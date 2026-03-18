@@ -1,0 +1,21 @@
+# Dependencias y artefactos de PlatformIO
+.pio/
+
+# Logs de compilación
+build_log.txt
+pio_build_log.txt
+pio_output.txt
+
+# Base de datos de compilación (generada automáticamente)
+compile_commands.json
+
+# Scripts auxiliares no relacionados con el desarrollo principal
+ppg_plotter_v0.py
+compare_files.py
+gen_coeffs_v3.py
+
+# Partición OTA (no relevante para el desarrollo del firmware/librería)
+ESP32S3_OTA_partition_8MB.csv
+
+# Tests (vacío por ahora)
+test/

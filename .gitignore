@@ -1,0 +1,22 @@
+.pio
+.vscode/.browse.c_cpp.db*
+# .vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
+.cache
+
+# Claude Code — configuración local (rutas de máquina, permisos locales)
+.claude/
+
+# Autogenerado por herramientas de build
+compile_commands.json
+build_log.txt
+pio_build_log.txt
+pio_output.txt
+
+# Archivos temporales / a eliminar
+src/AFE44x0.c.to_delete
+
+# Datos generados por ppg_plotter.py
+ppg_data_snap_*.csv
+ppg_data_stream_*.csv
