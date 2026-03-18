@@ -39,6 +39,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 ## Reglas de desarrollo (obligatorias)
 
 1. **Nunca usar `delay()`** — usar `vTaskDelay()` con `pdMS_TO_TICKS()`.
+6. **Idioma del código fuente:** todo el código, comentarios e identificadores deben estar en **inglés** (sin excepción).
 2. **Thread-safe** — proteger recursos compartidos con mutex (`SemaphoreHandle_t`).
 3. **Manejo de errores SPI/I2C** — siempre comprobar el resultado de las comunicaciones.
 4. **Pines desde `main.h`** — no hardcodear pines, seguir las definiciones del diccionario global.
@@ -48,6 +49,10 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 - C++ (Arduino + ESP-IDF + FreeRTOS)
 - ESP-IDF para configuración de hardware a bajo nivel (logs, Bluetooth)
 - FreeRTOS para multitarea (`freertos/semphr.h`)
+
+## Repositorio GitHub
+- **Repo:** https://github.com/acuesta-mow/mow_afe4490_test (privado)
+- **Cuenta:** `acuesta-mow` / `acuesta@medicalopenworld.org`
 
 ## Contexto del proyecto padre (IncuNest)
 - Repo: https://github.com/medicalopenworld/IncuNest/tree/master/Firmware

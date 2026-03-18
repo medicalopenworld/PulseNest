@@ -497,3 +497,72 @@ Se registra el siguiente paquete de funcionalidades futuras para `mow_afe4490` (
 - **Detector de apneas**: ausencia o irregularidad prolongada del patrón respiratorio derivado del PPG.
 - **Detector de artefactos**: movimiento del sensor/cuerpo, cambios de luz ambiental u otras perturbaciones. Base para PMAF.
 - **Cambios vasculares agudos**: vasoconstricción/vasodilatación, tono simpático, perfusión periférica, indicadores hemodinámicos (PTT, amplitud, área bajo la curva, tiempo de subida).
+
+---
+
+### Sesión 8 — 2026-03-18
+
+**Tema:** Subida del proyecto a GitHub
+
+**Acciones realizadas:**
+- Inicializado repositorio git en el directorio del proyecto.
+- Actualizado `.gitignore` para excluir: `.claude/` (permisos locales), `compile_commands.json` (5 MB autogenerado), logs de build (`build_log.txt`, `pio_build_log.txt`, `pio_output.txt`), y `src/AFE44x0.c.to_delete`.
+- Primer commit con 33 archivos (firmware, headers, librerías, spec, plotter, docs).
+- Creado repositorio privado en GitHub: https://github.com/acuesta-mow/mow_afe4490_test
+- Cuenta GitHub usada: `acuesta-mow` / `acuesta@medicalopenworld.org`
+
+**Decisiones:**
+- Repositorio creado como privado.
+- La carpeta `.claude/` se excluye siempre del repo (contiene rutas locales de máquina).
+
+---
+
+**Decisión — Problema 3 descartado:**
+
+`AFE4490Data` es solo observabilidad externa. Los algoritmos SpO2/HR son internos y no usan la struct como entrada — reciben los valores directamente en `_process_sample()`. Por tanto, no hay necesidad de exponer `led1_aled1_filtered` / `led2_aled2_filtered`. Las columnas `IRFilt`/`REDFilt` de la trama (pos 13-14) se mantienen como placeholders hasta que haya una necesidad concreta del plotter.
+
+---
+
+## Sesión 9 — 2026-03-18
+
+### Tema: Refactoring de nomenclatura en main.cpp + regla de idioma en CLAUDE.md
+
+---
+
+**`vTaskDelay(1ms)` añadido a `Protocentral_Task`**
+
+`SPO2_Task` hacía polling activo sin ceder CPU. Añadido `vTaskDelay(pdMS_TO_TICKS(1))` igual que `Mow_Output_Task`. Se eligió 1 ms en lugar de 2 ms (período exacto a 500 Hz) para evitar perder DRDY por jitter de fase del scheduler.
+
+---
+
+**Regla de idioma añadida a CLAUDE.md**
+
+Todo el código fuente, comentarios e identificadores deben estar en inglés (regla 6). Los comentarios en español de las líneas `vTaskDelay` fueron corregidos a inglés.
+
+---
+
+**Renombrados en main.cpp**
+
+| Nombre anterior | Nombre nuevo | Motivo |
+|---|---|---|
+| `SPO2_Task` | `Protocentral_Task` | Identifica la librería, no la función |
+| `Mow_Output_Task` | `Mow_Task` | `_Output` era redundante |
+| `afe4490ADCReady` | `protocentral_drdy_isr` | camelCase aislado; DRDY es el término del datasheet |
+| `AFE44XX_CS_PIN` / `AFE44XX_PWDN_PIN` / `AFE44XX_ADC_RDY_PIN` | `AFE4490_CS_PIN` / `AFE4490_PWDN_PIN` / `AFE4490_DRDY_PIN` | Pines del hardware concreto, no de la librería |
+| `afe44xx` | `protocentral` | Prefijo consistente con el bloque mow |
+| `afe44xx_raw_data` | `protocentral_raw_data` | ídem |
+| `last_intr_time_us` / `sample_counter` / `afe4490_ADC_ready` / `g_spo2_task` | `protocentral_last_intr_us` / `protocentral_sample_count` / `protocentral_drdy_flag` / `g_protocentral_task` | Simetría con variables de mow |
+| `"MOW_OUT"` / `"SPO2"` (etiquetas FreeRTOS) | `"MOW"` / `"PROTOCENTRAL"` | Consistentes con los nuevos nombres de tarea |
+| `g_mow_output_task` | `g_mow_task` | Consistente con el renombrado de la tarea |
+
+---
+
+**Refactoring de estructura**
+
+`main.cpp` reorganizado: globals → ISR → task → start → stop por cada librería. `start_mow` / `stop_mow` movidos junto a `Mow_Task`; `start_protocentral` / `stop_protocentral` junto a `Protocentral_Task`.
+
+---
+
+**Decisión — convención de prefijos**
+
+Se valoró aplicar prefijos `protocentral_` / `mow_` a todas las funciones (tareas incluidas). Descartado para las tareas: `Protocentral_Task` / `Mow_Task` ya expresan la distinción visualmente y la distinción tarea/función de control tiene valor. El fichero es suficientemente pequeño para que la convención de prefijo no aporte.
