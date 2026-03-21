@@ -30,7 +30,7 @@ struct AFE4490Data {
     // Processed outputs
     int32_t ppg;        // filtered PPG of selected channel
     float   spo2;       // SpO2 in %
-    uint8_t hr;         // heart rate in bpm
+    float   hr;         // heart rate in bpm
     bool    spo2_valid; // SpO2 is reliable
     bool    hr_valid;   // HR is reliable
     // Raw ADC outputs (6 signals from AFE4490)
@@ -40,6 +40,8 @@ struct AFE4490Data {
     int32_t aled2;      // ALED2VAL — ambient after LED2
     int32_t led1_aled1; // LED1-ALED1 — IR ambient-corrected
     int32_t led2_aled2; // LED2-ALED2 — RED ambient-corrected
+    // ── Diagnostic (temporary — may be removed in final release) ──
+    float hr1_ppg;      // HR1 internal signal (DC-removed + MA); set to 0.0 on detected peak
 };
 
 // ── Enumerations ──────────────────────────────────────────────────────────────
@@ -158,7 +160,7 @@ private:
 
     // Algorithms
     void _update_spo2(int32_t ir_corr, int32_t red_corr);
-    void _update_hr1(float ppg_filtered);
+    void _update_hr1(int32_t led1_aled1);
     void _reset_algorithms();
 
     // ── Hardware ──
@@ -198,17 +200,25 @@ private:
     BiquadState _bq_ppg;
     bool        _bq_ppg_needs_precharge;  // true after reset; pre-charge applied on first sample
 
-    // ── Moving average state ──
+    // ── Moving average state (PPG display filter) ──
     static constexpr int ma_len = 8;
     float    _ma_buf[ma_len];
     int      _ma_idx;
     float    _ma_sum;
+
+    // ── HR1 moving average state (independent of PPG display filter) ──
+    static constexpr int hr1_ma_max_len = 64;  // supports up to 640 Hz @ 5 Hz cutoff
+    float    _hr1_ma_buf[hr1_ma_max_len];
+    uint32_t _hr1_ma_len;   // computed from sample_rate in _recalc_rate_params()
+    int      _hr1_ma_idx;
+    float    _hr1_ma_sum;
 
     // ── Rate-dependent algorithm parameters (derived from _sample_rate_hz) ──
     uint32_t          _spo2_warmup_samples;
     uint32_t          _hr1_refractory_samples;
     float             _dc_iir_alpha;
     float             _ac_ema_beta;
+    float             _hr1_dc_alpha;
 
     // ── SpO2 state ──
     float    _dc_ir;
@@ -220,6 +230,8 @@ private:
     float    _spo2_b;
 
     // ── HR state ──
+    float    _hr1_dc;
+    uint32_t _hr1_peak_marker_countdown;
     float    _hr1_running_max;
     bool     _hr1_ppg_above_thresh;
     uint32_t _hr1_last_peak_idx;

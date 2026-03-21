@@ -667,3 +667,209 @@ La inversión ya existía para `_current_data.ppg` (línea `= -(int32_t)filtered
 **También configurado en esta sesión:**
 - Hook automático de guardado de contexto (`PostToolUse` + `Stop asyncRewake`) en `.claude/settings.local.json`.
 - Modo `bypassPermissions` activado en el proyecto.
+
+---
+
+## Sesión 12 — 2026-03-21
+
+### Tema: Commit + push de cambios acumulados; ajuste de f_high del filtro biquad
+
+---
+
+**Commit y push realizados**
+
+Commiteados y pusheados los cambios acumulados de sesiones 10–11 (commit `60f68a7`):
+- `mow_afe4490`: mutex split, biquad pre-charge, hr1 rename, fix inversión señal `_update_hr1(-filtered)`, documentación SPI.begin() y trampolines
+- `main.cpp`: rename `protocentral_raw_data` → `protocentral_data`
+- `ppg_plotter.py`: ventanas de laboratorio HRLabWindow / SpO2LabWindow / HRLab2Window + estimadores HR Python
+
+Autenticación gh: resuelto con `gh auth setup-git` (Windows Credential Manager no tenía el token; gh CLI sí).
+
+---
+
+**Observación HR — sesgo sistemático al alza**
+
+Con simulador a 60 BPM, `_update_hr1` devuelve ~64 BPM (sesgo ~4 BPM, variable). No es redondeo.
+
+Causa identificada: el decay del `running_max` (×0.9999/muestra) hace que el umbral baje ligeramente entre ciclos → el cruce de umbral en el siguiente ciclo ocurre antes en la rampa ascendente → intervalo medido más corto → HR sobreestimada.
+
+---
+
+**Prueba: reducir f_high del filtro biquad**
+
+Hipótesis: con f_high = 20 Hz el filtro deja pasar componentes de alta frecuencia que distorsionan la forma de la rampa ascendente y adelantan el cruce de umbral.
+
+Decisión: probar f_high = 8 Hz. Añadido en `start_mow()`:
+```cpp
+mow.setFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 8.0f);
+```
+
+**Resultado:** firmware flasheado con f_high = 8 Hz. Señal visualmente no parecía filtrada a 8 Hz — pendiente de evaluar con más datos.
+
+---
+
+**HR cambiado de `uint8_t` a `float` en `AFE4490Data`**
+
+Motivación: `uint8_t` (0–255) cubría el rango 40–240 BPM pero perdía resolución decimal. Con `float` se conserva la precisión del cálculo interno (`(sample_rate * 60) / avg_interval`).
+
+Cambios:
+- `include/mow_afe4490.h`: `uint8_t hr` → `float hr`
+- `src/mow_afe4490.cpp`: `(uint8_t)roundf(hr)` → `hr` (asignación directa)
+
+**Pendiente:** compilar, flashear y observar HR con mayor resolución.
+
+**`main.cpp` línea 134 — formato consistente con SpO2**
+
+`data.hr_valid ? (int)data.hr : -1` → `data.hr_valid ? data.hr : -1.0f` para mantener el mismo formato float que SpO2 en línea 132.
+
+**`ppg_plotter.py` — título p_hr con un decimal**
+
+`{int(self.data_hr[-1])} bpm` → `{self.data_hr[-1]:.1f} bpm` para mostrar resolución decimal en el título de la gráfica HR.
+
+**`main.cpp` — exploración de f_high para reducir sesgo HR**
+
+Secuencia de pruebas: 20 Hz (default) → 8 Hz → 4 Hz → 2 Hz. Conclusión: el sesgo no mejora con f_high más bajo — el filtro no es la causa. Revertido a 20 Hz: `setFilter(BUTTERWORTH, 0.5f, 20.0f)`.
+
+**`mow_afe4490.cpp` — eliminadas constantes `ppg_f_low_hz` / `ppg_f_high_hz`**
+
+Solo se usaban para inicializar `_filter_f_low` / `_filter_f_high` en el constructor. Sustituidas por literales directos `0.5f` / `20.0f`. Sin cambio de comportamiento.
+
+---
+
+**Decisión de arquitectura — HR independiente del filtro de visualización PPG**
+
+Los algoritmos SpO2 y HR deben operar sobre los 6 canales raw del AFE4490, independientes del filtro biquad de visualización (`_bq_ppg`). Motivo: cambiar `f_high` para visualización no debe afectar al algoritmo HR (acoplamiento indeseable detectado durante la exploración de f_high).
+
+SpO2 ya operaba sobre canales raw (correcto). HR operaba sobre `filtered` (incorrecto).
+
+**Solución implementada — filtro MA dedicado para HR1:**
+- Filtro de visualización PPG (biquad configurable): intacto, no toca HR
+- HR1 recibe `raw_ppg` y aplica su propio MA interno de 5 Hz cutoff
+- Ventana MA: `_hr1_ma_len = round(fs / (2 × 5.0))` → 50 muestras a 500 Hz
+- Se adapta automáticamente si cambia `_sample_rate_hz` (`_recalc_rate_params()`)
+- Buffer fijo `_hr1_ma_buf[64]` (soporta hasta 640 Hz @ 5 Hz cutoff)
+- Negación aplicada después del MA dentro de `_update_hr1()`, no fuera
+
+**Cambios:**
+- `include/mow_afe4490.h`: nuevos miembros `_hr1_ma_buf[64]`, `_hr1_ma_len`, `_hr1_ma_idx`, `_hr1_ma_sum`
+- `src/mow_afe4490.cpp` namespace: nueva constante `hr1_ma_cutoff_hz = 5.0f`
+- `src/mow_afe4490.cpp` constructor: inicialización de nuevos miembros
+- `_recalc_rate_params()`: calcula `_hr1_ma_len` con clamp a [1, 64]
+- `_reset_algorithms()`: resetea buffer y estado MA de HR1
+- `_process_sample()`: pasa `raw_ppg` a `_update_hr1()` (antes `-filtered`)
+- `_update_hr1()`: aplica MA interno + negación antes de detección de picos
+
+**`_process_sample()` — HR fijado a `led1_aled1`**
+
+`_update_hr1(raw_ppg)` → `_update_hr1(led1_aled1)`. HR usa siempre el canal IR ambiente-corregido, igual que SpO2. Desacopla HR del canal de visualización PPG (`_ppg_channel`).
+
+**`_update_hr1()` — firma cambiada a `int32_t led1_aled1`**
+
+`float raw` → `int32_t led1_aled1`. El nombre del parámetro documenta el contrato: solo acepta ese canal. La conversión a float se hace dentro. Actualizado también en la declaración del header.
+
+**`_update_hr1()` — negación movida antes del MA**
+
+La negación es lineal y conmuta con la media, así que el resultado es idéntico. Moverla antes hace que el buffer MA almacene ya la señal con polaridad convencional (picos hacia arriba). `raw = -(float)led1_aled1` antes de entrar al buffer; `ppg_filtered = _hr1_ma_sum / len` sin negación al salir.
+
+**Decisión de diseño — visualización de hr1_ppg**
+
+Opciones descartadas: ESP_LOGD (no graficable, mezcla con protocolo), BLE (demasiado costoso). Decisión: añadir `hr1_ppg` al final de `AFE4490Data` marcado explícitamente como diagnóstico/temporal. Truco elegante: `hr1_ppg` vale 0.0 en la muestra de detección de pico → los impulsos hacia abajo en la gráfica marcan exactamente cuándo dispara el algoritmo.
+
+**`AFE4490Data` — campo diagnóstico `hr1_ppg`**
+
+```cpp
+// ── Diagnostic (temporary — may be removed in final release) ──
+float hr1_ppg;  // HR1 internal signal (DC-removed + MA); set to 0.0 on detected peak
+```
+
+En `_update_hr1()`: `_current_data.hr1_ppg = ppg_filtered` cada muestra; `_current_data.hr1_ppg = 0.0f` en la detección de pico.
+
+**Bug: marcador de pico invisible por diezmado serie**
+
+Con `SERIAL_DOWNSAMPLING_RATIO=20`, la probabilidad de que la muestra del cero sea enviada es 1/20. Solución: mantener `hr1_ppg = 0.0` durante 25 muestras consecutivas tras cada pico (`hr1_peak_marker_samples = 25`). Garantiza al menos 1 muestra con cero en la trama enviada.
+
+Implementación:
+- Namespace: `hr1_peak_marker_samples = 10` (SERIAL_DOWNSAMPLING_RATIO = 10, no 20 como se asumió inicialmente)
+- Header: nuevo miembro `_hr1_peak_marker_countdown`
+- Constructor/reset: inicializado a 0
+- `_update_hr1()`: en detección de pico, `_hr1_peak_marker_countdown = 25`; cada muestra: si countdown > 0 → `hr1_ppg = 0.0, countdown--`; si no → `hr1_ppg = ppg_filtered`
+
+**Trama serie — nueva columna `HR1PPG` (pos 15, índice 14)**
+
+Decisión: columna nueva al final (no reutilizar placeholder `IRFilt`). Trama pasa de 14 a 15 campos:
+`LibID,SmpCnt,Ts_us,PPG,SpO2,HR,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG`
+
+`main.cpp`: añadido `Serial.print(","); Serial.println(data.hr1_ppg)` al final de la trama MOW.
+
+`ppg_plotter.py`:
+- `data_hr1_ppg` deque añadido
+- Parser: `len(parts) >= 15`, `p[13]` → `data_hr1_ppg`
+- `curve_hr1_ppg`: curva naranja (#FF8800) superpuesta en `p_ppg`
+- `curve_hr1_ppg.setData()` en el ciclo de refresco
+- Headers de consola y CSV (snapshot y streaming) actualizados con `HR1PPG`
+
+---
+
+**Bug: HR devuelve -1 — causa: DC no eliminado en path HR1**
+
+El MA es pasa-bajo y conserva el DC. Tras negar, la señal queda en un gran valor negativo → `_hr1_running_max` nunca supera 0 → umbral = 0 → sin cruces → `hr_valid = false` → -1. El biquad anterior era pasa-banda y eliminaba el DC, por eso funcionaba.
+
+**Fix: IIR DC removal dedicado para HR1**
+
+Añadido antes del MA en `_update_hr1()`:
+```cpp
+_hr1_dc = alpha * _hr1_dc + (1-alpha) * s;
+raw = -(s - _hr1_dc);  // AC con polaridad convencional
+```
+- Constante `hr1_dc_tau_s = 1.6f` (igual que SpO2, propia e independiente)
+- Alpha calculado en `_recalc_rate_params()`: `_hr1_dc_alpha = expf(-1/(tau*fs))`
+- Nuevos miembros: `_hr1_dc` (estado), `_hr1_dc_alpha` (rate-dependent)
+- Reset en `_reset_algorithms()`: `_hr1_dc = 0.0f`
+
+**Pendiente:** compilar, flashear y validar HR.
+
+---
+
+## Sesión 7 — 2026-03-21
+
+### Tema: Validación de marcadores de pico HR1 y ajuste visual del plotter
+
+---
+
+**Continuación de sesión anterior: hr1_peak_marker_samples = 10**
+
+Se confirmó que `SERIAL_DOWNSAMPLING_RATIO = 10` (main.cpp línea 1), no 20 como se había asumido. Se redujo `hr1_peak_marker_samples` de 25 a 10 para que el marcador de pico (hr1_ppg=0.0) tenga exactamente la duración mínima necesaria para sobrevivir el diezmado serial.
+
+Firmware compilado y flasheado a COM15. Script ppg_plotter.py relanzado.
+
+---
+
+**ppg_plotter.py: redimensionado relativo de los plots de la fila inferior**
+
+Petición del usuario: hacer el plot "Inverted PPG" más ancho y SpO2/HR más estrechos.
+
+Cambio en `ppg_plotter.py` (líneas ~843-845): `setColumnStretchFactor` de `stats_layout`:
+- Antes: columnas 0, 1, 2 con stretch 1, 1, 1 (igual ancho)
+- Después: columna 0 (PPG) = 3, columna 1 (SpO2) = 1, columna 2 (HR) = 1
+
+El plot PPG pasa a ocupar ~60% del ancho de la fila, SpO2 y HR ~20% cada uno.
+
+---
+
+**ppg_plotter.py: renombrado título del plot PPG**
+
+Cambiado el título de `p_ppg` de "Inverted PPG" a "PPG".
+
+---
+
+**ppg_plotter.py: ventana temporal reducida a 5 segundos**
+
+`WINDOW_SIZE` reducido de 500 a 250 muestras (5 s a 50 Hz efectivos).
+
+---
+
+**ppg_plotter.py: ventana de p_ppg reducida a 5 s sin afectar al resto**
+
+`WINDOW_SIZE` restaurado a 500 (10 s). Añadida constante `PPG_WINDOW_SIZE = 250` (5 s).
+`curve_ppg` y `curve_hr1_ppg` reciben `[-PPG_WINDOW_SIZE:]` en cada refresco.
+SpO2 y HR siguen mostrando los 10 s completos.

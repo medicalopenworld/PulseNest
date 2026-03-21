@@ -15,11 +15,14 @@ namespace {
     constexpr float    dc_iir_tau_s        = 1.6f;    // s  — DC IIR time constant
     constexpr float    ac_ema_tau_s        = 1.0f;    // s  — AC² EMA time constant
     constexpr float    hr_refractory_s     = 0.300f;  // s  — HR refractory period (~200 bpm max)
+    constexpr float    hr1_dc_tau_s        = 1.6f;    // s  — HR1 DC removal IIR time constant
+    constexpr uint32_t hr1_peak_marker_samples = 10; // samples — duration of hr1_ppg=0 marker after peak (survives serial downsampling)
 
     // ── PPG filter ────────────────────────────────────────────────────────────
-    constexpr float    ppg_f_low_hz        = 0.5f;    // Hz — default lower cutoff frequency
-    constexpr float    ppg_f_high_hz       = 20.0f;   // Hz — default upper cutoff frequency
     constexpr float    pi                  = 3.14159265358979f;
+
+    // ── HR1 moving average filter ─────────────────────────────────────────────
+    constexpr float    hr1_ma_cutoff_hz    = 5.0f;    // Hz — low-pass cutoff for HR peak detection
 
     // ── SpO2 ──────────────────────────────────────────────────────────────────
     constexpr float    spo2_a_default      = 104.0f;  // calibration coefficient
@@ -122,23 +125,28 @@ MOW_AFE4490::MOW_AFE4490()
       _stage2_gain(AFE4490Stage2Gain::GAIN_0DB),
       _ppg_channel(AFE4490Channel::LED1_ALED1),
       _filter_type(AFE4490Filter::BUTTERWORTH),
-      _filter_f_low(ppg_f_low_hz), _filter_f_high(ppg_f_high_hz),
+      _filter_f_low(0.5f), _filter_f_high(20.0f),
       _bq_b0(0.0f), _bq_b1(0.0f), _bq_b2(0.0f), _bq_a1(0.0f), _bq_a2(0.0f),
       _bq_ppg({0.0f, 0.0f}), _bq_ppg_needs_precharge(true),
       _ma_idx(0), _ma_sum(0.0f),
+      _hr1_ma_len(0), _hr1_ma_idx(0), _hr1_ma_sum(0.0f),
+      _hr1_dc_alpha(0.0f),
       _spo2_warmup_samples(0), _hr1_refractory_samples(0),
       _dc_iir_alpha(0.0f), _ac_ema_beta(0.0f),
       _dc_ir(0.0f), _dc_red(0.0f),
       _ac2_ir(0.0f), _ac2_red(0.0f),
       _spo2_sample_count(0),
       _spo2_a(spo2_a_default), _spo2_b(spo2_b_default),
+      _hr1_dc(0.0f), _hr1_peak_marker_countdown(0),
       _hr1_running_max(0.0f), _hr1_ppg_above_thresh(false),
       _hr1_last_peak_idx(0), _hr1_sample_idx(0),
       _hr1_interval_count(0)
 {
     memset(_ma_buf, 0, sizeof(_ma_buf));
+    memset(_hr1_ma_buf, 0, sizeof(_hr1_ma_buf));
+    _hr1_ma_idx = 0; _hr1_ma_sum = 0.0f;
     memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
-    _current_data = {0, 0.0f, 0, false, false, 0, 0, 0, 0, 0, 0};
+    _current_data = {0, 0.0f, 0.0f, false, false, 0, 0, 0, 0, 0, 0, 0.0f};
     _recalc_rate_params();
 }
 
@@ -373,7 +381,9 @@ void MOW_AFE4490::_reset_algorithms() {
     _dc_ir  = 0.0f; _dc_red  = 0.0f;
     _ac2_ir = 0.0f; _ac2_red = 0.0f;
     _spo2_sample_count = 0;
-    _hr1_running_max    = 0.0f;
+    _hr1_dc                    = 0.0f;
+    _hr1_peak_marker_countdown = 0;
+    _hr1_running_max           = 0.0f;
     _hr1_ppg_above_thresh   = false;
     _hr1_last_peak_idx  = 0;
     _hr1_sample_idx     = 0;
@@ -382,7 +392,7 @@ void MOW_AFE4490::_reset_algorithms() {
     _bq_ppg = {0.0f, 0.0f};
     memset(_ma_buf, 0, sizeof(_ma_buf));
     _ma_idx = 0; _ma_sum = 0.0f;
-    _current_data = {0, 0.0f, 0, false, false, 0, 0, 0, 0, 0, 0};
+    _current_data = {0, 0.0f, 0.0f, false, false, 0, 0, 0, 0, 0, 0, 0.0f};
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
@@ -528,10 +538,14 @@ void MOW_AFE4490::_apply_control_regs() {
 
 void MOW_AFE4490::_recalc_rate_params() {
     float fs              = (float)_sample_rate_hz;
-    _spo2_warmup_samples   = (uint32_t)(spo2_warmup_s   * fs);
+    _spo2_warmup_samples    = (uint32_t)(spo2_warmup_s   * fs);
     _hr1_refractory_samples = (uint32_t)(hr_refractory_s * fs);
-    _dc_iir_alpha          = expf(-1.0f / (dc_iir_tau_s * fs));
-    _ac_ema_beta           = 1.0f - expf(-1.0f / (ac_ema_tau_s * fs));
+    _dc_iir_alpha           = expf(-1.0f / (dc_iir_tau_s * fs));
+    _ac_ema_beta            = 1.0f - expf(-1.0f / (ac_ema_tau_s * fs));
+    _hr1_dc_alpha           = expf(-1.0f / (hr1_dc_tau_s * fs));
+    _hr1_ma_len             = (uint32_t)roundf(fs / (2.0f * hr1_ma_cutoff_hz));
+    if (_hr1_ma_len < 1) _hr1_ma_len = 1;
+    if (_hr1_ma_len > (uint32_t)hr1_ma_max_len) _hr1_ma_len = (uint32_t)hr1_ma_max_len;
     _recalc_biquad();
 }
 
@@ -676,8 +690,8 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
     // SpO2 uses ambient-corrected channels (unfiltered, spec §1.3)
     _update_spo2(led1_aled1, led2_aled2);
 
-    // HR uses filtered PPG (negated: same polarity as _current_data.ppg — peaks up)
-    _update_hr1(-filtered);
+    // HR uses led1_aled1 (IR ambient-corrected) — same channel as SpO2 IR, independent of PPG display channel
+    _update_hr1(led1_aled1);
 
     // Push to queue; if full, drop oldest to keep most recent
     if (xQueueSend(_data_queue, &_current_data, 0) != pdTRUE) {
@@ -737,8 +751,19 @@ void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
 // Adaptive-threshold peak detection on filtered PPG.
 // Threshold = 0.6 × running_max; refractory = _hr1_refractory_samples.
 // HR reported from average of 5 consecutive RR intervals.
-void MOW_AFE4490::_update_hr1(float ppg_filtered) {
+void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
     _hr1_sample_idx++;
+
+    // DC removal: IIR estimator (tau = hr1_dc_tau_s), then negate for conventional PPG polarity (peaks up)
+    float s = (float)led1_aled1;
+    _hr1_dc = _hr1_dc_alpha * _hr1_dc + (1.0f - _hr1_dc_alpha) * s;
+    // Apply dedicated MA low-pass filter (5 Hz cutoff, independent of PPG display filter)
+    float raw = -(s - _hr1_dc);
+    _hr1_ma_sum -= _hr1_ma_buf[_hr1_ma_idx];
+    _hr1_ma_buf[_hr1_ma_idx] = raw;
+    _hr1_ma_sum += raw;
+    _hr1_ma_idx = (_hr1_ma_idx + 1) % (int)_hr1_ma_len;
+    float ppg_filtered = _hr1_ma_sum / (float)_hr1_ma_len;
 
     // Running max: slow exponential decay keeps it tracking signal amplitude
     _hr1_running_max = fmaxf(_hr1_running_max * 0.9999f, ppg_filtered);
@@ -748,6 +773,7 @@ void MOW_AFE4490::_update_hr1(float ppg_filtered) {
     // Threshold crossing (rising edge only)
     if (ppg_filtered > threshold && !_hr1_ppg_above_thresh) {
         _hr1_ppg_above_thresh = true;
+        _hr1_peak_marker_countdown = hr1_peak_marker_samples;  // diagnostic: hold 0 for N samples
 
         uint32_t elapsed = _hr1_sample_idx - _hr1_last_peak_idx;
         if (_hr1_last_peak_idx > 0 && elapsed > _hr1_refractory_samples) {
@@ -760,6 +786,14 @@ void MOW_AFE4490::_update_hr1(float ppg_filtered) {
 
     } else if (ppg_filtered <= threshold) {
         _hr1_ppg_above_thresh = false;
+    }
+
+    // Diagnostic: hr1_ppg = 0 for hr1_peak_marker_samples after each peak, else normal value
+    if (_hr1_peak_marker_countdown > 0) {
+        _current_data.hr1_ppg = 0.0f;
+        _hr1_peak_marker_countdown--;
+    } else {
+        _current_data.hr1_ppg = ppg_filtered;
     }
 
     // Need 5 intervals for a stable estimate
@@ -775,7 +809,7 @@ void MOW_AFE4490::_update_hr1(float ppg_filtered) {
     float hr = ((float)_sample_rate_hz * 60.0f) / avg_interval;
 
     if (hr >= hr_min_bpm && hr <= hr_max_bpm) {
-        _current_data.hr       = (uint8_t)roundf(hr);
+        _current_data.hr       = hr;
         _current_data.hr_valid = true;
     } else {
         _current_data.hr_valid = false;

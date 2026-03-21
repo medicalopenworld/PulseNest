@@ -131,7 +131,7 @@ void Mow_Task(void *pvParameters) {
                 Serial.print(",");
                 Serial.print(data.spo2_valid ? data.spo2 : -1.0f);
                 Serial.print(",");
-                Serial.print(data.hr_valid ? (int)data.hr : -1);
+                Serial.print(data.hr_valid ? data.hr : -1.0f);
                 Serial.print(",");
                 Serial.print(data.led2);        // RED raw
                 Serial.print(",");
@@ -147,7 +147,9 @@ void Mow_Task(void *pvParameters) {
                 Serial.print(",");
                 Serial.print(data.led2_aled2);  // REDFilt (placeholder — no filtered data yet)
                 Serial.print(",");
-                Serial.println(data.led1_aled1); // IRFilt (placeholder — no filtered data yet)
+                Serial.print(data.led1_aled1); // IRFilt (placeholder — no filtered data yet)
+                Serial.print(",");
+                Serial.println(data.hr1_ppg);   // HR1PPG (diagnostic — DC-removed+MA; 0.0 on peak)
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.
@@ -164,6 +166,7 @@ void start_mow() {
 
     mow_sample_count = 0;
     mow.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN);
+    mow.setFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
     xTaskCreatePinnedToCore(Mow_Task, "MOW", 4096, NULL, 3, &g_mow_task, 1);
     g_active_lib = ActiveLib::MOW;
     Serial.println("# Switched to mow_afe4490");
