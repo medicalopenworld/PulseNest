@@ -566,3 +566,104 @@ Todo el código fuente, comentarios e identificadores deben estar en inglés (re
 **Decisión — convención de prefijos**
 
 Se valoró aplicar prefijos `protocentral_` / `mow_` a todas las funciones (tareas incluidas). Descartado para las tareas: `Protocentral_Task` / `Mow_Task` ya expresan la distinción visualmente y la distinción tarea/función de control tiene valor. El fichero es suficientemente pequeño para que la convención de prefijo no aporte.
+
+---
+
+## Sesión 10 — 2026-03-21
+
+### Tema: Análisis de cambios sin commitear detectados por revisión de código
+
+*Nota: esta entrada fue reconstruida a partir del diff del código fuente (git diff HEAD), ya que la sesión anterior fue cerrada sin guardar el log.*
+
+---
+
+**Cambios en `mow_afe4490` (v0.7 → sin versión asignada todavía)**
+
+**1. Split del mutex `_cfg_mutex` → `_spi_mutex` + `_state_mutex`**
+
+El mutex único `_cfg_mutex` fue separado en dos con responsabilidades distintas:
+- `_spi_mutex`: protege el bus SPI (`_write_reg` / `_read_spi_raw`)
+- `_state_mutex`: protege el estado interno de procesamiento (`_ppg_channel`, buffers biquad, acumuladores SpO2/HR)
+
+Consecuencia importante: en `_task_body()`, ahora se libera `_spi_mutex` inmediatamente después de la lectura SPI, y se toma `_state_mutex` por separado antes de `_process_sample()`. Esto elimina el bloqueo innecesario del bus SPI durante el procesado de señal.
+
+Config setters: los que tocan hardware (`setSampleRate`, `setLED*`, `setTIAGain`, etc.) usan `_spi_mutex`; los que solo tocan estado interno (`setPPGChannel`, `setFilter`, `setSpO2Coefficients`) usan `_state_mutex`.
+
+**2. Biquad pre-charge (`_biquad_precharge()`)**
+
+Nuevo método privado que pre-carga el estado del filtro biquad a su valor DC de estado estacionario antes de la primera muestra, eliminando el transitorio inicial. Fórmulas para DF-II transpuesto:
+```
+y_ss  = x0 * (b0+b1+b2) / (1+a1+a2)   → 0 para bandpass
+v1_ss = y_ss - b0*x0
+v2_ss = b2*x0 - a2*y_ss
+```
+Flag `_bq_ppg_needs_precharge` (bool): se activa al hacer reset/cambiar canal/cambiar filtro; se consume en el primer sample.
+
+**3. Renombrado `_hr_*` → `_hr1_*`**
+
+Todos los miembros y métodos del algoritmo HR renombrados con sufijo `_hr1_`. Señala que el diseño contempla un segundo algoritmo (`_hr2`) en el futuro. `_update_hr()` → `_update_hr1()`.
+
+Bug fix menor: `_hr_running_max` antes hacía `fmaxf(..., fabsf(ppg_filtered))`. Ahora es `fmaxf(..., ppg_filtered)` — el max se calcula sobre el valor positivo directo, no su valor absoluto.
+
+**4. Contrato SPI.begin() documentado explícitamente**
+
+Añadido comentario en `begin()` y en la declaración del header aclarando que la librería no llama `SPI.begin()` internamente — debe ser llamado por la aplicación antes de `begin()`. Motivo: SPI es un bus compartido; llamar `SPI.begin()` dentro de la librería podría reinicializar el bus y romper otros dispositivos.
+
+**5. Comentarios de documentación interna añadidos**
+
+- ISR trampoline (`_drdy_isr_static`): documentada la limitación del singleton `_g_instance` y las dos alternativas para soportar dos chips AFE4490 simultáneos.
+- Task trampoline (`_task_trampoline`): documentado el patrón trampoline+member como idioma estándar para FreeRTOS.
+- Static member definition de `_g_instance`: explicado por qué debe estar en el .cpp.
+
+---
+
+**Cambios en `main.cpp`**
+
+- `protocentral_raw_data` → `protocentral_data` (eliminado sufijo `_raw_` para simetría con naming de mow).
+- `SPI.begin()` en `setup()`: ampliado el comentario explicando por qué se llama aquí y no dentro de cada librería.
+
+---
+
+**Cambios en `ppg_plotter.py` (MAYOR — nuevas ventanas de laboratorio)**
+
+**Nuevos algoritmos Python de estimación HR:**
+
+Dos funciones de análisis (lado Python, para experimentar y comparar, no reemplazan el HR del firmware):
+
+- `_estimate_hr_xcorr_v1(seg, fs, max_lag_n, ...)`: cross-correlación entre dos segmentos solapados de la misma señal (`np.correlate` en modo `valid`). Selecciona el PRIMER pico significativo por encima de `min_lag_s` (no el mayor) para evitar bloqueo en armónicos.
+- `_estimate_hr_autocorr_v2(seg, fs, max_lag_n, ...)`: autocorrelación verdadera con `scipy.signal.correlate(seg, seg, method='direct')`. Más eficiente en ventanas largas.
+
+Ambas devuelven `HRResult` (namedtuple): `acorr`, `lags_s`, `peak_lag`, `hr_bpm`, `peak_val`, `hr_status`.
+`HRStatus` (IntEnum): `VALID`, `OUT_OF_RANGE`, `INVALID`.
+Ambas aplican interpolación parabólica sub-muestra al pico detectado.
+
+**Nuevas ventanas de laboratorio (secundarias, abiertas desde botones del sidebar):**
+
+- `HRLabWindow`: ventana principal de análisis HR. 3 columnas (A, B, C) con 3 plots cada una. Columna B: xcorr_v1 sobre PPG raw y PPG filtrado por biquad mow. Columna C: autocorr_v2 sobre los mismos. Incluye `_mow_biquad_coeffs()` (reimplementación Python de los coeficientes biquad de mow_afe4490). Actualización a 5 Hz.
+- `SpO2LabWindow`: 3×3 grid (1A-3C), para análisis SpO2. Layout: QSplitter proporciones 1:1:1.
+- `HRLab2Window`: 3×3 grid, proporciones 2:1:1. Uso pendiente de definir.
+
+**Nuevos botones sidebar:** `HRLAB`, `SPO2LAB`, `HRLAB2` (toggle checkable). HRLAB abre por defecto al inicio.
+
+---
+
+**Pendientes activos (sin cambios respecto a sesión anterior):**
+- Bug hot-swap: ESP32 deja de enviar datos al cambiar de librería — no resuelto.
+- Validación con hardware real.
+- Cambios sin commitear: los 4 archivos modificados no han sido commiteados aún.
+
+---
+
+## Sesión 11 — 2026-03-21
+
+### Tema: Bug fix `_update_hr1()` — señal no invertida
+
+**Bug:** `_update_hr1()` recibía `filtered` (señal sin invertir, picos hacia abajo). El algoritmo de detección de picos busca cruces hacia arriba, por lo que nunca detectaba nada.
+
+**Fix:** `src/mow_afe4490.cpp` — `_update_hr1(filtered)` → `_update_hr1(-filtered)`.
+
+La inversión ya existía para `_current_data.ppg` (línea `= -(int32_t)filtered`), pero no se había aplicado a la llamada al algoritmo HR. El AFE4490 produce una señal que cae en sístole; invertirla da la polaridad convencional PPG (picos hacia arriba).
+
+**También configurado en esta sesión:**
+- Hook automático de guardado de contexto (`PostToolUse` + `Stop asyncRewake`) en `.claude/settings.local.json`.
+- Modo `bypassPermissions` activado en el proyecto.

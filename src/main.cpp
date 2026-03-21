@@ -32,7 +32,7 @@ volatile ActiveLib g_active_lib = ActiveLib::MOW;  // default at startup
 // Library A — protocentral_afe44xx
 // ═══════════════════════════════════════════════════════════════════════════════
 AFE44XX       protocentral(AFE4490_CS_PIN, AFE4490_PWDN_PIN);
-afe44xx_data  protocentral_raw_data;
+afe44xx_data  protocentral_data;
 
 volatile unsigned long protocentral_last_intr_us  = 0;
 volatile unsigned long protocentral_sample_count  = 0;
@@ -54,7 +54,7 @@ void Protocentral_Task(void *pvParameters) {
             protocentral_drdy_flag = false;
             interrupts();
 
-            protocentral.get_AFE44XX_Data(&protocentral_raw_data);
+            protocentral.get_AFE44XX_Data(&protocentral_data);
 
             if (cnt % SERIAL_DOWNSAMPLING_RATIO == 0) {
                 Serial.print("$P1,");
@@ -62,27 +62,27 @@ void Protocentral_Task(void *pvParameters) {
                 Serial.print(",");
                 Serial.print(ts);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.IR_filtered_data * -1);  // ppg (inverted)
+                Serial.print(protocentral_data.IR_filtered_data * -1);  // ppg (inverted)
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.spo2);
+                Serial.print(protocentral_data.spo2);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.heart_rate);
+                Serial.print(protocentral_data.heart_rate);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.RED_data);
+                Serial.print(protocentral_data.RED_data);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.IR_data);
+                Serial.print(protocentral_data.IR_data);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.ambientRED_data);
+                Serial.print(protocentral_data.ambientRED_data);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.ambientIR_data);
+                Serial.print(protocentral_data.ambientIR_data);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.REDminusAmbient_data);
+                Serial.print(protocentral_data.REDminusAmbient_data);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.IRminusAmbient_data);
+                Serial.print(protocentral_data.IRminusAmbient_data);
                 Serial.print(",");
-                Serial.print(protocentral_raw_data.RED_filtered_data);
+                Serial.print(protocentral_data.RED_filtered_data);
                 Serial.print(",");
-                Serial.println(protocentral_raw_data.IR_filtered_data);
+                Serial.println(protocentral_data.IR_filtered_data);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.
@@ -204,9 +204,13 @@ void Cmd_Task(void *pvParameters) {
 // ── setup / loop ──────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
-    SPI.begin(36, 37, 35, -1);  // CLK=36, MOSI=37, MISO=35, CS=-1 (managed per device)
+    SPI.begin(36, 37, 35, -1);  // CLK=36, MOSI=37, MISO=35, CS=-1 (managed per device).
+                                // Called here and not inside each library: SPI is a shared bus —
+                                // multiple devices can coexist via beginTransaction()/endTransaction().
+                                // Calling SPI.begin() inside a library would risk reinitialising the
+                                // bus and breaking other devices sharing it.
 
-    xTaskCreatePinnedToCore(Cmd_Task, "CMD", 2048, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(Cmd_Task, "CMD", 2048, NULL, 2, NULL, 0);  // Serial command handler: switches active library at runtime ('m' = mow, 'p' = protocentral).
 
     start_mow();  // default library at startup — send 'p' over Serial to switch to protocentral, 'm' to switch back
 }

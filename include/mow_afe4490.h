@@ -91,7 +91,10 @@ public:
     MOW_AFE4490();
     ~MOW_AFE4490();
 
-    // Initialization — configures chip with defaults, attaches DRDY ISR, starts task
+    // Initialization — configures chip with defaults, attaches DRDY ISR, starts task.
+    // Requires SPI.begin() to have been called beforehand by the application.
+    // This library does not call SPI.begin() internally to avoid interfering with
+    // other SPI devices sharing the same bus.
     void begin(int pin_cs, int pin_drdy);
 
     // Chip configuration setters (callable before or after begin())
@@ -149,12 +152,13 @@ private:
     // Signal processing
     struct BiquadState { float v1, v2; };
     float _biquad_step(float x, BiquadState& st);
+    void  _biquad_precharge(float x0, BiquadState& st);
     void  _process_sample(int32_t led1, int32_t led2, int32_t aled1, int32_t aled2,
                           int32_t led1_aled1, int32_t led2_aled2);
 
     // Algorithms
     void _update_spo2(int32_t ir_corr, int32_t red_corr);
-    void _update_hr(float ppg_filtered);
+    void _update_hr1(float ppg_filtered);
     void _reset_algorithms();
 
     // ── Hardware ──
@@ -163,7 +167,10 @@ private:
 
     // ── FreeRTOS ──
     SemaphoreHandle_t _drdy_sem;
-    SemaphoreHandle_t _cfg_mutex;
+    SemaphoreHandle_t _spi_mutex;    // protects SPI bus access (_write_reg / _read_spi_raw)
+    SemaphoreHandle_t _state_mutex;  // protects internal processing state (_ppg_channel, filter
+                                     // buffers, SpO2/HR accumulators) shared between _process_sample()
+                                     // and the config setters that do not access the SPI bus
     QueueHandle_t     _data_queue;
     TaskHandle_t      _task_handle;
     bool              _initialized;
@@ -189,6 +196,7 @@ private:
 
     // ── Biquad state (one per signal path) ──
     BiquadState _bq_ppg;
+    bool        _bq_ppg_needs_precharge;  // true after reset; pre-charge applied on first sample
 
     // ── Moving average state ──
     static constexpr int ma_len = 8;
@@ -198,7 +206,7 @@ private:
 
     // ── Rate-dependent algorithm parameters (derived from _sample_rate_hz) ──
     uint32_t          _spo2_warmup_samples;
-    uint32_t          _hr_refractory_samples;
+    uint32_t          _hr1_refractory_samples;
     float             _dc_iir_alpha;
     float             _ac_ema_beta;
 
@@ -212,17 +220,27 @@ private:
     float    _spo2_b;
 
     // ── HR state ──
-    float    _hr_running_max;
-    bool     _hr_above_thresh;
-    uint32_t _hr_last_peak_idx;
-    uint32_t _hr_sample_idx;
-    int32_t  _hr_intervals[5];
-    uint8_t  _hr_interval_count;
+    float    _hr1_running_max;
+    bool     _hr1_ppg_above_thresh;
+    uint32_t _hr1_last_peak_idx;
+    uint32_t _hr1_sample_idx;
+    int32_t  _hr1_intervals[5];
+    uint8_t  _hr1_interval_count;
 
     // ── Output snapshot (written by task, pushed to queue) ──
     AFE4490Data _current_data;
 
     // ── Static ISR trampoline ──
+    // _g_instance holds a pointer to the single active MOW_AFE4490 object so that
+    // _drdy_isr_static (a plain C-compatible function required by attachInterrupt)
+    // can forward the interrupt to the correct instance.
+    //
+    // LIMITATION: only one MOW_AFE4490 instance is supported at a time. A second
+    // instance would overwrite _g_instance and its DRDY interrupts would be routed
+    // to the wrong object. To support two AFE4490 chips, either:
+    //   - add a second static ISR + pointer pair, or
+    //   - switch to ESP-IDF gpio_isr_handler_add(), which passes a void* argument
+    //     per handler, eliminating the need for a singleton pointer altogether.
     static MOW_AFE4490* _g_instance;
     static void IRAM_ATTR _drdy_isr_static();
 };

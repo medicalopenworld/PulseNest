@@ -104,12 +104,15 @@ namespace {
 }
 
 // ── Static member ─────────────────────────────────────────────────────────────
+// Singleton pointer used by the static ISR trampoline (_drdy_isr_static) to reach
+// the class instance. Static members must be defined exactly once in a .cpp file;
+// the declaration in the header only reserves the name.
 MOW_AFE4490* MOW_AFE4490::_g_instance = nullptr;
 
 // ── Constructor / destructor ──────────────────────────────────────────────────
 MOW_AFE4490::MOW_AFE4490()
     : _pin_cs(-1), _pin_drdy(-1),
-      _drdy_sem(nullptr), _cfg_mutex(nullptr),
+      _drdy_sem(nullptr), _spi_mutex(nullptr), _state_mutex(nullptr),
       _data_queue(nullptr), _task_handle(nullptr),
       _initialized(false),
       _sample_rate_hz(500), _num_averages(8),
@@ -121,20 +124,20 @@ MOW_AFE4490::MOW_AFE4490()
       _filter_type(AFE4490Filter::BUTTERWORTH),
       _filter_f_low(ppg_f_low_hz), _filter_f_high(ppg_f_high_hz),
       _bq_b0(0.0f), _bq_b1(0.0f), _bq_b2(0.0f), _bq_a1(0.0f), _bq_a2(0.0f),
-      _bq_ppg({0.0f, 0.0f}),
+      _bq_ppg({0.0f, 0.0f}), _bq_ppg_needs_precharge(true),
       _ma_idx(0), _ma_sum(0.0f),
-      _spo2_warmup_samples(0), _hr_refractory_samples(0),
+      _spo2_warmup_samples(0), _hr1_refractory_samples(0),
       _dc_iir_alpha(0.0f), _ac_ema_beta(0.0f),
       _dc_ir(0.0f), _dc_red(0.0f),
       _ac2_ir(0.0f), _ac2_red(0.0f),
       _spo2_sample_count(0),
       _spo2_a(spo2_a_default), _spo2_b(spo2_b_default),
-      _hr_running_max(0.0f), _hr_above_thresh(false),
-      _hr_last_peak_idx(0), _hr_sample_idx(0),
-      _hr_interval_count(0)
+      _hr1_running_max(0.0f), _hr1_ppg_above_thresh(false),
+      _hr1_last_peak_idx(0), _hr1_sample_idx(0),
+      _hr1_interval_count(0)
 {
     memset(_ma_buf, 0, sizeof(_ma_buf));
-    memset(_hr_intervals, 0, sizeof(_hr_intervals));
+    memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
     _current_data = {0, 0.0f, 0, false, false, 0, 0, 0, 0, 0, 0};
     _recalc_rate_params();
 }
@@ -144,13 +147,17 @@ MOW_AFE4490::~MOW_AFE4490() {
         vTaskDelete(_task_handle);
         _task_handle = nullptr;
     }
-    if (_data_queue)  vQueueDelete(_data_queue);
-    if (_drdy_sem)    vSemaphoreDelete(_drdy_sem);
-    if (_cfg_mutex)   vSemaphoreDelete(_cfg_mutex);
+    if (_data_queue)   vQueueDelete(_data_queue);
+    if (_drdy_sem)     vSemaphoreDelete(_drdy_sem);
+    if (_spi_mutex)    vSemaphoreDelete(_spi_mutex);
+    if (_state_mutex)  vSemaphoreDelete(_state_mutex);
     if (_g_instance == this) _g_instance = nullptr;
 }
 
 // ── begin() ───────────────────────────────────────────────────────────────────
+// Requires SPI.begin() to have been called beforehand. This library intentionally
+// does not call SPI.begin() to avoid reinitialising the bus and interfering with
+// other SPI devices. Only SPI.beginTransaction() / endTransaction() are used here.
 void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
     _pin_cs   = pin_cs;
     _pin_drdy = pin_drdy;
@@ -159,18 +166,19 @@ void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
     pinMode(_pin_cs, OUTPUT);
     digitalWrite(_pin_cs, HIGH);
 
-    _drdy_sem  = xSemaphoreCreateBinary();
-    _cfg_mutex = xSemaphoreCreateMutex();
-    _data_queue = xQueueCreate(MOW_AFE4490_QUEUE_SIZE, sizeof(AFE4490Data));
+    _drdy_sem    = xSemaphoreCreateBinary();
+    _spi_mutex   = xSemaphoreCreateMutex();
+    _state_mutex = xSemaphoreCreateMutex();
+    _data_queue  = xQueueCreate(MOW_AFE4490_QUEUE_SIZE, sizeof(AFE4490Data));
 
-    if (!_drdy_sem || !_cfg_mutex || !_data_queue) {
+    if (!_drdy_sem || !_spi_mutex || !_state_mutex || !_data_queue) {
         ESP_LOGE(TAG, "FreeRTOS object creation failed");
         return;
     }
 
-    xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _chip_init();
-    xSemaphoreGive(_cfg_mutex);
+    xSemaphoreGive(_spi_mutex);
 
     _initialized = true;
 
@@ -192,7 +200,7 @@ void MOW_AFE4490::setSampleRate(uint16_t hz) {
         return;
     }
 
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 
     _sample_rate_hz = hz;
 
@@ -212,7 +220,7 @@ void MOW_AFE4490::setSampleRate(uint16_t hz) {
     if (_initialized) {
         _apply_timing_regs();
         _apply_control_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
@@ -229,29 +237,29 @@ void MOW_AFE4490::setNumAverages(uint8_t num) {
         num = clamped;
     }
 
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _num_averages = num;
     if (_initialized) {
         _apply_control_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
 void MOW_AFE4490::setLED1Current(float mA) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _led1_current_mA = constrain(mA, 0.0f, (float)_led_range_mA);
     if (_initialized) {
         _apply_analog_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
 void MOW_AFE4490::setLED2Current(float mA) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _led2_current_mA = constrain(mA, 0.0f, (float)_led_range_mA);
     if (_initialized) {
         _apply_analog_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
@@ -260,71 +268,73 @@ void MOW_AFE4490::setLEDRange(uint8_t mA) {
         ESP_LOGE(TAG, "setLEDRange: must be 75 or 150 mA");
         return;
     }
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _led_range_mA = mA;
     if (_initialized) {
         _apply_analog_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
 void MOW_AFE4490::setTIAGain(AFE4490TIAGain gain) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _tia_gain = gain;
     if (_initialized) {
         _apply_analog_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
 void MOW_AFE4490::setTIACF(AFE4490TIACF cf) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _tia_cf = cf;
     if (_initialized) {
         _apply_analog_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
 void MOW_AFE4490::setStage2Gain(AFE4490Stage2Gain gain) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
     _stage2_gain = gain;
     if (_initialized) {
         _apply_analog_regs();
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_spi_mutex);
     }
 }
 
 void MOW_AFE4490::setPPGChannel(AFE4490Channel channel) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _ppg_channel = channel;
     // Reset filter state: changing channel means a different signal enters the filter
     _bq_ppg = {0.0f, 0.0f};
+    _bq_ppg_needs_precharge = true;
     memset(_ma_buf, 0, sizeof(_ma_buf));
     _ma_idx = 0;
     _ma_sum = 0.0f;
-    if (_initialized) xSemaphoreGive(_cfg_mutex);
+    if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
 void MOW_AFE4490::setFilter(AFE4490Filter type, float f_low_hz, float f_high_hz) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _filter_type   = type;
     _filter_f_low  = f_low_hz;
     _filter_f_high = f_high_hz;
     if (type == AFE4490Filter::BUTTERWORTH) _recalc_biquad();
     // Reset filter state
     _bq_ppg = {0.0f, 0.0f};
+    _bq_ppg_needs_precharge = true;
     memset(_ma_buf, 0, sizeof(_ma_buf));
     _ma_idx = 0;
     _ma_sum = 0.0f;
-    if (_initialized) xSemaphoreGive(_cfg_mutex);
+    if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
 void MOW_AFE4490::setSpO2Coefficients(float a, float b) {
-    if (_initialized) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _spo2_a = a;
     _spo2_b = b;
-    if (_initialized) xSemaphoreGive(_cfg_mutex);
+    if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
 // ── getData() ─────────────────────────────────────────────────────────────────
@@ -339,7 +349,7 @@ void MOW_AFE4490::stop() {
     detachInterrupt(digitalPinToInterrupt(_pin_drdy));
 
     // Take mutex to wait for any in-progress SPI transaction to finish
-    if (_cfg_mutex) xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
+    if (_spi_mutex) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 
     if (_task_handle) {
         vTaskDelete(_task_handle);
@@ -347,9 +357,10 @@ void MOW_AFE4490::stop() {
     }
 
     // Delete FreeRTOS objects (mutex last since we hold it)
-    if (_data_queue) { vQueueDelete(_data_queue);  _data_queue = nullptr; }
-    if (_drdy_sem)   { vSemaphoreDelete(_drdy_sem); _drdy_sem  = nullptr; }
-    if (_cfg_mutex)  { vSemaphoreDelete(_cfg_mutex); _cfg_mutex = nullptr; }
+    if (_data_queue)  { vQueueDelete(_data_queue);       _data_queue  = nullptr; }
+    if (_drdy_sem)    { vSemaphoreDelete(_drdy_sem);     _drdy_sem    = nullptr; }
+    if (_spi_mutex)   { vSemaphoreDelete(_spi_mutex);    _spi_mutex   = nullptr; }
+    if (_state_mutex) { vSemaphoreDelete(_state_mutex);  _state_mutex = nullptr; }
 
     _initialized = false;
     _reset_algorithms();
@@ -362,12 +373,12 @@ void MOW_AFE4490::_reset_algorithms() {
     _dc_ir  = 0.0f; _dc_red  = 0.0f;
     _ac2_ir = 0.0f; _ac2_red = 0.0f;
     _spo2_sample_count = 0;
-    _hr_running_max    = 0.0f;
-    _hr_above_thresh   = false;
-    _hr_last_peak_idx  = 0;
-    _hr_sample_idx     = 0;
-    _hr_interval_count = 0;
-    memset(_hr_intervals, 0, sizeof(_hr_intervals));
+    _hr1_running_max    = 0.0f;
+    _hr1_ppg_above_thresh   = false;
+    _hr1_last_peak_idx  = 0;
+    _hr1_sample_idx     = 0;
+    _hr1_interval_count = 0;
+    memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
     _bq_ppg = {0.0f, 0.0f};
     memset(_ma_buf, 0, sizeof(_ma_buf));
     _ma_idx = 0; _ma_sum = 0.0f;
@@ -518,7 +529,7 @@ void MOW_AFE4490::_apply_control_regs() {
 void MOW_AFE4490::_recalc_rate_params() {
     float fs              = (float)_sample_rate_hz;
     _spo2_warmup_samples   = (uint32_t)(spo2_warmup_s   * fs);
-    _hr_refractory_samples = (uint32_t)(hr_refractory_s * fs);
+    _hr1_refractory_samples = (uint32_t)(hr_refractory_s * fs);
     _dc_iir_alpha          = expf(-1.0f / (dc_iir_tau_s * fs));
     _ac_ema_beta           = 1.0f - expf(-1.0f / (ac_ema_tau_s * fs));
     _recalc_biquad();
@@ -542,6 +553,11 @@ void MOW_AFE4490::_recalc_biquad() {
 }
 
 // ── FreeRTOS task ─────────────────────────────────────────────────────────────
+// FreeRTOS requires the task entry point to be a plain C function (static or free function).
+// _task_trampoline satisfies that requirement: it receives the MOW_AFE4490 instance pointer
+// via the pvParameters argument and immediately forwards execution to _task_body(), which is
+// the actual member function with full access to private state. This pattern (trampoline +
+// member body) is the standard idiom for running a C++ method as a FreeRTOS task.
 void MOW_AFE4490::_task_trampoline(void* pv) {
     static_cast<MOW_AFE4490*>(pv)->_task_body();
     vTaskDelete(nullptr); // should never reach here
@@ -555,8 +571,8 @@ void MOW_AFE4490::_task_body() {
             continue;
         }
 
-        xSemaphoreTake(_cfg_mutex, portMAX_DELAY);
-
+        // _spi_mutex: protects the SPI bus while reading all 6 channels.
+        xSemaphoreTake(_spi_mutex, portMAX_DELAY);
         // Enable SPI read mode once, burst-read all 6 channels, disable
         _write_reg(REG_CONTROL0, ctrl0_spi_read);
         int32_t led2      = _sign_extend_22(_read_spi_raw(REG_LED2VAL));
@@ -566,14 +582,22 @@ void MOW_AFE4490::_task_body() {
         int32_t led2_diff = _sign_extend_22(_read_spi_raw(REG_LED2_ALED2VAL));
         int32_t led1_diff = _sign_extend_22(_read_spi_raw(REG_LED1_ALED1VAL));
         _write_reg(REG_CONTROL0, 0x000000UL);
+        xSemaphoreGive(_spi_mutex);
 
+        // _state_mutex: protects internal processing state (_ppg_channel, filter
+        // buffers, SpO2/HR accumulators) against concurrent config setter calls.
+        xSemaphoreTake(_state_mutex, portMAX_DELAY);
         _process_sample(led1, led2, aled1, aled2, led1_diff, led2_diff);
-
-        xSemaphoreGive(_cfg_mutex);
+        xSemaphoreGive(_state_mutex);
     }
 }
 
 // ── ISR ───────────────────────────────────────────────────────────────────────
+// Trampoline required because attachInterrupt() only accepts a plain C function pointer;
+// C++ member functions are not compatible. _drdy_isr_static is registered with
+// attachInterrupt() and forwards the call to the actual member ISR (_drdy_isr) via
+// the singleton pointer _g_instance. The null-check guards against a spurious interrupt
+// arriving after stop() has cleared _g_instance.
 void IRAM_ATTR MOW_AFE4490::_drdy_isr_static() {
     if (_g_instance) _g_instance->_drdy_isr();
 }
@@ -594,6 +618,17 @@ float MOW_AFE4490::_biquad_step(float x, BiquadState& st) {
     return y;
 }
 
+// Pre-charge biquad state to steady-state for a DC input x0, so that the first
+// output sample is ~0 instead of a large transient. Derivation for DF-II transposed:
+//   y_ss  = x0 * (b0+b1+b2) / (1+a1+a2)   (= 0 for this bandpass filter)
+//   v1_ss = y_ss - b0*x0
+//   v2_ss = b2*x0 - a2*y_ss
+void MOW_AFE4490::_biquad_precharge(float x0, BiquadState& st) {
+    float y_ss = x0 * (_bq_b0 + _bq_b1 + _bq_b2) / (1.0f + _bq_a1 + _bq_a2);
+    st.v1 = y_ss - _bq_b0 * x0;
+    st.v2 = _bq_b2 * x0 - _bq_a2 * y_ss;
+}
+
 void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int32_t aled2,
                                    int32_t led1_aled1, int32_t led2_aled2) {
     // Select PPG source
@@ -611,6 +646,10 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
     float filtered;
     switch (_filter_type) {
         case AFE4490Filter::BUTTERWORTH:
+            if (_bq_ppg_needs_precharge) {
+                _biquad_precharge(raw_ppg, _bq_ppg);
+                _bq_ppg_needs_precharge = false;
+            }
             filtered = _biquad_step(raw_ppg, _bq_ppg);
             break;
         case AFE4490Filter::MOVING_AVERAGE: {
@@ -637,8 +676,8 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
     // SpO2 uses ambient-corrected channels (unfiltered, spec §1.3)
     _update_spo2(led1_aled1, led2_aled2);
 
-    // HR uses filtered PPG
-    _update_hr(filtered);
+    // HR uses filtered PPG (negated: same polarity as _current_data.ppg — peaks up)
+    _update_hr1(-filtered);
 
     // Push to queue; if full, drop oldest to keep most recent
     if (xQueueSend(_data_queue, &_current_data, 0) != pdTRUE) {
@@ -696,41 +735,41 @@ void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
 
 // ── HR algorithm ──────────────────────────────────────────────────────────────
 // Adaptive-threshold peak detection on filtered PPG.
-// Threshold = 0.6 × running_max; refractory = _hr_refractory_samples.
+// Threshold = 0.6 × running_max; refractory = _hr1_refractory_samples.
 // HR reported from average of 5 consecutive RR intervals.
-void MOW_AFE4490::_update_hr(float ppg_filtered) {
-    _hr_sample_idx++;
+void MOW_AFE4490::_update_hr1(float ppg_filtered) {
+    _hr1_sample_idx++;
 
     // Running max: slow exponential decay keeps it tracking signal amplitude
-    _hr_running_max = fmaxf(_hr_running_max * 0.9999f, fabsf(ppg_filtered));
+    _hr1_running_max = fmaxf(_hr1_running_max * 0.9999f, ppg_filtered);
 
-    float threshold = 0.6f * _hr_running_max;
+    float threshold = 0.6f * _hr1_running_max;
 
     // Threshold crossing (rising edge only)
-    if (ppg_filtered > threshold && !_hr_above_thresh) {
-        _hr_above_thresh = true;
+    if (ppg_filtered > threshold && !_hr1_ppg_above_thresh) {
+        _hr1_ppg_above_thresh = true;
 
-        uint32_t elapsed = _hr_sample_idx - _hr_last_peak_idx;
-        if (_hr_last_peak_idx > 0 && elapsed > _hr_refractory_samples) {
+        uint32_t elapsed = _hr1_sample_idx - _hr1_last_peak_idx;
+        if (_hr1_last_peak_idx > 0 && elapsed > _hr1_refractory_samples) {
             // Shift interval buffer and store new interval
-            for (int i = 4; i > 0; i--) _hr_intervals[i] = _hr_intervals[i - 1];
-            _hr_intervals[0] = (int32_t)elapsed;
-            if (_hr_interval_count < 5) _hr_interval_count++;
+            for (int i = 4; i > 0; i--) _hr1_intervals[i] = _hr1_intervals[i - 1];
+            _hr1_intervals[0] = (int32_t)elapsed;
+            if (_hr1_interval_count < 5) _hr1_interval_count++;
         }
-        _hr_last_peak_idx = _hr_sample_idx;
+        _hr1_last_peak_idx = _hr1_sample_idx;
 
     } else if (ppg_filtered <= threshold) {
-        _hr_above_thresh = false;
+        _hr1_ppg_above_thresh = false;
     }
 
     // Need 5 intervals for a stable estimate
-    if (_hr_interval_count < 5) {
+    if (_hr1_interval_count < 5) {
         _current_data.hr_valid = false;
         return;
     }
 
     float sum = 0.0f;
-    for (int i = 0; i < 5; i++) sum += (float)_hr_intervals[i];
+    for (int i = 0; i < 5; i++) sum += (float)_hr1_intervals[i];
     float avg_interval = sum / 5.0f;
 
     float hr = ((float)_sample_rate_hz * 60.0f) / avg_interval;

@@ -2,10 +2,191 @@ import sys
 import serial
 import pyqtgraph as pg
 from PyQt5 import QtCore, QtGui, QtWidgets
-from collections import deque
+from collections import deque, namedtuple
 import numpy as np
 import time
 import datetime
+from scipy import signal
+from enum import IntEnum
+
+
+class HRStatus(IntEnum):
+    VALID        = 0  # local max found, peak_val >= min_corr, hr in [hr_min, hr_max]
+    OUT_OF_RANGE = 1  # local max found, peak_val >= min_corr, but hr outside [hr_min, hr_max]
+    INVALID      = 2  # no local max or peak_val < min_corr
+
+
+HRResult = namedtuple('HRResult', [
+    'acorr',      # np.array  — normalized autocorrelation signal (y axis for plotting)
+    'lags_s',     # np.array  — lag axis in seconds (x axis for plotting)
+    'peak_lag',   # float     — detected fundamental period (s)
+    'hr_bpm',     # float     — estimated heart rate (bpm), derived from peak_lag
+    'peak_val',   # float     — autocorrelation value at the corrected peak_lag (0–1, quality indicator)
+    'hr_status',  # HRStatus  — VALID / OUT_OF_RANGE / INVALID, in decreasing preference order
+])
+
+
+def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
+                              hr_min=38, hr_max=252, prominence=0.1):
+    """Compute HR estimate via cross-correlation between two overlapping segments of the same signal.
+
+    Uses np.correlate(seg, template, mode='valid') where template = seg[max_lag_n:].
+    This is a cross-correlation, not a true autocorrelation: the two vectors share the
+    same signal but differ in length and starting sample, introducing a slight asymmetry
+    at the edges. See _estimate_hr_autocorr_v2 for the true autocorrelation approach.
+
+    Strategy: find the FIRST significant peak above min_lag_s (not the highest),
+    to avoid locking onto harmonics of the fundamental frequency.
+
+    Parameters
+    ----------
+    seg        : np.array, length = window_n + max_lag_n
+    fs         : float, sample rate (Hz)
+    max_lag_n  : int, number of samples corresponding to the maximum lag
+    min_lag_s  : float, minimum lag to search for peaks (s), equivalent to max detectable HR
+    min_corr   : float, minimum autocorrelation value at peak to be considered valid
+    hr_min     : float, minimum expected HR (bpm) — below this is OUT_OF_RANGE
+    hr_max     : float, maximum expected HR (bpm) — above this is OUT_OF_RANGE
+    prominence : float, minimum prominence of peaks passed to signal.find_peaks (0–1 scale).
+                 A peak must rise at least this fraction above its surrounding valleys to be
+                 considered a candidate. Low values (e.g. 0.05) accept shallow peaks (noisy
+                 signals); high values (e.g. 0.3) require well-defined peaks (clean signals).
+
+    Returns
+    -------
+    HRResult namedtuple — see field documentation above
+    """
+    template = seg[max_lag_n:]
+    acorr = np.correlate(seg, template, mode='valid')[::-1]
+    if acorr[0] != 0:
+        acorr = acorr / acorr[0]
+    lags_s = np.arange(len(acorr)) / fs
+
+    min_idx = int(np.searchsorted(lags_s, min_lag_s))
+    if min_idx >= len(acorr):
+        return HRResult(acorr, lags_s, 0.0, 0.0, 0.0, HRStatus.INVALID)
+
+    local_peaks, _ = signal.find_peaks(acorr[min_idx:], prominence=prominence)
+
+    # Select the first peak that exceeds min_corr (fundamental period, not a harmonic).
+    # Fall back to the highest peak if none meets min_corr.
+    peak_idx = None
+    for p in local_peaks:
+        if acorr[min_idx + p] >= min_corr:
+            peak_idx = min_idx + p
+            break
+    if peak_idx is None:
+        if len(local_peaks) > 0:
+            peak_idx = min_idx + local_peaks[np.argmax(acorr[min_idx + local_peaks])]
+        else:
+            peak_idx = min_idx + np.argmax(acorr[min_idx:])
+
+    # Parabolic interpolation for sub-sample peak refinement.
+    # Fits a parabola through (peak_idx-1, peak_idx, peak_idx+1) and finds its analytical maximum.
+    # delta is the sub-sample correction in samples: positive shifts peak right, negative left.
+    # Valid only when the three-point parabola is concave (denominator < 0); otherwise no correction.
+    #   delta = 0.5 * (y[n-1] - y[n+1]) / (y[n-1] - 2·y[n] + y[n+1])
+    #   peak_lag_refined = (peak_idx + delta) / fs
+    if 0 < peak_idx < len(acorr) - 1:
+        y_prev, y_curr, y_next = acorr[peak_idx - 1], acorr[peak_idx], acorr[peak_idx + 1]
+        denom = y_prev - 2.0 * y_curr + y_next
+        delta = 0.5 * (y_prev - y_next) / denom if denom < 0 else 0.0
+    else:
+        delta = 0.0
+    peak_lag = (peak_idx + delta) / fs
+    peak_val = acorr[peak_idx]
+    hr_bpm   = 60.0 / peak_lag if peak_lag > 0 else 0.0
+
+    if len(local_peaks) == 0 or peak_val < min_corr:
+        hr_status = HRStatus.INVALID
+    elif hr_min <= hr_bpm <= hr_max:
+        hr_status = HRStatus.VALID
+    else:
+        hr_status = HRStatus.OUT_OF_RANGE
+
+    return HRResult(acorr, lags_s, peak_lag, hr_bpm, peak_val, hr_status)
+
+
+def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
+                              hr_min=38, hr_max=252, prominence=0.1):
+    """Compute autocorrelation-based HR estimate using scipy.signal.correlate with FFT.
+
+    Key difference from v1: computes the true autocorrelation of a single vector
+    (seg correlated with itself) using FFT-based convolution, which is more efficient
+    for long windows and starts both vectors at the same sample (lag 0 = full overlap).
+    v1 used two vectors offset by max_lag_n samples and np.correlate in 'valid' mode.
+
+    Parameters
+    ----------
+    seg        : np.array, length = window_n (only the analysis window, no extra lag samples)
+    fs         : float, sample rate (Hz)
+    max_lag_n  : int, number of lag samples to extract from the full autocorrelation
+    min_lag_s  : float, minimum lag to search for peaks (s), equivalent to max detectable HR
+    min_corr   : float, minimum autocorrelation value at peak to be considered valid
+    hr_min     : float, minimum expected HR (bpm) — below this is OUT_OF_RANGE
+    hr_max     : float, maximum expected HR (bpm) — above this is OUT_OF_RANGE
+    prominence : float, minimum prominence of peaks passed to signal.find_peaks (0–1 scale).
+                 A peak must rise at least this fraction above its surrounding valleys to be
+                 considered a candidate. Low values (e.g. 0.05) accept shallow peaks (noisy
+                 signals); high values (e.g. 0.3) require well-defined peaks (clean signals).
+
+    Returns
+    -------
+    HRResult namedtuple — see field documentation above
+    """
+    # Full autocorrelation (direct method): result has length 2*N-1, center at index N-1.
+    # Positive lags start at index N-1 and extend to the right.
+    n = len(seg)
+    full = signal.correlate(seg, seg, mode='full', method='direct')
+    acorr = full[n - 1: n - 1 + max_lag_n + 1]
+    if acorr[0] != 0:
+        acorr = acorr / acorr[0]
+    lags_s = np.arange(len(acorr)) / fs
+
+    min_idx = int(np.searchsorted(lags_s, min_lag_s))
+    if min_idx >= len(acorr):
+        return HRResult(acorr, lags_s, 0.0, 0.0, 0.0, HRStatus.INVALID)
+
+    local_peaks, _ = signal.find_peaks(acorr[min_idx:], prominence=prominence)
+
+    # Select the first peak that exceeds min_corr (fundamental period, not a harmonic).
+    # Fall back to the highest peak if none meets min_corr.
+    peak_idx = None
+    for p in local_peaks:
+        if acorr[min_idx + p] >= min_corr:
+            peak_idx = min_idx + p
+            break
+    if peak_idx is None:
+        if len(local_peaks) > 0:
+            peak_idx = min_idx + local_peaks[np.argmax(acorr[min_idx + local_peaks])]
+        else:
+            peak_idx = min_idx + np.argmax(acorr[min_idx:])
+
+    # Parabolic interpolation for sub-sample peak refinement.
+    # Fits a parabola through (peak_idx-1, peak_idx, peak_idx+1) and finds its analytical maximum.
+    # delta is the sub-sample correction in samples: positive shifts peak right, negative left.
+    # Valid only when the three-point parabola is concave (denominator < 0); otherwise no correction.
+    #   delta = 0.5 * (y[n-1] - y[n+1]) / (y[n-1] - 2·y[n] + y[n+1])
+    #   peak_lag_refined = (peak_idx + delta) / fs
+    if 0 < peak_idx < len(acorr) - 1:
+        y_prev, y_curr, y_next = acorr[peak_idx - 1], acorr[peak_idx], acorr[peak_idx + 1]
+        denom = y_prev - 2.0 * y_curr + y_next
+        delta = 0.5 * (y_prev - y_next) / denom if denom < 0 else 0.0
+    else:
+        delta = 0.0
+    peak_lag = (peak_idx + delta) / fs
+    peak_val = acorr[peak_idx]
+    hr_bpm   = 60.0 / peak_lag if peak_lag > 0 else 0.0
+
+    if len(local_peaks) == 0 or peak_val < min_corr:
+        hr_status = HRStatus.INVALID
+    elif hr_min <= hr_bpm <= hr_max:
+        hr_status = HRStatus.VALID
+    else:
+        hr_status = HRStatus.OUT_OF_RANGE
+
+    return HRResult(acorr, lags_s, peak_lag, hr_bpm, peak_val, hr_status)
+
 
 # --- CONFIGURACIÓN ---
 PORT = 'COM15'
@@ -28,6 +209,401 @@ ACTION_BUTTON_STYLE = """
         background-color: #FF8888; 
     }
 """
+
+class SpO2LabWindow(QtWidgets.QMainWindow):
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("SPO2LAB")
+        self.resize(1400, 800)
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        main_layout = QtWidgets.QVBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
+
+        # QSplitter for exact column proportions (1:1:1)
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._splitter.setHandleWidth(2)
+        main_layout.addWidget(self._splitter)
+
+        self._col_a = pg.GraphicsLayoutWidget()
+        self._col_b = pg.GraphicsLayoutWidget()
+        self._col_c = pg.GraphicsLayoutWidget()
+        self._splitter.addWidget(self._col_a)
+        self._splitter.addWidget(self._col_b)
+        self._splitter.addWidget(self._col_c)
+
+        # Plots — column A
+        self.p_1a = self._col_a.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1A</b>")
+        self.p_2a = self._col_a.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2A</b>")
+        self.p_3a = self._col_a.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3A</b>")
+
+        # Plots — column B
+        self.p_1b = self._col_b.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1B</b>")
+        self.p_2b = self._col_b.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2B</b>")
+        self.p_3b = self._col_b.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3B</b>")
+
+        # Plots — column C
+        self.p_1c = self._col_c.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1C</b>")
+        self.p_2c = self._col_c.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2C</b>")
+        self.p_3c = self._col_c.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3C</b>")
+
+        for plot in [self.p_1a, self.p_1b, self.p_1c,
+                     self.p_2a, self.p_2b, self.p_2c,
+                     self.p_3a, self.p_3b, self.p_3c]:
+            plot.showGrid(x=True, y=True, alpha=0.3)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._set_splitter_sizes)
+
+    def _set_splitter_sizes(self):
+        w = self._splitter.width()
+        if w > 0:
+            third = w // 3
+            self._splitter.setSizes([third, third, w - 2 * third])
+
+    def closeEvent(self, event):
+        if self.main_monitor is not None:
+            self.main_monitor.btn_spo2lab.setChecked(False)
+            self.main_monitor.spo2lab_window = None
+        super().closeEvent(event)
+
+
+class HRLab2Window(QtWidgets.QMainWindow):
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("HRLAB2")
+        self.resize(1400, 800)
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        main_layout = QtWidgets.QVBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
+
+        # QSplitter for exact column proportions (2:1:1)
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._splitter.setHandleWidth(2)
+        main_layout.addWidget(self._splitter)
+
+        self._col_a = pg.GraphicsLayoutWidget()
+        self._col_b = pg.GraphicsLayoutWidget()
+        self._col_c = pg.GraphicsLayoutWidget()
+        self._splitter.addWidget(self._col_a)
+        self._splitter.addWidget(self._col_b)
+        self._splitter.addWidget(self._col_c)
+
+        # Plots — column A
+        self.p_1a = self._col_a.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1A</b>")
+        self.p_2a = self._col_a.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2A</b>")
+        self.p_3a = self._col_a.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3A</b>")
+
+        # Plots — column B
+        self.p_1b = self._col_b.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1B</b>")
+        self.p_2b = self._col_b.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2B</b>")
+        self.p_3b = self._col_b.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3B</b>")
+
+        # Plots — column C
+        self.p_1c = self._col_c.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1C</b>")
+        self.p_2c = self._col_c.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2C</b>")
+        self.p_3c = self._col_c.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3C</b>")
+
+        for plot in [self.p_1a, self.p_1b, self.p_1c,
+                     self.p_2a, self.p_2b, self.p_2c,
+                     self.p_3a, self.p_3b, self.p_3c]:
+            plot.showGrid(x=True, y=True, alpha=0.3)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._set_splitter_sizes)
+
+    def _set_splitter_sizes(self):
+        w = self._splitter.width()
+        if w > 0:
+            self._splitter.setSizes([w // 2, w // 4, w // 4])
+
+    def closeEvent(self, event):
+        if self.main_monitor is not None:
+            self.main_monitor.btn_hrlab2.setChecked(False)
+            self.main_monitor.hrlab2_window = None
+        super().closeEvent(event)
+
+
+class _ResizableGraphicsLayout(pg.GraphicsLayoutWidget):
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, 'ci'):
+            return
+        w, h = self.width(), self.height()
+        if w > 0 and h > 0:
+            self.ci.setGeometry(QtCore.QRectF(0, 0, w, h))
+
+
+class HRLabWindow(QtWidgets.QMainWindow):
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("HRLAB")
+        self.resize(2400, 450)
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        main_layout = QtWidgets.QVBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
+
+        pg.setConfigOptions(antialias=True)
+
+        # QSplitter for exact column proportions (1:1:1)
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._splitter.setHandleWidth(2)
+        main_layout.addWidget(self._splitter)
+
+        self._col_a = _ResizableGraphicsLayout()
+        self._col_b = _ResizableGraphicsLayout()
+        self._col_c = _ResizableGraphicsLayout()
+        self._splitter.addWidget(self._col_a)
+        self._splitter.addWidget(self._col_b)
+        self._splitter.addWidget(self._col_c)
+
+        # Column A
+        self.p_1a = self._col_a.addPlot(row=0, col=0, title="<span style='color:#AAAAFF'>PPG(original)</span>")
+        self.curve_1a = self.p_1a.plot(pen=pg.mkPen('#AAAAFF', width=1.5))
+        self.p_1a.showGrid(x=True, y=True, alpha=0.3)
+
+        self.p_2a = self._col_a.addPlot(row=1, col=0, title="<span style='color:#FF88FF'>PPG(0.5–3.7 Hz)</span>")
+        self.curve_2a = self.p_2a.plot(pen=pg.mkPen('#FF88FF', width=1.5))
+        self.p_2a.showGrid(x=True, y=True, alpha=0.3)
+        self.p_2a.setXLink(self.p_1a)
+
+        # Column B
+        self.p_1b = self._col_b.addPlot(row=0, col=0, title="<span style='color:#AAAAFF'>1B</span>")
+        self.curve_1b = self.p_1b.plot(pen=pg.mkPen('#AAAAFF', width=1.5))
+        self.p_1b.showGrid(x=True, y=True, alpha=0.3)
+        self.p_1b.setYRange(-1.0, 1.0)
+        self.vline_1b = pg.InfiniteLine(pos=0, angle=90, movable=False,
+                                        pen=pg.mkPen('#FFDD44', width=2))
+        self.vline_1b.setVisible(False)
+        self.p_1b.addItem(self.vline_1b)
+
+        self.p_2b = self._col_b.addPlot(row=1, col=0, title="<span style='color:#FF88FF'>2B</span>")
+        self.curve_2b = self.p_2b.plot(pen=pg.mkPen('#FF88FF', width=1.5))
+        self.p_2b.showGrid(x=True, y=True, alpha=0.3)
+        self.p_2b.setYRange(-1.0, 1.0)
+        self.vline_2b = pg.InfiniteLine(pos=0, angle=90, movable=False,
+                                        pen=pg.mkPen('#FFDD44', width=2))
+        self.vline_2b.setVisible(False)
+        self.p_2b.addItem(self.vline_2b)
+
+        # Column C
+        self.p_1c = self._col_c.addPlot(row=0, col=0, title="<span style='color:#AAAAFF'>1C</span>")
+        self.curve_1c = self.p_1c.plot(pen=pg.mkPen('#AAAAFF', width=1.5))
+        self.p_1c.showGrid(x=True, y=True, alpha=0.3)
+        self.p_1c.setYRange(-1.0, 1.0)
+        self.vline_1c = pg.InfiniteLine(pos=0, angle=90, movable=False,
+                                        pen=pg.mkPen('#FFDD44', width=2))
+        self.vline_1c.setVisible(False)
+        self.p_1c.addItem(self.vline_1c)
+
+        self.p_2c = self._col_c.addPlot(row=1, col=0, title="<span style='color:#FF88FF'>2C</span>")
+        self.curve_2c = self.p_2c.plot(pen=pg.mkPen('#FF88FF', width=1.5))
+        self.p_2c.showGrid(x=True, y=True, alpha=0.3)
+        self.p_2c.setYRange(-1.0, 1.0)
+        self.vline_2c = pg.InfiniteLine(pos=0, angle=90, movable=False,
+                                        pen=pg.mkPen('#FFDD44', width=2))
+        self.vline_2c.setVisible(False)
+        self.p_2c.addItem(self.vline_2c)
+
+        for p in [self.p_1a, self.p_2a,
+                  self.p_1b, self.p_2b,
+                  self.p_1c, self.p_2c]:
+            p.setMinimumWidth(0)
+            p.getViewBox().setMinimumWidth(0)
+
+        self._hr_refresh_counter = 0
+
+        # Stateful mow biquad filter state
+        self._mow_zi         = None   # biquad state (2 floats)
+        self._mow_filt_buf   = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self._last_sample_cnt = None
+        self._mow_fs_cached  = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._set_splitter_sizes)
+        self._dbg_timer = QtCore.QTimer()
+        self._dbg_timer.timeout.connect(self._dbg_print_ranges)
+        self._dbg_timer.start(1000)
+
+    def _dbg_print_ranges(self):
+        vr = self.p_1b.viewRange()
+        ar = self.p_1b.getViewBox().state['autoRange']
+        col_w = self._col_b.width()
+        vb_w  = self.p_1b.getViewBox().width()
+        print(f"[DBG] p_1b viewRange={vr[0]}  autoRange={ar}  col_b.width={col_w}  vb.width={vb_w:.0f}", flush=True)
+
+    def _set_splitter_sizes(self):
+        w = self._splitter.width()
+        if w > 0:
+            col_a = int(w * 0.42)
+            col_bc = (w - col_a) // 2
+            self._splitter.setSizes([col_a, col_bc, w - col_a - col_bc])
+
+    @staticmethod
+    def _mow_biquad_coeffs(fs, f_low, f_high):
+        """Replicate mow_afe4490::_recalc_biquad() exactly (bilinear transform)."""
+        k    = 2.0 * fs
+        o_low = k * np.tan(np.pi * f_low  / fs)
+        o_hi  = k * np.tan(np.pi * f_high / fs)
+        o0sq  = o_low * o_hi
+        bw    = o_hi - o_low
+        d     = k*k + bw*k + o0sq
+        b = np.array([ bw*k/d,  0.0, -bw*k/d])
+        a = np.array([1.0, 2.0*(o0sq - k*k)/d, (k*k - bw*k + o0sq)/d])
+        return b, a
+
+    def update_plots(self, ppg_data, timestamp_us_data, sample_counter_data):
+        data = np.array(list(ppg_data))
+        self.curve_1a.setData(data)
+
+        fs = 50.0  # AFE4490 @ 500 Hz, SERIAL_DOWNSAMPLING_RATIO=10
+
+        nyq = fs / 2.0
+        high_norm = 3.7 / nyq
+
+        # Plot 2A: mow_afe4490 biquad — stateful, processes only new samples
+        mow_filtered = None
+        if high_norm < 1.0:
+            try:
+                b, a = self._mow_biquad_coeffs(fs, 0.5, 3.7)
+
+                # Reset state if sample rate changed
+                if fs != self._mow_fs_cached:
+                    self._mow_zi = None
+                    self._mow_fs_cached = fs
+
+                cur_cnt = int(sample_counter_data[-1])
+                reset = self._mow_zi is None or self._last_sample_cnt is None
+
+                if not reset:
+                    n_new = (cur_cnt - self._last_sample_cnt) // 10  # SERIAL_DOWNSAMPLING_RATIO=10
+                    if n_new <= 0 or n_new > len(data):
+                        reset = True
+
+                if reset:
+                    # First call or anomaly: warm up on full buffer
+                    zi_init = signal.lfilter_zi(b, a) * data[0]
+                    full_out, self._mow_zi = signal.lfilter(b, a, data, zi=zi_init)
+                    self._mow_filt_buf = deque(full_out, maxlen=WINDOW_SIZE)
+                else:
+                    new_samples = data[-n_new:]
+                    new_out, self._mow_zi = signal.lfilter(b, a, new_samples, zi=self._mow_zi)
+                    self._mow_filt_buf.extend(new_out)
+
+                self._last_sample_cnt = cur_cnt
+                mow_filtered = np.array(self._mow_filt_buf)
+                self.curve_2a.setData(mow_filtered)
+            except Exception:
+                pass
+
+        # Plots 4 & 5: autocorrelation-based HR, refreshed at 5 Hz
+        self._hr_refresh_counter += 1
+        refresh_every = max(1, int(round(fs / 5.0)))
+        if self._hr_refresh_counter >= refresh_every and mow_filtered is not None:
+            self._hr_refresh_counter = 0
+            window_n  = int(round(8.0 * fs))
+            max_lag_n = int(round(2.0 * fs))
+            needed    = window_n + max_lag_n
+            max_lag_s = max_lag_n / fs
+            print(f"[DBG] max_lag_s={max_lag_s:.4f}  max_lag_n={max_lag_n}  fs={fs:.2f}", flush=True)
+
+            _HR_COLOR = {
+                HRStatus.VALID:        '#FFDD44',
+                HRStatus.OUT_OF_RANGE: '#FF4444',
+                HRStatus.INVALID:      '#888888',
+            }
+
+            # Plot 1B: xcorr_v1 on raw PPG
+            if len(data) >= needed:
+                try:
+                    r = _estimate_hr_xcorr_v1(data[-needed:], fs, max_lag_n)
+                    hr_color = _HR_COLOR[r.hr_status]
+                    self.curve_1b.setData(r.lags_s, r.acorr)
+                    self.p_1b.setXRange(0, max_lag_s)
+                    self.p_1b.setTitle(
+                        f"<span style='color:#AAAAFF'>xcorr_v1 &nbsp;|&nbsp; </span>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                    )
+                    self.vline_1b.setPen(pg.mkPen(hr_color, width=2))
+                    self.vline_1b.setPos(r.peak_lag)
+                    self.vline_1b.setVisible(True)
+                except Exception:
+                    pass
+
+            # Plot 2B: xcorr_v1 on mow BPF
+            if len(mow_filtered) >= needed:
+                try:
+                    r = _estimate_hr_xcorr_v1(mow_filtered[-needed:], fs, max_lag_n)
+                    hr_color = _HR_COLOR[r.hr_status]
+                    self.curve_2b.setData(r.lags_s, r.acorr)
+                    self.p_2b.setXRange(0, max_lag_s)
+                    self.p_2b.setTitle(
+                        f"<span style='color:#FF88FF'>xcorr_v1 &nbsp;|&nbsp; </span>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                    )
+                    self.vline_2b.setPen(pg.mkPen(hr_color, width=2))
+                    self.vline_2b.setPos(r.peak_lag)
+                    self.vline_2b.setVisible(True)
+                except Exception:
+                    pass
+
+            # Plot 1C: autocorr_v2 on raw PPG (single vector, only window_n samples)
+            if len(data) >= window_n:
+                try:
+                    r = _estimate_hr_autocorr_v2(data[-window_n:], fs, max_lag_n)
+                    hr_color = _HR_COLOR[r.hr_status]
+                    self.curve_1c.setData(r.lags_s, r.acorr)
+                    self.p_1c.setXRange(0, max_lag_s)
+                    self.p_1c.setTitle(
+                        f"<span style='color:#AAAAFF'>autocorr_v2 &nbsp;|&nbsp; </span>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                    )
+                    self.vline_1c.setPen(pg.mkPen(hr_color, width=2))
+                    self.vline_1c.setPos(r.peak_lag)
+                    self.vline_1c.setVisible(True)
+                except Exception:
+                    pass
+
+            # Plot 2C: autocorr_v2 on mow BPF (single vector, only window_n samples)
+            if len(mow_filtered) >= window_n:
+                try:
+                    r = _estimate_hr_autocorr_v2(mow_filtered[-window_n:], fs, max_lag_n)
+                    hr_color = _HR_COLOR[r.hr_status]
+                    self.curve_2c.setData(r.lags_s, r.acorr)
+                    self.p_2c.setXRange(0, max_lag_s)
+                    self.p_2c.setTitle(
+                        f"<span style='color:#FF88FF'>autocorr_v2 &nbsp;|&nbsp; </span>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                    )
+                    self.vline_2c.setPen(pg.mkPen(hr_color, width=2))
+                    self.vline_2c.setPos(r.peak_lag)
+                    self.vline_2c.setVisible(True)
+                except Exception:
+                    pass
+
+    def closeEvent(self, event):
+        if self.main_monitor is not None:
+            self.main_monitor.btn_hrlab.setChecked(False)
+            self.main_monitor.hrlab_window = None
+        event.accept()
+
 
 class PPGMonitor(QtWidgets.QMainWindow):
     def set_status(self, text, status_type="info"):
@@ -89,6 +665,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         
         self.is_saving = False
         self.save_file = None
+        self.hrlab_window = None
+        self.spo2lab_window = None
+        self.hrlab2_window = None
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
@@ -189,6 +768,30 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.sidebar_layout.addWidget(self.btn_lib_mow)
         self.sidebar_layout.addWidget(self.btn_lib_pc)
         self._update_lib_button()
+
+        self.sidebar_layout.addSpacing(20)
+
+        label_analysis = QtWidgets.QLabel("ANALYSIS")
+        label_analysis.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
+        self.sidebar_layout.addWidget(label_analysis)
+
+        self.btn_hrlab = QtWidgets.QPushButton("HRLAB")
+        self.btn_hrlab.setCheckable(True)
+        self.btn_hrlab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_hrlab.clicked.connect(self.toggle_hrlab)
+        self.sidebar_layout.addWidget(self.btn_hrlab)
+
+        self.btn_spo2lab = QtWidgets.QPushButton("SPO2LAB")
+        self.btn_spo2lab.setCheckable(True)
+        self.btn_spo2lab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_spo2lab.clicked.connect(self.toggle_spo2lab)
+        self.sidebar_layout.addWidget(self.btn_spo2lab)
+
+        self.btn_hrlab2 = QtWidgets.QPushButton("HRLAB2")
+        self.btn_hrlab2.setCheckable(True)
+        self.btn_hrlab2.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_hrlab2.clicked.connect(self.toggle_hrlab2)
+        self.sidebar_layout.addWidget(self.btn_hrlab2)
 
         self.sidebar_layout.addStretch()
         
@@ -365,6 +968,48 @@ class PPGMonitor(QtWidgets.QMainWindow):
             return
         self.ser.write(cmd.encode())
 
+    def _open_hrlab_default(self):
+        self.btn_hrlab.setChecked(True)
+        self.toggle_hrlab()
+
+    def toggle_hrlab(self):
+        if self.btn_hrlab.isChecked():
+            self.hrlab_window = HRLabWindow(self)
+            self.hrlab_window.show()
+        else:
+            if self.hrlab_window is not None:
+                self.hrlab_window.main_monitor = None  # prevent recursive callback
+                self.hrlab_window.close()
+                self.hrlab_window = None
+
+    def _open_hrlab2_default(self):
+        self.btn_hrlab2.setChecked(True)
+        self.toggle_hrlab2()
+
+    def toggle_hrlab2(self):
+        if self.btn_hrlab2.isChecked():
+            self.hrlab2_window = HRLab2Window(self)
+            self.hrlab2_window.show()
+        else:
+            if self.hrlab2_window is not None:
+                self.hrlab2_window.main_monitor = None
+                self.hrlab2_window.close()
+                self.hrlab2_window = None
+
+    def _open_spo2lab_default(self):
+        self.btn_spo2lab.setChecked(True)
+        self.toggle_spo2lab()
+
+    def toggle_spo2lab(self):
+        if self.btn_spo2lab.isChecked():
+            self.spo2lab_window = SpO2LabWindow(self)
+            self.spo2lab_window.show()
+        else:
+            if self.spo2lab_window is not None:
+                self.spo2lab_window.main_monitor = None
+                self.spo2lab_window.close()
+                self.spo2lab_window = None
+
     def toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
         if self.is_paused:
@@ -506,7 +1151,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.curve_ir_sub.setData(list(self.data_ir_sub))
                     self.curve_red_filt.setData(list(self.data_red_filt))
                     self.curve_ir_filt.setData(list(self.data_ir_filt))
-                    
+
+                    if self.hrlab_window is not None:
+                        self.hrlab_window.update_plots(self.data_ppg, self.data_timestamp_us, self.data_sample_counter)
+
         except Exception as e:
             print(f"Error en loop: {e}")
 
@@ -514,12 +1162,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
         super().showEvent(event)
         # setSizes debe llamarse tras show() para que Qt no lo sobreescriba
         QtCore.QTimer.singleShot(0, lambda: self.splitter.setSizes([1800, 900]))
+        QtCore.QTimer.singleShot(0, self._open_hrlab_default)
 
     def closeEvent(self, event):
         if getattr(self, 'is_saving', False) and getattr(self, 'save_file', None):
             self.save_file.close()
         if hasattr(self, 'ser') and self.ser.is_open:
             self.ser.close()
+        if self.hrlab_window is not None:
+            self.hrlab_window.main_monitor = None
+            self.hrlab_window.close()
+        if self.spo2lab_window is not None:
+            self.spo2lab_window.main_monitor = None
+            self.spo2lab_window.close()
+        if self.hrlab2_window is not None:
+            self.hrlab2_window.main_monitor = None
+            self.hrlab2_window.close()
         event.accept()
 
 if __name__ == "__main__":
