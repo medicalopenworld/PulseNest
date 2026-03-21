@@ -149,7 +149,9 @@ void Mow_Task(void *pvParameters) {
                 Serial.print(",");
                 Serial.print(data.led1_aled1); // IRFilt (placeholder — no filtered data yet)
                 Serial.print(",");
-                Serial.println(data.hr1_ppg);   // HR1PPG (diagnostic — DC-removed+MA; 0.0 on peak)
+                Serial.print(data.hr1_ppg);     // HR1PPG (diagnostic — DC-removed+MA; 0.0 on peak)
+                Serial.print(",");
+                Serial.println(data.hr2_valid ? data.hr2 : -1.0f);  // HR2 (autocorrelation)
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.

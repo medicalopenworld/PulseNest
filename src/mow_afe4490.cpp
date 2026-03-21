@@ -15,14 +15,18 @@ namespace {
     constexpr float    dc_iir_tau_s        = 1.6f;    // s  — DC IIR time constant
     constexpr float    ac_ema_tau_s        = 1.0f;    // s  — AC² EMA time constant
     constexpr float    hr_refractory_s     = 0.300f;  // s  — HR refractory period (~200 bpm max)
-    constexpr float    hr1_dc_tau_s        = 1.6f;    // s  — HR1 DC removal IIR time constant
-    constexpr uint32_t hr1_peak_marker_samples = 10; // samples — duration of hr1_ppg=0 marker after peak (survives serial downsampling)
+    constexpr float    hr1_dc_tau_s             = 1.6f;   // s  — HR1 DC removal IIR time constant
+    constexpr uint32_t hr1_peak_marker_samples  = 10;    // samples — duration of hr1_ppg=0 marker after peak (survives serial downsampling)
 
-    // ── PPG filter ────────────────────────────────────────────────────────────
-    constexpr float    pi                  = 3.14159265358979f;
+    // ── PPG / HR2 filter ──────────────────────────────────────────────────────
+    constexpr float    pi                       = 3.14159265358979f;
 
     // ── HR1 moving average filter ─────────────────────────────────────────────
-    constexpr float    hr1_ma_cutoff_hz    = 5.0f;    // Hz — low-pass cutoff for HR peak detection
+    constexpr float    hr1_ma_cutoff_hz         = 5.0f;  // Hz — low-pass cutoff for HR peak detection
+
+    // ── HR2 autocorrelation ───────────────────────────────────────────────────
+    constexpr float    hr2_min_lag_s            = 0.22f; // s  — min RR lag searched (~272 BPM max)
+    constexpr float    hr2_min_corr             = 0.5f;  // normalised autocorrelation threshold
 
     // ── SpO2 ──────────────────────────────────────────────────────────────────
     constexpr float    spo2_a_default      = 104.0f;  // calibration coefficient
@@ -125,9 +129,7 @@ MOW_AFE4490::MOW_AFE4490()
       _stage2_gain(AFE4490Stage2Gain::GAIN_0DB),
       _ppg_channel(AFE4490Channel::LED1_ALED1),
       _filter_type(AFE4490Filter::BUTTERWORTH),
-      _filter_f_low(0.5f), _filter_f_high(20.0f),
-      _bq_b0(0.0f), _bq_b1(0.0f), _bq_b2(0.0f), _bq_a1(0.0f), _bq_a2(0.0f),
-      _bq_ppg({0.0f, 0.0f}), _bq_ppg_needs_precharge(true),
+      _ppg_bpf({0.5f, 20.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, {0.0f, 0.0f}, true}),
       _ma_idx(0), _ma_sum(0.0f),
       _hr1_ma_len(0), _hr1_ma_idx(0), _hr1_ma_sum(0.0f),
       _hr1_dc_alpha(0.0f),
@@ -140,13 +142,16 @@ MOW_AFE4490::MOW_AFE4490()
       _hr1_dc(0.0f), _hr1_peak_marker_countdown(0),
       _hr1_running_max(0.0f), _hr1_ppg_above_thresh(false),
       _hr1_last_peak_idx(0), _hr1_sample_idx(0),
-      _hr1_interval_count(0)
+      _hr1_interval_count(0),
+      _hr2_bpf({0.5f, 5.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, {0.0f, 0.0f}, true}),
+      _hr2_buf_idx(0), _hr2_buf_count(0), _hr2_decim_counter(0), _hr2_update_counter(0)
 {
     memset(_ma_buf, 0, sizeof(_ma_buf));
     memset(_hr1_ma_buf, 0, sizeof(_hr1_ma_buf));
     _hr1_ma_idx = 0; _hr1_ma_sum = 0.0f;
     memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
-    _current_data = {0, 0.0f, 0.0f, false, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    memset(_hr2_buf, 0, sizeof(_hr2_buf));
+    _current_data = {0, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
     _recalc_rate_params();
 }
 
@@ -315,8 +320,8 @@ void MOW_AFE4490::setPPGChannel(AFE4490Channel channel) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _ppg_channel = channel;
     // Reset filter state: changing channel means a different signal enters the filter
-    _bq_ppg = {0.0f, 0.0f};
-    _bq_ppg_needs_precharge = true;
+    _ppg_bpf.state          = {0.0f, 0.0f};
+    _ppg_bpf.needs_precharge = true;
     memset(_ma_buf, 0, sizeof(_ma_buf));
     _ma_idx = 0;
     _ma_sum = 0.0f;
@@ -325,16 +330,25 @@ void MOW_AFE4490::setPPGChannel(AFE4490Channel channel) {
 
 void MOW_AFE4490::setFilter(AFE4490Filter type, float f_low_hz, float f_high_hz) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
-    _filter_type   = type;
-    _filter_f_low  = f_low_hz;
-    _filter_f_high = f_high_hz;
-    if (type == AFE4490Filter::BUTTERWORTH) _recalc_biquad();
-    // Reset filter state
-    _bq_ppg = {0.0f, 0.0f};
-    _bq_ppg_needs_precharge = true;
+    _filter_type        = type;
+    _ppg_bpf.f_low      = f_low_hz;
+    _ppg_bpf.f_high     = f_high_hz;
+    if (type == AFE4490Filter::BUTTERWORTH) _recalc_biquad(_ppg_bpf);
+    _ppg_bpf.state           = {0.0f, 0.0f};
+    _ppg_bpf.needs_precharge = true;
     memset(_ma_buf, 0, sizeof(_ma_buf));
     _ma_idx = 0;
     _ma_sum = 0.0f;
+    if (_initialized) xSemaphoreGive(_state_mutex);
+}
+
+void MOW_AFE4490::setHR2Filter(float f_low_hz, float f_high_hz) {
+    if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
+    _hr2_bpf.f_low      = f_low_hz;
+    _hr2_bpf.f_high     = f_high_hz;
+    _recalc_biquad(_hr2_bpf);
+    _hr2_bpf.state           = {0.0f, 0.0f};
+    _hr2_bpf.needs_precharge = true;
     if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
@@ -389,10 +403,16 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr1_sample_idx     = 0;
     _hr1_interval_count = 0;
     memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
-    _bq_ppg = {0.0f, 0.0f};
+    _ppg_bpf.state           = {0.0f, 0.0f};
+    _ppg_bpf.needs_precharge = true;
     memset(_ma_buf, 0, sizeof(_ma_buf));
     _ma_idx = 0; _ma_sum = 0.0f;
-    _current_data = {0, 0.0f, 0.0f, false, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _hr2_bpf.state           = {0.0f, 0.0f};
+    _hr2_bpf.needs_precharge = true;
+    _hr2_buf_idx = 0; _hr2_buf_count = 0;
+    _hr2_decim_counter = 0; _hr2_update_counter = 0;
+    memset(_hr2_buf, 0, sizeof(_hr2_buf));
+    _current_data = {0, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
@@ -546,24 +566,25 @@ void MOW_AFE4490::_recalc_rate_params() {
     _hr1_ma_len             = (uint32_t)roundf(fs / (2.0f * hr1_ma_cutoff_hz));
     if (_hr1_ma_len < 1) _hr1_ma_len = 1;
     if (_hr1_ma_len > (uint32_t)hr1_ma_max_len) _hr1_ma_len = (uint32_t)hr1_ma_max_len;
-    _recalc_biquad();
+    _recalc_biquad(_ppg_bpf);
+    _recalc_biquad(_hr2_bpf);
 }
 
-void MOW_AFE4490::_recalc_biquad() {
+void MOW_AFE4490::_recalc_biquad(BiquadFilter& filt) {
     // 2nd-order Butterworth bandpass via bilinear transform.
     // Analog prototype: H(s) = BW·s / (s² + BW·s + Ω₀²)
     float fs    = (float)_sample_rate_hz;
     float k     = 2.0f * fs;
-    float o_low = k * tanf(pi * _filter_f_low  / fs);
-    float o_hi  = k * tanf(pi * _filter_f_high / fs);
+    float o_low = k * tanf(pi * filt.f_low  / fs);
+    float o_hi  = k * tanf(pi * filt.f_high / fs);
     float o0sq  = o_low * o_hi;
     float bw    = o_hi - o_low;
     float d     = k*k + bw*k + o0sq;
-    _bq_b0 =  bw * k / d;
-    _bq_b1 =  0.0f;
-    _bq_b2 = -bw * k / d;
-    _bq_a1 =  2.0f * (o0sq - k*k) / d;
-    _bq_a2 =  (k*k - bw*k + o0sq) / d;
+    filt.b0 =  bw * k / d;
+    filt.b1 =  0.0f;
+    filt.b2 = -bw * k / d;
+    filt.a1 =  2.0f * (o0sq - k*k) / d;
+    filt.a2 =  (k*k - bw*k + o0sq) / d;
 }
 
 // ── FreeRTOS task ─────────────────────────────────────────────────────────────
@@ -624,23 +645,23 @@ void IRAM_ATTR MOW_AFE4490::_drdy_isr() {
 
 // ── Signal processing ─────────────────────────────────────────────────────────
 
-// Direct Form II Transposed biquad
-float MOW_AFE4490::_biquad_step(float x, BiquadState& st) {
-    float y  = _bq_b0 * x + st.v1;
-    st.v1    = _bq_b1 * x - _bq_a1 * y + st.v2;
-    st.v2    = _bq_b2 * x - _bq_a2 * y;
-    return y;
-}
-
-// Pre-charge biquad state to steady-state for a DC input x0, so that the first
-// output sample is ~0 instead of a large transient. Derivation for DF-II transposed:
-//   y_ss  = x0 * (b0+b1+b2) / (1+a1+a2)   (= 0 for this bandpass filter)
+// Direct Form II Transposed biquad.
+// On the first call (needs_precharge=true), pre-charges the state to DC steady-state
+// so the first output is ~0 instead of a large transient. Derivation:
+//   y_ss  = x0 * (b0+b1+b2) / (1+a1+a2)   (= 0 for a bandpass filter)
 //   v1_ss = y_ss - b0*x0
 //   v2_ss = b2*x0 - a2*y_ss
-void MOW_AFE4490::_biquad_precharge(float x0, BiquadState& st) {
-    float y_ss = x0 * (_bq_b0 + _bq_b1 + _bq_b2) / (1.0f + _bq_a1 + _bq_a2);
-    st.v1 = y_ss - _bq_b0 * x0;
-    st.v2 = _bq_b2 * x0 - _bq_a2 * y_ss;
+float MOW_AFE4490::_biquad_process(float x, BiquadFilter& filt) {
+    if (filt.needs_precharge) {
+        float y_ss      = x * (filt.b0 + filt.b1 + filt.b2) / (1.0f + filt.a1 + filt.a2);
+        filt.state.v1   = y_ss - filt.b0 * x;
+        filt.state.v2   = filt.b2 * x - filt.a2 * y_ss;
+        filt.needs_precharge = false;
+    }
+    float y       = filt.b0 * x + filt.state.v1;
+    filt.state.v1 = filt.b1 * x - filt.a1 * y + filt.state.v2;
+    filt.state.v2 = filt.b2 * x - filt.a2 * y;
+    return y;
 }
 
 void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int32_t aled2,
@@ -660,11 +681,7 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
     float filtered;
     switch (_filter_type) {
         case AFE4490Filter::BUTTERWORTH:
-            if (_bq_ppg_needs_precharge) {
-                _biquad_precharge(raw_ppg, _bq_ppg);
-                _bq_ppg_needs_precharge = false;
-            }
-            filtered = _biquad_step(raw_ppg, _bq_ppg);
+            filtered = _biquad_process(raw_ppg, _ppg_bpf);
             break;
         case AFE4490Filter::MOVING_AVERAGE: {
             _ma_sum -= _ma_buf[_ma_idx];
@@ -690,8 +707,9 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
     // SpO2 uses ambient-corrected channels (unfiltered, spec §1.3)
     _update_spo2(led1_aled1, led2_aled2);
 
-    // HR uses led1_aled1 (IR ambient-corrected) — same channel as SpO2 IR, independent of PPG display channel
+    // HR1 and HR2: both use led1_aled1 (IR ambient-corrected), run in parallel
     _update_hr1(led1_aled1);
+    _update_hr2(led1_aled1);
 
     // Push to queue; if full, drop oldest to keep most recent
     if (xQueueSend(_data_queue, &_current_data, 0) != pdTRUE) {
@@ -813,5 +831,93 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
         _current_data.hr_valid = true;
     } else {
         _current_data.hr_valid = false;
+    }
+}
+
+// ── HR2 algorithm ─────────────────────────────────────────────────────────────
+// Bandpass-filters led1_aled1, decimates by hr2_decim_factor, fills a circular
+// buffer, then every hr2_update_interval decimated samples computes the normalised
+// autocorrelation and finds the fundamental RR lag via the first local maximum
+// above hr2_min_corr. Parabolic interpolation gives sub-sample lag resolution.
+// Mirrors autocorr_v2 from ppg_plotter.py.
+void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
+    // ── Bandpass filter (0.5–5 Hz) at full sample rate ──
+    float filtered = -_biquad_process((float)led1_aled1, _hr2_bpf);  // negate: peaks up (conventional PPG polarity)
+
+    // ── Decimate: store one sample every hr2_decim_factor ──
+    _hr2_decim_counter++;
+    if (_hr2_decim_counter < (uint32_t)hr2_decim_factor) return;
+    _hr2_decim_counter = 0;
+
+    _hr2_buf[_hr2_buf_idx] = filtered;
+    _hr2_buf_idx = (_hr2_buf_idx + 1) % hr2_buf_len;
+    if (_hr2_buf_count < (uint32_t)hr2_buf_len) _hr2_buf_count++;
+
+    // ── Periodic recomputation ──
+    _hr2_update_counter++;
+    if (_hr2_update_counter < (uint32_t)hr2_update_interval) return;
+    _hr2_update_counter = 0;
+
+    if (_hr2_buf_count < (uint32_t)hr2_buf_len) {
+        _current_data.hr2_valid = false;
+        return;
+    }
+
+    // ── Linearize circular buffer (oldest → newest) ──
+    for (int i = 0; i < hr2_buf_len; i++)
+        _hr2_seg[i] = _hr2_buf[(_hr2_buf_idx + i) % hr2_buf_len];
+
+    // ── Normalise: acorr[0] = sum(seg²) ──
+    float acorr0 = 0.0f;
+    for (int i = 0; i < hr2_buf_len; i++) acorr0 += _hr2_seg[i] * _hr2_seg[i];
+    if (acorr0 < 1.0f) { _current_data.hr2_valid = false; return; }
+
+    // ── Compute normalised autocorrelation for lags [min_lag, max_lag] ──
+    float fs2     = (float)_sample_rate_hz / (float)hr2_decim_factor;
+    int   min_lag = (int)(hr2_min_lag_s * fs2);
+    if (min_lag < 1) min_lag = 1;
+    int   max_lag = hr2_acorr_max_lag;
+    int   n_lags  = max_lag - min_lag + 1;
+
+    // Stack buffer for normalised autocorrelation values (76 floats = 304 bytes — safe)
+    float acorr_buf[hr2_acorr_max_lag + 1];
+    for (int lag = min_lag; lag <= max_lag; lag++) {
+        float sum = 0.0f;
+        int   n   = hr2_buf_len - lag;
+        for (int i = 0; i < n; i++) sum += _hr2_seg[i] * _hr2_seg[i + lag];
+        acorr_buf[lag - min_lag] = sum / acorr0;
+    }
+
+    // ── Find first local maximum above hr2_min_corr ──
+    int   peak_idx = -1;
+    float y_prev = 0.0f, y_peak = 0.0f, y_next = 0.0f;
+    for (int i = 1; i < n_lags - 1; i++) {
+        if (acorr_buf[i] > acorr_buf[i - 1] &&
+            acorr_buf[i] > acorr_buf[i + 1] &&
+            acorr_buf[i] >= hr2_min_corr) {
+            peak_idx = i;
+            y_prev   = acorr_buf[i - 1];
+            y_peak   = acorr_buf[i];
+            y_next   = acorr_buf[i + 1];
+            break;
+        }
+    }
+
+    if (peak_idx < 0) { _current_data.hr2_valid = false; return; }
+
+    // ── Parabolic interpolation for sub-sample lag refinement ──
+    //   delta = 0.5 * (y[n-1] - y[n+1]) / (y[n-1] - 2·y[n] + y[n+1])
+    float denom = y_prev - 2.0f * y_peak + y_next;
+    float delta = (denom < 0.0f) ? 0.5f * (y_prev - y_next) / denom : 0.0f;
+    float peak_lag_s = (float)(min_lag + peak_idx + delta) / fs2;
+
+    if (peak_lag_s <= 0.0f) { _current_data.hr2_valid = false; return; }
+
+    float hr2 = 60.0f / peak_lag_s;
+    if (hr2 >= hr_min_bpm && hr2 <= hr_max_bpm) {
+        _current_data.hr2       = hr2;
+        _current_data.hr2_valid = true;
+    } else {
+        _current_data.hr2_valid = false;
     }
 }

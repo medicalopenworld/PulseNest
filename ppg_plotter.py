@@ -192,7 +192,7 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 PORT = 'COM15'
 BAUD = 115200
 WINDOW_SIZE     = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10)
-PPG_WINDOW_SIZE = 250   #  5 s — p_ppg shows only the latest 5 s
+PPG_WINDOW_SIZE = 500   # 10 s — same as WINDOW_SIZE
 
 ACTION_BUTTON_STYLE = """
     QPushButton { 
@@ -659,6 +659,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_red_filt = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ir_filt = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr1_ppg = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr2     = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
         self.is_plot_paused = False
@@ -837,7 +838,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.p_spo2.setYRange(80, 100)
 
         self.p_hr = stats_layout.addPlot(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
-        self.curve_hr = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3))
+        self.curve_hr  = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3), name="HR1")
+        self.curve_hr2 = self.p_hr.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
         self.p_hr.setYRange(40, 180)
 
         # Column widths: PPG wider, SpO2 and HR narrower
@@ -863,7 +865,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # Timestamp_PC = 15 chars (%H:%M:%S.%f), Df_us = 5 chars (:>5)
         SERIAL_HEADER = (
             f"{'Timestamp_PC':<15},{'Df_us':>5},"
-            "LibID,SmpCnt,Ts_us,PPG,SpO2,HR,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG"
+            "LibID,SmpCnt,Ts_us,PPG,SpO2,HR,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2"
         )
         self.header_label = QtWidgets.QLabel(SERIAL_HEADER)
         self.header_label.setFont(QtGui.QFont("Consolas", 9))
@@ -930,7 +932,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         try:
             self.ser = serial.Serial(PORT, BAUD, timeout=0.1)
             self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
-            self.console.appendPlainText("Timestamp_PC   ,Df_us,$LibID,SmpCnt,Ts_us,PPG,SpO2,HR,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG")
+            self.console.appendPlainText("Timestamp_PC   ,Df_us,$LibID,SmpCnt,Ts_us,PPG,SpO2,HR,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2")
         except Exception as e:
             self.set_status(f"ERROR: No se pudo abrir {PORT}", "error")
             QtWidgets.QMessageBox.critical(self, "Error de Puerto", f"No se pudo abrir {PORT}:\n{str(e)}")
@@ -1042,9 +1044,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             filename = f"ppg_data_snap_{now_str}.csv"
             try:
                 with open(filename, "w") as f:
-                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG\n")
+                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2\n")
                     for i in range(len(self.data_sample_counter)):
-                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_ppg[i]},{self.data_hr[i]},{self.data_spo2[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_red_filt[i]},{self.data_ir_filt[i]},{self.data_hr1_ppg[i]}\n")
+                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_ppg[i]},{self.data_hr[i]},{self.data_spo2[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_red_filt[i]},{self.data_ir_filt[i]},{self.data_hr1_ppg[i]},{self.data_hr2[i]}\n")
                 self.set_status(f"Memoria guardada en {filename}", "success")
             except Exception as e:
                 self.set_status(f"Error al guardar memoria: {e}", "error")
@@ -1055,7 +1057,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 filename = f"ppg_data_stream_{now_str}.csv"
                 try:
                     self.save_file = open(filename, "w")
-                    self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG\n")
+                    self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2\n")
                     self.set_status(f"GRABANDO EN TIEMPO REAL: {filename}", "warning")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -1120,11 +1122,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if not line.startswith('$'):
                         continue
                     parts = line[1:].split(',')  # strip leading '$'
-                    if len(parts) >= 15:
+                    if len(parts) >= 16:
                         try:
-                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:PPG, 4:SpO2, 5:HR, 6:RED, 7:IR, 8:AmbRED, 9:AmbIR, 10:REDSub, 11:IRSub, 12:REDFilt, 13:IRFilt, 14:HR1PPG
+                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:PPG, 4:SpO2, 5:HR, 6:RED, 7:IR, 8:AmbRED, 9:AmbIR, 10:REDSub, 11:IRSub, 12:REDFilt, 13:IRFilt, 14:HR1PPG, 15:HR2
                             self.data_lib_id.append(parts[0])
-                            p = [float(x) for x in parts[1:15]]
+                            p = [float(x) for x in parts[1:16]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(p[1])
                             self.data_ppg.append(p[2])
@@ -1139,6 +1141,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_red_filt.append(p[11])
                             self.data_ir_filt.append(p[12])
                             self.data_hr1_ppg.append(p[13])
+                            self.data_hr2.append(p[14])
                         except ValueError: pass
                 
                 if not self.is_plot_paused:
@@ -1147,6 +1150,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.curve_ppg.setData(list(self.data_ppg)[-PPG_WINDOW_SIZE:])
                     self.curve_spo2.setData(list(self.data_spo2))
                     self.curve_hr.setData(list(self.data_hr))
+                    self.curve_hr2.setData(list(self.data_hr2))
                     self.curve_red.setData(list(self.data_red))
                     self.curve_ir.setData(list(self.data_ir))
                     self.curve_amb_red.setData(list(self.data_amb_red))

@@ -1,7 +1,7 @@
 #pragma once
 
 // mow_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.6 — ESP32-S3, Arduino + FreeRTOS
+// v0.7 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 
 #include <Arduino.h>
@@ -28,20 +28,22 @@
 // ── Public data struct ────────────────────────────────────────────────────────
 struct AFE4490Data {
     // Processed outputs
-    int32_t ppg;        // filtered PPG of selected channel
-    float   spo2;       // SpO2 in %
-    float   hr;         // heart rate in bpm
-    bool    spo2_valid; // SpO2 is reliable
-    bool    hr_valid;   // HR is reliable
+    int32_t ppg;         // filtered PPG of selected channel
+    float   spo2;        // SpO2 in %
+    float   hr;          // HR1 (peak detection) in bpm
+    bool    spo2_valid;  // SpO2 is reliable
+    bool    hr_valid;    // HR1 is reliable
+    float   hr2;         // HR2 (autocorrelation) in bpm
+    bool    hr2_valid;   // HR2 is reliable
     // Raw ADC outputs (6 signals from AFE4490)
-    int32_t led1;       // LED1VAL  — IR raw
-    int32_t led2;       // LED2VAL  — RED raw
-    int32_t aled1;      // ALED1VAL — ambient after LED1
-    int32_t aled2;      // ALED2VAL — ambient after LED2
-    int32_t led1_aled1; // LED1-ALED1 — IR ambient-corrected
-    int32_t led2_aled2; // LED2-ALED2 — RED ambient-corrected
+    int32_t led1;        // LED1VAL  — IR raw
+    int32_t led2;        // LED2VAL  — RED raw
+    int32_t aled1;       // ALED1VAL — ambient after LED1
+    int32_t aled2;       // ALED2VAL — ambient after LED2
+    int32_t led1_aled1;  // LED1-ALED1 — IR ambient-corrected
+    int32_t led2_aled2;  // LED2-ALED2 — RED ambient-corrected
     // ── Diagnostic (temporary — may be removed in final release) ──
-    float hr1_ppg;      // HR1 internal signal (DC-removed + MA); set to 0.0 on detected peak
+    float hr1_ppg;       // HR1 internal signal (DC-removed + MA); set to 0.0 on detected peak
 };
 
 // ── Enumerations ──────────────────────────────────────────────────────────────
@@ -113,6 +115,9 @@ public:
     void setPPGChannel(AFE4490Channel channel);
     void setFilter(AFE4490Filter type, float f_low_hz = 0.5f, float f_high_hz = 20.0f);
 
+    // HR2 bandpass filter cutoffs (default 0.5–5 Hz); callable before or after begin()
+    void setHR2Filter(float f_low_hz = 0.5f, float f_high_hz = 5.0f);
+
     // Data retrieval — non-blocking; returns true if data was available
     bool getData(AFE4490Data& data);
 
@@ -127,7 +132,21 @@ public:
     void _drdy_isr();
 
 private:
-    // SPI primitives
+    // ── Private types ─────────────────────────────────────────────────────────
+
+    struct BiquadState { float v1, v2; };
+
+    // BiquadFilter groups coefficients, state and cutoff frequencies for one filter instance.
+    // _recalc_biquad() writes b0/b1/b2/a1/a2 from f_low/f_high and _sample_rate_hz.
+    // _biquad_step() and _biquad_precharge() operate on state in-place.
+    struct BiquadFilter {
+        float f_low, f_high;          // cutoff frequencies (Hz) — parameterisable at runtime
+        float b0, b1, b2, a1, a2;    // DF-II transposed coefficients
+        BiquadState state;
+        bool  needs_precharge;        // true after reset; consumed on first sample
+    };
+
+    // ── SPI primitives ────────────────────────────────────────────────────────
     void     _write_reg(uint8_t addr, uint32_t data);
     uint32_t _read_spi_raw(uint8_t addr);   // assumes SPI_READ already enabled
     uint32_t _read_reg(uint8_t addr);       // handles SPI_READ enable/disable
@@ -137,8 +156,8 @@ private:
 
     // Recomputes rate-dependent algorithm parameters from _sample_rate_hz
     void _recalc_rate_params();
-    // Recomputes Butterworth bandpass biquad coefficients from _sample_rate_hz, _filter_f_low, _filter_f_high
-    void _recalc_biquad();
+    // Recomputes Butterworth bandpass biquad coefficients into filt from _sample_rate_hz and filt.f_low/f_high
+    void _recalc_biquad(BiquadFilter& filt);
 
     // Chip init
     void _chip_init();
@@ -152,15 +171,14 @@ private:
     void _task_body();
 
     // Signal processing
-    struct BiquadState { float v1, v2; };
-    float _biquad_step(float x, BiquadState& st);
-    void  _biquad_precharge(float x0, BiquadState& st);
+    float _biquad_process(float x, BiquadFilter& filt);  // precharge on first call, then step
     void  _process_sample(int32_t led1, int32_t led2, int32_t aled1, int32_t aled2,
                           int32_t led1_aled1, int32_t led2_aled2);
 
     // Algorithms
     void _update_spo2(int32_t ir_corr, int32_t red_corr);
     void _update_hr1(int32_t led1_aled1);
+    void _update_hr2(int32_t led1_aled1);
     void _reset_algorithms();
 
     // ── Hardware ──
@@ -190,17 +208,11 @@ private:
     // ── Signal processing configuration ──
     AFE4490Channel    _ppg_channel;
     AFE4490Filter     _filter_type;
-    float             _filter_f_low;
-    float             _filter_f_high;
 
-    // ── Biquad coefficients (computed dynamically by _recalc_biquad) ──
-    float _bq_b0, _bq_b1, _bq_b2, _bq_a1, _bq_a2;
+    // ── PPG display filter (Butterworth bandpass or MA, configurable via setFilter()) ──
+    BiquadFilter      _ppg_bpf;          // default: 0.5–20 Hz
 
-    // ── Biquad state (one per signal path) ──
-    BiquadState _bq_ppg;
-    bool        _bq_ppg_needs_precharge;  // true after reset; pre-charge applied on first sample
-
-    // ── Moving average state (PPG display filter) ──
+    // ── Moving average state (PPG display filter — used when _filter_type == MOVING_AVERAGE) ──
     static constexpr int ma_len = 8;
     float    _ma_buf[ma_len];
     int      _ma_idx;
@@ -229,7 +241,7 @@ private:
     float    _spo2_a;
     float    _spo2_b;
 
-    // ── HR state ──
+    // ── HR1 state ──
     float    _hr1_dc;
     uint32_t _hr1_peak_marker_countdown;
     float    _hr1_running_max;
@@ -238,6 +250,23 @@ private:
     uint32_t _hr1_sample_idx;
     int32_t  _hr1_intervals[5];
     uint8_t  _hr1_interval_count;
+
+    // ── HR2 — autocorrelation-based HR algorithm ──────────────────────────────
+    // Bandpass-filters led1_aled1 (0.5–5 Hz), decimates by hr2_decim_factor,
+    // accumulates a circular buffer of hr2_buf_len samples, then periodically
+    // computes normalised autocorrelation to find the fundamental RR period.
+    static constexpr int hr2_buf_len         = 400;  // 8 s at 50 Hz (fs/hr2_decim_factor)
+    static constexpr int hr2_acorr_max_lag   = 75;   // 40 BPM at 50 Hz: 50*60/40 = 75 samples
+    static constexpr int hr2_decim_factor    = 10;   // 500 Hz → 50 Hz
+    static constexpr int hr2_update_interval = 25;   // recompute every 0.5 s (25 decimated samples)
+
+    BiquadFilter _hr2_bpf;                   // bandpass filter (default 0.5–5 Hz)
+    float    _hr2_buf[hr2_buf_len];          // circular buffer of decimated filtered samples
+    float    _hr2_seg[hr2_buf_len];          // linearized copy for autocorrelation (avoids stack pressure)
+    int      _hr2_buf_idx;                   // next write position in _hr2_buf
+    uint32_t _hr2_buf_count;                 // samples written (capped at hr2_buf_len)
+    uint32_t _hr2_decim_counter;             // decimation phase counter
+    uint32_t _hr2_update_counter;            // decimated samples since last autocorr computation
 
     // ── Output snapshot (written by task, pushed to queue) ──
     AFE4490Data _current_data;

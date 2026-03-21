@@ -873,3 +873,86 @@ Cambiado el título de `p_ppg` de "Inverted PPG" a "PPG".
 `WINDOW_SIZE` restaurado a 500 (10 s). Añadida constante `PPG_WINDOW_SIZE = 250` (5 s).
 `curve_ppg` y `curve_hr1_ppg` reciben `[-PPG_WINDOW_SIZE:]` en cada refresco.
 SpO2 y HR siguen mostrando los 10 s completos.
+
+---
+
+## Sesión 8 — 2026-03-21
+
+### Tema: Implementación de HR2 (autocorrelación) + refactor BiquadFilter struct
+
+---
+
+**Decisión: agrupar miembros biquad en struct BiquadFilter**
+
+Propuesto por el usuario. Se crea `BiquadFilter` (struct privado de la clase) que agrupa:
+- `f_low`, `f_high` — frecuencias de corte parametrizables (y futuro adaptativo en runtime)
+- `b0, b1, b2, a1, a2` — coeficientes DF-II transpuesto
+- `BiquadState state` — estado del filtro
+- `bool needs_precharge`
+
+Ventajas: limpieza semántica, patrón reutilizable para HR2/HR3, facilita setters adaptativos.
+
+**Refactor PPG display filter**
+
+Eliminados miembros sueltos: `_filter_f_low`, `_filter_f_high`, `_bq_b0/_bq_b1/_bq_b2/_bq_a1/_bq_a2`, `_bq_ppg`, `_bq_ppg_needs_precharge`.
+Sustituidos por: `BiquadFilter _ppg_bpf` (default 0.5–20 Hz).
+
+`_recalc_biquad()` refactorizado a `_recalc_biquad(BiquadFilter& filt)` — calcula coeficientes desde `filt.f_low/f_high` y `_sample_rate_hz`, escribe en `filt.b0...a2`.
+`_biquad_step()` y `_biquad_precharge()` toman `BiquadFilter&` en vez de `BiquadState&` separado.
+
+**Implementación HR2**
+
+Algoritmo: `_update_hr2(int32_t led1_aled1)`, corre en paralelo con HR1 en `_process_sample()`.
+
+Pipeline:
+1. Biquad bandpass 0.5–5 Hz (BiquadFilter `_hr2_bpf`) a tasa completa (500 Hz) — elimina DC y altas frecuencias, actúa de antialiasing
+2. Negar (polaridad convencional, peaks up)
+3. Decimación ×10 → 50 Hz efectivos
+4. Buffer circular `_hr2_buf[400]` (8 s a 50 Hz, mismo que autocorr_v2 Python)
+5. Recomputo cada 25 muestras decimadas (0.5 s)
+6. Autocorrelación normalizada: lags [min_lag=11..max_lag=75] a 50 Hz (40–272 BPM)
+7. Primer máximo local ≥ 0.5 → interpolación parabólica → HR = 60/lag_s
+
+Constantes (en clase): `hr2_buf_len=400`, `hr2_acorr_max_lag=75`, `hr2_decim_factor=10`, `hr2_update_interval=25`.
+Constantes (namespace): `hr2_min_lag_s=0.22f`, `hr2_min_corr=0.5f`.
+
+Nuevo setter público: `setHR2Filter(float f_low_hz, float f_high_hz)` — para adaptación futura en runtime.
+
+Nuevos campos en `AFE4490Data`: `float hr2`, `bool hr2_valid`.
+
+**main.cpp**: añadido HR2 como campo 15 (0-indexed) de la trama serial.
+
+**ppg_plotter.py**: parser ampliado a 16 campos, `data_hr2` deque, `curve_hr2` (rojo #FF4444) en `p_hr`, cabeceras CSV actualizadas.
+
+**Compilación**: SUCCESS. RAM 7.6% (+3.2 KB respecto a sesión anterior, principalmente `_hr2_buf[400]` + `_hr2_seg[400]`).
+
+**Pendiente**: flash y validación con simulador/hardware real.
+
+---
+
+**ppg_plotter.py: p_ppg vuelve a 10 s**
+
+`PPG_WINDOW_SIZE` restaurado a 500 (10 s). El plot PPG vuelve a mostrar la ventana completa.
+
+---
+
+## Sesión 9 — 2026-03-22
+
+### Tema: Refactor _biquad_process + commit HR2
+
+---
+
+**Refactor: _biquad_process()**
+
+Observación del usuario: el bloque precharge+step se repetía en dos sitios (_process_sample y _update_hr2).
+Solución: nueva función `_biquad_process(float x, BiquadFilter& filt)` que encapsula el patrón:
+- Si `needs_precharge`: llama `_biquad_precharge` y baja el flag
+- Siempre llama `_biquad_step` y devuelve el resultado
+
+Los dos call-sites quedan en una sola línea cada uno. Compilación OK.
+
+---
+
+**Refactor: eliminadas _biquad_step() y _biquad_precharge()**
+
+Consolidadas en `_biquad_process()`. El precharge y el step viven ahora en una sola función autocontenida. Eliminadas del header y del .cpp. Compilación OK.
