@@ -12,7 +12,12 @@
 compile_commands.json
 build_log.txt
 pio_build_log.txt
+pio_build_log_utf8.txt
 pio_output.txt
+
+# Python
+__pycache__/
+*.pyc
 
 # Archivos temporales / a eliminar
 src/AFE44x0.c.to_delete
