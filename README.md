@@ -1,12 +1,15 @@
 # mow_afe4490_test
 
-**mow_afe4490_test** is validation tool for the library mow_afe4490.
-**mow_afe4490** is a library (driver + algorithms) for AFE4490
+**mow_afe4490_test** is a validation tool for the library mow_afe4490.
+
+**mow_afe4490** is a library (driver + algorithms) for AFE4490, implemented in `mow_afe4490.h` and `mow_afe4490.cpp`
+
 **AFE4490** is an Analog Front End chip designed by Texas Instruments for pulse oximetry applications using photoplethysmography (PPG)
+
 This repository is developed as part of the **IncuNest** project, open-source neonatal incubator by [Medical Open World](https://medicalopenworld.org).
 
 The goal is to verify PPG signal quality and SpO2/HR calculation in isolation, before integrating the AFE4490 into the main IncuNest firmware. It also serves as a comparison testbed between the Protocentral library and the in-house `mow_afe4490` library.
-This repository includes firmware code and python scripts to visualize serial output
+This repository includes firmware code and a python script to visualize serial output
 
 ## Hardware
 
