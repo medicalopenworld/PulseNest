@@ -1132,7 +1132,30 @@ Así ambas librerías envían 16 campos y el parser los procesa correctamente si
 
 ---
 
-## Sesión 20 — 2026-03-22
+## Sesión 21 — 2026-03-23
+
+### Tema: Ejemplo mínimo de uso de la librería
+
+**Creado:** `examples/basic/main.cpp`
+
+Ejemplo tutorial para usuarios nuevos de `mow_afe4490`. Documenta los 4 pasos obligatorios:
+1. `SPI.begin()` — el usuario gestiona el bus SPI (la librería no lo inicializa)
+2. Reset hardware vía PWDN — la librería no gestiona este pin
+3. `mow.begin(CS, DRDY)` — configura chip, ISR y tarea interna
+4. Tarea FreeRTOS con `getData()` + `vTaskDelay(1ms)` para consumir datos
+
+Incluye bloque de configuración opcional comentado: `setFilter`, `setSpO2Coefficients` (con nota sobre el problema 905 nm de la U401-D), `setLEDCurrent`.
+
+**Cabeceras estandarizadas** en `src/main.cpp` y `examples/basic/main.cpp` para alinearlas con el estilo de `mow_afe4490.h`: `// nombre — descripción`, `// vX.X — plataforma`, `// Spec/referencia`. Todos en v0.7.
+
+**Documentados coeficientes de calibración SpO2** en `mow_afe4490.cpp` y `mow_afe4490.h`:
+- Los valores `spo2_a_default` / `spo2_b_default` corresponden a calibración experimental con sonda **UpnMed U401-D(01AS-F)**, tipo Nellcor Non-Oximax. Comentario: "Coefficients a and b derived from experimental calibration with a UpnMed U401-D(01AS-F) probe, type Nellcor Non-Oximax."
+- Documentado en `mow_afe4490.cpp` junto a los constexpr (con fórmula `SpO2 = a - b·R`).
+- Documentado en `mow_afe4490.h` en el comentario de `setSpO2Coefficients()`.
+
+---
+
+## Sesión 20 (anterior) — 2026-03-22
 
 ### Tema: Añadir R ratio a la trama para calibración de SpO2
 

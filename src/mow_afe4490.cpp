@@ -29,7 +29,10 @@ namespace {
     constexpr float    hr2_min_corr             = 0.5f;  // normalised autocorrelation threshold
 
     // ── SpO2 ──────────────────────────────────────────────────────────────────
-    constexpr float    spo2_a_default      = 114.9208f;  // calibration coefficient
+    // Coefficients a and b derived from experimental calibration with a
+    // UpnMed U401-D(01AS-F) probe, type Nellcor Non-Oximax.
+    // Override at runtime with setSpO2Coefficients() for a different probe.
+    constexpr float    spo2_a_default      = 114.9208f;  // calibration coefficient  (SpO2 = a - b·R)
     constexpr float    spo2_b_default      =  30.5547f;  // calibration coefficient
     constexpr float    spo2_min            =  70.0f;  // % — valid lower bound
     constexpr float    spo2_max            = 100.0f;  // % — valid upper bound (values clamped if within spo2_clamp_margin above)

@@ -126,7 +126,8 @@ public:
     // After stop(), begin() can be called again to restart.
     void stop();
 
-    // SpO2 calibration coefficients (SpO2 = a - b*R)
+    // SpO2 calibration coefficients (SpO2 = a - b*R).
+    // Defaults are experimentally calibrated for UpnMed U401-D(01AS-F), Nellcor Non-Oximax type.
     void setSpO2Coefficients(float a, float b);
 
     // ISR entry point (must be public for static trampoline)

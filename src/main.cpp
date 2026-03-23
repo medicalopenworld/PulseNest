@@ -1,3 +1,7 @@
+// mow_afe4490 — Test firmware: mow_afe4490 vs protocentral-afe4490-arduino
+// v0.7 — ESP32-S3 (in3ator V15), Arduino + FreeRTOS
+// Switches between both libraries at runtime via Serial command ('m' / 'p').
+
 #define SERIAL_DOWNSAMPLING_RATIO 10
 
 #include "mow_afe4490.h"
