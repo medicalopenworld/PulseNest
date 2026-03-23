@@ -82,7 +82,13 @@ void Protocentral_Task(void *pvParameters) {
                 Serial.print(",");
                 Serial.print(protocentral_data.RED_filtered_data);
                 Serial.print(",");
-                Serial.println(protocentral_data.IR_filtered_data);
+                Serial.print(protocentral_data.IR_filtered_data);
+                Serial.print(",");
+                Serial.print(0.0f);   // HR1PPG — not available in protocentral
+                Serial.print(",");
+                Serial.print(-1.0f);   // HR2 — not available in protocentral
+                Serial.print(",");
+                Serial.println(-1.0f); // SpO2 R — not available in protocentral
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.
@@ -131,7 +137,7 @@ void Mow_Task(void *pvParameters) {
                 Serial.print(",");
                 Serial.print(data.spo2_valid ? data.spo2 : -1.0f);
                 Serial.print(",");
-                Serial.print(data.hr_valid ? data.hr : -1.0f);
+                Serial.print(data.hr1_valid ? data.hr1 : -1.0f);
                 Serial.print(",");
                 Serial.print(data.led2);        // RED raw
                 Serial.print(",");
@@ -151,7 +157,9 @@ void Mow_Task(void *pvParameters) {
                 Serial.print(",");
                 Serial.print(data.hr1_ppg);     // HR1PPG (diagnostic — DC-removed+MA; 0.0 on peak)
                 Serial.print(",");
-                Serial.println(data.hr2_valid ? data.hr2 : -1.0f);  // HR2 (autocorrelation)
+                Serial.print(data.hr2_valid ? data.hr2 : -1.0f);  // HR2 (autocorrelation)
+                Serial.print(",");
+                Serial.println(data.spo2_r, 5); // SpO2 R ratio — for calibration (5 decimals)
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.

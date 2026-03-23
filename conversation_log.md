@@ -956,3 +956,319 @@ Los dos call-sites quedan en una sola línea cada uno. Compilación OK.
 **Refactor: eliminadas _biquad_step() y _biquad_precharge()**
 
 Consolidadas en `_biquad_process()`. El precharge y el step viven ahora en una sola función autocontenida. Eliminadas del header y del .cpp. Compilación OK.
+
+---
+
+## Sesión 10 — 2026-03-22
+
+### Tema: Gestión de TODO y ajuste de parámetros en ppg_plotter.py
+
+---
+
+**Tareas añadidas al TODO.md**
+
+- Pendientes firmware: "HR1 — derivada antes de buscar picos" (aplicar derivada a la señal filtrada antes del detector de picos).
+- Pendientes firmware: "Validar algoritmo HR en condiciones adversas: baja perfusión, luz ambiental, artefactos por movimiento".
+- Backlog funcionalidades avanzadas: "Elasticidad arterial" — estimación basada en el tiempo de subida (rise time) del pulso PPG como indicador indirecto de rigidez vascular.
+
+---
+
+**ppg_plotter.py — window_n de 8 s a 4 s**
+
+En `HRLabWindow`, el parámetro `window_n` para `autocorr_v2` (columna C) se redujo de `8.0 * fs` a `4.0 * fs`.
+A 100 Hz: de 800 muestras a 400 muestras.
+`max_lag_n` (2 s / 200 muestras) no se modificó.
+
+---
+
+## Sesión 11 — 2026-03-22
+
+### Tema: Hint de interacción con pyqtgraph en todas las ventanas
+
+---
+
+**Añadido mensaje de ayuda en la statusBar de las 4 ventanas**
+
+Constante `_MOUSE_HINT` definida una sola vez antes de las clases:
+`"pyqtgraph: use mouse buttons and wheel on the plots to zoom/pan (right-click for more options)"`
+
+Añadido `self.statusBar().showMessage(_MOUSE_HINT)` en:
+- `PPGMonitor`
+- `HRLabWindow`
+- `HRLab2Window`
+- `SpO2LabWindow`
+
+Decisión: usar la statusBar nativa de QMainWindow (parte inferior, no intrusiva) en lugar de un QLabel adicional.
+
+---
+
+## Sesión 12 — 2026-03-22
+
+### Tema: HR con un decimal en títulos de columnas B y C de HRLab
+
+---
+
+**HR con 1 decimal en columnas B y C**
+
+Cambiado `:.0f` → `:.1f` en los 4 títulos de plots afectados:
+- Plot 1B (xcorr_v1, raw PPG)
+- Plot 2B (xcorr_v1, mow BPF)
+- Plot 1C (autocorr_v2, raw PPG)
+- Plot 2C (autocorr_v2, mow BPF)
+
+`corr` no se modificó (sigue con 2 decimales).
+
+---
+
+## Sesión 13 — 2026-03-22
+
+### Tema: HR con dos decimales en títulos de columnas B y C de HRLab
+
+---
+
+Cambiado `:.1f` → `:.2f` en los 4 títulos de plots (1B, 2B, 1C, 2C).
+
+---
+
+## Sesión 14 — 2026-03-22
+
+### Tema: HR con dos decimales en ventana principal
+
+---
+
+Cambiado `:.1f` → `:.2f` en `p_hr.setTitle` de `PPGMonitor` (línea 1155).
+
+---
+
+## Sesión 15 — 2026-03-22
+
+### Tema: Mostrar HR2 en el título del plot HR de la ventana principal
+
+---
+
+Añadido `HR2` al título de `p_hr` en `PPGMonitor`. El título muestra ahora:
+- HR (amarillo `#FFDD44`) con 2 decimales
+- HR2 (rojo `#FF4444`) con 2 decimales
+
+Color rojo elegido para coincidir con el de `curve_hr2` ya existente.
+
+---
+
+## Sesión 16 — 2026-03-22
+
+### Tema: Renombrado hr → hr1 en firmware, script y spec
+
+---
+
+**Motivación:** el campo `hr` era ambiguo (podía interpretarse como "HR genérico del chip"). Como el chip AFE4490 no calcula HR, el valor siempre corresponde al algoritmo 1 propio. Se renombra para simetría con `hr2`.
+
+**Cambios aplicados:**
+
+- `mow_afe4490.h`: `float hr` → `float hr1`, `bool hr_valid` → `bool hr1_valid` en `AFE4490Data`
+- `mow_afe4490.cpp`: variable local `hr` → `hr1`, `_current_data.hr` → `_current_data.hr1`, `_current_data.hr_valid` → `_current_data.hr1_valid`
+- `main.cpp`: `data.hr_valid ? data.hr` → `data.hr1_valid ? data.hr1`
+- `ppg_plotter.py`: `data_hr` → `data_hr1`, `curve_hr` → `curve_hr1`, cabeceras CSV `HR` → `HR1`, título del plot `HR:` → `HR1:`
+- `mow_afe4490_spec.md`: struct y referencia a `hr_valid` actualizados
+
+Pendiente: compilar para verificar que no hay errores de build.
+
+---
+
+## Sesión 17 — 2026-03-22
+
+### Tema: Documentación de parámetros en _update_spo2()
+
+---
+
+Añadido comentario antes de `_update_spo2()` en `mow_afe4490.cpp` documentando que `ir_corr` y `red_corr` son señales ambient-corrected (`led1 - aled1` y `led2 - aled2` respectivamente).
+
+---
+
+## Sesión 18 — 2026-03-22
+
+### Tema: Rango del plot SpO2 en ventana principal
+
+---
+
+`p_spo2.setYRange` cambiado de `[80, 100]` a `[50, 100]` en `PPGMonitor`.
+
+---
+
+## Sesión 19 — 2026-03-22
+
+### Tema: Fix plots no actualizados al cambiar a PROTOCENTRAL
+
+---
+
+**Causa:** la trama PROTOCENTRAL (`$P1`) tenía 14 campos pero el parser del script exige `len(parts) >= 16` → las tramas se descartaban silenciosamente.
+
+**Fix:** añadidos dos campos placeholder al final de la trama PROTOCENTRAL en `main.cpp`:
+- `0.0` para HR1PPG (no disponible en protocentral)
+- `-1.0` para HR2 (no disponible en protocentral)
+
+Así ambas librerías envían 16 campos y el parser los procesa correctamente sin modificar el script.
+
+---
+
+## Sesión 20 — 2026-03-22
+
+### Tema: Calibración SpO2 y optimización de tokens
+
+**Decisiones:**
+
+- `conversation_log.md` no se cargará por defecto en cada sesión para reducir consumo de tokens. Solo se leerá si el usuario lo pide explícitamente. Guardado en memoria.
+
+- Los coeficientes actuales `spo2_a=104, spo2_b=17` no tienen fuente trazable conocida. Se identificaron las fuentes de referencia reales:
+  - **Webster 1997:** `SpO2 = 110 - 25·R` (lineal, fuente primaria estándar)
+  - **Wukitsch 1988:** `SpO2 = -45.06·R² - 30.34·R + 110.2` (cuadrática, mayor precisión)
+  - **NXP AN4327 (2012):** lookup table para sonda Nellcor DS-100 (940 nm)
+
+- La sonda **UpnMed U401-D** usa IR a **905 nm**, no 940 nm. Ninguna de las fórmulas publicadas aplica directamente — error sistemático estimado de 1–3 puntos porcentuales. Requiere calibración empírica comparando contra oxímetro de referencia certificado.
+
+**Pendiente (no implementado aún):**
+- Cambiar defaults a Webster (`a=110, b=25`) con fuente documentada
+- Documentar en spec y código que los coeficientes asumen 940 nm IR
+- Evaluar si añadir soporte para modelo cuadrático (Wukitsch)
+
+---
+
+## Sesión 20 — 2026-03-22
+
+### Tema: Añadir R ratio a la trama para calibración de SpO2
+
+---
+
+**Motivación:** para calibrar los coeficientes `a` y `b` de `spo2 = a - b·R` se necesita capturar R junto con el SpO2 de referencia del calibrador.
+
+**Cambios en firmware:**
+- `mow_afe4490.h`: añadido campo `float spo2_r` al struct `AFE4490Data`
+- `mow_afe4490.cpp`: `_current_data.spo2_r = R` en `_update_spo2()` tras calcular R; inicializador del struct actualizado a 15 valores
+- `main.cpp` (trama MOW): añadido `data.spo2_r` como campo 17 de la trama
+- `main.cpp` (trama PROTOCENTRAL): añadido `-1.0` como placeholder del campo 17
+
+**Cambios en script:**
+- Nuevo deque `data_spo2_r`
+- Parser actualizado: `len(parts) >= 17`, índice 16 → `data_spo2_r`
+- Título del plot SpO2 muestra `R: x.xxxx` en gris
+- Cabeceras CSV (snapshot y tiempo real) actualizadas con columna `SpO2_R`
+
+**Spec actualizada:** `spo2_r` añadido al struct en `mow_afe4490_spec.md`.
+
+**Procedimiento de calibración previsto:**
+1. Estabilizar sensor en cada nivel del calibrador (mín. 3-4 niveles)
+2. Anotar pares `(R_medido, SpO2_ref)`
+3. Regresión lineal → coeficientes `a` y `b` óptimos
+
+---
+
+## Sesión 21 — 2026-03-22
+
+### Tema: Rediseño completo de SpO2LabWindow para calibración
+
+---
+
+**Motivación:** preparar una ventana dedicada para calibrar los coeficientes `a` y `b` de `spo2 = a - b·R` usando un calibrador externo y regresión lineal.
+
+**SpO2LocalCalc (nueva clase):**
+Replica el algoritmo firmware `_update_spo2()` en Python (mismo IIR DC + EMA AC²).
+Constantes: dc_iir_tau_s=1.6, ac_ema_tau_s=1.0, spo2_min_dc=1000, warmup_s=5, a=104, b=17.
+Alimentada con REDSub/IRSub muestra a muestra. fs=50 Hz (SPO2_RECEIVED_FS).
+
+**Nuevo SpO2LabWindow — panel izquierdo (4 plots, zoom libre):**
+- SpO2 fw (amarillo) + SpO2 local (naranja) + línea ref blanca punteada
+- R ratio fw (amarillo) + R local (naranja)
+- DC IR (azul) + DC RED (rojo)
+- RMS AC IR (azul claro) + RMS AC RED (rojo claro)
+- Títulos con valor instantáneo coloreado por curva
+
+**Panel derecho (calibración):**
+- Sensor info: Model (pre-relleno "UpnMed U401-D(01AS-F)"), LOT, Part No.
+- SpO2 ref spinbox (50-100 %, paso 0.5) + ventana de promedio (1-30 s)
+- ADD POINT → promedia R_fw y R_local en la ventana → añade fila a tabla
+- Tabla: #, SpO2_ref, R_fw, R_local
+- RUN REGRESSION → polyfit → a, b, R² + texto listo para copiar en setSpO2Coefficients()
+- CLEAR / EXPORT CSV (con cabecera modelo/LOT/PartNo y parámetros del algoritmo)
+
+**Constantes añadidas:** SPO2_CAL_BUFSIZE=3000, SPO2_RECEIVED_FS=50.0
+
+**Sensor documentado:** UpnMed U401-D(01AS-F) — campo LOT y Part No. pendientes de rellenar en cada sesión de calibración.
+
+---
+
+## Sesión 22 — 2026-03-22
+
+### Tema: SPO2LAB se abre por defecto al arrancar
+
+---
+
+Cambiado `_open_hrlab_default` → `_open_spo2lab_default` en el `showEvent` de `PPGMonitor`.
+
+---
+
+## Sesión 23 — 2026-03-22
+
+### Tema: Mejoras en SpO2LabWindow — Simulator info, tabla más alta, ventana más alta
+
+---
+
+- Añadido grupo "Simulator info" entre "Sensor info" y "Calibration point":
+  - Device: (default "MS100")
+  - Setting: (default "R-Curve Criticare")
+  - Ambos campos se exportan al CSV como # SimDevice y # SimSetting
+- Ventana redimensionada: 940 → 1080 px de alto
+- Tabla "Calibration points": maxHeight 160 → 260 px
+
+---
+
+## Sesión 24 — 2026-03-23
+
+### Tema: Ajustes de layout en SpO2LabWindow
+
+---
+
+- Ventana: 1080 → 1200 px de alto
+- Tabla "Calibration points": maxHeight 260 → 360 px
+- Altura de fila de la tabla reducida a 22 px (`setDefaultSectionSize(22)`)
+
+---
+
+## Sesión 25 — 2026-03-23
+
+### Tema: Cambio de valor por defecto de Simulator Setting
+
+---
+
+`_edit_sim_setting` default: "R-Curve Criticare" → "R-Curve Nellcor, 100 bpm"
+
+---
+
+## Sesión 26 — 2026-03-23
+
+### Tema: Nuevos coeficientes de calibración SpO2 + R con 5 decimales en trama
+
+---
+
+**Coeficientes SpO2 actualizados** (primeros valores calibrados con simulador MS100, R-Curve Nellcor 100 bpm):
+- `spo2_a_default`: 104.0 → **114.9208**
+- `spo2_b_default`: 17.0 → **30.5547**
+- Aplicado en: `mow_afe4490.cpp` (firmware) y `SpO2LocalCalc` en `ppg_plotter.py`
+
+**R con 5 decimales en trama serie:**
+- `Serial.println(data.spo2_r)` → `Serial.println(data.spo2_r, 5)`
+
+---
+
+## Sesión 27 — 2026-03-23
+
+### Tema: Truncado de SpO2 ligeramente por encima de spo2_max
+
+---
+
+Añadida constante `spo2_clamp_margin = 3.0f` en `mow_afe4490.cpp`.
+
+Lógica de validación actualizada en `_update_spo2()`:
+- spo2 ∈ [70, 100] → se publica tal cual
+- spo2 ∈ (100, 103] → se trunca a 100.0 con `fminf` y se publica como válido
+- spo2 > 103 → se descarta como inválido
+
+Motivación: errores numéricos del algoritmo pueden producir valores ligeramente por encima de 100%, que fisiológicamente son válidos.

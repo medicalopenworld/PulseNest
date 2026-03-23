@@ -191,8 +191,85 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 # --- CONFIGURACIÓN ---
 PORT = 'COM15'
 BAUD = 115200
-WINDOW_SIZE     = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10)
-PPG_WINDOW_SIZE = 500   # 10 s — same as WINDOW_SIZE
+WINDOW_SIZE        = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10)
+PPG_WINDOW_SIZE    = 500   # 10 s — same as WINDOW_SIZE
+SPO2_CAL_BUFSIZE   = 3000  # 60 s @ 50 Hz — rolling buffer for SpO2LabWindow
+SPO2_RECEIVED_FS   = 50.0  # AFE4490 @ 500 Hz, SERIAL_DOWNSAMPLING_RATIO=10
+
+
+class SpO2LocalCalc:
+    """Replicates firmware _update_spo2() in Python for independent verification.
+
+    Constants must match mow_afe4490.cpp:
+      dc_iir_tau_s=1.6, ac_ema_tau_s=1.0, spo2_min_dc=1000,
+      warmup_s=5, spo2_a=104, spo2_b=17, spo2_min=70, spo2_max=100.
+    """
+    _DC_IIR_TAU_S = 1.6
+    _AC_EMA_TAU_S = 1.0
+    _SPO2_MIN_DC  = 1000.0
+    _WARMUP_S     = 5.0
+    SPO2_A        = 114.9208
+    SPO2_B        =  30.5547
+    _SPO2_MIN     = 70.0
+    _SPO2_MAX     = 100.0
+
+    def __init__(self):
+        self._fs           = 0.0
+        self._dc_alpha     = 0.0
+        self._ac_beta      = 0.0
+        self._warmup_n     = 0
+        self._dc_ir        = 0.0
+        self._dc_red       = 0.0
+        self._ac2_ir       = 0.0
+        self._ac2_red      = 0.0
+        self._sample_count = 0
+
+    def _recalc_params(self, fs):
+        self._fs       = fs
+        self._dc_alpha = np.exp(-1.0 / (self._DC_IIR_TAU_S * fs))
+        self._ac_beta  = 1.0 - np.exp(-1.0 / (self._AC_EMA_TAU_S * fs))
+        self._warmup_n = int(self._WARMUP_S * fs)
+
+    def reset(self):
+        self._dc_ir = self._dc_red = 0.0
+        self._ac2_ir = self._ac2_red = 0.0
+        self._sample_count = 0
+        self._fs = 0.0
+
+    def update(self, ir, red, fs):
+        """Process one sample. Returns dict with intermediates, or None during warmup."""
+        if fs != self._fs:
+            self._recalc_params(fs)
+
+        self._dc_ir  = self._dc_alpha * self._dc_ir  + (1 - self._dc_alpha) * ir
+        self._dc_red = self._dc_alpha * self._dc_red + (1 - self._dc_alpha) * red
+
+        ac_ir  = ir  - self._dc_ir
+        ac_red = red - self._dc_red
+        self._ac2_ir  = self._ac_beta * ac_ir  * ac_ir  + (1 - self._ac_beta) * self._ac2_ir
+        self._ac2_red = self._ac_beta * ac_red * ac_red + (1 - self._ac_beta) * self._ac2_red
+
+        self._sample_count += 1
+        if (self._sample_count < self._warmup_n or
+                self._dc_ir < self._SPO2_MIN_DC or self._dc_red < self._SPO2_MIN_DC):
+            return None
+
+        rms_ac_ir  = np.sqrt(self._ac2_ir)
+        rms_ac_red = np.sqrt(self._ac2_red)
+        if self._dc_ir < 1.0 or self._dc_red < 1.0 or rms_ac_ir < 1.0:
+            return None
+
+        R    = (rms_ac_red / self._dc_red) / (rms_ac_ir / self._dc_ir)
+        spo2 = self.SPO2_A - self.SPO2_B * R
+        return {
+            'dc_ir':      self._dc_ir,
+            'dc_red':     self._dc_red,
+            'rms_ac_ir':  rms_ac_ir,
+            'rms_ac_red': rms_ac_red,
+            'R':          R,
+            'spo2':       spo2,
+            'spo2_valid': self._SPO2_MIN <= spo2 <= self._SPO2_MAX,
+        }
 
 ACTION_BUTTON_STYLE = """
     QPushButton { 
@@ -211,61 +288,408 @@ ACTION_BUTTON_STYLE = """
     }
 """
 
+_MOUSE_HINT = "pyqtgraph: use mouse buttons and wheel on the plots to zoom/pan (right-click for more options)"
+
 class SpO2LabWindow(QtWidgets.QMainWindow):
+    """SpO2 calibration window.
+
+    Left panel: 4 live plots (SpO2, R ratio, DC components, RMS-AC components).
+    Right panel: sensor info, reference SpO2 input, calibration point table,
+                 linear regression (spo2 = a - b·R) and CSV export.
+
+    Sensor model documented: UpnMed U401-D(01AS-F).
+    """
+
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("SPO2LAB")
-        self.resize(1400, 800)
+        self.setWindowTitle("SPO2LAB — Calibration")
+        self.resize(1500, 1200)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().showMessage(_MOUSE_HINT)
 
+        # ── State ─────────────────────────────────────────────────────────────
+        self._local_calc      = SpO2LocalCalc()
+        self._last_sample_cnt = -1
+        self._t0_us           = None
+        self._cal_points      = []   # list of (spo2_ref, R_fw_mean, R_loc_mean)
+
+        _B = SPO2_CAL_BUFSIZE
+        self._buf_t        = deque(maxlen=_B)
+        self._buf_spo2_fw  = deque(maxlen=_B)
+        self._buf_R_fw     = deque(maxlen=_B)
+        self._buf_spo2_loc = deque(maxlen=_B)
+        self._buf_R_loc    = deque(maxlen=_B)
+        self._buf_dc_ir    = deque(maxlen=_B)
+        self._buf_dc_red   = deque(maxlen=_B)
+        self._buf_rms_ir   = deque(maxlen=_B)
+        self._buf_rms_red  = deque(maxlen=_B)
+
+        # ── Root layout ───────────────────────────────────────────────────────
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        main_layout = QtWidgets.QVBoxLayout(central)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(5)
+        root = QtWidgets.QHBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
-        # QSplitter for exact column proportions (1:1:1)
-        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        self._splitter.setHandleWidth(2)
-        main_layout.addWidget(self._splitter)
+        # ── Left: plots ───────────────────────────────────────────────────────
+        glw = pg.GraphicsLayoutWidget()
+        root.addWidget(glw, stretch=3)
 
-        self._col_a = pg.GraphicsLayoutWidget()
-        self._col_b = pg.GraphicsLayoutWidget()
-        self._col_c = pg.GraphicsLayoutWidget()
-        self._splitter.addWidget(self._col_a)
-        self._splitter.addWidget(self._col_b)
-        self._splitter.addWidget(self._col_c)
+        def _make_plot(row, title, ylabel):
+            p = glw.addPlot(row=row, col=0,
+                            title=f"<b style='color:#CCCCCC'>{title}</b>")
+            p.showGrid(x=True, y=True, alpha=0.3)
+            p.setLabel('left', ylabel)
+            p.setLabel('bottom', 't (s)')
+            p.enableAutoRange()
+            return p
 
-        # Plots — column A
-        self.p_1a = self._col_a.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1A</b>")
-        self.p_2a = self._col_a.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2A</b>")
-        self.p_3a = self._col_a.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3A</b>")
+        self.p_spo2 = _make_plot(0, "SpO2 (%)",             "%")
+        self.p_R    = _make_plot(1, "R ratio",               "R")
+        self.p_dc   = _make_plot(2, "DC  (IR, RED)",         "ADC counts")
+        self.p_ac   = _make_plot(3, "RMS AC  (IR, RED)",     "ADC counts")
 
-        # Plots — column B
-        self.p_1b = self._col_b.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1B</b>")
-        self.p_2b = self._col_b.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2B</b>")
-        self.p_3b = self._col_b.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3B</b>")
+        self.curve_spo2_fw  = self.p_spo2.plot(pen=pg.mkPen('#FFDD44', width=2), name="SpO2 fw")
+        self.curve_spo2_loc = self.p_spo2.plot(pen=pg.mkPen('#FF8800', width=2), name="SpO2 local")
+        self._ref_line = pg.InfiniteLine(angle=0, movable=False,
+                                         pen=pg.mkPen('#FFFFFF', width=1,
+                                                      style=QtCore.Qt.DashLine))
+        self.p_spo2.addItem(self._ref_line)
+        self.p_spo2.addLegend()
 
-        # Plots — column C
-        self.p_1c = self._col_c.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1C</b>")
-        self.p_2c = self._col_c.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2C</b>")
-        self.p_3c = self._col_c.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3C</b>")
+        self.curve_R_fw  = self.p_R.plot(pen=pg.mkPen('#FFDD44', width=2), name="R fw")
+        self.curve_R_loc = self.p_R.plot(pen=pg.mkPen('#FF8800', width=2), name="R local")
+        self.p_R.addLegend()
 
-        for plot in [self.p_1a, self.p_1b, self.p_1c,
-                     self.p_2a, self.p_2b, self.p_2c,
-                     self.p_3a, self.p_3b, self.p_3c]:
-            plot.showGrid(x=True, y=True, alpha=0.3)
+        self.curve_dc_ir  = self.p_dc.plot(pen=pg.mkPen('#4488FF', width=1.5), name="DC IR")
+        self.curve_dc_red = self.p_dc.plot(pen=pg.mkPen('#FF4444', width=1.5), name="DC RED")
+        self.p_dc.addLegend()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        QtCore.QTimer.singleShot(0, self._set_splitter_sizes)
+        self.curve_rms_ir  = self.p_ac.plot(pen=pg.mkPen('#44AAFF', width=1.5), name="RMS AC IR")
+        self.curve_rms_red = self.p_ac.plot(pen=pg.mkPen('#FF6666', width=1.5), name="RMS AC RED")
+        self.p_ac.addLegend()
 
-    def _set_splitter_sizes(self):
-        w = self._splitter.width()
-        if w > 0:
-            third = w // 3
-            self._splitter.setSizes([third, third, w - 2 * third])
+        # ── Right: control panel ──────────────────────────────────────────────
+        right = QtWidgets.QWidget()
+        right.setFixedWidth(390)
+        right.setStyleSheet("background-color: #1A1A1A;")
+        root.addWidget(right)
+
+        panel = QtWidgets.QVBoxLayout(right)
+        panel.setContentsMargins(10, 10, 10, 10)
+        panel.setSpacing(8)
+
+        # Sensor info
+        grp_sensor = QtWidgets.QGroupBox("Sensor info")
+        grp_sensor.setStyleSheet("QGroupBox { color: #AAAAAA; font-weight: bold; }")
+        form_s = QtWidgets.QFormLayout(grp_sensor)
+        _edit_style = "background-color: #2A2A2A; color: #E0E0E0; border: 1px solid #444; padding: 2px;"
+        self._edit_model  = QtWidgets.QLineEdit("UpnMed U401-D(01AS-F)")
+        self._edit_lot    = QtWidgets.QLineEdit()
+        self._edit_partno = QtWidgets.QLineEdit()
+        for w in [self._edit_model, self._edit_lot, self._edit_partno]:
+            w.setStyleSheet(_edit_style)
+        form_s.addRow("Model:",    self._edit_model)
+        form_s.addRow("LOT:",      self._edit_lot)
+        form_s.addRow("Part No.:", self._edit_partno)
+        panel.addWidget(grp_sensor)
+
+        # Simulator info
+        grp_sim = QtWidgets.QGroupBox("Simulator info")
+        grp_sim.setStyleSheet("QGroupBox { color: #AAAAAA; font-weight: bold; }")
+        form_sim = QtWidgets.QFormLayout(grp_sim)
+        self._edit_sim_device  = QtWidgets.QLineEdit("MS100")
+        self._edit_sim_setting = QtWidgets.QLineEdit("R-Curve Nellcor, 100 bpm")
+        for w in [self._edit_sim_device, self._edit_sim_setting]:
+            w.setStyleSheet(_edit_style)
+        form_sim.addRow("Device:",  self._edit_sim_device)
+        form_sim.addRow("Setting:", self._edit_sim_setting)
+        panel.addWidget(grp_sim)
+
+        # Reference input
+        grp_ref = QtWidgets.QGroupBox("Calibration point")
+        grp_ref.setStyleSheet("QGroupBox { color: #AAAAAA; font-weight: bold; }")
+        form_r = QtWidgets.QFormLayout(grp_ref)
+        self._spin_spo2_ref = QtWidgets.QDoubleSpinBox()
+        self._spin_spo2_ref.setRange(50.0, 100.0)
+        self._spin_spo2_ref.setSingleStep(0.5)
+        self._spin_spo2_ref.setDecimals(1)
+        self._spin_spo2_ref.setValue(98.0)
+        self._spin_spo2_ref.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 2px;")
+        self._spin_spo2_ref.valueChanged.connect(self._on_ref_changed)
+        self._spin_avg_win = QtWidgets.QSpinBox()
+        self._spin_avg_win.setRange(1, 30)
+        self._spin_avg_win.setValue(5)
+        self._spin_avg_win.setSuffix(" s")
+        self._spin_avg_win.setStyleSheet("background-color: #2A2A2A; color: #E0E0E0; padding: 2px;")
+        form_r.addRow("SpO2 ref (%):", self._spin_spo2_ref)
+        form_r.addRow("Avg window:",   self._spin_avg_win)
+        panel.addWidget(grp_ref)
+
+        btn_add = QtWidgets.QPushButton("ADD POINT")
+        btn_add.setStyleSheet("background-color: #226622; color: #FFFFFF; font-weight: bold; padding: 8px;")
+        btn_add.clicked.connect(self._add_point)
+        panel.addWidget(btn_add)
+
+        # Calibration table
+        grp_tbl = QtWidgets.QGroupBox("Calibration points")
+        grp_tbl.setStyleSheet("QGroupBox { color: #AAAAAA; font-weight: bold; }")
+        vbox_tbl = QtWidgets.QVBoxLayout(grp_tbl)
+        self._table = QtWidgets.QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["#", "SpO2 ref", "R_fw", "R_local"])
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.setStyleSheet(
+            "background-color: #1E1E1E; color: #E0E0E0; gridline-color: #333;")
+        self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setDefaultSectionSize(22)
+        self._table.setMaximumHeight(360)
+        vbox_tbl.addWidget(self._table)
+
+        hbox_btns = QtWidgets.QHBoxLayout()
+        btn_reg    = QtWidgets.QPushButton("RUN REGRESSION")
+        btn_clear  = QtWidgets.QPushButton("CLEAR")
+        btn_export = QtWidgets.QPushButton("EXPORT CSV")
+        for b, c in [(btn_reg, "#222266"), (btn_clear, "#662222"), (btn_export, "#224466")]:
+            b.setStyleSheet(f"background-color: {c}; color: #FFFFFF; font-weight: bold; padding: 5px;")
+        btn_reg.clicked.connect(self._run_regression)
+        btn_clear.clicked.connect(self._clear_points)
+        btn_export.clicked.connect(self._export_csv)
+        hbox_btns.addWidget(btn_reg)
+        hbox_btns.addWidget(btn_clear)
+        hbox_btns.addWidget(btn_export)
+        vbox_tbl.addLayout(hbox_btns)
+        panel.addWidget(grp_tbl)
+
+        # Regression result
+        grp_res = QtWidgets.QGroupBox("Regression result")
+        grp_res.setStyleSheet("QGroupBox { color: #AAAAAA; font-weight: bold; }")
+        vbox_res = QtWidgets.QVBoxLayout(grp_res)
+        self._lbl_formula = QtWidgets.QLabel("spo2 = a \u2212 b \u00b7 R")
+        self._lbl_formula.setStyleSheet("color: #888888; font-style: italic;")
+        self._lbl_a      = QtWidgets.QLabel("a  =  ---")
+        self._lbl_b      = QtWidgets.QLabel("b  =  ---")
+        self._lbl_r2     = QtWidgets.QLabel("R\u00b2  =  ---")
+        self._lbl_status = QtWidgets.QLabel("")
+        for lbl in [self._lbl_a, self._lbl_b, self._lbl_r2]:
+            lbl.setStyleSheet("color: #44FF88; font-size: 14px; font-weight: bold;")
+        self._lbl_status.setStyleSheet("color: #FFAA44; font-size: 11px;")
+        self._lbl_status.setWordWrap(True)
+        vbox_res.addWidget(self._lbl_formula)
+        vbox_res.addWidget(self._lbl_a)
+        vbox_res.addWidget(self._lbl_b)
+        vbox_res.addWidget(self._lbl_r2)
+        vbox_res.addWidget(self._lbl_status)
+        panel.addWidget(grp_res)
+
+        panel.addStretch()
+
+    # ── Slots ─────────────────────────────────────────────────────────────────
+
+    def _on_ref_changed(self, val):
+        self._ref_line.setValue(val)
+
+    def _add_point(self):
+        if not self._buf_t:
+            self._lbl_status.setText("No data yet.")
+            return
+        avg_win_s = float(self._spin_avg_win.value())
+        t_now     = self._buf_t[-1]
+        t_min     = t_now - avg_win_s
+
+        R_fw_vals  = [r for t, r in zip(self._buf_t, self._buf_R_fw)
+                      if t >= t_min and not np.isnan(r)]
+        R_loc_vals = [r for t, r in zip(self._buf_t, self._buf_R_loc)
+                      if t >= t_min and not np.isnan(r)]
+
+        if not R_fw_vals:
+            self._lbl_status.setText("Not enough valid R_fw samples in window.")
+            return
+
+        R_fw_mean  = float(np.mean(R_fw_vals))
+        R_loc_mean = float(np.mean(R_loc_vals)) if R_loc_vals else float('nan')
+        spo2_ref   = self._spin_spo2_ref.value()
+        idx        = len(self._cal_points) + 1
+
+        self._cal_points.append((spo2_ref, R_fw_mean, R_loc_mean))
+
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        for col, val in enumerate([
+                str(idx),
+                f"{spo2_ref:.1f}",
+                f"{R_fw_mean:.5f}",
+                f"{R_loc_mean:.5f}" if not np.isnan(R_loc_mean) else "---"]):
+            item = QtWidgets.QTableWidgetItem(val)
+            item.setTextAlignment(QtCore.Qt.AlignCenter)
+            self._table.setItem(row, col, item)
+
+        n_fw = len(R_fw_vals)
+        self._lbl_status.setText(
+            f"Point {idx} added: SpO2={spo2_ref:.1f}%  R_fw={R_fw_mean:.5f}  (n={n_fw})")
+
+    def _run_regression(self):
+        if len(self._cal_points) < 2:
+            self._lbl_status.setText("Need at least 2 calibration points.")
+            return
+        spo2_refs = np.array([p[0] for p in self._cal_points])
+        R_fw_vals = np.array([p[1] for p in self._cal_points])
+
+        # spo2 = a - b*R  →  polyfit(R, spo2, 1) gives [slope, intercept]
+        coeffs = np.polyfit(R_fw_vals, spo2_refs, 1)
+        b = -float(coeffs[0])   # slope is negative → b is positive
+        a =  float(coeffs[1])
+
+        spo2_pred = a - b * R_fw_vals
+        ss_res = np.sum((spo2_refs - spo2_pred) ** 2)
+        ss_tot = np.sum((spo2_refs - np.mean(spo2_refs)) ** 2)
+        r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float('nan')
+
+        self._lbl_a.setText(f"a  =  {a:.4f}")
+        self._lbl_b.setText(f"b  =  {b:.4f}")
+        self._lbl_r2.setText(f"R\u00b2  =  {r2:.4f}")
+        self._lbl_status.setText(
+            f"Regression done ({len(self._cal_points)} pts). "
+            f"Use setSpO2Coefficients({a:.4f}, {b:.4f}) in firmware.")
+
+    def _clear_points(self):
+        self._cal_points.clear()
+        self._table.setRowCount(0)
+        self._lbl_a.setText("a  =  ---")
+        self._lbl_b.setText("b  =  ---")
+        self._lbl_r2.setText("R\u00b2  =  ---")
+        self._lbl_status.setText("")
+
+    def _export_csv(self):
+        if not self._cal_points:
+            self._lbl_status.setText("No points to export.")
+            return
+        now_str  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"spo2_cal_{now_str}.csv"
+        try:
+            with open(filename, "w") as f:
+                ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"# SpO2 Calibration — {ts}\n")
+                f.write(f"# Model,{self._edit_model.text()}\n")
+                f.write(f"# LOT,{self._edit_lot.text()}\n")
+                f.write(f"# PartNo,{self._edit_partno.text()}\n")
+                f.write(f"# SimDevice,{self._edit_sim_device.text()}\n")
+                f.write(f"# SimSetting,{self._edit_sim_setting.text()}\n")
+                f.write(f"# SpO2LocalCalc: DC_IIR_TAU_S={SpO2LocalCalc._DC_IIR_TAU_S}, "
+                        f"AC_EMA_TAU_S={SpO2LocalCalc._AC_EMA_TAU_S}\n")
+                f.write(f"# Firmware defaults: a={SpO2LocalCalc.SPO2_A}, b={SpO2LocalCalc.SPO2_B}\n")
+                f.write("#\n")
+                f.write("index,spo2_ref,R_fw_mean,R_local_mean\n")
+                for i, (s, rfw, rloc) in enumerate(self._cal_points, 1):
+                    rloc_str = f"{rloc:.6f}" if not np.isnan(rloc) else ""
+                    f.write(f"{i},{s:.1f},{rfw:.6f},{rloc_str}\n")
+                if "---" not in self._lbl_a.text():
+                    f.write(f"# Regression: {self._lbl_a.text().strip()}, "
+                            f"{self._lbl_b.text().strip()}, {self._lbl_r2.text().strip()}\n")
+            self._lbl_status.setText(f"Exported: {filename}")
+        except Exception as e:
+            self._lbl_status.setText(f"Export error: {e}")
+
+    # ── Update (called from main monitor loop) ────────────────────────────────
+
+    def update_plots(self, data_ir_sub, data_red_sub, data_spo2, data_spo2_r,
+                     data_timestamp_us, data_sample_counter):
+        n = len(data_sample_counter)
+        if n == 0:
+            return
+
+        # Find new samples not yet processed (scan backwards from end)
+        new_indices = []
+        for i in range(n - 1, -1, -1):
+            if data_sample_counter[i] <= self._last_sample_cnt:
+                break
+            new_indices.append(i)
+        if not new_indices:
+            return
+        new_indices.reverse()
+
+        nan = float('nan')
+        for i in new_indices:
+            ts     = float(data_timestamp_us[i])
+            ir     = float(data_ir_sub[i])
+            red    = float(data_red_sub[i])
+            spo2_f = float(data_spo2[i])
+            R_f    = float(data_spo2_r[i])
+
+            if self._t0_us is None:
+                self._t0_us = ts
+            t_s = (ts - self._t0_us) / 1e6
+
+            result = self._local_calc.update(ir, red, SPO2_RECEIVED_FS)
+
+            self._buf_t.append(t_s)
+            self._buf_spo2_fw.append(spo2_f if spo2_f >= 0 else nan)
+            self._buf_R_fw.append(R_f if R_f >= 0 else nan)
+
+            if result is not None:
+                self._buf_spo2_loc.append(result['spo2'] if result['spo2_valid'] else nan)
+                self._buf_R_loc.append(result['R'])
+                self._buf_dc_ir.append(result['dc_ir'])
+                self._buf_dc_red.append(result['dc_red'])
+                self._buf_rms_ir.append(result['rms_ac_ir'])
+                self._buf_rms_red.append(result['rms_ac_red'])
+            else:
+                for buf in [self._buf_spo2_loc, self._buf_R_loc, self._buf_dc_ir,
+                             self._buf_dc_red, self._buf_rms_ir, self._buf_rms_red]:
+                    buf.append(nan)
+
+        self._last_sample_cnt = data_sample_counter[-1]
+
+        t_arr = np.array(self._buf_t)
+
+        spo2_fw_arr  = np.array(self._buf_spo2_fw)
+        spo2_loc_arr = np.array(self._buf_spo2_loc)
+        R_fw_arr     = np.array(self._buf_R_fw)
+        R_loc_arr    = np.array(self._buf_R_loc)
+        dc_ir_arr    = np.array(self._buf_dc_ir)
+        dc_red_arr   = np.array(self._buf_dc_red)
+        rms_ir_arr   = np.array(self._buf_rms_ir)
+        rms_red_arr  = np.array(self._buf_rms_red)
+
+        self.curve_spo2_fw.setData(t_arr,  spo2_fw_arr)
+        self.curve_spo2_loc.setData(t_arr, spo2_loc_arr)
+        self.curve_R_fw.setData(t_arr,     R_fw_arr)
+        self.curve_R_loc.setData(t_arr,    R_loc_arr)
+        self.curve_dc_ir.setData(t_arr,    dc_ir_arr)
+        self.curve_dc_red.setData(t_arr,   dc_red_arr)
+        self.curve_rms_ir.setData(t_arr,   rms_ir_arr)
+        self.curve_rms_red.setData(t_arr,  rms_red_arr)
+
+        def _last(arr):
+            valid = arr[~np.isnan(arr)]
+            return valid[-1] if len(valid) else float('nan')
+
+        v_spo2_fw  = _last(spo2_fw_arr)
+        v_spo2_loc = _last(spo2_loc_arr)
+        v_R_fw     = _last(R_fw_arr)
+        v_R_loc    = _last(R_loc_arr)
+        v_dc_ir    = _last(dc_ir_arr)
+        v_dc_red   = _last(dc_red_arr)
+        v_rms_ir   = _last(rms_ir_arr)
+        v_rms_red  = _last(rms_red_arr)
+
+        def _fmt(v, decimals=2):
+            return f"{v:.{decimals}f}" if not np.isnan(v) else "---"
+
+        self.p_spo2.setTitle(
+            f"<b style='color:#FFDD44'>SpO2 fw: {_fmt(v_spo2_fw, 1)} %</b>"
+            f" &nbsp; <b style='color:#FF8800'>local: {_fmt(v_spo2_loc, 1)} %</b>")
+        self.p_R.setTitle(
+            f"<b style='color:#FFDD44'>R fw: {_fmt(v_R_fw, 5)}</b>"
+            f" &nbsp; <b style='color:#FF8800'>R local: {_fmt(v_R_loc, 5)}</b>")
+        self.p_dc.setTitle(
+            f"<b style='color:#4488FF'>DC IR: {_fmt(v_dc_ir, 0)}</b>"
+            f" &nbsp; <b style='color:#FF4444'>DC RED: {_fmt(v_dc_red, 0)}</b>")
+        self.p_ac.setTitle(
+            f"<b style='color:#44AAFF'>RMS AC IR: {_fmt(v_rms_ir, 1)}</b>"
+            f" &nbsp; <b style='color:#FF6666'>RMS AC RED: {_fmt(v_rms_red, 1)}</b>")
 
     def closeEvent(self, event):
         if self.main_monitor is not None:
@@ -281,6 +705,7 @@ class HRLab2Window(QtWidgets.QMainWindow):
         self.setWindowTitle("HRLAB2")
         self.resize(1400, 800)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().showMessage(_MOUSE_HINT)
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -353,6 +778,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("HRLAB")
         self.resize(2400, 450)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().showMessage(_MOUSE_HINT)
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -519,7 +945,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
         refresh_every = max(1, int(round(fs / 5.0)))
         if self._hr_refresh_counter >= refresh_every and mow_filtered is not None:
             self._hr_refresh_counter = 0
-            window_n  = int(round(8.0 * fs))
+            window_n  = int(round(4.0 * fs))
             max_lag_n = int(round(2.0 * fs))
             needed    = window_n + max_lag_n
             max_lag_s = max_lag_n / fs
@@ -540,7 +966,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
                     self.p_1b.setXRange(0, max_lag_s)
                     self.p_1b.setTitle(
                         f"<span style='color:#AAAAFF'>xcorr_v1 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
                     )
                     self.vline_1b.setPen(pg.mkPen(hr_color, width=2))
                     self.vline_1b.setPos(r.peak_lag)
@@ -557,7 +983,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
                     self.p_2b.setXRange(0, max_lag_s)
                     self.p_2b.setTitle(
                         f"<span style='color:#FF88FF'>xcorr_v1 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
                     )
                     self.vline_2b.setPen(pg.mkPen(hr_color, width=2))
                     self.vline_2b.setPos(r.peak_lag)
@@ -574,7 +1000,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
                     self.p_1c.setXRange(0, max_lag_s)
                     self.p_1c.setTitle(
                         f"<span style='color:#AAAAFF'>autocorr_v2 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
                     )
                     self.vline_1c.setPen(pg.mkPen(hr_color, width=2))
                     self.vline_1c.setPos(r.peak_lag)
@@ -591,7 +1017,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
                     self.p_2c.setXRange(0, max_lag_s)
                     self.p_2c.setTitle(
                         f"<span style='color:#FF88FF'>autocorr_v2 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.0f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
+                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
                     )
                     self.vline_2c.setPen(pg.mkPen(hr_color, width=2))
                     self.vline_2c.setPos(r.peak_lag)
@@ -642,13 +1068,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.setWindowTitle("AFE4490 Advanced Monitor (by Medical Open World)")
         self.resize(2700, 1600)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().showMessage(_MOUSE_HINT)
         
         # Estructuras de Datos
         self.data_lib_id = deque(["?"]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_sample_counter = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_timestamp_us = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ppg = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr  = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr1 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_spo2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_red = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ir  = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
@@ -660,6 +1087,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_ir_filt = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr1_ppg = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr2     = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_spo2_r  = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
         self.is_plot_paused = False
@@ -835,10 +1263,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.p_spo2 = stats_layout.addPlot(title="<b style='color:#44FF88'>SpO2 (%)</b>")
         self.curve_spo2 = self.p_spo2.plot(pen=pg.mkPen('#44FF88', width=3))
-        self.p_spo2.setYRange(80, 100)
+        self.p_spo2.setYRange(50, 100)
 
         self.p_hr = stats_layout.addPlot(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
-        self.curve_hr  = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3), name="HR1")
+        self.curve_hr1 = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3), name="HR1")
         self.curve_hr2 = self.p_hr.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
         self.p_hr.setYRange(40, 180)
 
@@ -865,7 +1293,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # Timestamp_PC = 15 chars (%H:%M:%S.%f), Df_us = 5 chars (:>5)
         SERIAL_HEADER = (
             f"{'Timestamp_PC':<15},{'Df_us':>5},"
-            "LibID,SmpCnt,Ts_us,PPG,SpO2,HR,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2"
+            "LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R"
         )
         self.header_label = QtWidgets.QLabel(SERIAL_HEADER)
         self.header_label.setFont(QtGui.QFont("Consolas", 9))
@@ -932,7 +1360,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         try:
             self.ser = serial.Serial(PORT, BAUD, timeout=0.1)
             self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
-            self.console.appendPlainText("Timestamp_PC   ,Df_us,$LibID,SmpCnt,Ts_us,PPG,SpO2,HR,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2")
+            self.console.appendPlainText("Timestamp_PC   ,Df_us,$LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R")
         except Exception as e:
             self.set_status(f"ERROR: No se pudo abrir {PORT}", "error")
             QtWidgets.QMessageBox.critical(self, "Error de Puerto", f"No se pudo abrir {PORT}:\n{str(e)}")
@@ -1044,9 +1472,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             filename = f"ppg_data_snap_{now_str}.csv"
             try:
                 with open(filename, "w") as f:
-                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2\n")
+                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR1,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
                     for i in range(len(self.data_sample_counter)):
-                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_ppg[i]},{self.data_hr[i]},{self.data_spo2[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_red_filt[i]},{self.data_ir_filt[i]},{self.data_hr1_ppg[i]},{self.data_hr2[i]}\n")
+                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_ppg[i]},{self.data_hr1[i]},{self.data_spo2[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_red_filt[i]},{self.data_ir_filt[i]},{self.data_hr1_ppg[i]},{self.data_hr2[i]},{self.data_spo2_r[i]}\n")
                 self.set_status(f"Memoria guardada en {filename}", "success")
             except Exception as e:
                 self.set_status(f"Error al guardar memoria: {e}", "error")
@@ -1057,7 +1485,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 filename = f"ppg_data_stream_{now_str}.csv"
                 try:
                     self.save_file = open(filename, "w")
-                    self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2\n")
+                    self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR1,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
                     self.set_status(f"GRABANDO EN TIEMPO REAL: {filename}", "warning")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -1122,16 +1550,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if not line.startswith('$'):
                         continue
                     parts = line[1:].split(',')  # strip leading '$'
-                    if len(parts) >= 16:
+                    if len(parts) >= 17:
                         try:
-                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:PPG, 4:SpO2, 5:HR, 6:RED, 7:IR, 8:AmbRED, 9:AmbIR, 10:REDSub, 11:IRSub, 12:REDFilt, 13:IRFilt, 14:HR1PPG, 15:HR2
+                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:PPG, 4:SpO2, 5:HR1, 6:RED, 7:IR, 8:AmbRED, 9:AmbIR, 10:REDSub, 11:IRSub, 12:REDFilt, 13:IRFilt, 14:HR1PPG, 15:HR2, 16:SpO2_R
                             self.data_lib_id.append(parts[0])
-                            p = [float(x) for x in parts[1:16]]
+                            p = [float(x) for x in parts[1:17]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(p[1])
                             self.data_ppg.append(p[2])
                             self.data_spo2.append(p[3])
-                            self.data_hr.append(p[4])
+                            self.data_hr1.append(p[4])
                             self.data_red.append(p[5])
                             self.data_ir.append(p[6])
                             self.data_amb_red.append(p[7])
@@ -1142,14 +1570,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_ir_filt.append(p[12])
                             self.data_hr1_ppg.append(p[13])
                             self.data_hr2.append(p[14])
+                            self.data_spo2_r.append(p[15])
                         except ValueError: pass
                 
                 if not self.is_plot_paused:
-                    self.p_spo2.setTitle(f"<b style='color:#44FF88'>SpO2: {self.data_spo2[-1]:.1f} %</b>")
-                    self.p_hr.setTitle(f"<b style='color:#FFDD44'>HR: {self.data_hr[-1]:.1f} bpm</b>")
+                    self.p_spo2.setTitle(f"<b style='color:#44FF88'>SpO2: {self.data_spo2[-1]:.1f} %</b> &nbsp; <b style='color:#AAAAAA'>R: {self.data_spo2_r[-1]:.4f}</b>")
+                    self.p_hr.setTitle(f"<b style='color:#FFDD44'>HR1: {self.data_hr1[-1]:.2f} bpm</b> &nbsp; <b style='color:#FF4444'>HR2: {self.data_hr2[-1]:.2f} bpm</b>")
                     self.curve_ppg.setData(list(self.data_ppg)[-PPG_WINDOW_SIZE:])
                     self.curve_spo2.setData(list(self.data_spo2))
-                    self.curve_hr.setData(list(self.data_hr))
+                    self.curve_hr1.setData(list(self.data_hr1))
                     self.curve_hr2.setData(list(self.data_hr2))
                     self.curve_red.setData(list(self.data_red))
                     self.curve_ir.setData(list(self.data_ir))
@@ -1164,6 +1593,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if self.hrlab_window is not None:
                         self.hrlab_window.update_plots(self.data_ppg, self.data_timestamp_us, self.data_sample_counter)
 
+                    if self.spo2lab_window is not None:
+                        self.spo2lab_window.update_plots(
+                            self.data_ir_sub, self.data_red_sub,
+                            self.data_spo2, self.data_spo2_r,
+                            self.data_timestamp_us, self.data_sample_counter)
+
         except Exception as e:
             print(f"Error en loop: {e}")
 
@@ -1171,7 +1606,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         super().showEvent(event)
         # setSizes debe llamarse tras show() para que Qt no lo sobreescriba
         QtCore.QTimer.singleShot(0, lambda: self.splitter.setSizes([1800, 900]))
-        QtCore.QTimer.singleShot(0, self._open_hrlab_default)
+        QtCore.QTimer.singleShot(0, self._open_spo2lab_default)
 
     def closeEvent(self, event):
         if getattr(self, 'is_saving', False) and getattr(self, 'save_file', None):

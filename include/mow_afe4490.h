@@ -30,9 +30,10 @@ struct AFE4490Data {
     // Processed outputs
     int32_t ppg;         // filtered PPG of selected channel
     float   spo2;        // SpO2 in %
-    float   hr;          // HR1 (peak detection) in bpm
+    float   spo2_r;      // R ratio used for SpO2 calculation: (AC_red/DC_red)/(AC_ir/DC_ir)
+    float   hr1;         // HR1 (peak detection) in bpm
     bool    spo2_valid;  // SpO2 is reliable
-    bool    hr_valid;    // HR1 is reliable
+    bool    hr1_valid;   // HR1 is reliable
     float   hr2;         // HR2 (autocorrelation) in bpm
     bool    hr2_valid;   // HR2 is reliable
     // Raw ADC outputs (6 signals from AFE4490)

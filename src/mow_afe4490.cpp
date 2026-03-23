@@ -29,10 +29,11 @@ namespace {
     constexpr float    hr2_min_corr             = 0.5f;  // normalised autocorrelation threshold
 
     // ── SpO2 ──────────────────────────────────────────────────────────────────
-    constexpr float    spo2_a_default      = 104.0f;  // calibration coefficient
-    constexpr float    spo2_b_default      =  17.0f;  // calibration coefficient
+    constexpr float    spo2_a_default      = 114.9208f;  // calibration coefficient
+    constexpr float    spo2_b_default      =  30.5547f;  // calibration coefficient
     constexpr float    spo2_min            =  70.0f;  // % — valid lower bound
-    constexpr float    spo2_max            = 100.0f;  // % — valid upper bound
+    constexpr float    spo2_max            = 100.0f;  // % — valid upper bound (values clamped if within spo2_clamp_margin above)
+    constexpr float    spo2_clamp_margin   =   3.0f;  // % — clamp to spo2_max if spo2 <= spo2_max + margin
     constexpr float    spo2_min_dc         = 1000.0f; // ADC counts — no-finger threshold
 
     // ── HR ────────────────────────────────────────────────────────────────────
@@ -151,7 +152,7 @@ MOW_AFE4490::MOW_AFE4490()
     _hr1_ma_idx = 0; _hr1_ma_sum = 0.0f;
     memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
     memset(_hr2_buf, 0, sizeof(_hr2_buf));
-    _current_data = {0, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _current_data = {0, 0.0f, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
     _recalc_rate_params();
 }
 
@@ -412,7 +413,7 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr2_buf_idx = 0; _hr2_buf_count = 0;
     _hr2_decim_counter = 0; _hr2_update_counter = 0;
     memset(_hr2_buf, 0, sizeof(_hr2_buf));
-    _current_data = {0, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _current_data = {0, 0.0f, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
@@ -722,6 +723,8 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
 // ── SpO2 algorithm ────────────────────────────────────────────────────────────
 // R = (AC_rms_RED / DC_RED) / (AC_rms_IR / DC_IR)
 // SpO2 = a - b * R
+// ir_corr  : IR  signal ambient-corrected (led1 - aled1)
+// red_corr : RED signal ambient-corrected (led2 - aled2)
 void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
     float ir  = (float)ir_corr;
     float red = (float)red_corr;
@@ -757,8 +760,10 @@ void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
     float R    = (rms_ac_red / _dc_red) / (rms_ac_ir / _dc_ir);
     float spo2 = _spo2_a - _spo2_b * R;
 
-    if (spo2 >= spo2_min && spo2 <= spo2_max) {
-        _current_data.spo2       = spo2;
+    _current_data.spo2_r = R;
+
+    if (spo2 >= spo2_min && spo2 <= spo2_max + spo2_clamp_margin) {
+        _current_data.spo2       = fminf(spo2, spo2_max);
         _current_data.spo2_valid = true;
     } else {
         _current_data.spo2_valid = false;
@@ -816,7 +821,7 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
 
     // Need 5 intervals for a stable estimate
     if (_hr1_interval_count < 5) {
-        _current_data.hr_valid = false;
+        _current_data.hr1_valid = false;
         return;
     }
 
@@ -824,13 +829,13 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
     for (int i = 0; i < 5; i++) sum += (float)_hr1_intervals[i];
     float avg_interval = sum / 5.0f;
 
-    float hr = ((float)_sample_rate_hz * 60.0f) / avg_interval;
+    float hr1 = ((float)_sample_rate_hz * 60.0f) / avg_interval;
 
-    if (hr >= hr_min_bpm && hr <= hr_max_bpm) {
-        _current_data.hr       = hr;
-        _current_data.hr_valid = true;
+    if (hr1 >= hr_min_bpm && hr1 <= hr_max_bpm) {
+        _current_data.hr1       = hr1;
+        _current_data.hr1_valid = true;
     } else {
-        _current_data.hr_valid = false;
+        _current_data.hr1_valid = false;
     }
 }
 

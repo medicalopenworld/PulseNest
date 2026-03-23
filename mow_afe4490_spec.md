@@ -62,9 +62,10 @@ struct AFE4490Data {
     // Processed outputs
     int32_t ppg;        // filtered PPG of selected channel
     float   spo2;       // SpO2 in %
-    uint8_t hr;         // heart rate in bpm
+    float   spo2_r;     // R ratio: (AC_red/DC_red)/(AC_ir/DC_ir) — for calibration
+    float   hr1;        // HR1 (peak detection) in bpm
     bool    spo2_valid; // true if SpO2 calculation is reliable
-    bool    hr_valid;   // true if HR calculation is reliable
+    bool    hr1_valid;  // true if HR1 calculation is reliable
     // The 6 raw signals from AFE4490
     int32_t led1;       // LED1VAL  — IR raw
     int32_t led2;       // LED2VAL  — RED raw
@@ -227,7 +228,7 @@ HR is calculated by measuring the interval between consecutive peaks (RR interva
 HR (bpm) = 60 / T_RR (seconds)
 ```
 
-`hr_valid` is set when enough consecutive peaks with a stable interval have been detected.
+`hr1_valid` is set when enough consecutive peaks with a stable interval have been detected.
 
 > Both algorithms developed from scratch. Protocentral code is not used as a base.
 
