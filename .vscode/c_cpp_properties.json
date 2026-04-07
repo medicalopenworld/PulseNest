@@ -10,6 +10,7 @@
             "includePath": [
                 "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/include",
                 "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/src",
+                "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/lib/mow_afe4490",
                 "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/.pio/libdeps/in3ator_V15/ProtoCentral AFE4490 PPG and SpO2 boards library/src",
                 "C:/Users/alexc/.platformio/packages/framework-arduinoespressif32@3.20014.231204/libraries/SPI/src",
                 "C:/Users/alexc/.platformio/packages/framework-arduinoespressif32@3.20014.231204/tools/sdk/esp32s3/include/newlib/platform_include",
@@ -245,6 +246,7 @@
                 "path": [
                     "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/include",
                     "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/src",
+                    "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/lib/mow_afe4490",
                     "C:/PRJ/MOW/Misc/AFE4490/Pulsioximeter_test_PABLO/Pulsioximeter_test/.pio/libdeps/in3ator_V15/ProtoCentral AFE4490 PPG and SpO2 boards library/src",
                     "C:/Users/alexc/.platformio/packages/framework-arduinoespressif32@3.20014.231204/libraries/SPI/src",
                     "C:/Users/alexc/.platformio/packages/framework-arduinoespressif32@3.20014.231204/tools/sdk/esp32s3/include/newlib/platform_include",

@@ -2,7 +2,7 @@
 // v0.7 — ESP32-S3 (in3ator V15), Arduino + FreeRTOS
 // Switches between both libraries at runtime via Serial command ('m' / 'p').
 
-#define SERIAL_DOWNSAMPLING_RATIO 10
+#define SERIAL_DOWNSAMPLING_RATIO 1
 
 #include "mow_afe4490.h"
 #include "protocentral_afe44xx.h"
@@ -28,9 +28,21 @@ inline void Serial_printf(const char *fmt, ...) {
     Serial.print(buffer);
 }
 
+// XOR checksum of all bytes between '$' and '*' (NMEA style).
+// p: pointer to character after '$'; len: number of bytes to XOR.
+static uint8_t frame_xor_chk(const char* p, int len) {
+    uint8_t chk = 0;
+    while (len-- > 0) chk ^= (uint8_t)*p++;
+    return chk;
+}
+
 // ── Runtime library selection ─────────────────────────────────────────────────
 enum class ActiveLib { PROTOCENTRAL, MOW };
 volatile ActiveLib g_active_lib = ActiveLib::MOW;  // default at startup
+
+// ── Mow frame mode ────────────────────────────────────────────────────────────
+enum class MowFrameMode { M1, M2 };  // M1=full frame (default), M2=raw ADC only
+volatile MowFrameMode g_mow_frame_mode = MowFrameMode::M1;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Library A — protocentral_afe44xx
@@ -61,38 +73,27 @@ void Protocentral_Task(void *pvParameters) {
             protocentral.get_AFE44XX_Data(&protocentral_data);
 
             if (cnt % SERIAL_DOWNSAMPLING_RATIO == 0) {
-                Serial.print("$P1,");
-                Serial.print(cnt);
-                Serial.print(",");
-                Serial.print(ts);
-                Serial.print(",");
-                Serial.print(protocentral_data.IR_filtered_data * -1);  // ppg (inverted)
-                Serial.print(",");
-                Serial.print(protocentral_data.spo2);
-                Serial.print(",");
-                Serial.print(protocentral_data.heart_rate);
-                Serial.print(",");
-                Serial.print(protocentral_data.RED_data);
-                Serial.print(",");
-                Serial.print(protocentral_data.IR_data);
-                Serial.print(",");
-                Serial.print(protocentral_data.ambientRED_data);
-                Serial.print(",");
-                Serial.print(protocentral_data.ambientIR_data);
-                Serial.print(",");
-                Serial.print(protocentral_data.REDminusAmbient_data);
-                Serial.print(",");
-                Serial.print(protocentral_data.IRminusAmbient_data);
-                Serial.print(",");
-                Serial.print(protocentral_data.RED_filtered_data);
-                Serial.print(",");
-                Serial.print(protocentral_data.IR_filtered_data);
-                Serial.print(",");
-                Serial.print(0.0f);   // HR1PPG — not available in protocentral
-                Serial.print(",");
-                Serial.print(-1.0f);   // HR2 — not available in protocentral
-                Serial.print(",");
-                Serial.println(-1.0f); // SpO2 R — not available in protocentral
+                char buf[256];
+                int n = snprintf(buf, sizeof(buf) - 6,
+                    "$P1,%lu,%lu,%ld,%g,%g,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.2f",
+                    cnt, ts,
+                    (long)(protocentral_data.IR_filtered_data * -1),
+                    (double)protocentral_data.spo2,
+                    (double)protocentral_data.heart_rate,
+                    (long)protocentral_data.RED_data,
+                    (long)protocentral_data.IR_data,
+                    (long)protocentral_data.ambientRED_data,
+                    (long)protocentral_data.ambientIR_data,
+                    (long)protocentral_data.REDminusAmbient_data,
+                    (long)protocentral_data.IRminusAmbient_data,
+                    (long)protocentral_data.RED_filtered_data,
+                    (long)protocentral_data.IR_filtered_data,
+                    0.0f,   // HR1PPG — not available in protocentral
+                    -1.0f,  // HR2    — not available in protocentral
+                    -1.0f); // SpO2_R — not available in protocentral
+                uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+                snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+                Serial.print(buf);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.
@@ -125,45 +126,80 @@ void stop_protocentral() {
 MOW_AFE4490              mow;
 TaskHandle_t             g_mow_task        = nullptr;
 static volatile uint32_t mow_sample_count  = 0;
+static volatile uint32_t mow_tx_dropped   = 0;  // frames skipped: TX buffer too full at frame start
+
+// ── Ambient-subtraction consistency check (temporary — remove #define to disable)
+// Verifies that the hardware-subtracted values (led1_aled1, led2_aled2) equal the
+// software difference of the individually-read raw registers.
+// Reports a one-line summary every 500 samples (~1 s at 500 Hz).
+// #define CHK_AMB_SUB
+#ifdef CHK_AMB_SUB
+static uint32_t chk_n         = 0;
+static uint32_t chk_mismatches = 0;
+static int32_t  chk_max_d_ir  = 0;
+static int32_t  chk_max_d_red = 0;
+
+static void chk_amb_sub(const AFE4490Data& d) {
+    int32_t d_ir  = d.led1_aled1 - (d.led1 - d.aled1);
+    int32_t d_red = d.led2_aled2 - (d.led2 - d.aled2);
+    if (d_ir != 0 || d_red != 0) chk_mismatches++;
+    if (abs(d_ir)  > chk_max_d_ir)  chk_max_d_ir  = abs(d_ir);
+    if (abs(d_red) > chk_max_d_red) chk_max_d_red = abs(d_red);
+    if (++chk_n % 500 == 0)
+        Serial_printf("# CHK n=%lu mis=%lu max_d_ir=%ld max_d_red=%ld\n",
+                      chk_n, chk_mismatches, chk_max_d_ir, chk_max_d_red);
+}
+#endif  // CHK_AMB_SUB
 
 void Mow_Task(void *pvParameters) {
     for (;;) {
         AFE4490Data data;
         if (mow.getData(data)) {
             mow_sample_count++;
+#ifdef CHK_AMB_SUB
+            chk_amb_sub(data);
+#endif
             if (mow_sample_count % SERIAL_DOWNSAMPLING_RATIO == 0) {  // send only 1 out of N samples to avoid saturating the serial port
-                Serial.print("$M0,");
-                Serial.print(mow_sample_count);
-                Serial.print(",");
-                Serial.print(micros());
-                Serial.print(",");
-                Serial.print(data.ppg);
-                Serial.print(",");
-                Serial.print(data.spo2_valid ? data.spo2 : -1.0f);
-                Serial.print(",");
-                Serial.print(data.hr1_valid ? data.hr1 : -1.0f);
-                Serial.print(",");
-                Serial.print(data.led2);        // RED raw
-                Serial.print(",");
-                Serial.print(data.led1);        // IR raw
-                Serial.print(",");
-                Serial.print(data.aled2);       // AmbRED
-                Serial.print(",");
-                Serial.print(data.aled1);       // AmbIR
-                Serial.print(",");
-                Serial.print(data.led2_aled2);  // REDSub
-                Serial.print(",");
-                Serial.print(data.led1_aled1);  // IRSub
-                Serial.print(",");
-                Serial.print(data.led2_aled2);  // REDFilt (placeholder — no filtered data yet)
-                Serial.print(",");
-                Serial.print(data.led1_aled1); // IRFilt (placeholder — no filtered data yet)
-                Serial.print(",");
-                Serial.print(data.hr1_ppg);     // HR1PPG (diagnostic — DC-removed+MA; 0.0 on peak)
-                Serial.print(",");
-                Serial.print(data.hr2_valid ? data.hr2 : -1.0f);  // HR2 (autocorrelation)
-                Serial.print(",");
-                Serial.println(data.spo2_r, 5); // SpO2 R ratio — for calibration (5 decimals)
+                // Diagnostic: count frames where TX buffer has < 30 bytes free (nearly full —
+                // next Serial.print will likely block or drop bytes).
+                if (Serial.availableForWrite() < 30) mow_tx_dropped++;
+
+                if (g_mow_frame_mode == MowFrameMode::M1) {
+                    char buf[256];
+                    int n = snprintf(buf, sizeof(buf) - 6,
+                        "$M1,%lu,%lu,%ld,%.2f,%.2f,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f",
+                        (unsigned long)mow_sample_count,
+                        (unsigned long)micros(),
+                        (long)data.ppg,
+                        data.spo2_valid ? data.spo2 : -1.0f,
+                        data.hr1_valid  ? data.hr1  : -1.0f,
+                        (long)data.led2, (long)data.led1,
+                        (long)data.aled2, (long)data.aled1,
+                        (long)data.led2_aled2, (long)data.led1_aled1,
+                        (long)data.led2_aled2, (long)data.led1_aled1,  // REDFilt, IRFilt (placeholders)
+                        data.hr1_ppg,
+                        data.hr2_valid ? data.hr2 : -1.0f,
+                        data.spo2_r);
+                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+                    Serial.print(buf);
+                } else {
+                    char buf[128];
+                    int n = snprintf(buf, sizeof(buf) - 6,
+                        "$M2,%lu,%ld,%ld,%ld,%ld,%ld,%ld",
+                        (unsigned long)mow_sample_count,
+                        (long)data.led2, (long)data.led1,
+                        (long)data.aled2, (long)data.aled1,
+                        (long)data.led2_aled2, (long)data.led1_aled1);
+                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+                    Serial.print(buf);
+                }
+
+                // Periodic TX health report (~every 10 s at 500 Hz)
+                if (mow_sample_count % 5000 == 0)
+                    Serial_printf("# STAT n=%lu tx_dropped=%lu\n",
+                                  (unsigned long)mow_sample_count, (unsigned long)mow_tx_dropped);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.
@@ -181,7 +217,7 @@ void start_mow() {
     mow_sample_count = 0;
     mow.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN);
     mow.setFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
-    xTaskCreatePinnedToCore(Mow_Task, "MOW", 4096, NULL, 3, &g_mow_task, 1);
+    xTaskCreatePinnedToCore(Mow_Task, "MOW", 8192, NULL, 3, &g_mow_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
     g_active_lib = ActiveLib::MOW;
     Serial.println("# Switched to mow_afe4490");
 }
@@ -206,12 +242,20 @@ void Cmd_Task(void *pvParameters) {
                 stop_protocentral();
                 stop_mow();
                 vTaskDelay(pdMS_TO_TICKS(200));
+                g_mow_frame_mode = MowFrameMode::M1;
                 start_mow();
             } else if (cmd == 'p') {
                 stop_mow();
                 stop_protocentral();
                 vTaskDelay(pdMS_TO_TICKS(200));
+                g_mow_frame_mode = MowFrameMode::M1;
                 start_protocentral();
+            } else if (cmd == '1' && g_active_lib == ActiveLib::MOW) {
+                g_mow_frame_mode = MowFrameMode::M1;
+                Serial.println("# Frame mode: $M1 (full)");
+            } else if (cmd == '2' && g_active_lib == ActiveLib::MOW) {
+                g_mow_frame_mode = MowFrameMode::M2;
+                Serial.println("# Frame mode: $M2 (raw)");
             }
         }
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -220,7 +264,8 @@ void Cmd_Task(void *pvParameters) {
 
 // ── setup / loop ──────────────────────────────────────────────────────────────
 void setup() {
-    Serial.begin(115200);
+    Serial.setTxBufferSize(1024);  // enlarge USB-CDC TX buffer (default ~256) to reduce corruption at 500 Hz
+    Serial.begin(921600);
     SPI.begin(36, 37, 35, -1);  // CLK=36, MOSI=37, MISO=35, CS=-1 (managed per device).
                                 // Called here and not inside each library: SPI is a shared bus —
                                 // multiple devices can coexist via beginTransaction()/endTransaction().

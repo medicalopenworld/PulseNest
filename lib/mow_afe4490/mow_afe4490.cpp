@@ -14,7 +14,7 @@ namespace {
     constexpr float    spo2_warmup_s       = 5.0f;    // s  — warmup before reporting SpO2
     constexpr float    dc_iir_tau_s        = 1.6f;    // s  — DC IIR time constant
     constexpr float    ac_ema_tau_s        = 1.0f;    // s  — AC² EMA time constant
-    constexpr float    hr_refractory_s     = 0.300f;  // s  — HR refractory period (~200 bpm max)
+    constexpr float    hr_refractory_s     = 0.200f;  // s  — HR refractory period (~300 bpm max)
     constexpr float    hr1_dc_tau_s             = 1.6f;   // s  — HR1 DC removal IIR time constant
     constexpr uint32_t hr1_peak_marker_samples  = 10;    // samples — duration of hr1_ppg=0 marker after peak (survives serial downsampling)
 
@@ -40,8 +40,8 @@ namespace {
     constexpr float    spo2_min_dc         = 1000.0f; // ADC counts — no-finger threshold
 
     // ── HR ────────────────────────────────────────────────────────────────────
-    constexpr float    hr_min_bpm          =  40.0f;  // bpm
-    constexpr float    hr_max_bpm          = 240.0f;  // bpm
+    constexpr float    hr_min_bpm          =  30.0f;  // bpm
+    constexpr float    hr_max_bpm          = 250.0f;  // bpm
 
     // ── AFE4490 register addresses ────────────────────────────────────────────
     constexpr uint8_t REG_CONTROL0      = 0x00;
@@ -155,7 +155,7 @@ MOW_AFE4490::MOW_AFE4490()
     _hr1_ma_idx = 0; _hr1_ma_sum = 0.0f;
     memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
     memset(_hr2_buf, 0, sizeof(_hr2_buf));
-    _current_data = {0, 0.0f, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
     _recalc_rate_params();
 }
 
@@ -221,7 +221,9 @@ void MOW_AFE4490::setSampleRate(uint16_t hz) {
 
     _sample_rate_hz = hz;
 
-    // Recalculate NUMAV_max = floor(5000 / PRF) - 1, HW limit = 15
+    // Maximum averages = floor(T_conv_window / T_conv_min) = floor(PRP/4 / 50µs) where PRP (Pulse Repetition Period)
+    // With PRF 500 Hz then PRP is 2000 µs and max_averages = 10 (NUMAV = 9 = 10-1)
+    // Hardware field limit: NUMAV ≤ 15 (16 averages max, datasheet CONTROL1 bits [7:0])
     uint8_t numav_max = (uint8_t)((5000u / hz) - 1u);
     if (numav_max > 15) numav_max = 15;
 
@@ -416,7 +418,7 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr2_buf_idx = 0; _hr2_buf_count = 0;
     _hr2_decim_counter = 0; _hr2_update_counter = 0;
     memset(_hr2_buf, 0, sizeof(_hr2_buf));
-    _current_data = {0, 0.0f, 0.0f, 0.0f, false, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
@@ -481,9 +483,10 @@ void MOW_AFE4490::_chip_init() {
 void MOW_AFE4490::_apply_timing_regs() {
     // Datasheet Table 2 formulas, PRF = _sample_rate_hz
     // AFECLK = 4 MHz → 1 count = 0.25 µs
-    const uint32_t afeclk      = 4000000UL;
-    const uint32_t tia_margin  = 50;   // counts (12.5 µs)
-    const uint32_t adc_reset   = 3;    // counts (0.75 µs → -60 dB crosstalk)
+    const uint32_t afeclk          = 4000000UL;
+    const uint32_t tia_margin      = 50;   // counts (12.5 µs) — TIA settling after LED ON
+    const uint32_t ambient_margin  = 200;  // counts (50 µs) — LED OFF decay before ambient sampling
+    const uint32_t adc_reset       = 3;    // counts (0.75 µs → -60 dB crosstalk)
 
     uint32_t phase = afeclk / _sample_rate_hz;
     uint32_t prp   = phase - 1;
@@ -494,14 +497,14 @@ void MOW_AFE4490::_apply_timing_regs() {
     _write_reg(REG_LED2LEDENDC,  prp);           // t4
     _write_reg(REG_LED2STC,      3*q + tia_margin); // t1
     _write_reg(REG_LED2ENDC,     prp - 1);       // t2
-    _write_reg(REG_ALED2STC,     tia_margin);    // t5
-    _write_reg(REG_ALED2ENDC,    q - 2);         // t6
+    _write_reg(REG_ALED2STC,     ambient_margin);  // t5 — starts 50 µs after LED2 OFF
+    _write_reg(REG_ALED2ENDC,    q - 2);           // t6
     _write_reg(REG_LED1LEDSTC,   q);             // t9
     _write_reg(REG_LED1LEDENDC,  2*q - 1);       // t10
     _write_reg(REG_LED1STC,      q + tia_margin); // t7
     _write_reg(REG_LED1ENDC,     2*q - 2);       // t8
-    _write_reg(REG_ALED1STC,     2*q + tia_margin); // t11
-    _write_reg(REG_ALED1ENDC,    3*q - 2);       // t12
+    _write_reg(REG_ALED1STC,     2*q + ambient_margin); // t11 — starts 50 µs after LED1 OFF
+    _write_reg(REG_ALED1ENDC,    3*q - 2);              // t12
 
     // ADC reset pulses (3 counts at each phase boundary)
     _write_reg(REG_ADCRSTSTCT0,  0);             // t21

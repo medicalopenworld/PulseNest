@@ -1295,3 +1295,1027 @@ Lógica de validación actualizada en `_update_spo2()`:
 - spo2 > 103 → se descarta como inválido
 
 Motivación: errores numéricos del algoritmo pueden producir valores ligeramente por encima de 100%, que fisiológicamente son válidos.
+
+---
+
+## Sesión 28 — 2026-03-27
+
+### Tema: Reordenación de campos en AFE4490Data
+
+---
+
+**Pregunta:** ¿Por qué `spo2_valid` aparece después de `hr1` en el struct `AFE4490Data`?
+
+**Causa:** orden histórico de adición de campos, sin razón técnica de fondo.
+
+**Decisión:** reordenar para agrupar cada valor con su flag de validez:
+- `spo2` / `spo2_r` / `spo2_valid`
+- `hr1` / `hr1_valid`
+- `hr2` / `hr2_valid`
+
+**Ficheros modificados:**
+- `include/mow_afe4490.h` — struct `AFE4490Data`
+- `mow_afe4490_spec.md` — sección 2.1 Data struct
+
+---
+
+## Sesión 29 — 2026-03-31
+
+### Tema: Spec v0.8, roadmap de algoritmos HR, estrategia de test y env:native
+
+---
+
+**HR2 validado con simulador**
+
+HR2 visible en el plotter con valores coherentes con HR1. Marcado como completado en TODO.md.
+
+---
+
+**Spec actualizada a v0.8**
+
+Cambios aplicados a `mow_afe4490_spec.md`:
+- §1.1 y §1.3: diagramas de arquitectura actualizados con HR2
+- §2.1 struct: añadidos `hr2` / `hr2_valid`
+- §2.4 API: añadido `setHR2Filter()`
+- §5.2 HR1: documentación completa de la cadena de procesado (DC removal IIR, MA LP, running-max, threshold crossing, 5 intervalos RR, peak marker)
+- §5.2 nota: threshold crossing es implementación actual; mejora prevista es detección por derivada (máximo de la derivada = pendiente máxima ascendente)
+- §5.3 HR2: nueva sección con pipeline completo y tabla de constantes
+- §5.4 Roadmap HR: tabla con HR1–HR4 y estado de implementación
+- §8 historial: entrada v0.8
+
+---
+
+**Decisión de naming — algoritmos HR**
+
+Debate sobre si llamar HR1 "peak detection" o "threshold crossing / rising edge detection".
+
+**Decisión:** mantener "peak detection" porque es el objetivo del algoritmo; el threshold crossing es solo el mecanismo actual. HR4 será el "true peak detection" mediante derivada. Cambiar el nombre ahora y luego volver a cambiarlo no tiene sentido.
+
+---
+
+**Roadmap de algoritmos HR**
+
+Añadidos a TODO.md y a spec §5.4:
+- HR3: FFT
+- HR4: peak detection via derivada (máximo de la derivada = flanco de subida preciso)
+
+---
+
+**Protocentral descartada como referencia de validación**
+
+El usuario considera que la librería protocentral es de baja calidad algorítmica. No se usará como ground truth para comparar con mow_afe4490. Guardado en memoria.
+
+---
+
+**Estrategia de test — decisiones**
+
+Dos tareas de test priorizadas (añadidas a TODO.md):
+1. Tests unitarios en PC con PlatformIO `env:native` + Unity
+2. Dataset de referencia con simulador MS100 (golden CSV a SpO2/HR conocidos)
+
+La comparación mow vs protocentral descartada como tarea de test (protocentral de baja calidad).
+
+Se empieza por la tarea 1 (sin simulador disponible hoy).
+
+---
+
+**Configuración env:native + primer test**
+
+- `platformio.ini`: añadido `[env:native]` con `platform = native` y `test_framework = unity`
+- Creado `test/test_hello/test_hello.cpp`: test de sanidad `1+1==2`
+- Resultado: **PASSED** — entorno nativo operativo
+- Unity 2.6.1 instalado automáticamente por PlatformIO
+
+
+---
+
+## Sesión 30 — 2026-03-31
+
+### Tema: Setup de tests unitarios nativos (env:native + Unity) — en progreso
+
+---
+
+**Objetivo:** configurar PlatformIO env:native + Unity para tests unitarios de algoritmos sin ESP32.
+
+**Avances:**
+
+- `platformio.ini`: añadido `[env:native]` con `platform = native`, `test_framework = unity`, `build_flags = -DUNIT_TEST -I test/stubs -I include -I src`, `build_src_filter = +<mow_afe4490.cpp>`
+- Creados stubs mínimos en `test/stubs/` para que el código compile en PC:
+  - `Arduino.h` (tipos, IRAM_ATTR, GPIO stubs)
+  - `SPI.h` (SPIClass stub)
+  - `freertos/FreeRTOS.h`, `task.h`, `semphr.h`, `queue.h` (tipos y funciones vacías)
+  - `esp_log.h` (macros ESP_LOG* → printf)
+- `include/mow_afe4490.h`: añadido bloque `#ifdef UNIT_TEST` al final de la clase que expone `TestBiquadFilter`, `test_recalc_biquad()` y `test_biquad_process()` como public
+- Creado `test/test_biquad/test_biquad.cpp` con 5 tests del filtro biquad:
+  1. Frecuencia en banda pasa (~1.0 de amplitud)
+  2. DC bloqueado (~0 a la salida)
+  3. Alta frecuencia atenuada (100 Hz con cutoff 20 Hz)
+  4. Filtro HR2 (0.5–5 Hz) atenúa 20 Hz
+  5. Salida decae a cero con entrada cero
+
+**Problema encontrado:** PlatformIO native no compila `src/` automáticamente para tests. `mow_afe4490.cpp` no se enlaza → "undefined reference".
+
+**Solución propuesta (pendiente de confirmar):** mover la librería a `lib/mow_afe4490/` (PlatformIO descubre y enlaza automáticamente el contenido de `lib/` en todos los entornos). `src/main.cpp` queda solo en `src/` para el build ESP32.
+
+
+---
+
+## Sesión 31 — 2026-03-31
+
+### Tema: Tests unitarios nativos — librería a lib/, stubs completos, test_biquad 5/5 PASSED
+
+---
+
+**Reestructuración: librería movida a lib/**
+
+`mow_afe4490.h` y `mow_afe4490.cpp` movidos de `include/` y `src/` a `lib/mow_afe4490/`. PlatformIO descubre y enlaza automáticamente el contenido de `lib/` en todos los entornos (ESP32 y native). `src/main.cpp` queda en `src/` exclusivamente para el build ESP32.
+
+**platformio.ini** simplificado para native:
+```ini
+[env:native]
+platform = native
+test_framework = unity
+build_flags =
+    -DUNIT_TEST
+    -I test/stubs
+```
+
+---
+
+**Stubs completados**
+
+Añadidos a `test/stubs/Arduino.h`: `INPUT_PULLUP`, `digitalPinToInterrupt`, `constrain`, `IRAM_ATTR`.
+Añadido a `test/stubs/freertos/task.h`: `xTaskCreatePinnedToCore`.
+Añadido a `test/stubs/freertos/FreeRTOS.h`: `portYIELD_FROM_ISR`.
+
+---
+
+**Bug corregido: inicializador de AFE4490Data**
+
+En `mow_afe4490.cpp` (dos sitios: constructor y `_reset_algorithms()`), el inicializador del struct tenía `spo2_valid` y `hr1` intercambiados:
+
+```cpp
+// Antes (incorrecto — narrowing conversion float→bool):
+_current_data = {0, 0.0f, 0.0f, 0.0f, false, false, 0.0f, false, ...};
+// Después (correcto):
+_current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, ...};
+```
+
+El compilador ESP32 no detectaba el error (más permisivo con narrowing); el compilador GCC nativo sí lo rechaza.
+
+---
+
+**test_biquad — 5/5 PASSED**
+
+`test/test_biquad/test_biquad.cpp` con 5 tests del filtro Butterworth bandpass:
+1. Frecuencia en banda (5 Hz, 0.5–20 Hz) → amplitud ~1.0 ✓
+2. DC bloqueado → salida ~0 ✓
+3. Alta frecuencia atenuada (100 Hz, cutoff 20 Hz) → amplitud < 0.25 ✓
+4. Filtro HR2 (0.5–5 Hz) atenúa 20 Hz → amplitud < 0.30 ✓
+5. Salida decae a cero con entrada cero ✓
+
+Nota: umbrales de atenuación ajustados a la pendiente real de un filtro biquad de 2.º orden (~20 dB/década), no 40 dB/década.
+
+
+---
+
+## Sesión 32 — 2026-03-31
+
+### Tema: Tests unitarios HR1 — 4/4 PASSED
+
+---
+
+**Accesores de test añadidos al header (bloque UNIT_TEST)**
+
+`lib/mow_afe4490/mow_afe4490.h` — ampliado el bloque `#ifdef UNIT_TEST` con accesores para HR1 y HR2:
+- `test_feed_hr1(int32_t)` / `test_hr1()` / `test_hr1_valid()`
+- `test_feed_hr2(int32_t)` / `test_hr2()` / `test_hr2_valid()`
+
+---
+
+**test/test_hr1/test_hr1.cpp — 4/4 PASSED**
+
+1. `test_hr1_not_valid_too_soon` — tras 1 s (< 5 intervalos), `hr1_valid = false` ✓
+2. `test_hr1_60bpm` — seno 1 Hz → HR1 ≈ 60 BPM ± 5 ✓
+3. `test_hr1_120bpm` — seno 2 Hz → HR1 ≈ 120 BPM ± 5 ✓
+4. `test_hr1_flat_signal_invalid` — señal DC constante (sin pulsos) → `hr1_valid = false` ✓
+
+Señal de test: seno con DC offset (500000 + 50000 × sin), 6000 muestras a 500 Hz (12 s).
+
+
+---
+
+## Sesión 33 — 2026-03-31
+
+### Tema: Tests unitarios HR2 — 4/4 PASSED. Suite completa 14/14 PASSED.
+
+---
+
+**test/test_hr2/test_hr2.cpp — 4/4 PASSED**
+
+1. `test_hr2_not_valid_until_buffer_full` — antes de 2000 muestras raw (mitad del buffer), `hr2_valid = false` ✓
+2. `test_hr2_60bpm` — seno 1 Hz → HR2 ≈ 60 BPM ± 5 ✓
+3. `test_hr2_120bpm` — seno 2 Hz → HR2 ≈ 120 BPM ± 5 ✓
+4. `test_hr2_flat_signal_invalid` — señal DC constante → `hr2_valid = false` ✓
+
+Señal de test: 4000 + 1000 muestras raw (buffer completo + margen).
+
+---
+
+**Suite completa: 14/14 PASSED en 8 segundos**
+
+| Grupo       | Tests | Estado |
+|-------------|-------|--------|
+| test_biquad | 5     | PASSED |
+| test_hello  | 1     | PASSED |
+| test_hr1    | 4     | PASSED |
+| test_hr2    | 4     | PASSED |
+
+Comando: `pio test -e native`
+
+---
+
+**Estado tarea de test**
+
+Tarea 1 (tests unitarios env:native) completada para biquad, HR1 y HR2.
+Pendiente: tests de SpO2 (si se decide abordar).
+
+
+---
+
+## Sesión 34 — 2026-03-31
+
+### Tema: Tests unitarios SpO2 — 6/6 PASSED. Suite completa 20/20 PASSED.
+
+---
+
+**Accesor de test añadido al header**
+
+`lib/mow_afe4490/mow_afe4490.h` — bloque UNIT_TEST ampliado con:
+- `test_feed_spo2(ir_corr, red_corr)` / `test_spo2()` / `test_spo2_r()` / `test_spo2_valid()`
+
+---
+
+**test/test_spo2/test_spo2.cpp — 6/6 PASSED**
+
+Señal de test: senos duales IR+RED con DC=100000, frecuencia 1 Hz, amplitudes elegidas para producir R exacto.
+Derivación: R = a_red/a_ir (los factores √2 del RMS se cancelan).
+
+1. `test_spo2_not_valid_during_warmup` — tras 1000 muestras (2 s < warmup 5 s), `spo2_valid = false` ✓
+2. `test_spo2_no_finger_invalid` — DC=500 < spo2_min_dc=1000 → `spo2_valid = false` ✓
+3. `test_spo2_98_percent` — a_ir=10000, a_red=5538 → R≈0.554 → SpO2 ≈ 98% ± 2 ✓
+4. `test_spo2_90_percent` — a_ir=10000, a_red=8156 → R≈0.816 → SpO2 ≈ 90% ± 2 ✓
+5. `test_spo2_clamp_above_100` — a_red=4500 → R≈0.45 → SpO2_raw≈101.2 → clamped a 100.0 y válido ✓
+6. `test_spo2_too_high_invalid` — a_red=3000 → R≈0.30 → SpO2_raw≈105.8 > 103 → inválido ✓
+
+---
+
+**Suite completa: 20/20 PASSED en 10 segundos**
+
+| Grupo       | Tests |
+|-------------|-------|
+| test_biquad | 5     |
+| test_hello  | 1     |
+| test_hr1    | 4     |
+| test_hr2    | 4     |
+| test_spo2   | 6     |
+
+Tarea 1 de test (tests unitarios env:native) completada.
+
+
+---
+
+## Sesión 35 — 2026-03-31
+
+### Tema: Rango HR extendido a 30–250 BPM — spec v0.9
+
+---
+
+**Cambios en código fuente**
+
+`lib/mow_afe4490/mow_afe4490.cpp`:
+- `hr_min_bpm`: 40.0 → **30.0** BPM
+- `hr_max_bpm`: 240.0 → **250.0** BPM
+- `hr_refractory_s`: 0.300 → **0.200** s — motivo: 0.3 s bloqueaba pulsos >200 BPM; 0.2 s permite hasta ~300 BPM
+
+`lib/mow_afe4490/mow_afe4490.h`:
+- `hr2_acorr_max_lag`: 75 → **100** samples — motivo: 75 samples a 50 Hz = 1.5 s → 40 BPM mínimo; 100 samples = 2.0 s → 30 BPM mínimo
+
+**Spec actualizada a v0.9**
+
+`mow_afe4490_spec.md` — §5.2, §5.3 y §8 (historial) actualizados con los nuevos valores.
+
+**Tests: 20/20 PASSED** tras los cambios.
+
+
+---
+
+## Sesión 36 — 2026-03-31
+
+### Tema: Dataset golden MS100 — diseño, downsampling y prueba a 500 Hz
+
+---
+
+**Bug HR1/HR2 a 30 BPM**
+Detectado con simulador MS100: HR1 y HR2 no funcionan correctamente a 30 BPM. Añadido a TODO. Pendiente investigar causa.
+
+**build_src_filter en env:native**
+Añadido `build_src_filter = -<*>` al env native para excluir `src/` (main.cpp, protocentral) del build nativo. Solo se compila `lib/mow_afe4490/`.
+
+**Diseño del dataset golden**
+
+Contexto neonatal (IncuNest): HR normal 100–180 BPM, bradicardia severa desde 60 BPM.
+
+Matriz reducida (no completa — los puntos centrales aportan poco):
+- SpO2: 100%, 98%, 95%, 92%, 88%, 85%
+- HR: 40, 60, 100, 150, 180, 220, 240 BPM
+- 42 combinaciones × 20 s ≈ 14 minutos
+
+Parámetros del AFE4490 pendiente de documentar junto al dataset (pregunta aplazada).
+
+**Uso del dataset golden**
+Validación de integración (no regresión continua): cuando se modifica un algoritmo importante, se recaptura o se corre el CSV golden por un replay offline. No para cada cambio pequeño — para eso ya existen los tests unitarios.
+
+**Opción B elegida: replay nativo (C++)**
+Para el replay offline se usará `env:native` — un programa C++ que lee CSV de entrada, pasa las muestras por `mow_afe4490` real, y escribe CSV de salida. Ventaja: siempre valida el algoritmo exacto del firmware.
+
+**Problema detectado: downsampling**
+`SERIAL_DOWNSAMPLING_RATIO 10` → el CSV solo tiene 50 Hz (1 de cada 10 muestras). Insuficiente para replay a 500 Hz. Para el dataset golden hay que capturar a ratio 1 (500 Hz completo).
+
+**Prueba con SERIAL_DOWNSAMPLING_RATIO = 1**
+`src/main.cpp` cambiado a ratio 1, flasheado y plotter lanzado. Pendiente observar comportamiento del plotter a 500 Hz.
+
+
+---
+
+## Sesión 37 — 2026-03-31
+
+### Tema: Subida de baud rate a 921600 para captura del dataset golden a 500 Hz
+
+---
+
+**Motivación**
+
+Para el replay nativo (opción B) se necesita capturar las muestras RAW a 500 Hz. A 115200 bps solo caben ~100 tramas/s (trama ~120 chars). La solución es subir el baud rate.
+
+Alternativa descartada: replay a 50 Hz con `setSampleRate(50)` — rechazada porque cambiar la frecuencia de muestreo altera el comportamiento de los algoritmos.
+
+**Cambios aplicados**
+
+- `src/main.cpp`: `Serial.begin(115200)` → `Serial.begin(921600)`
+- `src/main.cpp`: `SERIAL_DOWNSAMPLING_RATIO 10` → `SERIAL_DOWNSAMPLING_RATIO 1`
+- `platformio.ini`: `monitor_speed = 115200` → `monitor_speed = 921600`
+- `ppg_plotter.py`: `BAUD = 115200` → `BAUD = 921600`
+
+**Estado**
+
+Firmware flasheado y plotter lanzado. Pendiente observar si el plotter puede gestionar 500 tramas/s a 921600 bps.
+
+
+
+---
+
+## Sesión 38 — 2026-03-31
+
+### Tema: Control de decimación en ppg_plotter.py
+
+---
+
+**Problema**
+
+A 921600 bps con SERIAL_DOWNSAMPLING_RATIO=1, el ESP32 envía 500 tramas/s. El plotter no era capaz de renderizar a esa frecuencia: los plots se refrescaban cada varios segundos.
+
+**Solución implementada**
+
+Añadido control de decimación en la ventana principal del plotter:
+
+- Sidebar: nueva sección "DECIMACIÓN" con un `QSpinBox` ("1 de cada N tramas"), rango 1–500, valor por defecto 10.
+- `update_data()`: el contador `_decim_counter` se incrementa en cada trama `$`-prefijada. Solo 1 de cada N tramas se procesa para consola y gráficas.
+- **File save (GUARDAR DATOS)** siempre guarda a tasa completa (500 Hz), independientemente del factor de decimación. Esto es esencial para la captura del dataset golden a 500 Hz.
+
+**Comportamiento resultante**
+
+- Factor 10 (defecto): consola y plots a ~50 Hz. Fichero CSV a 500 Hz.
+- Factor 1: todo a 500 Hz (sin decimación).
+- El factor es ajustable en caliente (sin reiniciar), cambiándolo con el spinbox.
+
+
+---
+
+## Sesión 39 — 2026-03-31
+
+### Tema: Botón GUARDAR RAW (500 Hz) en ppg_plotter.py
+
+---
+
+**Motivación**
+
+Se necesitaban dos modos de guardado independientes:
+- **GUARDAR DATOS** → guarda las tramas decimadas (lo que se ve en consola y plots, a ~50 Hz con decim=10)
+- **GUARDAR RAW (500 Hz)** → guarda todas las tramas antes del diezmado, a la tasa completa del ESP32
+
+**Cambios aplicados**
+
+- `__init__`: nuevos campos `is_saving_raw`, `save_file_raw`, `auto_save_raw_timer`
+- Sidebar: nuevo botón "GUARDAR RAW (500 Hz)" debajo de "GUARDAR DATOS"
+- `update_data()`: el `save_file_raw.write` se ejecuta **antes** del check de decimación (tasa plena); el `save_file.write` se ejecuta **después** (solo tramas no diezmadas)
+- `toggle_save_raw()`: abre/cierra `ppg_data_raw_<timestamp>.csv`; en modo pausado devuelve error (no hay tramas entrando)
+- `auto_stop_save_raw()`: Auto-Stop de 1000 s idéntico al del botón normal
+- `closeEvent()`: cierra también `save_file_raw` si estaba abierto
+
+**Nombres de fichero generados**
+
+- GUARDAR DATOS (decimado): `ppg_data_stream_<timestamp>.csv`
+- GUARDAR RAW (500 Hz): `ppg_data_raw_<timestamp>.csv`
+
+---
+
+## Sesión 40 — 2026-03-31
+
+### Tema: Thread dedicado para lectura serie en ppg_plotter.py
+
+---
+
+**Problema detectado**
+
+Al capturar a 500 Hz (SERIAL_DOWNSAMPLING_RATIO=1, 921600 baud) se perdían tramas. El `QTimer` de 20 ms disparaba `update_data()` en el hilo de la UI, y si el renderizado tardaba, el buffer serie se llenaba antes de que se leyera.
+
+**Solución implementada: producer/consumer con `threading` + `queue.Queue`**
+
+- Nuevo thread daemon `_serial_reader()`: solo hace `ser.readline()` + `queue.put()`, sin UI, sin decimación, sin ficheros. Al estar desacoplado de la UI, el buffer hardware nunca se queda sin drenar.
+- `update_data()` (QTimer 20 ms) drena la cola con `get_nowait()` en vez de leer directamente del puerto serie.
+- Flag `_new_data`: los plots solo se actualizan si al menos un frame fue parseado correctamente en ese tick.
+- Modo pausa: drena la cola (antes drenaba el buffer HW) para evitar acumulación de RAM.
+- `closeEvent()`: llama `_reader_stop.set()` + `_reader_thread.join(timeout=1.0)` antes de cerrar el puerto.
+
+**Cambios en `ppg_plotter.py`**
+
+- Imports: añadidos `import threading`, `import queue`
+- Tras `serial.Serial(...)`: crea `_serial_queue`, `_reader_stop`, arranca `_reader_thread`
+- Nuevo método `_serial_reader()`
+- `update_data()`: bloque paused y bucle principal reescritos para usar la cola
+- `closeEvent()`: parada ordenada del thread
+
+**Nota:** el GIL de Python no bloquea la I/O de pyserial — el thread lector libera el GIL durante `readline()`, por lo que no compite con la UI.
+
+---
+
+## Sesión 2026-04-02
+
+### Tema: Flash + arranque del plotter; bug de indentación en ppg_plotter.py
+
+---
+
+**Flujo ejecutado:** kill Python → `pio run` → `pio run -t upload --upload-port COM15` → `start pythonw ppg_plotter.py`
+Build y upload de `in3ator_V15` exitosos (10.9% Flash, 7.6% RAM). El entorno `native` falla por no tener src (esperado, es el entorno de tests unitarios).
+
+---
+
+**Bug corregido en ppg_plotter.py (línea 1594):**
+`_new_data = False` tenía indentación incorrecta dentro del bloque `try:`, causando `IndentationError: unindent does not match any outer indentation level`. El script no arrancaba silenciosamente al usar `pythonw`. Corregida la indentación al nivel correcto del `if hasattr(...)` siguiente.
+
+---
+
+## Sesión 2026-04-02 (continuación)
+
+### Tema: Reducción de trama serie a 3 campos — diagnóstico de pérdida de tramas
+
+---
+
+**Problema detectado:** usando PuTTY directamente sobre COM15 (921600 baud), el PC no recibía todas las tramas. Sospecha: la trama era demasiado larga y saturaba el puerto serie a 500 Hz.
+
+**Decisión:** reducir ambas tramas ($P1 y $M0) a solo los tres primeros campos: prefijo, contador de muestra y timestamp.
+
+**Cambio en `src/main.cpp`:**
+- Trama `$P1`: de 17 campos a 3 → `$P1,cnt,ts,ppg`
+- Trama `$M0`: de 17 campos a 3 → `$M0,cnt,ts,ppg`
+- Build: SUCCESS (10.9% Flash, 7.6% RAM)
+- Upload pendiente: PuTTY ocupaba COM15 al intentar flashear
+
+**Revertido:** tras flashear y verificar con PuTTY, se deshizo el cambio — ambas tramas ($P1 y $M0) restauradas a los 17 campos originales.
+
+---
+
+## Sesión 2026-04-02 (continuación 2)
+
+### Tema: Dos modos de trama serie para mow_afe4490
+
+---
+
+**Motivación:** con tramas cortas (3 campos) no se pierden muestras en PuTTY. Para captura de calibración/test se necesitan los 6 valores raw del AFE4490 sin perder tramas.
+
+**Decisión de diseño:**
+- `$M0` renombrado a `$M1` — trama completa (17 campos), modo por defecto al arrancar
+- Nueva trama `$M2` — 7 campos: `$M2,cnt,led2,led1,aled2,aled1,led2_aled2,led1_aled1`
+- Comando serie `'1'` → activa `$M1` (solo si lib activa es mow_afe4490)
+- Comando serie `'2'` → activa `$M2` (solo si lib activa es mow_afe4490)
+- Al cambiar de librería (`'m'`/`'p'`) → reset a `$M1`
+
+**Implementación en `src/main.cpp`:**
+- Añadido `enum class MowFrameMode { FULL, RAW }` y variable `g_mow_frame_mode`
+- `Mow_Task`: bifurcación según `g_mow_frame_mode` para emitir `$M1` o `$M2`
+- `Cmd_Task`: comandos `'1'` y `'2'` con confirmación por Serial; reset en `'m'` y `'p'`
+- Build y flash realizados con éxito
+
+---
+
+## Sesión 2026-04-02 (continuación 3)
+
+### Tema: Panel de log de estado en ppg_plotter.py
+
+---
+
+**Cambio en `ppg_plotter.py`:** sustituido el widget `QLabel` (`self.status_bar`) por un `QTextEdit` de solo lectura (`self.log_panel`) que actúa como log acumulativo.
+
+- Altura fija: 130px (~5 líneas visibles), fondo oscuro `#1A1A2E`, fuente monospace 13px
+- `set_status()` ya no sobreescribe — añade una línea con timestamp `[HH:MM:SS]`, icono (✔/⚠/✖/●) y color según tipo (success/warning/error/info)
+- Auto-scroll al final en cada nueva línea
+- `datetime.datetime.now()` usado correctamente (módulo importado como `import datetime`)
+
+---
+
+## Sesión 2026-04-02 (continuación 4)
+
+### Tema: Control de frame mode ($M1/$M2) en ppg_plotter.py
+
+---
+
+**Cambios en `ppg_plotter.py`:**
+
+- Nueva sección "FRAME MODE" en sidebar con botones `$M1 FULL` y `$M2 RAW`
+  - Botón activo en azul (`#44AAFF`), inactivo en gris; deshabilitados si lib activa es PROTOCENTRAL
+  - `_send_frame_cmd(mode)`: envía `'1'`/`'2'` al ESP32, actualiza `self.frame_mode`, refresca UI
+  - `_update_frame_button()`: sincroniza estilos según `active_lib` y `frame_mode`
+  - `_update_lib_button()` llama a `_update_frame_button()` si los botones ya existen
+
+- Al recibir confirmación `#` del ESP32 al cambiar de librería: `frame_mode` se resetea a `"M1"` automáticamente
+- Mensajes `# Frame mode: ...` del ESP32 se muestran en el log de estado
+
+- Parser extendido para trama `$M2` (8 partes: prefijo + 7 campos):
+  - `$M2,cnt,led2(RED),led1(IR),aled2(AmbRED),aled1(AmbIR),led2_aled2(REDSub),led1_aled1(IRSub)`
+  - Campos no disponibles en M2 se rellenan con `0.0` / `-1.0` para no romper las gráficas
+
+---
+
+## Sesión 2026-04-02 (continuación 5)
+
+### Tema: Ajuste visual del log_panel
+
+---
+
+- `log_panel`: altura aumentada 130 → 180px, fuente 13 → 16px
+
+---
+
+## Sesión 2026-04-02 (continuación 6)
+
+### Tema: Curvas por defecto al arrancar
+
+---
+
+- `check_red_sub` y `check_ir_sub` arrancaban en `False` → cambiados a `True`
+- Al iniciar el script, las gráficas `RED (clean)` e `IR (clean)` ya están visibles por defecto
+- `RED (filt)` e `IR (filt)` cambiadas a `False` — ocultas por defecto
+
+---
+
+## Sesión 2026-04-02 (continuación 7)
+
+### Tema: Rizado en señales ambient — corrección de temporización ALED
+
+---
+
+**Diagnóstico:** las señales `aled1`/`aled2` mostraban rizado sincronizado con la señal PPG. Causa: `ALED2STC`/`ALED1STC` arrancaban solo 50 counts (12.5 µs) después del apagado del LED — insuficiente para que el LED se extinga completamente antes de muestrear el ambient.
+
+**Decisión:** añadir `ambient_margin = 200` counts (50 µs) separado de `tia_margin` (que es para el encendido), y aplicarlo a `ALED2STC` y `ALED1STC`.
+
+**Cambios en `lib/mow_afe4490/mow_afe4490.cpp`:**
+- Nueva constante `ambient_margin = 200` counts (50 µs)
+- `ALED2STC`: 50 → 200 (t5)
+- `ALED1STC`: 2*q+50 → 2*q+200 (t11)
+- Ventana ambient se acorta 150 counts (37.5 µs) por el lado inicial; sigue siendo ~450 µs
+
+**`mow_afe4490_spec.md` actualizado:** tabla de registros de timing corregida para ALED2STC y ALED1STC.
+
+---
+
+## Sesión 2026-04-02 (continuación 8)
+
+### Tema: Rizado persistent en ambient — subida de ambient_margin a 400 counts
+
+---
+
+**Observación:** con `ambient_margin = 200` (50 µs) el rizado en `aled1`/`aled2` persistía con amplitud ~1500 counts pk-pk, sincronizado con la señal LED. Hipótesis: crosstalk óptico/eléctrico (no timing).
+
+**Acción:** subido `ambient_margin` a 400 counts (100 µs) para confirmar o descartar la causa de timing. Si el rizado no varía → es crosstalk → siguiente paso: cancelación software.
+
+**Resultado con 400 counts:** rizado bajó de ~1500 a ~750 counts pk-pk. Parecía timing.
+**Resultado con 600 counts:** rizado volvió a 1500 counts — la bajada anterior probablemente fue variación de condiciones, no timing.
+**Conclusión definitiva:** el rizado en ambient es crosstalk óptico/eléctrico, no timing.
+
+**Caracterización del crosstalk:**
+- Señal RED pk-pk: ~30.000 counts → k_RED = 1500/30000 = **5%**
+- Señal IR pk-pk: ~15.000 counts → k_IR = 1500/15000 = **10%**
+- Relevante para SpO2 → pendiente cancelación software
+
+**Revertido a 200 counts (50 µs):** mayor margin no aporta nada y acorta la ventana ambient.
+- `lib/mow_afe4490/mow_afe4490.cpp`: `ambient_margin` → 200
+- `mow_afe4490_spec.md`: ALED2STC → 200, ALED1STC → 4200
+
+---
+
+## Sesión 2026-04-04
+
+### Tema: Documentación NUMAV, parámetros AFE4490, tareas pendientes
+
+---
+
+**Parámetros AFE4490 actuales (por defecto):**
+- LED RED/IR: 11,7 mA, rango 150 mA
+- TIA: RF_500K (500 kΩ), CF_5P (5 pF), stage2 = 0 dB
+- Sample rate: 500 Hz, NUMAV: 8 (registro = 7)
+
+**Aclaración NUMAV:** campo de 8 bits en CONTROL1, máximo registro = 15 (16 averages). A 500 Hz el límite real es 10 averages (ventana conversión ~500 µs ÷ 50 µs/conversión), NUMAV registro máximo = 9. Valor actual (8) dentro del límite con margen.
+
+**Mejora documentación `mow_afe4490.cpp` línea 224:** comentario reescrito siguiendo el formato propuesto por el usuario — referencia explícita a PRP/4, ejemplo a 500 Hz (max_averages=10, NUMAV=9), y límite hardware NUMAV≤15.
+
+**Tareas pendientes actualizadas:**
+1. Validación SpO2 con simulador MS100 *(en curso)*
+2. Cancelación software crosstalk ambient (k_RED≈5%, k_IR≈10%)
+3. Detección de asístole y otros eventos
+4. Eliminar filtro moving average si no se usa
+5. Tests unitarios
+6. Integración en IncuNest
+7. Detección de luz ambiental excesiva (sensor mal colocado) — umbral sobre ALED1/ALED2
+
+
+---
+
+## Sesión 2026-04-05
+
+### Tema: Análisis de trazas $M2, refactor MowFrameMode
+
+---
+
+**Análisis de trazas $M2 — intervalos temporales:**
+- Formato $M2: `$M2, SmpCnt, RED, IR, AmbRED, AmbIR, REDSub, IRSub` (sin Ts_us)
+- El segundo campo de la consola (`Df_us`) es el delta de tiempo en µs entre tramas consecutivas medido en el PC
+- Saltos de SmpCnt consistentes de 10: causados por la decimación de display del script (`spin_decim.setValue(10)` por defecto) — el firmware con `SERIAL_DOWNSAMPLING_RATIO=1` envía todas las muestras, pero la consola Qt muestra solo 1 de cada 10
+- Gaps irregulares (59, 21) sí son drops reales del firmware o del buffer serie
+- Patrón de llegada en pares + silencio de ~40-50 ms: comportamiento normal del QTimer drenando el buffer en ráfagas
+
+**Refactor `MowFrameMode` en `main.cpp`:**
+- Renombrado `MowFrameMode::FULL` → `MowFrameMode::M1` y `MowFrameMode::RAW` → `MowFrameMode::M2`
+- Motivación: los nombres semánticos FULL/RAW son una capa de indirección innecesaria; M1/M2 corresponden directamente al identificador de protocolo y son más extensibles (futuro M3)
+- Todos los usos actualizados: enum, variable global, `Cmd_Task`, `Mow_Task`
+
+### Tema: Check temporal resta ambiente (CHK_AMB_SUB)
+
+**Hipótesis a verificar:** `led1_aled1` y `led2_aled2` (valores restados por hardware del AFE4490) son exactamente iguales a `led1 - aled1` y `led2 - aled2` calculados por software a partir de los registros individuales.
+
+**Implementación:** bloque `#ifdef CHK_AMB_SUB` en `main.cpp`, antes de `Mow_Task`:
+- Función `chk_amb_sub()` acumula estadísticas por muestra: conteo total, mismatches, máxima diferencia en IR y RED
+- Reporta una línea `# CHK n=... mis=... max_d_ir=... max_d_red=...` cada 500 muestras (~1 s)
+- Para eliminar: comentar `#define CHK_AMB_SUB` y recompilar
+
+**Motivación:** la resta hardware ocurre en el dominio analógico (antes del ADC), por lo que el resultado puede diferir de la resta digital de los registros individuales. Si `mis` es siempre 0 y `max_d` es 0, los valores son idénticos y `led1_aled1`/`led2_aled2` son redundantes con la resta software.
+
+### Tema: Resultado CHK_AMB_SUB y coste de campos redundantes en M2
+
+**Resultado del check:** `led1_aled1` y `led2_aled2` son siempre idénticos bit a bit a `led1 - aled1` y `led2 - aled2`. La resta en el AFE4490 se hace en dominio digital (no analógico). TI los incluye por conveniencia SPI (leer 2 registros en vez de 4 cuando solo se necesita la señal corregida).
+
+**Coste identificado:** incluir REDSub/IRSub en M2 añade ~15 chars/trama → ~75 kbps extra a 500 Hz. Eliminarlos de M2 permitiría bajar de 921600 a 230400 baud (el script puede calcularlos como RED-AmbRED / IR-AmbIR). Pendiente decidir si se hace el cambio.
+
+**CHK_AMB_SUB desactivado:** `#define CHK_AMB_SUB` comentado en `main.cpp` línea 137. El bloque de código queda en el fichero por si se necesita en el futuro.
+
+---
+
+## Sesión 2026-04-06
+
+### Tema: Revisión de algoritmos HR y diseño de HR3 (FFT)
+
+---
+
+**Revisión de algoritmos HR implementados:**
+
+- **HR1** (línea 783 `mow_afe4490.cpp`): IIR DC removal (tau=1.6s) → MA low-pass 5 Hz → detección de cruce de umbral en flanco ascendente (0.6 × running_max) + refractario 300 ms → media de 5 intervalos RR
+- **HR2** (línea 854): biquad BPF 0.5–5 Hz → decimación ×10 → buffer circular 400 muestras → autocorrelación normalizada cada 0.5 s → primer máximo local ≥ 0.5 + interpolación parabólica
+
+**Observación sobre HR1 — no es detección de pico sino cruce de umbral:**
+
+El disparo de HR1 ocurre cuando la señal cruza `0.6 × running_max` en el flanco de subida, no en el máximo real de la onda PPG. Consecuencia: el timing del disparo depende de la amplitud (perfusión variable → jitter sistemático en el intervalo RR medido). Un verdadero pico requeriría detectar el cruce por cero descendente de la derivada (`d/dt(PPG) = 0` con `d²/dt² < 0`). Pendiente en TODO.md, no se implementa en esta sesión.
+
+**Nuevo algoritmo HR3 — diseño preliminar (pendiente decisiones):**
+
+Algoritmo basado en FFT. Parámetros propuestos:
+- Señal de entrada: `led1_aled1` (igual que HR1/HR2)
+- Decimación ÷10 → 50 Hz (igual que HR2)
+- Buffer: 512 muestras decimadas = 10.24 s → resolución ≈ 0.098 Hz ≈ 5.9 BPM
+- Ventana: Hann
+- Update: cada 0.5 s, buffer circular (ventana deslizante)
+- Búsqueda de pico dominante en [0.5, 3.5 Hz] = [30, 210 BPM] + interpolación parabólica sub-bin
+
+**Decisiones pendientes para HR3:**
+1. Librería FFT: `arduinoFFT` vs `ESP-DSP` (Espressif, optimizada para ESP32-S3)
+2. Tamaño de buffer: 512 (5.9 BPM res.) vs 256 (11.7 BPM res., menor RAM)
+3. ¿Prototipo Python primero (como se hizo con HR2/autocorr_v2) antes de portar al firmware?
+
+---
+
+## Sesión 2026-04-06
+
+### Tema: Baudios, headers CSV y tarea pendiente de precisión temporal
+
+---
+
+**¿Tener baudios altos tiene inconvenientes?**
+No en este contexto. La conexión es USB-CDC (no RS232 físico); el baud rate 921600 es virtual y no afecta a la velocidad real del cable USB. Solo sería relevante con adaptadores UART físicos de baja calidad o cables largos. Conclusión: no hace falta bajar de 921600.
+
+---
+
+**Bug corregido — headers CSV erróneos en `ppg_plotter.py`**
+
+*Problema 1:* los botones GUARDAR DATOS y GUARDAR RAW siempre escribían el header de M1, aunque `frame_mode` fuera M2.
+
+*Problema 2:* el header de M1/P1 tenía `PPG,HR1,SpO2` pero la trama firmware tiene `PPG,SpO2,HR1` (campos intercambiados).
+
+**Corrección (líneas 1569 y 1604):** header elegido en función de `self.frame_mode` al abrir el fichero:
+- M2: `Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub`
+- M1/P1: `Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R`
+
+El snap (paused) no se modificó — es internamente consistente (escribe campo a campo desde los arrays).
+
+Limitación conocida: si se cambia de M1 a M2 mientras se graba, el header queda desfasado.
+
+---
+
+**Nueva tarea añadida a TODO.md (backlog):**
+- Comprobar precisión temporal del muestreo (500 Hz) por si afecta a las medidas HR (jitter/deriva del timer).
+
+
+---
+
+## Sesión 2026-04-06 (continuación)
+
+### Tema: Diagnóstico de tramas cortadas — checksum NMEA + diagnóstico TX
+
+---
+
+**Análisis del CSV `ppg_data_raw_20260405_003154.csv`:**
+- 5 tramas malformadas confirmadas (campos 6-14 en lugar de 10): truncadas en el campo IR (led1) y una fusionada (dos tramas en un solo readline).
+- Tras cada trama malformada, gap de 260–440 frames consecutivos.
+- El Diff_us_PC tras el gap es ~300µs → los frames llegaban al PC pero no se guardaban/procesaban.
+- Causa raíz probable: bytes descartados por el stack USB-CDC cuando el buffer TX del ESP32 se satura; readline() con timeout=0.1s devuelve trama parcial.
+
+**Cambios en `main.cpp`:**
+- Nueva función helper `frame_xor_chk()` — XOR NMEA de bytes entre '$' y '*'.
+- Contador `mow_tx_dropped` — frames intentados con TX buffer < 30 bytes libres.
+- **M1, M2, P1:** refactorizados de múltiples `Serial.print()` a un único `snprintf` + `Serial.print(buf)` → envío atómico (elimina corte entre prints).
+- Checksum `*XX\r\n` añadido al final de cada trama (estilo NMEA).
+- `# STAT n=... tx_dropped=...` cada 5000 muestras (~10 s a 500 Hz).
+- Primera versión tenía umbral tx_dropped=200 (siempre disparaba con buffer de 256 B) → corregido a 30.
+
+**Cambios en `ppg_plotter.py`:**
+- Verificación checksum NMEA antes de procesar cualquier trama '$'.
+- Tramas con checksum incorrecto → `# BAD CHK (got XX exp YY): ...` en consola + descartadas.
+- `*XX` eliminado de `line` antes de crear `csv_line` → CSVs sin checksum.
+- Reordenado flujo `update_data()`: check '$' y checksum ANTES de crear csv_line.
+
+**Resultado con primer firmware:**
+- BAD CHK detectados correctamente (bytes faltando mid-frame, no solo truncamiento al final).
+- `tx_dropped=30000` para n=30000 → umbral incorrecto (corregido a 30).
+- Ejemplo BAD CHK revelador: `$M1,27679,571,...` — Ts_us debería ser ~57173338 pero llegó truncado a 571 → bytes descartados dentro de la trama.
+- Pendiente: confirmar tx_dropped con umbral 30 en la siguiente sesión.
+
+
+---
+
+## Sesión 2026-04-06 (continuación 2)
+
+### Tema: Parámetro --save-chk para diagnóstico autónomo de tramas
+
+---
+
+**Motivación:** necesidad de que Claude pueda analizar directamente los CSVs de diagnóstico sin intervención manual del usuario.
+
+**Cambios en `ppg_plotter.py`:**
+- `PPGMonitor.__init__(save_chk=False)` — nuevo parámetro.
+- `--save-chk` como argumento de línea de comandos (argparse en `__main__`).
+- Cuando activo: abre automáticamente `ppg_chk_<timestamp>.csv` con header `Timestamp_PC,Diff_us_PC,CHK_OK,RawFrame`.
+- Escribe TODAS las tramas '$' incluyendo el `*XX` (antes de stripping), con `CHK_OK=1` (válida) o `CHK_OK=0` (checksum fallido).
+- Frames sin checksum (firmware antiguo) también se guardan con `CHK_OK=1`.
+- Fichero line-buffered (`buffering=1`) — no se pierden datos si el script se cierra.
+- `closeEvent()` cierra el fichero correctamente.
+
+**Pendiente:** analizar el fichero `ppg_chk_*.csv` generado para confirmar patrón de BAD CHK y correlacionar con SmpCnt gaps.
+
+
+---
+
+## Sesión 2026-04-06 (continuación 3)
+
+### Tema: Auto-cierre del fichero CHK para análisis autónomo por Claude
+
+---
+
+**Motivación:** que Claude pueda lanzar el script, esperar N segundos, y analizar el fichero sin depender del usuario.
+
+**Cambios en `ppg_plotter.py`:**
+- `PPGMonitor.__init__(save_chk_duration=15)` — nuevo parámetro.
+- `--save-chk-duration N` como argumento de línea de comandos (default 15s).
+- `_auto_close_chk()`: cierra el fichero CHK, imprime `[save-chk] DONE: <filename>` por stdout y llama a `QApplication.quit()`.
+- QTimer singleShot activa `_auto_close_chk` tras N segundos si `save_chk=True` y `save_chk_duration > 0`.
+
+**Flujo de uso autónomo:**
+```
+python ppg_plotter.py --save-chk --save-chk-duration 20
+→ script corre 20s, cierra fichero, sale
+→ Claude lee stdout para obtener el nombre del fichero
+→ Claude lee y analiza ppg_chk_*.csv directamente
+```
+
+**Pendiente:** verificar que el script se cierra correctamente y analizar el contenido del primer fichero CHK generado.
+
+
+---
+
+## Sesión 2026-04-06 (continuación 4)
+
+### Tema: Análisis del fichero ppg_chk — diagnóstico de corrupción USB-CDC
+
+---
+
+**Fix segfault en _auto_close_chk:** `QApplication.quit()` directo desde callback de timer causa segfault durante cleanup Qt. Corregido a `QtCore.QTimer.singleShot(0, QApplication.instance().quit)` (quit diferido al siguiente ciclo del event loop).
+
+**Análisis de ppg_chk_20260406_231914.csv (20 segundos, 3218 tramas):**
+- BAD CHK: 51/3218 = 1.58% de tramas corruptas
+- Tramas sin checksum: 35 (posiblemente de inicio de sesión o firmware antiguo)
+
+**Tipos de corrupción identificados:**
+1. Truncación mid-field: trama cortada en mitad de un campo numérico
+2. Fusión de 2 tramas: `...-$M1,...` — el `\n` entre tramas se perdió
+3. Dígitos concatenados: `96.56102` en lugar de `96.56,102` — la coma fue eliminada
+4. Byte corrupto: `$M8` en lugar de `$M1` — bit flip 0x31→0x38, no es solo eliminación
+5. SmpCnt/Ts_us truncados a 1-2 dígitos
+
+**Conclusión:** el `snprintf` + `Serial.print()` atómico NO eliminó el problema. La corrupción ocurre en el stack USB-CDC del ESP32, no entre llamadas a print(). El caso `$M8` (bit flip) confirma que es corrupción de datos, no solo truncamiento.
+
+**Hipótesis:** contención entre `Mow_Task` (prioridad 3, core 1) y el driver USB-CDC del ESP32. Posibles vías de investigación: aumentar stack de Mow_Task (4096→8192), ajustar prioridad, o usar UART física en lugar de USB-CDC.
+
+**Pendiente:** decidir si investigar la corrupción USB-CDC o aceptarla como conocida (el checksum ya la filtra).
+
+
+---
+
+## Sesión 2026-04-06 (continuación 5)
+
+### Tema: Investigación corrupción USB-CDC — stack y core affinity
+
+---
+
+**Hipótesis:** corrupción de bytes (incluido bit flip $M1→$M8) causada por contención entre Mow_Task y el driver USB-CDC del ESP32-S3, que corre en core 1.
+
+**Cambios en `main.cpp`:**
+- `Mow_Task`: stack 4096 → 8192 bytes (el buf[256] + snprintf + llamadas USB pueden agotar el stack anterior).
+- `Mow_Task`: core 1 → core 0 (separa la tarea de transmisión serie del driver USB-CDC que usa core 1 en ESP32-S3).
+
+**Test en curso:** `python ppg_plotter.py --save-chk --save-chk-duration 20` para comparar tasa de BAD CHK con el firmware anterior (baseline: 1.58%).
+
+**Pendiente:** analizar resultado del test y decidir siguiente paso.
+
+
+---
+
+## Sesión 2026-04-06 (continuación 6)
+
+### Tema: Opción B — Serial.setTxBufferSize(1024)
+
+---
+
+**Resultado del test anterior (core 0 + stack 8192):** 1.402% BAD CHK — sin mejora significativa respecto al baseline 1.58%. La corrupción es estructural en el driver USB-CDC.
+
+**Cambio en `main.cpp`:**
+- `Serial.setTxBufferSize(1024)` antes de `Serial.begin(921600)` — buffer TX de ~256 a 1024 bytes.
+
+**Opinión:** puede reducir frecuencia de saturación pero no eliminará bit flips. Si baja de 1.5% a <0.3% → mejora útil. Si se mantiene en ~1.5% → confirma race condition en driver, no saturación de buffer.
+
+**Test en curso:** save-chk 20s para medir nueva tasa.
+**Pendiente:** analizar resultado y decidir si se acepta la tasa residual o se investiga opción D (UART física).
+
+---
+
+## Sesión 2026-04-06 (continuación 7)
+
+### Tema: Algoritmos HR existentes, revisión HR1, diseño e implementación prototipo HR3 (FFT)
+
+---
+
+**Revisión de algoritmos HR implementados:**
+
+- **HR1** (`_update_hr1`, línea 783 `mow_afe4490.cpp`): IIR DC removal (tau=1.6s) → MA low-pass 5 Hz → detección de cruce de umbral en flanco ascendente (0.6 × running_max) + refractario 300 ms → media de 5 intervalos RR. Salida: `hr1`, `hr1_valid`, `hr1_ppg`.
+- **HR2** (`_update_hr2`, línea 854): biquad BPF 0.5–5 Hz → decimación ×10 → buffer circular 400 muestras → autocorrelación normalizada cada 0.5 s → primer máximo local ≥ 0.5 + interpolación parabólica. Salida: `hr2`, `hr2_valid`.
+
+**Observación sobre HR1 — cruce de umbral, no pico real:**
+HR1 no detecta el máximo de la onda PPG sino el cruce por `0.6 × running_max` en el flanco ascendente. El timing del disparo depende de la amplitud → jitter sistemático en RR cuando la perfusión cambia. Un pico real requeriría `d/dt(PPG) = 0` con `d²/dt² < 0` (cruce por cero descendente de la derivada). Pendiente en TODO.md, no implementado en esta sesión.
+
+**HR3 (FFT) — decisiones de diseño:**
+- Señal entrada: `led1_aled1` (= IRSub en trama M1)
+- Filtro pre-FFT: biquad LP 10 Hz dedicado (opción B, independiente de HR2). Preserva armónicos PPG hasta ~10 Hz; la FFT selecciona el rango internamente. No decima: la señal llega al script a 50 Hz (SPO2_RECEIVED_FS).
+- Buffer: 512 muestras @ 50 Hz = 10.24 s → resolución frecuencial ≈ 0.098 Hz ≈ 5.9 BPM
+- Ventana: Hann
+- Update: cada 0.5 s (25 muestras nuevas → 95% solapamiento). Parámetro configurable.
+- Búsqueda: pico dominante en [0.5, 3.5 Hz] = [30, 210 BPM] + interpolación parabólica sub-bin
+- Librería firmware: ESP-DSP (Espressif, optimizada para ESP32-S3)
+- Tarea pendiente: analizar carga computacional de HR1 + HR2 + HR3 en ESP32-S3
+
+**Aclaración "Update cada 0.5 s":** FFT se computa sobre las 512 muestras del buffer completo (ventana deslizante). El intervalo de 0.5 s es con qué frecuencia se recalcula, no el tamaño de la ventana.
+
+**Prototipo Python implementado (`ppg_plotter.py`):**
+- Clase `HRFFTCalc` añadida (top-level junto a `SpO2LocalCalc`)
+  - `update(led1_aled1, fs)` → `(hr_bpm, hr_valid)`
+  - Pipeline: butter LP 10 Hz (scipy) → buffer circular 512 → `np.roll` → Hann → `np.fft.rfft` → `signal.find_peaks` en banda HR → interpolación parabólica (misma fórmula que `_estimate_hr_autocorr_v2`)
+- `data_hr3` deque + `hr3_calc = HRFFTCalc()` en `PPGMonitor`
+- `curve_hr3` en `p_hr` (cyan `#00CCFF`, 1.5px)
+- Loop M1: `hr3_calc.update(p[10], SPO2_RECEIVED_FS)` (p[10]=IRSub=led1_aled1); M2: append -1.0
+- Título `p_hr` actualizado: HR1 (amarillo) + HR2 (rojo) + HR3 (cyan)
+
+---
+
+## Sesión 2026-04-07
+
+### Tema: HR3LabWindow — ventana de diagnóstico FFT; tarea fiabilidad HR
+
+---
+
+**`HRFFTCalc` — nuevos atributos diagnósticos:**
+- `last_spectrum`: espectro FFT normalizado al máximo de la banda HR (0–1)
+- `last_freqs`: eje de frecuencias (Hz)
+- `last_peak_freq`: frecuencia del pico detectado (Hz, tras interpolación parabólica)
+- `last_peak_power_ratio`: fracción de potencia en banda HR concentrada en el pico (0–1); métrica de fiabilidad provisional de HR3
+- `last_filtered_buf`: 512 muestras LP-filtradas ordenadas (antes de ventana Hann)
+Inicializados en `__init__` y `_recalc_params`; actualizados en `update()` en cada ciclo FFT.
+
+**`HR3LabWindow` — reemplaza `HRLab2Window` (era placeholder 3×3):**
+- Botón: "HRLAB2" → "HR3LAB"
+- Layout: splitter horizontal (izquierda ancho / derecha 2 plots apilados) + barra de info inferior
+- **Plot FFT** (izquierda): espectro normalizado, banda [0.5–3.5 Hz] sombreada, línea cyan sólida en pico, líneas discontinuas en 2× y 3× (armónicos para verificar fundamental)
+- **Plot señal filtrada** (derecha arriba, verde claro): últimas 512 muestras LP-filtradas que entran al FFT
+- **Plot comparativa HR** (derecha abajo): HR1 amarillo + HR2 rojo + HR3 cyan sobre mismo eje temporal
+- **Barra inferior**: parámetros del algoritmo (LP, BUF, ventana, update, banda) + diagnóstico en tiempo real (freq_res BPM/bin, peak Hz/BPM, power_ratio %, buf fill %)
+- `update_plots(data_hr1, data_hr2, data_hr3, calc)` llamado desde loop principal
+
+**TODO.md actualizado:**
+- `HRLab2Window` marcado `[x]` como completado → `HR3LabWindow`
+- Nueva tarea: **Fiabilidad (confidence) de HR1/HR2/HR3** — valor porcentual por algoritmo:
+  - HR1: CV inverso de los 5 intervalos RR
+  - HR2: `peak_val` autocorrelación (ya disponible, 0–1)
+  - HR3: `peak_power_ratio` (ya disponible en `HRFFTCalc`)
+
+**Ventana por defecto al arrancar:** cambiado `_open_spo2lab_default` → `_open_hrlab2_default` en `showEvent` de `PPGMonitor`. Ahora HR3LAB se abre automáticamente en lugar de SPO2LAB.
+
+**Botón "PAUSE MAIN WINDOW":**
+- Renombrado de "PAUSAR GRÁFICAS" → "PAUSE MAIN WINDOW" / "RESUME MAIN WINDOW"
+- La pausa ahora congela también la consola de tramas (además de las gráficas): `console.appendPlainText` condicionado a `not is_plot_paused`
+- PAUSE MAIN WINDOW congela también HR3LAB (la llamada a `update_plots` está dentro del mismo bloque `not is_plot_paused`)
+
+**Renombrado hrlab2 → hr3lab:**
+- Todas las referencias `hrlab2` renombradas a `hr3lab` en `ppg_plotter.py`: `btn_hr3lab`, `hr3lab_window`, `toggle_hr3lab`, `_open_hr3lab_default`
+
+**PAUSE MAIN WINDOW — scope acotado a ventana principal:**
+- Las llamadas `update_plots` de sub-ventanas (HRLAB, SPO2LAB, HR3LAB) movidas fuera del bloque `not is_plot_paused` a un bloque `if _new_data:` independiente
+- Resultado: PAUSE MAIN WINDOW congela solo plots + consola de la ventana principal; HR3LAB, SPO2LAB y HRLAB siguen actualizándose
+
+**Fix kill script — wmic + pythonw:**
+- `taskkill /F` no funciona desde bash (convierte `/F` en ruta `F:/`); `Stop-Process -Name python` tampoco porque el proceso es `pythonw.exe`
+- Solución definitiva: `wmic process where "name='pythonw.exe'" delete`
+- Lanzamiento con `pythonw.exe` en lugar de `python.exe` para evitar la ventana de consola negra
+
+**Fix HR3LAB — batch console update:**
+- Causa del problema: `appendPlainText` + operaciones de scroll se ejecutaban para CADA muestra dentro del `while True:` de drenado de cola (50 veces/s). Qt es lento con estas operaciones, ralentizando el loop completo y haciendo que `hr3_calc.update()` recibiera muestras de forma irregular.
+- Solución: acumular líneas en `_console_lines` durante el while loop (sin ninguna operación Qt) y hacer un único `appendPlainText('\n'.join(...))` + scroll al salir del loop.
+- Resultado: el inner loop es puro Python/numpy sin overhead Qt; HR3LAB recibe muestras correctamente independientemente del estado de PAUSE MAIN WINDOW.
+
+**Métrica de fiabilidad HR3 — harmonic_ratio (sustituye a power_ratio):**
+- Motivación: la señal PPG no es sinusoidal — tiene armónicos significativos en 2·f₀, 3·f₀. El `power_ratio` anterior medía solo el bin fundamental, dando valores bajos incluso para señales limpias.
+- Nueva métrica `harmonic_ratio`:
+  - Numerador: potencia en f₀ ± 1 bin + 2·f₀ ± 1 bin + 3·f₀ ± 1 bin (los 3 armónicos que definen la estructura periódica del PPG)
+  - Denominador: potencia total en [HR_MIN_HZ, min(3·f₀ + 2 bins, Nyquist=25 Hz)] — se extiende más allá de la banda HR para incluir armónicos aunque estén fuera de [0.5–3.5 Hz]
+  - Valor alto → señal periódica con estructura de armónicos clara → estimación fiable
+- Atributo renombrado `last_peak_power_ratio` → `last_harmonic_ratio` en `HRFFTCalc`; etiquetas actualizadas en `HR3LabWindow`
+
+**HR3 — Harmonic Product Spectrum (HPS) para detección robusta de fundamental:**
+- Problema: a 35 BPM el 2° armónico (1.17 Hz) tenía más potencia que la fundamental (0.58 Hz); el algoritmo elegía el armónico.
+- Solución: **Harmonic Product Spectrum** — `HPS[i] = S[i] · S[2i] · S[3i]`. Refuerza la fundamental (todos los armónicos coinciden) y suprime los picos armónicos aislados (sus sub-armónicos son débiles). El peak-finding se hace sobre HPS; la interpolación parabólica de precisión se hace sobre el espectro original.
+- `last_hps` añadido como atributo diagnóstico en `HRFFTCalc`
+- `HR3LabWindow`: curva naranja (HPS normalizado) superpuesta sobre la cyan (espectro) en el plot FFT
+
+**Rango HR unificado a 30–250 BPM en todos los ficheros:**
+- `ppg_plotter.py` funciones autocorr: `hr_min=38, hr_max=252` → `hr_min=30, hr_max=250`
+- `ppg_plotter.py` `HRFFTCalc.HR_MAX_HZ`: `3.5` (210 BPM) → `4.167` (250 BPM)
+- `mow_afe4490_spec.md` línea HR1: `[40, 240] BPM` → `[30, 250] BPM`
+- `mow_afe4490.cpp`: ya estaba en 30–250 BPM ✓
+
+**Instrucción de flujo de trabajo:** ejecutar automáticamente tras cada cambio de código.
+
+---
+

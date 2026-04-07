@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.7
+# mow_afe4490 — Specification v0.9
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -21,7 +21,8 @@ ISR → xSemaphoreGiveFromISR()
 afe4490_task (internal)
     ├── reads SPI → 6 raw signals
     ├── processes PPG signal (bandpass filter)
-    ├── computes HR (peak detection)
+    ├── computes HR1 (peak detection)
+    ├── computes HR2 (autocorrelation, runs in parallel with HR1)
     ├── computes SpO2 (AC/DC ratio)
     └── xQueueSend() → FreeRTOS queue
     │
@@ -47,7 +48,9 @@ The AFE4490 produces 6 signals per sample. All are read internally:
 6 raw signals
     │
     ├─→ selected channel (setPPGChannel)
-    │       └─→ bandpass filter (setFilter) → ppg + HR
+    │       └─→ bandpass filter (setFilter) → ppg + HR1 (peak detection)
+    │
+    ├─→ LED1-ALED1 (IR corr.) → bandpass 0.5–5 Hz → decimate ×10 → HR2 (autocorrelation)
     │
     └─→ LED1-ALED1 (IR corr.) + LED2-ALED2 (RED corr.) → AC/DC → SpO2
 ```
@@ -63,9 +66,11 @@ struct AFE4490Data {
     int32_t ppg;        // filtered PPG of selected channel
     float   spo2;       // SpO2 in %
     float   spo2_r;     // R ratio: (AC_red/DC_red)/(AC_ir/DC_ir) — for calibration
-    float   hr1;        // HR1 (peak detection) in bpm
     bool    spo2_valid; // true if SpO2 calculation is reliable
+    float   hr1;        // HR1 (peak detection) in bpm
     bool    hr1_valid;  // true if HR1 calculation is reliable
+    float   hr2;        // HR2 (autocorrelation) in bpm
+    bool    hr2_valid;  // true if HR2 calculation is reliable
     // The 6 raw signals from AFE4490
     int32_t led1;       // LED1VAL  — IR raw
     int32_t led2;       // LED2VAL  — RED raw
@@ -117,6 +122,8 @@ void setStage2Gain(AFE4490Stage2Gain gain);
 ```cpp
 void setPPGChannel(AFE4490Channel channel);
 void setFilter(AFE4490Filter type, float f_low_hz = 0.5f, float f_high_hz = 20.0f);
+// HR2 bandpass filter cutoffs (default 0.5–5 Hz); callable before or after begin()
+void setHR2Filter(float f_low_hz = 0.5f, float f_high_hz = 5.0f);
 ```
 
 ### 2.5 Data retrieval
@@ -220,17 +227,73 @@ SpO2 = a - b × R
 Coefficients `a` and `b` are empirical (calibration). Configurable via `setSpO2Coefficients()`.
 `spo2_valid` is set when enough stable samples are available for the calculation.
 
-### 5.2 HR
-Peak detection on the filtered PPG signal (bandpass 0.5–20 Hz).
-HR is calculated by measuring the interval between consecutive peaks (RR interval):
+### 5.2 HR1 — Peak detection
+
+**Processing chain:**
+1. **DC removal:** IIR low-pass filter (τ = 1.6 s) estimates DC; subtracted from raw signal. Signal is negated for conventional PPG polarity (peaks up).
+2. **Low-pass filter:** moving average with cutoff ~5 Hz (`len = fs / (2 × 5)`; at 500 Hz → 50 samples). Capped at 64 samples max.
+3. **Running maximum:** exponential decay tracker (`× 0.9999` per sample) keeps amplitude reference current.
+4. **Threshold crossing:** rising edge detected when signal crosses `0.6 × running_max`. A refractory period (0.2 s, ~300 BPM max) prevents double-detection.
+5. **RR interval buffer:** last 5 consecutive intervals stored. HR1 computed as average:
 
 ```
-HR (bpm) = 60 / T_RR (seconds)
+HR1 (bpm) = fs × 60 / mean(last 5 RR intervals in samples)
 ```
 
-`hr1_valid` is set when enough consecutive peaks with a stable interval have been detected.
+`hr1_valid` is set when 5 intervals have been accumulated and the resulting HR1 is within [30, 250] BPM.
 
-> Both algorithms developed from scratch. Protocentral code is not used as a base.
+> **Implementation note:** peak location is currently approximated by the rising threshold crossing (first sample above `0.6 × running_max`). This introduces a timing error that depends on signal slope and amplitude — if either changes (low perfusion, motion), the detected instant shifts relative to the true peak, introducing jitter in the RR interval. Planned improvement: apply derivative to the filtered signal and detect the rising edge as the maximum of the derivative (steepest ascending slope), which gives a more stable and precise timing reference independent of signal amplitude.
+
+**Diagnostic field `hr1_ppg`:** after each detected peak, `hr1_ppg` is forced to 0 for 10 samples. This produces a visible marker in the serial stream / plotter that survives serial downsampling.
+
+**Key constants:**
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `hr1_dc_tau_s` | 1.6 s | IIR DC removal time constant |
+| `hr1_ma_cutoff_hz` | 5 Hz | Moving average low-pass cutoff |
+| `hr1_ma_max_len` | 64 samples | Max moving average length |
+| `hr_refractory_s` | 0.2 s | Refractory period between peaks (~300 BPM max) |
+| `hr1_peak_marker_samples` | 10 samples | Duration of peak marker (hr1_ppg=0) |
+| `hr_min_bpm` | 30 BPM | Valid HR range minimum |
+| `hr_max_bpm` | 250 BPM | Valid HR range maximum |
+
+### 5.3 HR2 — Autocorrelation
+Independent second HR algorithm running in parallel with HR1 on the same `led1_aled1` signal.
+
+**Processing chain:**
+1. Biquad bandpass filter 0.5–5 Hz at 500 Hz (eliminates DC, high-frequency noise, and acts as anti-aliasing)
+2. Decimate by factor 10 → effective rate 50 Hz
+3. Accumulate in circular buffer of 400 samples (8 s at 50 Hz)
+4. Every 25 decimated samples (0.5 s), compute normalised autocorrelation over lags corresponding to 30–272 BPM
+
+**Peak selection:** first local maximum above `hr2_min_corr = 0.5`. Sub-sample resolution via parabolic interpolation.
+
+**Key constants:**
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `hr2_buf_len` | 400 | Buffer length (8 s at 50 Hz) |
+| `hr2_acorr_max_lag` | 100 | Max lag searched (30 BPM at 50 Hz: 50×60/30=100) |
+| `hr2_decim_factor` | 10 | 500 Hz → 50 Hz |
+| `hr2_update_interval` | 25 | Recompute every 0.5 s |
+| `hr2_min_lag_s` | 0.22 s | Min RR lag (~272 BPM max) |
+| `hr2_min_corr` | 0.5 | Normalised correlation threshold for valid peak |
+
+`hr2_valid` is set when the buffer is full and a peak above `hr2_min_corr` is found in the valid HR range.
+
+### 5.4 HR algorithms roadmap
+
+| Algorithm | Method | Status |
+|---|---|---|
+| HR1 | Threshold crossing (rising edge, 0.6 × running_max) | Implemented |
+| HR2 | Autocorrelation on decimated signal (50 Hz, 8 s window) | Implemented |
+| HR3 | FFT on windowed signal | Planned |
+| HR4 | True peak detection via derivative (max of derivative = steepest ascending slope) | Planned |
+
+HR1–HR4 all operate on `led1_aled1` (IR ambient-corrected) and run in parallel. `AFE4490Data` will expose `hr3`/`hr3_valid` and `hr4`/`hr4_valid` when implemented.
+
+> All HR algorithms developed from scratch. Protocentral code is not used as a base.
 
 ---
 
@@ -329,6 +392,17 @@ SNR_improvement = sqrt(num)    →  num=8: ×2.83,  num=10: ×3.16
 |         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
 |         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
 |         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+| v0.9    | HR measurement range extended: 40–240 BPM → **30–250 BPM**.             |
+|         | `hr_min_bpm` 40→30, `hr_max_bpm` 240→250, `hr_refractory_s` 0.3→0.2 s  |
+|         | (allows up to ~300 BPM), `hr2_acorr_max_lag` 75→100 samples (30 BPM    |
+|         | at 50 Hz). Spec header updated to v0.9.                                  |
+| v0.8    | Added HR2 algorithm (autocorrelation): `hr2`/`hr2_valid` in `AFE4490Data`, |
+|         | `setHR2Filter()` in API, section 5.3. Updated architecture diagrams        |
+|         | (sections 1.1 and 1.3). HR1/HR2 run in parallel in `_process_sample()`.   |
+|         | BiquadFilter refactored as struct; `_biquad_process()` extracted.          |
+|         | Section 5.2 (HR1) fully documented: DC removal IIR, moving average LP,    |
+|         | running-max threshold, refractory period, 5-interval averaging, peak       |
+|         | marker diagnostic, and key constants table.                                |
 
 ---
 
@@ -352,13 +426,13 @@ This section documents the exact value of each AFE4490 register written by the l
 | LED2LEDENDC | 7599 | 7999 (t4) | 7999 | **7999** | 25% duty cycle: 2000 counts = 500µs → maximises photons |
 | LED2STC | 6080 | 6050 (t1) | 6000 | **6050** | 50 counts (12.5µs) margin for TIA settling. TI EVM uses 80 (excessive at 500Hz); Protocentral uses 0 (risky) |
 | LED2ENDC | 7598 | 7998 (t2) | 7998 | **7998** | Closes 2 counts before end of phase |
-| ALED2STC | 80 | 50 (t5) | 0 | **50** | Same 50-count margin for consistency with LED phases |
+| ALED2STC | 80 | 200 (t5) | 0 | **200** | 200 counts (50 µs) after LED2 OFF — timing margin; ambient ripple confirmed as optical/electrical crosstalk (not timing) |
 | ALED2ENDC | 1598 | 1998 (t6) | 1998 | **1998** | Uses full window except last 2 counts |
 | LED1LEDSTC | 2000 | 2000 (t9) | 2000 | **2000** | LED1 starts at beginning of its phase (25% of period) |
 | LED1LEDENDC | 3599 | 3999 (t10) | 3999 | **3999** | 25% duty cycle, same as LED2 |
 | LED1STC | 2080 | 2050 (t7) | 2000 | **2050** | Same criterion as LED2STC: 50-count margin |
 | LED1ENDC | 3598 | 3998 (t8) | 3998 | **3998** | Same as LED2ENDC |
-| ALED1STC | 4080 | 4050 (t11) | 4000 | **4050** | Same criterion |
+| ALED1STC | 4080 | 4200 (t11) | 4000 | **4200** | 200 counts (50 µs) after LED1 OFF — same criterion as ALED2STC |
 | ALED1ENDC | 5598 | 5998 (t12) | 5998 | **5998** | Same as ALED2ENDC |
 | LED2CONVST | 7 | 4 (t13) | 2 | **4** | 1 count after ADC reset end (end=3). Required: "Must start one AFE clock cycle after the ADC reset pulse ends" |
 | LED2CONVEND | 2000 | 1999 (t14) | 1999 | **1999** | 1 count before next reset (ADCRSTSTCT1=2000) |

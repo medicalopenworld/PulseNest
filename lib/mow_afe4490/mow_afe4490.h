@@ -31,8 +31,8 @@ struct AFE4490Data {
     int32_t ppg;         // filtered PPG of selected channel
     float   spo2;        // SpO2 in %
     float   spo2_r;      // R ratio used for SpO2 calculation: (AC_red/DC_red)/(AC_ir/DC_ir)
-    float   hr1;         // HR1 (peak detection) in bpm
     bool    spo2_valid;  // SpO2 is reliable
+    float   hr1;         // HR1 (peak detection) in bpm
     bool    hr1_valid;   // HR1 is reliable
     float   hr2;         // HR2 (autocorrelation) in bpm
     bool    hr2_valid;   // HR2 is reliable
@@ -258,7 +258,7 @@ private:
     // accumulates a circular buffer of hr2_buf_len samples, then periodically
     // computes normalised autocorrelation to find the fundamental RR period.
     static constexpr int hr2_buf_len         = 400;  // 8 s at 50 Hz (fs/hr2_decim_factor)
-    static constexpr int hr2_acorr_max_lag   = 75;   // 40 BPM at 50 Hz: 50*60/40 = 75 samples
+    static constexpr int hr2_acorr_max_lag   = 100;  // 30 BPM at 50 Hz: 50*60/30 = 100 samples
     static constexpr int hr2_decim_factor    = 10;   // 500 Hz → 50 Hz
     static constexpr int hr2_update_interval = 25;   // recompute every 0.5 s (25 decimated samples)
 
@@ -286,4 +286,30 @@ private:
     //     per handler, eliminating the need for a singleton pointer altogether.
     static MOW_AFE4490* _g_instance;
     static void IRAM_ATTR _drdy_isr_static();
+
+#ifdef UNIT_TEST
+public:
+    // Expose internals for unit testing only — not part of the public API
+
+    // Biquad filter
+    using TestBiquadFilter = BiquadFilter;
+    void  test_recalc_biquad(BiquadFilter& f)           { _recalc_biquad(f); }
+    float test_biquad_process(float x, BiquadFilter& f) { return _biquad_process(x, f); }
+
+    // HR1
+    void  test_feed_hr1(int32_t led1_aled1) { _update_hr1(led1_aled1); }
+    float test_hr1()                        { return _current_data.hr1; }
+    bool  test_hr1_valid()                  { return _current_data.hr1_valid; }
+
+    // HR2
+    void  test_feed_hr2(int32_t led1_aled1) { _update_hr2(led1_aled1); }
+    float test_hr2()                        { return _current_data.hr2; }
+    bool  test_hr2_valid()                  { return _current_data.hr2_valid; }
+
+    // SpO2
+    void  test_feed_spo2(int32_t ir_corr, int32_t red_corr) { _update_spo2(ir_corr, red_corr); }
+    float test_spo2()                       { return _current_data.spo2; }
+    float test_spo2_r()                     { return _current_data.spo2_r; }
+    bool  test_spo2_valid()                 { return _current_data.spo2_valid; }
+#endif
 };

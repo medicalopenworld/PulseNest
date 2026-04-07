@@ -1,5 +1,7 @@
 import sys
 import serial
+import threading
+import queue
 import pyqtgraph as pg
 from PyQt5 import QtCore, QtGui, QtWidgets
 from collections import deque, namedtuple
@@ -27,7 +29,7 @@ HRResult = namedtuple('HRResult', [
 
 
 def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=38, hr_max=252, prominence=0.1):
+                              hr_min=30, hr_max=250, prominence=0.1):
     """Compute HR estimate via cross-correlation between two overlapping segments of the same signal.
 
     Uses np.correlate(seg, template, mode='valid') where template = seg[max_lag_n:].
@@ -108,7 +110,7 @@ def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 
 
 def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=38, hr_max=252, prominence=0.1):
+                              hr_min=30, hr_max=250, prominence=0.1):
     """Compute autocorrelation-based HR estimate using scipy.signal.correlate with FFT.
 
     Key difference from v1: computes the true autocorrelation of a single vector
@@ -190,7 +192,7 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 
 # --- CONFIGURACIÓN ---
 PORT = 'COM15'
-BAUD = 115200
+BAUD = 921600
 WINDOW_SIZE        = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10)
 PPG_WINDOW_SIZE    = 500   # 10 s — same as WINDOW_SIZE
 SPO2_CAL_BUFSIZE   = 3000  # 60 s @ 50 Hz — rolling buffer for SpO2LabWindow
@@ -270,6 +272,171 @@ class SpO2LocalCalc:
             'spo2':       spo2,
             'spo2_valid': self._SPO2_MIN <= spo2 <= self._SPO2_MAX,
         }
+
+
+class HRFFTCalc:
+    """FFT-based HR estimator (HR3). Prototype of the planned firmware HR3 algorithm.
+
+    Pipeline per sample:
+      led1_aled1 → 2nd-order Butterworth LP 10 Hz → circular buffer 512 samples →
+      [every UPDATE_INTERVAL_S] Hann window → rfft → dominant peak in [HR_MIN_HZ, HR_MAX_HZ]
+      + parabolic sub-bin interpolation → HR3 (bpm)
+
+    Constants must match the firmware implementation when ported:
+      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.5, HR_MAX_HZ=3.5
+    """
+    LP_CUTOFF_HZ      = 10.0
+    BUF_LEN           = 512
+    UPDATE_INTERVAL_S = 0.5
+    HR_MIN_HZ         = 0.5   # 30 BPM
+    HR_MAX_HZ         = 4.167 # 250 BPM
+
+    def __init__(self):
+        self._fs           = 0.0
+        self._b            = None
+        self._a            = None
+        self._zi           = None
+        self._buf          = np.zeros(self.BUF_LEN)
+        self._buf_idx      = 0
+        self._buf_count    = 0
+        self._update_n     = 0
+        self._sample_count = 0
+        self.hr_bpm        = 0.0
+        self.hr_valid      = False
+        # Diagnostic state exposed for HR3LabWindow
+        self.last_spectrum         = np.zeros(self.BUF_LEN // 2 + 1)
+        self.last_freqs            = np.zeros(self.BUF_LEN // 2 + 1)
+        self.last_peak_freq        = 0.0
+        self.last_harmonic_ratio = 0.0
+        self.last_filtered_buf     = np.zeros(self.BUF_LEN)
+        self.last_hps              = np.zeros(self.BUF_LEN // 2 + 1)
+
+    def _recalc_params(self, fs):
+        self._fs      = fs
+        self._update_n = max(1, int(self.UPDATE_INTERVAL_S * fs))
+        self._b, self._a = signal.butter(2, self.LP_CUTOFF_HZ / (fs / 2.0), btype='low')
+        self._zi      = signal.lfilter_zi(self._b, self._a) * 0.0
+        self._buf     = np.zeros(self.BUF_LEN)
+        self._buf_idx = 0
+        self._buf_count   = 0
+        self._sample_count = 0
+        self.hr_bpm   = 0.0
+        self.hr_valid = False
+        self.last_spectrum         = np.zeros(self.BUF_LEN // 2 + 1)
+        self.last_freqs            = np.zeros(self.BUF_LEN // 2 + 1)
+        self.last_peak_freq        = 0.0
+        self.last_harmonic_ratio = 0.0
+        self.last_filtered_buf     = np.zeros(self.BUF_LEN)
+        self.last_hps              = np.zeros(self.BUF_LEN // 2 + 1)
+
+    def reset(self):
+        self._fs      = 0.0
+        self.hr_bpm   = 0.0
+        self.hr_valid = False
+
+    def update(self, led1_aled1, fs):
+        """Process one sample. Returns (hr_bpm, hr_valid)."""
+        if fs != self._fs:
+            self._recalc_params(fs)
+
+        # LP filter (anti-aliasing before virtual decimation; magnitude-only FFT → no need to negate)
+        x = float(led1_aled1)
+        filtered, self._zi = signal.lfilter(self._b, self._a, [x], zi=self._zi)
+        filtered = filtered[0]
+
+        # Circular buffer
+        self._buf[self._buf_idx] = filtered
+        self._buf_idx = (self._buf_idx + 1) % self.BUF_LEN
+        if self._buf_count < self.BUF_LEN:
+            self._buf_count += 1
+
+        # Update every UPDATE_INTERVAL_S seconds
+        self._sample_count += 1
+        if self._sample_count < self._update_n:
+            return self.hr_bpm, self.hr_valid
+        self._sample_count = 0
+
+        if self._buf_count < self.BUF_LEN:
+            self.hr_valid = False
+            return self.hr_bpm, self.hr_valid
+
+        # Reconstruct ordered segment (oldest first)
+        seg_raw = np.roll(self._buf, -self._buf_idx)
+        self.last_filtered_buf = seg_raw.copy()
+
+        # Apply Hann window and compute rfft
+        seg      = seg_raw * np.hanning(self.BUF_LEN)
+        spectrum = np.abs(np.fft.rfft(seg))
+        freqs    = np.fft.rfftfreq(self.BUF_LEN, d=1.0 / fs)
+
+        # Restrict search to HR band
+        mask = (freqs >= self.HR_MIN_HZ) & (freqs <= self.HR_MAX_HZ)
+        if not np.any(mask):
+            self.hr_valid = False
+            return self.hr_bpm, self.hr_valid
+
+        # Harmonic Product Spectrum (HPS): HPS[i] = S[i] · S[2i] · S[3i].
+        # Reinforces the fundamental frequency (all harmonics peak together) and
+        # suppresses isolated harmonic peaks (their sub-harmonics are weak).
+        # Solves the problem of locking onto the 2nd harmonic when it has more
+        # power than the fundamental (common in slow PPG signals).
+        n_hps = len(spectrum)
+        hps   = spectrum.copy()
+        for k in range(2, 4):          # k = 2, 3
+            n_valid        = n_hps // k
+            hps[:n_valid] *= spectrum[np.arange(n_valid) * k]
+            hps[n_valid:]  = 0.0
+        self.last_hps = hps.copy()     # exposed for HR3LabWindow
+
+        idx_offset = int(np.where(mask)[0][0])
+        hps_hr     = hps[mask]
+
+        # Dominant peak in HPS (highest peak with minimum prominence)
+        spec_hr = spectrum[mask]       # kept for harmonic_ratio computation below
+        peaks, _ = signal.find_peaks(hps_hr, prominence=0.05 * np.max(hps_hr))
+        peak_local = int(peaks[np.argmax(hps_hr[peaks])]) if len(peaks) > 0 else int(np.argmax(hps_hr))
+        peak_global = idx_offset + peak_local
+
+        # Parabolic sub-bin interpolation on original spectrum (not HPS) for freq precision
+        if 0 < peak_global < len(spectrum) - 1:
+            yp, yc, yn = spectrum[peak_global - 1], spectrum[peak_global], spectrum[peak_global + 1]
+            denom = yp - 2.0 * yc + yn
+            delta = 0.5 * (yp - yn) / denom if denom < 0.0 else 0.0
+        else:
+            delta = 0.0
+
+        freq_res  = fs / self.BUF_LEN
+        peak_freq = freqs[peak_global] + delta * freq_res
+        hr_bpm    = peak_freq * 60.0
+
+        # Store diagnostic state for HR3LabWindow
+        spec_max = np.max(spec_hr) if np.max(spec_hr) > 0.0 else 1.0
+        self.last_spectrum  = spectrum / spec_max          # normalised to HR-band max
+        self.last_freqs     = freqs
+        self.last_peak_freq = peak_freq
+
+        # Harmonic power ratio: signal = power at f0, 2·f0, 3·f0 (±1 bin each);
+        # denominator = total power in [HR_MIN_HZ, min(3·f0 + 2 bins, Nyquist)].
+        # Physically motivated: a clean PPG concentrates energy at the fundamental
+        # + harmonics; noise spreads it uniformly.
+        f_top    = min(peak_freq * 3.0 + 2.0 * freq_res, fs / 2.0)
+        ext_mask = (freqs >= self.HR_MIN_HZ) & (freqs <= f_top)
+        total_power  = np.sum(spectrum[ext_mask])
+        signal_power = 0.0
+        for k in (1, 2, 3):
+            h_bin = int(round(peak_freq * k / freq_res))
+            for b in range(max(0, h_bin - 1), min(len(spectrum), h_bin + 2)):
+                signal_power += spectrum[b]
+        self.last_harmonic_ratio = float(signal_power / total_power) if total_power > 0.0 else 0.0
+
+        if (self.HR_MIN_HZ * 60.0) <= hr_bpm <= (self.HR_MAX_HZ * 60.0):
+            self.hr_bpm   = hr_bpm
+            self.hr_valid = True
+        else:
+            self.hr_valid = False
+
+        return self.hr_bpm, self.hr_valid
+
 
 ACTION_BUTTON_STYLE = """
     QPushButton { 
@@ -698,66 +865,140 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
-class HRLab2Window(QtWidgets.QMainWindow):
+class HR3LabWindow(QtWidgets.QMainWindow):
+    """Diagnostic window for the HR3 (FFT-based) algorithm.
+
+    Layout:
+      Left (wide):   FFT spectrum — magnitude normalised to HR-band max, shaded HR band,
+                     peak marker (cyan), harmonic markers (2×, 3×).
+      Right top:     LP-filtered signal — last 512 samples fed into the FFT.
+      Right bottom:  HR comparison over time — HR1 (yellow), HR2 (red), HR3 (cyan).
+      Bottom bar:    Algorithm parameters and last-update diagnostics.
+    """
+
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("HRLAB2")
-        self.resize(1400, 800)
+        self.setWindowTitle("HR3LAB")
+        self.resize(1800, 900)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        main_layout = QtWidgets.QVBoxLayout(central)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(5)
+        outer = QtWidgets.QVBoxLayout(central)
+        outer.setContentsMargins(8, 8, 8, 4)
+        outer.setSpacing(4)
 
-        # QSplitter for exact column proportions (2:1:1)
+        # ── plots ────────────────────────────────────────────────────────────────
         self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self._splitter.setHandleWidth(2)
-        main_layout.addWidget(self._splitter)
+        outer.addWidget(self._splitter, stretch=1)
 
-        self._col_a = pg.GraphicsLayoutWidget()
-        self._col_b = pg.GraphicsLayoutWidget()
-        self._col_c = pg.GraphicsLayoutWidget()
-        self._splitter.addWidget(self._col_a)
-        self._splitter.addWidget(self._col_b)
-        self._splitter.addWidget(self._col_c)
+        # Left: FFT spectrum
+        left_gw = pg.GraphicsLayoutWidget()
+        self.p_fft = left_gw.addPlot(title="<b style='color:#00CCFF'>FFT SPECTRUM</b>")
+        self.p_fft.setLabel('bottom', 'Frequency', units='Hz')
+        self.p_fft.setLabel('left', 'Magnitude (norm. to HR-band max)')
+        self.p_fft.setXRange(0, 5.5)
+        self.p_fft.setYRange(0, 1.05)
+        self.p_fft.showGrid(x=True, y=True, alpha=0.3)
+        self._hr_region = pg.LinearRegionItem(
+            values=[HRFFTCalc.HR_MIN_HZ, HRFFTCalc.HR_MAX_HZ],
+            brush=pg.mkBrush(0, 180, 255, 25), movable=False)
+        self.p_fft.addItem(self._hr_region)
+        self.curve_fft = self.p_fft.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="Spectrum")
+        self.curve_hps = self.p_fft.plot(pen=pg.mkPen('#FF8800', width=1.5), name="HPS")
+        self._line_peak = pg.InfiniteLine(
+            pos=0, angle=90,
+            pen=pg.mkPen('#00CCFF', width=2),
+            label='peak', labelOpts={'color': '#00CCFF', 'position': 0.92})
+        self._line_h2 = pg.InfiniteLine(
+            pos=0, angle=90,
+            pen=pg.mkPen('#006688', width=1, style=QtCore.Qt.DashLine),
+            label='2×', labelOpts={'color': '#006688', 'position': 0.85})
+        self._line_h3 = pg.InfiniteLine(
+            pos=0, angle=90,
+            pen=pg.mkPen('#004455', width=1, style=QtCore.Qt.DashLine),
+            label='3×', labelOpts={'color': '#004455', 'position': 0.78})
+        for item in [self._line_peak, self._line_h2, self._line_h3]:
+            self.p_fft.addItem(item)
 
-        # Plots — column A
-        self.p_1a = self._col_a.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1A</b>")
-        self.p_2a = self._col_a.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2A</b>")
-        self.p_3a = self._col_a.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3A</b>")
+        # Right: two stacked plots
+        right_gw = pg.GraphicsLayoutWidget()
+        self.p_sig = right_gw.addPlot(
+            row=0, col=0,
+            title="<b style='color:#AAFFAA'>LP-FILTERED SIGNAL (input to FFT)</b>")
+        self.p_sig.setLabel('bottom', 'Sample')
+        self.p_sig.showGrid(x=True, y=True, alpha=0.3)
+        self.curve_sig = self.p_sig.plot(pen=pg.mkPen('#AAFFAA', width=1))
 
-        # Plots — column B
-        self.p_1b = self._col_b.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1B</b>")
-        self.p_2b = self._col_b.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2B</b>")
-        self.p_3b = self._col_b.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3B</b>")
+        self.p_hr_cmp = right_gw.addPlot(
+            row=1, col=0,
+            title="<b style='color:#FFFFFF'>HR COMPARISON (bpm)</b>")
+        self.p_hr_cmp.setLabel('bottom', 'Sample')
+        self.p_hr_cmp.setYRange(40, 180)
+        self.p_hr_cmp.showGrid(x=True, y=True, alpha=0.3)
+        self.curve_hr1_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#FFDD44', width=2),  name="HR1")
+        self.curve_hr2_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
+        self.curve_hr3_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#00CCFF', width=2),  name="HR3")
 
-        # Plots — column C
-        self.p_1c = self._col_c.addPlot(row=0, col=0, title="<b style='color:#FFFFFF'>1C</b>")
-        self.p_2c = self._col_c.addPlot(row=1, col=0, title="<b style='color:#FFFFFF'>2C</b>")
-        self.p_3c = self._col_c.addPlot(row=2, col=0, title="<b style='color:#FFFFFF'>3C</b>")
+        self._splitter.addWidget(left_gw)
+        self._splitter.addWidget(right_gw)
 
-        for plot in [self.p_1a, self.p_1b, self.p_1c,
-                     self.p_2a, self.p_2b, self.p_2c,
-                     self.p_3a, self.p_3b, self.p_3c]:
-            plot.showGrid(x=True, y=True, alpha=0.3)
+        # ── info bar ─────────────────────────────────────────────────────────────
+        self._info_label = QtWidgets.QLabel()
+        self._info_label.setFont(QtGui.QFont("Consolas", 10))
+        self._info_label.setStyleSheet("color: #AAAAAA; padding: 2px 4px;")
+        outer.addWidget(self._info_label)
+        self._refresh_info(None)
+
+    def _refresh_info(self, calc):
+        if calc is None or calc._fs == 0.0:
+            self._info_label.setText(
+                "HR3 params: LP 10 Hz · BUF 512 · Hann · update 0.5 s · band [0.5–3.5 Hz]   |   waiting for data...")
+            return
+        freq_res_bpm = (calc._fs / calc.BUF_LEN) * 60.0
+        buf_pct      = 100.0 * calc._buf_count / calc.BUF_LEN
+        self._info_label.setText(
+            f"LP {calc.LP_CUTOFF_HZ:.0f} Hz · BUF {calc.BUF_LEN} · Hann · "
+            f"update {calc.UPDATE_INTERVAL_S:.1f} s · band [{calc.HR_MIN_HZ:.1f}–{calc.HR_MAX_HZ:.1f} Hz]   |   "
+            f"freq_res {freq_res_bpm:.1f} BPM/bin · "
+            f"peak {calc.last_peak_freq:.3f} Hz = {calc.last_peak_freq * 60:.1f} BPM · "
+            f"harmonic_ratio {calc.last_harmonic_ratio * 100:.1f}% · "
+            f"buf {buf_pct:.0f}%")
+
+    def update_plots(self, data_hr1, data_hr2, data_hr3, calc):
+        self._refresh_info(calc)
+
+        if len(calc.last_freqs) > 1:
+            self.curve_fft.setData(calc.last_freqs, calc.last_spectrum)
+            hps_max = np.max(calc.last_hps) if np.max(calc.last_hps) > 0.0 else 1.0
+            self.curve_hps.setData(calc.last_freqs, calc.last_hps / hps_max)
+            self._line_peak.setValue(calc.last_peak_freq)
+            self._line_h2.setValue(calc.last_peak_freq * 2.0)
+            self._line_h3.setValue(calc.last_peak_freq * 3.0)
+            self.p_fft.setTitle(
+                f"<b style='color:#00CCFF'>FFT SPECTRUM</b>  "
+                f"<span style='color:#AAAAAA'>peak {calc.last_peak_freq:.3f} Hz = "
+                f"{calc.last_peak_freq * 60:.1f} BPM · "
+                f"harmonic_ratio {calc.last_harmonic_ratio * 100:.1f}%</span>")
+
+        if calc._buf_count > 0:
+            self.curve_sig.setData(calc.last_filtered_buf)
+
+        self.curve_hr1_cmp.setData(list(data_hr1))
+        self.curve_hr2_cmp.setData(list(data_hr2))
+        self.curve_hr3_cmp.setData(list(data_hr3))
 
     def showEvent(self, event):
         super().showEvent(event)
-        QtCore.QTimer.singleShot(0, self._set_splitter_sizes)
-
-    def _set_splitter_sizes(self):
-        w = self._splitter.width()
-        if w > 0:
-            self._splitter.setSizes([w // 2, w // 4, w // 4])
+        QtCore.QTimer.singleShot(0, lambda: self._splitter.setSizes([1100, 700]))
 
     def closeEvent(self, event):
         if self.main_monitor is not None:
-            self.main_monitor.btn_hrlab2.setChecked(False)
-            self.main_monitor.hrlab2_window = None
+            self.main_monitor.btn_hr3lab.setChecked(False)
+            self.main_monitor.hr3lab_window = None
         super().closeEvent(event)
 
 
@@ -1035,33 +1276,33 @@ class HRLabWindow(QtWidgets.QMainWindow):
 class PPGMonitor(QtWidgets.QMainWindow):
     def set_status(self, text, status_type="info"):
         """
-        Actualiza la barra de estado con colores y estilos llamativos según el tipo.
+        Añade una línea al log de estado con timestamp y color según el tipo.
         tipos: 'info' (azul), 'success' (verde), 'warning' (naranja), 'error' (rojo)
         """
         colors = {
-            "success": ("#00FF88", "rgba(0, 255, 136, 0.15)", "#00FF88"),
-            "warning": ("#FFDD44", "rgba(255, 221, 68, 0.15)", "#FFDD44"),
-            "error":   ("#FF4444", "rgba(255, 68, 68, 0.15)", "#FF4444"),
-            "info":    ("#44AAFF", "rgba(68, 170, 255, 0.15)", "#44AAFF")
+            "success": "#00FF88",
+            "warning": "#FFDD44",
+            "error":   "#FF4444",
+            "info":    "#44AAFF",
         }
-        
-        fg, bg, border = colors.get(status_type, colors["info"])
-        
-        self.status_bar.setText(f" ●  {text.upper()}")
-        self.status_bar.setStyleSheet(f"""
-            QLabel {{
-                background-color: {bg};
-                color: {fg};
-                font-size: 24px;
-                font-weight: 800;
-                padding: 20px;
-                border: 2px solid {border};
-                border-radius: 10px;
-                margin: 10px 0px 5px 0px;
-            }}
-        """)
+        icons = {
+            "success": "✔",
+            "warning": "⚠",
+            "error":   "✖",
+            "info":    "●",
+        }
+        fg = colors.get(status_type, colors["info"])
+        icon = icons.get(status_type, icons["info"])
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        self.log_panel.append(
+            f'<span style="color:#888888;">[{ts}]</span> '
+            f'<span style="color:{fg};font-weight:bold;">{icon} {text}</span>'
+        )
+        self.log_panel.verticalScrollBar().setValue(
+            self.log_panel.verticalScrollBar().maximum()
+        )
 
-    def __init__(self):
+    def __init__(self, save_chk=False, save_chk_duration=15):
         super().__init__()
         
         # Configuración Ventana Principal
@@ -1087,22 +1328,45 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_ir_filt = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr1_ppg = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr2     = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr3     = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_spo2_r  = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
         self.is_plot_paused = False
         self.last_time = None
-        self.active_lib = "MOW"  # must match default in main.cpp (start_mow)
+        self.active_lib = "MOW"   # must match default in main.cpp (start_mow)
+        self.frame_mode = "M1"    # must match default in main.cpp (MowFrameMode::FULL)
         
         self.is_saving = False
         self.save_file = None
+        self.is_saving_raw = False
+        self.save_file_raw = None
+        self.save_file_chk = None
+        self._chk_filename = None
+        if save_chk:
+            now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._chk_filename = f"ppg_chk_{now_str}.csv"
+            try:
+                self.save_file_chk = open(self._chk_filename, "w", buffering=1)
+                self.save_file_chk.write("Timestamp_PC,Diff_us_PC,CHK_OK,RawFrame\n")
+                print(f"[save-chk] Saving to {self._chk_filename}")
+                if save_chk_duration > 0:
+                    QtCore.QTimer.singleShot(save_chk_duration * 1000, self._auto_close_chk)
+            except Exception as e:
+                print(f"[save-chk] Error opening file: {e}")
         self.hrlab_window = None
         self.spo2lab_window = None
-        self.hrlab2_window = None
+        self.hr3lab_window = None
+        self._decim_counter = 0
+        self.hr3_calc = HRFFTCalc()
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
         self.auto_save_timer.timeout.connect(self.auto_stop_save)
+
+        self.auto_save_raw_timer = QtCore.QTimer()
+        self.auto_save_raw_timer.setSingleShot(True)
+        self.auto_save_raw_timer.timeout.connect(self.auto_stop_save_raw)
         
         # Widget Central
         central_widget = QtWidgets.QWidget()
@@ -1141,8 +1405,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         
         self.check_red_raw = create_check("RED (raw)", "#FFFFFF", False)
         self.check_red_amb = create_check("Ambient RED", "#00FFFF", False)
-        self.check_red_sub = create_check("RED (clean)", "#FF8888", False)
-        self.check_red_filt = create_check("RED (filt)", "#FF0000", True)
+        self.check_red_sub = create_check("RED (clean)", "#FF8888", True)
+        self.check_red_filt = create_check("RED (filt)", "#FF0000", False)
         
         self.sidebar_layout.addWidget(self.check_red_raw)
         self.sidebar_layout.addWidget(self.check_red_amb)
@@ -1155,8 +1419,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         
         self.check_ir_raw = create_check("IR (raw)", "#FFFFFF", False)
         self.check_ir_amb = create_check("Ambient IR", "#00FFFF", False)
-        self.check_ir_sub = create_check("IR (clean)", "#88CCFF", False)
-        self.check_ir_filt = create_check("IR (filt)", "#44AAFF", True)
+        self.check_ir_sub = create_check("IR (clean)", "#88CCFF", True)
+        self.check_ir_filt = create_check("IR (filt)", "#44AAFF", False)
         
         self.sidebar_layout.addWidget(self.check_ir_raw)
         self.sidebar_layout.addWidget(self.check_ir_amb)
@@ -1174,7 +1438,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.sidebar_layout.addWidget(self.btn_pause)
 
-        self.btn_pause_plot = QtWidgets.QPushButton("PAUSAR\nGRÁFICAS")
+        self.btn_pause_plot = QtWidgets.QPushButton("PAUSE\nMAIN WINDOW")
         self.btn_pause_plot.setCheckable(True)
         self.btn_pause_plot.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_pause_plot.clicked.connect(self.toggle_pause_plot)
@@ -1185,6 +1449,30 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_save.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_save.clicked.connect(self.toggle_save)
         self.sidebar_layout.addWidget(self.btn_save)
+
+        self.btn_save_raw = QtWidgets.QPushButton("GUARDAR\nRAW (500 Hz)")
+        self.btn_save_raw.setCheckable(True)
+        self.btn_save_raw.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_save_raw.clicked.connect(self.toggle_save_raw)
+        self.sidebar_layout.addWidget(self.btn_save_raw)
+
+        self.sidebar_layout.addSpacing(20)
+
+        label_decim = QtWidgets.QLabel("DECIMACIÓN")
+        label_decim.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
+        self.sidebar_layout.addWidget(label_decim)
+
+        decim_row = QtWidgets.QHBoxLayout()
+        decim_lbl = QtWidgets.QLabel("1 de cada")
+        decim_lbl.setStyleSheet("color: #CCCCCC; font-size: 16px;")
+        self.spin_decim = QtWidgets.QSpinBox()
+        self.spin_decim.setRange(1, 500)
+        self.spin_decim.setValue(10)
+        self.spin_decim.setSuffix(" tramas")
+        self.spin_decim.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 4px; font-size: 16px;")
+        decim_row.addWidget(decim_lbl)
+        decim_row.addWidget(self.spin_decim)
+        self.sidebar_layout.addLayout(decim_row)
 
         self.sidebar_layout.addSpacing(20)
 
@@ -1199,6 +1487,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.sidebar_layout.addWidget(self.btn_lib_mow)
         self.sidebar_layout.addWidget(self.btn_lib_pc)
         self._update_lib_button()
+
+        self.sidebar_layout.addSpacing(10)
+
+        label_frame = QtWidgets.QLabel("FRAME MODE")
+        label_frame.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
+        self.sidebar_layout.addWidget(label_frame)
+
+        self.btn_frame_m1 = QtWidgets.QPushButton("$M1  FULL")
+        self.btn_frame_m2 = QtWidgets.QPushButton("$M2  RAW")
+        self.btn_frame_m1.clicked.connect(lambda: self._send_frame_cmd("M1"))
+        self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
+        self.sidebar_layout.addWidget(self.btn_frame_m1)
+        self.sidebar_layout.addWidget(self.btn_frame_m2)
+        self._update_frame_button()
 
         self.sidebar_layout.addSpacing(20)
 
@@ -1218,11 +1520,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_spo2lab.clicked.connect(self.toggle_spo2lab)
         self.sidebar_layout.addWidget(self.btn_spo2lab)
 
-        self.btn_hrlab2 = QtWidgets.QPushButton("HRLAB2")
-        self.btn_hrlab2.setCheckable(True)
-        self.btn_hrlab2.setStyleSheet(ACTION_BUTTON_STYLE)
-        self.btn_hrlab2.clicked.connect(self.toggle_hrlab2)
-        self.sidebar_layout.addWidget(self.btn_hrlab2)
+        self.btn_hr3lab = QtWidgets.QPushButton("HR3LAB")
+        self.btn_hr3lab.setCheckable(True)
+        self.btn_hr3lab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_hr3lab.clicked.connect(self.toggle_hr3lab)
+        self.sidebar_layout.addWidget(self.btn_hr3lab)
 
         self.sidebar_layout.addStretch()
         
@@ -1268,6 +1570,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.p_hr = stats_layout.addPlot(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
         self.curve_hr1 = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3), name="HR1")
         self.curve_hr2 = self.p_hr.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
+        self.curve_hr3 = self.p_hr.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="HR3")
         self.p_hr.setYRange(40, 180)
 
         # Column widths: PPG wider, SpO2 and HR narrower
@@ -1350,15 +1653,31 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked())
         self.curve_ir_filt.setVisible(self.check_ir_filt.isChecked())
 
-        # Etiqueta de estado
-        self.status_bar = QtWidgets.QLabel()
-        self.status_bar.setAlignment(QtCore.Qt.AlignCenter)
-        main_layout.addWidget(self.status_bar)
+        # Panel de log de estado
+        self.log_panel = QtWidgets.QTextEdit()
+        self.log_panel.setReadOnly(True)
+        self.log_panel.setFixedHeight(180)
+        self.log_panel.setStyleSheet("""
+            QTextEdit {
+                background-color: #1A1A2E;
+                color: #E0E0E0;
+                font-family: monospace;
+                font-size: 16px;
+                border: 1px solid #333355;
+                border-radius: 6px;
+                padding: 4px 8px;
+            }
+        """)
+        main_layout.addWidget(self.log_panel)
         self.set_status(f"Conectando a {PORT}...", "info")
         
         # Conexión Serial
         try:
             self.ser = serial.Serial(PORT, BAUD, timeout=0.1)
+            self._serial_queue = queue.Queue()
+            self._reader_stop = threading.Event()
+            self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
+            self._reader_thread.start()
             self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
             self.console.appendPlainText("Timestamp_PC   ,Df_us,$LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R")
         except Exception as e:
@@ -1395,6 +1714,25 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_lib_pc.setStyleSheet(
             self.STYLE_LIB_ACTIVE.format(bg="#3A2A00", fg="#FFAA00", bgh="#4A3800")
             if not mow_active else self.STYLE_LIB_INACTIVE)
+        if hasattr(self, 'btn_frame_m1'):
+            self._update_frame_button()
+
+    def _update_frame_button(self):
+        mow_active = (self.active_lib == "MOW")
+        m1_active = (self.frame_mode == "M1")
+        for btn, is_active in ((self.btn_frame_m1, m1_active), (self.btn_frame_m2, not m1_active)):
+            btn.setEnabled(mow_active)
+            btn.setStyleSheet(
+                self.STYLE_LIB_ACTIVE.format(bg="#002A3A", fg="#44AAFF", bgh="#003A4A")
+                if (mow_active and is_active) else self.STYLE_LIB_INACTIVE)
+
+    def _send_frame_cmd(self, mode):
+        if not hasattr(self, 'ser') or not self.ser.is_open:
+            return
+        self.ser.write(('1' if mode == "M1" else '2').encode())
+        self.frame_mode = mode
+        self._update_frame_button()
+        self.set_status(f"Frame mode: ${mode}", "info")
 
     def _send_lib_cmd(self, cmd):
         if not hasattr(self, 'ser') or not self.ser.is_open:
@@ -1415,19 +1753,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hrlab_window.close()
                 self.hrlab_window = None
 
-    def _open_hrlab2_default(self):
-        self.btn_hrlab2.setChecked(True)
-        self.toggle_hrlab2()
+    def _open_hr3lab_default(self):
+        self.btn_hr3lab.setChecked(True)
+        self.toggle_hr3lab()
 
-    def toggle_hrlab2(self):
-        if self.btn_hrlab2.isChecked():
-            self.hrlab2_window = HRLab2Window(self)
-            self.hrlab2_window.show()
+    def toggle_hr3lab(self):
+        if self.btn_hr3lab.isChecked():
+            self.hr3lab_window = HR3LabWindow(self)
+            self.hr3lab_window.show()
         else:
-            if self.hrlab2_window is not None:
-                self.hrlab2_window.main_monitor = None
-                self.hrlab2_window.close()
-                self.hrlab2_window = None
+            if self.hr3lab_window is not None:
+                self.hr3lab_window.main_monitor = None
+                self.hr3lab_window.close()
+                self.hr3lab_window = None
 
     def _open_spo2lab_default(self):
         self.btn_spo2lab.setChecked(True)
@@ -1455,15 +1793,51 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def toggle_pause_plot(self):
         self.is_plot_paused = self.btn_pause_plot.isChecked()
         if self.is_plot_paused:
-            self.btn_pause_plot.setText("REANUDAR\nGRÁFICAS")
+            self.btn_pause_plot.setText("RESUME\nMAIN WINDOW")
         else:
-            self.btn_pause_plot.setText("PAUSAR\nGRÁFICAS")
+            self.btn_pause_plot.setText("PAUSE\nMAIN WINDOW")
 
     def auto_stop_save(self):
         if self.is_saving:
             self.btn_save.setChecked(False)
             self.toggle_save()
             self.set_status("Stream finalizado (Auto-Stop 1000s)", "info")
+
+    def auto_stop_save_raw(self):
+        if self.is_saving_raw:
+            self.btn_save_raw.setChecked(False)
+            self.toggle_save_raw()
+            self.set_status("Stream RAW finalizado (Auto-Stop 1000s)", "info")
+
+    def toggle_save_raw(self):
+        if self.is_paused:
+            self.btn_save_raw.setChecked(False)
+            self.set_status("No se puede grabar RAW en modo pausado", "error")
+            return
+        now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.is_saving_raw = self.btn_save_raw.isChecked()
+        if self.is_saving_raw:
+            self.btn_save_raw.setText("DETENER\nRAW")
+            filename = f"ppg_data_raw_{now_str}.csv"
+            try:
+                self.save_file_raw = open(filename, "w")
+                if self.frame_mode == "M2":
+                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
+                else:
+                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
+                self.set_status(f"GRABANDO RAW (500 Hz): {filename}", "warning")
+                self.auto_save_raw_timer.start(1000 * 1000)
+            except Exception as e:
+                self.set_status(f"Error al grabar RAW: {e}", "error")
+                self.is_saving_raw = False
+                self.btn_save_raw.setChecked(False)
+        else:
+            self.auto_save_raw_timer.stop()
+            self.btn_save_raw.setText("GUARDAR\nRAW (500 Hz)")
+            if self.save_file_raw:
+                self.save_file_raw.close()
+                self.save_file_raw = None
+            self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
 
     def toggle_save(self):
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1485,7 +1859,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 filename = f"ppg_data_stream_{now_str}.csv"
                 try:
                     self.save_file = open(filename, "w")
-                    self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR1,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
+                    if self.frame_mode == "M2":
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
+                    else:
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
                     self.set_status(f"GRABANDO EN TIEMPO REAL: {filename}", "warning")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -1500,16 +1877,35 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.save_file = None
                 self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
 
+    def _serial_reader(self):
+        """Dedicated thread: reads serial lines at full rate into a queue.
+        Completely decoupled from the UI so no frames are lost during rendering."""
+        while not self._reader_stop.is_set():
+            try:
+                line = self.ser.readline()
+                if line:
+                    self._serial_queue.put(line)
+            except Exception:
+                break
+
     def update_data(self):
         if self.is_paused:
-            # Keep draining the serial buffer so the ESP32 doesn't block
-            if hasattr(self, 'ser') and self.ser.is_open and self.ser.in_waiting > 0:
-                self.ser.read(self.ser.in_waiting)
+            # Drain queue to prevent memory buildup while paused
+            try:
+                while True:
+                    self._serial_queue.get_nowait()
+            except queue.Empty:
+                pass
             return
         try:
-            if hasattr(self, 'ser') and self.ser.is_open and self.ser.in_waiting > 0:
-                while self.ser.is_open and self.ser.in_waiting > 0:
-                    line_raw = self.ser.readline()
+            _new_data = False
+            _console_lines = []
+            if hasattr(self, '_serial_queue'):
+                while True:
+                    try:
+                        line_raw = self._serial_queue.get_nowait()
+                    except queue.Empty:
+                        break
                     try:
                         line = line_raw.decode('utf-8', errors='ignore').strip()
                     except: continue
@@ -1518,37 +1914,74 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # Confirmation messages from ESP32 (e.g. "# Switched to mow_afe4490")
                     if line.startswith('#'):
                         self.console.appendPlainText(line)
-                        if 'mow' in line.lower():
+                        if 'mow' in line.lower() and 'frame' not in line.lower():
                             self.active_lib = "MOW"
+                            self.frame_mode = "M1"
                             self._update_lib_button()
                             self.set_status("Librería activa: mow_afe4490", "info")
                         elif 'protocentral' in line.lower():
                             self.active_lib = "PROTOCENTRAL"
+                            self.frame_mode = "M1"
                             self._update_lib_button()
                             self.set_status("Librería activa: protocentral", "info")
+                        elif 'frame mode' in line.lower():
+                            self.set_status(line.lstrip('# '), "info")
                         continue
 
                     current_time_perf = time.perf_counter()
                     timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")
                     diff_us = int((current_time_perf - self.last_time) * 1e6) if self.last_time is not None else 0
                     self.last_time = current_time_perf
-                    
-                    csv_line = f"{timestamp},{diff_us:>5},{line}"
-                    self.console.appendPlainText(csv_line)
-                    if getattr(self, 'is_saving', False) and getattr(self, 'save_file', None):
-                        self.save_file.write(csv_line + "\n")
-                        self.save_file.flush()
-                    if self.console.blockCount() > 500:
-                        cursor = self.console.textCursor()
-                        cursor.movePosition(QtGui.QTextCursor.Start)
-                        cursor.select(QtGui.QTextCursor.BlockUnderCursor)
-                        cursor.removeSelectedText()
-                        cursor.deleteChar()
-                    self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
-                    self.console.horizontalScrollBar().setValue(0)
-                    
+
                     if not line.startswith('$'):
                         continue
+
+                    # Verify and strip NMEA-style XOR checksum (*XX) if present
+                    chk_ok = 1
+                    if '*' in line:
+                        star_pos = line.rfind('*')
+                        chk_field = line[star_pos + 1:]
+                        if len(chk_field) == 2:
+                            try:
+                                expected_chk = int(chk_field, 16)
+                                computed_chk = 0
+                                for c in line[1:star_pos]:
+                                    computed_chk ^= ord(c)
+                                if computed_chk != expected_chk:
+                                    chk_ok = 0
+                                    self.console.appendPlainText(
+                                        f"# BAD CHK (got {computed_chk:02X} exp {expected_chk:02X}): {line[:70]}")
+                            except ValueError:
+                                pass
+                        if self.save_file_chk is not None:
+                            self.save_file_chk.write(f"{timestamp},{diff_us:>5},{chk_ok},{line}\n")
+                        line = line[:star_pos]  # strip *XX for field parsing and CSV
+                        if not chk_ok:
+                            continue
+                    else:
+                        if self.save_file_chk is not None:
+                            self.save_file_chk.write(f"{timestamp},{diff_us:>5},{chk_ok},{line}\n")
+
+                    csv_line = f"{timestamp},{diff_us:>5},{line}"
+
+                    # RAW file save: full rate (500 Hz), before decimation
+                    if self.is_saving_raw and self.save_file_raw:
+                        self.save_file_raw.write(csv_line + "\n")
+                        self.save_file_raw.flush()
+
+                    # Decimation: skip N-1 out of every N data frames for console + plots
+                    self._decim_counter += 1
+                    if self._decim_counter % self.spin_decim.value() != 0:
+                        continue
+
+                    # Decimated file save: only kept frames
+                    if self.is_saving and self.save_file:
+                        self.save_file.write(csv_line + "\n")
+                        self.save_file.flush()
+
+                    if not self.is_plot_paused:
+                        _console_lines.append(csv_line)
+
                     parts = line[1:].split(',')  # strip leading '$'
                     if len(parts) >= 17:
                         try:
@@ -1571,15 +2004,55 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr1_ppg.append(p[13])
                             self.data_hr2.append(p[14])
                             self.data_spo2_r.append(p[15])
+                            hr3, _ = self.hr3_calc.update(p[10], SPO2_RECEIVED_FS)  # p[10]=IRSub=led1_aled1
+                            self.data_hr3.append(hr3)
                         except ValueError: pass
-                
-                if not self.is_plot_paused:
+                        else: _new_data = True
+                    elif parts[0] == "M2" and len(parts) >= 8:
+                        # $M2,cnt,led2(RED),led1(IR),aled2(AmbRED),aled1(AmbIR),led2_aled2(REDSub),led1_aled1(IRSub)
+                        try:
+                            self.data_lib_id.append(parts[0])
+                            p = [float(x) for x in parts[1:8]]
+                            self.data_sample_counter.append(int(p[0]))
+                            self.data_timestamp_us.append(0.0)
+                            self.data_ppg.append(0.0)
+                            self.data_spo2.append(-1.0)
+                            self.data_hr1.append(-1.0)
+                            self.data_red.append(p[1])
+                            self.data_ir.append(p[2])
+                            self.data_amb_red.append(p[3])
+                            self.data_amb_ir.append(p[4])
+                            self.data_red_sub.append(p[5])
+                            self.data_ir_sub.append(p[6])
+                            self.data_red_filt.append(0.0)
+                            self.data_ir_filt.append(0.0)
+                            self.data_hr1_ppg.append(0.0)
+                            self.data_hr2.append(-1.0)
+                            self.data_hr3.append(-1.0)
+                            self.data_spo2_r.append(-1.0)
+                        except ValueError: pass
+                        else: _new_data = True
+
+                # Batch console update: one appendPlainText call for all lines accumulated this cycle
+                if _console_lines and not self.is_plot_paused:
+                    self.console.appendPlainText('\n'.join(_console_lines))
+                    if self.console.blockCount() > 500:
+                        cursor = self.console.textCursor()
+                        cursor.movePosition(QtGui.QTextCursor.Start)
+                        cursor.select(QtGui.QTextCursor.BlockUnderCursor)
+                        cursor.removeSelectedText()
+                        cursor.deleteChar()
+                    self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
+                    self.console.horizontalScrollBar().setValue(0)
+
+                if _new_data and not self.is_plot_paused:
                     self.p_spo2.setTitle(f"<b style='color:#44FF88'>SpO2: {self.data_spo2[-1]:.1f} %</b> &nbsp; <b style='color:#AAAAAA'>R: {self.data_spo2_r[-1]:.4f}</b>")
-                    self.p_hr.setTitle(f"<b style='color:#FFDD44'>HR1: {self.data_hr1[-1]:.2f} bpm</b> &nbsp; <b style='color:#FF4444'>HR2: {self.data_hr2[-1]:.2f} bpm</b>")
+                    self.p_hr.setTitle(f"<b style='color:#FFDD44'>HR1: {self.data_hr1[-1]:.2f} bpm</b> &nbsp; <b style='color:#FF4444'>HR2: {self.data_hr2[-1]:.2f} bpm</b> &nbsp; <b style='color:#00CCFF'>HR3: {self.data_hr3[-1]:.2f} bpm</b>")
                     self.curve_ppg.setData(list(self.data_ppg)[-PPG_WINDOW_SIZE:])
                     self.curve_spo2.setData(list(self.data_spo2))
                     self.curve_hr1.setData(list(self.data_hr1))
                     self.curve_hr2.setData(list(self.data_hr2))
+                    self.curve_hr3.setData(list(self.data_hr3))
                     self.curve_red.setData(list(self.data_red))
                     self.curve_ir.setData(list(self.data_ir))
                     self.curve_amb_red.setData(list(self.data_amb_red))
@@ -1590,6 +2063,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.curve_ir_filt.setData(list(self.data_ir_filt))
                     self.curve_hr1_ppg.setData(list(self.data_hr1_ppg)[-PPG_WINDOW_SIZE:])
 
+                # Sub-windows update independently of PAUSE MAIN WINDOW
+                if _new_data:
                     if self.hrlab_window is not None:
                         self.hrlab_window.update_plots(self.data_ppg, self.data_timestamp_us, self.data_sample_counter)
 
@@ -1599,6 +2074,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_spo2, self.data_spo2_r,
                             self.data_timestamp_us, self.data_sample_counter)
 
+                    if self.hr3lab_window is not None:
+                        self.hr3lab_window.update_plots(
+                            self.data_hr1, self.data_hr2, self.data_hr3, self.hr3_calc)
+
         except Exception as e:
             print(f"Error en loop: {e}")
 
@@ -1606,11 +2085,26 @@ class PPGMonitor(QtWidgets.QMainWindow):
         super().showEvent(event)
         # setSizes debe llamarse tras show() para que Qt no lo sobreescriba
         QtCore.QTimer.singleShot(0, lambda: self.splitter.setSizes([1800, 900]))
-        QtCore.QTimer.singleShot(0, self._open_spo2lab_default)
+        QtCore.QTimer.singleShot(0, self._open_hr3lab_default)
+
+    def _auto_close_chk(self):
+        if self.save_file_chk is not None:
+            self.save_file_chk.close()
+            self.save_file_chk = None
+        print(f"[save-chk] DONE: {self._chk_filename}")
+        QtCore.QTimer.singleShot(0, QtWidgets.QApplication.instance().quit)
 
     def closeEvent(self, event):
         if getattr(self, 'is_saving', False) and getattr(self, 'save_file', None):
             self.save_file.close()
+        if getattr(self, 'is_saving_raw', False) and getattr(self, 'save_file_raw', None):
+            self.save_file_raw.close()
+        if getattr(self, 'save_file_chk', None):
+            self.save_file_chk.close()
+        if hasattr(self, '_reader_stop'):
+            self._reader_stop.set()
+        if hasattr(self, '_reader_thread'):
+            self._reader_thread.join(timeout=1.0)
         if hasattr(self, 'ser') and self.ser.is_open:
             self.ser.close()
         if self.hrlab_window is not None:
@@ -1619,14 +2113,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.spo2lab_window is not None:
             self.spo2lab_window.main_monitor = None
             self.spo2lab_window.close()
-        if self.hrlab2_window is not None:
-            self.hrlab2_window.main_monitor = None
-            self.hrlab2_window.close()
+        if self.hr3lab_window is not None:
+            self.hr3lab_window.main_monitor = None
+            self.hr3lab_window.close()
         event.accept()
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="AFE4490 PPG Monitor")
+    parser.add_argument("--save-chk", action="store_true",
+                        help="Auto-save diagnostic CSV with raw frames and CHK_OK field")
+    parser.add_argument("--save-chk-duration", type=int, default=15, metavar="N",
+                        help="Auto-close CHK file and exit after N seconds (default: 15)")
+    args = parser.parse_args()
+
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle('Fusion')
-    window = PPGMonitor()
+    window = PPGMonitor(save_chk=args.save_chk, save_chk_duration=args.save_chk_duration)
     window.show()
     sys.exit(app.exec_())
