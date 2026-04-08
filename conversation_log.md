@@ -2940,3 +2940,51 @@ Sesión dedicada exclusivamente a mejoras de UI en `ppg_plotter.py`. Sin cambios
 **Fichero modificado:** `ppg_plotter.py`.
 
 ---
+
+## Sesión — 2026-04-08 (continuación 8)
+
+### Tema: Implementación firmware HR3 (FFT + HPS)
+
+**Pregunta principal:** Implementar HR3 en la librería `mow_afe4490` (firmware) — algoritmo FFT + Harmonic Product Spectrum, como tercer algoritmo de HR en paralelo con HR1 y HR2.
+
+---
+
+**¿Por qué FFT radix-2 DIT propio en lugar de ESP-DSP?**
+ESP-DSP requiere configuración IDF como componente externo y no está disponible en `env:native` (tests en PC). Se implementó un FFT radix-2 DIT Cooley-Tukey autocontenido en el namespace anónimo del `.cpp`, que funciona en ambos entornos.
+
+**¿Por qué `_hr3_fft[1024]` como miembro de clase en lugar de variable local?**
+Con 4096 bytes en stack causaría stack overflow en la task interna (que tenía MOW_AFE4490_TASK_STACK=4096). Al moverlo al heap (miembro de clase) se elimina el riesgo. Se aumentó también MOW_AFE4490_TASK_STACK de 4096 a 8192 para dar margen a `cosf`/`sinf` durante los stages butterfly.
+
+**¿Por qué `_recalc_biquad_lp()` nueva función en lugar de usar `_recalc_biquad()`?**
+`_recalc_biquad()` sólo implementa bandpass. HR3 necesita un LP de anti-aliasing (10 Hz) antes de decimación. Se añadió `_recalc_biquad_lp()` con la transformada bilineal para Butterworth LP 2º orden (ganancia DC = 1.0).
+
+**¿Por qué HPS (P[k]·P[2k]·P[3k]) en lugar de peak del espectro directo?**
+El PPG frecuentemente tiene armónicos dominantes (2.ª o 3.ª) con mayor potencia que el fundamental a FC elevada. HPS refuerza el fundamental multiplicando el espectro por sus versiones decimadas; evita que el algoritmo bloquee en un armónico.
+
+**¿Por qué `search_max <= nyquist/3`?**
+Garantiza que `P[3k]` esté siempre dentro de la banda de Nyquist. Si `search_max` fuera mayor, `P[3*search_max]` caería fuera del espectro calculado.
+
+**Decisiones de diseño:**
+- Sustracción de media (DC removal) antes de la ventana Hann → elimina DC offset que quedaría tras el filtro LP
+- Negación de la señal LP filtrada en `_update_hr3()` igual que en `_update_hr2()` → picos hacia arriba
+- Guard band idéntica a HR1/HR2: búsqueda interna [22, 303] BPM, reporte válido [25, 300] BPM
+- `hr3_update_interval = 25` → actualización cada 0.5 s al igual que HR2
+- Interpolación parabólica sobre espectro original (no sobre HPS) para mayor precisión sub-bin
+
+**Trama serie:**
+- Trama `$M1` ampliada: campo 17 (índice 0) = HR3 (`%.2f`, `-1.0f` si no válido)
+- Trama `$P1` ampliada igualmente: campo 17 = `-1.0f` (placeholder, no disponible en protocentral)
+- `buf[256]` en main.cpp suficiente (trama crece ~7 bytes)
+
+**ppg_plotter.py:**
+- Parser: `>= 17` → `>= 18`, `parts[1:17]` → `parts[1:18]`, `data_hr3` = `p[16]` (firmware) en lugar de calculado en Python
+- `hr3_calc.update()` se mantiene para uso exclusivo en HR3LabWindow (diagnósticos)
+- Todos los CSV headers actualizados con columna `HR3`
+- Tooltip `$M1` actualizado: "17 fields" → "18 fields"
+- Descripción HR3 en stats actualizada: "computed in Python" → "computed in firmware"
+
+**Archivos modificados:** `lib/mow_afe4490/mow_afe4490.h`, `lib/mow_afe4490/mow_afe4490.cpp`, `src/main.cpp`, `ppg_plotter.py`, `mow_afe4490_spec.md` (v0.11 → v0.12), `TODO.md`.
+
+**Build:** SUCCESS (303 KB Flash, 31 KB RAM). Flashed a COM15.
+
+---

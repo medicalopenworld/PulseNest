@@ -75,7 +75,7 @@ void Protocentral_Task(void *pvParameters) {
             if (cnt % SERIAL_DOWNSAMPLING_RATIO == 0) {
                 char buf[256];
                 int n = snprintf(buf, sizeof(buf) - 6,
-                    "$P1,%lu,%lu,%ld,%g,%g,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.2f",
+                    "$P1,%lu,%lu,%ld,%g,%g,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.2f,%.2f",
                     cnt, ts,
                     (long)(protocentral_data.IR_filtered_data * -1),
                     (double)protocentral_data.spo2,
@@ -90,7 +90,8 @@ void Protocentral_Task(void *pvParameters) {
                     (long)protocentral_data.IR_filtered_data,
                     0.0f,   // HR1PPG — not available in protocentral
                     -1.0f,  // HR2    — not available in protocentral
-                    -1.0f); // SpO2_R — not available in protocentral
+                    -1.0f,  // SpO2_R — not available in protocentral
+                    -1.0f); // HR3    — not available in protocentral
                 uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                 snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                 Serial.print(buf);
@@ -167,7 +168,7 @@ void Mow_Task(void *pvParameters) {
                 if (g_mow_frame_mode == MowFrameMode::M1) {
                     char buf[256];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M1,%lu,%lu,%ld,%.2f,%.2f,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f",
+                        "$M1,%lu,%lu,%ld,%.2f,%.2f,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f",
                         (unsigned long)mow_sample_count,
                         (unsigned long)micros(),
                         (long)data.ppg,
@@ -179,7 +180,8 @@ void Mow_Task(void *pvParameters) {
                         (long)data.led2_aled2, (long)data.led1_aled1,  // REDFilt, IRFilt (placeholders)
                         data.hr1_ppg,
                         data.hr2_valid ? data.hr2 : -1.0f,
-                        data.spo2_r);
+                        data.spo2_r,
+                        data.hr3_valid ? data.hr3 : -1.0f);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     Serial.print(buf);

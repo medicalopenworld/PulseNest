@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.11
+# mow_afe4490 — Specification v0.12
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -23,6 +23,7 @@ afe4490_task (internal)
     ├── processes PPG signal (bandpass filter)
     ├── computes HR1 (peak detection)
     ├── computes HR2 (autocorrelation, runs in parallel with HR1)
+    ├── computes HR3 (FFT + HPS, runs in parallel with HR1 and HR2)
     ├── computes SpO2 (AC/DC ratio)
     └── xQueueSend() → FreeRTOS queue
     │
@@ -52,6 +53,8 @@ The AFE4490 produces 6 signals per sample. All are read internally:
     │
     ├─→ LED1-ALED1 (IR corr.) → bandpass 0.5–5 Hz → decimate ×10 → HR2 (autocorrelation)
     │
+    ├─→ LED1-ALED1 (IR corr.) → LP 10 Hz → decimate ×10 → 512-sample Hann → FFT → HPS → HR3
+    │
     └─→ LED1-ALED1 (IR corr.) + LED2-ALED2 (RED corr.) → AC/DC → SpO2
 ```
 
@@ -71,6 +74,8 @@ struct AFE4490Data {
     bool    hr1_valid;  // true if HR1 calculation is reliable
     float   hr2;        // HR2 (autocorrelation) in bpm
     bool    hr2_valid;  // true if HR2 calculation is reliable
+    float   hr3;        // HR3 (FFT + HPS) in bpm
+    bool    hr3_valid;  // true if HR3 calculation is reliable
     // The 6 raw signals from AFE4490
     int32_t led1;       // LED1VAL  — IR raw
     int32_t led2;       // LED2VAL  — RED raw
@@ -124,6 +129,8 @@ void setPPGChannel(AFE4490Channel channel);
 void setFilter(AFE4490Filter type, float f_low_hz = 0.5f, float f_high_hz = 20.0f);
 // HR2 bandpass filter cutoffs (default 0.5–5 Hz); callable before or after begin()
 void setHR2Filter(float f_low_hz = 0.5f, float f_high_hz = 5.0f);
+// HR3 low-pass filter cutoff (default 10 Hz); callable before or after begin()
+void setHR3Filter(float f_high_hz = 10.0f);
 ```
 
 ### 2.5 Data retrieval
@@ -286,16 +293,45 @@ Independent second HR algorithm running in parallel with HR1 on the same `led1_a
 
 `hr2_valid` is set when the buffer is full and a peak above `hr2_min_corr` is found in the valid HR range.
 
-### 5.4 HR algorithms roadmap
+### 5.4 HR3 — FFT + Harmonic Product Spectrum
+
+Independent third HR algorithm running in parallel with HR1 and HR2 on `led1_aled1`.
+
+**Processing chain:**
+1. 2nd-order Butterworth low-pass filter at 10 Hz (anti-aliasing before decimation)
+2. Decimate by factor 10 → effective rate 50 Hz
+3. Accumulate in circular buffer of 512 samples (10.24 s at 50 Hz)
+4. Every 25 decimated samples (0.5 s): mean subtraction (DC removal) → Hann window → in-place radix-2 DIT FFT → HPS → parabolic interpolation
+
+**Harmonic Product Spectrum (HPS):** multiplies the power spectrum by its 2nd and 3rd harmonic downsampled versions: `HPS[k] = P[k] · P[2k] · P[3k]`. Reinforces the fundamental frequency; suppresses dominant harmonics that can mislead simpler peak-finding.
+
+**Self-contained FFT:** radix-2 DIT FFT (Cooley-Tukey) implemented in the anonymous namespace to avoid external dependencies. Works in both `env:in3ator_V15` and `env:native` test environments.
+
+**Key constants:**
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `hr3_buf_len` | 512 | Buffer length (10.24 s at 50 Hz) |
+| `hr3_decim_factor` | 10 | 500 Hz → 50 Hz |
+| `hr3_update_interval` | 25 | Recompute every 0.5 s |
+| LP cutoff | 10 Hz | Anti-aliasing before decimation |
+| HPS harmonics | 2, 3 | P[k]·P[2k]·P[3k] |
+| HPS search cap | `nyquist/3` | Ensures 3rd harmonic stays within Nyquist band |
+
+**Stack note:** `_hr3_fft[1024]` (4096 bytes complex buffer) is stored as a class member (heap). `MOW_AFE4490_TASK_STACK` default increased to 8192 to accommodate `cosf`/`sinf` stack usage during butterfly stages.
+
+`hr3_valid` is set when the buffer is full and the HPS peak falls within [25, 300] BPM (internal search [22, 303] BPM guard band).
+
+### 5.5 HR algorithms roadmap
 
 | Algorithm | Method | Status |
 |---|---|---|
 | HR1 | Threshold crossing (rising edge, 0.6 × running_max) | Implemented |
 | HR2 | Autocorrelation on decimated signal (50 Hz, 8 s window) | Implemented |
-| HR3 | FFT on windowed signal | Planned |
+| HR3 | FFT + HPS on decimated signal (50 Hz, 10.24 s window) | Implemented |
 | HR4 | True peak detection via derivative (max of derivative = steepest ascending slope) | Planned |
 
-HR1–HR4 all operate on `led1_aled1` (IR ambient-corrected) and run in parallel. `AFE4490Data` will expose `hr3`/`hr3_valid` and `hr4`/`hr4_valid` when implemented.
+HR1–HR4 all operate on `led1_aled1` (IR ambient-corrected) and run in parallel. `AFE4490Data` will expose `hr4`/`hr4_valid` when implemented.
 
 > All HR algorithms developed from scratch. Protocentral code is not used as a base.
 
@@ -396,6 +432,11 @@ SNR_improvement = sqrt(num)    →  num=8: ×2.83,  num=10: ×3.16
 |         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
 |         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
 |         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+| v0.12   | Added HR3 algorithm (FFT + HPS): `hr3`/`hr3_valid` in `AFE4490Data`,     |
+|         | `setHR3Filter()` in API, section 5.4. Self-contained radix-2 DIT FFT     |
+|         | in anonymous namespace. `_recalc_biquad_lp()` for LP anti-aliasing.      |
+|         | `MOW_AFE4490_TASK_STACK` default 4096→8192. Architecture diagrams         |
+|         | (sections 1.1 and 1.3) updated. $M1 serial trama field 17 = HR3.        |
 | v0.11   | HR reported range corrected per ISO 80601-2-61 + neonatal use:           |
 |         | **[30, 250] → [25, 300] BPM**. Guard band updated to [22, 303] BPM.      |
 |         | `hr_refractory_s` 0.200→0.185 s (covers 303 BPM guard: 198 ms period).   |

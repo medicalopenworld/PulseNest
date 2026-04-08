@@ -27,7 +27,7 @@
 
 - [ ] **HR1 — derivada antes de buscar picos** — aplicar derivada a la señal filtrada antes del detector de picos para mejorar la precisión en la localización del frente de subida.
 - [x] **Flash y validar HR2** con simulador — valores coherentes con HR1 confirmados (2026-03-31).
-- [ ] **HR3 — FFT** — añadir un tercer algoritmo de HR basado en FFT como alternativa/complemento a HR1 y HR2.
+- [x] **HR3 — FFT** — algoritmo FFT + HPS implementado en firmware (2026-04-08): LP 10 Hz → decimate ×10 → buffer 512 → Hann → FFT radix-2 DIT → HPS (P[k]·P[2k]·P[3k]) → interpolación parabólica. Expuesto en trama M1 (campo 17). ppg_plotter.py actualizado.
 - [ ] **HR4 — Peak detection** — detección del frente de subida mediante derivada de la señal filtrada (máximo de la derivada = pendiente máxima ascendente), como mejora de precisión sobre el threshold crossing de HR1.
 - [ ] **Fiabilidad (confidence) de HR1, HR2, HR3** — calcular un valor porcentual de fiabilidad para cada algoritmo:
   - HR1: posible métrica basada en consistencia de los 5 intervalos RR (coeficiente de variación inverso)

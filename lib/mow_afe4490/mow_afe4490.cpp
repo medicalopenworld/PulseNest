@@ -28,6 +28,9 @@ namespace {
     constexpr float    hr2_min_lag_s            = 0.185f; // s  — min RR lag searched (guard band 303 BPM: 60/303 = 0.198 s period)
     constexpr float    hr2_min_corr             = 0.5f;  // normalised autocorrelation threshold
 
+    // ── HR3 FFT ───────────────────────────────────────────────────────────────
+    constexpr int      hr3_decim_factor         = 10;    // 500 Hz → 50 Hz effective sample rate
+
     // ── SpO2 ──────────────────────────────────────────────────────────────────
     // Coefficients a and b derived from experimental calibration with a
     // UpnMed U401-D(01AS-F) probe, type Nellcor Non-Oximax.
@@ -49,6 +52,44 @@ namespace {
     constexpr float    hr_search_max_bpm   = 303.0f;  // bpm — internal search upper bound (guard band: hr_max + 3)
     // HR1: refractory 200 ms naturally supports up to ~300 BPM; no explicit search bound needed.
     // HR2: search bound applied via hr2_acorr_max_lag (header) and hr2_min_lag_s (below).
+
+    // ── HR3 FFT — radix-2 Cooley-Tukey DIT (in-place, complex interleaved) ──
+    // x: float array of 2N elements [re0,im0, re1,im1, ..., re(N-1),im(N-1)]
+    // N must be a power of two. Twiddle factors computed per stage (9 calls to
+    // cosf/sinf for N=512), not per butterfly — negligible overhead at 0.5 s update rate.
+    static void _fft_r2(float* x, int N) {
+        // Bit-reversal permutation
+        for (int i = 1, j = 0; i < N; i++) {
+            int bit = N >> 1;
+            for (; j & bit; bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) {
+                float t;
+                t = x[2*i];   x[2*i]   = x[2*j];   x[2*j]   = t;
+                t = x[2*i+1]; x[2*i+1] = x[2*j+1]; x[2*j+1] = t;
+            }
+        }
+        // Butterfly stages
+        for (int len = 2; len <= N; len <<= 1) {
+            float w_re = cosf(-2.0f * pi / (float)len);
+            float w_im = sinf(-2.0f * pi / (float)len);
+            for (int i = 0; i < N; i += len) {
+                float c_re = 1.0f, c_im = 0.0f;
+                for (int j = 0; j < len / 2; j++) {
+                    int u = 2 * (i + j), v = 2 * (i + j + len / 2);
+                    float vt_re = c_re * x[v]   - c_im * x[v + 1];
+                    float vt_im = c_re * x[v + 1] + c_im * x[v];
+                    x[v]     = x[u]     - vt_re;
+                    x[v + 1] = x[u + 1] - vt_im;
+                    x[u]     = x[u]     + vt_re;
+                    x[u + 1] = x[u + 1] + vt_im;
+                    float tmp = c_re * w_re - c_im * w_im;
+                    c_im      = c_re * w_im + c_im * w_re;
+                    c_re      = tmp;
+                }
+            }
+        }
+    }
 
     // ── AFE4490 register addresses ────────────────────────────────────────────
     constexpr uint8_t REG_CONTROL0      = 0x00;
@@ -155,14 +196,17 @@ MOW_AFE4490::MOW_AFE4490()
       _hr1_last_peak_idx(0), _hr1_sample_idx(0),
       _hr1_interval_count(0),
       _hr2_bpf({0.5f, 5.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, {0.0f, 0.0f}, true}),
-      _hr2_buf_idx(0), _hr2_buf_count(0), _hr2_decim_counter(0), _hr2_update_counter(0)
+      _hr2_buf_idx(0), _hr2_buf_count(0), _hr2_decim_counter(0), _hr2_update_counter(0),
+      _hr3_lpf({0.0f, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, {0.0f, 0.0f}, true}),
+      _hr3_buf_idx(0), _hr3_buf_count(0), _hr3_decim_counter(0), _hr3_update_counter(0)
 {
     memset(_ma_buf, 0, sizeof(_ma_buf));
     memset(_hr1_ma_buf, 0, sizeof(_hr1_ma_buf));
     _hr1_ma_idx = 0; _hr1_ma_sum = 0.0f;
     memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
     memset(_hr2_buf, 0, sizeof(_hr2_buf));
-    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    memset(_hr3_buf, 0, sizeof(_hr3_buf));
+    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
     _recalc_rate_params();
 }
 
@@ -365,6 +409,15 @@ void MOW_AFE4490::setHR2Filter(float f_low_hz, float f_high_hz) {
     if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
+void MOW_AFE4490::setHR3Filter(float f_high_hz) {
+    if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
+    _hr3_lpf.f_high     = f_high_hz;
+    _recalc_biquad_lp(_hr3_lpf);
+    _hr3_lpf.state           = {0.0f, 0.0f};
+    _hr3_lpf.needs_precharge = true;
+    if (_initialized) xSemaphoreGive(_state_mutex);
+}
+
 void MOW_AFE4490::setSpO2Coefficients(float a, float b) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _spo2_a = a;
@@ -425,7 +478,12 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr2_buf_idx = 0; _hr2_buf_count = 0;
     _hr2_decim_counter = 0; _hr2_update_counter = 0;
     memset(_hr2_buf, 0, sizeof(_hr2_buf));
-    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _hr3_lpf.state           = {0.0f, 0.0f};
+    _hr3_lpf.needs_precharge = true;
+    _hr3_buf_idx = 0; _hr3_buf_count = 0;
+    _hr3_decim_counter = 0; _hr3_update_counter = 0;
+    memset(_hr3_buf, 0, sizeof(_hr3_buf));
+    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
@@ -582,6 +640,23 @@ void MOW_AFE4490::_recalc_rate_params() {
     if (_hr1_ma_len > (uint32_t)hr1_ma_max_len) _hr1_ma_len = (uint32_t)hr1_ma_max_len;
     _recalc_biquad(_ppg_bpf);
     _recalc_biquad(_hr2_bpf);
+    _recalc_biquad_lp(_hr3_lpf);
+}
+
+void MOW_AFE4490::_recalc_biquad_lp(BiquadFilter& filt) {
+    // 2nd-order Butterworth low-pass via bilinear transform.
+    // Uses filt.f_high as the -3 dB cutoff frequency.
+    // DC gain = 1.0; state unchanged (caller is responsible for resetting if needed).
+    float fs   = (float)_sample_rate_hz;
+    float Ohm  = tanf(pi * filt.f_high / fs);  // prewarped cutoff
+    float Ohm2 = Ohm * Ohm;
+    float sqrt2 = 1.41421356f;
+    float d    = 1.0f + sqrt2 * Ohm + Ohm2;
+    filt.b0    =  Ohm2 / d;
+    filt.b1    =  2.0f * filt.b0;
+    filt.b2    =  filt.b0;
+    filt.a1    =  2.0f * (Ohm2 - 1.0f) / d;
+    filt.a2    = (1.0f - sqrt2 * Ohm + Ohm2) / d;
 }
 
 void MOW_AFE4490::_recalc_biquad(BiquadFilter& filt) {
@@ -721,9 +796,10 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
     // SpO2 uses ambient-corrected channels (unfiltered, spec §1.3)
     _update_spo2(led1_aled1, led2_aled2);
 
-    // HR1 and HR2: both use led1_aled1 (IR ambient-corrected), run in parallel
+    // HR1, HR2 and HR3: all use led1_aled1 (IR ambient-corrected), run in parallel
     _update_hr1(led1_aled1);
     _update_hr2(led1_aled1);
+    _update_hr3(led1_aled1);
 
     // Push to queue; if full, drop oldest to keep most recent
     if (xQueueSend(_data_queue, &_current_data, 0) != pdTRUE) {
@@ -937,5 +1013,98 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
         _current_data.hr2_valid = true;
     } else {
         _current_data.hr2_valid = false;
+    }
+}
+
+// ── HR3 algorithm ─────────────────────────────────────────────────────────────
+// Low-pass-filters led1_aled1 (10 Hz), decimates by hr3_decim_factor, fills a
+// circular buffer of 512 samples (10.24 s at 50 Hz), then every hr3_update_interval
+// decimated samples applies a Hann window, computes the real FFT, and finds the
+// dominant frequency via the Harmonic Product Spectrum (HPS: P[k]·P[2k]·P[3k]).
+// Parabolic interpolation on the original spectrum gives sub-bin frequency resolution.
+void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
+    // ── Low-pass filter at full sample rate (anti-aliasing before decimation) ──
+    float filtered = -_biquad_process((float)led1_aled1, _hr3_lpf);  // negate: peaks up
+
+    // ── Decimate: store one sample every hr3_decim_factor ──
+    _hr3_decim_counter++;
+    if (_hr3_decim_counter < (uint32_t)hr3_decim_factor) return;
+    _hr3_decim_counter = 0;
+
+    _hr3_buf[_hr3_buf_idx] = filtered;
+    _hr3_buf_idx = (_hr3_buf_idx + 1) % hr3_buf_len;
+    if (_hr3_buf_count < (uint32_t)hr3_buf_len) _hr3_buf_count++;
+
+    // ── Periodic recomputation ──
+    _hr3_update_counter++;
+    if (_hr3_update_counter < (uint32_t)hr3_update_interval) return;
+    _hr3_update_counter = 0;
+
+    if (_hr3_buf_count < (uint32_t)hr3_buf_len) {
+        _current_data.hr3_valid = false;
+        return;
+    }
+
+    // ── Linearize, subtract mean (DC removal), apply Hann window → complex FFT input ──
+    float mean = 0.0f;
+    for (int i = 0; i < hr3_buf_len; i++)
+        mean += _hr3_buf[(_hr3_buf_idx + i) % hr3_buf_len];
+    mean /= (float)hr3_buf_len;
+
+    for (int i = 0; i < hr3_buf_len; i++) {
+        float sample = _hr3_buf[(_hr3_buf_idx + i) % hr3_buf_len] - mean;
+        float hann   = 0.5f * (1.0f - cosf(2.0f * pi * (float)i / (float)(hr3_buf_len - 1)));
+        _hr3_fft[2 * i]     = sample * hann;  // real
+        _hr3_fft[2 * i + 1] = 0.0f;           // imag
+    }
+
+    // ── In-place radix-2 DIT FFT ──
+    _fft_r2(_hr3_fft, hr3_buf_len);
+
+    // ── Find HPS peak in guard-band search range ──
+    // Frequency resolution: bin_res = fs_dec / N
+    float fs_dec   = (float)_sample_rate_hz / (float)hr3_decim_factor;
+    float bin_res  = fs_dec / (float)hr3_buf_len;
+
+    int search_min = (int)ceilf(hr_search_min_bpm / 60.0f / bin_res);
+    int search_max = (int)floorf(hr_search_max_bpm / 60.0f / bin_res);
+    int nyquist    = hr3_buf_len / 2;
+    if (search_max >= nyquist)          search_max = nyquist - 2;
+    if (search_max > nyquist / 3)       search_max = nyquist / 3;  // 3rd harmonic must stay inside Nyquist
+    if (search_min < 1)                 search_min = 1;
+    if (search_min >= search_max)       { _current_data.hr3_valid = false; return; }
+
+    // HPS = P[k] * P[2k] * P[3k]  where P[k] = re[k]^2 + im[k]^2
+    int   peak_bin = -1;
+    float peak_hps = 0.0f;
+    for (int k = search_min; k <= search_max; k++) {
+        float p1 = _hr3_fft[2*k]   * _hr3_fft[2*k]   + _hr3_fft[2*k+1]   * _hr3_fft[2*k+1];
+        float p2 = _hr3_fft[4*k]   * _hr3_fft[4*k]   + _hr3_fft[4*k+1]   * _hr3_fft[4*k+1];
+        float p3 = _hr3_fft[6*k]   * _hr3_fft[6*k]   + _hr3_fft[6*k+1]   * _hr3_fft[6*k+1];
+        float hps = p1 * p2 * p3;
+        if (hps > peak_hps) { peak_hps = hps; peak_bin = k; }
+    }
+
+    if (peak_bin < 1 || peak_bin >= nyquist - 1 || peak_hps <= 0.0f) {
+        _current_data.hr3_valid = false;
+        return;
+    }
+
+    // ── Parabolic interpolation on original spectrum around HPS peak ──
+    float yp = _hr3_fft[2*(peak_bin-1)] * _hr3_fft[2*(peak_bin-1)] + _hr3_fft[2*(peak_bin-1)+1] * _hr3_fft[2*(peak_bin-1)+1];
+    float y0 = _hr3_fft[2* peak_bin]    * _hr3_fft[2* peak_bin]    + _hr3_fft[2* peak_bin+1]    * _hr3_fft[2* peak_bin+1];
+    float yn = _hr3_fft[2*(peak_bin+1)] * _hr3_fft[2*(peak_bin+1)] + _hr3_fft[2*(peak_bin+1)+1] * _hr3_fft[2*(peak_bin+1)+1];
+    float denom = yp - 2.0f * y0 + yn;
+    float delta = (denom < 0.0f) ? 0.5f * (yp - yn) / denom : 0.0f;
+    float peak_freq = ((float)peak_bin + delta) * bin_res;  // Hz
+
+    if (peak_freq <= 0.0f) { _current_data.hr3_valid = false; return; }
+
+    float hr3 = 60.0f * peak_freq;
+    if (hr3 >= hr_min_bpm && hr3 <= hr_max_bpm) {
+        _current_data.hr3       = hr3;
+        _current_data.hr3_valid = true;
+    } else {
+        _current_data.hr3_valid = false;
     }
 }

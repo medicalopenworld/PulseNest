@@ -1583,7 +1583,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R"
+        "LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3"
     )
 
     def __init__(self, main_monitor):
@@ -1754,7 +1754,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("SpO2_R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
             ("HR1",      "data_hr1",      "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM."),
             ("HR2",      "data_hr2",      "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in Python). LP 10 Hz → 512-sample Hann window → rfft → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
+            ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
             ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("Amb RED",  "data_amb_red",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
@@ -1926,8 +1926,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
         self.btn_frame_m1.setToolTip(_make_tooltip(
             "$M1 — FULL frame",
-            "Full frame mode: 17 fields — SmpCnt, Ts_us, PPG, SpO2, HR1, RED, IR, "
-            "AmbRED, AmbIR, REDSub, IRSub, REDFilt, IRFilt, HR1PPG, HR2, SpO2_R + checksum. "
+            "Full frame mode: 18 fields — SmpCnt, Ts_us, PPG, SpO2, HR1, RED, IR, "
+            "AmbRED, AmbIR, REDSub, IRSub, REDFilt, IRFilt, HR1PPG, HR2, SpO2_R, HR3 + checksum. "
             "Use for algorithm analysis and calibration."))
         self.btn_frame_m2.setToolTip(_make_tooltip(
             "$M2 — RAW frame",
@@ -2267,7 +2267,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if self.frame_mode == "M2":
                     self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
                 else:
-                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
+                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3\n")
                 self.set_status(f"GRABANDO RAW (500 Hz): {filename}", "warning")
                 self.auto_save_raw_timer.start(1000 * 1000)
             except Exception as e:
@@ -2289,9 +2289,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             filename = f"ppg_data_snap_{now_str}.csv"
             try:
                 with open(filename, "w") as f:
-                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR1,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
+                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR1,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3\n")
                     for i in range(len(self.data_sample_counter)):
-                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_ppg[i]},{self.data_hr1[i]},{self.data_spo2[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_red_filt[i]},{self.data_ir_filt[i]},{self.data_hr1_ppg[i]},{self.data_hr2[i]},{self.data_spo2_r[i]}\n")
+                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_ppg[i]},{self.data_hr1[i]},{self.data_spo2[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_red_filt[i]},{self.data_ir_filt[i]},{self.data_hr1_ppg[i]},{self.data_hr2[i]},{self.data_spo2_r[i]},{self.data_hr3[i]}\n")
                 self.set_status(f"Memoria guardada en {filename}", "success")
             except Exception as e:
                 self.set_status(f"Error al guardar memoria: {e}", "error")
@@ -2305,7 +2305,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if self.frame_mode == "M2":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
                     else:
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3\n")
                     self.set_status(f"GRABANDO EN TIEMPO REAL: {filename}", "warning")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -2525,11 +2525,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     _console_lines.append(csv_line)
 
                     parts = line[1:].split(',')  # strip leading '$'
-                    if len(parts) >= 17:
+                    if len(parts) >= 18:
                         try:
-                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:PPG, 4:SpO2, 5:HR1, 6:RED, 7:IR, 8:AmbRED, 9:AmbIR, 10:REDSub, 11:IRSub, 12:REDFilt, 13:IRFilt, 14:HR1PPG, 15:HR2, 16:SpO2_R
+                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:PPG, 4:SpO2, 5:HR1, 6:RED, 7:IR, 8:AmbRED, 9:AmbIR, 10:REDSub, 11:IRSub, 12:REDFilt, 13:IRFilt, 14:HR1PPG, 15:HR2, 16:SpO2_R, 17:HR3
                             self.data_lib_id.append(parts[0])
-                            p = [float(x) for x in parts[1:17]]
+                            p = [float(x) for x in parts[1:18]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(p[1])
                             self.data_ppg.append(p[2])
@@ -2546,8 +2546,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr1_ppg.append(p[13])
                             self.data_hr2.append(p[14])
                             self.data_spo2_r.append(p[15])
-                            hr3, _ = self.hr3_calc.update(p[10], SPO2_RECEIVED_FS)  # p[10]=IRSub=led1_aled1
-                            self.data_hr3.append(hr3)
+                            self.data_hr3.append(p[16])  # HR3 from firmware; -1.0 if not valid
+                            self.hr3_calc.update(p[10], SPO2_RECEIVED_FS)  # keep for HR3Lab diagnostics
                             # Stats buffers
                             for sname, attr, _ in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])

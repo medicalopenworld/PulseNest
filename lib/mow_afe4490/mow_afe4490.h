@@ -1,7 +1,7 @@
 #pragma once
 
 // mow_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.7 — ESP32-S3, Arduino + FreeRTOS
+// v0.8 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 
 #include <Arduino.h>
@@ -22,7 +22,7 @@
 #endif
 
 #ifndef MOW_AFE4490_TASK_STACK
-#define MOW_AFE4490_TASK_STACK      4096
+#define MOW_AFE4490_TASK_STACK      8192  // increased from 4096: HR3 FFT calls cosf/sinf which needs extra stack
 #endif
 
 // ── Public data struct ────────────────────────────────────────────────────────
@@ -36,6 +36,8 @@ struct AFE4490Data {
     bool    hr1_valid;   // HR1 is reliable
     float   hr2;         // HR2 (autocorrelation) in bpm
     bool    hr2_valid;   // HR2 is reliable
+    float   hr3;         // HR3 (FFT + HPS) in bpm
+    bool    hr3_valid;   // HR3 is reliable
     // Raw ADC outputs (6 signals from AFE4490)
     int32_t led1;        // LED1VAL  — IR raw
     int32_t led2;        // LED2VAL  — RED raw
@@ -119,6 +121,9 @@ public:
     // HR2 bandpass filter cutoffs (default 0.5–5 Hz); callable before or after begin()
     void setHR2Filter(float f_low_hz = 0.5f, float f_high_hz = 5.0f);
 
+    // HR3 low-pass filter cutoff (default 10 Hz, anti-aliasing before decimation)
+    void setHR3Filter(float f_high_hz = 10.0f);
+
     // Data retrieval — non-blocking; returns true if data was available
     bool getData(AFE4490Data& data);
 
@@ -160,6 +165,8 @@ private:
     void _recalc_rate_params();
     // Recomputes Butterworth bandpass biquad coefficients into filt from _sample_rate_hz and filt.f_low/f_high
     void _recalc_biquad(BiquadFilter& filt);
+    // Recomputes Butterworth low-pass biquad coefficients into filt (uses filt.f_high as cutoff)
+    void _recalc_biquad_lp(BiquadFilter& filt);
 
     // Chip init
     void _chip_init();
@@ -181,6 +188,7 @@ private:
     void _update_spo2(int32_t ir_corr, int32_t red_corr);
     void _update_hr1(int32_t led1_aled1);
     void _update_hr2(int32_t led1_aled1);
+    void _update_hr3(int32_t led1_aled1);
     void _reset_algorithms();
 
     // ── Hardware ──
@@ -270,6 +278,23 @@ private:
     uint32_t _hr2_decim_counter;             // decimation phase counter
     uint32_t _hr2_update_counter;            // decimated samples since last autocorr computation
 
+    // ── HR3 — FFT + Harmonic Product Spectrum HR algorithm ───────────────────
+    // Low-pass-filters led1_aled1 (10 Hz anti-aliasing), decimates by hr3_decim_factor,
+    // accumulates 512 samples, then every hr3_update_interval decimated samples applies
+    // a Hann window, computes the real FFT, and finds the dominant peak via the
+    // Harmonic Product Spectrum (fundamental × 2nd harmonic × 3rd harmonic).
+    static constexpr int hr3_buf_len         = 512;  // 10.24 s at 50 Hz → freq resolution 0.098 Hz ≈ 5.9 BPM/bin
+    static constexpr int hr3_decim_factor    = 10;   // 500 Hz → 50 Hz
+    static constexpr int hr3_update_interval = 25;   // recompute every 0.5 s (25 decimated samples)
+
+    BiquadFilter _hr3_lpf;                     // low-pass anti-aliasing filter (default 10 Hz cutoff)
+    float    _hr3_buf[hr3_buf_len];            // circular buffer of decimated LP-filtered samples
+    float    _hr3_fft[hr3_buf_len * 2];        // complex FFT buffer (interleaved re/im), also scratch for windowed input
+    int      _hr3_buf_idx;                     // next write position in _hr3_buf
+    uint32_t _hr3_buf_count;                   // samples written (capped at hr3_buf_len)
+    uint32_t _hr3_decim_counter;               // decimation phase counter
+    uint32_t _hr3_update_counter;              // decimated samples since last FFT computation
+
     // ── Output snapshot (written by task, pushed to queue) ──
     AFE4490Data _current_data;
 
@@ -305,6 +330,11 @@ public:
     void  test_feed_hr2(int32_t led1_aled1) { _update_hr2(led1_aled1); }
     float test_hr2()                        { return _current_data.hr2; }
     bool  test_hr2_valid()                  { return _current_data.hr2_valid; }
+
+    // HR3
+    void  test_feed_hr3(int32_t led1_aled1) { _update_hr3(led1_aled1); }
+    float test_hr3()                        { return _current_data.hr3; }
+    bool  test_hr3_valid()                  { return _current_data.hr3_valid; }
 
     // SpO2
     void  test_feed_spo2(int32_t ir_corr, int32_t red_corr) { _update_spo2(ir_corr, red_corr); }
