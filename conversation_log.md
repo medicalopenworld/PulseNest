@@ -2719,3 +2719,224 @@ Todos los bucles que desempaquetaban `(name, attr)` actualizados a `(name, attr,
 **Fichero modificado:** `ppg_plotter.py`.
 
 ---
+
+## Sesión — 2026-04-09
+
+### Tema: HR3LabWindow — anchura mínima libre
+
+`setMinimumWidth(0)` en `left_gw`, `right_gw` y `self._splitter` dentro de `HR3LabWindow`. Los `pg.GraphicsLayoutWidget` tenían un ancho mínimo implícito que impedía reducir la ventana.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-09 (continuación 1)
+
+### Tema: HR3LAB anchura mínima (fix 2) + autosave de settings
+
+**HR3LAB:** el verdadero limitante de anchura era `_info_label` (texto largo). Corregido con `setSizePolicy(Ignored, Preferred)` + `setMinimumWidth(0)`.
+
+**ppg_plotter.ini no se guardaba al forzar cierre:** `Stop-Process -Force` mata Python sin ejecutar `closeEvent`, por lo que `_save_settings()` nunca se llamaba. Solución: `_autosave_settings_timer` (QTimer, cada 10 s) que llama a `_save_settings()` periódicamente. Máxima pérdida posible: 10 s de cambios de posición/tamaño.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-09 (continuación 2)
+
+### Tema: Traer ventanas al frente al arrancar el script
+
+Al lanzar el script, las ventanas quedaban detrás de otras ventanas del sistema operativo. Solución: método `_bring_all_to_front()` en `PPGMonitor` que llama a `raise_()` + `activateWindow()` sobre todas las ventanas abiertas (`self`, `ppgplots_window`, `serialcom_window`, `hrlab_window`, `spo2lab_window`, `hr3lab_window`). Se invoca desde `showEvent` via `QTimer.singleShot(300, ...)` — 300 ms para que todas las sub-ventanas hayan sido creadas.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-09 (continuación 3)
+
+### Tema: Traer ventanas al frente — fix Win32 con AttachThreadInput
+
+`raise_()` + `activateWindow()` no es suficiente en Windows: el SO bloquea el robo de foco si la app no es el proceso en primer plano. Solución: usar la API Win32 directamente con `ctypes`:
+1. `GetForegroundWindow()` + `GetWindowThreadProcessId()` para obtener el TID del proceso en primer plano.
+2. `AttachThreadInput(my_tid, fg_tid, True)` para adjuntar el hilo de la app al hilo en primer plano (le da permiso para cambiar el foco).
+3. `SetForegroundWindow(hwnd)` para cada ventana.
+4. `AttachThreadInput(my_tid, fg_tid, False)` para desadjuntar.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-09 (continuación 4)
+
+### Tema: Tooltips SIGNAL STATS — fuente doble y ventana estrecha multilínea
+
+Los tooltips de la tabla SIGNAL STATS usaban texto plano, lo que producía un popup de una sola línea muy ancho. Cambiado a HTML con `_make_tooltip()`: tabla de 360px de ancho + `font-size:26px` (doble del default ~13px) + `white-space:normal` para que el texto haga wrap en varias líneas.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-09 (continuación 5)
+
+### Tema: Tooltips SIGNAL STATS — fuente más grande, fondo más claro, delay reducido
+
+- Fuente: 26px → 30px en el HTML del tooltip.
+- Fondo: `QToolTip` stylesheet global → `background-color: #2E2E40` (azul oscuro medio), `color: #E8E8E8`, `border: 1px solid #7070A0`.
+- Delay: `QProxyStyle` (`_FastTipStyle`) sobreescribe `SH_ToolTip_WakeUpDelay` a 150 ms (por defecto ~700 ms). Se aplica como `app.setStyle(_FastTipStyle('Fusion'))`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-09 (continuación 6)
+
+### Tema: Tooltips SIGNAL STATS — fondo llamativo + nombre de variable resaltado
+
+- Fondo tooltip: `#1A0040` (púrpura oscuro) con borde `2px solid #9955FF`.
+- `_make_tooltip(name, text)`: primera línea con el nombre de la señal en negrita, `font-size:32px`, color `#FFE066` (amarillo dorado). Descripción debajo en `font-size:30px`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-09 (continuación 7)
+
+### Tema: Tooltips SIGNAL STATS — color de fondo llamativo (fix)
+
+Qt ignora el `QToolTip` stylesheet cuando el tooltip usa rich text (HTML). Solución: color embebido directamente en el `style` de la tabla HTML (`background-color:#7700CC`). También se mantiene en el stylesheet como fallback. Borde amarillo dorado `#FFE066` tanto en stylesheet como en tabla.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08
+
+### Tema: Aprendizaje de Claude Code — agentes en background, bash, WSL
+
+**Sin modificaciones de código fuente en esta sesión.**
+
+---
+
+**¿Por qué aparece el error 401 "Invalid authentication credentials"?**
+Token de sesión expirado o invalidado. Con dos sesiones abiertas simultáneamente puede ocurrir cuando una renueva el token e invalida el de la otra. Solución: ejecutar `/login`.
+
+---
+
+**Agentes en background — demostración práctica**
+Se lanzó un agente `Explore` en background para analizar sincronización entre `mow_afe4490_spec.md` y el código en `lib/mow_afe4490/`. Resultado: spec en v0.11, código en v0.7 — brecha de 4 versiones. API pública y struct correctamente sincronizados; desincronizaciones en rangos HR y constantes de timing. Pendiente decidir si adelantar código a v0.11 o rebajar spec a v0.7.
+
+---
+
+**PATH y diagnóstico de instalación**
+`C:\Users\alexc\.local\bin` sí está en el PATH de usuario (en minúsculas). El aviso del diagnóstico es un falso positivo por diferencia de capitalización. Claude ejecutado: `claude.exe` v2.1.81 desde esa ruta.
+
+---
+
+**WSL instalado sin saberlo**
+Al ejecutar `bash` en terminal se lanzó WSL (no Git Bash). El usuario tiene Ubuntu real instalado. `/mnt/c` apunta a `C:\`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 1)
+
+### Tema: Tooltips en todos los controles del script + splitter en SPO2LAB + ajuste color tooltip
+
+---
+
+**Tooltips rich HTML extendidos a todos los controles del script**
+
+Se añadió `setToolTip(_make_tooltip(...))` a todos los controles interactivos del script (antes solo existía en la tabla SIGNAL STATS):
+
+- `PPGMonitor` sidebar: `combo_port`, `btn_port_refresh`, `btn_port_connect`, `btn_pause`, `btn_save`, `btn_save_raw`, `spin_decim`, `btn_lib_mow`, `btn_lib_pc`, `btn_frame_m1`, `btn_frame_m2`, `btn_ppgplots`, `btn_serialcom`, `btn_hrlab`, `btn_spo2lab`, `btn_hr3lab`, `spin_stats_interval`
+- `PPGPlotsWindow`: 8 checkboxes (RED raw/amb/clean/filt, IR raw/amb/clean/filt)
+- `SpO2LabWindow`: `_spin_spo2_ref`, `_spin_avg_win`, `btn_add`, `btn_reg`, `btn_clear`, `btn_export`
+
+Decisión de diseño: `_make_tooltip(name, text)` promovida de función local anidada en `_setup_stats_table` a **función de módulo** (antes de `class SpO2LabWindow`), accesible desde todas las clases. La versión local fue eliminada.
+
+Regla establecida: todo control nuevo o modificado en `ppg_plotter.py` debe tener siempre tooltip con `_make_tooltip`. Guardado en memoria `feedback_tooltips.md`.
+
+---
+
+**Splitter horizontal en SPO2LAB**
+
+El sidebar de calibración (antes ancho fijo 390 px) es ahora redimensionable con un `QSplitter(Qt.Horizontal)`. Tamaño por defecto: plots 1100 px / sidebar 390 px. Estado del splitter persistido en `ppg_plotter.ini` como `SpO2LabWindow/splitter`.
+
+---
+
+**Color de fondo del tooltip: ajuste a más oscuro**
+
+Color cambiado de `#7700CC` a `#5500AA` (dos sitios: HTML embebido en `_make_tooltip` y stylesheet `QToolTip`).
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 2)
+
+### Tema: Texto _MOUSE_HINT
+
+Cambiado "on the plots" por "on plots and axes" en `_MOUSE_HINT` (línea 465).
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 3)
+
+### Tema: _MOUSE_HINT — consistencia y color llamativo en las 4 ventanas
+
+PPGPlotsWindow usaba un QLabel con `color: #555555; font-size: 11px` (casi invisible). Las otras 3 ventanas (SPO2LAB, HR3LAB, HRLAB) heredaban `#E0E0E0` del stylesheet global del QMainWindow sin tamaño explícito.
+
+Solución: las 4 ventanas muestran ahora `_MOUSE_HINT` en `#FFAA44` (naranja ámbar) a 13px. Las 3 QMainWindow usan `statusBar().setStyleSheet(...)` antes del `showMessage`; PPGPlotsWindow cambia el estilo del QLabel.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 4)
+
+### Tema: _MOUSE_HINT — tamaño mayor e itálica
+
+`_MOUSE_HINT` subido de 13px a 16px y añadida `font-style: italic` en las 4 ventanas (SPO2LAB, HR3LAB, HRLAB statusBars + PPGPlotsWindow QLabel).
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 5)
+
+### Tema: _MOUSE_HINT — tamaño de letra aumentado de nuevo
+
+`_MOUSE_HINT` subido de 16px a 20px en las 4 ventanas.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 6)
+
+### Tema: Tooltip — ventana más ancha
+
+Ancho del tooltip aumentado de 360px a 540px (~50% más).
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 7)
+
+### Tema: Cierre de sesión — resumen de cambios en ppg_plotter.py
+
+Sesión dedicada exclusivamente a mejoras de UI en `ppg_plotter.py`. Sin cambios en firmware ni en la librería `mow_afe4490`.
+
+**Cambios acumulados en esta sesión:**
+- `_make_tooltip` promovida a función de módulo (antes función local anidada)
+- Tooltips rich HTML añadidos a todos los controles del script: sidebar PPGMonitor (17 controles), checkboxes PPGPlotsWindow (8), SpO2LabWindow (6)
+- Splitter horizontal en SPO2LAB entre plots y sidebar; estado persistido en `ppg_plotter.ini`
+- Color tooltip: `#7700CC` → `#5500AA` (más oscuro)
+- Ancho tooltip: 360px → 540px
+- `_MOUSE_HINT`: texto "on the plots" → "on plots and axes", color `#555555`/`#E0E0E0` → `#FFAA44`, tamaño 11px → 20px, añadida itálica, aplicado en las 4 ventanas con consistencia
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---

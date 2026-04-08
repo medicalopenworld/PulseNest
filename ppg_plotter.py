@@ -462,7 +462,26 @@ ACTION_BUTTON_STYLE = """
     }
 """
 
-_MOUSE_HINT = "pyqtgraph: use mouse buttons and wheel on the plots to zoom/pan (right-click for more options)"
+_MOUSE_HINT = "pyqtgraph: use mouse buttons and wheel on plots and axes to zoom/pan (right-click for more options)"
+
+
+def _make_tooltip(name: str, text: str) -> str:
+    """Build a rich-text HTML tooltip with a vivid purple background.
+
+    ``name`` is shown in bold gold as the first line; ``text`` follows in light grey.
+    Used by every interactive control in the script.
+    """
+    return (
+        "<table width='540' style='background-color:#5500AA; border-radius:6px;'>"
+        "<tr><td style='padding:8px;'>"
+        "<span style='font-size:32px; font-weight:bold; color:#FFE066;'>"
+        f"{name}"
+        "</span><br/>"
+        "<span style='font-size:30px; white-space:normal; color:#F0F0F0;'>"
+        f"{text}"
+        "</span></td></tr></table>"
+    )
+
 
 class SpO2LabWindow(QtWidgets.QMainWindow):
     """SpO2 calibration window.
@@ -479,6 +498,7 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         self.main_monitor = main_monitor
         self.setWindowTitle("SPO2LAB — Calibration")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
         # ── State ─────────────────────────────────────────────────────────────
@@ -501,13 +521,17 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         # ── Root layout ───────────────────────────────────────────────────────
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        root = QtWidgets.QHBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root_layout = QtWidgets.QHBoxLayout(central)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(0)
+
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._splitter.setHandleWidth(6)
+        root_layout.addWidget(self._splitter)
 
         # ── Left: plots ───────────────────────────────────────────────────────
         glw = pg.GraphicsLayoutWidget()
-        root.addWidget(glw, stretch=3)
+        self._splitter.addWidget(glw)
 
         def _make_plot(row, title, ylabel):
             p = glw.addPlot(row=row, col=0,
@@ -545,9 +569,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
 
         # ── Right: control panel ──────────────────────────────────────────────
         right = QtWidgets.QWidget()
-        right.setFixedWidth(390)
         right.setStyleSheet("background-color: #1A1A1A;")
-        root.addWidget(right)
+        self._splitter.addWidget(right)
 
         panel = QtWidgets.QVBoxLayout(right)
         panel.setContentsMargins(10, 10, 10, 10)
@@ -591,11 +614,19 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         self._spin_spo2_ref.setValue(98.0)
         self._spin_spo2_ref.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 2px;")
         self._spin_spo2_ref.valueChanged.connect(self._on_ref_changed)
+        self._spin_spo2_ref.setToolTip(_make_tooltip(
+            "SpO2 ref (%)",
+            "Reference SpO2 value provided by the calibrator/simulator (ground truth). "
+            "Used as the target when adding a calibration point."))
         self._spin_avg_win = QtWidgets.QSpinBox()
         self._spin_avg_win.setRange(1, 30)
         self._spin_avg_win.setValue(5)
         self._spin_avg_win.setSuffix(" s")
         self._spin_avg_win.setStyleSheet("background-color: #2A2A2A; color: #E0E0E0; padding: 2px;")
+        self._spin_avg_win.setToolTip(_make_tooltip(
+            "Avg window",
+            "Duration (seconds) of the rolling average used to compute R_fw and R_local "
+            "when capturing a calibration point. Longer = more stable, slower to react."))
         form_r.addRow("SpO2 ref (%):", self._spin_spo2_ref)
         form_r.addRow("Avg window:",   self._spin_avg_win)
         panel.addWidget(grp_ref)
@@ -603,6 +634,10 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         btn_add = QtWidgets.QPushButton("ADD POINT")
         btn_add.setStyleSheet("background-color: #226622; color: #FFFFFF; font-weight: bold; padding: 8px;")
         btn_add.clicked.connect(self._add_point)
+        btn_add.setToolTip(_make_tooltip(
+            "ADD POINT",
+            "Capture the current averaged R-ratio (firmware and local) at the reference SpO2 "
+            "and add it as a calibration point to the table below."))
         panel.addWidget(btn_add)
 
         # Calibration table
@@ -630,6 +665,16 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         btn_reg.clicked.connect(self._run_regression)
         btn_clear.clicked.connect(self._clear_points)
         btn_export.clicked.connect(self._export_csv)
+        btn_reg.setToolTip(_make_tooltip(
+            "RUN REGRESSION",
+            "Compute a linear regression SpO2 = a − b·R from all captured calibration points. "
+            "Updates the coefficients a, b and shows R² fit quality."))
+        btn_clear.setToolTip(_make_tooltip(
+            "CLEAR",
+            "Delete all calibration points from the table. Cannot be undone."))
+        btn_export.setToolTip(_make_tooltip(
+            "EXPORT CSV",
+            "Save all calibration points (SpO2 ref, R_fw, R_local) to a CSV file."))
         hbox_btns.addWidget(btn_reg)
         hbox_btns.addWidget(btn_clear)
         hbox_btns.addWidget(btn_export)
@@ -666,6 +711,11 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
             self.restoreGeometry(geom)
         else:
             self.resize(1500, 1200)
+        splitter_state = s.value("SpO2LabWindow/splitter")
+        if splitter_state:
+            self._splitter.restoreState(splitter_state)
+        else:
+            self._splitter.setSizes([1100, 390])
         self._spin_spo2_ref.setValue(s.value("SpO2LabWindow/spin_spo2_ref", 98.0, type=float))
 
     # ── Slots ─────────────────────────────────────────────────────────────────
@@ -875,7 +925,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        s.setValue("SpO2LabWindow/geometry",     self.saveGeometry())
+        s.setValue("SpO2LabWindow/geometry",      self.saveGeometry())
+        s.setValue("SpO2LabWindow/splitter",      self._splitter.saveState())
         s.setValue("SpO2LabWindow/spin_spo2_ref", self._spin_spo2_ref.value())
         if self.main_monitor is not None:
             self.main_monitor.btn_spo2lab.setChecked(False)
@@ -899,6 +950,7 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         self.main_monitor = main_monitor
         self.setWindowTitle("HR3LAB")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
         central = QtWidgets.QWidget()
@@ -960,6 +1012,9 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         self.curve_hr2_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
         self.curve_hr3_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#00CCFF', width=2),  name="HR3")
 
+        left_gw.setMinimumWidth(0)
+        right_gw.setMinimumWidth(0)
+        self._splitter.setMinimumWidth(0)
         self._splitter.addWidget(left_gw)
         self._splitter.addWidget(right_gw)
 
@@ -967,6 +1022,8 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         self._info_label = QtWidgets.QLabel()
         self._info_label.setFont(QtGui.QFont("Consolas", 10))
         self._info_label.setStyleSheet("color: #AAAAAA; padding: 2px 4px;")
+        self._info_label.setMinimumWidth(0)
+        self._info_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         outer.addWidget(self._info_label)
         self._refresh_info(None)
 
@@ -1044,6 +1101,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
         self.main_monitor = main_monitor
         self.setWindowTitle("HRLAB")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
         central = QtWidgets.QWidget()
@@ -1340,7 +1398,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         outer.addLayout(root)
 
         hint = QtWidgets.QLabel(_MOUSE_HINT)
-        hint.setStyleSheet("color: #555555; font-size: 11px; padding: 2px 6px;")
+        hint.setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic; padding: 2px 6px;")
 
         # ── Checkbox sidebar ──────────────────────────────────────────────────
         sidebar = QtWidgets.QVBoxLayout()
@@ -1368,6 +1426,22 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.check_red_amb  = create_check("Ambient RED",  "#00FFFF", False)
         self.check_red_sub  = create_check("RED (clean)",  "#FF8888", True)
         self.check_red_filt = create_check("RED (filt)",   "#FF0000", False)
+        self.check_red_raw.setToolTip(_make_tooltip(
+            "RED (raw)",
+            "Raw RED LED ADC reading directly from the AFE4490. "
+            "Includes ambient light contamination. Field: led1 in the M1 frame."))
+        self.check_red_amb.setToolTip(_make_tooltip(
+            "Ambient RED",
+            "Ambient light sampled during the RED LED off period (aled1). "
+            "Represents environmental light interference on the RED channel."))
+        self.check_red_sub.setToolTip(_make_tooltip(
+            "RED (clean)",
+            "RED minus ambient: led1 − aled1. Ambient-subtracted RED signal. "
+            "This is the primary input to the SpO2 algorithm. Field: REDSub."))
+        self.check_red_filt.setToolTip(_make_tooltip(
+            "RED (filt)",
+            "RED clean signal after the digital bandpass filter (0.5–5 Hz). "
+            "Used for PPG analysis. Field: REDFilt."))
         for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub, self.check_red_filt):
             sidebar.addWidget(w)
 
@@ -1378,6 +1452,22 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.check_ir_amb  = create_check("Ambient IR",   "#00FFFF", False)
         self.check_ir_sub  = create_check("IR (clean)",   "#88CCFF", True)
         self.check_ir_filt = create_check("IR (filt)",    "#44AAFF", False)
+        self.check_ir_raw.setToolTip(_make_tooltip(
+            "IR (raw)",
+            "Raw IR LED ADC reading directly from the AFE4490. "
+            "Includes ambient light contamination. Field: led2 in the M1 frame."))
+        self.check_ir_amb.setToolTip(_make_tooltip(
+            "Ambient IR",
+            "Ambient light sampled during the IR LED off period (aled2). "
+            "Represents environmental light interference on the IR channel."))
+        self.check_ir_sub.setToolTip(_make_tooltip(
+            "IR (clean)",
+            "IR minus ambient: led2 − aled2. Ambient-subtracted IR signal. "
+            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: IRSub."))
+        self.check_ir_filt.setToolTip(_make_tooltip(
+            "IR (filt)",
+            "IR clean signal after the digital bandpass filter (0.5–5 Hz). "
+            "Used for PPG analysis. Field: IRFilt."))
         for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub, self.check_ir_filt):
             sidebar.addWidget(w)
 
@@ -1689,6 +1779,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._stats_timer.timeout.connect(self._update_stats_table)
         self._stats_timer.start(1000)
 
+        self._autosave_settings_timer = QtCore.QTimer()
+        self._autosave_settings_timer.timeout.connect(self._save_settings)
+        self._autosave_settings_timer.start(10000)  # save every 10 s
+
         # Widget Central
         central_widget = QtWidgets.QWidget()
         self.setCentralWidget(central_widget)
@@ -1714,11 +1808,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.combo_port = QtWidgets.QComboBox()
         self.combo_port.setStyleSheet(
             "background-color: #2A2A2A; color: #FFDD44; font-size: 18px; padding: 3px;")
+        self.combo_port.setToolTip(_make_tooltip(
+            "PORT",
+            "Serial port selector. Shows all available COM ports. "
+            "Select the ESP32-S3 (in3ator V15) port — usually COM15."))
         self.btn_port_refresh = QtWidgets.QPushButton("↺")
         self.btn_port_refresh.setFixedWidth(36)
         self.btn_port_refresh.setStyleSheet(
             "background-color: #2A2A2A; color: #AAAAAA; font-size: 18px; border: 1px solid #444;")
         self.btn_port_refresh.clicked.connect(self._populate_ports)
+        self.btn_port_refresh.setToolTip(_make_tooltip(
+            "Refresh ports",
+            "Rescan the system for available serial ports and update the dropdown list."))
         port_row.addWidget(self.combo_port, stretch=1)
         port_row.addWidget(self.btn_port_refresh)
         self.sidebar_layout.addLayout(port_row)
@@ -1729,6 +1830,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
         self.btn_port_connect.clicked.connect(
             lambda: self._connect_serial(self.combo_port.currentText()))
+        self.btn_port_connect.setToolTip(_make_tooltip(
+            "CONNECT / DISCONNECT",
+            "Open or close the serial connection to the selected COM port. "
+            "921600 baud, 8N1. Reconnect hot-swap: disconnect and reconnect without restarting."))
         self.sidebar_layout.addWidget(self.btn_port_connect)
 
         self.sidebar_layout.addSpacing(12)
@@ -1737,18 +1842,32 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_pause.setCheckable(True)
         self.btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_pause.clicked.connect(self.toggle_pause)
+        self.btn_pause.setToolTip(_make_tooltip(
+            "PAUSAR CAPTURA",
+            "Pause or resume live data display. The serial port stays open and data "
+            "keeps flowing; only the UI plots and stats are frozen."))
         self.sidebar_layout.addWidget(self.btn_pause)
 
         self.btn_save = QtWidgets.QPushButton("GUARDAR\nDATOS")
         self.btn_save.setCheckable(True)
         self.btn_save.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_save.clicked.connect(self.toggle_save)
+        self.btn_save.setToolTip(_make_tooltip(
+            "GUARDAR DATOS",
+            "Toggle saving decimated data to a timestamped CSV file. "
+            "Records at the display rate (500 Hz ÷ DECIMATION). "
+            "Filename: ppg_data_<timestamp>.csv"))
         self.sidebar_layout.addWidget(self.btn_save)
 
         self.btn_save_raw = QtWidgets.QPushButton("GUARDAR\nRAW (500 Hz)")
         self.btn_save_raw.setCheckable(True)
         self.btn_save_raw.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_save_raw.clicked.connect(self.toggle_save_raw)
+        self.btn_save_raw.setToolTip(_make_tooltip(
+            "GUARDAR RAW (500 Hz)",
+            "Toggle saving every raw frame at full 500 Hz to a timestamped CSV file. "
+            "Ignores DECIMATION. Use for offline algorithm analysis. "
+            "Filename: ppg_data_raw_<timestamp>.csv"))
         self.sidebar_layout.addWidget(self.btn_save_raw)
 
         self.sidebar_layout.addSpacing(20)
@@ -1766,6 +1885,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.spin_decim.setValue(10)
         self.spin_decim.setSuffix(" frames")
         self.spin_decim.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 4px; font-size: 20px;")
+        self.spin_decim.setToolTip(_make_tooltip(
+            "DECIMATION",
+            "Show 1 out of every N frames in the UI and in GUARDAR DATOS. "
+            "At 500 Hz: N=10 → 50 Hz display, N=1 → 500 Hz. "
+            "GUARDAR RAW always records at full 500 Hz regardless of this setting."))
         self.sidebar_layout.addWidget(self.spin_decim)
 
         self.sidebar_layout.addSpacing(20)
@@ -1778,6 +1902,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_lib_pc  = QtWidgets.QPushButton("PROTOCENTRAL")
         self.btn_lib_mow.clicked.connect(lambda: self._send_lib_cmd('m'))
         self.btn_lib_pc.clicked.connect(lambda:  self._send_lib_cmd('p'))
+        self.btn_lib_mow.setToolTip(_make_tooltip(
+            "LIBRARY: MOW",
+            "Switch the firmware to use the custom mow_afe4490 library (lib/mow_afe4490). "
+            "Sends 'm' command over serial. The button stays highlighted while MOW is active."))
+        self.btn_lib_pc.setToolTip(_make_tooltip(
+            "LIBRARY: PROTOCENTRAL",
+            "Switch the firmware to use the ProtoCentral AFE4490 Arduino library. "
+            "Sends 'p' command over serial. The button stays highlighted while PROTOCENTRAL is active."))
         self.sidebar_layout.addWidget(self.btn_lib_mow)
         self.sidebar_layout.addWidget(self.btn_lib_pc)
         self._update_lib_button()
@@ -1792,6 +1924,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_frame_m2 = QtWidgets.QPushButton("$M2  RAW")
         self.btn_frame_m1.clicked.connect(lambda: self._send_frame_cmd("M1"))
         self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
+        self.btn_frame_m1.setToolTip(_make_tooltip(
+            "$M1 — FULL frame",
+            "Full frame mode: 17 fields — SmpCnt, Ts_us, PPG, SpO2, HR1, RED, IR, "
+            "AmbRED, AmbIR, REDSub, IRSub, REDFilt, IRFilt, HR1PPG, HR2, SpO2_R + checksum. "
+            "Use for algorithm analysis and calibration."))
+        self.btn_frame_m2.setToolTip(_make_tooltip(
+            "$M2 — RAW frame",
+            "Raw frame mode: only raw ADC values — SmpCnt, Ts_us, RED, IR, AmbRED, AmbIR + checksum. "
+            "Lower bandwidth. Use when only raw signal capture is needed."))
         self.sidebar_layout.addWidget(self.btn_frame_m1)
         self.sidebar_layout.addWidget(self.btn_frame_m2)
         self._update_frame_button()
@@ -1806,12 +1947,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_ppgplots.setCheckable(True)
         self.btn_ppgplots.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_ppgplots.clicked.connect(self.toggle_ppgplots)
+        self.btn_ppgplots.setToolTip(_make_tooltip(
+            "PPGPLOTS",
+            "Show or hide the PPG Plots window. "
+            "Displays RED/IR raw and filtered signals, PPG, SpO2 and HR curves in real time. "
+            "Throttled to 25 Hz to keep CPU load low."))
         self.sidebar_layout.addWidget(self.btn_ppgplots)
 
         self.btn_serialcom = QtWidgets.QPushButton("SERIALCOM")
         self.btn_serialcom.setCheckable(True)
         self.btn_serialcom.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_serialcom.clicked.connect(self.toggle_serialcom)
+        self.btn_serialcom.setToolTip(_make_tooltip(
+            "SERIALCOM",
+            "Show or hide the Serial Console window. "
+            "Displays raw serial frames received from the ESP32-S3 and the CSV header."))
         self.sidebar_layout.addWidget(self.btn_serialcom)
 
         label_analysis = QtWidgets.QLabel("ANALYSIS")
@@ -1822,18 +1972,32 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hrlab.setCheckable(True)
         self.btn_hrlab.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_hrlab.clicked.connect(self.toggle_hrlab)
+        self.btn_hrlab.setToolTip(_make_tooltip(
+            "HRLAB",
+            "Show or hide the Heart Rate diagnostic window. "
+            "Displays the normalised autocorrelation (HR2) used to detect the dominant pulse period."))
         self.sidebar_layout.addWidget(self.btn_hrlab)
 
         self.btn_spo2lab = QtWidgets.QPushButton("SPO2LAB")
         self.btn_spo2lab.setCheckable(True)
         self.btn_spo2lab.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_spo2lab.clicked.connect(self.toggle_spo2lab)
+        self.btn_spo2lab.setToolTip(_make_tooltip(
+            "SPO2LAB",
+            "Show or hide the SpO2 Calibration Lab window. "
+            "Compare firmware vs local SpO2/R-ratio, capture calibration points and "
+            "run linear regression to obtain a·b coefficients for the SpO2 = a − b·R formula."))
         self.sidebar_layout.addWidget(self.btn_spo2lab)
 
         self.btn_hr3lab = QtWidgets.QPushButton("HR3LAB")
         self.btn_hr3lab.setCheckable(True)
         self.btn_hr3lab.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_hr3lab.clicked.connect(self.toggle_hr3lab)
+        self.btn_hr3lab.setToolTip(_make_tooltip(
+            "HR3LAB",
+            "Show or hide the HR3 FFT/HPS analysis window. "
+            "Displays FFT spectrum, Harmonic Product Spectrum and HR1/HR2/HR3 comparison in real time. "
+            "HR3 uses a 512-sample Hann window + rfft + HPS on the IR sub-signal at 50 Hz."))
         self.sidebar_layout.addWidget(self.btn_hr3lab)
 
         self.sidebar_layout.addStretch()
@@ -1871,6 +2035,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.spin_stats_interval.setFixedWidth(110)
         self.spin_stats_interval.valueChanged.connect(
             lambda v: self._stats_timer.setInterval(v * 1000))
+        self.spin_stats_interval.setToolTip(_make_tooltip(
+            "Stats update interval",
+            "How often the Signal Stats table recalculates and resets its running statistics "
+            "(Last / Mean / Min / Max). Range: 1–60 s."))
         stats_header.addWidget(stats_interval_lbl)
         stats_header.addWidget(self.spin_stats_interval)
         stats_vbox.addLayout(stats_header)
@@ -1902,15 +2070,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _HR_ROWS  = {3, 4, 5}   # HR1, HR2, HR3
         _MEAN_COL = 2
         _MAROON   = QtGui.QColor("#5C001A")
+
         for row, (name, _, tooltip) in enumerate(self._STATS_SIGNALS):
+            rich_tip = _make_tooltip(name, tooltip)
             item = QtWidgets.QTableWidgetItem(name)
             item.setForeground(QtGui.QColor("#AAAAAA"))
-            item.setToolTip(tooltip)
+            item.setToolTip(rich_tip)
             self.stats_table.setItem(row, 0, item)
             for col in range(1, 5):
                 it = QtWidgets.QTableWidgetItem("---")
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                it.setToolTip(tooltip)
+                it.setToolTip(rich_tip)
                 if row in _HR_ROWS and col == _MEAN_COL:
                     it.setBackground(_MAROON)
                 self.stats_table.setItem(row, col, it)
@@ -2457,6 +2627,29 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hrlab_default)
         if s.value("PPGMonitor/spo2lab_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_spo2lab_default)
+        QtCore.QTimer.singleShot(300, self._bring_all_to_front)
+
+    def _bring_all_to_front(self):
+        import ctypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        fg_hwnd = user32.GetForegroundWindow()
+        fg_tid  = user32.GetWindowThreadProcessId(fg_hwnd, None)
+        my_tid  = kernel32.GetCurrentThreadId()
+        if fg_tid != my_tid:
+            user32.AttachThreadInput(my_tid, fg_tid, True)
+        for w in [self, self.ppgplots_window, self.serialcom_window,
+                  self.hrlab_window, self.spo2lab_window, self.hr3lab_window]:
+            if w is not None:
+                w.show()
+                w.raise_()
+                w.activateWindow()
+                try:
+                    user32.SetForegroundWindow(int(w.winId()))
+                except Exception:
+                    pass
+        if fg_tid != my_tid:
+            user32.AttachThreadInput(my_tid, fg_tid, False)
 
     def _auto_close_chk(self):
         if self.save_file_chk is not None:
@@ -2506,7 +2699,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
-    app.setStyle('Fusion')
+
+    class _FastTipStyle(QtWidgets.QProxyStyle):
+        def styleHint(self, hint, option=None, widget=None, returnData=None):
+            if hint == QtWidgets.QStyle.SH_ToolTip_WakeUpDelay:
+                return 150  # ms (default ~700 ms)
+            return super().styleHint(hint, option, widget, returnData)
+
+    app.setStyle(_FastTipStyle('Fusion'))
+    app.setStyleSheet(
+        "QToolTip { background-color: #5500AA; color: #F0F0F0; "
+        "border: 2px solid #FFE066; padding: 8px; }"
+    )
     window = PPGMonitor(save_chk=args.save_chk, save_chk_duration=args.save_chk_duration)
     window.show()
     sys.exit(app.exec_())
