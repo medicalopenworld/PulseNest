@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.9
+# mow_afe4490 — Specification v0.11
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -240,7 +240,7 @@ Coefficients `a` and `b` are empirical (calibration). Configurable via `setSpO2C
 HR1 (bpm) = fs × 60 / mean(last 5 RR intervals in samples)
 ```
 
-`hr1_valid` is set when 5 intervals have been accumulated and the resulting HR1 is within [30, 250] BPM.
+`hr1_valid` is set when 5 intervals have been accumulated and the resulting HR1 is within [25, 300] BPM (reported valid range). The refractory period of 200 ms naturally supports detection up to ~300 BPM, providing a guard band above the 250 BPM limit at no cost.
 
 > **Implementation note:** peak location is currently approximated by the rising threshold crossing (first sample above `0.6 × running_max`). This introduces a timing error that depends on signal slope and amplitude — if either changes (low perfusion, motion), the detected instant shifts relative to the true peak, introducing jitter in the RR interval. Planned improvement: apply derivative to the filtered signal and detect the rising edge as the maximum of the derivative (steepest ascending slope), which gives a more stable and precise timing reference independent of signal amplitude.
 
@@ -255,8 +255,12 @@ HR1 (bpm) = fs × 60 / mean(last 5 RR intervals in samples)
 | `hr1_ma_max_len` | 64 samples | Max moving average length |
 | `hr_refractory_s` | 0.2 s | Refractory period between peaks (~300 BPM max) |
 | `hr1_peak_marker_samples` | 10 samples | Duration of peak marker (hr1_ppg=0) |
-| `hr_min_bpm` | 30 BPM | Valid HR range minimum |
-| `hr_max_bpm` | 250 BPM | Valid HR range maximum |
+| `hr_min_bpm` | 25 BPM | Reported valid HR range minimum (ISO 80601-2-61; neonatal use) |
+| `hr_max_bpm` | 300 BPM | Reported valid HR range maximum (neonatal tachycardia) |
+| `hr_search_min_bpm` | 22 BPM | Internal search lower bound (guard band: hr_min − 3) |
+| `hr_search_max_bpm` | 303 BPM | Internal search upper bound (guard band: hr_max + 3) |
+
+> **Guard band design:** all HR algorithms search internally in [22, 303] BPM and report `hr_valid = true` only when the result falls within [25, 300] BPM. This prevents boundary-clipping errors where a signal at exactly 25 BPM could be missed due to small algorithmic offsets. The ±3 BPM margin is consistent with the ISO 80601-2-61 measurement tolerance.
 
 ### 5.3 HR2 — Autocorrelation
 Independent second HR algorithm running in parallel with HR1 on the same `led1_aled1` signal.
@@ -274,7 +278,7 @@ Independent second HR algorithm running in parallel with HR1 on the same `led1_a
 | Constant | Value | Meaning |
 |---|---|---|
 | `hr2_buf_len` | 400 | Buffer length (8 s at 50 Hz) |
-| `hr2_acorr_max_lag` | 100 | Max lag searched (30 BPM at 50 Hz: 50×60/30=100) |
+| `hr2_acorr_max_lag` | 137 | Max lag searched (guard band 22 BPM at 50 Hz: 50×60/22=137) |
 | `hr2_decim_factor` | 10 | 500 Hz → 50 Hz |
 | `hr2_update_interval` | 25 | Recompute every 0.5 s |
 | `hr2_min_lag_s` | 0.22 s | Min RR lag (~272 BPM max) |
@@ -392,6 +396,15 @@ SNR_improvement = sqrt(num)    →  num=8: ×2.83,  num=10: ×3.16
 |         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
 |         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
 |         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+| v0.11   | HR reported range corrected per ISO 80601-2-61 + neonatal use:           |
+|         | **[30, 250] → [25, 300] BPM**. Guard band updated to [22, 303] BPM.      |
+|         | `hr_refractory_s` 0.200→0.185 s (covers 303 BPM guard: 198 ms period).   |
+|         | `hr2_min_lag_s` 0.22→0.185 s. `hr2_acorr_max_lag` 111→137 samples.      |
+|         | Python `HR_MIN_HZ`/`HR_MAX_HZ`/`HR_SEARCH_*` updated accordingly.        |
+| v0.10   | Guard band: internal HR search range extended to [27, 253] BPM (±3 BPM  |
+|         | beyond reported [30, 250] BPM). HR2: `hr2_acorr_max_lag` 100→111        |
+|         | (27 BPM @ 50 Hz). HR3 Python: `HR_SEARCH_MIN_HZ`/`HR_SEARCH_MAX_HZ`     |
+|         | added. `hr_search_min_bpm`/`hr_search_max_bpm` constants documented.     |
 | v0.9    | HR measurement range extended: 40–240 BPM → **30–250 BPM**.             |
 |         | `hr_min_bpm` 40→30, `hr_max_bpm` 240→250, `hr_refractory_s` 0.3→0.2 s  |
 |         | (allows up to ~300 BPM), `hr2_acorr_max_lag` 75→100 samples (30 BPM    |

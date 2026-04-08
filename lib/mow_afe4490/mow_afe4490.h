@@ -258,7 +258,7 @@ private:
     // accumulates a circular buffer of hr2_buf_len samples, then periodically
     // computes normalised autocorrelation to find the fundamental RR period.
     static constexpr int hr2_buf_len         = 400;  // 8 s at 50 Hz (fs/hr2_decim_factor)
-    static constexpr int hr2_acorr_max_lag   = 100;  // 30 BPM at 50 Hz: 50*60/30 = 100 samples
+    static constexpr int hr2_acorr_max_lag   = 137;  // guard band lower bound 22 BPM at 50 Hz: 50*60/22 = 137 samples
     static constexpr int hr2_decim_factor    = 10;   // 500 Hz → 50 Hz
     static constexpr int hr2_update_interval = 25;   // recompute every 0.5 s (25 decimated samples)
 

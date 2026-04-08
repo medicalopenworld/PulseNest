@@ -1,5 +1,7 @@
 import sys
+import os
 import serial
+from serial.tools import list_ports
 import threading
 import queue
 import pyqtgraph as pg
@@ -29,7 +31,7 @@ HRResult = namedtuple('HRResult', [
 
 
 def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=30, hr_max=250, prominence=0.1):
+                              hr_min=25, hr_max=300, prominence=0.1):
     """Compute HR estimate via cross-correlation between two overlapping segments of the same signal.
 
     Uses np.correlate(seg, template, mode='valid') where template = seg[max_lag_n:].
@@ -110,7 +112,7 @@ def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 
 
 def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=30, hr_max=250, prominence=0.1):
+                              hr_min=25, hr_max=300, prominence=0.1):
     """Compute autocorrelation-based HR estimate using scipy.signal.correlate with FFT.
 
     Key difference from v1: computes the true autocorrelation of a single vector
@@ -193,6 +195,7 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 # --- CONFIGURACIÓN ---
 PORT = 'COM15'
 BAUD = 921600
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppg_plotter.ini")
 WINDOW_SIZE        = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10)
 PPG_WINDOW_SIZE    = 500   # 10 s — same as WINDOW_SIZE
 SPO2_CAL_BUFSIZE   = 3000  # 60 s @ 50 Hz — rolling buffer for SpO2LabWindow
@@ -285,11 +288,15 @@ class HRFFTCalc:
     Constants must match the firmware implementation when ported:
       LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.5, HR_MAX_HZ=3.5
     """
-    LP_CUTOFF_HZ      = 10.0
-    BUF_LEN           = 512
-    UPDATE_INTERVAL_S = 0.5
-    HR_MIN_HZ         = 0.5   # 30 BPM
-    HR_MAX_HZ         = 4.167 # 250 BPM
+    LP_CUTOFF_HZ       = 10.0
+    BUF_LEN            = 512
+    UPDATE_INTERVAL_S  = 0.5
+    HR_MIN_HZ          = 25.0 / 60.0  # 0.4167 Hz — 25 BPM — reported valid lower bound (ISO 80601-2-61; neonatal)
+    HR_MAX_HZ          = 300.0 / 60.0 # 5.0 Hz    — 300 BPM — reported valid upper bound (neonatal tachycardia)
+    # Guard band: internal search extends ±3 BPM beyond the reported valid range.
+    # Ensures signals at the boundary are found before the validity gate is applied.
+    HR_SEARCH_MIN_HZ   = 22.0 / 60.0  # 0.3667 Hz — 22 BPM
+    HR_SEARCH_MAX_HZ   = 303.0 / 60.0 # 5.05 Hz   — 303 BPM
 
     def __init__(self):
         self._fs           = 0.0
@@ -369,8 +376,8 @@ class HRFFTCalc:
         spectrum = np.abs(np.fft.rfft(seg))
         freqs    = np.fft.rfftfreq(self.BUF_LEN, d=1.0 / fs)
 
-        # Restrict search to HR band
-        mask = (freqs >= self.HR_MIN_HZ) & (freqs <= self.HR_MAX_HZ)
+        # Restrict search to guard-band HR range (±3 BPM beyond reported valid range)
+        mask = (freqs >= self.HR_SEARCH_MIN_HZ) & (freqs <= self.HR_SEARCH_MAX_HZ)
         if not np.any(mask):
             self.hr_valid = False
             return self.hr_bpm, self.hr_valid
@@ -420,7 +427,7 @@ class HRFFTCalc:
         # Physically motivated: a clean PPG concentrates energy at the fundamental
         # + harmonics; noise spreads it uniformly.
         f_top    = min(peak_freq * 3.0 + 2.0 * freq_res, fs / 2.0)
-        ext_mask = (freqs >= self.HR_MIN_HZ) & (freqs <= f_top)
+        ext_mask = (freqs >= self.HR_SEARCH_MIN_HZ) & (freqs <= f_top)
         total_power  = np.sum(spectrum[ext_mask])
         signal_power = 0.0
         for k in (1, 2, 3):
@@ -471,7 +478,6 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.main_monitor = main_monitor
         self.setWindowTitle("SPO2LAB — Calibration")
-        self.resize(1500, 1200)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
@@ -652,6 +658,15 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         panel.addWidget(grp_res)
 
         panel.addStretch()
+
+        # ── Restore settings ──────────────────────────────────────────────────
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("SpO2LabWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1500, 1200)
+        self._spin_spo2_ref.setValue(s.value("SpO2LabWindow/spin_spo2_ref", 98.0, type=float))
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -859,6 +874,9 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
             f" &nbsp; <b style='color:#FF6666'>RMS AC RED: {_fmt(v_rms_red, 1)}</b>")
 
     def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("SpO2LabWindow/geometry",     self.saveGeometry())
+        s.setValue("SpO2LabWindow/spin_spo2_ref", self._spin_spo2_ref.value())
         if self.main_monitor is not None:
             self.main_monitor.btn_spo2lab.setChecked(False)
             self.main_monitor.spo2lab_window = None
@@ -880,7 +898,6 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.main_monitor = main_monitor
         self.setWindowTitle("HR3LAB")
-        self.resize(1800, 900)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
@@ -953,6 +970,13 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         outer.addWidget(self._info_label)
         self._refresh_info(None)
 
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("HR3LabWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1800, 900)
+
     def _refresh_info(self, calc):
         if calc is None or calc._fs == 0.0:
             self._info_label.setText(
@@ -996,6 +1020,8 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, lambda: self._splitter.setSizes([1100, 700]))
 
     def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("HR3LabWindow/geometry", self.saveGeometry())
         if self.main_monitor is not None:
             self.main_monitor.btn_hr3lab.setChecked(False)
             self.main_monitor.hr3lab_window = None
@@ -1017,7 +1043,6 @@ class HRLabWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.main_monitor = main_monitor
         self.setWindowTitle("HRLAB")
-        self.resize(2400, 450)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
@@ -1103,6 +1128,13 @@ class HRLabWindow(QtWidgets.QMainWindow):
         self._last_sample_cnt = None
         self._mow_fs_cached  = None
 
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("HRLabWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(2400, 450)
+
     def showEvent(self, event):
         super().showEvent(event)
         QtCore.QTimer.singleShot(0, self._set_splitter_sizes)
@@ -1187,7 +1219,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
         if self._hr_refresh_counter >= refresh_every and mow_filtered is not None:
             self._hr_refresh_counter = 0
             window_n  = int(round(4.0 * fs))
-            max_lag_n = int(round(2.0 * fs))
+            max_lag_n = int(round((60.0 / 22.0) * fs))  # covers guard band minimum 22 BPM
             needed    = window_n + max_lag_n
             max_lag_s = max_lag_n / fs
             print(f"[DBG] max_lag_s={max_lag_s:.4f}  max_lag_n={max_lag_n}  fs={fs:.2f}", flush=True)
@@ -1267,10 +1299,268 @@ class HRLabWindow(QtWidgets.QMainWindow):
                     pass
 
     def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("HRLabWindow/geometry", self.saveGeometry())
         if self.main_monitor is not None:
             self.main_monitor.btn_hrlab.setChecked(False)
             self.main_monitor.hrlab_window = None
         event.accept()
+
+
+class PPGPlotsWindow(QtWidgets.QWidget):
+    """Floating window with all PPG/SpO2/HR plots and RED/IR channel checkboxes."""
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("PPG Plots")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._setup_ui()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("PPGPlotsWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1800, 900)
+        self.check_red_raw.setChecked( s.value("PPGPlotsWindow/check_red_raw",  False, type=bool))
+        self.check_red_amb.setChecked( s.value("PPGPlotsWindow/check_red_amb",  False, type=bool))
+        self.check_red_sub.setChecked( s.value("PPGPlotsWindow/check_red_sub",  True,  type=bool))
+        self.check_red_filt.setChecked(s.value("PPGPlotsWindow/check_red_filt", False, type=bool))
+        self.check_ir_raw.setChecked(  s.value("PPGPlotsWindow/check_ir_raw",   False, type=bool))
+        self.check_ir_amb.setChecked(  s.value("PPGPlotsWindow/check_ir_amb",   False, type=bool))
+        self.check_ir_sub.setChecked(  s.value("PPGPlotsWindow/check_ir_sub",   True,  type=bool))
+        self.check_ir_filt.setChecked( s.value("PPGPlotsWindow/check_ir_filt",  False, type=bool))
+
+    def _setup_ui(self):
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        root = QtWidgets.QHBoxLayout()
+        outer.addLayout(root)
+
+        hint = QtWidgets.QLabel(_MOUSE_HINT)
+        hint.setStyleSheet("color: #555555; font-size: 11px; padding: 2px 6px;")
+
+        # ── Checkbox sidebar ──────────────────────────────────────────────────
+        sidebar = QtWidgets.QVBoxLayout()
+
+        def create_check(label, color, checked):
+            cb = QtWidgets.QCheckBox(label)
+            cb.setChecked(checked)
+            cb.setStyleSheet(f"""
+                QCheckBox {{ color: {color}; font-size: 16px; padding: 2px; }}
+                QCheckBox::indicator {{
+                    width: 24px; height: 24px; border: 2px solid #555555;
+                    border-radius: 4px; background-color: #1A1A1A;
+                }}
+                QCheckBox::indicator:checked {{
+                    background-color: #666666; border: 2px solid #BBBBBB;
+                    image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAdUlEQVR4nO2UQQ7AIAgEWf//5+21aYQFIpfGvRhJnFGJgqRNfGjrwiqCdKzCVB2DRAFC22RnWoAAAAAElFTkSuQmCC");
+                }}
+            """)
+            return cb
+
+        lbl_red = QtWidgets.QLabel("RED")
+        lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 10px;")
+        sidebar.addWidget(lbl_red)
+        self.check_red_raw  = create_check("RED (raw)",    "#FFFFFF", False)
+        self.check_red_amb  = create_check("Ambient RED",  "#00FFFF", False)
+        self.check_red_sub  = create_check("RED (clean)",  "#FF8888", True)
+        self.check_red_filt = create_check("RED (filt)",   "#FF0000", False)
+        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub, self.check_red_filt):
+            sidebar.addWidget(w)
+
+        lbl_ir = QtWidgets.QLabel("IR")
+        lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 20px;")
+        sidebar.addWidget(lbl_ir)
+        self.check_ir_raw  = create_check("IR (raw)",     "#FFFFFF", False)
+        self.check_ir_amb  = create_check("Ambient IR",   "#00FFFF", False)
+        self.check_ir_sub  = create_check("IR (clean)",   "#88CCFF", True)
+        self.check_ir_filt = create_check("IR (filt)",    "#44AAFF", False)
+        for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub, self.check_ir_filt):
+            sidebar.addWidget(w)
+
+        sidebar.addStretch()
+        sb_widget = QtWidgets.QWidget()
+        sb_widget.setLayout(sidebar)
+        sb_widget.setFixedWidth(180)
+        root.addWidget(sb_widget)
+
+        # ── Plots ─────────────────────────────────────────────────────────────
+        self.graphics_layout = pg.GraphicsLayoutWidget()
+        root.addWidget(self.graphics_layout)
+
+        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
+        self.curve_red      = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
+        self.curve_amb_red  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
+        self.curve_red_sub  = self.p1.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
+        self.curve_red_filt = self.p1.plot(pen=pg.mkPen('#FF0000', width=3),   name="RED (Filtered)")
+        self.p1.showGrid(x=True, y=True, alpha=0.3)
+
+        self.graphics_layout.nextRow()
+
+        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
+        self.curve_ir      = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
+        self.curve_amb_ir  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
+        self.curve_ir_sub  = self.p2.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
+        self.curve_ir_filt = self.p2.plot(pen=pg.mkPen('#44AAFF', width=3),   name="IR (Filtered)")
+        self.p2.showGrid(x=True, y=True, alpha=0.3)
+
+        self.graphics_layout.nextRow()
+
+        stats_layout = self.graphics_layout.addLayout()
+        self.p_ppg = stats_layout.addPlot(title="<b style='color:#FFFFFF'>PPG</b>")
+        self.curve_ppg     = self.p_ppg.plot(pen=pg.mkPen('#FFFFFF', width=2))
+        self.curve_hr1_ppg = self.p_ppg.plot(pen=pg.mkPen('#FF8800', width=1.5), name="HR1 PPG")
+        self.p_ppg.showGrid(x=True, y=True, alpha=0.3)
+
+        self.p_spo2 = stats_layout.addPlot(title="<b style='color:#44FF88'>SpO2 (%)</b>")
+        self.curve_spo2 = self.p_spo2.plot(pen=pg.mkPen('#44FF88', width=3))
+        self.p_spo2.setYRange(50, 100)
+
+        self.p_hr = stats_layout.addPlot(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
+        self.curve_hr1 = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3),  name="HR1")
+        self.curve_hr2 = self.p_hr.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
+        self.curve_hr3 = self.p_hr.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="HR3")
+        self.p_hr.setYRange(40, 180)
+
+        stats_layout.layout.setColumnStretchFactor(0, 3)
+        stats_layout.layout.setColumnStretchFactor(1, 1)
+        stats_layout.layout.setColumnStretchFactor(2, 1)
+
+        # ── Checkbox → curve visibility ───────────────────────────────────────
+        self.check_red_raw.stateChanged.connect( lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
+        self.check_red_amb.stateChanged.connect( lambda: self.curve_amb_red.setVisible(self.check_red_amb.isChecked()))
+        self.check_red_sub.stateChanged.connect( lambda: self.curve_red_sub.setVisible(self.check_red_sub.isChecked()))
+        self.check_red_filt.stateChanged.connect(lambda: self.curve_red_filt.setVisible(self.check_red_filt.isChecked()))
+        self.check_ir_raw.stateChanged.connect(  lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
+        self.check_ir_amb.stateChanged.connect(  lambda: self.curve_amb_ir.setVisible(self.check_ir_amb.isChecked()))
+        self.check_ir_sub.stateChanged.connect(  lambda: self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked()))
+        self.check_ir_filt.stateChanged.connect( lambda: self.curve_ir_filt.setVisible(self.check_ir_filt.isChecked()))
+
+        self.curve_red.setVisible(False)
+        self.curve_amb_red.setVisible(False)
+        self.curve_red_sub.setVisible(True)
+        self.curve_red_filt.setVisible(False)
+        self.curve_ir.setVisible(False)
+        self.curve_amb_ir.setVisible(False)
+        self.curve_ir_sub.setVisible(True)
+        self.curve_ir_filt.setVisible(False)
+
+        outer.addWidget(hint)
+
+    def update_plots(self, data_ppg, data_hr1, data_hr2, data_hr3,
+                     data_spo2, data_spo2_r, data_red, data_ir,
+                     data_amb_red, data_amb_ir, data_red_sub, data_ir_sub,
+                     data_red_filt, data_ir_filt, data_hr1_ppg):
+        self.p_spo2.setTitle(f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b> &nbsp; <b style='color:#AAAAAA'>R: {data_spo2_r[-1]:.4f}</b>")
+        self.p_hr.setTitle(f"<b style='color:#FFDD44'>HR1: {data_hr1[-1]:.2f} bpm</b> &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.2f} bpm</b> &nbsp; <b style='color:#00CCFF'>HR3: {data_hr3[-1]:.2f} bpm</b>")
+        self.curve_ppg.setData(list(data_ppg)[-PPG_WINDOW_SIZE:])
+        self.curve_spo2.setData(list(data_spo2))
+        self.curve_hr1.setData(list(data_hr1))
+        self.curve_hr2.setData(list(data_hr2))
+        self.curve_hr3.setData(list(data_hr3))
+        self.curve_red.setData(list(data_red))
+        self.curve_ir.setData(list(data_ir))
+        self.curve_amb_red.setData(list(data_amb_red))
+        self.curve_amb_ir.setData(list(data_amb_ir))
+        self.curve_red_sub.setData(list(data_red_sub))
+        self.curve_ir_sub.setData(list(data_ir_sub))
+        self.curve_red_filt.setData(list(data_red_filt))
+        self.curve_ir_filt.setData(list(data_ir_filt))
+        self.curve_hr1_ppg.setData(list(data_hr1_ppg)[-PPG_WINDOW_SIZE:])
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("PPGPlotsWindow/geometry",    self.saveGeometry())
+        s.setValue("PPGPlotsWindow/check_red_raw",  self.check_red_raw.isChecked())
+        s.setValue("PPGPlotsWindow/check_red_amb",  self.check_red_amb.isChecked())
+        s.setValue("PPGPlotsWindow/check_red_sub",  self.check_red_sub.isChecked())
+        s.setValue("PPGPlotsWindow/check_red_filt", self.check_red_filt.isChecked())
+        s.setValue("PPGPlotsWindow/check_ir_raw",   self.check_ir_raw.isChecked())
+        s.setValue("PPGPlotsWindow/check_ir_amb",   self.check_ir_amb.isChecked())
+        s.setValue("PPGPlotsWindow/check_ir_sub",   self.check_ir_sub.isChecked())
+        s.setValue("PPGPlotsWindow/check_ir_filt",  self.check_ir_filt.isChecked())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_ppgplots.setChecked(False)
+            self.main_monitor.ppgplots_window = None
+        super().closeEvent(event)
+
+
+class SerialComWindow(QtWidgets.QWidget):
+    """Floating window with the raw serial stream console."""
+
+    SERIAL_HEADER = (
+        f"{'Timestamp_PC':<15},{'Df_us':>5},"
+        "LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R"
+    )
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("Serial COM")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._setup_ui()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("SerialComWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1200, 400)
+
+    def _setup_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.header_label = QtWidgets.QLabel(self.SERIAL_HEADER)
+        self.header_label.setFont(QtGui.QFont("Consolas", 9))
+        self.header_label.setWordWrap(False)
+        self.header_label.setMinimumWidth(0)
+        self.header_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.header_label.setStyleSheet("""
+            QLabel {
+                background-color: #1A1000; color: #FFAA00;
+                padding: 5px 8px; border: 1px solid #FFAA00;
+            }
+        """)
+        layout.addWidget(self.header_label)
+
+        self.console = QtWidgets.QPlainTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.console.setFont(QtGui.QFont("Consolas", 9))
+        self.console.setStyleSheet("""
+            background-color: #000000; color: #D09000;
+            border: 1px solid #FFAA00; padding: 5px;
+        """)
+        layout.addWidget(self.console)
+
+    def append_line(self, line):
+        """Append a single line immediately (for status/error messages)."""
+        self.console.appendPlainText(line)
+        self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
+
+    def append_lines(self, lines):
+        """Batch append a list of lines (called from update_data loop)."""
+        if not lines:
+            return
+        self.console.appendPlainText('\n'.join(lines))
+        if self.console.blockCount() > 500:
+            cursor = self.console.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.Start)
+            cursor.select(QtGui.QTextCursor.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+        self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
+        self.console.horizontalScrollBar().setValue(0)
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("SerialComWindow/geometry", self.saveGeometry())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_serialcom.setChecked(False)
+            self.main_monitor.serialcom_window = None
+        super().closeEvent(event)
 
 
 class PPGMonitor(QtWidgets.QMainWindow):
@@ -1296,7 +1586,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         self.log_panel.append(
             f'<span style="color:#888888;">[{ts}]</span> '
-            f'<span style="color:{fg};font-weight:bold;">{icon} {text}</span>'
+            f'<span style="color:{fg};font-weight:normal;">{icon} {text}</span>'
         )
         self.log_panel.verticalScrollBar().setValue(
             self.log_panel.verticalScrollBar().maximum()
@@ -1307,10 +1597,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         
         # Configuración Ventana Principal
         self.setWindowTitle("AFE4490 Advanced Monitor (by Medical Open World)")
-        self.resize(2700, 1600)
+        self.resize(1800, 1100)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
-        self.statusBar().showMessage(_MOUSE_HINT)
-        
+
         # Estructuras de Datos
         self.data_lib_id = deque(["?"]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_sample_counter = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
@@ -1332,7 +1621,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_spo2_r  = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
-        self.is_plot_paused = False
         self.last_time = None
         self.active_lib = "MOW"   # must match default in main.cpp (start_mow)
         self.frame_mode = "M1"    # must match default in main.cpp (MowFrameMode::FULL)
@@ -1354,11 +1642,40 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     QtCore.QTimer.singleShot(save_chk_duration * 1000, self._auto_close_chk)
             except Exception as e:
                 print(f"[save-chk] Error opening file: {e}")
-        self.hrlab_window = None
-        self.spo2lab_window = None
-        self.hr3lab_window = None
+        self.ppgplots_window  = None
+        self.serialcom_window = None
+        self.hrlab_window     = None
+        self.spo2lab_window   = None
+        self.hr3lab_window    = None
+        # Render throttle rates (all relative to ~50 Hz update_data calls)
+        self._PPGPLOTS_REFRESH_EVERY  = 2   # 25 Hz — smooth plot animation
+        self._SUBWIN_REFRESH_EVERY    = 5   # 10 Hz — SpO2/HR3 change slowly
+        self._ppgplots_refresh_counter = 0
+        self._spo2lab_refresh_counter  = 0
+        self._hr3lab_refresh_counter   = 0
         self._decim_counter = 0
         self.hr3_calc = HRFFTCalc()
+
+        # ── Stats table buffers (reset every N seconds) ───────────────────────
+        self._STATS_SIGNALS = [
+            # (display_name, data_attr, tooltip_description)
+            ("PPG",      "data_ppg",      "Filtered PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Units: ADC counts."),
+            ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (mow_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
+            ("SpO2_R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
+            ("HR1",      "data_hr1",      "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM."),
+            ("HR2",      "data_hr2",      "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
+            ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in Python). LP 10 Hz → 512-sample Hann window → rfft → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
+            ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
+            ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
+            ("Amb RED",  "data_amb_red",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
+            ("Amb IR",   "data_amb_ir",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
+            ("RED sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
+            ("IR sub",   "data_ir_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
+            ("RED filt", "data_red_filt", "RED signal after firmware digital filter (BPF biquad 0.5–5 Hz applied to RED sub). Used internally for HR2 RED path. Units: ADC counts."),
+            ("IR filt",  "data_ir_filt",  "IR signal after firmware digital filter (BPF biquad 0.5–5 Hz applied to IR sub). Used internally for HR2 IR path. Units: ADC counts."),
+            ("HR1 PPG",  "data_hr1_ppg",  "Diagnostic marker for HR1 peak detector. Set to 0.0 for 10 samples after each detected peak; otherwise mirrors the filtered PPG. Useful to visualise peak timing on the PPG waveform."),
+        ]
+        self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
@@ -1367,7 +1684,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.auto_save_raw_timer = QtCore.QTimer()
         self.auto_save_raw_timer.setSingleShot(True)
         self.auto_save_raw_timer.timeout.connect(self.auto_stop_save_raw)
-        
+
+        self._stats_timer = QtCore.QTimer()
+        self._stats_timer.timeout.connect(self._update_stats_table)
+        self._stats_timer.start(1000)
+
         # Widget Central
         central_widget = QtWidgets.QWidget()
         self.setCentralWidget(central_widget)
@@ -1381,56 +1702,36 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # 0. Sidebar de Control (Izquierda)
         self.sidebar_layout = QtWidgets.QVBoxLayout()
         self.sidebar_layout.setSpacing(10)
-        
-        def create_check(label, color, checked=True):
-            cb = QtWidgets.QCheckBox(label)
-            cb.setChecked(checked)
-            cb.setStyleSheet(f"""
-                QCheckBox {{ color: {color}; font-weight: bold; font-size: 18px; spacing: 10px; }}
-                QCheckBox::indicator {{ 
-                    width: 24px; height: 24px; border: 2px solid #555555; 
-                    border-radius: 4px; background-color: #1A1A1A; 
-                }}
-                QCheckBox::indicator:checked {{ 
-                    background-color: #666666; 
-                    border: 2px solid #BBBBBB;
-                    image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAdUlEQVR4nO2UQQ7AIAgEWf//5+21aYQFIpfGvRhJnFGJgqRNfGjrwiqCdKzCVB2DRAFC22RnWoAAAAAElFTkSuQmCC");
-                }}
-            """)
-            return cb
 
-        self.label_red = QtWidgets.QLabel("RED")
-        self.label_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 10px;")
-        self.sidebar_layout.addWidget(self.label_red)
-        
-        self.check_red_raw = create_check("RED (raw)", "#FFFFFF", False)
-        self.check_red_amb = create_check("Ambient RED", "#00FFFF", False)
-        self.check_red_sub = create_check("RED (clean)", "#FF8888", True)
-        self.check_red_filt = create_check("RED (filt)", "#FF0000", False)
-        
-        self.sidebar_layout.addWidget(self.check_red_raw)
-        self.sidebar_layout.addWidget(self.check_red_amb)
-        self.sidebar_layout.addWidget(self.check_red_sub)
-        self.sidebar_layout.addWidget(self.check_red_filt)
-        
-        self.label_ir = QtWidgets.QLabel("IR")
-        self.label_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 20px;")
-        self.sidebar_layout.addWidget(self.label_ir)
-        
-        self.check_ir_raw = create_check("IR (raw)", "#FFFFFF", False)
-        self.check_ir_amb = create_check("Ambient IR", "#00FFFF", False)
-        self.check_ir_sub = create_check("IR (clean)", "#88CCFF", True)
-        self.check_ir_filt = create_check("IR (filt)", "#44AAFF", False)
-        
-        self.sidebar_layout.addWidget(self.check_ir_raw)
-        self.sidebar_layout.addWidget(self.check_ir_amb)
-        self.sidebar_layout.addWidget(self.check_ir_sub)
-        self.sidebar_layout.addWidget(self.check_ir_filt)
-        
-        # Espaciador para separar checkboxes de botones
-        self.sidebar_layout.addSpacing(30)
+        # ── Sidebar (controls only) ───────────────────────────────────────────
 
-        # Botones de Acción en el lateral
+        # PORT section
+        label_port = QtWidgets.QLabel("PORT")
+        label_port.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px;")
+        self.sidebar_layout.addWidget(label_port)
+
+        port_row = QtWidgets.QHBoxLayout()
+        self.combo_port = QtWidgets.QComboBox()
+        self.combo_port.setStyleSheet(
+            "background-color: #2A2A2A; color: #FFDD44; font-size: 18px; padding: 3px;")
+        self.btn_port_refresh = QtWidgets.QPushButton("↺")
+        self.btn_port_refresh.setFixedWidth(36)
+        self.btn_port_refresh.setStyleSheet(
+            "background-color: #2A2A2A; color: #AAAAAA; font-size: 18px; border: 1px solid #444;")
+        self.btn_port_refresh.clicked.connect(self._populate_ports)
+        port_row.addWidget(self.combo_port, stretch=1)
+        port_row.addWidget(self.btn_port_refresh)
+        self.sidebar_layout.addLayout(port_row)
+
+        self.btn_port_connect = QtWidgets.QPushButton("CONNECT")
+        self.btn_port_connect.setStyleSheet(
+            "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
+            "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
+        self.btn_port_connect.clicked.connect(
+            lambda: self._connect_serial(self.combo_port.currentText()))
+        self.sidebar_layout.addWidget(self.btn_port_connect)
+
+        self.sidebar_layout.addSpacing(12)
 
         self.btn_pause = QtWidgets.QPushButton("PAUSAR\nCAPTURA")
         self.btn_pause.setCheckable(True)
@@ -1438,12 +1739,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.sidebar_layout.addWidget(self.btn_pause)
 
-        self.btn_pause_plot = QtWidgets.QPushButton("PAUSE\nMAIN WINDOW")
-        self.btn_pause_plot.setCheckable(True)
-        self.btn_pause_plot.setStyleSheet(ACTION_BUTTON_STYLE)
-        self.btn_pause_plot.clicked.connect(self.toggle_pause_plot)
-        self.sidebar_layout.addWidget(self.btn_pause_plot)
-        
         self.btn_save = QtWidgets.QPushButton("GUARDAR\nDATOS")
         self.btn_save.setCheckable(True)
         self.btn_save.setStyleSheet(ACTION_BUTTON_STYLE)
@@ -1458,21 +1753,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.sidebar_layout.addSpacing(20)
 
-        label_decim = QtWidgets.QLabel("DECIMACIÓN")
+        label_decim = QtWidgets.QLabel("DECIMATION")
         label_decim.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
         self.sidebar_layout.addWidget(label_decim)
 
-        decim_row = QtWidgets.QHBoxLayout()
-        decim_lbl = QtWidgets.QLabel("1 de cada")
-        decim_lbl.setStyleSheet("color: #CCCCCC; font-size: 16px;")
+        decim_lbl = QtWidgets.QLabel("1 out of every")
+        decim_lbl.setStyleSheet("color: #CCCCCC; font-size: 20px;")
+        self.sidebar_layout.addWidget(decim_lbl)
+
         self.spin_decim = QtWidgets.QSpinBox()
         self.spin_decim.setRange(1, 500)
         self.spin_decim.setValue(10)
-        self.spin_decim.setSuffix(" tramas")
-        self.spin_decim.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 4px; font-size: 16px;")
-        decim_row.addWidget(decim_lbl)
-        decim_row.addWidget(self.spin_decim)
-        self.sidebar_layout.addLayout(decim_row)
+        self.spin_decim.setSuffix(" frames")
+        self.spin_decim.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 4px; font-size: 20px;")
+        self.sidebar_layout.addWidget(self.spin_decim)
 
         self.sidebar_layout.addSpacing(20)
 
@@ -1504,6 +1798,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.sidebar_layout.addSpacing(20)
 
+        label_display = QtWidgets.QLabel("DISPLAY")
+        label_display.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
+        self.sidebar_layout.addWidget(label_display)
+
+        self.btn_ppgplots = QtWidgets.QPushButton("PPGPLOTS")
+        self.btn_ppgplots.setCheckable(True)
+        self.btn_ppgplots.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_ppgplots.clicked.connect(self.toggle_ppgplots)
+        self.sidebar_layout.addWidget(self.btn_ppgplots)
+
+        self.btn_serialcom = QtWidgets.QPushButton("SERIALCOM")
+        self.btn_serialcom.setCheckable(True)
+        self.btn_serialcom.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_serialcom.clicked.connect(self.toggle_serialcom)
+        self.sidebar_layout.addWidget(self.btn_serialcom)
+
         label_analysis = QtWidgets.QLabel("ANALYSIS")
         label_analysis.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
         self.sidebar_layout.addWidget(label_analysis)
@@ -1527,163 +1837,105 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.sidebar_layout.addWidget(self.btn_hr3lab)
 
         self.sidebar_layout.addStretch()
-        
-        left_layout = QtWidgets.QVBoxLayout()
-        right_layout = QtWidgets.QVBoxLayout()
-        
-        # 1. Dashboard de Gráficas (Usando PyQtGraph)
-        pg.setConfigOptions(antialias=True)
-        self.graphics_layout = pg.GraphicsLayoutWidget()
-        left_layout.addWidget(self.graphics_layout, stretch=10)
-        
-        # Canal Rojo
-        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
-        self.curve_red = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
-        self.curve_amb_red = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
-        self.curve_red_sub = self.p1.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
-        self.curve_red_filt = self.p1.plot(pen=pg.mkPen('#FF0000', width=3), name="RED (Filtered)")
-        self.p1.showGrid(x=True, y=True, alpha=0.3)
-        
-        self.graphics_layout.nextRow()
-        
-        # Canal IR
-        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
-        self.curve_ir = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
-        self.curve_amb_ir = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
-        self.curve_ir_sub = self.p2.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
-        self.curve_ir_filt = self.p2.plot(pen=pg.mkPen('#44AAFF', width=3), name="IR (Filtered)")
-        self.p2.showGrid(x=True, y=True, alpha=0.3)
-        
-        self.graphics_layout.nextRow()
-        
-        # Fila para HR y SPO2 (en paralelo)
-        stats_layout = self.graphics_layout.addLayout()
-        self.p_ppg = stats_layout.addPlot(title="<b style='color:#FFFFFF'>PPG</b>")
-        self.curve_ppg = self.p_ppg.plot(pen=pg.mkPen('#FFFFFF', width=2))
-        self.curve_hr1_ppg = self.p_ppg.plot(pen=pg.mkPen('#FF8800', width=1.5), name="HR1 PPG")
-        self.p_ppg.showGrid(x=True, y=True, alpha=0.3)
 
-        self.p_spo2 = stats_layout.addPlot(title="<b style='color:#44FF88'>SpO2 (%)</b>")
-        self.curve_spo2 = self.p_spo2.plot(pen=pg.mkPen('#44FF88', width=3))
-        self.p_spo2.setYRange(50, 100)
-
-        self.p_hr = stats_layout.addPlot(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
-        self.curve_hr1 = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3), name="HR1")
-        self.curve_hr2 = self.p_hr.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
-        self.curve_hr3 = self.p_hr.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="HR3")
-        self.p_hr.setYRange(40, 180)
-
-        # Column widths: PPG wider, SpO2 and HR narrower
-        stats_layout.layout.setColumnStretchFactor(0, 3)  # Inverted PPG
-        stats_layout.layout.setColumnStretchFactor(1, 1)  # SpO2
-        stats_layout.layout.setColumnStretchFactor(2, 1)  # HR
-
-        # 2. Consola de Texto
-        self.console = QtWidgets.QPlainTextEdit()
-        self.console.setReadOnly(True)
-        self.console.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
-        self.console.setMinimumWidth(200)
-        self.console.setFont(QtGui.QFont("Consolas", 9))
-        self.console.setStyleSheet("""
-            background-color: #000000; 
-            color: #D09000; 
-            border: 1px solid #FFAA00;
-            padding: 5px;
-        """)
-        right_layout.addWidget(self.console)
-
-        # 3. Etiqueta de cabecera de campos del puerto serie
-        # Timestamp_PC = 15 chars (%H:%M:%S.%f), Df_us = 5 chars (:>5)
-        SERIAL_HEADER = (
-            f"{'Timestamp_PC':<15},{'Df_us':>5},"
-            "LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R"
-        )
-        self.header_label = QtWidgets.QLabel(SERIAL_HEADER)
-        self.header_label.setFont(QtGui.QFont("Consolas", 9))
-        self.header_label.setWordWrap(False)
-        self.header_label.setMinimumWidth(0)
-        self.header_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Ignored,      # horizontal: ignorar sizeHint → no bloquea splitter
-            QtWidgets.QSizePolicy.Preferred     # vertical: normal
-        )
-        self.header_label.setStyleSheet("""
-            QLabel {
-                background-color: #1A1000;
-                color: #FFAA00;
-                padding: 5px 8px;
-                border: 1px solid #FFAA00;
-                border-top: none;
-            }
-        """)
-        right_layout.addWidget(self.header_label)
-
-        
-        # Splitter
-        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        left_container = QtWidgets.QWidget()
-        left_container.setLayout(left_layout)
-        right_container = QtWidgets.QWidget()
-        right_container.setLayout(right_layout)
-        self.splitter.addWidget(left_container)
-        self.splitter.addWidget(right_container)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 1)
-        
-        content_layout.addLayout(self.sidebar_layout)
-        content_layout.addWidget(self.splitter)
-        main_layout.addLayout(content_layout)
-        
-        # Conectar Checkboxes
-        self.check_red_raw.stateChanged.connect(lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
-        self.check_red_amb.stateChanged.connect(lambda: self.curve_amb_red.setVisible(self.check_red_amb.isChecked()))
-        self.check_red_sub.stateChanged.connect(lambda: self.curve_red_sub.setVisible(self.check_red_sub.isChecked()))
-        self.check_red_filt.stateChanged.connect(lambda: self.curve_red_filt.setVisible(self.check_red_filt.isChecked()))
-        self.check_ir_raw.stateChanged.connect(lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
-        self.check_ir_amb.stateChanged.connect(lambda: self.curve_amb_ir.setVisible(self.check_ir_amb.isChecked()))
-        self.check_ir_sub.stateChanged.connect(lambda: self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked()))
-        self.check_ir_filt.stateChanged.connect(lambda: self.curve_ir_filt.setVisible(self.check_ir_filt.isChecked()))
-        
-        # Actualizar visibilidad inicial según checks
-        self.curve_red.setVisible(self.check_red_raw.isChecked())
-        self.curve_amb_red.setVisible(self.check_red_amb.isChecked())
-        self.curve_red_sub.setVisible(self.check_red_sub.isChecked())
-        self.curve_red_filt.setVisible(self.check_red_filt.isChecked())
-        self.curve_ir.setVisible(self.check_ir_raw.isChecked())
-        self.curve_amb_ir.setVisible(self.check_ir_amb.isChecked())
-        self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked())
-        self.curve_ir_filt.setVisible(self.check_ir_filt.isChecked())
-
-        # Panel de log de estado
+        # ── Log panel (right of sidebar, fills remaining space) ───────────────
         self.log_panel = QtWidgets.QTextEdit()
         self.log_panel.setReadOnly(True)
-        self.log_panel.setFixedHeight(180)
         self.log_panel.setStyleSheet("""
             QTextEdit {
-                background-color: #1A1A2E;
-                color: #E0E0E0;
-                font-family: monospace;
-                font-size: 16px;
-                border: 1px solid #333355;
-                border-radius: 6px;
-                padding: 4px 8px;
+                background-color: #1A1A2E; color: #E0E0E0;
+                font-family: monospace; font-size: 26px;
+                border: 1px solid #333355; border-radius: 6px; padding: 4px 8px;
             }
         """)
-        main_layout.addWidget(self.log_panel)
-        self.set_status(f"Conectando a {PORT}...", "info")
-        
-        # Conexión Serial
-        try:
-            self.ser = serial.Serial(PORT, BAUD, timeout=0.1)
-            self._serial_queue = queue.Queue()
-            self._reader_stop = threading.Event()
-            self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
-            self._reader_thread.start()
-            self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
-            self.console.appendPlainText("Timestamp_PC   ,Df_us,$LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R")
-        except Exception as e:
-            self.set_status(f"ERROR: No se pudo abrir {PORT}", "error")
-            QtWidgets.QMessageBox.critical(self, "Error de Puerto", f"No se pudo abrir {PORT}:\n{str(e)}")
-            sys.exit(1)
+
+        # ── Stats table widget ────────────────────────────────────────────────
+        stats_container = QtWidgets.QWidget()
+        stats_container.setStyleSheet("background-color: #1A1A1A; border: 1px solid #333333; border-radius: 6px;")
+        stats_vbox = QtWidgets.QVBoxLayout(stats_container)
+        stats_vbox.setContentsMargins(6, 6, 6, 6)
+        stats_vbox.setSpacing(4)
+
+        stats_header = QtWidgets.QHBoxLayout()
+        stats_title = QtWidgets.QLabel("SIGNAL STATS")
+        stats_title.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 22px;")
+        stats_header.addWidget(stats_title)
+        stats_header.addStretch()
+        stats_interval_lbl = QtWidgets.QLabel("Update interval:")
+        stats_interval_lbl.setStyleSheet("color: #CCCCCC; font-size: 22px;")
+        self.spin_stats_interval = QtWidgets.QSpinBox()
+        self.spin_stats_interval.setRange(1, 60)
+        self.spin_stats_interval.setValue(1)
+        self.spin_stats_interval.setSuffix(" s")
+        self.spin_stats_interval.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 22px;")
+        self.spin_stats_interval.setFixedWidth(110)
+        self.spin_stats_interval.valueChanged.connect(
+            lambda v: self._stats_timer.setInterval(v * 1000))
+        stats_header.addWidget(stats_interval_lbl)
+        stats_header.addWidget(self.spin_stats_interval)
+        stats_vbox.addLayout(stats_header)
+
+        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 5)
+        self.stats_table.setHorizontalHeaderLabels(["Signal", "Last", "Mean", "Min", "Max"])
+        self.stats_table.verticalHeader().setVisible(False)
+        self.stats_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.stats_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.stats_table.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.stats_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #111111; color: #E0E0E0;
+                font-family: monospace; font-size: 22px;
+                gridline-color: #2A2A2A; border: none;
+            }
+            QHeaderView::section {
+                background-color: #1E1E2E; color: #AAAAAA;
+                font-size: 22px; font-weight: bold;
+                padding: 6px; border: 1px solid #2A2A2A;
+            }
+            QTableWidget::item { padding: 6px 10px; }
+        """)
+        self.stats_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        for col in range(1, 5):
+            self.stats_table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
+        self.stats_table.verticalHeader().setDefaultSectionSize(40)
+
+        _HR_ROWS  = {3, 4, 5}   # HR1, HR2, HR3
+        _MEAN_COL = 2
+        _MAROON   = QtGui.QColor("#5C001A")
+        for row, (name, _, tooltip) in enumerate(self._STATS_SIGNALS):
+            item = QtWidgets.QTableWidgetItem(name)
+            item.setForeground(QtGui.QColor("#AAAAAA"))
+            item.setToolTip(tooltip)
+            self.stats_table.setItem(row, 0, item)
+            for col in range(1, 5):
+                it = QtWidgets.QTableWidgetItem("---")
+                it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                it.setToolTip(tooltip)
+                if row in _HR_ROWS and col == _MEAN_COL:
+                    it.setBackground(_MAROON)
+                self.stats_table.setItem(row, col, it)
+
+        stats_vbox.addWidget(self.stats_table)
+
+        # ── Right side: stats table + log panel ───────────────────────────────
+        self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.right_splitter.addWidget(stats_container)
+        self.right_splitter.addWidget(self.log_panel)
+        self.right_splitter.setStretchFactor(0, 1)
+        self.right_splitter.setStretchFactor(1, 1)
+
+        content_layout.addLayout(self.sidebar_layout)
+        content_layout.addWidget(self.right_splitter, stretch=1)
+        main_layout.addLayout(content_layout)
+
+        self.ser = None
+        self._serial_queue = queue.Queue()
+        self._reader_stop = threading.Event()
+        self._reader_thread = None
+
+        self._populate_ports()
+        self._restore_settings()
+        self._connect_serial(self.combo_port.currentText())
             
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_data)
@@ -1753,6 +2005,34 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hrlab_window.close()
                 self.hrlab_window = None
 
+    def _open_ppgplots_default(self):
+        self.btn_ppgplots.setChecked(True)
+        self.toggle_ppgplots()
+
+    def toggle_ppgplots(self):
+        if self.btn_ppgplots.isChecked():
+            self.ppgplots_window = PPGPlotsWindow(self)
+            self.ppgplots_window.show()
+        else:
+            if self.ppgplots_window is not None:
+                self.ppgplots_window.main_monitor = None
+                self.ppgplots_window.close()
+                self.ppgplots_window = None
+
+    def _open_serialcom_default(self):
+        self.btn_serialcom.setChecked(True)
+        self.toggle_serialcom()
+
+    def toggle_serialcom(self):
+        if self.btn_serialcom.isChecked():
+            self.serialcom_window = SerialComWindow(self)
+            self.serialcom_window.show()
+        else:
+            if self.serialcom_window is not None:
+                self.serialcom_window.main_monitor = None
+                self.serialcom_window.close()
+                self.serialcom_window = None
+
     def _open_hr3lab_default(self):
         self.btn_hr3lab.setChecked(True)
         self.toggle_hr3lab()
@@ -1789,13 +2069,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
         else:
             self.btn_pause.setText("PAUSAR\nCAPTURA")
             self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
-
-    def toggle_pause_plot(self):
-        self.is_plot_paused = self.btn_pause_plot.isChecked()
-        if self.is_plot_paused:
-            self.btn_pause_plot.setText("RESUME\nMAIN WINDOW")
-        else:
-            self.btn_pause_plot.setText("PAUSE\nMAIN WINDOW")
 
     def auto_stop_save(self):
         if self.is_saving:
@@ -1877,16 +2150,114 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.save_file = None
                 self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
 
+    def _save_settings(self):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("PPGMonitor/geometry",       self.saveGeometry())
+        s.setValue("PPGMonitor/right_splitter", self.right_splitter.saveState())
+        s.setValue("PPGMonitor/spin_decim",          self.spin_decim.value())
+        s.setValue("PPGMonitor/spin_stats_interval", self.spin_stats_interval.value())
+        s.setValue("PPGMonitor/combo_port",     self.combo_port.currentText())
+        s.setValue("PPGMonitor/ppgplots_open",  self.ppgplots_window  is not None)
+        s.setValue("PPGMonitor/serialcom_open", self.serialcom_window is not None)
+        s.setValue("PPGMonitor/hrlab_open",     self.hrlab_window     is not None)
+        s.setValue("PPGMonitor/spo2lab_open",   self.spo2lab_window   is not None)
+        s.setValue("PPGMonitor/hr3lab_open",    self.hr3lab_window    is not None)
+
+    def _restore_settings(self):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("PPGMonitor/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        splitter = s.value("PPGMonitor/right_splitter")
+        if splitter:
+            self.right_splitter.restoreState(splitter)
+        self.spin_decim.setValue(         s.value("PPGMonitor/spin_decim",          10,  type=int))
+        self.spin_stats_interval.setValue(s.value("PPGMonitor/spin_stats_interval", 1,   type=int))
+        port = s.value("PPGMonitor/combo_port", PORT)
+        idx = self.combo_port.findText(port)
+        if idx >= 0:
+            self.combo_port.setCurrentIndex(idx)
+
+    def _populate_ports(self):
+        current = self.combo_port.currentText()
+        self.combo_port.blockSignals(True)
+        self.combo_port.clear()
+        ports = sorted(p.device for p in list_ports.comports())
+        self.combo_port.addItems(ports)
+        idx = self.combo_port.findText(current)
+        self.combo_port.setCurrentIndex(idx if idx >= 0 else 0)
+        self.combo_port.blockSignals(False)
+
+    def _connect_serial(self, port: str):
+        if not port:
+            self.set_status("No port selected", "error")
+            return
+        # Stop existing reader thread
+        self._reader_stop.set()
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=1.0)
+        if self.ser is not None and self.ser.is_open:
+            self.ser.close()
+        # Drain queue
+        while not self._serial_queue.empty():
+            try: self._serial_queue.get_nowait()
+            except: break
+        self._reader_stop.clear()
+        self.set_status(f"Conectando a {port}...", "info")
+        try:
+            self.ser = serial.Serial(port, BAUD, timeout=0.1)
+            self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
+            self._reader_thread.start()
+            self.set_status(f"Sistema ONLINE — {port} @ {BAUD}", "success")
+            self.btn_port_connect.setStyleSheet(
+                "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
+                "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
+            self.btn_port_connect.setText("CONNECTED")
+        except Exception as e:
+            self.ser = None
+            self.set_status(f"ERROR: No se pudo abrir {port} — {e}", "error")
+            self.btn_port_connect.setStyleSheet(
+                "background-color: #3A1A1A; color: #FF4444; font-size: 18px; "
+                "font-weight: bold; padding: 4px; border: 1px solid #FF4444; border-radius: 4px;")
+            self.btn_port_connect.setText("CONNECT")
+
     def _serial_reader(self):
         """Dedicated thread: reads serial lines at full rate into a queue.
         Completely decoupled from the UI so no frames are lost during rendering."""
-        while not self._reader_stop.is_set():
+        while not self._reader_stop.is_set() and self.ser is not None:
             try:
                 line = self.ser.readline()
                 if line:
                     self._serial_queue.put(line)
             except Exception:
                 break
+
+    _STATS_HR_ROWS  = {3, 4, 5}   # HR1, HR2, HR3
+    _STATS_MEAN_COL = 2
+    _STATS_MAROON   = QtGui.QColor("#5C001A")
+
+    def _update_stats_table(self):
+        for row, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
+            buf = self._stats_buf[name]
+            if buf:
+                last = buf[-1]
+                mean = sum(buf) / len(buf)
+                lo   = min(buf)
+                hi   = max(buf)
+                vals = [f"{last:.2f}", f"{mean:.2f}", f"{lo:.2f}", f"{hi:.2f}"]
+            else:
+                vals = ["---", "---", "---", "---"]
+            for col, v in enumerate(vals, start=1):
+                item = self.stats_table.item(row, col)
+                if item is None:
+                    item = QtWidgets.QTableWidgetItem(v)
+                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                    if row in self._STATS_HR_ROWS and col == self._STATS_MEAN_COL:
+                        item.setBackground(self._STATS_MAROON)
+                    self.stats_table.setItem(row, col, item)
+                else:
+                    item.setText(v)
+            self._stats_buf[name].clear()
 
     def update_data(self):
         if self.is_paused:
@@ -1913,7 +2284,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     # Confirmation messages from ESP32 (e.g. "# Switched to mow_afe4490")
                     if line.startswith('#'):
-                        self.console.appendPlainText(line)
+                        if self.serialcom_window is not None:
+                            self.serialcom_window.append_line(line)
                         if 'mow' in line.lower() and 'frame' not in line.lower():
                             self.active_lib = "MOW"
                             self.frame_mode = "M1"
@@ -1949,8 +2321,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     computed_chk ^= ord(c)
                                 if computed_chk != expected_chk:
                                     chk_ok = 0
-                                    self.console.appendPlainText(
-                                        f"# BAD CHK (got {computed_chk:02X} exp {expected_chk:02X}): {line[:70]}")
+                                    if self.serialcom_window is not None:
+                                        self.serialcom_window.append_line(
+                                            f"# BAD CHK (got {computed_chk:02X} exp {expected_chk:02X}): {line[:70]}")
                             except ValueError:
                                 pass
                         if self.save_file_chk is not None:
@@ -1979,8 +2352,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.save_file.write(csv_line + "\n")
                         self.save_file.flush()
 
-                    if not self.is_plot_paused:
-                        _console_lines.append(csv_line)
+                    _console_lines.append(csv_line)
 
                     parts = line[1:].split(',')  # strip leading '$'
                     if len(parts) >= 17:
@@ -2006,6 +2378,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_spo2_r.append(p[15])
                             hr3, _ = self.hr3_calc.update(p[10], SPO2_RECEIVED_FS)  # p[10]=IRSub=led1_aled1
                             self.data_hr3.append(hr3)
+                            # Stats buffers
+                            for sname, attr, _ in self._STATS_SIGNALS:
+                                self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
                         else: _new_data = True
                     elif parts[0] == "M2" and len(parts) >= 8:
@@ -2033,48 +2408,36 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         except ValueError: pass
                         else: _new_data = True
 
-                # Batch console update: one appendPlainText call for all lines accumulated this cycle
-                if _console_lines and not self.is_plot_paused:
-                    self.console.appendPlainText('\n'.join(_console_lines))
-                    if self.console.blockCount() > 500:
-                        cursor = self.console.textCursor()
-                        cursor.movePosition(QtGui.QTextCursor.Start)
-                        cursor.select(QtGui.QTextCursor.BlockUnderCursor)
-                        cursor.removeSelectedText()
-                        cursor.deleteChar()
-                    self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
-                    self.console.horizontalScrollBar().setValue(0)
+                # SerialComWindow: batch update (already one Qt op per cycle — no extra throttle needed)
+                if _console_lines and self.serialcom_window is not None:
+                    self.serialcom_window.append_lines(_console_lines)
 
-                if _new_data and not self.is_plot_paused:
-                    self.p_spo2.setTitle(f"<b style='color:#44FF88'>SpO2: {self.data_spo2[-1]:.1f} %</b> &nbsp; <b style='color:#AAAAAA'>R: {self.data_spo2_r[-1]:.4f}</b>")
-                    self.p_hr.setTitle(f"<b style='color:#FFDD44'>HR1: {self.data_hr1[-1]:.2f} bpm</b> &nbsp; <b style='color:#FF4444'>HR2: {self.data_hr2[-1]:.2f} bpm</b> &nbsp; <b style='color:#00CCFF'>HR3: {self.data_hr3[-1]:.2f} bpm</b>")
-                    self.curve_ppg.setData(list(self.data_ppg)[-PPG_WINDOW_SIZE:])
-                    self.curve_spo2.setData(list(self.data_spo2))
-                    self.curve_hr1.setData(list(self.data_hr1))
-                    self.curve_hr2.setData(list(self.data_hr2))
-                    self.curve_hr3.setData(list(self.data_hr3))
-                    self.curve_red.setData(list(self.data_red))
-                    self.curve_ir.setData(list(self.data_ir))
-                    self.curve_amb_red.setData(list(self.data_amb_red))
-                    self.curve_amb_ir.setData(list(self.data_amb_ir))
-                    self.curve_red_sub.setData(list(self.data_red_sub))
-                    self.curve_ir_sub.setData(list(self.data_ir_sub))
-                    self.curve_red_filt.setData(list(self.data_red_filt))
-                    self.curve_ir_filt.setData(list(self.data_ir_filt))
-                    self.curve_hr1_ppg.setData(list(self.data_hr1_ppg)[-PPG_WINDOW_SIZE:])
+                if _new_data:
+                    # PPGPlotsWindow: throttled to 25 Hz (every 2 calls)
+                    self._ppgplots_refresh_counter += 1
+                    if self.ppgplots_window is not None and self._ppgplots_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
+                        self._ppgplots_refresh_counter = 0
+                        self.ppgplots_window.update_plots(
+                            self.data_ppg, self.data_hr1, self.data_hr2, self.data_hr3,
+                            self.data_spo2, self.data_spo2_r, self.data_red, self.data_ir,
+                            self.data_amb_red, self.data_amb_ir, self.data_red_sub, self.data_ir_sub,
+                            self.data_red_filt, self.data_ir_filt, self.data_hr1_ppg)
 
-                # Sub-windows update independently of PAUSE MAIN WINDOW
                 if _new_data:
                     if self.hrlab_window is not None:
                         self.hrlab_window.update_plots(self.data_ppg, self.data_timestamp_us, self.data_sample_counter)
 
-                    if self.spo2lab_window is not None:
+                    self._spo2lab_refresh_counter += 1
+                    if self.spo2lab_window is not None and self._spo2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                        self._spo2lab_refresh_counter = 0
                         self.spo2lab_window.update_plots(
                             self.data_ir_sub, self.data_red_sub,
                             self.data_spo2, self.data_spo2_r,
                             self.data_timestamp_us, self.data_sample_counter)
 
-                    if self.hr3lab_window is not None:
+                    self._hr3lab_refresh_counter += 1
+                    if self.hr3lab_window is not None and self._hr3lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                        self._hr3lab_refresh_counter = 0
                         self.hr3lab_window.update_plots(
                             self.data_hr1, self.data_hr2, self.data_hr3, self.hr3_calc)
 
@@ -2083,9 +2446,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # setSizes debe llamarse tras show() para que Qt no lo sobreescriba
-        QtCore.QTimer.singleShot(0, lambda: self.splitter.setSizes([1800, 900]))
-        QtCore.QTimer.singleShot(0, self._open_hr3lab_default)
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        if s.value("PPGMonitor/ppgplots_open",  True,  type=bool):
+            QtCore.QTimer.singleShot(0, self._open_ppgplots_default)
+        if s.value("PPGMonitor/serialcom_open", True,  type=bool):
+            QtCore.QTimer.singleShot(0, self._open_serialcom_default)
+        if s.value("PPGMonitor/hr3lab_open",    True,  type=bool):
+            QtCore.QTimer.singleShot(0, self._open_hr3lab_default)
+        if s.value("PPGMonitor/hrlab_open",     False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_hrlab_default)
+        if s.value("PPGMonitor/spo2lab_open",   False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_spo2lab_default)
 
     def _auto_close_chk(self):
         if self.save_file_chk is not None:
@@ -2095,6 +2466,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, QtWidgets.QApplication.instance().quit)
 
     def closeEvent(self, event):
+        self._save_settings()
         if getattr(self, 'is_saving', False) and getattr(self, 'save_file', None):
             self.save_file.close()
         if getattr(self, 'is_saving_raw', False) and getattr(self, 'save_file_raw', None):
@@ -2107,6 +2479,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._reader_thread.join(timeout=1.0)
         if hasattr(self, 'ser') and self.ser.is_open:
             self.ser.close()
+        if self.ppgplots_window is not None:
+            self.ppgplots_window.main_monitor = None
+            self.ppgplots_window.close()
+        if self.serialcom_window is not None:
+            self.serialcom_window.main_monitor = None
+            self.serialcom_window.close()
         if self.hrlab_window is not None:
             self.hrlab_window.main_monitor = None
             self.hrlab_window.close()

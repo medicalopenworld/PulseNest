@@ -7,7 +7,7 @@
 ## Bugs activos
 
 - [ ] **Bug hot-swap:** ESP32, a veces, deja de enviar datos al cambiar de librería con `'m'`/`'p'`. Siguiente paso: reproducir y leer consola Python buscando `Guru Meditation Error`, `DRDY timeout` o corte silencioso de tramas.
-- [ ] **Bug HR1/HR2 a 30 BPM:** con el simulador MS100 a 30 BPM, HR1 y HR2 no funcionan correctamente. Detectado tras extender el rango a 30–250 BPM. Investigar si el problema es en `hr2_acorr_max_lag`, en el periodo refractario, en el warmup, o en la señal del simulador a esa frecuencia.
+- [ ] **Bug HR1/HR2 a valores bajos de BPM:** con el simulador MS100 a 30 BPM, HR1 y HR2 no funcionan correctamente. El rango reportado es ahora 25–300 BPM (guard band interna 22–303 BPM). Investigar si el problema es en `hr2_acorr_max_lag`, en el periodo refractario, en el warmup, o en la señal del simulador a esa frecuencia.
 
 ---
 

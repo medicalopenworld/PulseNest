@@ -14,7 +14,7 @@ namespace {
     constexpr float    spo2_warmup_s       = 5.0f;    // s  — warmup before reporting SpO2
     constexpr float    dc_iir_tau_s        = 1.6f;    // s  — DC IIR time constant
     constexpr float    ac_ema_tau_s        = 1.0f;    // s  — AC² EMA time constant
-    constexpr float    hr_refractory_s     = 0.200f;  // s  — HR refractory period (~300 bpm max)
+    constexpr float    hr_refractory_s     = 0.185f;  // s  — HR refractory period (covers guard band 303 BPM: 198 ms period)
     constexpr float    hr1_dc_tau_s             = 1.6f;   // s  — HR1 DC removal IIR time constant
     constexpr uint32_t hr1_peak_marker_samples  = 10;    // samples — duration of hr1_ppg=0 marker after peak (survives serial downsampling)
 
@@ -25,7 +25,7 @@ namespace {
     constexpr float    hr1_ma_cutoff_hz         = 5.0f;  // Hz — low-pass cutoff for HR peak detection
 
     // ── HR2 autocorrelation ───────────────────────────────────────────────────
-    constexpr float    hr2_min_lag_s            = 0.22f; // s  — min RR lag searched (~272 BPM max)
+    constexpr float    hr2_min_lag_s            = 0.185f; // s  — min RR lag searched (guard band 303 BPM: 60/303 = 0.198 s period)
     constexpr float    hr2_min_corr             = 0.5f;  // normalised autocorrelation threshold
 
     // ── SpO2 ──────────────────────────────────────────────────────────────────
@@ -40,8 +40,15 @@ namespace {
     constexpr float    spo2_min_dc         = 1000.0f; // ADC counts — no-finger threshold
 
     // ── HR ────────────────────────────────────────────────────────────────────
-    constexpr float    hr_min_bpm          =  30.0f;  // bpm
-    constexpr float    hr_max_bpm          = 250.0f;  // bpm
+    // Reported valid range: [hr_min_bpm, hr_max_bpm].
+    // Internal search range: [hr_search_min_bpm, hr_search_max_bpm] — guard band of ±3 BPM.
+    // Ensures signals at the boundary are detected reliably before the validity gate is applied.
+    constexpr float    hr_min_bpm          =  25.0f;  // bpm — reported valid lower bound (ISO 80601-2-61 minimum; neonatal use)
+    constexpr float    hr_max_bpm          = 300.0f;  // bpm — reported valid upper bound (neonatal tachycardia)
+    constexpr float    hr_search_min_bpm   =  22.0f;  // bpm — internal search lower bound (guard band: hr_min − 3)
+    constexpr float    hr_search_max_bpm   = 303.0f;  // bpm — internal search upper bound (guard band: hr_max + 3)
+    // HR1: refractory 200 ms naturally supports up to ~300 BPM; no explicit search bound needed.
+    // HR2: search bound applied via hr2_acorr_max_lag (header) and hr2_min_lag_s (below).
 
     // ── AFE4490 register addresses ────────────────────────────────────────────
     constexpr uint8_t REG_CONTROL0      = 0x00;

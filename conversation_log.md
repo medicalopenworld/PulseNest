@@ -2319,3 +2319,403 @@ Inicializados en `__init__` y `_recalc_params`; actualizados en `update()` en ca
 
 ---
 
+
+## Sesión — 2026-04-07
+
+### Tema: Diagnóstico de corrupción serial USB-CDC + conclusiones; preguntas conceptuales
+
+---
+
+**Resultado del test Serial.setTxBufferSize(1024) (Opción B):**
+- Test completado: `ppg_chk_20260406_233852.csv`, 3729 frames, **1.770% BAD CHK**
+- Comparativa completa:
+  - Baseline (múltiples Serial.print): 1.752%
+  - core0 + stack 8192: 1.402%
+  - setTxBufferSize(1024): 1.770%
+- **Conclusión:** `setTxBufferSize(1024)` no mejora la tasa de corrupción. El problema es intrínseco a la capa USB-CDC (HWCDC) del ESP32-S3, no al buffer de la aplicación.
+- **Decisión:** aceptar la tasa de corrupción actual (~1.5–1.8%). El checksum XOR ya filtra los frames corruptos correctamente. Para producción (dispositivo médico), usar UART físico (Opción D, pendiente en backlog).
+
+---
+
+## Sesión — 2026-04-07 (continuación)
+
+### Tema: Guard band HR, rango neonatal 25–300 BPM, preguntas DSP
+
+---
+
+**np.fft.rfftfreq() — explicación:**
+- Devuelve el array de frecuencias (Hz) correspondientes a cada bin del output de `rfft`.
+- Parámetro `d=1/fs`; sin él devuelve frecuencias normalizadas [0..0.5].
+- Con BUF_LEN=512 y fs_dec=50 Hz: resolución = 50/512 ≈ 0.098 Hz ≈ 5.9 BPM.
+
+**Resolución FFT — 5.9 BPM no es el techo:**
+- El 5.9 BPM es el espaciado entre bins (bin spacing), no la resolución efectiva.
+- La interpolación parabólica ya implementada en `HRFFTCalc` da resolución efectiva < 1 BPM para señal limpia.
+- La norma ISO 80601-2-61 exige ±3 BPM o ±3% — sobradamente cubierto.
+
+**Por qué la ISO exige solo ±3 BPM o ±3%:**
+- La HR fisiológica tiene variabilidad natural (HRV) de ±5–10 BPM en reposo: exigir más precisión que la variabilidad del propio parámetro no tiene sentido clínico.
+- El valor clínico es categórico (bradicardia / normal / taquicardia), no continuo.
+- El método de referencia (ECG) tiene su propio error de medida.
+- El ±3% para HR altas refleja la degradación real de la señal PPG a frecuencias elevadas.
+
+**HRV añadida al backlog con detalle:**
+- Dominio temporal: RMSSD, SDNN, NN50/pNN50, media RR.
+- Dominio frecuencial: VLF (<0.04 Hz), LF (0.04–0.15 Hz), HF (0.15–0.4 Hz), ratio LF/HF.
+- Prerequisito: HR4 (detección de pico real, no threshold crossing) para RR precisos.
+- Añadido análisis de validez PPG vs ECG para HRV: el PPG introduce retardo mecánico variable (PTT) y jitter adicional; revisar literatura sobre concordancia PPG-HRV vs ECG-HRV.
+
+**FFT magnitude-only — respuesta teórica:**
+- No existe un FFT estándar que omita la fase: las butterfly de Cooley-Tukey calculan real e imaginario conjuntamente — la fase no se puede separar del cómputo.
+- `|X|² = real² + imag²` evita el `sqrt` (para comparar picos basta el cuadrado). En firmware ESP-DSP, útil para buscar el bin ganador; `sqrt` solo en el bin final si se necesita amplitud absoluta.
+- En Python con NumPy esto es irrelevante (vectorizado en C).
+
+---
+
+**Guard band ±3 BPM — decisión de diseño:**
+- Motivación: si el algoritmo busca en [25, 300] y el corazón late a 24.5 BPM, el resultado sería erróneo. Con guard band, se busca en [22, 303] y se reporta válido solo si cae en [25, 300].
+- Decisión: usar ±3 BPM absolutos (coherente con la tolerancia de la norma).
+- Flujo: búsqueda interna [22, 303] BPM → validez reportada [25, 300] BPM.
+
+**Corrección de rango — ISO 80601-2-61 + uso neonatal:**
+- Rango anterior: [30, 250] BPM (incorrecto — norma exige mínimo 25 BPM).
+- Rango nuevo: **[25, 300] BPM** (ISO mínimo 25; neonatal hasta 300 BPM).
+- Guard band nueva: **[22, 303] BPM**.
+
+**Cambios aplicados (spec v0.11):**
+
+| Parámetro | Antes | Después |
+|---|---|---|
+| `hr_min_bpm` | 30 | 25 |
+| `hr_max_bpm` | 250 | 300 |
+| `hr_search_min_bpm` | 27 | 22 |
+| `hr_search_max_bpm` | 253 | 303 |
+| `hr_refractory_s` | 200 ms | 185 ms (cubre 303 BPM: periodo 198 ms) |
+| `hr2_min_lag_s` | 0.22 s | 0.185 s |
+| `hr2_acorr_max_lag` | 111 | 137 (22 BPM @ 50 Hz) |
+| `HR_MIN_HZ` Python | 0.5 Hz (30 BPM) | 0.4167 Hz (25 BPM) |
+| `HR_MAX_HZ` Python | 4.167 Hz (250 BPM) | 5.0 Hz (300 BPM) |
+| `HR_SEARCH_MIN_HZ` | 0.45 Hz (27 BPM) | 0.3667 Hz (22 BPM) |
+| `HR_SEARCH_MAX_HZ` | 4.217 Hz (253 BPM) | 5.05 Hz (303 BPM) |
+| `max_lag_n` HRLabWindow | 2.0×fs | 2.73×fs |
+| Defaults autocorr Python | hr_min=30, hr_max=250 | hr_min=25, hr_max=300 |
+
+**Ficheros modificados:** `lib/mow_afe4490/mow_afe4490.h`, `lib/mow_afe4490/mow_afe4490.cpp`, `ppg_plotter.py`, `mow_afe4490_spec.md` (v0.11), `TODO.md`.
+
+---
+
+**Trabajo en paralelo con otra sesión de Claude Code:**
+- Pregunta sobre riesgos de dos sesiones simultáneas sobre el mismo proyecto.
+- Conclusión: el riesgo principal es que una sesión sobreescriba los cambios de la otra si edita un fichero que ya había leído al inicio de su contexto. Ficheros críticos: `mow_afe4490_spec.md`, `conversation_log.md`, `TODO.md`. Protocolo acordado: hacer commit en cada sesión antes de que la otra modifique ficheros compartidos.
+
+---
+
+**Explicación de showEvent() y _dbg_print_ranges():**
+- `showEvent()`: método Qt que se dispara al hacerse visible la ventana. Se usa para ajustar tamaños de splitter con `QTimer.singleShot(0, ...)` (diferido al siguiente ciclo de event loop, cuando el layout ya es definitivo).
+- `_dbg_print_ranges()`: función de diagnóstico temporal (timer cada 1 s) que imprime el rango visible y ancho del panel `p_1b`. Sin utilidad funcional, se puede eliminar junto con `_dbg_timer`.
+
+---
+
+**Normas HR — ISO 80601-2-61:**
+- Rango mínimo obligatorio: 25–250 BPM (uso general); neonatal puede requerir hasta 300 BPM.
+- Precisión: ±3 BPM o ±3% (el mayor), medido como RMSE.
+- Resolución: 1 BPM.
+- Gap identificado: `mow_afe4490` v0.9 cubre 30–250 BPM (límite inferior 30 vs. 25 de la norma). Para neonatal estricto, revisar cobertura hasta 300 BPM.
+- Precisión sin validar aún (pendiente dataset de referencia con simulador MS100).
+
+---
+
+## Sesión — 2026-04-08
+
+### Tema: Guard band HR, rango neonatal 25–300 BPM, build/upload automático, throttle sub-ventanas
+
+---
+
+**Instrucción de flujo de trabajo — build + upload automático tras cambio de firmware:**
+- El usuario ha confirmado que al modificar `.cpp`/`.h` hay que hacer automáticamente: kill script → build → upload → relaunch, sin esperar a que lo pida.
+- Si solo hay cambios Python, solo kill → relaunch.
+- Guardado en memoria `feedback_platformio_tasks.md`.
+
+---
+
+**Corrección de rango HR — ISO 80601-2-61 + uso neonatal (spec v0.11):**
+- Rango anterior incorrecto: [30, 250] BPM.
+- Rango nuevo: **[25, 300] BPM** (25 BPM = mínimo ISO; 300 BPM = neonatal).
+- Guard band interna: **[22, 303] BPM** (±3 BPM).
+
+Cambios en firmware (`mow_afe4490.cpp` / `.h`):
+
+| Parámetro | Antes | Después |
+|---|---|---|
+| `hr_min_bpm` | 30 | 25 |
+| `hr_max_bpm` | 250 | 300 |
+| `hr_search_min_bpm` | 27 | 22 |
+| `hr_search_max_bpm` | 253 | 303 |
+| `hr_refractory_s` | 200 ms | 185 ms |
+| `hr2_min_lag_s` | 0.22 s | 0.185 s |
+| `hr2_acorr_max_lag` | 111 | 137 |
+
+Cambios en Python (`ppg_plotter.py`):
+- `HR_MIN_HZ` / `HR_MAX_HZ`: 0.5/4.167 → 0.4167/5.0 Hz
+- `HR_SEARCH_MIN_HZ` / `HR_SEARCH_MAX_HZ`: 27/60 / 253/60 → 22/60 / 303/60
+- Defaults autocorr: `hr_min=30, hr_max=250` → `hr_min=25, hr_max=300`
+- `max_lag_n` HRLabWindow: `2.0×fs` → `(60/22)×fs`
+
+Firmware compilado y flasheado. Spec v0.11 actualizada.
+
+---
+
+**Bug de rendimiento — plots a mitad de velocidad con SpO2LAB + HR3LAB abiertas:**
+
+**Síntoma:** los plots avanzan a ~mitad de velocidad esperada cuando SpO2LAB y HR3LAB están abiertas simultáneamente con la ventana principal. Desaparece al cerrar SpO2LAB y HR3LAB o al pausar la ventana principal.
+
+**Causa:** SpO2LabWindow y HR3LabWindow se renderizaban a 50 Hz (cada llamada a `update_data()`), pero su contenido cambia mucho más lento (SpO2 lento, HR3 solo actualiza cada 0.5 s). El rendering Qt de múltiples plots a 50 Hz superaba la capacidad de proceso disponible.
+
+**Solución:** throttle independiente por sub-ventana con contadores en `update_data()`:
+- `_SUBWIN_REFRESH_EVERY = 5` → actualización a **10 Hz** (1 de cada 5 llamadas)
+- `_spo2lab_refresh_counter` y `_hr3lab_refresh_counter` incrementan solo cuando hay `_new_data`
+- HRLabWindow sin cambio (el usuario confirmó que sola es fluida)
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08
+
+### Tema: Refactor ppg_plotter.py — extracción de plots y consola serie a ventanas independientes
+
+**Objetivo:** Extraer los plots y la consola serie de `PPGMonitor` a dos ventanas flotantes independientes, siguiendo el mismo patrón que `HRLabWindow`, `SpO2LabWindow` y `HR3LabWindow`.
+
+**Decisiones tomadas:**
+
+- Nueva clase `PPGPlotsWindow(QWidget)`: contiene todos los plots (RED, IR, PPG, SpO2, HR) + checkboxes RED/IR. Abierta por defecto al arrancar (via `_open_ppgplots_default()`). Throttle a 25 Hz (cada 2 llamadas a `update_data()`).
+- Nueva clase `SerialComWindow(QWidget)`: contiene la consola de texto (`QPlainTextEdit`) + `header_label`. Abierta por defecto al arrancar. Sin throttle propio (batch por ciclo ya es suficiente).
+- `PPGMonitor` queda sólo con: sidebar de controles, `log_panel` de estado, y dispatch a sub-ventanas.
+- Eliminados de `PPGMonitor`: `is_plot_paused`, `btn_pause_plot`, `toggle_pause_plot()`, `splitter`, `graphics_layout`, `console`, `header_label`, todos los `curve_*` y `p_*` de plots, los checkboxes RED/IR.
+- Sidebar reorganizado: secciones DECIMACIÓN, LIBRARY, FRAME MODE, DISPLAY (PPGPLOTS, SERIALCOM), ANALYSIS (HRLAB, SPO2LAB, HR3LAB).
+- `showEvent()` abre automáticamente PPGPlotsWindow + SerialComWindow + HR3LabWindow.
+- `closeEvent()` cierra todas las sub-ventanas en orden.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación)
+
+### Tema: Ajustes visuales PPGMonitor
+
+**Ventana principal más estrecha:** `resize(2700, 1600)` → `resize(600, 1000)`.
+
+**Log panel — texto el doble de tamaño:** `font-size: 16px` → `font-size: 32px`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 2)
+
+### Tema: Ajustes visuales PPGMonitor (iteración 2)
+
+**Ventana principal más ancha:** `resize(600, 1000)` → `resize(900, 1000)`.
+
+**Log panel — texto reducido:** `font-size: 32px` → `font-size: 22px`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 3)
+
+### Tema: Ajustes visuales PPGMonitor (iteración 3)
+
+**Ventana principal más alta y doble de ancha:** `resize(900, 1000)` → `resize(1800, 1100)`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 4)
+
+### Tema: Fix texto bold en log_panel + reubicación mouse hint
+
+**Log panel — texto en negrita:** `font-weight:bold` → `font-weight:normal` en `set_status()`. El texto de los mensajes de estado aparecía en negrita; corregido a peso normal.
+
+**Mouse hint reubicado:** El mensaje "pyqtgraph: use mouse buttons and wheel..." se eliminó de la ventana principal `PPGMonitor` (que ya no tiene plots) y se añadió a las ventanas con plots:
+- `PPGPlotsWindow`: añadido como `QLabel` gris en la parte inferior del layout (es `QWidget`, no tiene `statusBar()`). Layout externo cambiado a `QVBoxLayout` para contener el hint.
+- `SpO2LabWindow`, `HR3LabWindow`, `HRLabWindow`: ya tenían el hint via `statusBar()` — sin cambios.
+- `SerialComWindow`: sin plots → sin hint.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 5)
+
+### Tema: Ajuste tamaño fuente log_panel
+
+**Log panel — tamaño de fuente:** `font-size: 22px` → `font-size: 26px`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 6)
+
+### Tema: Sección DECIMATION del sidebar — inglés + layout + tamaño
+
+- "DECIMACIÓN" → "DECIMATION"
+- "1 de cada" → "1 out of every": movido a línea propia encima del spinbox, `font-size: 16px` → `20px`
+- Spinbox: `font-size: 16px` → `20px`; sufijo "tramas" → "frames"
+- Layout cambiado de `QHBoxLayout` (label + spin en fila) a widgets independientes en el `sidebar_layout`
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 7)
+
+### Tema: Tabla de estadísticas numéricas en PPGMonitor
+
+Añadida tabla `SIGNAL STATS` encima del `log_panel` en `PPGMonitor`.
+
+**Diseño:**
+- 15 señales (filas): PPG, SpO2, SpO2_R, HR1, HR2, HR3, RED, IR, Amb RED, Amb IR, RED sub, IR sub, RED filt, IR filt, HR1 PPG
+- 5 columnas: Signal | Last | Mean | Min | Max
+- **Modo reset periódico (opción B):** buffers acumulan muestras entre disparos del timer; al disparar → calcula stats, actualiza tabla, limpia buffers
+- Spinbox "Update interval" (1–60 s, por defecto 1 s) en cabecera de la tabla
+- Solo se alimentan buffers con tramas M1 válidas (post-checksum, post-decimación)
+
+**Cambios en layout:** lado derecho de `content_layout` cambiado de `log_panel` directo a `right_layout (QVBoxLayout)` → stats_container + log_panel.
+
+**Nuevos elementos en código:**
+- `_STATS_SIGNALS`: lista de (nombre, atributo) para las 15 señales
+- `_stats_buf`: dict de listas, una por señal
+- `_stats_timer` (`QTimer`): conectado a `_update_stats_table()`
+- `spin_stats_interval`: spinbox que ajusta el intervalo del timer
+- `stats_table` (`QTableWidget` 15×5)
+- `_update_stats_table()`: calcula last/mean/min/max, actualiza tabla, limpia buffers
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 8)
+
+### Tema: Tabla de estadísticas — mayor tamaño
+
+- Texto filas: `font-size: 14px` → `18px`
+- Cabecera: `font-size: 13px` → `17px`
+- Alto de fila: `setDefaultSectionSize(22)` → `32`
+- Padding de celda: `2px 6px` → `4px 8px`
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 9)
+
+### Tema: Tabla de estadísticas — mayor tamaño (iteración 2)
+
+- Texto filas: `18px` → `22px`
+- Cabecera: `17px` → `21px`
+- Alto de fila: `32` → `40`
+- Padding de celda: `4px 8px` → `6px 10px`
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 10)
+
+### Tema: Splitter entre tabla de estadísticas y log_panel
+
+`right_layout (QVBoxLayout)` reemplazado por `right_splitter (QSplitter vertical)`. La tabla y el log_panel son ahora redimensionables por el usuario arrastrando el separador. `stretchFactor=1` en ambos paneles (50/50 por defecto).
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 11)
+
+### Tema: Tabla de estadísticas — uniformizar tamaño de texto a 22px
+
+Título "SIGNAL STATS", label "Update interval:", spinbox y cabeceras de columna igualados al tamaño de las celdas (`22px`). Ancho del spinbox ajustado a `110px`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 12)
+
+### Tema: Tabla de estadísticas — alineación y color de celdas HR
+
+- Valores (cols 1–4): alineados a la derecha (`AlignRight | AlignVCenter`)
+- Celdas Mean (col 2) de HR1, HR2, HR3 (filas 3, 4, 5): fondo granate oscuro `#5C001A`
+- Constantes de clase `_STATS_HR_ROWS`, `_STATS_MEAN_COL`, `_STATS_MAROON` para mantener coherencia entre init y `_update_stats_table()`
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 13)
+
+### Tema: Selector de puerto serie configurable en el sidebar
+
+- Añadida sección **PORT** al top del sidebar: `QComboBox` con puertos disponibles + botón `↺` (refresh) + botón `CONNECT`
+- `from serial.tools import list_ports` añadido a imports
+- **`_populate_ports()`**: rellena el combobox con `list_ports.comports()`, preserva selección
+- **`_connect_serial(port)`**: para el hilo lector anterior, cierra el puerto, abre el nuevo, relanza el hilo; sin `sys.exit` — fallo muestra error en status y botón rojo `#3A1A1A`; éxito → botón verde `CONNECTED`
+- Conexión inicial al arrancar auto-selecciona `COM15` (fallback al primero disponible)
+- `_serial_reader` protegido contra `self.ser is None`
+- `self.ser`, `_serial_queue`, `_reader_stop`, `_reader_thread` inicializados antes de construir la UI
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 14)
+
+### Tema: Persistencia de estado UI con QSettings
+
+Implementada persistencia completa del estado de la UI en `ppg_plotter.ini` (directorio del script).
+
+**Mecanismo:** `QSettings(SETTINGS_FILE, QSettings.IniFormat)`. Se guarda en `closeEvent` y se restaura en `__init__` / `_restore_settings()`.
+
+**Estado guardado por ventana:**
+
+| Ventana | Datos |
+|---|---|
+| PPGMonitor | geometría, splitter derecho, `spin_decim`, `spin_stats_interval`, puerto COM, qué subventanas estaban abiertas |
+| PPGPlotsWindow | geometría, 8 checkboxes RED/IR |
+| SerialComWindow | geometría |
+| HRLabWindow | geometría |
+| HR3LabWindow | geometría |
+| SpO2LabWindow | geometría, `spin_spo2_ref` |
+
+**Cambios estructurales:**
+- `SETTINGS_FILE` constante global; `import os` añadido
+- `right_splitter` → `self.right_splitter` (era variable local)
+- `_restore_settings()` llamado en `__init__` antes de `_connect_serial()` (para restaurar puerto)
+- `showEvent` usa settings para decidir qué subventanas abrir (defecto: PPGPlots+SerialCom+HR3Lab)
+- `_save_settings()` llamado al inicio de `closeEvent` de PPGMonitor
+- Primer arranque sin `.ini`: valores por defecto de siempre
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
+
+## Sesión — 2026-04-08 (continuación 15)
+
+### Tema: Tooltips descriptivos en SIGNAL STATS
+
+`_STATS_SIGNALS` ampliado de tuplas `(name, attr)` a `(name, attr, tooltip)`. Cada señal lleva su descripción técnica completa inline, junto al nombre y atributo — si el código cambia, la descripción está justo al lado.
+
+El tooltip se asigna a **todas las celdas de la fila** (nombre + Last/Mean/Min/Max) mediante `item.setToolTip(tooltip)`. Aparece al pasar el ratón sobre cualquier celda de la fila.
+
+Descripciones incluidas para las 15 señales: PPG, SpO2, SpO2_R, HR1, HR2, HR3, RED, IR, Amb RED, Amb IR, RED sub, IR sub, RED filt, IR filt, HR1 PPG.
+
+Todos los bucles que desempaquetaban `(name, attr)` actualizados a `(name, attr, _tooltip)` o `(name, attr, _)`.
+
+**Fichero modificado:** `ppg_plotter.py`.
+
+---
