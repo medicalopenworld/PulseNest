@@ -52,7 +52,7 @@ void ReaderTask(void *pvParameters) {
 
             // SpO2 — valid flag indicates enough samples have been accumulated
             Serial.print("  SpO2: ");
-            if (data.spo2_valid) {
+            if (data.spo2_sqi > 0.0f) {
                 Serial.print(data.spo2, 1);
                 Serial.print(" %");
             } else {
@@ -61,7 +61,7 @@ void ReaderTask(void *pvParameters) {
 
             // HR via peak detection
             Serial.print("  HR1: ");
-            if (data.hr1_valid) {
+            if (data.hr1_sqi > 0.0f) {
                 Serial.print(data.hr1, 0);
                 Serial.print(" bpm");
             } else {
@@ -70,7 +70,7 @@ void ReaderTask(void *pvParameters) {
 
             // HR via autocorrelation (more robust, higher latency)
             Serial.print("  HR2: ");
-            if (data.hr2_valid) {
+            if (data.hr2_sqi > 0.0f) {
                 Serial.print(data.hr2, 0);
                 Serial.print(" bpm");
             } else {

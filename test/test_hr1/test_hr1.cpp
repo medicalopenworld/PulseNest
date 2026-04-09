@@ -20,23 +20,25 @@ void tearDown() {}
 void test_hr1_not_valid_too_soon() {
     MOW_AFE4490 afe;
     feed_hr1_sine(afe, 1.0f, 500.0f, 500);  // 1 second — not enough intervals
-    TEST_ASSERT_FALSE(afe.test_hr1_valid());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
 }
 
 // ── Test 2: 60 BPM (1 Hz sine) ───────────────────────────────────────────────
 // After enough samples, HR1 should converge to 60 BPM ± 5.
+// SQI is continuous: a synthetic sine has very low RR jitter → SQI should be high (> 0.7).
 void test_hr1_60bpm() {
     MOW_AFE4490 afe;
     feed_hr1_sine(afe, 1.0f, 500.0f, 6000);  // 12 seconds — plenty of intervals
-    TEST_ASSERT_TRUE(afe.test_hr1_valid());
+    TEST_ASSERT_GREATER_THAN(0.7f, afe.test_hr1_sqi());
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 60.0f, afe.test_hr1());
 }
 
 // ── Test 3: 120 BPM (2 Hz sine) ──────────────────────────────────────────────
+// SQI continuous: synthetic sine → low jitter → SQI > 0.7.
 void test_hr1_120bpm() {
     MOW_AFE4490 afe;
     feed_hr1_sine(afe, 2.0f, 500.0f, 6000);
-    TEST_ASSERT_TRUE(afe.test_hr1_valid());
+    TEST_ASSERT_GREATER_THAN(0.7f, afe.test_hr1_sqi());
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 120.0f, afe.test_hr1());
 }
 
@@ -46,7 +48,7 @@ void test_hr1_flat_signal_invalid() {
     MOW_AFE4490 afe;
     for (int i = 0; i < 6000; i++)
         afe.test_feed_hr1(500000);  // constant DC, no PPG pulses
-    TEST_ASSERT_FALSE(afe.test_hr1_valid());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
 }
 
 int main() {

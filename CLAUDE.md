@@ -42,7 +42,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 ## Reglas de desarrollo (obligatorias)
 
 1. **Nunca usar `delay()`** — usar `vTaskDelay()` con `pdMS_TO_TICKS()`.
-6. **Idioma del código fuente:** todo el código, comentarios e identificadores deben estar en **inglés** (sin excepción).
+6. **Idioma del código fuente:** todo el código, comentarios, identificadores y textos de interfaz de usuario (botones, labels, tooltips, mensajes de estado, cabeceras de tabla, títulos de ventana) deben estar en **inglés** (sin excepción). Aplica a firmware C++, `ppg_plotter.py` y cualquier otro fichero del proyecto.
 2. **Thread-safe** — proteger recursos compartidos con mutex (`SemaphoreHandle_t`).
 3. **Manejo de errores SPI/I2C** — siempre comprobar el resultado de las comunicaciones.
 4. **Pines desde `main.h`** — no hardcodear pines, seguir las definiciones del diccionario global.

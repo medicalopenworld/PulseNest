@@ -73,25 +73,28 @@ void Protocentral_Task(void *pvParameters) {
             protocentral.get_AFE44XX_Data(&protocentral_data);
 
             if (cnt % SERIAL_DOWNSAMPLING_RATIO == 0) {
-                char buf[256];
+                // $P1,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI
+                char buf[384];
                 int n = snprintf(buf, sizeof(buf) - 6,
-                    "$P1,%lu,%lu,%ld,%g,%g,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.2f,%.2f",
+                    "$P1,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
                     cnt, ts,
-                    (long)(protocentral_data.IR_filtered_data * -1),
-                    (double)protocentral_data.spo2,
-                    (double)protocentral_data.heart_rate,
                     (long)protocentral_data.RED_data,
                     (long)protocentral_data.IR_data,
                     (long)protocentral_data.ambientRED_data,
                     (long)protocentral_data.ambientIR_data,
                     (long)protocentral_data.REDminusAmbient_data,
                     (long)protocentral_data.IRminusAmbient_data,
-                    (long)protocentral_data.RED_filtered_data,
-                    (long)protocentral_data.IR_filtered_data,
-                    0.0f,   // HR1PPG — not available in protocentral
-                    -1.0f,  // HR2    — not available in protocentral
-                    -1.0f,  // SpO2_R — not available in protocentral
-                    -1.0f); // HR3    — not available in protocentral
+                    (long)(protocentral_data.IR_filtered_data * -1), // PPG
+                    (double)protocentral_data.spo2,
+                    -1.0f,  // SpO2SQI — not available in protocentral
+                    -1.0f,  // SpO2_R  — not available in protocentral
+                    -1.0f,  // PI      — not available in protocentral
+                    (double)protocentral_data.heart_rate,
+                    -1.0f,  // HR1SQI  — not available in protocentral
+                    -1.0f,  // HR2     — not available in protocentral
+                    -1.0f,  // HR2SQI  — not available in protocentral
+                    -1.0f,  // HR3     — not available in protocentral
+                    -1.0f); // HR3SQI  — not available in protocentral
                 uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                 snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                 Serial.print(buf);
@@ -166,22 +169,29 @@ void Mow_Task(void *pvParameters) {
                 if (Serial.availableForWrite() < 30) mow_tx_dropped++;
 
                 if (g_mow_frame_mode == MowFrameMode::M1) {
-                    char buf[256];
+                    // $M1,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI
+                    char buf[384];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M1,%lu,%lu,%ld,%.2f,%.2f,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f",
+                        "$M1,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
                         (unsigned long)mow_sample_count,
                         (unsigned long)micros(),
-                        (long)data.ppg,
-                        data.spo2_valid ? data.spo2 : -1.0f,
-                        data.hr1_valid  ? data.hr1  : -1.0f,
-                        (long)data.led2, (long)data.led1,
-                        (long)data.aled2, (long)data.aled1,
-                        (long)data.led2_aled2, (long)data.led1_aled1,
-                        (long)data.led2_aled2, (long)data.led1_aled1,  // REDFilt, IRFilt (placeholders)
-                        data.hr1_ppg,
-                        data.hr2_valid ? data.hr2 : -1.0f,
+                        (long)data.led2,       // RED
+                        (long)data.led1,       // IR
+                        (long)data.aled2,      // AmbRED
+                        (long)data.aled1,      // AmbIR
+                        (long)data.led2_aled2, // REDSub
+                        (long)data.led1_aled1, // IRSub
+                        (long)data.ppg,        // PPG
+                        data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
+                        data.spo2_sqi,                           // SpO2SQI
                         data.spo2_r,
-                        data.hr3_valid ? data.hr3 : -1.0f);
+                        data.pi,                                 // PI: Perfusion Index [%]
+                        data.hr1_sqi > 0.0f ? data.hr1 : -1.0f,
+                        data.hr1_sqi,                            // HR1SQI
+                        data.hr2_sqi > 0.0f ? data.hr2 : -1.0f,
+                        data.hr2_sqi,                            // HR2SQI
+                        data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
+                        data.hr3_sqi);                           // HR3SQI
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     Serial.print(buf);

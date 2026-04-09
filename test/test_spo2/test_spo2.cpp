@@ -33,7 +33,7 @@ void tearDown() {}
 void test_spo2_not_valid_during_warmup() {
     MOW_AFE4490 afe;
     feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, 1000);  // only 2 seconds
-    TEST_ASSERT_FALSE(afe.test_spo2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
 }
 
 // ── Test 2: no finger (DC too low) → invalid ─────────────────────────────────
@@ -42,7 +42,7 @@ void test_spo2_no_finger_invalid() {
     MOW_AFE4490 afe;
     for (int i = 0; i < WARMUP_SAMPLES; i++)
         afe.test_feed_spo2(500, 500);  // DC below threshold
-    TEST_ASSERT_FALSE(afe.test_spo2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
 }
 
 // ── Test 3: SpO2 ≈ 98% ───────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ void test_spo2_no_finger_invalid() {
 void test_spo2_98_percent() {
     MOW_AFE4490 afe;
     feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, WARMUP_SAMPLES);
-    TEST_ASSERT_TRUE(afe.test_spo2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 98.0f, afe.test_spo2());
 }
 
@@ -61,7 +61,7 @@ void test_spo2_98_percent() {
 void test_spo2_90_percent() {
     MOW_AFE4490 afe;
     feed_spo2_sine(afe, 10000.0f, 8156.0f, 1.0f, WARMUP_SAMPLES);
-    TEST_ASSERT_TRUE(afe.test_spo2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 90.0f, afe.test_spo2());
 }
 
@@ -70,7 +70,7 @@ void test_spo2_90_percent() {
 void test_spo2_clamp_above_100() {
     MOW_AFE4490 afe;
     feed_spo2_sine(afe, 10000.0f, 4500.0f, 1.0f, WARMUP_SAMPLES);
-    TEST_ASSERT_TRUE(afe.test_spo2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, afe.test_spo2());
 }
 
@@ -79,7 +79,7 @@ void test_spo2_clamp_above_100() {
 void test_spo2_too_high_invalid() {
     MOW_AFE4490 afe;
     feed_spo2_sine(afe, 10000.0f, 3000.0f, 1.0f, WARMUP_SAMPLES);
-    TEST_ASSERT_FALSE(afe.test_spo2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
 }
 
 int main() {

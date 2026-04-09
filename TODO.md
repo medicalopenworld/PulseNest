@@ -28,7 +28,8 @@
 - [ ] **HR1 — derivada antes de buscar picos** — aplicar derivada a la señal filtrada antes del detector de picos para mejorar la precisión en la localización del frente de subida.
 - [x] **Flash y validar HR2** con simulador — valores coherentes con HR1 confirmados (2026-03-31).
 - [x] **HR3 — FFT** — algoritmo FFT + HPS implementado en firmware (2026-04-08): LP 10 Hz → decimate ×10 → buffer 512 → Hann → FFT radix-2 DIT → HPS (P[k]·P[2k]·P[3k]) → interpolación parabólica. Expuesto en trama M1 (campo 17). ppg_plotter.py actualizado.
-- [ ] **HR4 — Peak detection** — detección del frente de subida mediante derivada de la señal filtrada (máximo de la derivada = pendiente máxima ascendente), como mejora de precisión sobre el threshold crossing de HR1.
+- [ ] **HR4 — AMDF (Average Magnitude Difference Function)** — estimación de HR mediante AMDF normalizado: `AMDF_n[τ] = AMDF[τ] / (AMDF_mean + ε)` para invarianza ante cambios de amplitud. Ventana adaptativa: ajustar el tamaño de la ventana de análisis en función de la estimación de HR previa (al menos 2–3 ciclos). Threshold dinámico: el mínimo válido se acepta sólo si cae por debajo de una fracción configurable del valor medio de AMDF (p.ej. 0.6·mean), descartando mínimos espurios en señales ruidosas. Alternativa robusta a la autocorrelación, especialmente en señales con baja SNR o formas de onda asimétricas. Evaluar como método independiente y comparar con HR1/HR2/HR3.
+- [ ] **HR5 — Peak detection** — detección del frente de subida mediante derivada de la señal filtrada (máximo de la derivada = pendiente máxima ascendente), como mejora de precisión sobre el threshold crossing de HR1.
 - [ ] **Fiabilidad (confidence) de HR1, HR2, HR3** — calcular un valor porcentual de fiabilidad para cada algoritmo:
   - HR1: posible métrica basada en consistencia de los 5 intervalos RR (coeficiente de variación inverso)
   - HR2: `peak_val` de la autocorrelación ya disponible (0–1); expresar como porcentaje
@@ -42,6 +43,7 @@
   - Calcular `PI(IR)` y `PI(RED)` por separado y comparar (IR: mayor penetración, menos sensible a color de piel, luz ambiente y movimiento)
   - Evaluar si el LED IR es el más adecuado para PI
 - [ ] **PI como índice de fiabilidad de SpO2** — estudiar si PI puede usarse para validar o ponderar la medida de SpO2.
+- [ ] **PI — RMS vs pico a pico** — analizar la idoneidad del método actual (AC_rms / DC_ir × 100) frente al uso del valor AC pico a pico: cuál es más representativo fisiológicamente, más robusto ante ruido, y más coherente con la definición usada por los fabricantes de pulsioxímetros comerciales.
 - [ ] **Calibrar coeficientes SpO2** (`setSpO2Coefficients`) con sensor real.
 - [ ] **Validación general con hardware real** (la mayoría de pruebas se han hecho con simulador).
 - [ ] **Validar algoritmo HR en condiciones adversas:** (1) baja perfusión, (2) luz ambiental, (3) artefactos por movimiento.
@@ -53,6 +55,7 @@
 
 - [x] **Tests unitarios de algoritmos en PC (env:native)** — 20/20 PASSED (2026-03-31): biquad (5), HR1 (4), HR2 (4), SpO2 (6). Infraestructura: lib/mow_afe4490/, test/stubs/, env:native.
 - [ ] **Dataset de referencia con simulador MS100** — capturar CSVs con ppg_plotter.py a SpO2 y HR conocidas (p.ej. 98%, 90%, 80% / 60, 80, 100 bpm); usar como ground truth para regresión: si cambia el algoritmo, verificar que los valores no se desvían del golden dataset.
+- [ ] **Dataset de referencia con sujetos reales** — capturar medidas simultáneas con el AFE4490 y equipos de referencia clínicos (pulsioxímetro de referencia, co-oxímetro si disponible) sobre voluntarios sanos; registrar SpO2 y HR de ambos sistemas para calcular sesgo, RMSE y límites de acuerdo (Bland-Altman). Condiciones a cubrir: reposo, tras ejercicio, distintas saturaciones si es posible.
 
 ---
 

@@ -141,7 +141,7 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
     # Full autocorrelation (direct method): result has length 2*N-1, center at index N-1.
     # Positive lags start at index N-1 and extend to the right.
     n = len(seg)
-    full = signal.correlate(seg, seg, mode='full', method='direct')
+    full = signal.correlate(seg, seg, mode='full', method='fft')
     acorr = full[n - 1: n - 1 + max_lag_n + 1]
     if acorr[0] != 0:
         acorr = acorr / acorr[0]
@@ -1054,7 +1054,9 @@ class HR3LabWindow(QtWidgets.QMainWindow):
 
         if len(calc.last_freqs) > 1:
             self.curve_fft.setData(calc.last_freqs, calc.last_spectrum)
-            hps_max = np.max(calc.last_hps) if np.max(calc.last_hps) > 0.0 else 1.0
+            hps_max = np.max(calc.last_hps)
+            if hps_max <= 0.0:
+                hps_max = 1.0
             self.curve_hps.setData(calc.last_freqs, calc.last_hps / hps_max)
             self._line_peak.setValue(calc.last_peak_freq)
             self._line_h2.setValue(calc.last_peak_freq * 2.0)
@@ -1068,9 +1070,9 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         if calc._buf_count > 0:
             self.curve_sig.setData(calc.last_filtered_buf)
 
-        self.curve_hr1_cmp.setData(list(data_hr1))
-        self.curve_hr2_cmp.setData(list(data_hr2))
-        self.curve_hr3_cmp.setData(list(data_hr3))
+        self.curve_hr1_cmp.setData(np.array(data_hr1))
+        self.curve_hr2_cmp.setData(np.array(data_hr2))
+        self.curve_hr3_cmp.setData(np.array(data_hr3))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1099,7 +1101,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("HRLAB")
+        self.setWindowTitle("HR2LAB")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -1185,6 +1187,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
         self._mow_filt_buf   = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self._last_sample_cnt = None
         self._mow_fs_cached  = None
+        self._mow_ba_cached  = None   # cached (b, a) coefficients — recomputed only when fs changes
 
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         geom = s.value("HRLabWindow/geometry")
@@ -1228,7 +1231,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
         return b, a
 
     def update_plots(self, ppg_data, timestamp_us_data, sample_counter_data):
-        data = np.array(list(ppg_data))
+        data = np.array(ppg_data)
         self.curve_1a.setData(data)
 
         fs = 50.0  # AFE4490 @ 500 Hz, SERIAL_DOWNSAMPLING_RATIO=10
@@ -1240,12 +1243,12 @@ class HRLabWindow(QtWidgets.QMainWindow):
         mow_filtered = None
         if high_norm < 1.0:
             try:
-                b, a = self._mow_biquad_coeffs(fs, 0.5, 3.7)
-
-                # Reset state if sample rate changed
-                if fs != self._mow_fs_cached:
-                    self._mow_zi = None
+                # Recompute coefficients only when fs changes
+                if fs != self._mow_fs_cached or self._mow_ba_cached is None:
+                    self._mow_ba_cached = self._mow_biquad_coeffs(fs, 0.5, 3.7)
                     self._mow_fs_cached = fs
+                    self._mow_zi = None   # force filter reset on coefficient change
+                b, a = self._mow_ba_cached
 
                 cur_cnt = int(sample_counter_data[-1])
                 reset = self._mow_zi is None or self._last_sample_cnt is None
@@ -1280,7 +1283,6 @@ class HRLabWindow(QtWidgets.QMainWindow):
             max_lag_n = int(round((60.0 / 22.0) * fs))  # covers guard band minimum 22 BPM
             needed    = window_n + max_lag_n
             max_lag_s = max_lag_n / fs
-            print(f"[DBG] max_lag_s={max_lag_s:.4f}  max_lag_n={max_lag_n}  fs={fs:.2f}", flush=True)
 
             _HR_COLOR = {
                 HRStatus.VALID:        '#FFDD44',
@@ -1380,14 +1382,12 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             self.restoreGeometry(geom)
         else:
             self.resize(1800, 900)
-        self.check_red_raw.setChecked( s.value("PPGPlotsWindow/check_red_raw",  False, type=bool))
-        self.check_red_amb.setChecked( s.value("PPGPlotsWindow/check_red_amb",  False, type=bool))
-        self.check_red_sub.setChecked( s.value("PPGPlotsWindow/check_red_sub",  True,  type=bool))
-        self.check_red_filt.setChecked(s.value("PPGPlotsWindow/check_red_filt", False, type=bool))
-        self.check_ir_raw.setChecked(  s.value("PPGPlotsWindow/check_ir_raw",   False, type=bool))
-        self.check_ir_amb.setChecked(  s.value("PPGPlotsWindow/check_ir_amb",   False, type=bool))
-        self.check_ir_sub.setChecked(  s.value("PPGPlotsWindow/check_ir_sub",   True,  type=bool))
-        self.check_ir_filt.setChecked( s.value("PPGPlotsWindow/check_ir_filt",  False, type=bool))
+        self.check_red_raw.setChecked(s.value("PPGPlotsWindow/check_red_raw", False, type=bool))
+        self.check_red_amb.setChecked(s.value("PPGPlotsWindow/check_red_amb", False, type=bool))
+        self.check_red_sub.setChecked(s.value("PPGPlotsWindow/check_red_sub", True,  type=bool))
+        self.check_ir_raw.setChecked( s.value("PPGPlotsWindow/check_ir_raw",  False, type=bool))
+        self.check_ir_amb.setChecked( s.value("PPGPlotsWindow/check_ir_amb",  False, type=bool))
+        self.check_ir_sub.setChecked( s.value("PPGPlotsWindow/check_ir_sub",  True,  type=bool))
 
     def _setup_ui(self):
         outer = QtWidgets.QVBoxLayout(self)
@@ -1425,24 +1425,19 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.check_red_raw  = create_check("RED (raw)",    "#FFFFFF", False)
         self.check_red_amb  = create_check("Ambient RED",  "#00FFFF", False)
         self.check_red_sub  = create_check("RED (clean)",  "#FF8888", True)
-        self.check_red_filt = create_check("RED (filt)",   "#FF0000", False)
         self.check_red_raw.setToolTip(_make_tooltip(
             "RED (raw)",
             "Raw RED LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: led1 in the M1 frame."))
+            "Includes ambient light contamination. Field: RED in the M1 frame."))
         self.check_red_amb.setToolTip(_make_tooltip(
             "Ambient RED",
-            "Ambient light sampled during the RED LED off period (aled1). "
+            "Ambient light sampled during the RED LED off period (aled2). "
             "Represents environmental light interference on the RED channel."))
         self.check_red_sub.setToolTip(_make_tooltip(
             "RED (clean)",
-            "RED minus ambient: led1 − aled1. Ambient-subtracted RED signal. "
-            "This is the primary input to the SpO2 algorithm. Field: REDSub."))
-        self.check_red_filt.setToolTip(_make_tooltip(
-            "RED (filt)",
-            "RED clean signal after the digital bandpass filter (0.5–5 Hz). "
-            "Used for PPG analysis. Field: REDFilt."))
-        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub, self.check_red_filt):
+            "RED minus ambient: RED − AmbRED. Ambient-subtracted RED signal. "
+            "Primary input to the SpO2 algorithm. Field: REDSub."))
+        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub):
             sidebar.addWidget(w)
 
         lbl_ir = QtWidgets.QLabel("IR")
@@ -1451,24 +1446,19 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.check_ir_raw  = create_check("IR (raw)",     "#FFFFFF", False)
         self.check_ir_amb  = create_check("Ambient IR",   "#00FFFF", False)
         self.check_ir_sub  = create_check("IR (clean)",   "#88CCFF", True)
-        self.check_ir_filt = create_check("IR (filt)",    "#44AAFF", False)
         self.check_ir_raw.setToolTip(_make_tooltip(
             "IR (raw)",
             "Raw IR LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: led2 in the M1 frame."))
+            "Includes ambient light contamination. Field: IR in the M1 frame."))
         self.check_ir_amb.setToolTip(_make_tooltip(
             "Ambient IR",
-            "Ambient light sampled during the IR LED off period (aled2). "
+            "Ambient light sampled during the IR LED off period (aled1). "
             "Represents environmental light interference on the IR channel."))
         self.check_ir_sub.setToolTip(_make_tooltip(
             "IR (clean)",
-            "IR minus ambient: led2 − aled2. Ambient-subtracted IR signal. "
+            "IR minus ambient: IR − AmbIR. Ambient-subtracted IR signal. "
             "Primary input to the HR algorithms (HR1, HR2, HR3). Field: IRSub."))
-        self.check_ir_filt.setToolTip(_make_tooltip(
-            "IR (filt)",
-            "IR clean signal after the digital bandpass filter (0.5–5 Hz). "
-            "Used for PPG analysis. Field: IRFilt."))
-        for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub, self.check_ir_filt):
+        for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub):
             sidebar.addWidget(w)
 
         sidebar.addStretch()
@@ -1478,14 +1468,19 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         root.addWidget(sb_widget)
 
         # ── Plots ─────────────────────────────────────────────────────────────
+        plots_vbox = QtWidgets.QVBoxLayout()
+        plots_vbox.setContentsMargins(0, 0, 0, 0)
+        plots_vbox.setSpacing(0)
+        root.addLayout(plots_vbox)
+
+        # Top two rows: RED and IR in a GraphicsLayoutWidget
         self.graphics_layout = pg.GraphicsLayoutWidget()
-        root.addWidget(self.graphics_layout)
+        plots_vbox.addWidget(self.graphics_layout, stretch=1)
 
         self.p1 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
         self.curve_red      = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
         self.curve_amb_red  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
         self.curve_red_sub  = self.p1.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
-        self.curve_red_filt = self.p1.plot(pen=pg.mkPen('#FF0000', width=3),   name="RED (Filtered)")
         self.p1.showGrid(x=True, y=True, alpha=0.3)
 
         self.graphics_layout.nextRow()
@@ -1494,58 +1489,69 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.curve_ir      = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
         self.curve_amb_ir  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
         self.curve_ir_sub  = self.p2.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
-        self.curve_ir_filt = self.p2.plot(pen=pg.mkPen('#44AAFF', width=3),   name="IR (Filtered)")
         self.p2.showGrid(x=True, y=True, alpha=0.3)
 
-        self.graphics_layout.nextRow()
+        # Bottom row: PPG | SpO2 | HR in a plain QHBoxLayout with pg.PlotWidget
+        # Qt distributes QHBoxLayout space evenly by default — guaranteed equal widths.
+        bottom_row = QtWidgets.QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(0)
+        plots_vbox.addLayout(bottom_row, stretch=1)
 
-        stats_layout = self.graphics_layout.addLayout()
-        self.p_ppg = stats_layout.addPlot(title="<b style='color:#FFFFFF'>PPG</b>")
-        self.curve_ppg     = self.p_ppg.plot(pen=pg.mkPen('#FFFFFF', width=2))
-        self.curve_hr1_ppg = self.p_ppg.plot(pen=pg.mkPen('#FF8800', width=1.5), name="HR1 PPG")
+        w_ppg = pg.PlotWidget(title="<b style='color:#FFFFFF'>PPG</b>")
+        w_ppg.setBackground('#121212')
+        self.p_ppg = w_ppg.plotItem
+        self.curve_ppg = self.p_ppg.plot(pen=pg.mkPen('#FFFFFF', width=2))
         self.p_ppg.showGrid(x=True, y=True, alpha=0.3)
+        bottom_row.addWidget(w_ppg)
 
-        self.p_spo2 = stats_layout.addPlot(title="<b style='color:#44FF88'>SpO2 (%)</b>")
+        w_spo2 = pg.PlotWidget(title="<b style='color:#44FF88'>SpO2 (%)</b>")
+        w_spo2.setBackground('#121212')
+        self.p_spo2 = w_spo2.plotItem
         self.curve_spo2 = self.p_spo2.plot(pen=pg.mkPen('#44FF88', width=3))
         self.p_spo2.setYRange(50, 100)
+        bottom_row.addWidget(w_spo2)
 
-        self.p_hr = stats_layout.addPlot(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
+        w_hr = pg.PlotWidget(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
+        w_hr.setBackground('#121212')
+        self.p_hr = w_hr.plotItem
         self.curve_hr1 = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3),  name="HR1")
         self.curve_hr2 = self.p_hr.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
         self.curve_hr3 = self.p_hr.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="HR3")
         self.p_hr.setYRange(40, 180)
-
-        stats_layout.layout.setColumnStretchFactor(0, 3)
-        stats_layout.layout.setColumnStretchFactor(1, 1)
-        stats_layout.layout.setColumnStretchFactor(2, 1)
+        bottom_row.addWidget(w_hr)
 
         # ── Checkbox → curve visibility ───────────────────────────────────────
-        self.check_red_raw.stateChanged.connect( lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
-        self.check_red_amb.stateChanged.connect( lambda: self.curve_amb_red.setVisible(self.check_red_amb.isChecked()))
-        self.check_red_sub.stateChanged.connect( lambda: self.curve_red_sub.setVisible(self.check_red_sub.isChecked()))
-        self.check_red_filt.stateChanged.connect(lambda: self.curve_red_filt.setVisible(self.check_red_filt.isChecked()))
-        self.check_ir_raw.stateChanged.connect(  lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
-        self.check_ir_amb.stateChanged.connect(  lambda: self.curve_amb_ir.setVisible(self.check_ir_amb.isChecked()))
-        self.check_ir_sub.stateChanged.connect(  lambda: self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked()))
-        self.check_ir_filt.stateChanged.connect( lambda: self.curve_ir_filt.setVisible(self.check_ir_filt.isChecked()))
+        self.check_red_raw.stateChanged.connect(lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
+        self.check_red_amb.stateChanged.connect(lambda: self.curve_amb_red.setVisible(self.check_red_amb.isChecked()))
+        self.check_red_sub.stateChanged.connect(lambda: self.curve_red_sub.setVisible(self.check_red_sub.isChecked()))
+        self.check_ir_raw.stateChanged.connect( lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
+        self.check_ir_amb.stateChanged.connect( lambda: self.curve_amb_ir.setVisible(self.check_ir_amb.isChecked()))
+        self.check_ir_sub.stateChanged.connect( lambda: self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked()))
 
         self.curve_red.setVisible(False)
         self.curve_amb_red.setVisible(False)
         self.curve_red_sub.setVisible(True)
-        self.curve_red_filt.setVisible(False)
         self.curve_ir.setVisible(False)
         self.curve_amb_ir.setVisible(False)
         self.curve_ir_sub.setVisible(True)
-        self.curve_ir_filt.setVisible(False)
 
         outer.addWidget(hint)
 
     def update_plots(self, data_ppg, data_hr1, data_hr2, data_hr3,
-                     data_spo2, data_spo2_r, data_red, data_ir,
-                     data_amb_red, data_amb_ir, data_red_sub, data_ir_sub,
-                     data_red_filt, data_ir_filt, data_hr1_ppg):
-        self.p_spo2.setTitle(f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b> &nbsp; <b style='color:#AAAAAA'>R: {data_spo2_r[-1]:.4f}</b>")
-        self.p_hr.setTitle(f"<b style='color:#FFDD44'>HR1: {data_hr1[-1]:.2f} bpm</b> &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.2f} bpm</b> &nbsp; <b style='color:#00CCFF'>HR3: {data_hr3[-1]:.2f} bpm</b>")
+                     data_spo2, data_spo2_sqi, data_spo2_r,
+                     data_hr1_sqi, data_hr2_sqi, data_hr3_sqi,
+                     data_red, data_ir,
+                     data_amb_red, data_amb_ir, data_red_sub, data_ir_sub):
+        self.p_spo2.setTitle(
+            f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b>"
+            f" &nbsp; <b style='color:#888888'>SQI: {data_spo2_sqi[-1]:.2f}</b>"
+            f" &nbsp; <b style='color:#AAAAAA'>R: {data_spo2_r[-1]:.4f}</b>")
+        self.p_hr.setTitle(
+            f"<b style='color:#FFDD44'>HR1: {data_hr1[-1]:.1f}</b><b style='color:#888888'> [{data_hr1_sqi[-1]:.2f}]</b>"
+            f" &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.1f}</b><b style='color:#888888'> [{data_hr2_sqi[-1]:.2f}]</b>"
+            f" &nbsp; <b style='color:#00CCFF'>HR3: {data_hr3[-1]:.1f}</b><b style='color:#888888'> [{data_hr3_sqi[-1]:.2f}]</b>"
+            f" <b style='color:#AAAAAA'>bpm</b>")
         self.curve_ppg.setData(list(data_ppg)[-PPG_WINDOW_SIZE:])
         self.curve_spo2.setData(list(data_spo2))
         self.curve_hr1.setData(list(data_hr1))
@@ -1557,9 +1563,6 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.curve_amb_ir.setData(list(data_amb_ir))
         self.curve_red_sub.setData(list(data_red_sub))
         self.curve_ir_sub.setData(list(data_ir_sub))
-        self.curve_red_filt.setData(list(data_red_filt))
-        self.curve_ir_filt.setData(list(data_ir_filt))
-        self.curve_hr1_ppg.setData(list(data_hr1_ppg)[-PPG_WINDOW_SIZE:])
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -1567,11 +1570,9 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         s.setValue("PPGPlotsWindow/check_red_raw",  self.check_red_raw.isChecked())
         s.setValue("PPGPlotsWindow/check_red_amb",  self.check_red_amb.isChecked())
         s.setValue("PPGPlotsWindow/check_red_sub",  self.check_red_sub.isChecked())
-        s.setValue("PPGPlotsWindow/check_red_filt", self.check_red_filt.isChecked())
         s.setValue("PPGPlotsWindow/check_ir_raw",   self.check_ir_raw.isChecked())
         s.setValue("PPGPlotsWindow/check_ir_amb",   self.check_ir_amb.isChecked())
         s.setValue("PPGPlotsWindow/check_ir_sub",   self.check_ir_sub.isChecked())
-        s.setValue("PPGPlotsWindow/check_ir_filt",  self.check_ir_filt.isChecked())
         if self.main_monitor is not None:
             self.main_monitor.btn_ppgplots.setChecked(False)
             self.main_monitor.ppgplots_window = None
@@ -1583,7 +1584,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,PPG,SpO2,HR1,RED,IR,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3"
+        "LibID,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI"
     )
 
     def __init__(self, main_monitor):
@@ -1656,8 +1657,8 @@ class SerialComWindow(QtWidgets.QWidget):
 class PPGMonitor(QtWidgets.QMainWindow):
     def set_status(self, text, status_type="info"):
         """
-        Añade una línea al log de estado con timestamp y color según el tipo.
-        tipos: 'info' (azul), 'success' (verde), 'warning' (naranja), 'error' (rojo)
+        Appends a timestamped line to the status log, coloured by type.
+        types: 'info' (blue), 'success' (green), 'warning' (orange), 'error' (red)
         """
         colors = {
             "success": "#00FF88",
@@ -1703,12 +1704,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_amb_red = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ir_sub = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_red_sub = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_red_filt = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_ir_filt = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr1_ppg = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr2     = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr3     = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_spo2_r  = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr2      = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr3      = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_spo2_r   = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_pi       = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_spo2_sqi = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr1_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr2_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_hr3_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
         self.last_time = None
@@ -1741,6 +1744,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._PPGPLOTS_REFRESH_EVERY  = 2   # 25 Hz — smooth plot animation
         self._SUBWIN_REFRESH_EVERY    = 5   # 10 Hz — SpO2/HR3 change slowly
         self._ppgplots_refresh_counter = 0
+        self._hrlab_refresh_counter    = 0
         self._spo2lab_refresh_counter  = 0
         self._hr3lab_refresh_counter   = 0
         self._decim_counter = 0
@@ -1749,21 +1753,24 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # ── Stats table buffers (reset every N seconds) ───────────────────────
         self._STATS_SIGNALS = [
             # (display_name, data_attr, tooltip_description)
-            ("PPG",      "data_ppg",      "Filtered PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Units: ADC counts."),
-            ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (mow_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
-            ("SpO2_R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
-            ("HR1",      "data_hr1",      "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR2",      "data_hr2",      "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
+            # Order mirrors the $M1/$P1 serial frame. Row indices: HR1=11, HR2=13, HR3=15.
             ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("Amb RED",  "data_amb_red",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
             ("Amb IR",   "data_amb_ir",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
             ("RED sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
             ("IR sub",   "data_ir_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
-            ("RED filt", "data_red_filt", "RED signal after firmware digital filter (BPF biquad 0.5–5 Hz applied to RED sub). Used internally for HR2 RED path. Units: ADC counts."),
-            ("IR filt",  "data_ir_filt",  "IR signal after firmware digital filter (BPF biquad 0.5–5 Hz applied to IR sub). Used internally for HR2 IR path. Units: ADC counts."),
-            ("HR1 PPG",  "data_hr1_ppg",  "Diagnostic marker for HR1 peak detector. Set to 0.0 for 10 samples after each detected peak; otherwise mirrors the filtered PPG. Useful to visualise peak timing on the PPG waveform."),
+            ("PPG",      "data_ppg",      "Filtered PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Units: ADC counts."),
+            ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (mow_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
+            ("SpO2 SQI", "data_spo2_sqi", "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference."),
+            ("SpO2_R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
+            ("PI",       "data_pi",       "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion."),
+            ("HR1",      "data_hr1",      "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM."),
+            ("HR1 SQI",  "data_hr1_sqi",  "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range."),
+            ("HR2",      "data_hr2",      "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
+            ("HR2 SQI",  "data_hr2_sqi",  "HR2 Signal Quality Index [0–1]. Normalised autocorrelation value at the dominant RR lag: SQI = acorr[peak_lag] / acorr[0]. High value = strong, clear periodicity. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range."),
+            ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
+            ("HR3 SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         
@@ -1838,33 +1845,33 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.sidebar_layout.addSpacing(12)
 
-        self.btn_pause = QtWidgets.QPushButton("PAUSAR\nCAPTURA")
+        self.btn_pause = QtWidgets.QPushButton("PAUSE\nCAPTURE")
         self.btn_pause.setCheckable(True)
         self.btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.btn_pause.setToolTip(_make_tooltip(
-            "PAUSAR CAPTURA",
+            "PAUSE CAPTURE",
             "Pause or resume live data display. The serial port stays open and data "
             "keeps flowing; only the UI plots and stats are frozen."))
         self.sidebar_layout.addWidget(self.btn_pause)
 
-        self.btn_save = QtWidgets.QPushButton("GUARDAR\nDATOS")
+        self.btn_save = QtWidgets.QPushButton("SAVE\nDATA")
         self.btn_save.setCheckable(True)
         self.btn_save.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_save.clicked.connect(self.toggle_save)
         self.btn_save.setToolTip(_make_tooltip(
-            "GUARDAR DATOS",
+            "SAVE DATA",
             "Toggle saving decimated data to a timestamped CSV file. "
             "Records at the display rate (500 Hz ÷ DECIMATION). "
             "Filename: ppg_data_<timestamp>.csv"))
         self.sidebar_layout.addWidget(self.btn_save)
 
-        self.btn_save_raw = QtWidgets.QPushButton("GUARDAR\nRAW (500 Hz)")
+        self.btn_save_raw = QtWidgets.QPushButton("SAVE\nRAW (500 Hz)")
         self.btn_save_raw.setCheckable(True)
         self.btn_save_raw.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_save_raw.clicked.connect(self.toggle_save_raw)
         self.btn_save_raw.setToolTip(_make_tooltip(
-            "GUARDAR RAW (500 Hz)",
+            "SAVE RAW (500 Hz)",
             "Toggle saving every raw frame at full 500 Hz to a timestamped CSV file. "
             "Ignores DECIMATION. Use for offline algorithm analysis. "
             "Filename: ppg_data_raw_<timestamp>.csv"))
@@ -1887,9 +1894,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.spin_decim.setStyleSheet("background-color: #2A2A2A; color: #FFDD44; padding: 4px; font-size: 20px;")
         self.spin_decim.setToolTip(_make_tooltip(
             "DECIMATION",
-            "Show 1 out of every N frames in the UI and in GUARDAR DATOS. "
+            "Show 1 out of every N frames in the UI and in SAVE DATA. "
             "At 500 Hz: N=10 → 50 Hz display, N=1 → 500 Hz. "
-            "GUARDAR RAW always records at full 500 Hz regardless of this setting."))
+            "SAVE RAW always records at full 500 Hz regardless of this setting."))
         self.sidebar_layout.addWidget(self.spin_decim)
 
         self.sidebar_layout.addSpacing(20)
@@ -1926,8 +1933,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
         self.btn_frame_m1.setToolTip(_make_tooltip(
             "$M1 — FULL frame",
-            "Full frame mode: 18 fields — SmpCnt, Ts_us, PPG, SpO2, HR1, RED, IR, "
-            "AmbRED, AmbIR, REDSub, IRSub, REDFilt, IRFilt, HR1PPG, HR2, SpO2_R, HR3 + checksum. "
+            "Full frame mode: 19 fields — SmpCnt, Ts_us, RED, IR, AmbRED, AmbIR, REDSub, IRSub, "
+            "PPG, SpO2, SpO2SQI, SpO2_R, PI, HR1, HR1SQI, HR2, HR2SQI, HR3, HR3SQI + checksum. "
             "Use for algorithm analysis and calibration."))
         self.btn_frame_m2.setToolTip(_make_tooltip(
             "$M2 — RAW frame",
@@ -1968,26 +1975,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
         label_analysis.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
         self.sidebar_layout.addWidget(label_analysis)
 
-        self.btn_hrlab = QtWidgets.QPushButton("HRLAB")
+        self.btn_hrlab = QtWidgets.QPushButton("HR2LAB")
         self.btn_hrlab.setCheckable(True)
         self.btn_hrlab.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_hrlab.clicked.connect(self.toggle_hrlab)
         self.btn_hrlab.setToolTip(_make_tooltip(
-            "HRLAB",
-            "Show or hide the Heart Rate diagnostic window. "
+            "HR2LAB",
+            "Show or hide the HR2 diagnostic window. "
             "Displays the normalised autocorrelation (HR2) used to detect the dominant pulse period."))
         self.sidebar_layout.addWidget(self.btn_hrlab)
-
-        self.btn_spo2lab = QtWidgets.QPushButton("SPO2LAB")
-        self.btn_spo2lab.setCheckable(True)
-        self.btn_spo2lab.setStyleSheet(ACTION_BUTTON_STYLE)
-        self.btn_spo2lab.clicked.connect(self.toggle_spo2lab)
-        self.btn_spo2lab.setToolTip(_make_tooltip(
-            "SPO2LAB",
-            "Show or hide the SpO2 Calibration Lab window. "
-            "Compare firmware vs local SpO2/R-ratio, capture calibration points and "
-            "run linear regression to obtain a·b coefficients for the SpO2 = a − b·R formula."))
-        self.sidebar_layout.addWidget(self.btn_spo2lab)
 
         self.btn_hr3lab = QtWidgets.QPushButton("HR3LAB")
         self.btn_hr3lab.setCheckable(True)
@@ -1999,6 +1995,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Displays FFT spectrum, Harmonic Product Spectrum and HR1/HR2/HR3 comparison in real time. "
             "HR3 uses a 512-sample Hann window + rfft + HPS on the IR sub-signal at 50 Hz."))
         self.sidebar_layout.addWidget(self.btn_hr3lab)
+
+        self.btn_spo2lab = QtWidgets.QPushButton("SPO2LAB")
+        self.btn_spo2lab.setCheckable(True)
+        self.btn_spo2lab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_spo2lab.clicked.connect(self.toggle_spo2lab)
+        self.btn_spo2lab.setToolTip(_make_tooltip(
+            "SPO2LAB",
+            "Show or hide the SpO2 Calibration Lab window. "
+            "Compare firmware vs local SpO2/R-ratio, capture calibration points and "
+            "run linear regression to obtain a·b coefficients for the SpO2 = a − b·R formula."))
+        self.sidebar_layout.addWidget(self.btn_spo2lab)
 
         self.sidebar_layout.addStretch()
 
@@ -2067,7 +2074,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.stats_table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
         self.stats_table.verticalHeader().setDefaultSectionSize(40)
 
-        _HR_ROWS  = {3, 4, 5}   # HR1, HR2, HR3
+        _HR_ROWS  = {11, 13, 15}   # HR1, HR2, HR3
         _MEAN_COL = 2
         _MAROON   = QtGui.QColor("#5C001A")
 
@@ -2234,53 +2241,53 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
         if self.is_paused:
-            self.btn_pause.setText("REANUDAR\nCAPTURA")
-            self.set_status("Captura PAUSADA", "warning")
+            self.btn_pause.setText("RESUME\nCAPTURE")
+            self.set_status("Capture PAUSED", "warning")
         else:
-            self.btn_pause.setText("PAUSAR\nCAPTURA")
-            self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
+            self.btn_pause.setText("PAUSE\nCAPTURE")
+            self.set_status(f"System ONLINE - Connected to {PORT} @ {BAUD}", "success")
 
     def auto_stop_save(self):
         if self.is_saving:
             self.btn_save.setChecked(False)
             self.toggle_save()
-            self.set_status("Stream finalizado (Auto-Stop 1000s)", "info")
+            self.set_status("Stream ended (Auto-Stop 1000s)", "info")
 
     def auto_stop_save_raw(self):
         if self.is_saving_raw:
             self.btn_save_raw.setChecked(False)
             self.toggle_save_raw()
-            self.set_status("Stream RAW finalizado (Auto-Stop 1000s)", "info")
+            self.set_status("RAW stream ended (Auto-Stop 1000s)", "info")
 
     def toggle_save_raw(self):
         if self.is_paused:
             self.btn_save_raw.setChecked(False)
-            self.set_status("No se puede grabar RAW en modo pausado", "error")
+            self.set_status("Cannot record RAW while capture is paused", "error")
             return
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.is_saving_raw = self.btn_save_raw.isChecked()
         if self.is_saving_raw:
-            self.btn_save_raw.setText("DETENER\nRAW")
+            self.btn_save_raw.setText("STOP\nRAW")
             filename = f"ppg_data_raw_{now_str}.csv"
             try:
                 self.save_file_raw = open(filename, "w")
                 if self.frame_mode == "M2":
                     self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
                 else:
-                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3\n")
-                self.set_status(f"GRABANDO RAW (500 Hz): {filename}", "warning")
+                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
+                self.set_status(f"RECORDING RAW (500 Hz): {filename}", "warning")
                 self.auto_save_raw_timer.start(1000 * 1000)
             except Exception as e:
-                self.set_status(f"Error al grabar RAW: {e}", "error")
+                self.set_status(f"Error opening RAW file: {e}", "error")
                 self.is_saving_raw = False
                 self.btn_save_raw.setChecked(False)
         else:
             self.auto_save_raw_timer.stop()
-            self.btn_save_raw.setText("GUARDAR\nRAW (500 Hz)")
+            self.btn_save_raw.setText("SAVE\nRAW (500 Hz)")
             if self.save_file_raw:
                 self.save_file_raw.close()
                 self.save_file_raw = None
-            self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
+            self.set_status(f"System ONLINE - Connected to {PORT} @ {BAUD}", "success")
 
     def toggle_save(self):
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2289,36 +2296,36 @@ class PPGMonitor(QtWidgets.QMainWindow):
             filename = f"ppg_data_snap_{now_str}.csv"
             try:
                 with open(filename, "w") as f:
-                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,HR1,SpO2,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3\n")
+                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
                     for i in range(len(self.data_sample_counter)):
-                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_ppg[i]},{self.data_hr1[i]},{self.data_spo2[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_red_filt[i]},{self.data_ir_filt[i]},{self.data_hr1_ppg[i]},{self.data_hr2[i]},{self.data_spo2_r[i]},{self.data_hr3[i]}\n")
-                self.set_status(f"Memoria guardada en {filename}", "success")
+                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_ppg[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
+                self.set_status(f"Snapshot saved to {filename}", "success")
             except Exception as e:
-                self.set_status(f"Error al guardar memoria: {e}", "error")
+                self.set_status(f"Error saving snapshot: {e}", "error")
         else:
             self.is_saving = self.btn_save.isChecked()
             if self.is_saving:
-                self.btn_save.setText("DETENER\nGRABACIÓN")
+                self.btn_save.setText("STOP\nRECORDING")
                 filename = f"ppg_data_stream_{now_str}.csv"
                 try:
                     self.save_file = open(filename, "w")
                     if self.frame_mode == "M2":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
                     else:
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG,SpO2,HR1,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub,REDFilt,IRFilt,HR1PPG,HR2,SpO2_R,HR3\n")
-                    self.set_status(f"GRABANDO EN TIEMPO REAL: {filename}", "warning")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
+                    self.set_status(f"RECORDING LIVE: {filename}", "warning")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
-                    self.set_status(f"Error al grabar: {e}", "error")
+                    self.set_status(f"Error opening save file: {e}", "error")
                     self.is_saving = False
                     self.btn_save.setChecked(False)
             else:
                 self.auto_save_timer.stop()
-                self.btn_save.setText("GUARDAR\nDATOS")
+                self.btn_save.setText("SAVE\nDATA")
                 if self.save_file:
                     self.save_file.close()
                     self.save_file = None
-                self.set_status(f"Sistema ONLINE - Conectado a {PORT} @ {BAUD}", "success")
+                self.set_status(f"System ONLINE - Connected to {PORT} @ {BAUD}", "success")
 
     def _save_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -2373,19 +2380,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
             try: self._serial_queue.get_nowait()
             except: break
         self._reader_stop.clear()
-        self.set_status(f"Conectando a {port}...", "info")
+        self.set_status(f"Connecting to {port}...", "info")
         try:
             self.ser = serial.Serial(port, BAUD, timeout=0.1)
             self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
             self._reader_thread.start()
-            self.set_status(f"Sistema ONLINE — {port} @ {BAUD}", "success")
+            self.set_status(f"System ONLINE — {port} @ {BAUD}", "success")
             self.btn_port_connect.setStyleSheet(
                 "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
                 "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
             self.btn_port_connect.setText("CONNECTED")
         except Exception as e:
             self.ser = None
-            self.set_status(f"ERROR: No se pudo abrir {port} — {e}", "error")
+            self.set_status(f"ERROR: Could not open {port} — {e}", "error")
             self.btn_port_connect.setStyleSheet(
                 "background-color: #3A1A1A; color: #FF4444; font-size: 18px; "
                 "font-weight: bold; padding: 4px; border: 1px solid #FF4444; border-radius: 4px;")
@@ -2402,7 +2409,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             except Exception:
                 break
 
-    _STATS_HR_ROWS  = {3, 4, 5}   # HR1, HR2, HR3
+    _STATS_HR_ROWS  = {11, 13, 15}   # HR1, HR2, HR3
     _STATS_MEAN_COL = 2
     _STATS_MAROON   = QtGui.QColor("#5C001A")
 
@@ -2460,12 +2467,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.active_lib = "MOW"
                             self.frame_mode = "M1"
                             self._update_lib_button()
-                            self.set_status("Librería activa: mow_afe4490", "info")
+                            self.set_status("Active library: mow_afe4490", "info")
                         elif 'protocentral' in line.lower():
                             self.active_lib = "PROTOCENTRAL"
                             self.frame_mode = "M1"
                             self._update_lib_button()
-                            self.set_status("Librería activa: protocentral", "info")
+                            self.set_status("Active library: protocentral", "info")
                         elif 'frame mode' in line.lower():
                             self.set_status(line.lstrip('# '), "info")
                         continue
@@ -2524,30 +2531,33 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     _console_lines.append(csv_line)
 
-                    parts = line[1:].split(',')  # strip leading '$'
-                    if len(parts) >= 18:
+                    parts = line[1:].split('*')[0].split(',')  # strip leading '$' and trailing checksum
+                    if len(parts) >= 20:
                         try:
-                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:PPG, 4:SpO2, 5:HR1, 6:RED, 7:IR, 8:AmbRED, 9:AmbIR, 10:REDSub, 11:IRSub, 12:REDFilt, 13:IRFilt, 14:HR1PPG, 15:HR2, 16:SpO2_R, 17:HR3
+                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:RED, 4:IR, 5:AmbRED, 6:AmbIR, 7:REDSub, 8:IRSub,
+                            # 9:PPG, 10:SpO2, 11:SpO2SQI, 12:SpO2_R, 13:PI, 14:HR1, 15:HR1SQI, 16:HR2, 17:HR2SQI, 18:HR3, 19:HR3SQI
                             self.data_lib_id.append(parts[0])
-                            p = [float(x) for x in parts[1:18]]
+                            p = [float(x) for x in parts[1:20]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(p[1])
-                            self.data_ppg.append(p[2])
-                            self.data_spo2.append(p[3])
-                            self.data_hr1.append(p[4])
-                            self.data_red.append(p[5])
-                            self.data_ir.append(p[6])
-                            self.data_amb_red.append(p[7])
-                            self.data_amb_ir.append(p[8])
-                            self.data_red_sub.append(p[9])
-                            self.data_ir_sub.append(p[10])
-                            self.data_red_filt.append(p[11])
-                            self.data_ir_filt.append(p[12])
-                            self.data_hr1_ppg.append(p[13])
-                            self.data_hr2.append(p[14])
-                            self.data_spo2_r.append(p[15])
-                            self.data_hr3.append(p[16])  # HR3 from firmware; -1.0 if not valid
-                            self.hr3_calc.update(p[10], SPO2_RECEIVED_FS)  # keep for HR3Lab diagnostics
+                            self.data_red.append(p[2])
+                            self.data_ir.append(p[3])
+                            self.data_amb_red.append(p[4])
+                            self.data_amb_ir.append(p[5])
+                            self.data_red_sub.append(p[6])
+                            self.data_ir_sub.append(p[7])
+                            self.data_ppg.append(p[8])
+                            self.data_spo2.append(p[9])
+                            self.data_spo2_sqi.append(p[10])
+                            self.data_spo2_r.append(p[11])
+                            self.data_pi.append(p[12])
+                            self.data_hr1.append(p[13])
+                            self.data_hr1_sqi.append(p[14])
+                            self.data_hr2.append(p[15])
+                            self.data_hr2_sqi.append(p[16])
+                            self.data_hr3.append(p[17])
+                            self.data_hr3_sqi.append(p[18])
+                            self.hr3_calc.update(p[7], SPO2_RECEIVED_FS)  # IRSub for HR3Lab diagnostics
                             # Stats buffers
                             for sname, attr, _ in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
@@ -2569,12 +2579,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_amb_ir.append(p[4])
                             self.data_red_sub.append(p[5])
                             self.data_ir_sub.append(p[6])
-                            self.data_red_filt.append(0.0)
-                            self.data_ir_filt.append(0.0)
-                            self.data_hr1_ppg.append(0.0)
                             self.data_hr2.append(-1.0)
                             self.data_hr3.append(-1.0)
                             self.data_spo2_r.append(-1.0)
+                            self.data_pi.append(-1.0)
+                            self.data_spo2_sqi.append(0.0)
+                            self.data_hr1_sqi.append(0.0)
+                            self.data_hr2_sqi.append(0.0)
+                            self.data_hr3_sqi.append(0.0)
                         except ValueError: pass
                         else: _new_data = True
 
@@ -2589,12 +2601,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self._ppgplots_refresh_counter = 0
                         self.ppgplots_window.update_plots(
                             self.data_ppg, self.data_hr1, self.data_hr2, self.data_hr3,
-                            self.data_spo2, self.data_spo2_r, self.data_red, self.data_ir,
-                            self.data_amb_red, self.data_amb_ir, self.data_red_sub, self.data_ir_sub,
-                            self.data_red_filt, self.data_ir_filt, self.data_hr1_ppg)
+                            self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
+                            self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
+                            self.data_red, self.data_ir,
+                            self.data_amb_red, self.data_amb_ir, self.data_red_sub, self.data_ir_sub)
 
                 if _new_data:
-                    if self.hrlab_window is not None:
+                    self._hrlab_refresh_counter += 1
+                    if self.hrlab_window is not None and self._hrlab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                        self._hrlab_refresh_counter = 0
                         self.hrlab_window.update_plots(self.data_ppg, self.data_timestamp_us, self.data_sample_counter)
 
                     self._spo2lab_refresh_counter += 1

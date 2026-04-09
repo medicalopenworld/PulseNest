@@ -24,25 +24,28 @@ void tearDown() {}
 void test_hr2_not_valid_until_buffer_full() {
     MOW_AFE4490 afe;
     feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW / 2);
-    TEST_ASSERT_FALSE(afe.test_hr2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
 }
 
 // ── Test 2: 60 BPM (1 Hz sine) ───────────────────────────────────────────────
 // At 50 Hz decimated rate, 1 Hz → period = 50 samples lag.
 // HR2 should converge to 60 BPM ± 5.
+// SQI is continuous: for a synthetic sine the normalised autocorrelation at
+// the fundamental lag is very high → SQI should be high (> 0.7).
 void test_hr2_60bpm() {
     MOW_AFE4490 afe;
     feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW + 1000);  // fill + margin
-    TEST_ASSERT_TRUE(afe.test_hr2_valid());
+    TEST_ASSERT_GREATER_THAN(0.7f, afe.test_hr2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 60.0f, afe.test_hr2());
 }
 
 // ── Test 3: 120 BPM (2 Hz sine) ──────────────────────────────────────────────
 // At 50 Hz decimated rate, 2 Hz → period = 25 samples lag.
+// SQI continuous: synthetic sine → high autocorrelation peak → SQI > 0.7.
 void test_hr2_120bpm() {
     MOW_AFE4490 afe;
     feed_hr2_sine(afe, 2.0f, 500.0f, HR2_BUF_RAW + 1000);
-    TEST_ASSERT_TRUE(afe.test_hr2_valid());
+    TEST_ASSERT_GREATER_THAN(0.7f, afe.test_hr2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 120.0f, afe.test_hr2());
 }
 
@@ -53,7 +56,7 @@ void test_hr2_flat_signal_invalid() {
     MOW_AFE4490 afe;
     for (int i = 0; i < HR2_BUF_RAW + 1000; i++)
         afe.test_feed_hr2(500000);
-    TEST_ASSERT_FALSE(afe.test_hr2_valid());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
 }
 
 int main() {

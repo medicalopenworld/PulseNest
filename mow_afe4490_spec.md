@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.12
+# mow_afe4490 — Specification v0.13
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -65,24 +65,26 @@ The AFE4490 produces 6 signals per sample. All are read internally:
 ### 2.1 Data struct
 ```cpp
 struct AFE4490Data {
+    // Field order mirrors the $M1/$P1 serial frame: raw signals first, then processed outputs
+    // Raw ADC outputs (6 signals from AFE4490)
+    int32_t led2;       // LED2VAL  — RED raw           (frame: RED)
+    int32_t led1;       // LED1VAL  — IR raw            (frame: IR)
+    int32_t aled2;      // ALED2VAL — ambient after LED2 (frame: AmbRED)
+    int32_t aled1;      // ALED1VAL — ambient after LED1 (frame: AmbIR)
+    int32_t led2_aled2; // LED2-ALED2 — RED ambient-corrected (frame: REDSub)
+    int32_t led1_aled1; // LED1-ALED1 — IR ambient-corrected  (frame: IRSub)
     // Processed outputs
     int32_t ppg;        // filtered PPG of selected channel
     float   spo2;       // SpO2 in %
+    float   spo2_sqi;   // SpO2 Signal Quality Index [0–1]: PI-based; 0=no finger, 1=PI ≥ 2%
     float   spo2_r;     // R ratio: (AC_red/DC_red)/(AC_ir/DC_ir) — for calibration
-    bool    spo2_valid; // true if SpO2 calculation is reliable
+    float   pi;         // Perfusion Index: (AC_ir / DC_ir) × 100 [%]
     float   hr1;        // HR1 (peak detection) in bpm
-    bool    hr1_valid;  // true if HR1 calculation is reliable
+    float   hr1_sqi;    // HR1 Signal Quality Index [0–1]: RR interval regularity; 0=arrhythmia/invalid, 1=perfectly regular
     float   hr2;        // HR2 (autocorrelation) in bpm
-    bool    hr2_valid;  // true if HR2 calculation is reliable
+    float   hr2_sqi;    // HR2 Signal Quality Index [0–1]: normalised autocorrelation at dominant lag; 0=no periodicity, 1=perfect
     float   hr3;        // HR3 (FFT + HPS) in bpm
-    bool    hr3_valid;  // true if HR3 calculation is reliable
-    // The 6 raw signals from AFE4490
-    int32_t led1;       // LED1VAL  — IR raw
-    int32_t led2;       // LED2VAL  — RED raw
-    int32_t aled1;      // ALED1VAL — ambient after LED1
-    int32_t aled2;      // ALED2VAL — ambient after LED2
-    int32_t led1_aled1; // LED1-ALED1 — IR ambient-corrected
-    int32_t led2_aled2; // LED2-ALED2 — RED ambient-corrected
+    float   hr3_sqi;    // HR3 Signal Quality Index [0–1]: spectral concentration at peak; 0=diffuse spectrum, 1=dominant tone
 };
 ```
 
@@ -232,7 +234,13 @@ SpO2 = a - b × R
 ```
 
 Coefficients `a` and `b` are empirical (calibration). Configurable via `setSpO2Coefficients()`.
-`spo2_valid` is set when enough stable samples are available for the calculation.
+`spo2_sqi` is a continuous [0–1] quality metric based on the Perfusion Index (PI):
+
+```
+sqi = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1)
+```
+
+PI < 0.5 % → SQI = 0 (absent or very weak signal, no finger contact). PI ≥ 2.0 % → SQI = 1 (full quality). Thresholds from Nellcor/Masimo clinical reference. If SpO2 is outside the valid range [70–100 %] or the DC level is below the no-finger threshold, SQI is forced to 0.
 
 ### 5.2 HR1 — Peak detection
 
@@ -247,7 +255,14 @@ Coefficients `a` and `b` are empirical (calibration). Configurable via `setSpO2C
 HR1 (bpm) = fs × 60 / mean(last 5 RR intervals in samples)
 ```
 
-`hr1_valid` is set when 5 intervals have been accumulated and the resulting HR1 is within [25, 300] BPM (reported valid range). The refractory period of 200 ms naturally supports detection up to ~300 BPM, providing a guard band above the 250 BPM limit at no cost.
+`hr1_sqi` is a continuous [0–1] quality metric based on the coefficient of variation (CV) of the 5 most recent RR intervals:
+
+```
+CV  = std(RR[0..4]) / mean(RR[0..4])
+SQI = clamp(1 − CV / 0.15, 0, 1)
+```
+
+CV = 0 (perfectly regular rhythm) → SQI = 1. CV ≥ 15 % → SQI = 0 (arrhythmia, artefact, or loss of signal). The 15 % threshold is the standard clinical criterion for rhythm regularity. If fewer than 5 intervals have been detected, or if HR1 is outside [25, 300] BPM, SQI is forced to 0. The refractory period of 200 ms naturally supports detection up to ~300 BPM, providing a guard band above the 250 BPM limit at no cost.
 
 > **Implementation note:** peak location is currently approximated by the rising threshold crossing (first sample above `0.6 × running_max`). This introduces a timing error that depends on signal slope and amplitude — if either changes (low perfusion, motion), the detected instant shifts relative to the true peak, introducing jitter in the RR interval. Planned improvement: apply derivative to the filtered signal and detect the rising edge as the maximum of the derivative (steepest ascending slope), which gives a more stable and precise timing reference independent of signal amplitude.
 
@@ -267,7 +282,7 @@ HR1 (bpm) = fs × 60 / mean(last 5 RR intervals in samples)
 | `hr_search_min_bpm` | 22 BPM | Internal search lower bound (guard band: hr_min − 3) |
 | `hr_search_max_bpm` | 303 BPM | Internal search upper bound (guard band: hr_max + 3) |
 
-> **Guard band design:** all HR algorithms search internally in [22, 303] BPM and report `hr_valid = true` only when the result falls within [25, 300] BPM. This prevents boundary-clipping errors where a signal at exactly 25 BPM could be missed due to small algorithmic offsets. The ±3 BPM margin is consistent with the ISO 80601-2-61 measurement tolerance.
+> **Guard band design:** all HR algorithms search internally in [22, 303] BPM and force `hr*_sqi = 0.0` when the result falls outside [25, 300] BPM. This prevents boundary-clipping errors where a signal at exactly 25 BPM could be missed due to small algorithmic offsets. The ±3 BPM margin is consistent with the ISO 80601-2-61 measurement tolerance.
 
 ### 5.3 HR2 — Autocorrelation
 Independent second HR algorithm running in parallel with HR1 on the same `led1_aled1` signal.
@@ -291,7 +306,13 @@ Independent second HR algorithm running in parallel with HR1 on the same `led1_a
 | `hr2_min_lag_s` | 0.22 s | Min RR lag (~272 BPM max) |
 | `hr2_min_corr` | 0.5 | Normalised correlation threshold for valid peak |
 
-`hr2_valid` is set when the buffer is full and a peak above `hr2_min_corr` is found in the valid HR range.
+`hr2_sqi` is a continuous [0–1] quality metric equal to the normalised autocorrelation value at the dominant lag:
+
+```
+SQI = acorr[peak_lag]    (already normalised to [0, 1] by acorr[0] = Σ x²)
+```
+
+A value close to 1 means the signal is strongly periodic at the detected RR period. `hr2_min_corr = 0.5` acts as the minimum threshold below which no peak is reported and SQI is forced to 0. If the buffer is not yet full or no valid peak is found, SQI = 0.
 
 ### 5.4 HR3 — FFT + Harmonic Product Spectrum
 
@@ -320,7 +341,15 @@ Independent third HR algorithm running in parallel with HR1 and HR2 on `led1_ale
 
 **Stack note:** `_hr3_fft[1024]` (4096 bytes complex buffer) is stored as a class member (heap). `MOW_AFE4490_TASK_STACK` default increased to 8192 to accommodate `cosf`/`sinf` stack usage during butterfly stages.
 
-`hr3_valid` is set when the buffer is full and the HPS peak falls within [25, 300] BPM (internal search [22, 303] BPM guard band).
+`hr3_sqi` is a continuous [0–1] quality metric based on spectral concentration of the fundamental power at the detected peak bin, relative to the total fundamental power across the search range:
+
+```
+fraction = P[peak_bin] / Σ P[k]   (k across search range)
+baseline = 1 / N_bins              (flat-spectrum reference)
+SQI      = clamp((fraction − baseline) / (1 − baseline), 0, 1)
+```
+
+`baseline` is the fraction a single bin would hold if power were uniformly distributed across the `N_bins` bins of the search range (~48 bins). A dominant spectral tone greatly exceeds the baseline → SQI approaches 1. A diffuse or noisy spectrum stays near the baseline → SQI ≈ 0. If the buffer is not yet full, the HPS peak is outside [25, 300] BPM, or the power sum is zero, SQI = 0.
 
 ### 5.5 HR algorithms roadmap
 
@@ -568,3 +597,50 @@ This section documents the exact value of each AFE4490 register written by the l
 | 5 | CONTROL1 (timer ON) | Timing registers | **Timing registers** | All timing registers before starting the timer |
 | 6 | CONTROL0=SPI_READ | CONTROL1 (timer ON) | **CONTROL1 (timer ON — last)** | TIMEREN activated last when everything is configured |
 | 7 | — | delay 1000ms | **delay 1000ms** | Stabilisation before first read. Protocentral value not justified in datasheet — possibly reducible, but safe for startup |
+
+---
+
+## 10. Bibliographic references
+
+Key references for each algorithm implemented in this library.
+
+### 10.1 HR1 — Adaptive threshold peak detection
+
+- **Pan, J. & Tompkins, W.J. (1985).** "A Real-Time QRS Detection Algorithm." *IEEE Transactions on Biomedical Engineering*, 32(3), 230–236.
+  The classical reference for cardiac peak detection with adaptive threshold and refractory period. HR1 is a simplified adaptation for PPG.
+
+- **Elgendi, M. et al. (2013).** "Systolic Peak Detection in Acceleration Photoplethysmograms Measured from Emergency Responders in Tropical Conditions." *PLoS ONE*, 8(10), e76585.
+  More specific to PPG peak detection in challenging conditions.
+
+### 10.2 HR2 — Normalised autocorrelation
+
+- **de Cheveigné, A. & Kawahara, H. (2002).** "YIN, a fundamental frequency estimator for speech and music." *Journal of the Acoustical Society of America*, 111(4), 1917–1930.
+  The primary reference for normalised autocorrelation-based fundamental frequency estimation. HR2 is directly derived from this approach.
+
+- **Rabiner, L.R. & Schafer, R.W. (1978).** *Digital Processing of Speech Signals.* Prentice-Hall.
+  Foundational coverage of autocorrelation methods for pitch estimation.
+
+### 10.3 HR3 — FFT + Harmonic Product Spectrum
+
+- **Schroeder, M.R. (1968).** "Period histogram and product spectrum: New methods for fundamental-frequency measurement." *Journal of the Acoustical Society of America*, 43(4), 829–834.
+  Original paper introducing the Harmonic Product Spectrum concept.
+
+- **Noll, A.M. (1969).** "Cepstrum pitch determination." *Journal of the Acoustical Society of America*, 41(2), 293–309.
+  Historical context and comparison with HPS-based approaches.
+
+- **Paradkar, N. & Chowdhary, S.R. (2017).** "Cardiac arrhythmia detection using photoplethysmography." *IEEE EMBC 2017*.
+  Application of FFT-based HR estimation on PPG signals in a wearable context similar to this project.
+
+### 10.4 SpO2 — AC/DC ratio (R-curve method)
+
+- **Webster, J.G. (Ed.) (1997).** *Design of Pulse Oximeters.* IOP Publishing.
+  The definitive reference. Covers Beer-Lambert law, the R ratio, empirical calibration, and sources of measurement error.
+
+- **Jubran, A. (1999).** "Pulse oximetry." *Critical Care*, 3(2), R11–R17.
+  Clear clinical review of the operating principle and limitations.
+
+- **ISO 80601-2-61.** *Medical electrical equipment — Part 2-61: Particular requirements for basic safety and essential performance of pulse oximeter equipment.*
+  Normative standard defining valid measurement ranges, tolerances, and test conditions. Source of the [70–100 %] SpO2 and [25–300 BPM] HR bounds used in this library.
+
+- **Severinghaus, J.W. & Astrup, P.B. (1986).** "History of blood gas analysis." *Journal of Clinical Monitoring*, 2(4), 270–288.
+  Historical context for non-invasive oxygen saturation measurement.

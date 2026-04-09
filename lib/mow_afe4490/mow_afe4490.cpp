@@ -1,5 +1,5 @@
 // mow_afe4490.cpp — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.6 — ESP32-S3, Arduino + FreeRTOS
+// v0.13 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 
 #include "mow_afe4490.h"
@@ -16,7 +16,6 @@ namespace {
     constexpr float    ac_ema_tau_s        = 1.0f;    // s  — AC² EMA time constant
     constexpr float    hr_refractory_s     = 0.185f;  // s  — HR refractory period (covers guard band 303 BPM: 198 ms period)
     constexpr float    hr1_dc_tau_s             = 1.6f;   // s  — HR1 DC removal IIR time constant
-    constexpr uint32_t hr1_peak_marker_samples  = 10;    // samples — duration of hr1_ppg=0 marker after peak (survives serial downsampling)
 
     // ── PPG / HR2 filter ──────────────────────────────────────────────────────
     constexpr float    pi                       = 3.14159265358979f;
@@ -41,6 +40,18 @@ namespace {
     constexpr float    spo2_max            = 100.0f;  // % — valid upper bound (values clamped if within spo2_clamp_margin above)
     constexpr float    spo2_clamp_margin   =   3.0f;  // % — clamp to spo2_max if spo2 <= spo2_max + margin
     constexpr float    spo2_min_dc         = 1000.0f; // ADC counts — no-finger threshold
+
+    // ── SQI ───────────────────────────────────────────────────────────────────
+    // SpO2 SQI: Perfusion Index thresholds (Nellcor/Masimo clinical reference).
+    // PI < spo2_pi_sqi_lo → SQI=0 (absent or very weak signal).
+    // PI ≥ spo2_pi_sqi_hi → SQI=1 (full quality). Linear ramp in between.
+    constexpr float spo2_pi_sqi_lo  = 0.5f;   // % — PI below this → SQI = 0
+    constexpr float spo2_pi_sqi_hi  = 2.0f;   // % — PI above this → SQI = 1
+
+    // HR1 SQI: coefficient of variation (CV = std/mean) of the 5 RR intervals.
+    // CV=0 (perfectly regular) → SQI=1. CV ≥ hr1_sqi_cv_max → SQI=0.
+    // 15% CV threshold matches clinical criterion for rhythm regularity.
+    constexpr float hr1_sqi_cv_max  = 0.15f;  // dimensionless — CV above this → SQI = 0
 
     // ── HR ────────────────────────────────────────────────────────────────────
     // Reported valid range: [hr_min_bpm, hr_max_bpm].
@@ -191,7 +202,7 @@ MOW_AFE4490::MOW_AFE4490()
       _ac2_ir(0.0f), _ac2_red(0.0f),
       _spo2_sample_count(0),
       _spo2_a(spo2_a_default), _spo2_b(spo2_b_default),
-      _hr1_dc(0.0f), _hr1_peak_marker_countdown(0),
+      _hr1_dc(0.0f),
       _hr1_running_max(0.0f), _hr1_ppg_above_thresh(false),
       _hr1_last_peak_idx(0), _hr1_sample_idx(0),
       _hr1_interval_count(0),
@@ -206,7 +217,7 @@ MOW_AFE4490::MOW_AFE4490()
     memset(_hr1_intervals, 0, sizeof(_hr1_intervals));
     memset(_hr2_buf, 0, sizeof(_hr2_buf));
     memset(_hr3_buf, 0, sizeof(_hr3_buf));
-    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _current_data = AFE4490Data{};
     _recalc_rate_params();
 }
 
@@ -462,7 +473,6 @@ void MOW_AFE4490::_reset_algorithms() {
     _ac2_ir = 0.0f; _ac2_red = 0.0f;
     _spo2_sample_count = 0;
     _hr1_dc                    = 0.0f;
-    _hr1_peak_marker_countdown = 0;
     _hr1_running_max           = 0.0f;
     _hr1_ppg_above_thresh   = false;
     _hr1_last_peak_idx  = 0;
@@ -483,7 +493,7 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr3_buf_idx = 0; _hr3_buf_count = 0;
     _hr3_decim_counter = 0; _hr3_update_counter = 0;
     memset(_hr3_buf, 0, sizeof(_hr3_buf));
-    _current_data = {0, 0.0f, 0.0f, false, 0.0f, false, 0.0f, false, 0.0f, false, 0, 0, 0, 0, 0, 0, 0.0f};
+    _current_data = AFE4490Data{};
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
@@ -828,12 +838,15 @@ void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
     _ac2_ir  = _ac_ema_beta * ac_ir  * ac_ir  + (1.0f - _ac_ema_beta) * _ac2_ir;
     _ac2_red = _ac_ema_beta * ac_red * ac_red + (1.0f - _ac_ema_beta) * _ac2_red;
 
+    // Perfusion Index (always updated, independent of SpO2 warmup)
+    _current_data.pi = (_dc_ir > 1.0f) ? (sqrtf(_ac2_ir) / _dc_ir) * 100.0f : -1.0f;
+
     _spo2_sample_count++;
 
     // Skip during warmup or if DC is too low (no finger)
     if (_spo2_sample_count < _spo2_warmup_samples ||
         _dc_ir < spo2_min_dc || _dc_red < spo2_min_dc) {
-        _current_data.spo2_valid = false;
+        _current_data.spo2_sqi = 0.0f;
         return;
     }
 
@@ -842,7 +855,7 @@ void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
 
     // Avoid division by near-zero
     if (_dc_ir < 1.0f || _dc_red < 1.0f || rms_ac_ir < 1.0f) {
-        _current_data.spo2_valid = false;
+        _current_data.spo2_sqi = 0.0f;
         return;
     }
 
@@ -852,10 +865,14 @@ void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
     _current_data.spo2_r = R;
 
     if (spo2 >= spo2_min && spo2 <= spo2_max + spo2_clamp_margin) {
-        _current_data.spo2       = fminf(spo2, spo2_max);
-        _current_data.spo2_valid = true;
+        _current_data.spo2 = fminf(spo2, spo2_max);
+        // SQI: Perfusion Index linearly mapped to [0, 1].
+        // PI < spo2_pi_sqi_lo → SQI = 0 (no finger or very weak signal).
+        // PI ≥ spo2_pi_sqi_hi → SQI = 1 (full quality, per Nellcor/Masimo thresholds).
+        float sqi = (_current_data.pi - spo2_pi_sqi_lo) / (spo2_pi_sqi_hi - spo2_pi_sqi_lo);
+        _current_data.spo2_sqi = fmaxf(0.0f, fminf(1.0f, sqi));
     } else {
-        _current_data.spo2_valid = false;
+        _current_data.spo2_sqi = 0.0f;
     }
 }
 
@@ -885,7 +902,6 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
     // Threshold crossing (rising edge only)
     if (ppg_filtered > threshold && !_hr1_ppg_above_thresh) {
         _hr1_ppg_above_thresh = true;
-        _hr1_peak_marker_countdown = hr1_peak_marker_samples;  // diagnostic: hold 0 for N samples
 
         uint32_t elapsed = _hr1_sample_idx - _hr1_last_peak_idx;
         if (_hr1_last_peak_idx > 0 && elapsed > _hr1_refractory_samples) {
@@ -900,17 +916,9 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
         _hr1_ppg_above_thresh = false;
     }
 
-    // Diagnostic: hr1_ppg = 0 for hr1_peak_marker_samples after each peak, else normal value
-    if (_hr1_peak_marker_countdown > 0) {
-        _current_data.hr1_ppg = 0.0f;
-        _hr1_peak_marker_countdown--;
-    } else {
-        _current_data.hr1_ppg = ppg_filtered;
-    }
-
     // Need 5 intervals for a stable estimate
     if (_hr1_interval_count < 5) {
-        _current_data.hr1_valid = false;
+        _current_data.hr1_sqi = 0.0f;
         return;
     }
 
@@ -921,10 +929,20 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
     float hr1 = ((float)_sample_rate_hz * 60.0f) / avg_interval;
 
     if (hr1 >= hr_min_bpm && hr1 <= hr_max_bpm) {
-        _current_data.hr1       = hr1;
-        _current_data.hr1_valid = true;
+        _current_data.hr1 = hr1;
+        // SQI: coefficient of variation (CV = std / mean) of the 5 RR intervals.
+        // Perfectly regular rhythm → CV = 0 → SQI = 1.
+        // CV ≥ hr1_sqi_cv_max (15%) → SQI = 0 (arrhythmia or motion artefact).
+        float var = 0.0f;
+        for (int i = 0; i < 5; i++) {
+            float diff = (float)_hr1_intervals[i] - avg_interval;
+            var += diff * diff;
+        }
+        float cv  = (avg_interval > 0.0f) ? sqrtf(var / 5.0f) / avg_interval : 1.0f;
+        float sqi = 1.0f - cv / hr1_sqi_cv_max;
+        _current_data.hr1_sqi = fmaxf(0.0f, fminf(1.0f, sqi));
     } else {
-        _current_data.hr1_valid = false;
+        _current_data.hr1_sqi = 0.0f;
     }
 }
 
@@ -953,7 +971,7 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
     _hr2_update_counter = 0;
 
     if (_hr2_buf_count < (uint32_t)hr2_buf_len) {
-        _current_data.hr2_valid = false;
+        _current_data.hr2_sqi = 0.0f;
         return;
     }
 
@@ -964,7 +982,7 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
     // ── Normalise: acorr[0] = sum(seg²) ──
     float acorr0 = 0.0f;
     for (int i = 0; i < hr2_buf_len; i++) acorr0 += _hr2_seg[i] * _hr2_seg[i];
-    if (acorr0 < 1.0f) { _current_data.hr2_valid = false; return; }
+    if (acorr0 < 1.0f) { _current_data.hr2_sqi = 0.0f; return; }
 
     // ── Compute normalised autocorrelation for lags [min_lag, max_lag] ──
     float fs2     = (float)_sample_rate_hz / (float)hr2_decim_factor;
@@ -997,7 +1015,7 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
         }
     }
 
-    if (peak_idx < 0) { _current_data.hr2_valid = false; return; }
+    if (peak_idx < 0) { _current_data.hr2_sqi = 0.0f; return; }
 
     // ── Parabolic interpolation for sub-sample lag refinement ──
     //   delta = 0.5 * (y[n-1] - y[n+1]) / (y[n-1] - 2·y[n] + y[n+1])
@@ -1005,14 +1023,16 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
     float delta = (denom < 0.0f) ? 0.5f * (y_prev - y_next) / denom : 0.0f;
     float peak_lag_s = (float)(min_lag + peak_idx + delta) / fs2;
 
-    if (peak_lag_s <= 0.0f) { _current_data.hr2_valid = false; return; }
+    if (peak_lag_s <= 0.0f) { _current_data.hr2_sqi = 0.0f; return; }
 
     float hr2 = 60.0f / peak_lag_s;
     if (hr2 >= hr_min_bpm && hr2 <= hr_max_bpm) {
-        _current_data.hr2       = hr2;
-        _current_data.hr2_valid = true;
+        _current_data.hr2 = hr2;
+        // SQI: normalised autocorrelation value at the dominant lag.
+        // y_peak ∈ [hr2_min_corr, 1]: high value → sharp, strong periodicity.
+        _current_data.hr2_sqi = y_peak;
     } else {
-        _current_data.hr2_valid = false;
+        _current_data.hr2_sqi = 0.0f;
     }
 }
 
@@ -1041,7 +1061,7 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
     _hr3_update_counter = 0;
 
     if (_hr3_buf_count < (uint32_t)hr3_buf_len) {
-        _current_data.hr3_valid = false;
+        _current_data.hr3_sqi = 0.0f;
         return;
     }
 
@@ -1072,21 +1092,24 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
     if (search_max >= nyquist)          search_max = nyquist - 2;
     if (search_max > nyquist / 3)       search_max = nyquist / 3;  // 3rd harmonic must stay inside Nyquist
     if (search_min < 1)                 search_min = 1;
-    if (search_min >= search_max)       { _current_data.hr3_valid = false; return; }
+    if (search_min >= search_max)       { _current_data.hr3_sqi = 0.0f; return; }
 
     // HPS = P[k] * P[2k] * P[3k]  where P[k] = re[k]^2 + im[k]^2
-    int   peak_bin = -1;
-    float peak_hps = 0.0f;
+    // power_sum accumulates P[k] (fundamental only) across the search range for SQI.
+    int   peak_bin  = -1;
+    float peak_hps  = 0.0f;
+    float power_sum = 0.0f;
     for (int k = search_min; k <= search_max; k++) {
         float p1 = _hr3_fft[2*k]   * _hr3_fft[2*k]   + _hr3_fft[2*k+1]   * _hr3_fft[2*k+1];
         float p2 = _hr3_fft[4*k]   * _hr3_fft[4*k]   + _hr3_fft[4*k+1]   * _hr3_fft[4*k+1];
         float p3 = _hr3_fft[6*k]   * _hr3_fft[6*k]   + _hr3_fft[6*k+1]   * _hr3_fft[6*k+1];
         float hps = p1 * p2 * p3;
+        power_sum += p1;
         if (hps > peak_hps) { peak_hps = hps; peak_bin = k; }
     }
 
     if (peak_bin < 1 || peak_bin >= nyquist - 1 || peak_hps <= 0.0f) {
-        _current_data.hr3_valid = false;
+        _current_data.hr3_sqi = 0.0f;
         return;
     }
 
@@ -1098,13 +1121,20 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
     float delta = (denom < 0.0f) ? 0.5f * (yp - yn) / denom : 0.0f;
     float peak_freq = ((float)peak_bin + delta) * bin_res;  // Hz
 
-    if (peak_freq <= 0.0f) { _current_data.hr3_valid = false; return; }
+    if (peak_freq <= 0.0f) { _current_data.hr3_sqi = 0.0f; return; }
 
     float hr3 = 60.0f * peak_freq;
     if (hr3 >= hr_min_bpm && hr3 <= hr_max_bpm) {
-        _current_data.hr3       = hr3;
-        _current_data.hr3_valid = true;
+        _current_data.hr3 = hr3;
+        // SQI: spectral concentration — excess of peak fundamental power over flat-spectrum baseline.
+        // Maps [1/N_bins, 1] → [0, 1]: diffuse spectrum → SQI ≈ 0, dominant tone → SQI ≈ 1.
+        // y0 is the fundamental power at peak_bin (computed above for parabolic interpolation).
+        int   n_bins   = search_max - search_min + 1;
+        float baseline = (n_bins > 1) ? 1.0f / (float)n_bins : 0.0f;
+        float fraction = (power_sum > 0.0f) ? y0 / power_sum : 0.0f;
+        float sqi      = (n_bins > 1) ? (fraction - baseline) / (1.0f - baseline) : 0.0f;
+        _current_data.hr3_sqi = fmaxf(0.0f, fminf(1.0f, sqi));
     } else {
-        _current_data.hr3_valid = false;
+        _current_data.hr3_sqi = 0.0f;
     }
 }

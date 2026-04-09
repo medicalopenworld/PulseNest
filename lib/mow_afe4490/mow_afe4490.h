@@ -1,7 +1,7 @@
 #pragma once
 
 // mow_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.8 — ESP32-S3, Arduino + FreeRTOS
+// v0.13 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 
 #include <Arduino.h>
@@ -27,26 +27,26 @@
 
 // ── Public data struct ────────────────────────────────────────────────────────
 struct AFE4490Data {
+    // Field order mirrors the $M1/$P1 serial frame: raw signals first, then processed outputs
+    // Raw ADC outputs (6 signals from AFE4490)
+    int32_t led2;        // LED2VAL  — RED raw          (frame: RED)
+    int32_t led1;        // LED1VAL  — IR raw           (frame: IR)
+    int32_t aled2;       // ALED2VAL — ambient after LED2 (frame: AmbRED)
+    int32_t aled1;       // ALED1VAL — ambient after LED1 (frame: AmbIR)
+    int32_t led2_aled2;  // LED2-ALED2 — RED ambient-corrected (frame: REDSub)
+    int32_t led1_aled1;  // LED1-ALED1 — IR ambient-corrected  (frame: IRSub)
     // Processed outputs
     int32_t ppg;         // filtered PPG of selected channel
     float   spo2;        // SpO2 in %
+    float   spo2_sqi;    // SpO2 Signal Quality Index [0–1]: PI-based; 0=invalid/no finger, 1=full quality (PI ≥ 2%)
     float   spo2_r;      // R ratio used for SpO2 calculation: (AC_red/DC_red)/(AC_ir/DC_ir)
-    bool    spo2_valid;  // SpO2 is reliable
+    float   pi;          // Perfusion Index: (AC_ir / DC_ir) * 100 [%]
     float   hr1;         // HR1 (peak detection) in bpm
-    bool    hr1_valid;   // HR1 is reliable
+    float   hr1_sqi;     // HR1 Signal Quality Index [0–1]: 1 − CV/0.15; 0=arrhythmia/artefact/invalid, 1=perfectly regular
     float   hr2;         // HR2 (autocorrelation) in bpm
-    bool    hr2_valid;   // HR2 is reliable
+    float   hr2_sqi;     // HR2 Signal Quality Index [0–1]: normalised autocorrelation at dominant lag; 0=no periodicity, 1=perfect
     float   hr3;         // HR3 (FFT + HPS) in bpm
-    bool    hr3_valid;   // HR3 is reliable
-    // Raw ADC outputs (6 signals from AFE4490)
-    int32_t led1;        // LED1VAL  — IR raw
-    int32_t led2;        // LED2VAL  — RED raw
-    int32_t aled1;       // ALED1VAL — ambient after LED1
-    int32_t aled2;       // ALED2VAL — ambient after LED2
-    int32_t led1_aled1;  // LED1-ALED1 — IR ambient-corrected
-    int32_t led2_aled2;  // LED2-ALED2 — RED ambient-corrected
-    // ── Diagnostic (temporary — may be removed in final release) ──
-    float hr1_ppg;       // HR1 internal signal (DC-removed + MA); set to 0.0 on detected peak
+    float   hr3_sqi;     // HR3 Signal Quality Index [0–1]: spectral concentration at peak bin vs. search range; 0=diffuse, 1=dominant tone
 };
 
 // ── Enumerations ──────────────────────────────────────────────────────────────
@@ -253,7 +253,6 @@ private:
 
     // ── HR1 state ──
     float    _hr1_dc;
-    uint32_t _hr1_peak_marker_countdown;
     float    _hr1_running_max;
     bool     _hr1_ppg_above_thresh;
     uint32_t _hr1_last_peak_idx;
@@ -324,22 +323,22 @@ public:
     // HR1
     void  test_feed_hr1(int32_t led1_aled1) { _update_hr1(led1_aled1); }
     float test_hr1()                        { return _current_data.hr1; }
-    bool  test_hr1_valid()                  { return _current_data.hr1_valid; }
+    float test_hr1_sqi()                    { return _current_data.hr1_sqi; }
 
     // HR2
     void  test_feed_hr2(int32_t led1_aled1) { _update_hr2(led1_aled1); }
     float test_hr2()                        { return _current_data.hr2; }
-    bool  test_hr2_valid()                  { return _current_data.hr2_valid; }
+    float test_hr2_sqi()                    { return _current_data.hr2_sqi; }
 
     // HR3
     void  test_feed_hr3(int32_t led1_aled1) { _update_hr3(led1_aled1); }
     float test_hr3()                        { return _current_data.hr3; }
-    bool  test_hr3_valid()                  { return _current_data.hr3_valid; }
+    float test_hr3_sqi()                    { return _current_data.hr3_sqi; }
 
     // SpO2
     void  test_feed_spo2(int32_t ir_corr, int32_t red_corr) { _update_spo2(ir_corr, red_corr); }
     float test_spo2()                       { return _current_data.spo2; }
     float test_spo2_r()                     { return _current_data.spo2_r; }
-    bool  test_spo2_valid()                 { return _current_data.spo2_valid; }
+    float test_spo2_sqi()                   { return _current_data.spo2_sqi; }
 #endif
 };

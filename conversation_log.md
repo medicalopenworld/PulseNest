@@ -2988,3 +2988,184 @@ Garantiza que `P[3k]` esté siempre dentro de la banda de Nyquist. Si `search_ma
 **Build:** SUCCESS (303 KB Flash, 31 KB RAM). Flashed a COM15.
 
 ---
+
+## Sesión 2026-04-08 — Consulta sobre /context
+
+**Tema:** Uso informativo de Claude Code — sin cambios de código.
+
+**Pregunta:** El usuario pidió explicación de la salida del comando `/context`.
+
+**Respuesta:** Se explicó el desglose de tokens: system prompt (6.4k), system tools (8.4k), memory files (1.7k), skills (476), messages (183), espacio libre (~150k, 75%), buffer autocompact (33k). Sesión al 9% de uso de ventana de contexto.
+
+**Decisiones:** Ninguna. Sesión puramente informativa.
+
+---
+
+## Sesión 2026-04-09 — GUI i18n, AMDF task, CLAUDE.md update
+
+**Tema:** Traducción de textos en español a inglés en `ppg_plotter.py`, añadir tarea pendiente HR4-AMDF, y ampliar consigna de idioma en CLAUDE.md.
+
+**Preguntas y decisiones:**
+
+1. **Verificación de implementación HR3:** Se confirmó que el commit `cd93f15` contiene la implementación completa (FFT+HPS firmware, plotter, spec v0.12). Los cambios sin commitear en `ppg_plotter.py` son mejoras menores post-implementación; el usuario decidió no commitearlos por ahora.
+
+2. **Explicación de HPS:** Harmonic Product Spectrum — `HPS[k] = |X[k]|·|X[2k]|·|X[3k]|`; amplifica el fundamental donde coinciden sus armónicos.
+
+3. **Tarea HR4 — AMDF:** Añadida en `TODO.md` como nuevo método de cálculo de HR mediante Average Magnitude Difference Function normalizado, con ventana adaptativa y threshold dinámico. El antiguo HR4 (peak detection por derivada) renombrado a HR5.
+   - AMDF normalizado: `AMDF_n[τ] = AMDF[τ] / (AMDF_mean + ε)`
+   - Ventana adaptativa: ajustada a 2–3 ciclos según estimación previa de HR
+   - Threshold dinámico: mínimo válido si cae bajo fracción configurable de la media (p.ej. 0.6·mean)
+
+4. **GUI i18n — ppg_plotter.py:** 22 strings en español traducidos a inglés (botones, tooltips, mensajes de estado, docstring). Ningún cambio funcional.
+   - Botones: PAUSAR→PAUSE, GUARDAR→SAVE, REANUDAR→RESUME, DETENER→STOP, GRABACIÓN→RECORDING
+   - Status: "Sistema ONLINE"→"System ONLINE", "Librería activa"→"Active library", "Memoria guardada"→"Snapshot saved", etc.
+
+5. **CLAUDE.md — regla de idioma ampliada:** La regla 6 ahora cubre explícitamente textos de GUI (botones, labels, tooltips, mensajes de estado, cabeceras, títulos de ventana) además de código y comentarios.
+
+---
+
+## Sesión 2026-04-09 — PPG Plots bottom row equal width; HRLAB→HR2LAB; side panel reorder
+
+**Tema:** Renombrado de botón HRLAB a HR2LAB y reordenación de la sección ANALYSIS del side panel.
+
+**Decisiones:**
+
+1. **HRLAB → HR2LAB:** El botón y la ventana se renombraron a HR2LAB para ser consistentes con la nomenclatura HR3LAB. El tooltip se actualizó para reflejar que muestra la autocorrelación normalizada (HR2). Variables internas (`btn_hrlab`, `hrlab_window`) se mantienen sin cambio.
+
+2. **Reorden ANALYSIS:** El orden anterior era HR2LAB → SPO2LAB → HR3LAB (inconsistente). El nuevo orden es `HR2LAB → HR3LAB → SPO2LAB`: algoritmos de HR en orden numérico, SpO2 al final.
+
+3. **PPG Plots — anchura igual en los tres plots inferiores:** Varios intentos fallidos con pyqtgraph `GraphicsLayout` (stretch factors, colspan, setWidth en ejes Y) — la distribución de anchuras en pyqtgraph es poco fiable cuando los ejes Y tienen anchos distintos.
+   Solución definitiva: los tres plots inferiores (PPG, SpO2, HR) se sacan del `GraphicsLayoutWidget` y se implementan como tres `pg.PlotWidget` independientes en un `QHBoxLayout` estándar de Qt. Qt distribuye el espacio equitativamente por defecto. RED e IR permanecen en el `GraphicsLayoutWidget` original.
+
+---
+
+## Sesión 2026-04-09 — Deep serial frame restructure
+
+**Tema:** Reestructuración profunda de la trama serie en firmware y plotter.
+
+**Decisiones:**
+
+1. **Nueva trama $M1 (18 campos de datos):**
+   `LibID,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SSI,SpO2_R,HR1,HR1SSI,HR2,HR2SSI,HR3,HR3SSI`
+   - Eliminados: REDFilt, IRFilt, HR1PPG (señales de diagnóstico obsoletas)
+   - Añadidos: SpO2SSI, HR1SSI, HR2SSI, HR3SSI (Signal Inadequacy Index: 0.0=adecuado, 1.0=inadecuado)
+
+2. **SSI (Signal Inadequacy Index):** Derivado directamente de los booleanos `spo2_valid`/`hr1_valid`/`hr2_valid`/`hr3_valid` existentes en la librería. Sin nuevo cómputo en firmware.
+
+3. **Trama $P1 (protocentral):** Mismo formato que $M1; campos no disponibles = -1.0.
+
+4. **hr1_ppg eliminado de mow_afe4490:** Campo `hr1_ppg` y `_hr1_peak_marker_countdown` eliminados del struct `AFE4490Data` y de la librería (eran diagnóstico temporal).
+
+5. **Fix crítico en parser plotter:** El checksum NMEA (`*XX`) causaba `ValueError: could not convert string to float` silencioso en el parser. Fix: `line[1:].split('*')[0].split(',')` antes del split de campos.
+
+6. **Archivos modificados:** `mow_afe4490.h`, `mow_afe4490.cpp`, `src/main.cpp`, `ppg_plotter.py`.
+
+---
+
+## Sesión 2026-04-09 — Corrección nomenclatura SII
+
+**Tema:** Renombrado HR1SSI→HR1SII, HR2SSI→HR2SII, HR3SSI→HR3SII en firmware y plotter.
+
+**Decisión:** El acrónimo correcto es SII (Signal Inadequacy Index), no SSI. SpO2SSI no cambia (era correcto). Afecta a `src/main.cpp` y `ppg_plotter.py` (comentarios, headers CSV, tooltip, SERIAL_HEADER, parser).
+
+---
+
+## Sesión 2026-04-09 — Fix build: initializer list AFE4490Data
+
+**Tema:** Error de compilación tras eliminar `hr1_ppg` del struct.
+
+**Decisión:** El initializer list `_current_data = {0, 0.0f, ..., 0.0f}` en `mow_afe4490.cpp` (líneas 208 y 484) tenía 17 valores (sobraba el antiguo `hr1_ppg`). Reemplazado por `_current_data = AFE4490Data{}` (zero-init agregado), más robusto ante futuros cambios del struct. Build + upload COM15 exitosos.
+
+---
+
+## Sesión 2026-04-09 — AFE4490Data: raw signals primero (orden = trama serie)
+
+**Tema:** Completar el reordenamiento del struct para que las señales raw precedan a las calculadas, igual que en la trama $M1/$P1.
+
+**Decisión:** En el cambio anterior se había reordenado el bloque de señales procesadas pero no se había movido el bloque raw al principio. Corregido en `mow_afe4490.h` y `mow_afe4490_spec.md`. El `.cpp` no necesita cambios (acceso por nombre, no por posición). Orden final del struct: led2(RED), led1(IR), aled2(AmbRED), aled1(AmbIR), led2_aled2(REDSub), led1_aled1(IRSub), ppg, spo2, spo2_sqi, spo2_r, pi, hr1, hr1_sqi, hr2, hr2_sqi, hr3, hr3_sqi.
+
+---
+
+## Sesión 2026-04-09 — AFE4490Data: bool _valid → float _sqi + reorden struct
+
+**Tema:** Eliminar los campos `bool *_valid` de `AFE4490Data` y sustituirlos por `float *_sqi` (Signal Quality Index, 0=inválido, 1=válido). Reordenar el struct para que coincida con el orden de la trama serie $M1/$P1.
+
+**Decisión:** El usuario decidió no mantener los bools. El struct pasa a tener `spo2_sqi`, `hr1_sqi`, `hr2_sqi`, `hr3_sqi` como `float`. El orden del struct refleja ahora exactamente el orden de la trama serie. Ficheros afectados: `mow_afe4490.h` (struct + test helpers), `mow_afe4490.cpp` (19 asignaciones), `src/main.cpp` (snprintf usa SQI directamente), `test/test_spo2`, `test/test_hr1`, `test/test_hr2` (assertions `TRUE/FALSE` → `EQUAL_FLOAT`), `examples/basic/main.cpp` (`*_valid` → `*_sqi > 0.0f`), `mow_afe4490_spec.md` (struct y descripciones).
+
+---
+
+## Sesión 2026-04-09 — Corrección lógica SQI (invertida)
+
+**Tema:** SQI = Signal Quality Index, rango 0–1, siendo 1 la calidad máxima (señal válida).
+
+**Decisión:** El firmware enviaba `valid ? 0.0f : 1.0f` (invertido). Corregido a `valid ? 1.0f : 0.0f` en `main.cpp` para los cuatro campos (SpO2SQI, HR1SQI, HR2SQI, HR3SQI). En `ppg_plotter.py`, deques SQI inicializados a `0.0` (antes `1.0`) y fallback M2 también a `0.0`. Definición guardada en memoria del proyecto.
+
+---
+
+## Sesión 2026-04-09 — Renombrado variables internas _ssi → _sqi en ppg_plotter.py
+
+**Tema:** Coherencia de nomenclatura interna Python con el protocolo serie.
+
+**Decisión:** Las variables `data_spo2_ssi`, `data_hr1_ssi`, `data_hr2_ssi`, `data_hr3_ssi` renombradas a `data_spo2_sqi`, `data_hr1_sqi`, `data_hr2_sqi`, `data_hr3_sqi` en todas sus ocurrencias (deques, parser, guardado snapshot, fallback M2). Completa el renombrado SII→SQI iniciado antes, que sólo afectaba a strings del protocolo.
+
+---
+
+## Sesión 2026-04-09 — Añadido PI (Perfusion Index) al protocolo serie
+
+**Tema:** Añadir PI como nuevo campo en la trama serie, después de SpO2_R.
+
+**Decisión:** PI = (AC_IR / DC_IR) × 100 [%], calculado en `mow_afe4490.cpp::_update_spo2()` a partir de los ya existentes `_ac2_ir` y `_dc_ir`. Se actualiza siempre (independiente del warmup de SpO2). Añadido al struct `AFE4490Data` como `float pi`. Tramas `$M1` y `$P1` pasan de 18 a 19 campos de datos. En `$P1` (protocentral) se envía `-1`. Plotter actualizado: deque `data_pi`, parser (índice 13), todos los CSV headers, `_STATS_SIGNALS` y M2 fallback.
+
+---
+
+## Sesión 2026-04-09 — Renombrado SII → SQI
+
+**Tema:** Corrección de acrónimo: SII pasa a SQI (Signal Quality Index).
+
+**Decisión:** `SpO2SSI` → `SpO2SQI`, `HR1SII` → `HR1SQI`, `HR2SII` → `HR2SQI`, `HR3SII` → `HR3SQI`. Afecta a `src/main.cpp` y `ppg_plotter.py` (20 ocurrencias en total: comentarios, headers CSV, SERIAL_HEADER, parser). El acrónimo SQI es más estándar en la literatura de señales biomédicas (Signal Quality Index).
+
+---
+
+## Sesión 2026-04-09 — SQI continuo (0–1) en todos los algoritmos
+
+**Tema:** Reemplazar SQI binario (0/1) por métricas continuas de calidad de señal.
+
+**Decisiones:**
+
+- **SpO2 SQI:** basado en Perfusion Index. `SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1)`. PI < 0.5 % → 0, PI ≥ 2.0 % → 1. Umbrales Nellcor/Masimo. Si SpO2 fuera del rango válido → SQI = 0.
+
+- **HR1 SQI:** coeficiente de variación de los 5 intervalos RR. `CV = std / mean`, `SQI = clamp(1 − CV / 0.15, 0, 1)`. Ritmo perfecto → 1, CV ≥ 15 % (criterio clínico de arritmia) → 0.
+
+- **HR2 SQI:** valor de la autocorrelación normalizada en el lag dominante (`y_peak`). Ya en [0, 1] por construcción. Alta periodicidad → SQI cercano a 1.
+
+- **HR3 SQI:** concentración espectral. `fraction = P[peak] / Σ P[k]`, `SQI = clamp((fraction − 1/N_bins) / (1 − 1/N_bins), 0, 1)`. Espectro con tono dominante → 1, espectro difuso → 0.
+
+**Versión:** librería y spec pasan a v0.13.
+
+**Tests actualizados:** los `ASSERT_EQUAL_FLOAT(1.0f, sqi)` de HR1/HR2 pasan a `ASSERT_GREATER_THAN(0.7f, sqi)` (señal sintética pura tiene SQI alto pero no necesariamente 1.0 exacto). SpO2 tests se mantienen con `== 1.0f` (PI ≈ 7 % con los parámetros de test → SQI = 1.0 tras clamp).
+
+---
+
+## Sesión 2026-04-09 — ppg_plotter.py: SQI continuo en tabla de señales y títulos de gráficas
+
+**Tema:** Actualizar el plotter para reflejar el SQI continuo [0–1].
+
+**Decisiones:**
+
+- **Tabla de señales (`_STATS_SIGNALS`):** añadidas 4 filas SQI intercaladas después de su señal padre: SpO2 SQI (fila 2), HR1 SQI (fila 6), HR2 SQI (fila 8), HR3 SQI (fila 10). La tabla pasa de 13 a 17 filas.
+
+- **`_HR_ROWS` / `_STATS_HR_ROWS`:** corregidos de {3,4,5} (que apuntaban a PI/HR1/HR2, era un bug) a {5,7,9} (HR1, HR2, HR3 con la nueva numeración). El fondo maroon en columna Mean sigue aplicándose solo a las filas HR.
+
+- **`PPGPlotsWindow.update_plots`:** firma ampliada con `data_spo2_sqi`, `data_hr1_sqi`, `data_hr2_sqi`, `data_hr3_sqi`. Títulos de gráficas actualizados: SpO2 muestra `SQI: 0.85`, HR muestra `[0.92]` gris junto a cada valor de BPM.
+
+- **Call site:** llamada a `ppgplots_window.update_plots` actualizada con los 4 deques SQI.
+
+---
+
+## Sesión 2026-04-09 — ppg_plotter.py: tabla SIGNAL STATS reordenada según trama serie
+
+**Tema:** Alinear el orden de filas de `_STATS_SIGNALS` con el orden exacto de los campos en la trama $M1/$P1.
+
+**Decisión:** Orden nuevo: RED, IR, Amb RED, Amb IR, RED sub, IR sub, PPG, SpO2, SpO2 SQI, SpO2_R, PI, HR1, HR1 SQI, HR2, HR2 SQI, HR3, HR3 SQI. `_STATS_HR_ROWS` / `_HR_ROWS` actualizados a {11, 13, 15}.
+
+---
