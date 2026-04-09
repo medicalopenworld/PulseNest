@@ -427,7 +427,53 @@ SNR_improvement = sqrt(num)    →  num=8: ×2.83,  num=10: ×3.16
 
 ---
 
-## 8. Version history
+## 8. Validation tooling — ppg_plotter.py
+
+The `ppg_plotter.py` script is the primary validation tool for the mow_afe4490 library.
+It contains two distinct categories of windows with different purposes and lifecycles.
+
+### 8.1 LAB windows (pre-implementation)
+
+| Window | Purpose |
+|---|---|
+| `HR3LAB` | FFT + HPS algorithm design |
+| `HRLab` | Autocorrelation HR2 algorithm design |
+| `SpO2Lab` | SpO2 calibration and R-ratio curve fitting |
+
+LAB windows exist **before** an algorithm is implemented in firmware. They are exploratory: free to experiment, iterate, and prototype ideas. They have no obligation to match the firmware — they are the design space where algorithms are conceived. Once an algorithm is finalised and implemented in firmware, its LAB window may be kept or retired, but it is not the verification tool.
+
+### 8.2 TEST windows (post-implementation)
+
+| Window | Algorithm under test |
+|---|---|
+| `SPO2TEST` | SpO2: AC/DC ratio, R, SQI |
+| `HR1TEST` | HR1: threshold peak detection |
+| `HR2TEST` | HR2: autocorrelation |
+| `HR3TEST` | HR3: FFT + HPS |
+
+TEST windows exist **after** an algorithm is implemented in firmware. Each TEST window contains an independent Python reimplementation of the exact algorithm described in this spec — same constants, same formulas, same state machine. The Python mirror is derived from this spec, not from the firmware source code.
+
+**The spec is the contract.** Both the firmware and the Python mirror must implement this spec. Any discrepancy between the firmware output and the Python mirror output has exactly three possible causes:
+1. Bug in the firmware implementation.
+2. Bug in the Python mirror.
+3. Ambiguity in this spec (interpreted differently in C++ vs Python).
+
+This three-way relationship (spec → firmware, spec → Python mirror, firmware ↔ Python mirror) provides a rigorous independent verification mechanism appropriate for a medical device.
+
+### 8.3 TEST window design rules
+
+- **Parameters:** each TEST window exposes all algorithm constants as editable controls, with the firmware default values pre-loaded. The user can modify parameters to explore sensitivity and understand algorithm behaviour. This does not change the firmware — it only affects the Python mirror. A persistent status indicator signals whether the comparison is valid:
+  - **Green — `FIRMWARE DEFAULTS`**: all parameters match the firmware defaults → comparison between firmware output and Python mirror is meaningful.
+  - **Orange — `CUSTOM PARAMS`**: one or more parameters have been modified → the Python mirror no longer replicates the firmware; the window operates in exploratory mode. A `RESET TO DEFAULTS` button restores all parameters to firmware defaults.
+- **Data sources:** each TEST window supports two modes:
+  - **Live mode:** feeds from the active serial connection at 500 Hz (full rate, before decimation).
+  - **Offline mode:** loads a recorded CSV file, processes it in batch, and displays the full time series as a static zoomable plot.
+- **Comparison:** each window displays firmware output (received over serial) vs Python mirror output side by side, with a delta channel and a pass/fail indicator.
+- **No code reuse from LAB windows:** TEST windows implement their algorithms from scratch following this spec. LAB windows may have evolved away from the final spec during the design phase; reusing their code would introduce uncontrolled divergence.
+
+---
+
+## 9. Version history
 
 | Version | Description                                                                 |
 |---------|-----------------------------------------------------------------------------|

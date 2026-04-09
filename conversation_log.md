@@ -3169,3 +3169,69 @@ Garantiza que `P[3k]` esté siempre dentro de la banda de Nyquist. Si `search_ma
 **Decisión:** Orden nuevo: RED, IR, Amb RED, Amb IR, RED sub, IR sub, PPG, SpO2, SpO2 SQI, SpO2_R, PI, HR1, HR1 SQI, HR2, HR2 SQI, HR3, HR3 SQI. `_STATS_HR_ROWS` / `_HR_ROWS` actualizados a {11, 13, 15}.
 
 ---
+
+## Sesión — 2026-04-09
+
+### Tema: Diseño e implementación de las ventanas TEST (SPO2TEST, HR1TEST, HR2TEST, HR3TEST)
+
+**Pregunta clave:** ¿Es buena idea añadir 4 ventanas TEST que reimplementen los algoritmos en Python para comparar con el ESP32?
+
+**Decisión:** Sí. Se adopta el patrón LAB (pre-implementación, exploratorio) vs TEST (post-implementación, verificación). Las ventanas TEST son réplicas Python exactas del spec, no reutilizan código LAB. El spec (`mow_afe4490_spec.md`) actúa como contrato entre firmware y mirror Python.
+
+**Diseño acordado:**
+- 4 ventanas independientes: SPO2TEST, HR1TEST, HR2TEST, HR3TEST
+- Todo implementado desde cero (sin reutilizar código LAB)
+- Modo live: datos desde serial; modo offline: carga CSV → batch → plot estático zoomable
+- Parámetros ajustables en UI con indicador verde (FIRMWARE DEFAULTS) / naranja (CUSTOM PARAMS) + botón RESET TO DEFAULTS
+- HR1 mirror: ejecutar a 500 Hz (antes del continue de decimación)
+- Spec actualizado con sección 8 (LAB/TEST philosophy, design rules)
+
+**Implementado esta sesión:** SPO2TEST completo
+- `SpO2TestCalc`: mirror from scratch de firmware _update_spo2() según spec §5.1
+- `SpO2TestWindow`: 6 plots (SpO2 fw/py, delta, R fw/py, SQI fw/py, DC, RMS AC), panel de parámetros, tabla de valores, modo offline CSV, export
+- Integrado en PPGMonitor: botón SPO2TEST en sidebar sección TEST, toggle, settings persistence
+
+---
+
+---
+
+## Sesión 2026-04-09 (continuación) — HR3TEST
+
+### Tema: Implementación de HR3TEST (4ª y última ventana TEST)
+
+**Contexto:** Esta sesión continuó directamente desde la anterior (contexto resumido). SPO2TEST, HR1TEST y HR2TEST ya estaban implementados y funcionando. HR3TEST era el único pendiente.
+
+**Decisión:** HR3TEST sigue el mismo patrón que HR2TEST. El mirror corre a 50 Hz (tasa decimada), alimentado por `PPGMonitor.update_plots()`. No hay hook a 500 Hz (a diferencia de HR1TEST).
+
+**Implementado:**
+
+`HR3TestCalc`:
+- Mirror from scratch de firmware _update_hr3() según spec §5.4
+- Pipeline: LP Butterworth 2nd-order 10 Hz → buffer circular 512 muestras → cada 25 muestras: sustracción de media → ventana Hann → rfft → HPS P[k]·P[2k]·P[3k] → argmax en rango HR → interpolación parabólica (sobre espectro original)
+- SQI: fraction = P[peak_bin]/ΣP[k], baseline = 1/N_bins, SQI = clamp((fraction−baseline)/(1−baseline), 0, 1) — exactamente como spec §5.4
+- Estado diagnóstico: last_spectrum, last_freqs, last_hps, last_peak_freq, last_filtered_buf
+- Parámetros: lp_cutoff_hz, buf_len, update_n, hps_harmonics (con FW_* como defaults)
+
+`HR3TestWindow`:
+- 4 plots: FFT+HPS spectrum (con LinearRegionItem rango HR, InfiniteLine peak, curvas cyan/naranja), buffer LP filtrado, HR3 fw/py vs tiempo, SQI fw/py vs tiempo
+- Panel derecho: parámetros (LP cutoff, buf_len, update_n, HPS harmonics), botón RESET TO DEFAULTS, tabla de valores (HR3, SQI, peak freq)
+- Indicador verde/naranja FIRMWARE DEFAULTS / CUSTOM PARAMS
+- Modo offline: carga CSV (CHK y raw), batch process, plot estático
+- Export CSV
+
+`PPGMonitor`:
+- `self.hr3test_window = None`, `_HR3TEST_REFRESH_EVERY = 5`, `_hr3test_refresh_counter`
+- Botón HR3TEST en sidebar (sección TEST, después de HR2TEST)
+- `toggle_hr3test()`, `_open_hr3test_default()`
+- `_save_settings()`: hr3test_open
+- `showEvent()`: restaura hr3test si estaba abierto
+- `_bring_all_to_front()`: incluye hr3test_window
+- `update_data()`: bloque de refresco HR3TEST cada 5 ticks (≈10 Hz), pasa data_ir_sub, data_hr3, data_hr3_sqi
+
+**Nota técnica (CSV parsing):**
+- CHK format: parts[18]=HR3, parts[19]=HR3SQI (tras split del raw $M1 frame)
+- Raw CSV format: row[offset+17]=HR3, row[offset+18]=HR3SQI (offset=3, raw CSV cols 0..21)
+
+**Estado final:** Las 4 ventanas TEST están completas e integradas. ppg_plotter.py ~5870 líneas, pasa py_compile sin errores.
+
+---
