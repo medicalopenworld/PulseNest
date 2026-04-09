@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.13
+# mow_afe4490 — Specification v0.14
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -507,6 +507,17 @@ This three-way relationship (spec → firmware, spec → Python mirror, firmware
 |         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
 |         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
 |         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+| v0.14   | Timing instrumentation: `MOW_TIMING_STATS` compile-time flag, `TimingStat` |
+|         | struct, `_emit_timing()` private method. Measures HR1/HR2/HR3/SpO2 per-call |
+|         | time and full cycle time (SPI + all algos) with `esp_timer_get_time()`.      |
+|         | `$TIMING` serial frame emitted every ~5 s. `TIMING` window added to         |
+|         | `ppg_plotter.py` with green/orange/red budget indicator (budget = 2000 µs). |
+|         | Spec §8.4 added. Enabled in `platformio.ini` via `-DMOW_TIMING_STATS=1`.    |
+| v0.13   | SQI continuous [0–1] for all algorithms. HR1 SQI: CV-based. HR2 SQI:       |
+|         | normalised autocorrelation peak. HR3 SQI: spectral concentration.           |
+|         | SpO2 SQI: PI-based (clamp PI from 0.5%–2.0%). All SQI fields added to      |
+|         | `AFE4490Data` and $M1 frame. 4 TEST windows completed (SPO2TEST, HR1TEST,  |
+|         | HR2TEST, HR3TEST). ppg_plotter.py spec §8 updated.                          |
 | v0.12   | Added HR3 algorithm (FFT + HPS): `hr3`/`hr3_valid` in `AFE4490Data`,     |
 |         | `setHR3Filter()` in API, section 5.4. Self-contained radix-2 DIT FFT     |
 |         | in anonymous namespace. `_recalc_biquad_lp()` for LP anti-aliasing.      |
@@ -532,6 +543,42 @@ This three-way relationship (spec → firmware, spec → Python mirror, firmware
 |         | Section 5.2 (HR1) fully documented: DC removal IIR, moving average LP,    |
 |         | running-max threshold, refractory period, 5-interval averaging, peak       |
 |         | marker diagnostic, and key constants table.                                |
+
+### 8.4 TIMING window (diagnostics)
+
+The `TIMING` window in `ppg_plotter.py` displays per-algorithm CPU execution times measured in firmware, parsed from `$TIMING` diagnostic frames.
+
+**Compile-time flag:** `MOW_TIMING_STATS` (default 0). Set to 1 via `platformio.ini` `build_flags` to enable. When 0, all instrumentation code is compiled out with zero overhead.
+
+**Frame format:**
+```
+$TIMING,hr1_mean,hr1_max,hr2_mean,hr2_max,hr3_mean,hr3_max,
+        spo2_mean,spo2_max,cycle_mean,cycle_max,stack_free*XX
+```
+- All time values in **µs** (measured with `esp_timer_get_time()`, resolution 1 µs)
+- `stack_free`: remaining stack of the mow_afe4490 FreeRTOS task in 4-byte words (`uxTaskGetStackHighWaterMark`)
+- Checksum: XOR of all bytes between `$` and `*` (NMEA style)
+- Emitted every `ts_emit_interval = 2500` samples (~5 s at 500 Hz); stats reset after each emission
+
+**Timing scope:**
+
+| Field | What is measured |
+|---|---|
+| `hr1_mean/max` | `_update_hr1()` execution time |
+| `hr2_mean/max` | `_update_hr2()` execution time (biquad + autocorr combined) |
+| `hr3_mean/max` | `_update_hr3()` execution time (LP filter + FFT + HPS combined) |
+| `spo2_mean/max` | `_update_spo2()` execution time |
+| `cycle_mean/max` | Full sample cycle: SPI burst-read (6 channels) + `_process_sample()` |
+
+**Budget:** cycle budget = 2000 µs (1 sample period at 500 Hz).
+- `cycle_max < 1800 µs` → green (safe, 10% margin)
+- `1800 ≤ cycle_max ≤ 2000 µs` → orange (tight)
+- `cycle_max > 2000 µs` → red (over budget, risk of missed samples)
+
+**Implementation notes:**
+- Individual algo timers are in `_process_sample()`; cycle timer is in `_task_body()`
+- `_emit_timing()` is a private method; formats and sends the frame, then resets all `TimingStat` accumulators
+- `TimingStat` struct (fields: `max_us`, `sum_us`, `count`) lives in the private section of `MOW_AFE4490`, guarded by `#if MOW_TIMING_STATS`
 
 ---
 

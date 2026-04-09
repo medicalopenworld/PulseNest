@@ -3235,3 +3235,207 @@ Garantiza que `P[3k]` esté siempre dentro de la banda de Nyquist. Si `search_ma
 **Estado final:** Las 4 ventanas TEST están completas e integradas. ppg_plotter.py ~5870 líneas, pasa py_compile sin errores.
 
 ---
+
+## Sesión 2026-04-09 — Instrumentación de timing (v0.14)
+
+### Objetivo
+Implementar la instrumentación de timing para medir el consumo de CPU de los 4 algoritmos (HR1, HR2, HR3, SpO2) y verificar que el ciclo cabe en los 2000 µs del período de muestreo a 500 Hz.
+
+### Decisiones tomadas
+
+**Firmware:**
+- Flag `MOW_TIMING_STATS` (compilado in/out, default 0, activo en `platformio.ini` con `-DMOW_TIMING_STATS=1`)
+- `TimingStat` struct privada en `MOW_AFE4490` (max_us, sum_us, count, update, mean_us, reset)
+- Medición con `esp_timer_get_time()` (resolución 1 µs, ESP-IDF)
+- Algoritmos instrumentados en `_process_sample()` con bloques `{ uint64_t _t = ...; algo(); _ts_X.update(...); }`
+- Ciclo completo (SPI + todo) instrumentado en `_task_body()` con `_t_cycle` antes del SPI mutex
+- `_emit_timing()`: método privado, emite trama `$TIMING` cada `ts_emit_interval=2500` samples (~5 s a 500 Hz), luego resetea todos los acumuladores
+- Trama: `$TIMING,hr1_mean,hr1_max,hr2_mean,hr2_max,hr3_mean,hr3_max,spo2_mean,spo2_max,cycle_mean,cycle_max,stack_free*XX`
+
+**ppg_plotter.py:**
+- `TimingWindow`: tabla (Algorithm / Mean µs / Max µs / Budget %) + status bar verde/naranja/rojo
+- Thresholds: WARN=1800 µs, BUDGET=2000 µs
+- Parser `$TIMING` antes de la decimación (con `continue`, se muestra en consola)
+- Botón `TIMING` en sidebar (checkable, persistente con QSettings)
+
+**Spec:** actualizada a v0.14 (sección §8.4 añadida, entrada en historial de versiones)
+
+### Estado final
+Todos los archivos modificados: `platformio.ini`, `mow_afe4490.h`, `mow_afe4490.cpp`, `ppg_plotter.py`, `mow_afe4490_spec.md`. Pendiente: compilar + flashear y leer primeras tramas `$TIMING`.
+
+---
+
+## Sesión 2026-04-09 — Fixes ppg_plotter.py post-timing (v0.14 patch)
+
+### Cambios
+- **`closeEvent` añadido a 5 ventanas** (SpO2TestWindow, HR1TestWindow, HR2TestWindow, HR3TestWindow, TimingWindow): al cerrar con la X el botón del sidebar se desactiva y la referencia en PPGMonitor se pone a None
+- **TimingWindow más alta**: `resize(480, 340)` en lugar de 260 (5 filas visibles sin scroll)
+- **Tabla TimingWindow copiable**: selección `ContiguousSelection` + `keyPressEvent` con `Ctrl+C` copia celdas seleccionadas como TSV
+
+---
+
+## Sesión 2026-04-09 — TimingWindow resize 340→400
+
+- `resize(480, 400)` para que la última fila de la tabla sea visible.
+
+---
+
+---
+
+## Sesión 2026-04-09 — Async HR2/HR3 tasks (v0.14 async split)
+
+### Contexto
+Las mediciones de timing con `MOW_TIMING_STATS` mostraron que en el frame en que coinciden HR2 autocorrelación (~3885 µs max) y HR3 FFT (~1657 µs max), el ciclo completo superaba los 5945 µs (casi 3× el presupuesto de 2000 µs). La causa es estructural: ambos algoritmos se ejecutaban síncronamente en la tarea de muestreo a 500 Hz.
+
+### Decisión de diseño
+Separar HR2 y HR3 en tareas FreeRTOS independientes (prio 4, una prioridad por debajo de la tarea de muestreo a prio 5). La tarea de muestreo (Task A) solo ejecuta el camino rápido (filtrar + decimarı + buffer), y señaliza las tareas lentas cuando hay un nuevo intervalo disponible. Las tareas lentas (Task B para HR2, Task C para HR3) bloquean en un semáforo binario y solo se activan cada ~0.5 s.
+
+### Patrón skip-if-busy
+Si Task B/C todavía está computando cuando llega el siguiente intervalo, Task A salta (`if (!_hrX_computing)`) — no bloquea, no hace cola, simplemente descarta ese intervalo. La frecuencia de actualización de HR2/HR3 es 0.5 s, no hace falta actualizarlos más rápido.
+
+### Cambios en mow_afe4490.cpp
+
+**HR2 — split en 4 funciones:**
+- `_update_hr2_sample()`: camino rápido (biquad BPF + decimación + circular buffer), devuelve `true` cuando el intervalo se dispara
+- `_linearize_hr2()`: copia el buffer circular en `_hr2_seg` (snapshot linealizado, bajo `_state_mutex`)
+- `_compute_hr2()`: autocorrelación sobre `_hr2_seg` → `_hr2_result`/`_hr2_sqi_result` (sin mutex, solo lee `_hr2_seg`)
+- `_update_hr2()`: wrapper síncrono mantenido para compatibilidad con unit tests
+
+**HR3 — split en 4 funciones (mismo patrón):**
+- `_update_hr3_sample()`: camino rápido (biquad LPF + decimación + circular buffer), devuelve `true` cuando el intervalo se dispara
+- `_linearize_hr3()`: DC removal + ventana Hann → `_hr3_fft[]` (bajo `_state_mutex`)
+- `_compute_hr3()`: FFT radix-2 + HPS + interpolación parabólica sobre `_hr3_fft` → `_hr3_result`/`_hr3_sqi_result`
+- `_update_hr3()`: wrapper síncrono mantenido para compatibilidad con unit tests
+
+**Tareas FreeRTOS añadidas:**
+- `_hr2_task_trampoline()` / `_hr2_task_body()`: bloquea en `_hr2_calc_sem`, llama `_compute_hr2()`, escribe resultados bajo `_state_mutex`, limpia `_hr2_computing`
+- `_hr3_task_trampoline()` / `_hr3_task_body()`: mismo patrón para HR3
+
+**`_process_sample()` actualizado:** reemplazadas las llamadas directas `_update_hr2/hr3()` por el patrón fast-path + signal:
+```cpp
+if (_update_hr2_sample(led1_aled1)) {
+    if (!_hr2_computing) {
+        _linearize_hr2();
+        _hr2_computing = true;
+        xSemaphoreGive(_hr2_calc_sem);
+    }
+}
+```
+
+### Resultado esperado
+Con el split, el `cycle_max` en la ventana TIMING debería bajar a < 500 µs. Los valores de HR2/HR3 en la tabla TIMING miden solo el camino rápido (< 50 µs), no la computación lenta.
+
+### Estado
+Compilado y flasheado sin errores. Pendiente: leer primera trama `$TIMING` con plotter para confirmar mejora.
+
+
+---
+
+## Sesión 2026-04-10 — Precompute Hann window (v0.14 patch)
+
+### Problema
+Con el async split, HR3 fast path mostraba max = 819 µs en la ventana TIMING. Causa: `_linearize_hr3()` ejecutaba 512 llamadas a `cosf()` para la ventana Hann en cada frame donde se dispara el intervalo, y eso corre en Task A (ciclo de muestreo).
+
+### Fix
+Precomputar la ventana Hann una sola vez en `begin()`, guardada en el nuevo miembro `float _hr3_hann[hr3_buf_len]`. `_linearize_hr3()` ahora solo hace multiply-add sin trigonometría.
+
+**Cambios:**
+- `mow_afe4490.h`: añadido `float _hr3_hann[hr3_buf_len]` (2 KB RAM adicionales)
+- `mow_afe4490.cpp` — `begin()`: bucle de precomputo `_hr3_hann[i] = 0.5f * (1.0f - cosf(...))` antes de lanzar las tareas
+- `mow_afe4490.cpp` — `_linearize_hr3()`: `sample * _hr3_hann[i]` en lugar de `sample * cosf(...)`
+
+### Resultado esperado
+- HR3 fast path max: < 50 µs (solo multiply-add)
+- Cycle max: < 500 µs
+
+
+---
+
+## Sesión 2026-04-10 — Task B/C CPU load en ventana TIMING
+
+### Motivación
+La columna "Budget %" de la ventana TIMING solo tenía sentido para Task A (tiempo por muestra vs 2 ms). Task B y C (async) no se miden contra ese presupuesto — su métrica correcta es CPU load % = tiempo de cómputo / período de invocación.
+
+### Cambios firmware
+
+**mow_afe4490.h:**
+- Añadidos `_ts_hr2_compute` y `_ts_hr3_compute` (tipo `TimingStat`) junto a los stats existentes de Task A
+
+**mow_afe4490.cpp:**
+- `_hr2_task_body()`: instrumentado `_compute_hr2()` con `esp_timer_get_time()` (bajo `#if MOW_TIMING_STATS`)
+- `_hr3_task_body()`: ídem para `_compute_hr3()`
+- `_emit_timing()`: frame extendido de 11 a 15 valores:
+  `$TIMING,hr1,hr2fp,hr3fp,spo2,cycle, hr2cmp,hr3cmp, stack_free`
+  (cada par = mean_us + max_us)
+- `buf[192]` → `buf[256]` para el frame más largo
+- Reset de `_ts_hr2_compute` y `_ts_hr3_compute` al emitir
+
+### Cambios ppg_plotter.py
+
+**TimingWindow rediseñada:**
+- Título: "TIMING — CPU Budget & Load"
+- 9 filas físicas: 1 header + 5 datos Task A + 1 header + 2 datos Task B/C
+- Headers de sección con `setSpan()` y estilo azulado
+- Task A: columna "Metric" muestra "Budget %" (max / 2000 µs)
+- Task B/C: columna "Metric" muestra "CPU load %" (mean / 500 000 µs)
+- `update_timing()` acepta ahora 15 parámetros (antes 11)
+- Ventana ampliada a 520×490 px
+
+**Parser `$TIMING`:**
+- `len(_tp) >= 16` (antes 12)
+- `_tp[1:16]` (antes `_tp[1:12]`)
+
+
+---
+
+## Sesión 2026-04-10 — TimingWindow resize 520x490 → 640x980
+
+- `self.resize(640, 980)` — un poco más ancha y el doble de alta.
+
+
+---
+
+## Sesión 2026-04-10 — FreeRTOS task CPU% en ventana TIMING ($TASK frames)
+
+### Motivación
+El usuario quería ver el consumo de CPU de todas las tareas de la librería (A, B, C) para estimar el impacto al integrarla en IncuNest.
+
+### Enfoque elegido
+`uxTaskGetSystemState()` requiere `configUSE_TRACE_FACILITY=1` en FreeRTOS, pero Arduino ESP32 usa una librería FreeRTOS precompilada que no lo activa — no se puede cambiar sin recompilar el framework. Solución: calcular CPU% directamente desde los `sum_us` ya medidos por los `TimingStat` existentes.
+
+### CPU% por tarea (intervalo actual, no acumulado desde boot)
+- `mow_afe4490` (Task A): `_ts_cycle.sum_us / window_us × 100`
+- `mow_hr2` (Task B): `_ts_hr2_compute.sum_us / window_us × 100`
+- `mow_hr3` (Task C): `_ts_hr3_compute.sum_us / window_us × 100`
+- `window_us = ts_emit_interval * 1,000,000 / sample_rate_hz = 5,000,000 µs`
+
+### Tramas emitidas (al final de cada ciclo de $TIMING)
+```
+$TASK,mow_afe4490,cpu_pct_x10,stack_words*XX
+$TASK,mow_hr2,cpu_pct_x10,stack_words*XX
+$TASK,mow_hr3,cpu_pct_x10,stack_words*XX
+$TASKS_END*XX
+```
+`cpu_pct_x10` = CPU% × 10 (entero, resolución 0.1%). `stack_words` = `uxTaskGetStackHighWaterMark()`.
+
+**Importante:** `_emit_tasks()` se llama ANTES de `_ts_*.reset()` para leer los `sum_us` del intervalo actual.
+
+### Cambios firmware
+- `mow_afe4490.h`: declaración `_emit_tasks()` bajo `#if MOW_TIMING_STATS`
+- `mow_afe4490.cpp`: implementación de `_emit_tasks()` con struct `LibTask[]` para las 3 tareas; reordenado el final de `_emit_timing()`: emit_tasks() → resets
+
+### Cambios ppg_plotter.py
+- `PPGMonitor.__init__`: añadido `self._pending_tasks = []`
+- Parser `$TIMING`: resetea `_pending_tasks = []` al inicio de cada nuevo ciclo
+- Parser `$TASK`: acumula `(name, pct_x10, stack)` en `_pending_tasks`
+- Parser `$TASKS_END`: llama `timing_window.update_tasks(_pending_tasks)` si la ventana está abierta
+- `TimingWindow`: añadida sección "FreeRTOS Tasks" con `QTableWidget` dinámico (filas según número de tareas, ordenadas por CPU% desc), amarillo para tareas ≥ 20% CPU
+- `TimingWindow.update_tasks()`: nuevo método que reconstruye la tabla en cada ciclo
+
+
+---
+
+## Sesión 2026-04-10 — TimingWindow: Ctrl+C en tabla de tareas
+
+- `keyPressEvent` actualizado para copiar de `_tasks_table` además de `_table` (el que tenga selección activa).
+

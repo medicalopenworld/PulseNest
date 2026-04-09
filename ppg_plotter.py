@@ -2203,6 +2203,12 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             f"<b style='color:#00CC66'>R fw: {_fmt(v_R_fw,5)}</b>"
             f"  <b style='color:#FFDD44'>R py: {_fmt(v_R_py,5)}</b>")
 
+    def closeEvent(self, event):
+        if self.main_monitor is not None:
+            self.main_monitor.btn_spo2test.setChecked(False)
+            self.main_monitor.spo2test_window = None
+        super().closeEvent(event)
+
 
 class HR1TestWindow(QtWidgets.QMainWindow):
     """HR1TEST — post-implementation verification window for the HR1 algorithm.
@@ -2834,6 +2840,12 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                 f"MA len={int(round(fs / (2.0 * (self._spin_ma_cut.value() or 1))))}, "
                 f"fs={fs:.0f} Hz)</b>")
 
+    def closeEvent(self, event):
+        if self.main_monitor is not None:
+            self.main_monitor.btn_hr1test.setChecked(False)
+            self.main_monitor.hr1test_window = None
+        super().closeEvent(event)
+
 
 class HR2TestWindow(QtWidgets.QMainWindow):
     """HR2TEST — post-implementation verification window for the HR2 algorithm.
@@ -3404,6 +3416,12 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             fs = self._calc._fs if self._calc._fs > 0 else HR2TestCalc.FW_FS
             filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
             self.curve_filt.setData(filt_t, filt)
+
+    def closeEvent(self, event):
+        if self.main_monitor is not None:
+            self.main_monitor.btn_hr2test.setChecked(False)
+            self.main_monitor.hr2test_window = None
+        super().closeEvent(event)
 
 
 class HR3TestCalc:
@@ -4134,6 +4152,269 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             fs = self._calc._fs if self._calc._fs > 0 else HR3TestCalc.FW_FS
             filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
             self.curve_filt.setData(filt_t, filt)
+
+    def closeEvent(self, event):
+        if self.main_monitor is not None:
+            self.main_monitor.btn_hr3test.setChecked(False)
+            self.main_monitor.hr3test_window = None
+        super().closeEvent(event)
+
+
+class TimingWindow(QtWidgets.QMainWindow):
+    """Timing diagnostics window — shows per-algorithm CPU time from $TIMING frames.
+
+    Two sections:
+      Task A (real-time 500 Hz): Budget % = max / 2000 µs × 100
+      Task B/C (async ~2 Hz):    CPU load % = mean / 500000 µs × 100
+    A status bar reflects the Task A cycle_max vs the 2 ms budget.
+    """
+
+    _BUDGET_US    = 2000     # µs — 1 sample period at 500 Hz (Task A budget)
+    _WARN_US      = 1800     # µs — 10% margin warning threshold
+    _ASYNC_PERIOD = 500_000  # µs — HR2/HR3 compute period (0.5 s at 500 Hz)
+
+    # Row definitions: (display name, section)  section 0=Task A, section 1=Task B/C
+    _ROW_DEFS = [
+        ("HR1",              0),
+        ("HR2 fast path",    0),
+        ("HR3 fast path",    0),
+        ("SpO2",             0),
+        ("Cycle (SPI+all)",  0),
+        ("HR2 autocorr",     1),
+        ("HR3 FFT+HPS",      1),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("TIMING — CPU Budget & Load")
+        self.resize(640, 980)
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        vbox = QtWidgets.QVBoxLayout(central)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(6)
+
+        # Status indicator (Task A cycle)
+        self._lbl_status = QtWidgets.QLabel("Waiting for $TIMING frame…")
+        self._lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+        self._lbl_status.setStyleSheet(
+            "background: #1A2A1A; color: #888888; font-size: 13px; "
+            "font-weight: bold; padding: 4px; border-radius: 4px;")
+        self._lbl_status.setToolTip(_make_tooltip(
+            "Task A cycle status",
+            f"GREEN: cycle_max < {self._WARN_US} µs (safe).\n"
+            f"ORANGE: {self._WARN_US}–{self._BUDGET_US} µs (tight — 10% margin).\n"
+            f"RED: cycle_max > {self._BUDGET_US} µs (OVER BUDGET — may miss samples at 500 Hz)."))
+        vbox.addWidget(self._lbl_status)
+
+        # Table: section header rows + data rows
+        # Physical row layout: header_A, 5 data rows, header_BC, 2 data rows = 9 rows total
+        self._table = QtWidgets.QTableWidget(9, 4)
+        self._table.setHorizontalHeaderLabels(["Algorithm", "Mean (µs)", "Max (µs)", "Metric"])
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
+        self._table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        for col in (1, 2, 3):
+            self._table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeToContents)
+
+        # Section header style
+        _hdr_style = "background: #1E2E3E; color: #88BBDD; font-size: 11px; font-weight: bold;"
+
+        # Row 0: Task A section header
+        self._table.setSpan(0, 0, 1, 4)
+        hdr_a = QtWidgets.QTableWidgetItem("  Task A — Real-time 500 Hz  (Budget % = max / 2000 µs)")
+        hdr_a.setFlags(QtCore.Qt.ItemIsEnabled)
+        hdr_a.setBackground(QtGui.QColor("#1E2E3E"))
+        hdr_a.setForeground(QtGui.QColor("#88BBDD"))
+        hdr_a.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._table.setItem(0, 0, hdr_a)
+
+        # Rows 1–5: Task A data rows
+        self._data_rows_A = [1, 2, 3, 4, 5]  # physical rows for HR1, HR2fp, HR3fp, SpO2, Cycle
+        for phys_row, (name, _) in zip(self._data_rows_A, self._ROW_DEFS[:5]):
+            item = QtWidgets.QTableWidgetItem(f"  {name}")
+            item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            self._table.setItem(phys_row, 0, item)
+            for col in (1, 2, 3):
+                cell = QtWidgets.QTableWidgetItem("—")
+                cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                self._table.setItem(phys_row, col, cell)
+
+        # Row 6: Task B/C section header
+        self._table.setSpan(6, 0, 1, 4)
+        hdr_bc = QtWidgets.QTableWidgetItem("  Task B/C — Async ~2 Hz  (CPU load % = mean / 500 000 µs)")
+        hdr_bc.setFlags(QtCore.Qt.ItemIsEnabled)
+        hdr_bc.setBackground(QtGui.QColor("#1E2E3E"))
+        hdr_bc.setForeground(QtGui.QColor("#88BBDD"))
+        hdr_bc.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._table.setItem(6, 0, hdr_bc)
+
+        # Rows 7–8: Task B/C data rows
+        self._data_rows_BC = [7, 8]  # physical rows for HR2 compute, HR3 compute
+        for phys_row, (name, _) in zip(self._data_rows_BC, self._ROW_DEFS[5:]):
+            item = QtWidgets.QTableWidgetItem(f"  {name}")
+            item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            self._table.setItem(phys_row, 0, item)
+            for col in (1, 2, 3):
+                cell = QtWidgets.QTableWidgetItem("—")
+                cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                self._table.setItem(phys_row, col, cell)
+
+        self._table.setToolTip(_make_tooltip(
+            "Timing table",
+            "Execution time per algorithm, measured with esp_timer_get_time() (1 µs resolution).\n"
+            "Task A (real-time): Budget % = max / 2000 µs × 100. Cycle includes SPI + all fast paths.\n"
+            "Task B/C (async): CPU load % = mean / 500 000 µs × 100 (compute time / invocation period)."))
+        vbox.addWidget(self._table)
+
+        # Stack free (Task A)
+        self._lbl_stack = QtWidgets.QLabel("Stack free: —")
+        self._lbl_stack.setAlignment(QtCore.Qt.AlignRight)
+        self._lbl_stack.setStyleSheet("color: #888888; font-size: 11px;")
+        self._lbl_stack.setToolTip(_make_tooltip(
+            "Stack free",
+            "Remaining stack of the mow_afe4490 FreeRTOS task (Task A), in 4-byte words "
+            "(uxTaskGetStackHighWaterMark). Low values risk stack overflow."))
+        vbox.addWidget(self._lbl_stack)
+
+        # ── FreeRTOS task list section ──────────────────────────────────────────
+        lbl_tasks_hdr = QtWidgets.QLabel("  FreeRTOS Tasks (avg CPU since boot)")
+        lbl_tasks_hdr.setStyleSheet(
+            "background: #1E2E3E; color: #88BBDD; font-size: 11px; font-weight: bold; padding: 3px;")
+        lbl_tasks_hdr.setToolTip(_make_tooltip(
+            "FreeRTOS task list",
+            "CPU% = ulRunTimeCounter / total_time × 100 (cumulative average since boot).\n"
+            "Populated from $TASK frames emitted by the firmware after each $TIMING frame.\n"
+            "Stack free: uxTaskGetStackHighWaterMark in 4-byte words."))
+        vbox.addWidget(lbl_tasks_hdr)
+
+        self._tasks_table = QtWidgets.QTableWidget(0, 3)
+        self._tasks_table.setHorizontalHeaderLabels(["Task", "CPU %", "Stack (words)"])
+        self._tasks_table.verticalHeader().setVisible(False)
+        self._tasks_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._tasks_table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
+        self._tasks_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        for col in (1, 2):
+            self._tasks_table.horizontalHeader().setSectionResizeMode(
+                col, QtWidgets.QHeaderView.ResizeToContents)
+        self._tasks_table.setToolTip(_make_tooltip(
+            "FreeRTOS task list",
+            "All active FreeRTOS tasks sorted by CPU% descending.\n"
+            "CPU% is cumulative since boot — not a per-interval snapshot."))
+        vbox.addWidget(self._tasks_table)
+
+    def update_timing(self, hr1_mean, hr1_max, hr2fp_mean, hr2fp_max,
+                      hr3fp_mean, hr3fp_max, spo2_mean, spo2_max,
+                      cycle_mean, cycle_max,
+                      hr2cmp_mean, hr2cmp_max, hr3cmp_mean, hr3cmp_max,
+                      stack_free):
+        """Called with parsed integer µs values from a $TIMING frame."""
+        import datetime
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+
+        # Task A rows: metric = Budget % (max vs 2000 µs)
+        task_a_data = [
+            (hr1_mean,   hr1_max),
+            (hr2fp_mean, hr2fp_max),
+            (hr3fp_mean, hr3fp_max),
+            (spo2_mean,  spo2_max),
+            (cycle_mean, cycle_max),
+        ]
+        for phys_row, (mean_us, max_us) in zip(self._data_rows_A, task_a_data):
+            budget_pct = max_us / self._BUDGET_US * 100.0
+            self._table.item(phys_row, 1).setText(f"{mean_us}")
+            self._table.item(phys_row, 2).setText(f"{max_us}")
+            self._table.item(phys_row, 3).setText(f"{budget_pct:.1f}%")
+            if phys_row == self._data_rows_A[-1]:  # Cycle row — colour-code
+                if max_us > self._BUDGET_US:
+                    colour = "#FF4444"
+                elif max_us > self._WARN_US:
+                    colour = "#FFA500"
+                else:
+                    colour = "#44FF44"
+                self._table.item(phys_row, 2).setForeground(QtGui.QColor(colour))
+                self._table.item(phys_row, 3).setForeground(QtGui.QColor(colour))
+
+        # Task B/C rows: metric = CPU load % (mean vs 500 000 µs period)
+        task_bc_data = [
+            (hr2cmp_mean, hr2cmp_max),
+            (hr3cmp_mean, hr3cmp_max),
+        ]
+        for phys_row, (mean_us, max_us) in zip(self._data_rows_BC, task_bc_data):
+            cpu_pct = mean_us / self._ASYNC_PERIOD * 100.0
+            self._table.item(phys_row, 1).setText(f"{mean_us}")
+            self._table.item(phys_row, 2).setText(f"{max_us}")
+            self._table.item(phys_row, 3).setText(f"{cpu_pct:.2f}% CPU")
+
+        # Status bar (Task A cycle)
+        if cycle_max > self._BUDGET_US:
+            self._lbl_status.setText(f"OVER BUDGET  cycle_max={cycle_max} µs > {self._BUDGET_US} µs  [{now}]")
+            self._lbl_status.setStyleSheet(
+                "background: #3A0000; color: #FF4444; font-size: 13px; "
+                "font-weight: bold; padding: 4px; border-radius: 4px;")
+        elif cycle_max > self._WARN_US:
+            self._lbl_status.setText(f"TIGHT  cycle_max={cycle_max} µs  (budget {self._BUDGET_US} µs)  [{now}]")
+            self._lbl_status.setStyleSheet(
+                "background: #2A1A00; color: #FFA500; font-size: 13px; "
+                "font-weight: bold; padding: 4px; border-radius: 4px;")
+        else:
+            self._lbl_status.setText(f"OK  cycle_max={cycle_max} µs  (budget {self._BUDGET_US} µs)  [{now}]")
+            self._lbl_status.setStyleSheet(
+                "background: #1A3A1A; color: #44FF44; font-size: 13px; "
+                "font-weight: bold; padding: 4px; border-radius: 4px;")
+
+        self._lbl_stack.setText(f"Stack free: {stack_free} words  |  Last update: {now}")
+
+    def update_tasks(self, tasks):
+        """Rebuild the FreeRTOS task table from a list of (name, pct_x10, stack) tuples."""
+        # Sort by CPU% descending
+        sorted_tasks = sorted(tasks, key=lambda t: t[1], reverse=True)
+        self._tasks_table.setRowCount(len(sorted_tasks))
+        for row, (name, pct_x10, stack) in enumerate(sorted_tasks):
+            cpu_pct = pct_x10 / 10.0
+            name_item = QtWidgets.QTableWidgetItem(name)
+            name_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            pct_item  = QtWidgets.QTableWidgetItem(f"{cpu_pct:.1f}%")
+            pct_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            stk_item  = QtWidgets.QTableWidgetItem(str(stack))
+            stk_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            # Colour-code CPU%: highlight tasks consuming significant CPU
+            if cpu_pct >= 20.0:
+                colour = QtGui.QColor("#FFA500")
+                name_item.setForeground(colour)
+                pct_item.setForeground(colour)
+            self._tasks_table.setItem(row, 0, name_item)
+            self._tasks_table.setItem(row, 1, pct_item)
+            self._tasks_table.setItem(row, 2, stk_item)
+
+    def keyPressEvent(self, event):
+        if event.matches(QtGui.QKeySequence.Copy):
+            # Copy from whichever table has an active selection
+            for tbl in (self._table, self._tasks_table):
+                selected = tbl.selectedRanges()
+                if not selected:
+                    continue
+                rows_text = []
+                for rng in selected:
+                    for row in range(rng.topRow(), rng.bottomRow() + 1):
+                        cells = []
+                        for col in range(rng.leftColumn(), rng.rightColumn() + 1):
+                            item = tbl.item(row, col)
+                            cells.append(item.text() if item else "")
+                        rows_text.append("\t".join(cells))
+                QtWidgets.QApplication.clipboard().setText("\n".join(rows_text))
+                return
+        else:
+            super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        parent = self.parent()
+        if parent is not None and hasattr(parent, 'btn_timing'):
+            parent.btn_timing.setChecked(False)
+            parent.timing_window = None
+        super().closeEvent(event)
 
 
 class HR3LabWindow(QtWidgets.QMainWindow):
@@ -4947,6 +5228,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr1test_calc     = HR1TestCalc()
         self.hr2test_window   = None
         self.hr3test_window   = None
+        self.timing_window    = None
+        self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
         # Render throttle rates (all relative to ~50 Hz update_data calls)
         self._PPGPLOTS_REFRESH_EVERY  = 2   # 25 Hz — smooth plot animation
         self._SUBWIN_REFRESH_EVERY    = 5   # 10 Hz — SpO2/HR3 change slowly
@@ -5269,6 +5552,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Mirror runs at the decimated rate. See mow_afe4490_spec.md §5.4 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_hr3test)
 
+        self.btn_timing = QtWidgets.QPushButton("TIMING")
+        self.btn_timing.setCheckable(True)
+        self.btn_timing.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_timing.clicked.connect(self.toggle_timing)
+        self.btn_timing.setToolTip(_make_tooltip(
+            "TIMING — Algorithm CPU Budget",
+            "Opens the timing diagnostics window. Shows per-algorithm mean/max execution time "
+            "(µs) and remaining FreeRTOS stack, parsed from $TIMING frames emitted by the firmware "
+            "every ~5 s. Requires MOW_TIMING_STATS=1 in firmware. "
+            "Cycle budget = 2000 µs (1 sample period at 500 Hz)."))
+        self.sidebar_layout.addWidget(self.btn_timing)
+
         self.sidebar_layout.addStretch()
 
         # ── Log panel (right of sidebar, fills remaining space) ───────────────
@@ -5556,6 +5851,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hr3test_window.close()
                 self.hr3test_window = None
 
+    def _open_timing_default(self):
+        self.btn_timing.setChecked(True)
+        self.toggle_timing()
+
+    def toggle_timing(self):
+        if self.btn_timing.isChecked():
+            self.timing_window = TimingWindow(self)
+            self.timing_window.show()
+        else:
+            if self.timing_window is not None:
+                self.timing_window.close()
+                self.timing_window = None
+
     def toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
         if self.is_paused:
@@ -5661,6 +5969,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr1test_open",  self.hr1test_window  is not None)
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
+        s.setValue("PPGMonitor/timing_open",   self.timing_window   is not None)
 
     def _restore_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -5850,6 +6159,43 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             except (ValueError, IndexError):
                                 pass
 
+                    # TIMING diagnostic frame: handle before decimation, not counted as data
+                    # Format: $TIMING,hr1_mean,hr1_max,hr2fp_mean,hr2fp_max,hr3fp_mean,hr3fp_max,
+                    #                 spo2_mean,spo2_max,cycle_mean,cycle_max,
+                    #                 hr2cmp_mean,hr2cmp_max,hr3cmp_mean,hr3cmp_max,stack_free*XX
+                    if line.startswith('$TIMING,'):
+                        _console_lines.append(csv_line)
+                        self._pending_tasks = []  # reset task accumulator for new cycle
+                        if self.timing_window is not None:
+                            _tp = line[1:].split('*')[0].split(',')
+                            if len(_tp) >= 16:
+                                try:
+                                    vals = [int(x) for x in _tp[1:16]]
+                                    self.timing_window.update_timing(*vals)
+                                except (ValueError, IndexError):
+                                    pass
+                        continue
+
+                    # $TASK frame: one per FreeRTOS task, emitted after $TIMING
+                    # Format: $TASK,name,cpu_pct_x10,stack_words*XX
+                    if line.startswith('$TASK,'):
+                        _tp = line[1:].split('*')[0].split(',')
+                        if len(_tp) >= 4:
+                            try:
+                                name      = _tp[1]
+                                pct_x10   = int(_tp[2])
+                                stack     = int(_tp[3])
+                                self._pending_tasks.append((name, pct_x10, stack))
+                            except (ValueError, IndexError):
+                                pass
+                        continue
+
+                    # $TASKS_END: all $TASK frames for this cycle have been received
+                    if line.startswith('$TASKS_END'):
+                        if self.timing_window is not None:
+                            self.timing_window.update_tasks(self._pending_tasks)
+                        continue
+
                     # Decimation: skip N-1 out of every N data frames for console + plots
                     self._decim_counter += 1
                     if self._decim_counter % self.spin_decim.value() != 0:
@@ -6010,6 +6356,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr2test_default)
         if s.value("PPGMonitor/hr3test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr3test_default)
+        if s.value("PPGMonitor/timing_open",    False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_timing_default)
         QtCore.QTimer.singleShot(300, self._bring_all_to_front)
 
     def _bring_all_to_front(self):
@@ -6024,7 +6372,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for w in [self, self.ppgplots_window, self.serialcom_window,
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
-                  self.hr3test_window]:
+                  self.hr3test_window, self.timing_window]:
             if w is not None:
                 w.show()
                 w.raise_()

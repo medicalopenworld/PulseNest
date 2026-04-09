@@ -1,11 +1,14 @@
 // mow_afe4490.cpp — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.13 — ESP32-S3, Arduino + FreeRTOS
+// v0.14 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 
 #include "mow_afe4490.h"
 #include "esp_log.h"
 #include <math.h>
 #include <string.h>
+#if MOW_TIMING_STATS
+#include "esp_timer.h"
+#endif
 
 static const char* TAG = "mow_afe4490";
 
@@ -185,6 +188,11 @@ MOW_AFE4490::MOW_AFE4490()
       _drdy_sem(nullptr), _spi_mutex(nullptr), _state_mutex(nullptr),
       _data_queue(nullptr), _task_handle(nullptr),
       _initialized(false),
+      _hr2_calc_sem(nullptr), _hr3_calc_sem(nullptr),
+      _hr2_task_handle(nullptr), _hr3_task_handle(nullptr),
+      _hr2_computing(false), _hr3_computing(false),
+      _hr2_result(0.0f), _hr2_sqi_result(0.0f),
+      _hr3_result(0.0f), _hr3_sqi_result(0.0f),
       _sample_rate_hz(500), _num_averages(8),
       _led1_current_mA(11.7f), _led2_current_mA(11.7f), _led_range_mA(150),
       _tia_gain(AFE4490TIAGain::RF_500K),
@@ -222,14 +230,15 @@ MOW_AFE4490::MOW_AFE4490()
 }
 
 MOW_AFE4490::~MOW_AFE4490() {
-    if (_task_handle) {
-        vTaskDelete(_task_handle);
-        _task_handle = nullptr;
-    }
-    if (_data_queue)   vQueueDelete(_data_queue);
-    if (_drdy_sem)     vSemaphoreDelete(_drdy_sem);
-    if (_spi_mutex)    vSemaphoreDelete(_spi_mutex);
-    if (_state_mutex)  vSemaphoreDelete(_state_mutex);
+    if (_task_handle)      { vTaskDelete(_task_handle);      _task_handle      = nullptr; }
+    if (_hr2_task_handle)  { vTaskDelete(_hr2_task_handle);  _hr2_task_handle  = nullptr; }
+    if (_hr3_task_handle)  { vTaskDelete(_hr3_task_handle);  _hr3_task_handle  = nullptr; }
+    if (_data_queue)       vQueueDelete(_data_queue);
+    if (_drdy_sem)         vSemaphoreDelete(_drdy_sem);
+    if (_hr2_calc_sem)     vSemaphoreDelete(_hr2_calc_sem);
+    if (_hr3_calc_sem)     vSemaphoreDelete(_hr3_calc_sem);
+    if (_spi_mutex)        vSemaphoreDelete(_spi_mutex);
+    if (_state_mutex)      vSemaphoreDelete(_state_mutex);
     if (_g_instance == this) _g_instance = nullptr;
 }
 
@@ -249,8 +258,11 @@ void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
     _spi_mutex   = xSemaphoreCreateMutex();
     _state_mutex = xSemaphoreCreateMutex();
     _data_queue  = xQueueCreate(MOW_AFE4490_QUEUE_SIZE, sizeof(AFE4490Data));
+    _hr2_calc_sem = xSemaphoreCreateBinary();
+    _hr3_calc_sem = xSemaphoreCreateBinary();
 
-    if (!_drdy_sem || !_spi_mutex || !_state_mutex || !_data_queue) {
+    if (!_drdy_sem || !_spi_mutex || !_state_mutex || !_data_queue ||
+        !_hr2_calc_sem || !_hr3_calc_sem) {
         ESP_LOGE(TAG, "FreeRTOS object creation failed");
         return;
     }
@@ -261,13 +273,27 @@ void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
 
     _initialized = true;
 
+    // Precompute Hann window once — avoids 512 cosf() calls per frame in _linearize_hr3()
+    for (int i = 0; i < hr3_buf_len; i++)
+        _hr3_hann[i] = 0.5f * (1.0f - cosf(2.0f * pi * (float)i / (float)(hr3_buf_len - 1)));
+
     pinMode(_pin_drdy, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(_pin_drdy), _drdy_isr_static, RISING);
 
     xTaskCreatePinnedToCore(
-        _task_trampoline, "mow_afe4490",
+        _task_trampoline,     "mow_afe4490",
         MOW_AFE4490_TASK_STACK, this,
         MOW_AFE4490_TASK_PRIORITY, &_task_handle, 1);
+
+    xTaskCreatePinnedToCore(
+        _hr2_task_trampoline, "mow_hr2",
+        MOW_AFE4490_HR2_TASK_STACK, this,
+        MOW_AFE4490_HR23_TASK_PRIORITY, &_hr2_task_handle, 1);
+
+    xTaskCreatePinnedToCore(
+        _hr3_task_trampoline, "mow_hr3",
+        MOW_AFE4490_HR3_TASK_STACK, this,
+        MOW_AFE4490_HR23_TASK_PRIORITY, &_hr3_task_handle, 1);
 
     ESP_LOGI(TAG, "Started: PRF=%u Hz, NUMAV=%u", _sample_rate_hz, _num_averages);
 }
@@ -450,16 +476,17 @@ void MOW_AFE4490::stop() {
     // Take mutex to wait for any in-progress SPI transaction to finish
     if (_spi_mutex) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 
-    if (_task_handle) {
-        vTaskDelete(_task_handle);
-        _task_handle = nullptr;
-    }
+    if (_task_handle)     { vTaskDelete(_task_handle);      _task_handle     = nullptr; }
+    if (_hr2_task_handle) { vTaskDelete(_hr2_task_handle); _hr2_task_handle = nullptr; }
+    if (_hr3_task_handle) { vTaskDelete(_hr3_task_handle); _hr3_task_handle = nullptr; }
 
-    // Delete FreeRTOS objects (mutex last since we hold it)
-    if (_data_queue)  { vQueueDelete(_data_queue);       _data_queue  = nullptr; }
-    if (_drdy_sem)    { vSemaphoreDelete(_drdy_sem);     _drdy_sem    = nullptr; }
-    if (_spi_mutex)   { vSemaphoreDelete(_spi_mutex);    _spi_mutex   = nullptr; }
-    if (_state_mutex) { vSemaphoreDelete(_state_mutex);  _state_mutex = nullptr; }
+    // Delete FreeRTOS objects (mutexes last since we may hold _spi_mutex)
+    if (_data_queue)   { vQueueDelete(_data_queue);          _data_queue   = nullptr; }
+    if (_drdy_sem)     { vSemaphoreDelete(_drdy_sem);        _drdy_sem     = nullptr; }
+    if (_hr2_calc_sem) { vSemaphoreDelete(_hr2_calc_sem);    _hr2_calc_sem = nullptr; }
+    if (_hr3_calc_sem) { vSemaphoreDelete(_hr3_calc_sem);    _hr3_calc_sem = nullptr; }
+    if (_spi_mutex)    { vSemaphoreDelete(_spi_mutex);       _spi_mutex    = nullptr; }
+    if (_state_mutex)  { vSemaphoreDelete(_state_mutex);     _state_mutex  = nullptr; }
 
     _initialized = false;
     _reset_algorithms();
@@ -493,6 +520,9 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr3_buf_idx = 0; _hr3_buf_count = 0;
     _hr3_decim_counter = 0; _hr3_update_counter = 0;
     memset(_hr3_buf, 0, sizeof(_hr3_buf));
+    _hr2_computing = false;  _hr3_computing = false;
+    _hr2_result = 0.0f; _hr2_sqi_result = 0.0f;
+    _hr3_result = 0.0f; _hr3_sqi_result = 0.0f;
     _current_data = AFE4490Data{};
 }
 
@@ -706,6 +736,9 @@ void MOW_AFE4490::_task_body() {
         }
 
         // _spi_mutex: protects the SPI bus while reading all 6 channels.
+#if MOW_TIMING_STATS
+        uint64_t _t_cycle = esp_timer_get_time();
+#endif
         xSemaphoreTake(_spi_mutex, portMAX_DELAY);
         // Enable SPI read mode once, burst-read all 6 channels, disable
         _write_reg(REG_CONTROL0, ctrl0_spi_read);
@@ -723,6 +756,13 @@ void MOW_AFE4490::_task_body() {
         xSemaphoreTake(_state_mutex, portMAX_DELAY);
         _process_sample(led1, led2, aled1, aled2, led1_diff, led2_diff);
         xSemaphoreGive(_state_mutex);
+#if MOW_TIMING_STATS
+        _ts_cycle.update(esp_timer_get_time() - _t_cycle);
+        if (++_ts_emit_counter >= ts_emit_interval) {
+            _ts_emit_counter = 0;
+            _emit_timing();
+        }
+#endif
     }
 }
 
@@ -804,12 +844,42 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
     _current_data.led2_aled2 = led2_aled2;
 
     // SpO2 uses ambient-corrected channels (unfiltered, spec §1.3)
+    // HR1 runs fully in this task. HR2/HR3 fast paths run here; slow computation in Task B/C.
+#if MOW_TIMING_STATS
+    { uint64_t _t = esp_timer_get_time(); _update_spo2(led1_aled1, led2_aled2); _ts_spo2.update(esp_timer_get_time() - _t); }
+    { uint64_t _t = esp_timer_get_time(); _update_hr1(led1_aled1);              _ts_hr1.update(esp_timer_get_time() - _t); }
+    uint64_t _t_hr2 = esp_timer_get_time();
+#else
     _update_spo2(led1_aled1, led2_aled2);
-
-    // HR1, HR2 and HR3: all use led1_aled1 (IR ambient-corrected), run in parallel
     _update_hr1(led1_aled1);
-    _update_hr2(led1_aled1);
-    _update_hr3(led1_aled1);
+#endif
+
+    // HR2 fast path: filter + decimate + buffer; trigger Task B when interval fires
+    if (_update_hr2_sample(led1_aled1)) {
+        if (!_hr2_computing) {
+            _linearize_hr2();
+            _hr2_computing = true;
+            xSemaphoreGive(_hr2_calc_sem);
+        }
+    }
+
+#if MOW_TIMING_STATS
+    _ts_hr2.update(esp_timer_get_time() - _t_hr2);
+    uint64_t _t_hr3 = esp_timer_get_time();
+#endif
+
+    // HR3 fast path: LP filter + decimate + buffer; trigger Task C when interval fires
+    if (_update_hr3_sample(led1_aled1)) {
+        if (!_hr3_computing) {
+            _linearize_hr3();
+            _hr3_computing = true;
+            xSemaphoreGive(_hr3_calc_sem);
+        }
+    }
+
+#if MOW_TIMING_STATS
+    _ts_hr3.update(esp_timer_get_time() - _t_hr3);
+#endif
 
     // Push to queue; if full, drop oldest to keep most recent
     if (xQueueSend(_data_queue, &_current_data, 0) != pdTRUE) {
@@ -818,6 +888,70 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
         xQueueSend(_data_queue, &_current_data, 0);
     }
 }
+
+// ── Timing report ─────────────────────────────────────────────────────────────
+// Emits a $TIMING serial frame with per-algorithm mean/max execution times (µs)
+// and remaining task stack (words). Called every ts_emit_interval samples.
+// Frame: $TIMING,hr1_mean,hr1_max,hr2fp_mean,hr2fp_max,hr3fp_mean,hr3fp_max,
+//                spo2_mean,spo2_max,cycle_mean,cycle_max,
+//                hr2cmp_mean,hr2cmp_max,hr3cmp_mean,hr3cmp_max,stack_free*XX
+// Task A fast-path (first 10 values): budget reference = 2000 µs (1/500 Hz).
+// Task B/C compute (values 11-14): CPU load % = mean / 500000 µs (0.5 s period).
+#if MOW_TIMING_STATS
+void MOW_AFE4490::_emit_timing() {
+    UBaseType_t stack_free = uxTaskGetStackHighWaterMark(nullptr);
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf),
+        "TIMING,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u",
+        (unsigned long long)_ts_hr1.mean_us(),          (unsigned long long)_ts_hr1.max_us,
+        (unsigned long long)_ts_hr2.mean_us(),          (unsigned long long)_ts_hr2.max_us,
+        (unsigned long long)_ts_hr3.mean_us(),          (unsigned long long)_ts_hr3.max_us,
+        (unsigned long long)_ts_spo2.mean_us(),         (unsigned long long)_ts_spo2.max_us,
+        (unsigned long long)_ts_cycle.mean_us(),        (unsigned long long)_ts_cycle.max_us,
+        (unsigned long long)_ts_hr2_compute.mean_us(),  (unsigned long long)_ts_hr2_compute.max_us,
+        (unsigned long long)_ts_hr3_compute.mean_us(),  (unsigned long long)_ts_hr3_compute.max_us,
+        (unsigned)stack_free);
+    uint8_t chk = 0;
+    for (int i = 0; i < n; i++) chk ^= (uint8_t)buf[i];
+    Serial.printf("$%s*%02X\r\n", buf, chk);
+    // Emit task CPU stats BEFORE resetting accumulators (needs sum_us values)
+    _emit_tasks();
+    _ts_spo2.reset(); _ts_hr1.reset(); _ts_hr2.reset(); _ts_hr3.reset(); _ts_cycle.reset();
+    _ts_hr2_compute.reset(); _ts_hr3_compute.reset();
+}
+
+// Emits one $TASK frame per library task + $TASKS_END.
+// CPU% is computed from sum_us over the emit window (current interval, not cumulative).
+// Window = ts_emit_interval samples / sample_rate_hz.
+// stack_words = uxTaskGetStackHighWaterMark() for each task handle.
+// Does NOT use uxTaskGetSystemState() — avoids requiring configUSE_TRACE_FACILITY=1
+// in the precompiled Arduino ESP32 FreeRTOS library.
+void MOW_AFE4490::_emit_tasks() {
+    uint64_t window_us = (uint64_t)ts_emit_interval * 1000000u / _sample_rate_hz;
+
+    struct LibTask { const char* name; uint64_t sum_us; TaskHandle_t handle; };
+    LibTask lib_tasks[] = {
+        { "mow_afe4490", _ts_cycle.sum_us,        _task_handle      },
+        { "mow_hr2",     _ts_hr2_compute.sum_us,   _hr2_task_handle  },
+        { "mow_hr3",     _ts_hr3_compute.sum_us,   _hr3_task_handle  },
+    };
+    for (const auto& t : lib_tasks) {
+        uint32_t pct_x10 = (window_us > 0) ?
+            (uint32_t)(t.sum_us * 1000u / window_us) : 0u;
+        uint32_t stack = t.handle ? (uint32_t)uxTaskGetStackHighWaterMark(t.handle) : 0u;
+        char buf[96];
+        int len = snprintf(buf, sizeof(buf), "TASK,%s,%lu,%lu",
+            t.name, (unsigned long)pct_x10, (unsigned long)stack);
+        uint8_t chk = 0;
+        for (int j = 0; j < len; j++) chk ^= (uint8_t)buf[j];
+        Serial.printf("$%s*%02X\r\n", buf, chk);
+    }
+    const char* end_str = "TASKS_END";
+    uint8_t end_chk = 0;
+    for (int i = 0; end_str[i]; i++) end_chk ^= (uint8_t)end_str[i];
+    Serial.printf("$%s*%02X\r\n", end_str, end_chk);
+}
+#endif
 
 // ── SpO2 algorithm ────────────────────────────────────────────────────────────
 // R = (AC_rms_RED / DC_RED) / (AC_rms_IR / DC_IR)
@@ -946,52 +1080,48 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
     }
 }
 
-// ── HR2 algorithm ─────────────────────────────────────────────────────────────
-// Bandpass-filters led1_aled1, decimates by hr2_decim_factor, fills a circular
-// buffer, then every hr2_update_interval decimated samples computes the normalised
-// autocorrelation and finds the fundamental RR lag via the first local maximum
-// above hr2_min_corr. Parabolic interpolation gives sub-sample lag resolution.
-// Mirrors autocorr_v2 from ppg_plotter.py.
-void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
-    // ── Bandpass filter (0.5–5 Hz) at full sample rate ──
-    float filtered = -_biquad_process((float)led1_aled1, _hr2_bpf);  // negate: peaks up (conventional PPG polarity)
+// ── HR2 algorithm — split into fast path + async computation ──────────────────
 
-    // ── Decimate: store one sample every hr2_decim_factor ──
+// Fast path: called every raw sample from Task A.
+// Returns true when the computation window fires (buffer full, interval elapsed).
+bool MOW_AFE4490::_update_hr2_sample(int32_t led1_aled1) {
+    float filtered = -_biquad_process((float)led1_aled1, _hr2_bpf);
+
     _hr2_decim_counter++;
-    if (_hr2_decim_counter < (uint32_t)hr2_decim_factor) return;
+    if (_hr2_decim_counter < (uint32_t)hr2_decim_factor) return false;
     _hr2_decim_counter = 0;
 
     _hr2_buf[_hr2_buf_idx] = filtered;
     _hr2_buf_idx = (_hr2_buf_idx + 1) % hr2_buf_len;
     if (_hr2_buf_count < (uint32_t)hr2_buf_len) _hr2_buf_count++;
 
-    // ── Periodic recomputation ──
     _hr2_update_counter++;
-    if (_hr2_update_counter < (uint32_t)hr2_update_interval) return;
+    if (_hr2_update_counter < (uint32_t)hr2_update_interval) return false;
     _hr2_update_counter = 0;
 
-    if (_hr2_buf_count < (uint32_t)hr2_buf_len) {
-        _current_data.hr2_sqi = 0.0f;
-        return;
-    }
+    return _hr2_buf_count >= (uint32_t)hr2_buf_len;
+}
 
-    // ── Linearize circular buffer (oldest → newest) ──
+// Linearize circular buffer (oldest → newest) into _hr2_seg.
+// Called under _state_mutex by Task A immediately before signalling Task B.
+void MOW_AFE4490::_linearize_hr2() {
     for (int i = 0; i < hr2_buf_len; i++)
         _hr2_seg[i] = _hr2_buf[(_hr2_buf_idx + i) % hr2_buf_len];
+}
 
-    // ── Normalise: acorr[0] = sum(seg²) ──
+// Slow path: autocorrelation on _hr2_seg → _hr2_result / _hr2_sqi_result.
+// Called by Task B. Reads only _hr2_seg (no other shared state written).
+void MOW_AFE4490::_compute_hr2() {
     float acorr0 = 0.0f;
     for (int i = 0; i < hr2_buf_len; i++) acorr0 += _hr2_seg[i] * _hr2_seg[i];
-    if (acorr0 < 1.0f) { _current_data.hr2_sqi = 0.0f; return; }
+    if (acorr0 < 1.0f) { _hr2_sqi_result = 0.0f; return; }
 
-    // ── Compute normalised autocorrelation for lags [min_lag, max_lag] ──
     float fs2     = (float)_sample_rate_hz / (float)hr2_decim_factor;
     int   min_lag = (int)(hr2_min_lag_s * fs2);
     if (min_lag < 1) min_lag = 1;
     int   max_lag = hr2_acorr_max_lag;
     int   n_lags  = max_lag - min_lag + 1;
 
-    // Stack buffer for normalised autocorrelation values (76 floats = 304 bytes — safe)
     float acorr_buf[hr2_acorr_max_lag + 1];
     for (int lag = min_lag; lag <= max_lag; lag++) {
         float sum = 0.0f;
@@ -1000,7 +1130,6 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
         acorr_buf[lag - min_lag] = sum / acorr0;
     }
 
-    // ── Find first local maximum above hr2_min_corr ──
     int   peak_idx = -1;
     float y_prev = 0.0f, y_peak = 0.0f, y_next = 0.0f;
     for (int i = 1; i < n_lags - 1; i++) {
@@ -1015,57 +1144,57 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
         }
     }
 
-    if (peak_idx < 0) { _current_data.hr2_sqi = 0.0f; return; }
+    if (peak_idx < 0) { _hr2_sqi_result = 0.0f; return; }
 
-    // ── Parabolic interpolation for sub-sample lag refinement ──
-    //   delta = 0.5 * (y[n-1] - y[n+1]) / (y[n-1] - 2·y[n] + y[n+1])
-    float denom = y_prev - 2.0f * y_peak + y_next;
-    float delta = (denom < 0.0f) ? 0.5f * (y_prev - y_next) / denom : 0.0f;
+    float denom      = y_prev - 2.0f * y_peak + y_next;
+    float delta      = (denom < 0.0f) ? 0.5f * (y_prev - y_next) / denom : 0.0f;
     float peak_lag_s = (float)(min_lag + peak_idx + delta) / fs2;
 
-    if (peak_lag_s <= 0.0f) { _current_data.hr2_sqi = 0.0f; return; }
+    if (peak_lag_s <= 0.0f) { _hr2_sqi_result = 0.0f; return; }
 
     float hr2 = 60.0f / peak_lag_s;
     if (hr2 >= hr_min_bpm && hr2 <= hr_max_bpm) {
-        _current_data.hr2 = hr2;
-        // SQI: normalised autocorrelation value at the dominant lag.
-        // y_peak ∈ [hr2_min_corr, 1]: high value → sharp, strong periodicity.
-        _current_data.hr2_sqi = y_peak;
+        _hr2_result     = hr2;
+        _hr2_sqi_result = y_peak;
     } else {
-        _current_data.hr2_sqi = 0.0f;
+        _hr2_sqi_result = 0.0f;
     }
 }
 
-// ── HR3 algorithm ─────────────────────────────────────────────────────────────
-// Low-pass-filters led1_aled1 (10 Hz), decimates by hr3_decim_factor, fills a
-// circular buffer of 512 samples (10.24 s at 50 Hz), then every hr3_update_interval
-// decimated samples applies a Hann window, computes the real FFT, and finds the
-// dominant frequency via the Harmonic Product Spectrum (HPS: P[k]·P[2k]·P[3k]).
-// Parabolic interpolation on the original spectrum gives sub-bin frequency resolution.
-void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
-    // ── Low-pass filter at full sample rate (anti-aliasing before decimation) ──
+// Synchronous wrapper kept for unit-test compatibility.
+void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
+    if (!_update_hr2_sample(led1_aled1)) return;
+    _linearize_hr2();
+    _compute_hr2();
+    if (_hr2_sqi_result > 0.0f) _current_data.hr2 = _hr2_result;
+    _current_data.hr2_sqi = _hr2_sqi_result;
+}
+
+// ── HR3 algorithm — split into fast path + async computation ──────────────────
+
+// Fast path: called every raw sample from Task A.
+// Returns true when the computation window fires (buffer full, interval elapsed).
+bool MOW_AFE4490::_update_hr3_sample(int32_t led1_aled1) {
     float filtered = -_biquad_process((float)led1_aled1, _hr3_lpf);  // negate: peaks up
 
-    // ── Decimate: store one sample every hr3_decim_factor ──
     _hr3_decim_counter++;
-    if (_hr3_decim_counter < (uint32_t)hr3_decim_factor) return;
+    if (_hr3_decim_counter < (uint32_t)hr3_decim_factor) return false;
     _hr3_decim_counter = 0;
 
     _hr3_buf[_hr3_buf_idx] = filtered;
     _hr3_buf_idx = (_hr3_buf_idx + 1) % hr3_buf_len;
     if (_hr3_buf_count < (uint32_t)hr3_buf_len) _hr3_buf_count++;
 
-    // ── Periodic recomputation ──
     _hr3_update_counter++;
-    if (_hr3_update_counter < (uint32_t)hr3_update_interval) return;
+    if (_hr3_update_counter < (uint32_t)hr3_update_interval) return false;
     _hr3_update_counter = 0;
 
-    if (_hr3_buf_count < (uint32_t)hr3_buf_len) {
-        _current_data.hr3_sqi = 0.0f;
-        return;
-    }
+    return _hr3_buf_count >= (uint32_t)hr3_buf_len;
+}
 
-    // ── Linearize, subtract mean (DC removal), apply Hann window → complex FFT input ──
+// Linearize circular buffer + DC removal + Hann window → complex FFT input in _hr3_fft.
+// Called under _state_mutex by Task A immediately before signalling Task C.
+void MOW_AFE4490::_linearize_hr3() {
     float mean = 0.0f;
     for (int i = 0; i < hr3_buf_len; i++)
         mean += _hr3_buf[(_hr3_buf_idx + i) % hr3_buf_len];
@@ -1073,29 +1202,30 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
 
     for (int i = 0; i < hr3_buf_len; i++) {
         float sample = _hr3_buf[(_hr3_buf_idx + i) % hr3_buf_len] - mean;
-        float hann   = 0.5f * (1.0f - cosf(2.0f * pi * (float)i / (float)(hr3_buf_len - 1)));
-        _hr3_fft[2 * i]     = sample * hann;  // real
-        _hr3_fft[2 * i + 1] = 0.0f;           // imag
+        _hr3_fft[2 * i]     = sample * _hr3_hann[i];  // real — uses precomputed Hann window
+        _hr3_fft[2 * i + 1] = 0.0f;                   // imag
     }
+}
 
+// Slow path: FFT + HPS on _hr3_fft → _hr3_result / _hr3_sqi_result.
+// Called by Task C. Reads/writes only _hr3_fft and result floats (no other shared state).
+void MOW_AFE4490::_compute_hr3() {
     // ── In-place radix-2 DIT FFT ──
     _fft_r2(_hr3_fft, hr3_buf_len);
 
     // ── Find HPS peak in guard-band search range ──
-    // Frequency resolution: bin_res = fs_dec / N
     float fs_dec   = (float)_sample_rate_hz / (float)hr3_decim_factor;
     float bin_res  = fs_dec / (float)hr3_buf_len;
 
     int search_min = (int)ceilf(hr_search_min_bpm / 60.0f / bin_res);
     int search_max = (int)floorf(hr_search_max_bpm / 60.0f / bin_res);
     int nyquist    = hr3_buf_len / 2;
-    if (search_max >= nyquist)          search_max = nyquist - 2;
-    if (search_max > nyquist / 3)       search_max = nyquist / 3;  // 3rd harmonic must stay inside Nyquist
-    if (search_min < 1)                 search_min = 1;
-    if (search_min >= search_max)       { _current_data.hr3_sqi = 0.0f; return; }
+    if (search_max >= nyquist)    search_max = nyquist - 2;
+    if (search_max > nyquist / 3) search_max = nyquist / 3;  // 3rd harmonic must stay inside Nyquist
+    if (search_min < 1)           search_min = 1;
+    if (search_min >= search_max) { _hr3_sqi_result = 0.0f; return; }
 
     // HPS = P[k] * P[2k] * P[3k]  where P[k] = re[k]^2 + im[k]^2
-    // power_sum accumulates P[k] (fundamental only) across the search range for SQI.
     int   peak_bin  = -1;
     float peak_hps  = 0.0f;
     float power_sum = 0.0f;
@@ -1109,7 +1239,7 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
     }
 
     if (peak_bin < 1 || peak_bin >= nyquist - 1 || peak_hps <= 0.0f) {
-        _current_data.hr3_sqi = 0.0f;
+        _hr3_sqi_result = 0.0f;
         return;
     }
 
@@ -1121,20 +1251,84 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
     float delta = (denom < 0.0f) ? 0.5f * (yp - yn) / denom : 0.0f;
     float peak_freq = ((float)peak_bin + delta) * bin_res;  // Hz
 
-    if (peak_freq <= 0.0f) { _current_data.hr3_sqi = 0.0f; return; }
+    if (peak_freq <= 0.0f) { _hr3_sqi_result = 0.0f; return; }
 
     float hr3 = 60.0f * peak_freq;
     if (hr3 >= hr_min_bpm && hr3 <= hr_max_bpm) {
-        _current_data.hr3 = hr3;
-        // SQI: spectral concentration — excess of peak fundamental power over flat-spectrum baseline.
-        // Maps [1/N_bins, 1] → [0, 1]: diffuse spectrum → SQI ≈ 0, dominant tone → SQI ≈ 1.
-        // y0 is the fundamental power at peak_bin (computed above for parabolic interpolation).
+        _hr3_result = hr3;
         int   n_bins   = search_max - search_min + 1;
         float baseline = (n_bins > 1) ? 1.0f / (float)n_bins : 0.0f;
         float fraction = (power_sum > 0.0f) ? y0 / power_sum : 0.0f;
         float sqi      = (n_bins > 1) ? (fraction - baseline) / (1.0f - baseline) : 0.0f;
-        _current_data.hr3_sqi = fmaxf(0.0f, fminf(1.0f, sqi));
+        _hr3_sqi_result = fmaxf(0.0f, fminf(1.0f, sqi));
     } else {
-        _current_data.hr3_sqi = 0.0f;
+        _hr3_sqi_result = 0.0f;
+    }
+}
+
+// Synchronous wrapper kept for unit-test compatibility.
+void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
+    if (!_update_hr3_sample(led1_aled1)) return;
+    _linearize_hr3();
+    _compute_hr3();
+    if (_hr3_sqi_result > 0.0f) _current_data.hr3 = _hr3_result;
+    _current_data.hr3_sqi = _hr3_sqi_result;
+}
+
+// ── HR2 async task (Task B) ────────────────────────────────────────────────────
+void MOW_AFE4490::_hr2_task_trampoline(void* pv) {
+    static_cast<MOW_AFE4490*>(pv)->_hr2_task_body();
+    vTaskDelete(nullptr);
+}
+
+// Blocks on _hr2_calc_sem. When signalled by Task A:
+//   1. Runs autocorrelation on the already-linearized _hr2_seg snapshot.
+//   2. Takes _state_mutex to write results into _current_data.
+//   3. Clears _hr2_computing so Task A knows the slot is free.
+void MOW_AFE4490::_hr2_task_body() {
+    for (;;) {
+        xSemaphoreTake(_hr2_calc_sem, portMAX_DELAY);
+
+#if MOW_TIMING_STATS
+        { uint64_t _t = esp_timer_get_time(); _compute_hr2(); _ts_hr2_compute.update(esp_timer_get_time() - _t); }
+#else
+        _compute_hr2();  // reads _hr2_seg only — no shared-state write
+#endif
+
+        xSemaphoreTake(_state_mutex, portMAX_DELAY);
+        if (_hr2_sqi_result > 0.0f) _current_data.hr2 = _hr2_result;
+        _current_data.hr2_sqi = _hr2_sqi_result;
+        xSemaphoreGive(_state_mutex);
+
+        _hr2_computing = false;  // release slot after results committed
+    }
+}
+
+// ── HR3 async task (Task C) ────────────────────────────────────────────────────
+void MOW_AFE4490::_hr3_task_trampoline(void* pv) {
+    static_cast<MOW_AFE4490*>(pv)->_hr3_task_body();
+    vTaskDelete(nullptr);
+}
+
+// Blocks on _hr3_calc_sem. When signalled by Task A:
+//   1. Runs FFT + HPS on the already-prepared _hr3_fft buffer.
+//   2. Takes _state_mutex to write results into _current_data.
+//   3. Clears _hr3_computing so Task A knows the slot is free.
+void MOW_AFE4490::_hr3_task_body() {
+    for (;;) {
+        xSemaphoreTake(_hr3_calc_sem, portMAX_DELAY);
+
+#if MOW_TIMING_STATS
+        { uint64_t _t = esp_timer_get_time(); _compute_hr3(); _ts_hr3_compute.update(esp_timer_get_time() - _t); }
+#else
+        _compute_hr3();  // reads/writes _hr3_fft only — no other shared state
+#endif
+
+        xSemaphoreTake(_state_mutex, portMAX_DELAY);
+        if (_hr3_sqi_result > 0.0f) _current_data.hr3 = _hr3_result;
+        _current_data.hr3_sqi = _hr3_sqi_result;
+        xSemaphoreGive(_state_mutex);
+
+        _hr3_computing = false;  // release slot after results committed
     }
 }

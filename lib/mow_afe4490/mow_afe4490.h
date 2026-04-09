@@ -1,7 +1,7 @@
 #pragma once
 
 // mow_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.13 — ESP32-S3, Arduino + FreeRTOS
+// v0.14 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 
 #include <Arduino.h>
@@ -23,6 +23,22 @@
 
 #ifndef MOW_AFE4490_TASK_STACK
 #define MOW_AFE4490_TASK_STACK      8192  // increased from 4096: HR3 FFT calls cosf/sinf which needs extra stack
+#endif
+
+#ifndef MOW_AFE4490_HR2_TASK_STACK
+#define MOW_AFE4490_HR2_TASK_STACK  3072  // acorr_buf[138] on stack + overhead
+#endif
+
+#ifndef MOW_AFE4490_HR3_TASK_STACK
+#define MOW_AFE4490_HR3_TASK_STACK  2048  // FFT data lives in _hr3_fft member, minimal stack
+#endif
+
+#ifndef MOW_AFE4490_HR23_TASK_PRIORITY
+#define MOW_AFE4490_HR23_TASK_PRIORITY  (MOW_AFE4490_TASK_PRIORITY - 1)
+#endif
+
+#ifndef MOW_TIMING_STATS
+#define MOW_TIMING_STATS 0
 #endif
 
 // ── Public data struct ────────────────────────────────────────────────────────
@@ -184,12 +200,29 @@ private:
     void  _process_sample(int32_t led1, int32_t led2, int32_t aled1, int32_t aled2,
                           int32_t led1_aled1, int32_t led2_aled2);
 
-    // Algorithms
+    // Algorithms — synchronous (used by unit tests and SpO2/HR1)
     void _update_spo2(int32_t ir_corr, int32_t red_corr);
     void _update_hr1(int32_t led1_aled1);
+    // HR2/HR3 synchronous entry points (unit-test only; production uses split paths below)
     void _update_hr2(int32_t led1_aled1);
     void _update_hr3(int32_t led1_aled1);
     void _reset_algorithms();
+
+    // HR2 async split: fast per-sample path + linearise + compute
+    bool _update_hr2_sample(int32_t led1_aled1); // filter+decimate+buffer; returns true when interval fires
+    void _linearize_hr2();                        // copy _hr2_buf → _hr2_seg (call under _state_mutex)
+    void _compute_hr2();                          // autocorr on _hr2_seg → _hr2_result/_hr2_sqi_result
+
+    // HR3 async split
+    bool _update_hr3_sample(int32_t led1_aled1); // filter+decimate+buffer; returns true when interval fires
+    void _linearize_hr3();                        // DC+Hann into _hr3_fft (call under _state_mutex)
+    void _compute_hr3();                          // FFT+HPS on _hr3_fft → _hr3_result/_hr3_sqi_result
+
+    // HR2/HR3 async FreeRTOS tasks
+    static void _hr2_task_trampoline(void* pv);
+    void _hr2_task_body();
+    static void _hr3_task_trampoline(void* pv);
+    void _hr3_task_body();
 
     // ── Hardware ──
     int _pin_cs;
@@ -204,6 +237,39 @@ private:
     QueueHandle_t     _data_queue;
     TaskHandle_t      _task_handle;
     bool              _initialized;
+
+    // ── HR2/HR3 async computation tasks ──────────────────────────────────────
+    // Task A (_task_body) runs the fast per-sample path and signals Task B/C when
+    // the computation window fires. Task B/C run the slow autocorr / FFT+HPS
+    // outside the real-time loop, then write results under _state_mutex.
+    SemaphoreHandle_t _hr2_calc_sem;    // given by Task A, taken by Task B
+    SemaphoreHandle_t _hr3_calc_sem;    // given by Task A, taken by Task C
+    TaskHandle_t      _hr2_task_handle;
+    TaskHandle_t      _hr3_task_handle;
+    volatile bool     _hr2_computing;   // true while Task B holds _hr2_seg; prevents Task A from overwriting
+    volatile bool     _hr3_computing;   // true while Task C uses _hr3_fft; prevents Task A from overwriting
+    float             _hr2_result;      // written by Task B, copied to _current_data under _state_mutex
+    float             _hr2_sqi_result;
+    float             _hr3_result;      // written by Task C
+    float             _hr3_sqi_result;
+
+#if MOW_TIMING_STATS
+    // ── Timing instrumentation ─────────────────────────────────────────────────
+    struct TimingStat {
+        uint64_t max_us = 0;
+        uint64_t sum_us = 0;
+        uint32_t count  = 0;
+        void update(uint64_t dt) { if (dt > max_us) max_us = dt; sum_us += dt; count++; }
+        uint64_t mean_us() const { return count ? sum_us / count : 0; }
+        void reset() { max_us = sum_us = count = 0; }
+    };
+    TimingStat _ts_spo2, _ts_hr1, _ts_hr2, _ts_hr3, _ts_cycle;  // Task A fast-path timings
+    TimingStat _ts_hr2_compute, _ts_hr3_compute;                 // Task B/C slow-path timings
+    uint32_t   _ts_emit_counter = 0;
+    static constexpr uint32_t ts_emit_interval = 2500;  // emit every 5 s at 500 Hz
+    void _emit_timing();
+    void _emit_tasks();   // emits $TASK frame per FreeRTOS task + $TASKS_END
+#endif
 
     // ── Chip configuration ──
     uint16_t          _sample_rate_hz;
@@ -288,6 +354,7 @@ private:
 
     BiquadFilter _hr3_lpf;                     // low-pass anti-aliasing filter (default 10 Hz cutoff)
     float    _hr3_buf[hr3_buf_len];            // circular buffer of decimated LP-filtered samples
+    float    _hr3_hann[hr3_buf_len];           // precomputed Hann window coefficients (computed once in begin())
     float    _hr3_fft[hr3_buf_len * 2];        // complex FFT buffer (interleaved re/im), also scratch for windowed input
     int      _hr3_buf_idx;                     // next write position in _hr3_buf
     uint32_t _hr3_buf_count;                   // samples written (capped at hr3_buf_len)
