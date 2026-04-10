@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.14
+# mow_afe4490 — Specification v0.15
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -341,15 +341,15 @@ Independent third HR algorithm running in parallel with HR1 and HR2 on `led1_ale
 
 **Stack note:** `_hr3_fft[1024]` (4096 bytes complex buffer) is stored as a class member (heap). `MOW_AFE4490_TASK_STACK` default increased to 8192 to accommodate `cosf`/`sinf` stack usage during butterfly stages.
 
-`hr3_sqi` is a continuous [0–1] quality metric based on spectral concentration of the fundamental power at the detected peak bin, relative to the total fundamental power across the search range:
+`hr3_sqi` is a continuous [0–1] quality metric based on HPS peak prominence: the fraction of total HPS energy at the detected peak bin, relative to the sum of all HPS values across the search range:
 
 ```
-fraction = P[peak_bin] / Σ P[k]   (k across search range)
-baseline = 1 / N_bins              (flat-spectrum reference)
+fraction = HPS[peak_bin] / Σ HPS[k]   (k across search range)
+baseline = 1 / N_bins                  (flat-HPS reference)
 SQI      = clamp((fraction − baseline) / (1 − baseline), 0, 1)
 ```
 
-`baseline` is the fraction a single bin would hold if power were uniformly distributed across the `N_bins` bins of the search range (~48 bins). A dominant spectral tone greatly exceeds the baseline → SQI approaches 1. A diffuse or noisy spectrum stays near the baseline → SQI ≈ 0. If the buffer is not yet full, the HPS peak is outside [25, 300] BPM, or the power sum is zero, SQI = 0.
+`baseline` is the fraction a single bin would hold if HPS were uniformly distributed across the `N_bins` bins of the search range (~48 bins). Using the HPS domain instead of the linear spectrum avoids harmonic inflation of the denominator: since HPS = P[k]·P[2k]·P[3k], only the true fundamental accumulates power from all three harmonics simultaneously, so the peak bin naturally dominates the HPS sum when the signal is periodic. A clean PPG signal → SQI approaches 1. A diffuse or noisy spectrum → SQI ≈ 0. If the buffer is not yet full, the HPS peak is outside [25, 300] BPM, or the HPS sum is zero, SQI = 0.
 
 ### 5.5 HR algorithms roadmap
 
@@ -507,6 +507,11 @@ This three-way relationship (spec → firmware, spec → Python mirror, firmware
 |         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
 |         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
 |         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+| v0.15   | HR3 SQI redesigned: from linear spectral concentration to HPS peak           |
+|         | prominence (`HPS[peak_bin] / Σ HPS[k]`). Eliminates harmonic inflation of   |
+|         | the denominator. No new buffer — `hps_sum` accumulated in the existing loop. |
+|         | Updated: `mow_afe4490.cpp` `_compute_hr3()`, `mow_afe4490.h` comment,       |
+|         | `HR3TestCalc` in `ppg_plotter.py`, spec §5.4.                               |
 | v0.14   | Timing instrumentation: `MOW_TIMING_STATS` compile-time flag, `TimingStat` |
 |         | struct, `_emit_timing()` private method. Measures HR1/HR2/HR3/SpO2 per-call |
 |         | time and full cycle time (SPI + all algos) with `esp_timer_get_time()`.      |

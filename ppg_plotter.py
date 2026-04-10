@@ -3436,8 +3436,8 @@ class HR3TestCalc:
       HPS: P[k]·P[2k]·P[3k] → argmax in HR range → parabolic interpolation
       → HR3 = peak_freq × 60
 
-    SQI (spectral concentration, spec §5.4):
-      fraction = P[peak_bin] / Σ P[k]   (k across search range)
+    SQI (HPS peak prominence, spec §5.4):
+      fraction = HPS[peak_bin] / Σ HPS[k]   (k across search range)
       baseline = 1 / N_bins_search
       SQI      = clamp((fraction − baseline) / (1 − baseline), 0, 1)
 
@@ -3592,11 +3592,10 @@ class HR3TestCalc:
         peak_freq = freqs[peak_global] + delta * freq_res
         hr_bpm    = peak_freq * 60.0
 
-        # SQI: spectral concentration (spec §5.4)
-        spec_hr     = spectrum[mask]
-        total_power = float(np.sum(spec_hr))
-        if total_power > 0.0 and 0 <= peak_global < len(spectrum):
-            fraction = float(spectrum[peak_global]) / total_power
+        # SQI: HPS peak prominence (spec §5.4)
+        total_hps = float(np.sum(hps_hr))
+        if total_hps > 0.0:
+            fraction = float(hps[peak_global]) / total_hps
             baseline = 1.0 / n_bins if n_bins > 0 else 1.0
             sqi = max(0.0, min(1.0, (fraction - baseline) / (1.0 - baseline))) if baseline < 1.0 else 0.0
         else:
@@ -4291,7 +4290,7 @@ class TimingWindow(QtWidgets.QMainWindow):
         vbox.addWidget(lbl_tasks_hdr)
 
         self._tasks_table = QtWidgets.QTableWidget(0, 3)
-        self._tasks_table.setHorizontalHeaderLabels(["Task", "CPU %", "Stack (words)"])
+        self._tasks_table.setHorizontalHeaderLabels(["Task", "CPU %", "Stack free (bytes)"])
         self._tasks_table.verticalHeader().setVisible(False)
         self._tasks_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._tasks_table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
@@ -4367,6 +4366,12 @@ class TimingWindow(QtWidgets.QMainWindow):
 
         self._lbl_stack.setText(f"Stack free: {stack_free} words  |  Last update: {now}")
 
+    _TASK_LABELS = {
+        "mow_afe4490": "mow_afe4490 (Task A)",
+        "mow_hr2":     "mow_hr2 (Task B)",
+        "mow_hr3":     "mow_hr3 (Task C)",
+    }
+
     def update_tasks(self, tasks):
         """Rebuild the FreeRTOS task table from a list of (name, pct_x10, stack) tuples."""
         # Sort by CPU% descending
@@ -4374,7 +4379,8 @@ class TimingWindow(QtWidgets.QMainWindow):
         self._tasks_table.setRowCount(len(sorted_tasks))
         for row, (name, pct_x10, stack) in enumerate(sorted_tasks):
             cpu_pct = pct_x10 / 10.0
-            name_item = QtWidgets.QTableWidgetItem(name)
+            display_name = self._TASK_LABELS.get(name, name)
+            name_item = QtWidgets.QTableWidgetItem(display_name)
             name_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
             pct_item  = QtWidgets.QTableWidgetItem(f"{cpu_pct:.1f}%")
             pct_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -4537,9 +4543,9 @@ class HR3LabWindow(QtWidgets.QMainWindow):
 
         if len(calc.last_freqs) > 1:
             self.curve_fft.setData(calc.last_freqs, calc.last_spectrum)
-            hps_max = np.max(calc.last_hps)
-            if hps_max <= 0.0:
-                hps_max = 1.0
+            hr_mask  = (calc.last_freqs >= calc.HR_SEARCH_MIN_HZ) & (calc.last_freqs <= calc.HR_SEARCH_MAX_HZ)
+            hps_band = calc.last_hps[hr_mask]
+            hps_max  = float(np.max(hps_band)) if len(hps_band) > 0 and np.max(hps_band) > 0.0 else 1.0
             self.curve_hps.setData(calc.last_freqs, calc.last_hps / hps_max)
             self._line_peak.setValue(calc.last_peak_freq)
             self._line_h2.setValue(calc.last_peak_freq * 2.0)
@@ -5341,6 +5347,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "921600 baud, 8N1. Reconnect hot-swap: disconnect and reconnect without restarting."))
         self.sidebar_layout.addWidget(self.btn_port_connect)
 
+        self.btn_reset_esp = QtWidgets.QPushButton("RESET\nESP32")
+        self.btn_reset_esp.setStyleSheet(
+            "background-color: #3A1A1A; color: #FF8844; font-size: 16px; "
+            "font-weight: bold; padding: 4px; border: 1px solid #FF8844; border-radius: 4px;")
+        self.btn_reset_esp.clicked.connect(self._reset_esp32)
+        self.btn_reset_esp.setToolTip(_make_tooltip(
+            "RESET ESP32",
+            "Hardware-reset the ESP32 via RTS/DTR (ESP-Prog auto-reset circuit). "
+            "EN is pulled low then released. The firmware prints # SYS: info lines on "
+            "startup which appear in this log. The serial port stays open during reset."))
+        self.sidebar_layout.addWidget(self.btn_reset_esp)
+
         self.sidebar_layout.addSpacing(12)
 
         self.btn_pause = QtWidgets.QPushButton("PAUSE\nCAPTURE")
@@ -5616,12 +5634,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.stats_table.setStyleSheet("""
             QTableWidget {
                 background-color: #111111; color: #E0E0E0;
-                font-family: monospace; font-size: 22px;
+                font-family: monospace; font-size: 26px;
                 gridline-color: #2A2A2A; border: none;
             }
             QHeaderView::section {
                 background-color: #1E1E2E; color: #AAAAAA;
-                font-size: 22px; font-weight: bold;
+                font-size: 33px; font-weight: bold;
                 padding: 6px; border: 1px solid #2A2A2A;
             }
             QTableWidget::item { padding: 6px 10px; }
@@ -5724,6 +5742,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if not hasattr(self, 'ser') or not self.ser.is_open:
             return
         self.ser.write(cmd.encode())
+
+    def _reset_esp32(self):
+        """Hardware-reset the ESP32 via RTS/DTR (ESP-Prog auto-reset circuit)."""
+        if not hasattr(self, 'ser') or self.ser is None or not self.ser.is_open:
+            self.set_status("Not connected — cannot reset ESP32", "error")
+            return
+        try:
+            self.ser.dtr = False   # IO0 high → run mode (not bootloader)
+            self.ser.rts = True    # EN low  → reset active
+            time.sleep(0.1)
+            self.ser.rts = False   # EN high → chip boots in run mode
+            # DTR stays False: IO0 remains high → normal firmware, not bootloader
+            self.set_status("ESP32 reset triggered (RTS/DTR via ESP-Prog)", "info")
+        except Exception as e:
+            self.set_status(f"Reset failed: {e}", "error")
 
     def _open_hrlab_default(self):
         self.btn_hrlab.setChecked(True)
@@ -6106,6 +6139,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.set_status("Active library: protocentral", "info")
                         elif 'frame mode' in line.lower():
                             self.set_status(line.lstrip('# '), "info")
+                        elif line.startswith('# SYS:'):
+                            self.set_status(line[6:].strip(), "info")
                         continue
 
                     current_time_perf = time.perf_counter()
@@ -6420,6 +6455,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hr3lab_window is not None:
             self.hr3lab_window.main_monitor = None
             self.hr3lab_window.close()
+        if self.spo2test_window is not None:
+            self.spo2test_window.close()
+        if self.hr1test_window is not None:
+            self.hr1test_window.close()
+        if self.hr2test_window is not None:
+            self.hr2test_window.close()
+        if self.hr3test_window is not None:
+            self.hr3test_window.close()
+        if self.timing_window is not None:
+            self.timing_window.close()
         event.accept()
 
 if __name__ == "__main__":

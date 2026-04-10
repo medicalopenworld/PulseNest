@@ -1229,13 +1229,13 @@ void MOW_AFE4490::_compute_hr3() {
     // HPS = P[k] * P[2k] * P[3k]  where P[k] = re[k]^2 + im[k]^2
     int   peak_bin  = -1;
     float peak_hps  = 0.0f;
-    float power_sum = 0.0f;
+    float hps_sum   = 0.0f;  // sum of HPS values across search range (used for SQI)
     for (int k = search_min; k <= search_max; k++) {
         float p1 = _hr3_fft[2*k]   * _hr3_fft[2*k]   + _hr3_fft[2*k+1]   * _hr3_fft[2*k+1];
         float p2 = _hr3_fft[4*k]   * _hr3_fft[4*k]   + _hr3_fft[4*k+1]   * _hr3_fft[4*k+1];
         float p3 = _hr3_fft[6*k]   * _hr3_fft[6*k]   + _hr3_fft[6*k+1]   * _hr3_fft[6*k+1];
         float hps = p1 * p2 * p3;
-        power_sum += p1;
+        hps_sum += hps;
         if (hps > peak_hps) { peak_hps = hps; peak_bin = k; }
     }
 
@@ -1257,9 +1257,11 @@ void MOW_AFE4490::_compute_hr3() {
     float hr3 = 60.0f * peak_freq;
     if (hr3 >= hr_min_bpm && hr3 <= hr_max_bpm) {
         _hr3_result = hr3;
+        // SQI: HPS peak prominence — fraction of total HPS energy at the detected bin.
+        // Using HPS domain avoids harmonic inflation of the denominator (spec §5.4).
         int   n_bins   = search_max - search_min + 1;
         float baseline = (n_bins > 1) ? 1.0f / (float)n_bins : 0.0f;
-        float fraction = (power_sum > 0.0f) ? y0 / power_sum : 0.0f;
+        float fraction = (hps_sum > 0.0f) ? peak_hps / hps_sum : 0.0f;
         float sqi      = (n_bins > 1) ? (fraction - baseline) / (1.0f - baseline) : 0.0f;
         _hr3_sqi_result = fmaxf(0.0f, fminf(1.0f, sqi));
     } else {

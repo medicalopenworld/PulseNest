@@ -63,7 +63,7 @@ struct AFE4490Data {
     float   hr2;         // HR2 (autocorrelation) in bpm
     float   hr2_sqi;     // HR2 Signal Quality Index [0–1]: normalised autocorrelation at dominant lag; 0=no periodicity, 1=perfect
     float   hr3;         // HR3 (FFT + HPS) in bpm
-    float   hr3_sqi;     // HR3 Signal Quality Index [0–1]: spectral concentration at peak bin vs. search range; 0=diffuse, 1=dominant tone
+    float   hr3_sqi;     // HR3 Signal Quality Index [0–1]: HPS peak prominence in search range; 0=diffuse HPS, 1=dominant peak
 };
 
 // ── Enumerations ──────────────────────────────────────────────────────────────

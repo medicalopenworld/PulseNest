@@ -3525,3 +3525,142 @@ mow_hr3 usa 57% del stack (2048 bytes). Considerar subir `MOW_AFE4490_HR3_TASK_S
 
 - Añadidas líneas `Library version:` y `Author:` en `mow_afe4490.h` y `mow_afe4490.cpp` para sincronizar con `examples/basic/main.cpp`.
 - Los tres ficheros tienen ahora la misma cabecera estándar: versión, spec y autor con web y email.
+
+---
+
+## Sesión 2026-04-10 — examples/basic/main.cpp: SQI siempre visible
+
+- Añadido `(SQI: x.xx)` tras cada valor (SpO2, HR1, HR2, HR3), siempre impreso independientemente de si el valor es válido o no.
+- Formato: `SpO2: 98.0 % (SQI: 0.85)  HR1: 72 bpm (SQI: 0.91) ...`
+
+---
+
+## Sesión 2026-04-10 — ppg_plotter.py: cierre de ventanas TEST al cerrar ventana principal
+
+- Bug: al cerrar la ventana principal, las ventanas SPO2TEST, HR1TEST, HR2TEST, HR3TEST y TimingWindow no se cerraban.
+- Fix: añadidas en `closeEvent` de `PPGMonitor` las llamadas a `.close()` para `spo2test_window`, `hr1test_window`, `hr2test_window`, `hr3test_window` y `timing_window`.
+
+---
+
+## Sesión 2026-04-10 — System info ESP32 al arranque + botón RESET en plotter
+
+### Preguntas clave
+- ¿LED1_ALED1 es siempre igual a LED1 − ALED1? (pregunta planteada, no implementada aún)
+- ¿Cómo resetear el ESP32 con el script en ejecución sin conflictos de puerto?
+
+### Decisiones tomadas
+- El ESP-Prog (FT2232HL) actúa como bridge UART: el puerto serie no se cierra al resetear el ESP32. No hay conflicto.
+- El circuito auto-reset del ESP-Prog conecta RTS→EN y DTR→IO0, igual que esptool.py.
+- Protocolo acordado: el firmware emite `# SYS: <info>` en setup(); el plotter detecta ese prefijo y lo muestra en el log principal vía `set_status()`.
+
+### Cambios implementados
+**`examples/basic/main.cpp`**:
+- Añadidos `#include <esp_chip_info.h>` y `#include <esp_mac.h>`
+- En `setup()`, tras `mow.begin()`: 4 líneas `# SYS:` con chip rev/cores/MHz, Flash/PSRAM, Heap/IDF version, MAC address.
+
+**`ppg_plotter.py`**:
+- Parser de `#` lines: añadida rama `elif line.startswith('# SYS:')` → `set_status(..., "info")`.
+- Botón **RESET ESP32** en sidebar (después de CONNECT), estilo naranja. Llama a `_reset_esp32()`.
+- Método `_reset_esp32()`: toggle RTS/DTR via pyserial (dtr=False, rts=True → sleep 100ms → rts=False, dtr=True).
+
+---
+
+## Sesión 2026-04-10 — Fix botón RESET ESP32: bootloader mode
+
+### Bug
+Al pulsar RESET ESP32, el ESP32 arrancaba en modo bootloader y dejaba de enviar datos.
+
+### Causa
+La última línea del método `_reset_esp32()` ponía `dtr = True`, lo que a través del transistor del ESP-Prog tiraba IO0 a LOW → bootloader mode.
+
+### Fix
+Eliminada la línea `self.ser.dtr = True`. DTR permanece en False durante todo el reset → IO0 queda HIGH → firmware normal arranca correctamente.
+
+Secuencia correcta: `dtr=False, rts=True` → sleep 100ms → `rts=False` (DTR no se toca).
+
+---
+
+## Sesión 2026-04-10 — Fix: # SYS: estaba en fichero incorrecto (examples/ vs src/)
+
+### Bug
+Las líneas `# SYS:` no aparecían porque los cambios se habían hecho en `examples/basic/main.cpp`, que es solo documentación. El firmware compilado por PlatformIO es `src/main.cpp`.
+
+### Fix
+- Añadidos `#include <esp_chip_info.h>` y `#include <esp_mac.h>` en `src/main.cpp`.
+- Añadido bloque `# SYS:` en `setup()` de `src/main.cpp`, tras `Serial.begin(921600)`.
+- Los cambios equivalentes en `examples/basic/main.cpp` se mantienen como documentación del ejemplo.
+
+### Nota
+El firmware en `src/main.cpp` usa 921600 baud (no 115200), tiene `Serial_printf()` propio y no tiene `while (!Serial)`. Las líneas `# SYS:` se emiten justo tras `Serial.begin()`, antes de `SPI.begin()` y `start_mow()`.
+
+---
+
+## Sesión 2026-04-10 — Limpieza examples/basic/main.cpp
+
+- Eliminado el bloque Step 4 (# SYS:) y los includes `esp_chip_info.h` / `esp_mac.h` que se habían añadido por error en `examples/basic/main.cpp`.
+- El ejemplo queda limpio: solo muestra el uso básico de la librería, sin dependencias del sistema de diagnóstico del plotter.
+
+---
+
+## Sesión 2026-04-10 — ppg_plotter: aumento de fuente en stats_table
+
+### Cambio
+Aumentados los tamaños de fuente en la tabla de estadísticas (`stats_table`) de `ppg_plotter.py`:
+- **Header (títulos de columna):** `22px → 44px` (×2)
+- **Celdas (datos):** `22px → 33px` (×1.5)
+
+### Restricción
+La altura de las filas (`setDefaultSectionSize(40)`) no se ha modificado.
+
+---
+
+## Sesión 2026-04-10 — ppg_plotter: ajuste fino de fuente en stats_table
+
+### Cambio
+Ajustados los tamaños de fuente en `stats_table` de `ppg_plotter.py`:
+- **Header (títulos de columna):** `44px → 22px` (−50%)
+- **Celdas (datos):** `33px → 26px` (−20%)
+
+---
+
+## Sesión 2026-04-10 — ppg_plotter: ajuste título stats_table +50%
+
+### Cambio
+- **Header (títulos de columna):** `22px → 33px` (+50%)
+- Celdas sin cambio (`26px`)
+
+---
+
+## Sesión 2026-04-10 — ppg_plotter: HR3LAB HPS normalizado a banda HR
+
+### Cambio
+En `HR3LabWindow.update_plots` (`ppg_plotter.py`): el HPS se normalizaba al máximo global del array. Corregido para normalizar al máximo dentro de la banda HR (`HR_SEARCH_MIN_HZ`–`HR_SEARCH_MAX_HZ`), igual que hace `HR3TestCalc`.
+
+El espectro FFT ya estaba correcto (normalizado a HR-band max desde `HRFFTCalc.update`).
+
+### Análisis adicional (sin cambios de código)
+Se analizó por qué `hr3_sqi` es sistemáticamente bajo (< 0.3):
+- El denominador `power_sum` del SQI incluye los bins armónicos (2°, 3°) que caen dentro del rango de búsqueda [22–303 BPM]
+- Para FC 60–180 BPM, los armónicos 2° y 3° están bien dentro del paso del LP (< 10 Hz) y contribuyen 20–40% de la energía espectral
+- Esto infla el denominador estructuralmente, deprimiendo `fraction` y el SQI resultante
+- Opciones de mejora: SQI basado en el espectro HPS (opción A, recomendada), exclusión de bins armónicos del denominador (opción B), o SNR local (opción C)
+- Pendiente decisión del usuario sobre qué opción implementar
+
+---
+
+## Sesión 2026-04-10 — HR3 SQI v0.15: HPS peak prominence
+
+### Problema identificado
+El `hr3_sqi` era sistemáticamente bajo (< 0.3) porque el denominador `power_sum` acumulaba la potencia lineal P[k] de todos los bins del rango de búsqueda [22–303 BPM], incluyendo los armónicos 2° y 3° de la señal PPG. Como estos caen dentro del paso del filtro LP (< 10 Hz) y dentro del rango de búsqueda, inflaban el denominador estructuralmente aunque la señal fuese buena.
+
+### Solución implementada (Opción A)
+SQI calculado en el dominio HPS en lugar del espectro lineal:
+- `fraction = HPS[peak_bin] / Σ HPS[k]` en lugar de `P[peak_bin] / Σ P[k]`
+- En el dominio HPS, solo el bin fundamental acumula potencia de los tres armónicos simultáneamente → el pico domina naturalmente la suma HPS cuando la señal es periódica
+- Sin buffer nuevo: `hps_sum` se acumula en el bucle existente (4 bytes de stack adicionales)
+
+### Ficheros modificados
+- `mow_afe4490.cpp`: `_compute_hr3()` — `power_sum` → `hps_sum`, SQI formula actualizada
+- `mow_afe4490.h`: comentario `hr3_sqi` actualizado
+- `ppg_plotter.py`: `HR3TestCalc` — SQI formula y docstring actualizados
+- `mow_afe4490_spec.md`: §5.4 reescrito, versión v0.14 → v0.15, changelog añadido

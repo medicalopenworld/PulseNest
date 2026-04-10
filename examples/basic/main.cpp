@@ -59,6 +59,7 @@ void ReaderTask(void *pvParameters) {
             } else {
                 Serial.print("--");
             }
+            Serial.print(" (SQI: "); Serial.print(data.spo2_sqi, 2); Serial.print(")");
 
             // HR via peak detection
             Serial.print("  HR1: ");
@@ -68,6 +69,7 @@ void ReaderTask(void *pvParameters) {
             } else {
                 Serial.print("--");
             }
+            Serial.print(" (SQI: "); Serial.print(data.hr1_sqi, 2); Serial.print(")");
 
             // HR via autocorrelation (more robust, higher latency)
             Serial.print("  HR2: ");
@@ -77,6 +79,7 @@ void ReaderTask(void *pvParameters) {
             } else {
                 Serial.print("--");
             }
+            Serial.print(" (SQI: "); Serial.print(data.hr2_sqi, 2); Serial.print(")");
 
             // HR via FFT + Harmonic Product Spectrum (most robust, highest latency)
             Serial.print("  HR3: ");
@@ -86,6 +89,7 @@ void ReaderTask(void *pvParameters) {
             } else {
                 Serial.print("--");
             }
+            Serial.print(" (SQI: "); Serial.print(data.hr3_sqi, 2); Serial.print(")");
 
             Serial.println();
         }

@@ -13,6 +13,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdarg.h>
+#include <esp_chip_info.h>
+#include <esp_mac.h>
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
 #define AFE4490_CS_PIN      21
@@ -278,6 +280,26 @@ void Cmd_Task(void *pvParameters) {
 void setup() {
     Serial.setTxBufferSize(1024);  // enlarge USB-CDC TX buffer (default ~256) to reduce corruption at 500 Hz
     Serial.begin(921600);
+
+    // System info — shown in ppg_plotter log on startup/reset (prefix "# SYS:")
+    {
+        esp_chip_info_t chip;
+        esp_chip_info(&chip);
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        Serial.printf("# SYS: ESP32-S3 rev.%d, %d cores @ %d MHz\n",
+            chip.revision, chip.cores, ESP.getCpuFreqMHz());
+        Serial.printf("# SYS: Flash %lu MB | PSRAM %lu MB (free %lu KB)\n",
+            (unsigned long)(ESP.getFlashChipSize() / (1024UL * 1024)),
+            (unsigned long)(ESP.getPsramSize()     / (1024UL * 1024)),
+            (unsigned long)(ESP.getFreePsram()     / 1024UL));
+        Serial.printf("# SYS: Heap free %lu KB | IDF %s\n",
+            (unsigned long)(esp_get_free_heap_size() / 1024UL),
+            esp_get_idf_version());
+        Serial.printf("# SYS: MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+
     SPI.begin(36, 37, 35, -1);  // CLK=36, MOSI=37, MISO=35, CS=-1 (managed per device).
                                 // Called here and not inside each library: SPI is a shared bus —
                                 // multiple devices can coexist via beginTransaction()/endTransaction().
