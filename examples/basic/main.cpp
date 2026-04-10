@@ -1,6 +1,7 @@
 // mow_afe4490 — Basic Example
-// v0.7 — ESP32-S3, Arduino + FreeRTOS
+// Library version: v0.14 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
+// Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 //
 // Minimal example showing how to integrate mow_afe4490 into an application.
 // Reads PPG, SpO2 and heart rate from an AFE4490 chip and prints results
@@ -72,6 +73,15 @@ void ReaderTask(void *pvParameters) {
             Serial.print("  HR2: ");
             if (data.hr2_sqi > 0.0f) {
                 Serial.print(data.hr2, 0);
+                Serial.print(" bpm");
+            } else {
+                Serial.print("--");
+            }
+
+            // HR via FFT + Harmonic Product Spectrum (most robust, highest latency)
+            Serial.print("  HR3: ");
+            if (data.hr3_sqi > 0.0f) {
+                Serial.print(data.hr3, 0);
                 Serial.print(" bpm");
             } else {
                 Serial.print("--");

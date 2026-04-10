@@ -1,6 +1,7 @@
 // mow_afe4490.cpp — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.14 — ESP32-S3, Arduino + FreeRTOS
+// Library version: v0.14 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
+// Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
 #include "mow_afe4490.h"
 #include "esp_log.h"

@@ -1,8 +1,9 @@
 #pragma once
 
 // mow_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// v0.14 — ESP32-S3, Arduino + FreeRTOS
+// Library version: v0.14 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
+// Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -265,6 +266,7 @@ private:
     };
     TimingStat _ts_spo2, _ts_hr1, _ts_hr2, _ts_hr3, _ts_cycle;  // Task A fast-path timings
     TimingStat _ts_hr2_compute, _ts_hr3_compute;                 // Task B/C slow-path timings
+    // Note: uxTaskGetStackHighWaterMark() returns bytes on ESP32 (portSTACK_TYPE = uint8_t)
     uint32_t   _ts_emit_counter = 0;
     static constexpr uint32_t ts_emit_interval = 2500;  // emit every 5 s at 500 Hz
     void _emit_timing();

@@ -3439,3 +3439,89 @@ $TASKS_END*XX
 
 - `keyPressEvent` actualizado para copiar de `_tasks_table` además de `_table` (el que tenga selección activa).
 
+
+---
+
+## Sesión 2026-04-10 — Corrección etiqueta stack (words → bytes)
+
+### Mediciones confirmadas
+- mow_afe4490 (Task A): 19.5% CPU, 5640 bytes stack libre (de 8192)
+- mow_hr2 (Task B): 1.1% CPU, 1772 bytes libre (de 3072)
+- mow_hr3 (Task C): 0.4% CPU, 1176 bytes libre (de 2048) ← más ajustado
+- **Total librería: ~21% CPU de un core**
+
+### Corrección
+`uxTaskGetStackHighWaterMark()` en ESP32 devuelve **bytes** (no words), porque el puerto Xtensa usa `portSTACK_TYPE = uint8_t`. Corregida la cabecera de la tabla en ppg_plotter.py: "Stack (words)" → "Stack free (bytes)". Añadida nota en mow_afe4490.h.
+
+### Nota de integración
+mow_hr3 usa 57% del stack (2048 bytes). Considerar subir `MOW_AFE4490_HR3_TASK_STACK` a 3072 al integrar en IncuNest si se añaden más llamadas en ese contexto.
+
+
+---
+
+## Sesión 2026-04-10 — TimingWindow: etiquetas Task A/B/C en tabla de tareas
+
+- Añadido `_TASK_LABELS` dict en `TimingWindow`: `mow_afe4490 (Task A)`, `mow_hr2 (Task B)`, `mow_hr3 (Task C)`.
+- `update_tasks()` usa `_TASK_LABELS.get(name, name)` para mostrar el nombre enriquecido.
+
+
+---
+
+## Sesión 2026-04-10 — Análisis de corriente LED y parámetros AFE4490
+
+**Revisión de la corriente LED por defecto (11.7 mA):**
+- El valor provenía de Protocentral (código DAC 20, TX_REF=0.75V, RANGE_0).
+- Decisión: los valores de Protocentral no son fuente fiable. La única referencia válida es el datasheet del AFE4490.
+- Además, la corriente real calculada con TX_REF=0.75V + LEDRANGE=0 es ~5.9 mA (full scale = 75 mA), no 11.7 mA como se asumía.
+
+**Añadida tarea pendiente:** análisis de sensibilidad de corriente LED (LED1/LED2), ganancia TIA (RF) y ganancia etapa 2, basado en el datasheet del AFE4490.
+
+---
+
+## Sesión 2026-04-10 — Correcciones examples/basic/main.cpp
+
+- Añadido `// Author: Medical Open World` en la cabecera del fichero.
+- Añadido bloque HR3 (FFT + HPS) en `ReaderTask()`, con el mismo patrón de SQI guard que HR1 y HR2.
+
+---
+
+## Sesión 2026-04-10 — Versión en examples/basic/main.cpp
+
+- Corregida versión de `v0.7` a `v0.14` en la cabecera del fichero (estaba desactualizada).
+
+---
+
+## Sesión 2026-04-10 — Cabecera examples/basic/main.cpp
+
+- Ampliado comentario de spec: `// Spec: mow_afe4490_spec.md  — full design specification, register map and algorithm details`
+
+---
+
+## Sesión 2026-04-10 — Cabecera examples/basic/main.cpp (versión)
+
+- Cambiado `// v0.14 — ESP32-S3...` por `// Library version: v0.14 — ESP32-S3...` para indicar explícitamente que el número corresponde a la versión de la librería.
+
+---
+
+## Sesión 2026-04-10 — Cabecera examples/basic/main.cpp (spec)
+
+- Revertida descripción de spec: eliminado `— full design specification, register map and algorithm details`, dejado solo `// Spec: mow_afe4490_spec.md`.
+
+---
+
+## Sesión 2026-04-10 — Cabecera examples/basic/main.cpp (autor)
+
+- Ampliada línea de autor: `// Author: Medical Open World — http://medicalopenworld.org — contact@medicalopenworld.org`
+
+---
+
+## Sesión 2026-04-10 — Cabecera examples/basic/main.cpp (email entre ángulos)
+
+- Email del autor puesto entre ángulos: `<contact@medicalopenworld.org>` (convención estándar en cabeceras de código).
+
+---
+
+## Sesión 2026-04-10 — Sincronización cabeceras librería
+
+- Añadidas líneas `Library version:` y `Author:` en `mow_afe4490.h` y `mow_afe4490.cpp` para sincronizar con `examples/basic/main.cpp`.
+- Los tres ficheros tienen ahora la misma cabecera estándar: versión, spec y autor con web y email.
