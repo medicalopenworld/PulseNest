@@ -86,9 +86,13 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows) {
         return false;
     }
 
+    // Skip comment/empty lines before the header
     std::string header_line;
-    if (!std::getline(f, header_line)) {
-        fprintf(stderr, "ERROR: empty file %s\n", path.string().c_str());
+    while (std::getline(f, header_line)) {
+        if (!header_line.empty() && header_line[0] != '#') break;
+    }
+    if (header_line.empty()) {
+        fprintf(stderr, "ERROR: no header found in %s\n", path.string().c_str());
         return false;
     }
 
