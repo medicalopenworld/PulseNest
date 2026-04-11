@@ -1,17 +1,24 @@
 #pragma once
 
 // mow_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// Library version: v0.14 — ESP32-S3, Arduino + FreeRTOS
+// Library version: v0.16 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
-#include <Arduino.h>
-#include <SPI.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/semphr.h>
-#include <freertos/queue.h>
-#include <stdint.h>
+#ifdef MOW_OFFLINE
+  #ifndef UNIT_TEST
+    #define UNIT_TEST
+  #endif
+  #include "mow_afe4490_platform_stub.h"
+#else
+  #include <Arduino.h>
+  #include <SPI.h>
+  #include <freertos/FreeRTOS.h>
+  #include <freertos/task.h>
+  #include <freertos/semphr.h>
+  #include <freertos/queue.h>
+  #include <stdint.h>
+#endif
 
 // ── Compile-time configuration (override before including this header) ────────
 #ifndef MOW_AFE4490_QUEUE_SIZE
@@ -119,7 +126,9 @@ public:
     // Requires SPI.begin() to have been called beforehand by the application.
     // This library does not call SPI.begin() internally to avoid interfering with
     // other SPI devices sharing the same bus.
+#ifndef MOW_OFFLINE
     void begin(int pin_cs, int pin_drdy);
+#endif
 
     // Chip configuration setters (callable before or after begin())
     void setSampleRate(uint16_t hz);        // 63–5000 Hz; recalculates NUMAV_max
@@ -142,18 +151,24 @@ public:
     void setHR3Filter(float f_high_hz = 10.0f);
 
     // Data retrieval — non-blocking; returns true if data was available
+#ifndef MOW_OFFLINE
     bool getData(AFE4490Data& data);
+#endif
 
     // Shutdown — detaches ISR, deletes internal task and FreeRTOS objects, resets state.
     // After stop(), begin() can be called again to restart.
+#ifndef MOW_OFFLINE
     void stop();
+#endif
 
     // SpO2 calibration coefficients (SpO2 = a - b*R).
     // Defaults are experimentally calibrated for UpnMed U401-D(01AS-F), Nellcor Non-Oximax type.
     void setSpO2Coefficients(float a, float b);
 
     // ISR entry point (must be public for static trampoline)
+#ifndef MOW_OFFLINE
     void _drdy_isr();
+#endif
 
 private:
     // ── Private types ─────────────────────────────────────────────────────────
@@ -171,9 +186,11 @@ private:
     };
 
     // ── SPI primitives ────────────────────────────────────────────────────────
+#ifndef MOW_OFFLINE
     void     _write_reg(uint8_t addr, uint32_t data);
     uint32_t _read_spi_raw(uint8_t addr);   // assumes SPI_READ already enabled
     uint32_t _read_reg(uint8_t addr);       // handles SPI_READ enable/disable
+#endif
 
     // Sign-extend 22-bit two's complement ADC output
     static int32_t _sign_extend_22(uint32_t raw);
@@ -186,15 +203,19 @@ private:
     void _recalc_biquad_lp(BiquadFilter& filt);
 
     // Chip init
+#ifndef MOW_OFFLINE
     void _chip_init();
     void _apply_timing_regs();
     void _apply_analog_regs();
     void _apply_control_regs();
     uint32_t _build_tiagain();
+#endif
 
     // FreeRTOS task
+#ifndef MOW_OFFLINE
     static void _task_trampoline(void* pv);
     void _task_body();
+#endif
 
     // Signal processing
     float _biquad_process(float x, BiquadFilter& filt);  // precharge on first call, then step
@@ -220,10 +241,12 @@ private:
     void _compute_hr3();                          // FFT+HPS on _hr3_fft → _hr3_result/_hr3_sqi_result
 
     // HR2/HR3 async FreeRTOS tasks
+#ifndef MOW_OFFLINE
     static void _hr2_task_trampoline(void* pv);
     void _hr2_task_body();
     static void _hr3_task_trampoline(void* pv);
     void _hr3_task_body();
+#endif
 
     // ── Hardware ──
     int _pin_cs;
@@ -377,8 +400,10 @@ private:
     //   - add a second static ISR + pointer pair, or
     //   - switch to ESP-IDF gpio_isr_handler_add(), which passes a void* argument
     //     per handler, eliminating the need for a singleton pointer altogether.
+#ifndef MOW_OFFLINE
     static MOW_AFE4490* _g_instance;
     static void IRAM_ATTR _drdy_isr_static();
+#endif
 
 #ifdef UNIT_TEST
 public:

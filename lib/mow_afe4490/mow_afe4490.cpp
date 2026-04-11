@@ -1,17 +1,26 @@
 // mow_afe4490.cpp — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
-// Library version: v0.14 — ESP32-S3, Arduino + FreeRTOS
+// Library version: v0.16 — ESP32-S3, Arduino + FreeRTOS
 // Spec: mow_afe4490_spec.md
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
 #include "mow_afe4490.h"
+#ifndef MOW_OFFLINE
 #include "esp_log.h"
+#endif
 #include <math.h>
 #include <string.h>
-#if MOW_TIMING_STATS
+#if MOW_TIMING_STATS && !defined(MOW_OFFLINE)
 #include "esp_timer.h"
 #endif
 
+#ifdef MOW_OFFLINE
+[[maybe_unused]] static const char* TAG = "";
+#define ESP_LOGE(tag, ...) ((void)0)
+#define ESP_LOGI(tag, ...) ((void)0)
+#define ESP_LOGW(tag, ...) ((void)0)
+#else
 static const char* TAG = "mow_afe4490";
+#endif
 
 namespace {
     // ── Algorithm time constants (physical units) ────────────────────────────
@@ -181,7 +190,9 @@ namespace {
 // Singleton pointer used by the static ISR trampoline (_drdy_isr_static) to reach
 // the class instance. Static members must be defined exactly once in a .cpp file;
 // the declaration in the header only reserves the name.
+#ifndef MOW_OFFLINE
 MOW_AFE4490* MOW_AFE4490::_g_instance = nullptr;
+#endif
 
 // ── Constructor / destructor ──────────────────────────────────────────────────
 MOW_AFE4490::MOW_AFE4490()
@@ -228,9 +239,11 @@ MOW_AFE4490::MOW_AFE4490()
     memset(_hr3_buf, 0, sizeof(_hr3_buf));
     _current_data = AFE4490Data{};
     _recalc_rate_params();
+    _reset_algorithms();
 }
 
 MOW_AFE4490::~MOW_AFE4490() {
+#ifndef MOW_OFFLINE
     if (_task_handle)      { vTaskDelete(_task_handle);      _task_handle      = nullptr; }
     if (_hr2_task_handle)  { vTaskDelete(_hr2_task_handle);  _hr2_task_handle  = nullptr; }
     if (_hr3_task_handle)  { vTaskDelete(_hr3_task_handle);  _hr3_task_handle  = nullptr; }
@@ -241,12 +254,14 @@ MOW_AFE4490::~MOW_AFE4490() {
     if (_spi_mutex)        vSemaphoreDelete(_spi_mutex);
     if (_state_mutex)      vSemaphoreDelete(_state_mutex);
     if (_g_instance == this) _g_instance = nullptr;
+#endif
 }
 
 // ── begin() ───────────────────────────────────────────────────────────────────
 // Requires SPI.begin() to have been called beforehand. This library intentionally
 // does not call SPI.begin() to avoid reinitialising the bus and interfering with
 // other SPI devices. Only SPI.beginTransaction() / endTransaction() are used here.
+#ifndef MOW_OFFLINE
 void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
     _pin_cs   = pin_cs;
     _pin_drdy = pin_drdy;
@@ -274,10 +289,6 @@ void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
 
     _initialized = true;
 
-    // Precompute Hann window once — avoids 512 cosf() calls per frame in _linearize_hr3()
-    for (int i = 0; i < hr3_buf_len; i++)
-        _hr3_hann[i] = 0.5f * (1.0f - cosf(2.0f * pi * (float)i / (float)(hr3_buf_len - 1)));
-
     pinMode(_pin_drdy, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(_pin_drdy), _drdy_isr_static, RISING);
 
@@ -298,6 +309,7 @@ void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
 
     ESP_LOGI(TAG, "Started: PRF=%u Hz, NUMAV=%u", _sample_rate_hz, _num_averages);
 }
+#endif
 
 // ── Configuration setters ─────────────────────────────────────────────────────
 void MOW_AFE4490::setSampleRate(uint16_t hz) {
@@ -306,7 +318,9 @@ void MOW_AFE4490::setSampleRate(uint16_t hz) {
         return;
     }
 
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
 
     _sample_rate_hz = hz;
 
@@ -325,11 +339,13 @@ void MOW_AFE4490::setSampleRate(uint16_t hz) {
 
     _recalc_rate_params();
 
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_timing_regs();
         _apply_control_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setNumAverages(uint8_t num) {
@@ -345,30 +361,42 @@ void MOW_AFE4490::setNumAverages(uint8_t num) {
         num = clamped;
     }
 
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
     _num_averages = num;
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_control_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setLED1Current(float mA) {
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
     _led1_current_mA = constrain(mA, 0.0f, (float)_led_range_mA);
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setLED2Current(float mA) {
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
     _led2_current_mA = constrain(mA, 0.0f, (float)_led_range_mA);
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setLEDRange(uint8_t mA) {
@@ -376,39 +404,55 @@ void MOW_AFE4490::setLEDRange(uint8_t mA) {
         ESP_LOGE(TAG, "setLEDRange: must be 75 or 150 mA");
         return;
     }
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
     _led_range_mA = mA;
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setTIAGain(AFE4490TIAGain gain) {
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
     _tia_gain = gain;
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setTIACF(AFE4490TIACF cf) {
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
     _tia_cf = cf;
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setStage2Gain(AFE4490Stage2Gain gain) {
+#ifndef MOW_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
+#endif
     _stage2_gain = gain;
+#ifndef MOW_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
     }
+#endif
 }
 
 void MOW_AFE4490::setPPGChannel(AFE4490Channel channel) {
@@ -464,11 +508,14 @@ void MOW_AFE4490::setSpO2Coefficients(float a, float b) {
 }
 
 // ── getData() ─────────────────────────────────────────────────────────────────
+#ifndef MOW_OFFLINE
 bool MOW_AFE4490::getData(AFE4490Data& data) {
     return xQueueReceive(_data_queue, &data, 0) == pdTRUE;
 }
+#endif
 
 // ── stop() ────────────────────────────────────────────────────────────────────
+#ifndef MOW_OFFLINE
 void MOW_AFE4490::stop() {
     if (!_initialized) return;
 
@@ -494,6 +541,7 @@ void MOW_AFE4490::stop() {
 
     ESP_LOGI(TAG, "Stopped");
 }
+#endif
 
 // ── _reset_algorithms() ───────────────────────────────────────────────────────
 void MOW_AFE4490::_reset_algorithms() {
@@ -525,9 +573,13 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr2_result = 0.0f; _hr2_sqi_result = 0.0f;
     _hr3_result = 0.0f; _hr3_sqi_result = 0.0f;
     _current_data = AFE4490Data{};
+    // Precompute Hann window — needed for HR3 FFT (moved here from begin() to support MOW_OFFLINE)
+    for (int i = 0; i < hr3_buf_len; i++)
+        _hr3_hann[i] = 0.5f * (1.0f - cosf(2.0f * pi * (float)i / (float)(hr3_buf_len - 1)));
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
+#ifndef MOW_OFFLINE
 void MOW_AFE4490::_write_reg(uint8_t addr, uint32_t data) {
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
     digitalWrite(_pin_cs, LOW);
@@ -558,6 +610,7 @@ uint32_t MOW_AFE4490::_read_reg(uint8_t addr) {
     _write_reg(REG_CONTROL0, 0x000000UL);
     return val;
 }
+#endif
 
 int32_t MOW_AFE4490::_sign_extend_22(uint32_t raw) {
     // AFE4490 ADC output is 22-bit two's complement in bits [21:0]
@@ -565,6 +618,7 @@ int32_t MOW_AFE4490::_sign_extend_22(uint32_t raw) {
 }
 
 // ── Chip init ─────────────────────────────────────────────────────────────────
+#ifndef MOW_OFFLINE
 void MOW_AFE4490::_chip_init() {
     // Step 2: Set SPI write mode
     _write_reg(REG_CONTROL0, 0x000000UL);
@@ -668,6 +722,7 @@ void MOW_AFE4490::_apply_control_regs() {
     uint8_t numav = (_num_averages > 0) ? (_num_averages - 1u) : 0u;
     _write_reg(REG_CONTROL1, ctrl1_timeren | numav);
 }
+#endif  // !MOW_OFFLINE
 
 void MOW_AFE4490::_recalc_rate_params() {
     float fs              = (float)_sample_rate_hz;
@@ -723,6 +778,7 @@ void MOW_AFE4490::_recalc_biquad(BiquadFilter& filt) {
 // via the pvParameters argument and immediately forwards execution to _task_body(), which is
 // the actual member function with full access to private state. This pattern (trampoline +
 // member body) is the standard idiom for running a C++ method as a FreeRTOS task.
+#ifndef MOW_OFFLINE
 void MOW_AFE4490::_task_trampoline(void* pv) {
     static_cast<MOW_AFE4490*>(pv)->_task_body();
     vTaskDelete(nullptr); // should never reach here
@@ -782,6 +838,7 @@ void IRAM_ATTR MOW_AFE4490::_drdy_isr() {
     xSemaphoreGiveFromISR(_drdy_sem, &woken);
     portYIELD_FROM_ISR(woken);
 }
+#endif  // !MOW_OFFLINE
 
 // ── Signal processing ─────────────────────────────────────────────────────────
 
@@ -898,7 +955,7 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
 //                hr2cmp_mean,hr2cmp_max,hr3cmp_mean,hr3cmp_max,stack_free*XX
 // Task A fast-path (first 10 values): budget reference = 2000 µs (1/500 Hz).
 // Task B/C compute (values 11-14): CPU load % = mean / 500000 µs (0.5 s period).
-#if MOW_TIMING_STATS
+#if MOW_TIMING_STATS && !defined(MOW_OFFLINE)
 void MOW_AFE4490::_emit_timing() {
     UBaseType_t stack_free = uxTaskGetStackHighWaterMark(nullptr);
     char buf[256];
@@ -1279,6 +1336,7 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
 }
 
 // ── HR2 async task (Task B) ────────────────────────────────────────────────────
+#ifndef MOW_OFFLINE
 void MOW_AFE4490::_hr2_task_trampoline(void* pv) {
     static_cast<MOW_AFE4490*>(pv)->_hr2_task_body();
     vTaskDelete(nullptr);
@@ -1306,8 +1364,10 @@ void MOW_AFE4490::_hr2_task_body() {
         _hr2_computing = false;  // release slot after results committed
     }
 }
+#endif  // !MOW_OFFLINE
 
 // ── HR3 async task (Task C) ────────────────────────────────────────────────────
+#ifndef MOW_OFFLINE
 void MOW_AFE4490::_hr3_task_trampoline(void* pv) {
     static_cast<MOW_AFE4490*>(pv)->_hr3_task_body();
     vTaskDelete(nullptr);
@@ -1335,3 +1395,4 @@ void MOW_AFE4490::_hr3_task_body() {
         _hr3_computing = false;  // release slot after results committed
     }
 }
+#endif  // !MOW_OFFLINE

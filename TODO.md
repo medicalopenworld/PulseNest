@@ -23,6 +23,12 @@
 
 ---
 
+## Pendientes documentación
+
+- [ ] **Actualizar `mow_afe4490_spec.md` — arquitectura async FreeRTOS** — documentar en §6 la separación en 3 tareas (Task A muestreo prio 5, Task B HR2 prio 4, Task C HR3 prio 4) con semáforos binarios, mediciones de CPU% y stack.
+
+---
+
 ## Pendientes firmware (mow_afe4490 / main.cpp)
 
 - [ ] **HR1 — derivada antes de buscar picos** — aplicar derivada a la señal filtrada antes del detector de picos para mejorar la precisión en la localización del frente de subida.
@@ -47,6 +53,9 @@
 - [ ] **Calibrar coeficientes SpO2** (`setSpO2Coefficients`) con sensor real.
 - [ ] **Validación general con hardware real** (la mayoría de pruebas se han hecho con simulador).
 - [ ] **Validar algoritmo HR en condiciones adversas:** (1) baja perfusión, (2) luz ambiental, (3) artefactos por movimiento.
+- [ ] **Probe presence detection** — diseñar estrategia y algoritmo explícito de detección de presencia del sensor. Actualmente es implícita (umbral DC en SpO2, PI en SQI); se necesita un módulo propio, genérico y configurable.
+- [ ] **Verificación de consistencia `LED1_ALED1 == LED1 − ALED1`** — comprobar que el valor hardware del registro `LED1_ALED1VAL` (0x2F) coincide con la resta software `LED1 − ALED1` (y lo mismo para `LED2_ALED2`). Una discrepancia indicaría un problema de lectura SPI o de sincronización. Implementar tanto en firmware (assert/log) como opcionalmente en `ppg_plotter.py` (diagnóstico visual de la diferencia en tiempo real).
+- [ ] **Registro DIAG (0x30)** — utilizar el registro de diagnóstico del AFE4490 (`DIAG`, address 0x30) para diagnosticar el estado del sistema, especialmente el estado de la sonda (LED abierto/cortocircuito, fotodiodo, etc.).
 - [ ] **Detección de luz ambiental excesiva** — chequear si ALED1/ALED2 superan un umbral que indique que el sensor no está bien colocado; emitir aviso (flag en `AFE4490Data` o log serie).
 
 ---

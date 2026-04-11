@@ -3664,3 +3664,215 @@ SQI calculado en el dominio HPS en lugar del espectro lineal:
 - `mow_afe4490.h`: comentario `hr3_sqi` actualizado
 - `ppg_plotter.py`: `HR3TestCalc` — SQI formula y docstring actualizados
 - `mow_afe4490_spec.md`: §5.4 reescrito, versión v0.14 → v0.15, changelog añadido
+
+---
+
+## Sesión 2026-04-10 — ppg_plotter: guardado periódico de geometría de todas las ventanas
+
+### Problema
+La geometría de las ventanas solo se guardaba en `closeEvent`. Al matar el proceso con `taskkill`, ese evento no se dispara y las posiciones/tamaños se pierden.
+
+### Solución
+`PPGMonitor._save_settings()` ya corría cada 10 s pero solo guardaba la geometría de la ventana principal. Se extendió para guardar también la geometría de todos los subwindows abiertos.
+
+Adicionalmente, 5 ventanas que nunca habían tenido save/restore de geometría se actualizaron:
+- `SpO2TestWindow`, `HR1TestWindow`, `HR2TestWindow`, `HR3TestWindow`: restore añadido al final de `__init__`, save añadido en `closeEvent`.
+- `TimingWindow`: `self.resize(640, 980)` sustituido por restore+default, save añadido en `closeEvent`.
+
+### Resultado
+Todas las 11 ventanas del script persisten su geometría:
+- Al cerrar correctamente: vía `closeEvent`.
+- Al matar con taskkill: vía el timer de 10 s en `_save_settings()`.
+
+---
+
+## Sesión 2026-04-10 — Fix: HR3TestCalc spec_hr undefined tras refactor SQI
+
+### Bug
+Al refactorizar el bloque SQI de `HR3TestCalc.update()` para usar HPS en lugar del espectro lineal, se eliminó por error la línea `spec_hr = spectrum[mask]`. La sección de normalización para display (línea `spec_max = float(np.max(spec_hr))`) seguía referenciando `spec_hr`, causando `NameError` en cada ciclo de cálculo. Efecto: FFT plot parado, HR no calculado, plot temporal congelado.
+
+### Fix
+Añadida de nuevo `spec_hr = spectrum[mask]` al inicio del bloque SQI en `HR3TestCalc.update()`.
+
+---
+
+## Sesión 2026-04-11 — Diseño offline runner (spec v0.16)
+
+### Contexto
+Las incubadoras Incunest enviarán ficheros CSV de 10 s / 500 Hz con las 6 señales brutas del AFE4490 a un repositorio Google Drive. El objetivo es pasar esos ficheros por los algoritmos HR1/HR2/HR3/SpO2 para calibrar y mejorar el firmware.
+
+### Opciones evaluadas
+- **Opción 1 (ESP32 + serie):** posible en batch pero requiere hardware físico siempre conectado.
+- **Opción 2 (C++ nativo):** seleccionada. Los algoritmos HR1/HR2/HR3 son C++ puro, sin Arduino ni FreeRTOS. Coste de setup mínimo.
+- **Opción 3 (Python):** descartada por riesgo de divergencia respecto al firmware (ya ha ocurrido con HR3 SQI).
+
+### Decisiones de diseño
+
+**Formato CSV de entrada**
+- Formato propio de Incunest, variable entre versiones de firmware.
+- Siempre contiene las 6 señales brutas con nombres: `RED`, `IR`, `AmbRED`, `AmbIR`, `REDSub`, `IRSub`.
+- El parser detecta columnas **por nombre** (no por posición). Columnas extra ignoradas.
+
+**Columnas opcionales de firmware**
+- Si el CSV incluye `FW_HR1`, `FW_HR2`, `FW_HR3`, `FW_SpO2`, se añaden columnas `delta_*` al resultado.
+- Propósito: comprobar equivalencia firmware ↔ runner, no calibración.
+
+**Flag `MOW_OFFLINE`**
+- Nueva flag de compilación que sustituye includes de Arduino/SPI/FreeRTOS por `mow_offline_platform.h`.
+- Deshabilita `begin()`, `stop()`, `getData()`, ISR y tareas FreeRTOS.
+- Activa implícitamente `UNIT_TEST` → expone `test_feed_*` / `test_hr*`.
+- Requiere mover precálculo de la ventana Hann de `begin()` a `_reset_algorithms()`.
+
+**Estructura de ficheros**
+```
+tools/offline_runner/
+  CMakeLists.txt
+  main.cpp
+  mow_offline_platform.h
+```
+
+**Salidas**
+- `<basename>_result.csv` por fichero (muestra a muestra)
+- `batch_summary.csv` acumulativo (estadísticas por fichero)
+
+### Cambios especificados (sin implementar aún)
+- `mow_afe4490_spec.md` v0.15 → v0.16: añadida §9 completa con diseño del runner.
+- Pendiente de implementar: cambios en `.h`/`.cpp` y ficheros `tools/`.
+
+### Nota
+Todo lo relativo al runner queda documentado en `mow_afe4490_spec.md` §9 como parte permanente de la spec.
+
+---
+
+## Sesión 2026-04-11 — MOW_OFFLINE guards en mow_afe4490.h y mow_afe4490.cpp
+
+### Tema
+Añadir soporte al flag de compilación `MOW_OFFLINE` en la librería `mow_afe4490`.
+
+### Cambios implementados
+
+**`mow_afe4490.h`**
+- Sustituidos los includes de plataforma por bloque `#ifdef MOW_OFFLINE / #else / #endif` que incluye `mow_offline_platform.h` (y fuerza `UNIT_TEST`) o los includes normales de Arduino/FreeRTOS.
+- Guardados con `#ifndef MOW_OFFLINE` los métodos públicos `begin()`, `stop()`, `getData()` y `_drdy_isr()`.
+- Guardados con `#ifndef MOW_OFFLINE` los métodos privados de hardware: SPI primitivos (`_write_reg`, `_read_spi_raw`, `_read_reg`), chip init (`_chip_init`, `_apply_timing_regs`, `_apply_analog_regs`, `_apply_control_regs`, `_build_tiagain`), FreeRTOS tasks (`_task_trampoline`, `_task_body`, `_hr2_task_trampoline`, `_hr2_task_body`, `_hr3_task_trampoline`, `_hr3_task_body`), ISR (`_drdy_isr_static`), y static `_g_instance`.
+
+**`mow_afe4490.cpp`**
+- `esp_log.h` guardado con `#ifndef MOW_OFFLINE`; `esp_timer.h` con `#if MOW_TIMING_STATS && !defined(MOW_OFFLINE)`.
+- Añadido bloque `#ifdef MOW_OFFLINE` para `TAG` + macros `ESP_LOGE/I/W` como `((void)0)`.
+- `MOW_AFE4490::_g_instance = nullptr` guardado con `#ifndef MOW_OFFLINE`.
+- Cuerpo del destructor guardado con `#ifndef MOW_OFFLINE` (destructor vacío bajo offline).
+- Hann window precomputation movida de `begin()` a `_reset_algorithms()`.
+- `begin()` completo guardado con `#ifndef MOW_OFFLINE`.
+- Constructor ahora llama `_reset_algorithms()` al final (precomputa la ventana Hann también en construcción).
+- `getData()` y `stop()` guardados con `#ifndef MOW_OFFLINE`.
+- SPI primitivos y chip-init functions (`_write_reg` .. `_apply_control_regs`) en un bloque `#ifndef MOW_OFFLINE`.
+- `_task_trampoline`, `_task_body`, `_drdy_isr_static`, `_drdy_isr` en un bloque `#ifndef MOW_OFFLINE`.
+- Block `#if MOW_TIMING_STATS` de `_emit_timing`/`_emit_tasks` cambiado a `#if MOW_TIMING_STATS && !defined(MOW_OFFLINE)`.
+- Setters de hardware (`setSampleRate`, `setNumAverages`, `setLED1Current`, `setLED2Current`, `setLEDRange`, `setTIAGain`, `setTIACF`, `setStage2Gain`): bloques `if (_initialized) xSemaphoreTake(_spi_mutex, ...)` y `if (_initialized) { _apply_*; xSemaphoreGive(...); }` guardados con `#ifndef MOW_OFFLINE`.
+- `_hr2_task_trampoline`/`_hr2_task_body` y `_hr3_task_trampoline`/`_hr3_task_body` guardados con `#ifndef MOW_OFFLINE`.
+
+### Decisiones clave
+- `setSpO2Coefficients` y los demás setters de algoritmo (`setPPGChannel`, `setFilter`, `setHR2Filter`, `setHR3Filter`) no se tocan: sus `xSemaphoreTake/Give(_state_mutex, ...)` son condicionales a `_initialized` (siempre false en offline) y compilarán con los stubs de `mow_offline_platform.h`.
+- `_sign_extend_22`, `_recalc_rate_params`, `_recalc_biquad`, `_recalc_biquad_lp`, `_biquad_process`, `_process_sample`, `_update_*`, `_linearize_*`, `_compute_*`, `_reset_algorithms` se dejan siempre activos (son los algoritmos puros que el runner offline necesita).
+
+
+---
+
+## Sesión — 2026-04-11
+
+### Tema: Preguntas sobre señales AFE4490 y gestión de tareas pendientes
+
+### Preguntas y respuestas clave
+
+- **¿Qué señal usa cada algoritmo HR?** — Los tres (HR1, HR2, HR3) usan `LED1_ALED1` (IR con corrección de ambiental). Pre-procesado distinto: HR1 MA 5 Hz, HR2 BPF 0.5–5 Hz + decimate ×10, HR3 LPF 10 Hz + decimate ×10.
+- **¿Cómo confirmar que LED1 = IR?** — Tres fuentes: (1) datasheet AFE4490 (SBAS491, p.18), (2) código ProtoCentral (`IRtemp = afe44xxRead(LED1VAL)`), (3) comentarios en `mow_afe4490.h:50`.
+- **¿Qué es la detección de dedo?** — No existe un algoritmo propio. Es implícita: umbral DC (`spo2_min_dc = 1000` cuentas ADC) en SpO2, y PI < umbral → SQI = 0.
+- **¿Hay verificación de que `LED1_ALED1 == LED1 - ALED1`?** — No. El chip hace la resta internamente (registro 0x2F) y se usa tal cual sin comparar con la resta software.
+
+### Decisiones y cambios
+
+- **TODO.md** — Añadidas tres tareas nuevas:
+  - Actualizar `mow_afe4490_spec.md` §6 con arquitectura async FreeRTOS.
+  - Probe presence detection (módulo explícito, genérico/configurable).
+  - Utilizar registro DIAG (0x30) para diagnosticar estado del sistema/sonda.
+- **Regla de workflow** — Las tareas pendientes van siempre en `TODO.md`, no en la memoria persistente de Claude.
+- **Memoria** — Corregido `project_limb_detection_task.md` (eliminada referencia a tobillo neonatal; la librería es agnóstica al sitio anatómico).
+
+### Añadido tras primera actualización de sesión
+
+- **¿Hay verificación de `LED1_ALED1 == LED1 - ALED1` en ppg_plotter.py?** — No. El plotter recibe `IRSub`/`REDSub` como campos de trama y los acepta sin calcular la resta por su cuenta. Queda como posible tarea de diagnóstico futura.
+- **Gestión de tareas pendientes** — Corregido el workflow: las tareas van siempre en `TODO.md`, no en la memoria persistente de Claude. Regla guardada en `feedback_general.md`.
+
+---
+
+## Sesión 2026-04-11 — Implementación offline runner + corrección spec
+
+### Corrección de la spec (mow_afe4490_spec.md v0.16)
+Errores de numeración corregidos:
+- `### 9.5 ADC Averaging` dentro de §7 → `### 7.1`
+- `### 8.4 TIMING window` flotando tras version history → devuelta a §8
+- Tres secciones `## 9.` → renumeradas: offline runner=§9, version history=§10, chip registers=§11, bibliography=§12
+- Version history reordenada descendente (v0.16 → v0.1)
+
+### Ficheros creados/modificados
+
+- `lib/mow_afe4490/mow_afe4490.h` — guards `#ifdef MOW_OFFLINE` en includes y declaraciones de hardware
+- `lib/mow_afe4490/mow_afe4490.cpp` — guards en funciones hardware; ventana Hann movida a `_reset_algorithms()`; macros ESP_LOG como no-ops
+- `tools/offline_runner/mow_offline_platform.h` (nuevo) — stubs FreeRTOS + Arduino
+- `tools/offline_runner/CMakeLists.txt` (nuevo) — C++17, sin deps externas, linkado estático Windows
+- `tools/offline_runner/main.cpp` (nuevo) — parser CSV por nombre de columna, batch processing, result CSV + batch_summary.csv
+- `.gitignore` — añadido `tools/offline_runner/build/` y ficheros generados
+
+### Prueba
+Señal sintética 1.2 Hz (72 BPM), 5000 muestras: HR1=72.7 BPM, HR2=72.3 BPM ✓
+
+### Uso
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+build/mow_offline_runner.exe fichero.csv
+build/mow_offline_runner.exe directorio/
+```
+
+---
+
+## Sesión 2026-04-11 — Renombrado mow_afe4490_platform_stub.h
+
+### Cambio
+`mow_offline_platform.h` renombrado a `mow_afe4490_platform_stub.h`.
+
+### Motivo
+- Prefijo `mow_afe4490_` es coherente con el resto de la librería
+- `_stub` es el término técnico estándar para implementación vacía que sustituye a la real
+- `platform` describe con precisión qué se stubs (Arduino + FreeRTOS), más preciso que `offline`
+
+### Ficheros actualizados
+- `lib/mow_afe4490/mow_offline_platform.h` → `lib/mow_afe4490/mow_afe4490_platform_stub.h`
+- `lib/mow_afe4490/mow_afe4490.h` — include actualizado
+- `mow_afe4490_spec.md` — todas las referencias actualizadas
+
+
+---
+
+## Sesión 2026-04-11 — Corrección comentario en mow_afe4490_platform_stub.h
+
+### Cambio
+Corrección menor: el comentario de cabecera en `mow_afe4490_platform_stub.h` línea 2 aún tenía el nombre antiguo `mow_offline_platform.h`. Actualizado a `mow_afe4490_platform_stub.h`.
+
+### Fichero actualizado
+- `lib/mow_afe4490/mow_afe4490_platform_stub.h` — comentario de cabecera corregido
+
+---
+
+## Sesión 2026-04-11 — Firma estándar de cabecera en todos los ficheros de la librería
+
+### Cambio
+Aplicada firma estándar de 4 líneas en todos los ficheros de código del proyecto, y corregida la versión v0.14 → v0.16 en los ficheros que estaban desactualizados.
+
+### Ficheros actualizados
+- `lib/mow_afe4490/mow_afe4490_platform_stub.h` — firma estándar añadida (v0.16), comentario descriptivo anterior eliminado
+- `lib/mow_afe4490/mow_afe4490.h` — v0.14 → v0.16
+- `lib/mow_afe4490/mow_afe4490.cpp` — v0.14 → v0.16
+- `tools/offline_runner/main.cpp` — firma estándar aplicada (v0.16), línea Build eliminada
+
+### Regla
+Todo fichero de código nuevo debe incluir la firma de 4 líneas desde su creación. Al subir versión, actualizar todos los ficheros afectados. Guardado en memoria persistente.

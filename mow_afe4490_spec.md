@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.15
+# mow_afe4490 — Specification v0.16
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -386,9 +386,7 @@ HR1–HR4 all operate on `led1_aled1` (IR ambient-corrected) and run in parallel
 - **Timing registers** — calculated automatically by the library from `setSampleRate()`. Not exposed to the user.
 - **This spec must be updated** with any design change to the library, so that it can always regenerate the corresponding version
 
----
-
-### 9.5 ADC Averaging — formula and constraints
+### 7.1 ADC Averaging — formula and constraints
 
 Source: AFE4490 datasheet section 8.4.1, Equation 5.
 
@@ -471,42 +469,175 @@ This three-way relationship (spec → firmware, spec → Python mirror, firmware
 - **Comparison:** each window displays firmware output (received over serial) vs Python mirror output side by side, with a delta channel and a pass/fail indicator.
 - **No code reuse from LAB windows:** TEST windows implement their algorithms from scratch following this spec. LAB windows may have evolved away from the final spec during the design phase; reusing their code would introduce uncontrolled divergence.
 
+### 8.4 TIMING window (diagnostics)
+
+The `TIMING` window in `ppg_plotter.py` displays per-algorithm CPU execution times measured in firmware, parsed from `$TIMING` diagnostic frames.
+
+**Compile-time flag:** `MOW_TIMING_STATS` (default 0). Set to 1 via `platformio.ini` `build_flags` to enable. When 0, all instrumentation code is compiled out with zero overhead.
+
+**Frame format:**
+```
+$TIMING,hr1_mean,hr1_max,hr2_mean,hr2_max,hr3_mean,hr3_max,
+        spo2_mean,spo2_max,cycle_mean,cycle_max,stack_free*XX
+```
+- All time values in **µs** (measured with `esp_timer_get_time()`, resolution 1 µs)
+- `stack_free`: remaining stack of the mow_afe4490 FreeRTOS task in 4-byte words (`uxTaskGetStackHighWaterMark`)
+- Checksum: XOR of all bytes between `$` and `*` (NMEA style)
+- Emitted every `ts_emit_interval = 2500` samples (~5 s at 500 Hz); stats reset after each emission
+
+**Timing scope:**
+
+| Field | What is measured |
+|---|---|
+| `hr1_mean/max` | `_update_hr1()` execution time |
+| `hr2_mean/max` | `_update_hr2()` execution time (biquad + autocorr combined) |
+| `hr3_mean/max` | `_update_hr3()` execution time (LP filter + FFT + HPS combined) |
+| `spo2_mean/max` | `_update_spo2()` execution time |
+| `cycle_mean/max` | Full sample cycle: SPI burst-read (6 channels) + `_process_sample()` |
+
+**Budget:** cycle budget = 2000 µs (1 sample period at 500 Hz).
+- `cycle_max < 1800 µs` → green (safe, 10% margin)
+- `1800 ≤ cycle_max ≤ 2000 µs` → orange (tight)
+- `cycle_max > 2000 µs` → red (over budget, risk of missed samples)
+
+**Implementation notes:**
+- Individual algo timers are in `_process_sample()`; cycle timer is in `_task_body()`
+- `_emit_timing()` is a private method; formats and sends the frame, then resets all `TimingStat` accumulators
+- `TimingStat` struct (fields: `max_us`, `sum_us`, `count`) lives in the private section of `MOW_AFE4490`, guarded by `#if MOW_TIMING_STATS`
+
 ---
 
-## 9. Version history
+## 9. Offline runner — `mow_offline_runner`
+
+### 9.1 Purpose
+
+A native C++ command-line tool that runs the mow_afe4490 algorithms (HR1, HR2, HR3, SpO2) on CSV files received from real Incunest incubators, without any hardware. Used to calibrate and improve the Incunest firmware using real neonatal PPG data.
+
+### 9.2 Input CSV format
+
+Incunest incubators export 10-second CSV files at 500 Hz (5000 samples). The format is not fixed — it may vary across firmware versions — but the following six columns are always present:
+
+| Column name | Signal | `AFE4490Data` field |
+|---|---|---|
+| `RED`    | LED2VAL — RED raw          | `led2`       |
+| `IR`     | LED1VAL — IR raw           | `led1`       |
+| `AmbRED` | ALED2VAL — ambient after LED2 | `aled2`   |
+| `AmbIR`  | ALED1VAL — ambient after LED1 | `aled1`   |
+| `REDSub` | LED2-ALED2 — RED corrected | `led2_aled2` |
+| `IRSub`  | LED1-ALED1 — IR corrected  | `led1_aled1` |
+
+**Parser rule:** the parser reads the CSV header row and finds the above columns **by name** (case-insensitive). Column order and extra columns are ignored. The parser aborts with a clear error if any of the six required columns is missing.
+
+**Optional firmware result columns:** if the CSV also contains columns `FW_HR1`, `FW_HR2`, `FW_HR3`, `FW_SpO2`, the runner includes them in the output and adds delta columns (`delta_HR1`, etc.) for algorithm equivalence checking. These columns do not affect calibration — their sole purpose is to verify that the offline C++ runner and the firmware produce identical results.
+
+### 9.3 Compile-time flag: `MOW_OFFLINE`
+
+To compile `mow_afe4490.cpp` without Arduino, SPI, or FreeRTOS, define `MOW_OFFLINE` before including the header. This flag:
+
+1. Replaces all platform includes with `mow_afe4490_platform_stub.h` (type stubs only).
+2. Disables `begin()`, `stop()`, `getData()`, the ISR, and all FreeRTOS objects.
+3. Implicitly enables `UNIT_TEST`, exposing `test_feed_*` / `test_hr*` / `test_spo2*` methods.
+4. Keeps all algorithm methods (`_update_hr1`, `_update_hr2`, `_update_hr3`, `_update_spo2`, `_reset_algorithms`, `_recalc_rate_params`, `_biquad_process`) fully functional.
+
+`MOW_OFFLINE` is never defined in firmware builds. It is only used by the offline runner and any future native unit tests.
+
+### 9.4 `mow_afe4490_platform_stub.h`
+
+Thin stub (~30 lines) located at `lib/mow_afe4490/mow_afe4490_platform_stub.h` — alongside the library header that includes it. Provides:
+
+- Standard integer types (`uint8_t`, `int32_t`, etc.) via `<cstdint>`
+- `inline uint32_t millis() { return 0; }` (not used by algorithms, present to avoid linker error)
+- `SemaphoreHandle_t`, `QueueHandle_t`, `TaskHandle_t` as `void*` typedefs (never accessed under `MOW_OFFLINE`)
+- `IRAM_ATTR` as empty macro
+- `portTICK_PERIOD_MS` as `1`
+
+No Arduino-specific classes (`Serial`, `SPI`, `SPIClass`) are needed — they are all guarded by `#ifndef MOW_OFFLINE` in the library.
+
+### 9.5 Changes required in `mow_afe4490.h` / `.cpp`
+
+| Change | Location | Reason |
+|---|---|---|
+| Wrap platform includes in `#ifdef MOW_OFFLINE` / `#else` | `mow_afe4490.h` top | Avoid Arduino/FreeRTOS headers on native build |
+| Wrap `begin()`, `stop()`, `getData()`, ISR, task methods in `#ifndef MOW_OFFLINE` | `mow_afe4490.h` + `.cpp` | These are hardware-only |
+| Move Hann window precomputation from `begin()` to `_reset_algorithms()` | `mow_afe4490.cpp` | `begin()` is disabled under `MOW_OFFLINE`; `_reset_algorithms()` is available |
+| `#define UNIT_TEST` when `MOW_OFFLINE` is defined | `mow_afe4490.h` | Expose `test_feed_*` API |
+
+### 9.6 File structure
+
+```
+lib/mow_afe4490/
+  mow_afe4490.h              — library header (includes mow_afe4490_platform_stub.h when MOW_OFFLINE)
+  mow_afe4490.cpp            — library implementation
+  mow_afe4490_platform_stub.h    — Arduino/FreeRTOS type stubs (used by the library, not the runner)
+
+tools/
+  offline_runner/
+    CMakeLists.txt           — CMake build (C++17, no external deps)
+    main.cpp                 — CSV reader, algorithm driver, output writer
+```
+
+The runner includes `../../lib/mow_afe4490/mow_afe4490.cpp` directly via CMake `target_sources`. No subproject, no installation, no package manager.
+
+### 9.7 Execution flow
+
+```
+mow_offline_runner <path>     // path = CSV file or directory of CSV files
+
+for each CSV file:
+    parse header → locate required columns by name
+    MOW_AFE4490 afe (default constructor, no begin())
+    afe._reset_algorithms()   // zeroes state + precomputes Hann window
+    for each row:
+        afe.test_feed_spo2(led1_aled1, led2_aled2)
+        afe.test_feed_hr1(led1_aled1)
+        afe.test_feed_hr2(led1_aled1)
+        afe.test_feed_hr3(led1_aled1)
+        write result row to <input_basename>_result.csv
+    write summary row to batch_summary.csv
+```
+
+HR2 and HR3 are driven via `test_feed_hr2()` / `test_feed_hr3()`, which call the synchronous `_update_hr2()` / `_update_hr3()` paths (same computation as the async tasks, without FreeRTOS signalling). Results are available via `test_hr2()`, `test_hr2_sqi()`, etc. after each call.
+
+### 9.8 Output files
+
+**Per-file result:** `<input_basename>_result.csv`
+
+```
+SmpIdx,RED,IR,AmbRED,AmbIR,REDSub,IRSub,SpO2,SpO2SQI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI
+[,FW_HR1,FW_HR2,FW_HR3,FW_SpO2,delta_HR1,delta_HR2,delta_HR3,delta_SpO2]  ← if firmware columns present
+```
+
+**Batch summary:** `batch_summary.csv` (appended per run, not overwritten)
+
+```
+Timestamp,File,N_samples,SpO2_mean,SpO2_SQI_mean,HR1_mean,HR1_SQI_mean,HR2_mean,HR3_mean,valid_spo2_pct
+```
+
+### 9.9 Build
+
+```bash
+cd tools/offline_runner
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+build/mow_offline_runner path/to/file.csv
+build/mow_offline_runner path/to/directory/
+```
+
+Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11). No external libraries.
+
+---
+
+## 10. Version history
 
 | Version | Description                                                                 |
 |---------|-----------------------------------------------------------------------------|
-| v0.1    | Initial complete specification                                              |
-| v0.2    | Added section 9 with comparative register tables (timing, analog, control, |
-|         | init sequence). Sources: AFE44x0.h EVM TI v1.4, Datasheet AFE4490 Table 2,|
-|         | Protocentral src/. mow_afe4490 values justified register by register.      |
-|         | Updated defaults: NUMAV=7, ENSEPGAIN=0, Stage2 disabled.                   |
-| v0.3    | Configurable NUMAV: added `setNumAverages(uint8_t num)` to the API.        |
-|         | Section 9.5 with NUMAV_max formula, table by PRF, clamping behaviour and   |
-|         | SNR effect. `setSampleRate()` recalculates NUMAV_max.                      |
-|         | **First implementation:** `include/mow_afe4490.h` and                      |
-|         | `src/mow_afe4490.cpp` generated. Pending hardware validation.              |
-| v0.4    | `AFE4490Data` extended with the 6 raw AFE4490 signals (led1, led2,         |
-|         | aled1, aled2, led1_aled1, led2_aled2). Struct is now equivalent in         |
-|         | information to the protocentral output.                                    |
-| v0.5    | Internal constants reorganised at the top of the anonymous namespace in    |
-|         | `.cpp`, in snake_case. Algorithm time parameters expressed in physical      |
-|         | units (seconds): `spo2_warmup_s`, `dc_iir_tau_s`, `ac_ema_tau_s`,         |
-|         | `hr_refractory_s`. New members `_spo2_warmup_samples`,                     |
-|         | `_hr_refractory_samples`, `_dc_iir_alpha`, `_ac_ema_beta` derived from     |
-|         | `_sample_rate_hz` via `_recalc_rate_params()`, called in constructor and   |
-|         | in `setSampleRate()`. SpO2 and HR algorithms now correct at any PRF.       |
-| v0.6    | Biquad coefficients computed dynamically (`_recalc_biquad()`). Formula:    |
-|         | bilinear transform on a 2nd-order Butterworth bandpass prototype.          |
-|         | Coefficients moved from namespace constants to members `_bq_b0..a2`.       |
-|         | Called from `_recalc_rate_params()` and `setFilter()`. The "not yet        |
-|         | implemented" warning removed. `setFilter()` is now fully functional for    |
-|         | any fs, f_low, f_high.                                                     |
-| v0.7    | Added `stop()` (section 2.6): clean shutdown — detaches ISR, deletes       |
-|         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
-|         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
-|         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+| v0.16   | Offline runner specification added (§9): `mow_offline_runner` native C++   |
+|         | tool. `MOW_OFFLINE` compile flag stubs Arduino/FreeRTOS and enables        |
+|         | `UNIT_TEST` API for algorithm-only builds. Hann window precomputation       |
+|         | moved to `_reset_algorithms()`. Input CSV: column-name-based parser,        |
+|         | format-agnostic, requires RED/IR/AmbRED/AmbIR/REDSub/IRSub. Output:        |
+|         | per-file `_result.csv` + `batch_summary.csv`. Build: CMake, C++17, no      |
+|         | external deps. Optional firmware delta columns for equivalence checking.    |
 | v0.15   | HR3 SQI redesigned: from linear spectral concentration to HPS peak           |
 |         | prominence (`HPS[peak_bin] / Σ HPS[k]`). Eliminates harmonic inflation of   |
 |         | the denominator. No new buffer — `hps_sum` accumulated in the existing loop. |
@@ -548,46 +679,40 @@ This three-way relationship (spec → firmware, spec → Python mirror, firmware
 |         | Section 5.2 (HR1) fully documented: DC removal IIR, moving average LP,    |
 |         | running-max threshold, refractory period, 5-interval averaging, peak       |
 |         | marker diagnostic, and key constants table.                                |
-
-### 8.4 TIMING window (diagnostics)
-
-The `TIMING` window in `ppg_plotter.py` displays per-algorithm CPU execution times measured in firmware, parsed from `$TIMING` diagnostic frames.
-
-**Compile-time flag:** `MOW_TIMING_STATS` (default 0). Set to 1 via `platformio.ini` `build_flags` to enable. When 0, all instrumentation code is compiled out with zero overhead.
-
-**Frame format:**
-```
-$TIMING,hr1_mean,hr1_max,hr2_mean,hr2_max,hr3_mean,hr3_max,
-        spo2_mean,spo2_max,cycle_mean,cycle_max,stack_free*XX
-```
-- All time values in **µs** (measured with `esp_timer_get_time()`, resolution 1 µs)
-- `stack_free`: remaining stack of the mow_afe4490 FreeRTOS task in 4-byte words (`uxTaskGetStackHighWaterMark`)
-- Checksum: XOR of all bytes between `$` and `*` (NMEA style)
-- Emitted every `ts_emit_interval = 2500` samples (~5 s at 500 Hz); stats reset after each emission
-
-**Timing scope:**
-
-| Field | What is measured |
-|---|---|
-| `hr1_mean/max` | `_update_hr1()` execution time |
-| `hr2_mean/max` | `_update_hr2()` execution time (biquad + autocorr combined) |
-| `hr3_mean/max` | `_update_hr3()` execution time (LP filter + FFT + HPS combined) |
-| `spo2_mean/max` | `_update_spo2()` execution time |
-| `cycle_mean/max` | Full sample cycle: SPI burst-read (6 channels) + `_process_sample()` |
-
-**Budget:** cycle budget = 2000 µs (1 sample period at 500 Hz).
-- `cycle_max < 1800 µs` → green (safe, 10% margin)
-- `1800 ≤ cycle_max ≤ 2000 µs` → orange (tight)
-- `cycle_max > 2000 µs` → red (over budget, risk of missed samples)
-
-**Implementation notes:**
-- Individual algo timers are in `_process_sample()`; cycle timer is in `_task_body()`
-- `_emit_timing()` is a private method; formats and sends the frame, then resets all `TimingStat` accumulators
-- `TimingStat` struct (fields: `max_us`, `sum_us`, `count`) lives in the private section of `MOW_AFE4490`, guarded by `#if MOW_TIMING_STATS`
+| v0.7    | Added `stop()` (section 2.6): clean shutdown — detaches ISR, deletes       |
+|         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
+|         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
+|         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+| v0.6    | Biquad coefficients computed dynamically (`_recalc_biquad()`). Formula:    |
+|         | bilinear transform on a 2nd-order Butterworth bandpass prototype.          |
+|         | Coefficients moved from namespace constants to members `_bq_b0..a2`.       |
+|         | Called from `_recalc_rate_params()` and `setFilter()`. The "not yet        |
+|         | implemented" warning removed. `setFilter()` is now fully functional for    |
+|         | any fs, f_low, f_high.                                                     |
+| v0.5    | Internal constants reorganised at the top of the anonymous namespace in    |
+|         | `.cpp`, in snake_case. Algorithm time parameters expressed in physical      |
+|         | units (seconds): `spo2_warmup_s`, `dc_iir_tau_s`, `ac_ema_tau_s`,         |
+|         | `hr_refractory_s`. New members `_spo2_warmup_samples`,                     |
+|         | `_hr_refractory_samples`, `_dc_iir_alpha`, `_ac_ema_beta` derived from     |
+|         | `_sample_rate_hz` via `_recalc_rate_params()`, called in constructor and   |
+|         | in `setSampleRate()`. SpO2 and HR algorithms now correct at any PRF.       |
+| v0.4    | `AFE4490Data` extended with the 6 raw AFE4490 signals (led1, led2,         |
+|         | aled1, aled2, led1_aled1, led2_aled2). Struct is now equivalent in         |
+|         | information to the protocentral output.                                    |
+| v0.3    | Configurable NUMAV: added `setNumAverages(uint8_t num)` to the API.        |
+|         | Section 11.1 with NUMAV_max formula, table by PRF, clamping behaviour and  |
+|         | SNR effect. `setSampleRate()` recalculates NUMAV_max.                      |
+|         | **First implementation:** `include/mow_afe4490.h` and                      |
+|         | `src/mow_afe4490.cpp` generated. Pending hardware validation.              |
+| v0.2    | Added section 11 with comparative register tables (timing, analog, control,|
+|         | init sequence). Sources: AFE44x0.h EVM TI v1.4, Datasheet AFE4490 Table 2,|
+|         | Protocentral src/. mow_afe4490 values justified register by register.      |
+|         | Updated defaults: NUMAV=7, ENSEPGAIN=0, Stage2 disabled.                   |
+| v0.1    | Initial complete specification                                              |
 
 ---
 
-## 9. AFE4490 chip register configuration
+## 11. AFE4490 chip register configuration
 
 This section documents the exact value of each AFE4490 register written by the library during initialisation, compared against the three reference sources analysed.
 
@@ -598,7 +723,7 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ---
 
-### 9.1 Timing registers (PRF = 500 Hz, AFECLK = 4 MHz, 1 count = 0.25 µs)
+### 11.1 Timing registers (PRF = 500 Hz, AFECLK = 4 MHz, 1 count = 0.25 µs)
 
 | Register | AFE44x0.h (PRF=500) | Datasheet Table 2 | Protocentral (src/) | **mow_afe4490** | **Rationale** |
 |---|---|---|---|---|---|
@@ -641,7 +766,7 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ---
 
-### 9.2 Analog configuration
+### 11.2 Analog configuration
 
 | Register / Field | AFE44x0.h (EVM) | Datasheet | Protocentral (src/) | **mow_afe4490** | **Rationale** |
 |---|---|---|---|---|---|
@@ -670,21 +795,21 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ---
 
-### 9.3 Control registers
+### 11.3 Control registers
 
 | Register / Field | AFE44x0.h (EVM) | Datasheet | Protocentral (src/) | **mow_afe4490** | **Rationale** |
 |---|---|---|---|---|---|
 | **CONTROL0** | 0x000000 | — | 0x000000→0x000008 | **0x000008 in init** | SW_RST ensures known state. Self-clearing. EVM does no explicit SW_RST — risk if chip was left in inconsistent state |
 | **CONTROL1** | 0x000107 | — | 0x010707 | **0x000107** | TIMEREN=1, NUMAV=7, no outputs on ALM pins |
 | → TIMEREN | 1 | — | 1 | **1** | Required for the internal timer to generate control signals |
-| → NUMAV | 7 (8 avg.) | — | 7 (8 avg.) | **7** | Default = 8 averaged samples → SNR ×√8 ≈ 2.8×. Configurable via `setNumAverages()`. See NUMAV_max formula in section 9.5 |
+| → NUMAV | 7 (8 avg.) | — | 7 (8 avg.) | **7** | Default = 8 averaged samples → SNR ×√8 ≈ 2.8×. Configurable via `setNumAverages()`. See NUMAV_max formula in section 7.1 |
 | → CLKALMPIN | not config. | — | LED2_CONV\|LED1_CONV | **not config. (0x00)** | Protocentral outputs conversion signals on ALM pins (useful with oscilloscope). Unnecessary in production; may interfere with other uses of those pins on in3ator |
 | → bit 16 | 0 | — | 1 ⚠️ | **0** | Not documented in AFE44x0.h or identified in datasheet. Protocentral enables it without apparent justification. Not replicated until its purpose is understood |
 | **ALARM** | not config. | — | not config. | **not config.** | Not needed for basic operation. Will be added if chip diagnostics are implemented |
 
 ---
 
-### 9.4 Initialisation sequence
+### 11.4 Initialisation sequence
 
 | Step | AFE44x0.h (EVM) | Protocentral (src/) | **mow_afe4490** | **Rationale** |
 |---|---|---|---|---|
@@ -698,11 +823,11 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ---
 
-## 10. Bibliographic references
+## 12. Bibliographic references
 
 Key references for each algorithm implemented in this library.
 
-### 10.1 HR1 — Adaptive threshold peak detection
+### 12.1 HR1 — Adaptive threshold peak detection
 
 - **Pan, J. & Tompkins, W.J. (1985).** "A Real-Time QRS Detection Algorithm." *IEEE Transactions on Biomedical Engineering*, 32(3), 230–236.
   The classical reference for cardiac peak detection with adaptive threshold and refractory period. HR1 is a simplified adaptation for PPG.
@@ -710,7 +835,7 @@ Key references for each algorithm implemented in this library.
 - **Elgendi, M. et al. (2013).** "Systolic Peak Detection in Acceleration Photoplethysmograms Measured from Emergency Responders in Tropical Conditions." *PLoS ONE*, 8(10), e76585.
   More specific to PPG peak detection in challenging conditions.
 
-### 10.2 HR2 — Normalised autocorrelation
+### 12.2 HR2 — Normalised autocorrelation
 
 - **de Cheveigné, A. & Kawahara, H. (2002).** "YIN, a fundamental frequency estimator for speech and music." *Journal of the Acoustical Society of America*, 111(4), 1917–1930.
   The primary reference for normalised autocorrelation-based fundamental frequency estimation. HR2 is directly derived from this approach.
@@ -718,7 +843,7 @@ Key references for each algorithm implemented in this library.
 - **Rabiner, L.R. & Schafer, R.W. (1978).** *Digital Processing of Speech Signals.* Prentice-Hall.
   Foundational coverage of autocorrelation methods for pitch estimation.
 
-### 10.3 HR3 — FFT + Harmonic Product Spectrum
+### 12.3 HR3 — FFT + Harmonic Product Spectrum
 
 - **Schroeder, M.R. (1968).** "Period histogram and product spectrum: New methods for fundamental-frequency measurement." *Journal of the Acoustical Society of America*, 43(4), 829–834.
   Original paper introducing the Harmonic Product Spectrum concept.
@@ -729,7 +854,7 @@ Key references for each algorithm implemented in this library.
 - **Paradkar, N. & Chowdhary, S.R. (2017).** "Cardiac arrhythmia detection using photoplethysmography." *IEEE EMBC 2017*.
   Application of FFT-based HR estimation on PPG signals in a wearable context similar to this project.
 
-### 10.4 SpO2 — AC/DC ratio (R-curve method)
+### 12.4 SpO2 — AC/DC ratio (R-curve method)
 
 - **Webster, J.G. (Ed.) (1997).** *Design of Pulse Oximeters.* IOP Publishing.
   The definitive reference. Covers Beer-Lambert law, the R ratio, empirical calibration, and sources of measurement error.
