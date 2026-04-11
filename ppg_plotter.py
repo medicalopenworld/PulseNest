@@ -1801,6 +1801,9 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._arr_rms_ir   = np.array([])
         self._arr_rms_red  = np.array([])
 
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("SpO2TestWindow/geometry")
+        if geom: self.restoreGeometry(geom)
+
     # ── Parameter handling ────────────────────────────────────────────────────
 
     def _on_param_changed(self):
@@ -2204,6 +2207,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             f"  <b style='color:#FFDD44'>R py: {_fmt(v_R_py,5)}</b>")
 
     def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("SpO2TestWindow/geometry", self.saveGeometry())
         if self.main_monitor is not None:
             self.main_monitor.btn_spo2test.setChecked(False)
             self.main_monitor.spo2test_window = None
@@ -2483,6 +2487,9 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                    self._spin_thr, self._spin_refr]:
             sp.valueChanged.connect(self._on_param_changed)
         self._spin_ma_max.valueChanged.connect(self._on_param_changed)
+
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR1TestWindow/geometry")
+        if geom: self.restoreGeometry(geom)
 
     # ── Parameter handling ────────────────────────────────────────────────────
 
@@ -2841,6 +2848,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                 f"fs={fs:.0f} Hz)</b>")
 
     def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("HR1TestWindow/geometry", self.saveGeometry())
         if self.main_monitor is not None:
             self.main_monitor.btn_hr1test.setChecked(False)
             self.main_monitor.hr1test_window = None
@@ -3105,6 +3113,9 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             sp.valueChanged.connect(self._on_param_changed)
         for sp in [self._spin_buf_len, self._spin_max_lag, self._spin_upd_n]:
             sp.valueChanged.connect(self._on_param_changed)
+
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR2TestWindow/geometry")
+        if geom: self.restoreGeometry(geom)
 
     # ── Parameter handling ────────────────────────────────────────────────────
 
@@ -3418,6 +3429,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             self.curve_filt.setData(filt_t, filt)
 
     def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("HR2TestWindow/geometry", self.saveGeometry())
         if self.main_monitor is not None:
             self.main_monitor.btn_hr2test.setChecked(False)
             self.main_monitor.hr2test_window = None
@@ -3593,6 +3605,7 @@ class HR3TestCalc:
         hr_bpm    = peak_freq * 60.0
 
         # SQI: HPS peak prominence (spec §5.4)
+        spec_hr   = spectrum[mask]
         total_hps = float(np.sum(hps_hr))
         if total_hps > 0.0:
             fraction = float(hps[peak_global]) / total_hps
@@ -3864,6 +3877,9 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         vals_layout.addWidget(self._val_table)
         right_vbox.addWidget(grp_vals)
         right_vbox.addStretch()
+
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR3TestWindow/geometry")
+        if geom: self.restoreGeometry(geom)
 
     def _on_param_changed(self):
         self._calc.lp_cutoff_hz  = self._spin_lp_cutoff.value()
@@ -4153,6 +4169,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             self.curve_filt.setData(filt_t, filt)
 
     def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("HR3TestWindow/geometry", self.saveGeometry())
         if self.main_monitor is not None:
             self.main_monitor.btn_hr3test.setChecked(False)
             self.main_monitor.hr3test_window = None
@@ -4186,7 +4203,9 @@ class TimingWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("TIMING — CPU Budget & Load")
-        self.resize(640, 980)
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("TimingWindow/geometry")
+        if geom: self.restoreGeometry(geom)
+        else:    self.resize(640, 980)
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -4416,6 +4435,7 @@ class TimingWindow(QtWidgets.QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("TimingWindow/geometry", self.saveGeometry())
         parent = self.parent()
         if parent is not None and hasattr(parent, 'btn_timing'):
             parent.btn_timing.setChecked(False)
@@ -6003,6 +6023,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
         s.setValue("PPGMonitor/timing_open",   self.timing_window   is not None)
+        # Persist geometry of all open subwindows (survives taskkill; also saved in their closeEvent)
+        if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",   self.ppgplots_window.saveGeometry())
+        if self.serialcom_window is not None: s.setValue("SerialComWindow/geometry",  self.serialcom_window.saveGeometry())
+        if self.hrlab_window     is not None: s.setValue("HRLabWindow/geometry",      self.hrlab_window.saveGeometry())
+        if self.spo2lab_window   is not None: s.setValue("SpO2LabWindow/geometry",    self.spo2lab_window.saveGeometry())
+        if self.hr3lab_window    is not None: s.setValue("HR3LabWindow/geometry",     self.hr3lab_window.saveGeometry())
+        if self.spo2test_window  is not None: s.setValue("SpO2TestWindow/geometry",   self.spo2test_window.saveGeometry())
+        if self.hr1test_window   is not None: s.setValue("HR1TestWindow/geometry",    self.hr1test_window.saveGeometry())
+        if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
+        if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
+        if self.timing_window    is not None: s.setValue("TimingWindow/geometry",     self.timing_window.saveGeometry())
 
     def _restore_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
