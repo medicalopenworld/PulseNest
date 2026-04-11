@@ -5208,7 +5208,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.main_monitor = main_monitor
         self.setWindowTitle("Lab Capture")
-        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 20px;")
         self._setup_ui()
         self._load_settings()
 
@@ -5234,7 +5234,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             "Each line will be written as a # comment before the CSV header.")
         self._pre_notes.setFixedHeight(90)
         self._pre_notes.setStyleSheet(
-            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:18px;")
+            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:20px;")
         self._pre_notes.setToolTip(_make_tooltip(
             "Pre-capture notes",
             "Free-form text written as # comment lines at the top of the CSV file, "
@@ -5252,7 +5252,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         for i, (label, csv_name, _, mandatory) in enumerate(self._COLS):
             cb = QtWidgets.QCheckBox(label)
             cb.setChecked(True)
-            cb.setStyleSheet("font-size:18px; color:#E0E0E0;")
+            cb.setStyleSheet("font-size:20px; color:#E0E0E0;")
             if mandatory:
                 cb.setEnabled(False)
                 cb.setToolTip(_make_tooltip(
@@ -5272,28 +5272,28 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
         dir_row = QtWidgets.QHBoxLayout()
         self._edit_dir = QtWidgets.QLineEdit()
-        self._edit_dir.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:18px;")
+        self._edit_dir.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:20px;")
         self._edit_dir.setToolTip(_make_tooltip(
             "Output directory", "Folder where capture CSV files are saved."))
         dir_row.addWidget(self._edit_dir)
         btn_browse = QtWidgets.QPushButton("Browse…")
-        btn_browse.setStyleSheet("font-size:18px; padding:4px 10px;")
+        btn_browse.setStyleSheet("font-size:20px; padding:4px 10px;")
         btn_browse.clicked.connect(self._browse_dir)
         btn_browse.setToolTip(_make_tooltip(
             "Browse", "Choose the output directory for captured CSV files."))
         dir_row.addWidget(btn_browse)
         _lbl_dir = QtWidgets.QLabel("Directory:")
-        _lbl_dir.setStyleSheet("color:#CCCCCC; font-size:18px;")
+        _lbl_dir.setStyleSheet("color:#CCCCCC; font-size:20px;")
         form_out.addRow(_lbl_dir, dir_row)
 
         self._edit_prefix = QtWidgets.QLineEdit()
         self._edit_prefix.setPlaceholderText("lab_capture")
-        self._edit_prefix.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:18px;")
+        self._edit_prefix.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:20px;")
         self._edit_prefix.setToolTip(_make_tooltip(
             "Filename prefix",
             "The captured file is named <prefix>_<YYYYMMDD_HHMMSS>.csv"))
         _lbl_pfx = QtWidgets.QLabel("Filename prefix:")
-        _lbl_pfx.setStyleSheet("color:#CCCCCC; font-size:18px;")
+        _lbl_pfx.setStyleSheet("color:#CCCCCC; font-size:20px;")
         form_out.addRow(_lbl_pfx, self._edit_prefix)
         outer.addWidget(grp_out)
 
@@ -5317,14 +5317,14 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._spin_samples.setValue(5000)
         self._spin_samples.setSingleStep(500)
         self._spin_samples.setStyleSheet(
-            "background:#2A2A2A; color:#FFDD44; font-size:18px; padding:4px;")
+            "background:#2A2A2A; color:#FFDD44; font-size:20px; padding:4px;")
         self._spin_samples.setToolTip(_make_tooltip(
             "Sample count",
             "Number of 500 Hz samples to record in a timed capture. "
             "5000 samples = 10 seconds at 500 Hz."))
         row_timed.addWidget(self._spin_samples)
         lbl_smp = QtWidgets.QLabel("samples")
-        lbl_smp.setStyleSheet("font-size:18px; color:#AAAAAA;")
+        lbl_smp.setStyleSheet("font-size:20px; color:#AAAAAA;")
         row_timed.addWidget(lbl_smp)
         vbox_cap.addLayout(row_timed)
 
@@ -5353,7 +5353,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._progress.setTextVisible(True)
         self._progress.setStyleSheet(
             "QProgressBar { background:#2A2A2A; border:1px solid #555; color:#FFF; "
-            "font-size:18px; text-align:center; } "
+            "font-size:20px; text-align:center; } "
             "QProgressBar::chunk { background:#33AA55; }")
         vbox_cap.addWidget(self._progress)
 
@@ -5374,7 +5374,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             "Written as # comment lines at the end of the CSV file.")
         self._post_notes.setFixedHeight(90)
         self._post_notes.setStyleSheet(
-            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:18px;")
+            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:20px;")
         self._post_notes.setToolTip(_make_tooltip(
             "Post-capture notes",
             "Free-form text written as # comment lines at the bottom of the CSV file, "
@@ -5488,7 +5488,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         name = os.path.basename(filepath)
         self._lbl_status.setText(f"CAPTURING → {name}")
         self._lbl_status.setStyleSheet(
-            "font-size:18px; color:#FFDD44; font-weight:bold;")
+            "font-size:20px; color:#FFDD44; font-weight:bold;")
 
     def on_capture_progress(self, count: int, target: int):
         if target > 0:
@@ -5506,7 +5506,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         name = os.path.basename(filepath)
         self._lbl_status.setText(f"DONE  {count} samples → {name}")
         self._lbl_status.setStyleSheet(
-            "font-size:18px; color:#00FF88; font-weight:bold;")
+            "font-size:20px; color:#00FF88; font-weight:bold;")
 
     # ── Close ─────────────────────────────────────────────────────────────────
     def closeEvent(self, event):
