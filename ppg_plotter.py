@@ -5163,6 +5163,359 @@ class SerialComWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
 
+class LabCaptureWindow(QtWidgets.QMainWindow):
+    """Controlled lab capture window.
+
+    Opens via the CAPTURE LAB sidebar button.  Lets the user configure
+    metadata, column selection, output path and capture length before
+    triggering a 500 Hz CSV capture.  The window stays open after each
+    capture so consecutive sessions can be started without reconfiguring.
+
+    CSV format (compatible with mow_offline_runner):
+      - Pre-capture notes as '# ...' lines before the column header.
+      - Mandatory columns: RED, IR, AmbRED, AmbIR, REDSub, IRSub.
+      - Optional FW columns: FW_SpO2, FW_HR1, FW_HR2, FW_HR3 (offline_runner names).
+      - Post-capture notes as '# ...' lines after the last data row.
+    """
+
+    # (display label, csv column name, M1-parts index after '$', mandatory)
+    # M1 parts layout (after stripping '$' and checksum):
+    #   [0]=LibID  [1]=SmpCnt  [2]=Ts_us
+    #   [3]=RED  [4]=IR  [5]=AmbRED  [6]=AmbIR  [7]=REDSub  [8]=IRSub
+    #   [9]=PPG  [10]=SpO2  [11]=SpO2SQI  [12]=SpO2_R  [13]=PI
+    #   [14]=HR1  [15]=HR1SQI  [16]=HR2  [17]=HR2SQI  [18]=HR3  [19]=HR3SQI
+    _COLS = [
+        ("RED",      "RED",      3,  True),
+        ("IR",       "IR",       4,  True),
+        ("AmbRED",   "AmbRED",   5,  True),
+        ("AmbIR",    "AmbIR",    6,  True),
+        ("REDSub",   "REDSub",   7,  True),
+        ("IRSub",    "IRSub",    8,  True),
+        ("PPG",      "PPG",      9,  False),
+        ("SpO2",     "FW_SpO2", 10,  False),
+        ("SpO2 SQI", "SpO2SQI", 11,  False),
+        ("SpO2 R",   "SpO2_R",  12,  False),
+        ("PI",       "PI",      13,  False),
+        ("HR1",      "FW_HR1",  14,  False),
+        ("HR1 SQI",  "HR1SQI",  15,  False),
+        ("HR2",      "FW_HR2",  16,  False),
+        ("HR2 SQI",  "HR2SQI",  17,  False),
+        ("HR3",      "FW_HR3",  18,  False),
+        ("HR3 SQI",  "HR3SQI",  19,  False),
+    ]
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("Lab Capture")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._setup_ui()
+        self._load_settings()
+
+    # ── UI ───────────────────────────────────────────────────────────────────
+    def _setup_ui(self):
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        outer = QtWidgets.QVBoxLayout(central)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        _GRP = ("QGroupBox { color: #FFAA44; font-weight: bold; font-size: 18px; "
+                "border: 1px solid #555; margin-top: 8px; } "
+                "QGroupBox::title { subcontrol-origin: margin; left: 8px; }")
+
+        # ── Pre-capture notes ──────────────────────────────────────────────
+        grp_pre = QtWidgets.QGroupBox("Pre-capture notes")
+        grp_pre.setStyleSheet(_GRP)
+        vbox_pre = QtWidgets.QVBoxLayout(grp_pre)
+        self._pre_notes = QtWidgets.QPlainTextEdit()
+        self._pre_notes.setPlaceholderText(
+            "Subject ID, session conditions, operator name, …\n"
+            "Each line will be written as a # comment before the CSV header.")
+        self._pre_notes.setFixedHeight(90)
+        self._pre_notes.setStyleSheet(
+            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:16px;")
+        self._pre_notes.setToolTip(_make_tooltip(
+            "Pre-capture notes",
+            "Free-form text written as # comment lines at the top of the CSV file, "
+            "before the column header. Use it for subject ID, session conditions, "
+            "operator name, etc."))
+        vbox_pre.addWidget(self._pre_notes)
+        outer.addWidget(grp_pre)
+
+        # ── Columns ────────────────────────────────────────────────────────
+        grp_cols = QtWidgets.QGroupBox("Columns")
+        grp_cols.setStyleSheet(_GRP)
+        grid_cols = QtWidgets.QGridLayout(grp_cols)
+        grid_cols.setSpacing(4)
+        self._checks = {}
+        for i, (label, csv_name, _, mandatory) in enumerate(self._COLS):
+            cb = QtWidgets.QCheckBox(label)
+            cb.setChecked(True)
+            cb.setStyleSheet("font-size:17px; color:#E0E0E0;")
+            if mandatory:
+                cb.setEnabled(False)
+                cb.setToolTip(_make_tooltip(
+                    label,
+                    f"Always included — required by the offline runner (column: {csv_name})."))
+            else:
+                cb.setToolTip(_make_tooltip(label, f"Optional column: {csv_name}."))
+            self._checks[label] = cb
+            grid_cols.addWidget(cb, i // 3, i % 3)
+        outer.addWidget(grp_cols)
+
+        # ── Output ─────────────────────────────────────────────────────────
+        grp_out = QtWidgets.QGroupBox("Output")
+        grp_out.setStyleSheet(_GRP)
+        form_out = QtWidgets.QFormLayout(grp_out)
+        form_out.setSpacing(6)
+
+        dir_row = QtWidgets.QHBoxLayout()
+        self._edit_dir = QtWidgets.QLineEdit()
+        self._edit_dir.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:17px;")
+        self._edit_dir.setToolTip(_make_tooltip(
+            "Output directory", "Folder where capture CSV files are saved."))
+        dir_row.addWidget(self._edit_dir)
+        btn_browse = QtWidgets.QPushButton("Browse…")
+        btn_browse.setStyleSheet("font-size:16px; padding:2px 8px;")
+        btn_browse.clicked.connect(self._browse_dir)
+        btn_browse.setToolTip(_make_tooltip(
+            "Browse", "Choose the output directory for captured CSV files."))
+        dir_row.addWidget(btn_browse)
+        form_out.addRow("Directory:", dir_row)
+
+        self._edit_prefix = QtWidgets.QLineEdit()
+        self._edit_prefix.setPlaceholderText("lab_capture")
+        self._edit_prefix.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:17px;")
+        self._edit_prefix.setToolTip(_make_tooltip(
+            "Filename prefix",
+            "The captured file is named <prefix>_<YYYYMMDD_HHMMSS>.csv"))
+        form_out.addRow("Filename prefix:", self._edit_prefix)
+        outer.addWidget(grp_out)
+
+        # ── Capture controls ───────────────────────────────────────────────
+        grp_cap = QtWidgets.QGroupBox("Capture")
+        grp_cap.setStyleSheet(_GRP)
+        vbox_cap = QtWidgets.QVBoxLayout(grp_cap)
+        vbox_cap.setSpacing(6)
+
+        # Row 1: timed capture
+        row_timed = QtWidgets.QHBoxLayout()
+        self._btn_capture_timed = QtWidgets.QPushButton("▶  CAPTURE")
+        self._btn_capture_timed.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_capture_timed.clicked.connect(self._on_capture_timed)
+        self._btn_capture_timed.setToolTip(_make_tooltip(
+            "CAPTURE (timed)",
+            "Start a capture that stops automatically after the specified number of samples."))
+        row_timed.addWidget(self._btn_capture_timed)
+        self._spin_samples = QtWidgets.QSpinBox()
+        self._spin_samples.setRange(1, 1_000_000)
+        self._spin_samples.setValue(5000)
+        self._spin_samples.setSingleStep(500)
+        self._spin_samples.setStyleSheet(
+            "background:#2A2A2A; color:#FFDD44; font-size:18px; padding:4px;")
+        self._spin_samples.setToolTip(_make_tooltip(
+            "Sample count",
+            "Number of 500 Hz samples to record in a timed capture. "
+            "5000 samples = 10 seconds at 500 Hz."))
+        row_timed.addWidget(self._spin_samples)
+        lbl_smp = QtWidgets.QLabel("samples")
+        lbl_smp.setStyleSheet("font-size:17px; color:#AAAAAA;")
+        row_timed.addWidget(lbl_smp)
+        vbox_cap.addLayout(row_timed)
+
+        # Row 2: continuous capture
+        row_cont = QtWidgets.QHBoxLayout()
+        self._btn_capture_cont = QtWidgets.QPushButton("▶  START CONTINUOUS")
+        self._btn_capture_cont.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_capture_cont.clicked.connect(self._on_capture_cont)
+        self._btn_capture_cont.setToolTip(_make_tooltip(
+            "START CONTINUOUS",
+            "Start a capture that runs until STOP is pressed."))
+        row_cont.addWidget(self._btn_capture_cont)
+        self._btn_stop = QtWidgets.QPushButton("■  STOP")
+        self._btn_stop.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_stop.setEnabled(False)
+        self._btn_stop.clicked.connect(self._on_stop)
+        self._btn_stop.setToolTip(_make_tooltip(
+            "STOP",
+            "Stop the ongoing capture and flush post-capture notes to the file."))
+        row_cont.addWidget(self._btn_stop)
+        vbox_cap.addLayout(row_cont)
+
+        # Progress + status
+        self._progress = QtWidgets.QProgressBar()
+        self._progress.setValue(0)
+        self._progress.setTextVisible(True)
+        self._progress.setStyleSheet(
+            "QProgressBar { background:#2A2A2A; border:1px solid #555; color:#FFF; "
+            "font-size:16px; text-align:center; } "
+            "QProgressBar::chunk { background:#33AA55; }")
+        vbox_cap.addWidget(self._progress)
+
+        self._lbl_status = QtWidgets.QLabel("IDLE")
+        self._lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+        self._lbl_status.setStyleSheet(
+            "font-size:18px; color:#AAAAAA; font-weight:bold;")
+        vbox_cap.addWidget(self._lbl_status)
+        outer.addWidget(grp_cap)
+
+        # ── Post-capture notes ─────────────────────────────────────────────
+        grp_post = QtWidgets.QGroupBox("Post-capture notes")
+        grp_post.setStyleSheet(_GRP)
+        vbox_post = QtWidgets.QVBoxLayout(grp_post)
+        self._post_notes = QtWidgets.QPlainTextEdit()
+        self._post_notes.setPlaceholderText(
+            "Observations after the capture: signal quality, artefacts, …\n"
+            "Written as # comment lines at the end of the CSV file.")
+        self._post_notes.setFixedHeight(90)
+        self._post_notes.setStyleSheet(
+            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:16px;")
+        self._post_notes.setToolTip(_make_tooltip(
+            "Post-capture notes",
+            "Free-form text written as # comment lines at the bottom of the CSV file, "
+            "after the last data row. Use it for signal quality observations, artefacts, etc."))
+        vbox_post.addWidget(self._post_notes)
+        outer.addWidget(grp_post)
+
+        outer.addStretch()
+
+    # ── Settings ─────────────────────────────────────────────────────────────
+    def _load_settings(self):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("LabCaptureWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(620, 800)
+        self._pre_notes.setPlainText(
+            s.value("LabCaptureWindow/pre_notes",  "", type=str))
+        self._post_notes.setPlainText(
+            s.value("LabCaptureWindow/post_notes", "", type=str))
+        default_dir = os.path.dirname(os.path.abspath(__file__))
+        self._edit_dir.setText(
+            s.value("LabCaptureWindow/output_dir", default_dir, type=str))
+        self._edit_prefix.setText(
+            s.value("LabCaptureWindow/filename_prefix", "lab_capture", type=str))
+        self._spin_samples.setValue(
+            s.value("LabCaptureWindow/spin_samples", 5000, type=int))
+        for label, _, _, mandatory in self._COLS:
+            if not mandatory:
+                key = f"LabCaptureWindow/check_{label.replace(' ', '_')}"
+                self._checks[label].setChecked(s.value(key, True, type=bool))
+
+    def _save_settings(self):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("LabCaptureWindow/geometry",        self.saveGeometry())
+        s.setValue("LabCaptureWindow/pre_notes",       self._pre_notes.toPlainText())
+        s.setValue("LabCaptureWindow/post_notes",      self._post_notes.toPlainText())
+        s.setValue("LabCaptureWindow/output_dir",      self._edit_dir.text())
+        s.setValue("LabCaptureWindow/filename_prefix", self._edit_prefix.text())
+        s.setValue("LabCaptureWindow/spin_samples",    self._spin_samples.value())
+        for label, _, _, mandatory in self._COLS:
+            if not mandatory:
+                key = f"LabCaptureWindow/check_{label.replace(' ', '_')}"
+                s.setValue(key, self._checks[label].isChecked())
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _browse_dir(self):
+        d = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select output directory", self._edit_dir.text())
+        if d:
+            self._edit_dir.setText(d)
+
+    def _active_col_spec(self):
+        """Return list of (csv_name, m1_idx) for checked columns."""
+        return [(csv_name, idx)
+                for label, csv_name, idx, _ in self._COLS
+                if self._checks[label].isChecked()]
+
+    def _make_filepath(self):
+        prefix = self._edit_prefix.text().strip() or "lab_capture"
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = self._edit_dir.text().strip()
+        if not out_dir or not os.path.isdir(out_dir):
+            out_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(out_dir, f"{prefix}_{ts}.csv")
+
+    def _set_capturing(self, is_capturing: bool):
+        self._btn_capture_timed.setEnabled(not is_capturing)
+        self._btn_capture_cont.setEnabled(not is_capturing)
+        self._btn_stop.setEnabled(is_capturing)
+        for label, _, _, mandatory in self._COLS:
+            if not mandatory:
+                self._checks[label].setEnabled(not is_capturing)
+        self._edit_dir.setEnabled(not is_capturing)
+        self._edit_prefix.setEnabled(not is_capturing)
+        self._spin_samples.setEnabled(not is_capturing)
+
+    # ── Capture triggers ──────────────────────────────────────────────────────
+    def _on_capture_timed(self):
+        if self.main_monitor is None:
+            return
+        self.main_monitor.start_lab_capture(
+            target=self._spin_samples.value(),
+            col_spec=self._active_col_spec(),
+            filepath=self._make_filepath(),
+            pre_notes=self._pre_notes.toPlainText(),
+        )
+
+    def _on_capture_cont(self):
+        if self.main_monitor is None:
+            return
+        self.main_monitor.start_lab_capture(
+            target=0,
+            col_spec=self._active_col_spec(),
+            filepath=self._make_filepath(),
+            pre_notes=self._pre_notes.toPlainText(),
+        )
+
+    def _on_stop(self):
+        if self.main_monitor is not None:
+            self.main_monitor.stop_lab_capture(
+                post_notes=self._post_notes.toPlainText())
+
+    # ── Callbacks from PPGMonitor ─────────────────────────────────────────────
+    def on_capture_started(self, filepath: str, target: int):
+        self._set_capturing(True)
+        self._progress.setMaximum(target if target > 0 else 0)
+        self._progress.setValue(0)
+        self._progress.setFormat("0" if target == 0 else f"0 / {target}")
+        name = os.path.basename(filepath)
+        self._lbl_status.setText(f"CAPTURING → {name}")
+        self._lbl_status.setStyleSheet(
+            "font-size:18px; color:#FFDD44; font-weight:bold;")
+
+    def on_capture_progress(self, count: int, target: int):
+        if target > 0:
+            self._progress.setValue(count)
+            self._progress.setFormat(f"{count} / {target}")
+        else:
+            self._progress.setMaximum(0)
+            self._progress.setFormat(f"{count}")
+
+    def on_capture_done(self, count: int, filepath: str):
+        self._set_capturing(False)
+        self._progress.setMaximum(100)
+        self._progress.setValue(100)
+        self._progress.setFormat(f"{count} samples")
+        name = os.path.basename(filepath)
+        self._lbl_status.setText(f"DONE  {count} samples → {name}")
+        self._lbl_status.setStyleSheet(
+            "font-size:18px; color:#00FF88; font-weight:bold;")
+
+    # ── Close ─────────────────────────────────────────────────────────────────
+    def closeEvent(self, event):
+        if self.main_monitor is not None and self.main_monitor.is_lab_capturing:
+            self.main_monitor.stop_lab_capture(
+                post_notes=self._post_notes.toPlainText())
+        self._save_settings()
+        if self.main_monitor is not None:
+            self.main_monitor.btn_lab_capture.setChecked(False)
+            self.main_monitor.lab_capture_window = None
+        super().closeEvent(event)
+
+
 class PPGMonitor(QtWidgets.QMainWindow):
     def log(self, text):
         """Appends a timestamped line to the log panel, colour inferred from text content."""
@@ -5226,8 +5579,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
         
         self.is_saving = False
         self.save_file = None
-        self.is_saving_raw = False
-        self.save_file_raw = None
         self.save_file_chk = None
         self._chk_filename = None
         if save_chk:
@@ -5299,9 +5650,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.auto_save_timer.setSingleShot(True)
         self.auto_save_timer.timeout.connect(self.auto_stop_save)
 
-        self.auto_save_raw_timer = QtCore.QTimer()
-        self.auto_save_raw_timer.setSingleShot(True)
-        self.auto_save_raw_timer.timeout.connect(self.auto_stop_save_raw)
+        self.lab_capture_window     = None
+        self.is_lab_capturing       = False
+        self._lab_capture_file      = None
+        self._lab_capture_count     = 0
+        self._lab_capture_target    = 0
+        self._lab_capture_col_spec  = []
+        self._lab_capture_filepath  = ""
 
         self._stats_timer = QtCore.QTimer()
         self._stats_timer.timeout.connect(self._update_stats_table)
@@ -5399,16 +5754,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Filename: ppg_data_<timestamp>.csv"))
         self.sidebar_layout.addWidget(self.btn_save)
 
-        self.btn_save_raw = QtWidgets.QPushButton("SAVE\nRAW (500 Hz)")
-        self.btn_save_raw.setCheckable(True)
-        self.btn_save_raw.setStyleSheet(ACTION_BUTTON_STYLE)
-        self.btn_save_raw.clicked.connect(self.toggle_save_raw)
-        self.btn_save_raw.setToolTip(_make_tooltip(
-            "SAVE RAW (500 Hz)",
-            "Toggle saving every raw frame at full 500 Hz to a timestamped CSV file. "
-            "Ignores DECIMATION. Use for offline algorithm analysis. "
-            "Filename: ppg_data_raw_<timestamp>.csv"))
-        self.sidebar_layout.addWidget(self.btn_save_raw)
+        self.btn_lab_capture = QtWidgets.QPushButton("CAPTURE\nLAB")
+        self.btn_lab_capture.setCheckable(True)
+        self.btn_lab_capture.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_lab_capture.clicked.connect(self.toggle_lab_capture)
+        self.btn_lab_capture.setToolTip(_make_tooltip(
+            "CAPTURE LAB",
+            "Open the Lab Capture window to configure and trigger controlled 500 Hz "
+            "CSV captures for offline algorithm analysis."))
+        self.sidebar_layout.addWidget(self.btn_lab_capture)
 
         self.sidebar_layout.addSpacing(20)
 
@@ -5429,7 +5783,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "DECIMATION",
             "Show 1 out of every N frames in the UI and in SAVE DATA. "
             "At 500 Hz: N=10 → 50 Hz display, N=1 → 500 Hz. "
-            "SAVE RAW always records at full 500 Hz regardless of this setting."))
+            "Lab Capture always records at full 500 Hz regardless of this setting."))
         self.sidebar_layout.addWidget(self.spin_decim)
 
         self.sidebar_layout.addSpacing(20)
@@ -5914,6 +6268,94 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.timing_window.close()
                 self.timing_window = None
 
+    def _open_lab_capture_default(self):
+        self.btn_lab_capture.setChecked(True)
+        self.toggle_lab_capture()
+
+    def toggle_lab_capture(self):
+        if self.btn_lab_capture.isChecked():
+            self.lab_capture_window = LabCaptureWindow(self)
+            self.lab_capture_window.show()
+        else:
+            if self.lab_capture_window is not None:
+                self.lab_capture_window.main_monitor = None
+                self.lab_capture_window.close()
+                self.lab_capture_window = None
+
+    def start_lab_capture(self, target: int, col_spec: list,
+                          filepath: str, pre_notes: str):
+        """Open the capture file, write pre-notes and header, start counting."""
+        if self.is_paused:
+            self.log("Cannot capture LAB while paused")
+            return
+        try:
+            f = open(filepath, "w", buffering=1)
+            if pre_notes.strip():
+                for txt in pre_notes.splitlines():
+                    f.write(f"# {txt}\n")
+            f.write(",".join(csv_name for csv_name, _ in col_spec) + "\n")
+            self._lab_capture_file = f
+        except Exception as e:
+            self.log(f"Error opening lab capture file: {e}")
+            return
+        self.is_lab_capturing      = True
+        self._lab_capture_count    = 0
+        self._lab_capture_target   = target
+        self._lab_capture_col_spec = col_spec
+        self._lab_capture_filepath = filepath
+        mode = f"{target} samples" if target > 0 else "continuous"
+        self.log(f"LAB CAPTURE recording ({mode}): {os.path.basename(filepath)}")
+        if self.lab_capture_window is not None:
+            self.lab_capture_window.on_capture_started(filepath, target)
+
+    def stop_lab_capture(self, post_notes: str = ""):
+        """Flush post-notes, close the file, update the window."""
+        if not self.is_lab_capturing:
+            return
+        self.is_lab_capturing = False
+        count    = self._lab_capture_count
+        filepath = self._lab_capture_filepath
+        if self._lab_capture_file:
+            if post_notes.strip():
+                for txt in post_notes.splitlines():
+                    self._lab_capture_file.write(f"# {txt}\n")
+            self._lab_capture_file.close()
+            self._lab_capture_file = None
+        self.log(f"LAB CAPTURE done: {count} samples → {os.path.basename(filepath)}")
+        if self.lab_capture_window is not None:
+            self.lab_capture_window.on_capture_done(count, filepath)
+
+    def _write_lab_capture_row(self, raw_line: str):
+        """Write one CSV row from a raw serial frame. Called at 500 Hz."""
+        parts = raw_line[1:].split('*')[0].split(',')   # strip '$' and checksum
+        n = len(parts)
+        is_m2 = (n >= 1 and parts[0] == "M2")
+        # M2 parts layout: [0]=M2 [1]=cnt [2]=RED [3]=IR [4]=AmbRED [5]=AmbIR [6]=REDSub [7]=IRSub
+        _M2_MAP = {3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7}
+
+        row_vals = []
+        for csv_name, m1_idx in self._lab_capture_col_spec:
+            if is_m2:
+                mapped = _M2_MAP.get(m1_idx, -1)
+                row_vals.append(parts[mapped] if 0 <= mapped < n else "-1")
+            else:
+                row_vals.append(parts[m1_idx] if m1_idx < n else "-1")
+
+        self._lab_capture_file.write(",".join(row_vals) + "\n")
+        self._lab_capture_count += 1
+
+        # Progress update throttled to every 50 samples
+        if self._lab_capture_count % 50 == 0 and self.lab_capture_window is not None:
+            self.lab_capture_window.on_capture_progress(
+                self._lab_capture_count, self._lab_capture_target)
+
+        # Auto-stop for timed capture
+        if (self._lab_capture_target > 0
+                and self._lab_capture_count >= self._lab_capture_target):
+            post = (self.lab_capture_window._post_notes.toPlainText()
+                    if self.lab_capture_window else "")
+            QtCore.QTimer.singleShot(0, lambda: self.stop_lab_capture(post_notes=post))
+
     def toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
         if self.is_paused:
@@ -5928,42 +6370,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.btn_save.setChecked(False)
             self.toggle_save()
             self.log("Stream ended (Auto-Stop 1000s)")
-
-    def auto_stop_save_raw(self):
-        if self.is_saving_raw:
-            self.btn_save_raw.setChecked(False)
-            self.toggle_save_raw()
-            self.log("RAW stream ended (Auto-Stop 1000s)")
-
-    def toggle_save_raw(self):
-        if self.is_paused:
-            self.btn_save_raw.setChecked(False)
-            self.log("Cannot record RAW while capture is paused")
-            return
-        now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.is_saving_raw = self.btn_save_raw.isChecked()
-        if self.is_saving_raw:
-            self.btn_save_raw.setText("STOP\nRAW")
-            filename = f"ppg_data_raw_{now_str}.csv"
-            try:
-                self.save_file_raw = open(filename, "w")
-                if self.frame_mode == "M2":
-                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
-                else:
-                    self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
-                self.log(f"RECORDING RAW (500 Hz): {filename}")
-                self.auto_save_raw_timer.start(1000 * 1000)
-            except Exception as e:
-                self.log(f"Error opening RAW file: {e}")
-                self.is_saving_raw = False
-                self.btn_save_raw.setChecked(False)
-        else:
-            self.auto_save_raw_timer.stop()
-            self.btn_save_raw.setText("SAVE\nRAW (500 Hz)")
-            if self.save_file_raw:
-                self.save_file_raw.close()
-                self.save_file_raw = None
-            self.log(f"System ONLINE - Connected to {PORT} @ {BAUD}")
 
     def toggle_save(self):
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -6019,7 +6425,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr1test_open",  self.hr1test_window  is not None)
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
-        s.setValue("PPGMonitor/timing_open",   self.timing_window   is not None)
+        s.setValue("PPGMonitor/timing_open",      self.timing_window      is not None)
+        s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
         # Persist geometry of all open subwindows (survives taskkill; also saved in their closeEvent)
         if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",   self.ppgplots_window.saveGeometry())
         if self.serialcom_window is not None: s.setValue("SerialComWindow/geometry",  self.serialcom_window.saveGeometry())
@@ -6030,7 +6437,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hr1test_window   is not None: s.setValue("HR1TestWindow/geometry",    self.hr1test_window.saveGeometry())
         if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
-        if self.timing_window    is not None: s.setValue("TimingWindow/geometry",     self.timing_window.saveGeometry())
+        if self.timing_window        is not None: s.setValue("TimingWindow/geometry",       self.timing_window.saveGeometry())
+        if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
 
     def _restore_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -6208,10 +6616,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     csv_line = f"{timestamp},{diff_us:>5},{line}"
 
-                    # RAW file save: full rate (500 Hz), before decimation
-                    if self.is_saving_raw and self.save_file_raw:
-                        self.save_file_raw.write(csv_line + "\n")
-                        self.save_file_raw.flush()
+                    # Lab Capture: full rate (500 Hz), before decimation
+                    if self.is_lab_capturing and self._lab_capture_file:
+                        self._write_lab_capture_row(line)
 
                     # HR1TEST mirror: 500 Hz (before decimation) — must match firmware _update_hr1()
                     if self.hr1test_window is not None:
@@ -6419,8 +6826,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr2test_default)
         if s.value("PPGMonitor/hr3test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr3test_default)
-        if s.value("PPGMonitor/timing_open",    False, type=bool):
+        if s.value("PPGMonitor/timing_open",       False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_timing_default)
+        if s.value("PPGMonitor/labcapture_open",   False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_lab_capture_default)
         QtCore.QTimer.singleShot(300, self._bring_all_to_front)
 
     def _bring_all_to_front(self):
@@ -6435,7 +6844,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for w in [self, self.ppgplots_window, self.serialcom_window,
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
-                  self.hr3test_window, self.timing_window]:
+                  self.hr3test_window, self.timing_window, self.lab_capture_window]:
             if w is not None:
                 w.show()
                 w.raise_()
@@ -6458,8 +6867,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._save_settings()
         if getattr(self, 'is_saving', False) and getattr(self, 'save_file', None):
             self.save_file.close()
-        if getattr(self, 'is_saving_raw', False) and getattr(self, 'save_file_raw', None):
-            self.save_file_raw.close()
+        if getattr(self, 'is_lab_capturing', False) and getattr(self, '_lab_capture_file', None):
+            self._lab_capture_file.close()
         if getattr(self, 'save_file_chk', None):
             self.save_file_chk.close()
         if hasattr(self, '_reader_stop'):
@@ -6493,6 +6902,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.hr3test_window.close()
         if self.timing_window is not None:
             self.timing_window.close()
+        if self.lab_capture_window is not None:
+            self.lab_capture_window.main_monitor = None
+            self.lab_capture_window.close()
         event.accept()
 
 if __name__ == "__main__":
