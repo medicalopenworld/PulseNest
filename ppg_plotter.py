@@ -5234,7 +5234,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             "Each line will be written as a # comment before the CSV header.")
         self._pre_notes.setFixedHeight(90)
         self._pre_notes.setStyleSheet(
-            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:16px;")
+            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:18px;")
         self._pre_notes.setToolTip(_make_tooltip(
             "Pre-capture notes",
             "Free-form text written as # comment lines at the top of the CSV file, "
@@ -5252,7 +5252,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         for i, (label, csv_name, _, mandatory) in enumerate(self._COLS):
             cb = QtWidgets.QCheckBox(label)
             cb.setChecked(True)
-            cb.setStyleSheet("font-size:17px; color:#E0E0E0;")
+            cb.setStyleSheet("font-size:18px; color:#E0E0E0;")
             if mandatory:
                 cb.setEnabled(False)
                 cb.setToolTip(_make_tooltip(
@@ -5272,25 +5272,29 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
         dir_row = QtWidgets.QHBoxLayout()
         self._edit_dir = QtWidgets.QLineEdit()
-        self._edit_dir.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:17px;")
+        self._edit_dir.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:18px;")
         self._edit_dir.setToolTip(_make_tooltip(
             "Output directory", "Folder where capture CSV files are saved."))
         dir_row.addWidget(self._edit_dir)
         btn_browse = QtWidgets.QPushButton("Browse…")
-        btn_browse.setStyleSheet("font-size:16px; padding:2px 8px;")
+        btn_browse.setStyleSheet("font-size:18px; padding:4px 10px;")
         btn_browse.clicked.connect(self._browse_dir)
         btn_browse.setToolTip(_make_tooltip(
             "Browse", "Choose the output directory for captured CSV files."))
         dir_row.addWidget(btn_browse)
-        form_out.addRow("Directory:", dir_row)
+        _lbl_dir = QtWidgets.QLabel("Directory:")
+        _lbl_dir.setStyleSheet("color:#CCCCCC; font-size:18px;")
+        form_out.addRow(_lbl_dir, dir_row)
 
         self._edit_prefix = QtWidgets.QLineEdit()
         self._edit_prefix.setPlaceholderText("lab_capture")
-        self._edit_prefix.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:17px;")
+        self._edit_prefix.setStyleSheet("background:#2A2A2A; color:#FFDD44; font-size:18px;")
         self._edit_prefix.setToolTip(_make_tooltip(
             "Filename prefix",
             "The captured file is named <prefix>_<YYYYMMDD_HHMMSS>.csv"))
-        form_out.addRow("Filename prefix:", self._edit_prefix)
+        _lbl_pfx = QtWidgets.QLabel("Filename prefix:")
+        _lbl_pfx.setStyleSheet("color:#CCCCCC; font-size:18px;")
+        form_out.addRow(_lbl_pfx, self._edit_prefix)
         outer.addWidget(grp_out)
 
         # ── Capture controls ───────────────────────────────────────────────
@@ -5320,7 +5324,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             "5000 samples = 10 seconds at 500 Hz."))
         row_timed.addWidget(self._spin_samples)
         lbl_smp = QtWidgets.QLabel("samples")
-        lbl_smp.setStyleSheet("font-size:17px; color:#AAAAAA;")
+        lbl_smp.setStyleSheet("font-size:18px; color:#AAAAAA;")
         row_timed.addWidget(lbl_smp)
         vbox_cap.addLayout(row_timed)
 
@@ -5349,14 +5353,14 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._progress.setTextVisible(True)
         self._progress.setStyleSheet(
             "QProgressBar { background:#2A2A2A; border:1px solid #555; color:#FFF; "
-            "font-size:16px; text-align:center; } "
+            "font-size:18px; text-align:center; } "
             "QProgressBar::chunk { background:#33AA55; }")
         vbox_cap.addWidget(self._progress)
 
         self._lbl_status = QtWidgets.QLabel("IDLE")
         self._lbl_status.setAlignment(QtCore.Qt.AlignCenter)
         self._lbl_status.setStyleSheet(
-            "font-size:18px; color:#AAAAAA; font-weight:bold;")
+            "font-size:20px; color:#AAAAAA; font-weight:bold;")
         vbox_cap.addWidget(self._lbl_status)
         outer.addWidget(grp_cap)
 
@@ -5370,7 +5374,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             "Written as # comment lines at the end of the CSV file.")
         self._post_notes.setFixedHeight(90)
         self._post_notes.setStyleSheet(
-            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:16px;")
+            "background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:18px;")
         self._post_notes.setToolTip(_make_tooltip(
             "Post-capture notes",
             "Free-form text written as # comment lines at the bottom of the CSV file, "
