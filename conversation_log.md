@@ -3876,3 +3876,39 @@ Aplicada firma estándar de 4 líneas en todos los ficheros de código del proye
 
 ### Regla
 Todo fichero de código nuevo debe incluir la firma de 4 líneas desde su creación. Al subir versión, actualizar todos los ficheros afectados. Guardado en memoria persistente.
+
+---
+
+## Sesión 2026-04-11 — Correcciones menores offline runner y ppg_plotter
+
+### Cambios en ppg_plotter.py
+Persistencia de geometría añadida a todas las ventanas TEST y herramientas que la tenían pendiente: SpO2TestWindow, HR1TestWindow, HR2TestWindow, HR3TestWindow, TimingWindow. Además, PPGMonitor._save_settings() guarda geometría de todas las subventanas abiertas para que sobrevivan a taskkill.
+
+### Cambios en tools/offline_runner/main.cpp
+- Firma estándar de 4 líneas aplicada al encabezado del fichero.
+- Fix parser CSV: las líneas `#` (metadatos) ahora se descartan correctamente también **antes de la cabecera**. Anteriormente solo se descartaban en el bucle de datos. El fix usa un `while(getline)` que salta líneas vacías y `#` hasta encontrar la primera línea de cabecera real.
+
+### Cambios en lib/mow_afe4490/ y herramientas
+- Versión v0.14 → v0.16 corregida en mow_afe4490.h y mow_afe4490.cpp.
+- mow_afe4490_platform_stub.h: comentario de cabecera corregido (nombre antiguo → nuevo) y firma estándar de 4 líneas aplicada.
+
+### Regla nueva guardada en memoria
+Todo fichero de código nuevo debe incluir la firma estándar de 4 líneas desde su creación.
+
+---
+
+## Sesión 2026-04-11 — Refactor set_status → log() en ppg_plotter.py
+
+### Pregunta clave
+¿Tiene sentido la función `set_status()`? ¿El script tiene un "estado"?
+
+### Decisión
+No — la función no gestiona ningún estado. Es un `log_panel.append()` con timestamp y color. El nombre `set_status` era engañoso. Se renombra a `log()` y se elimina el parámetro `status_type`.
+
+### Cambio en ppg_plotter.py
+- `set_status(text, status_type)` → `log(text)`: el nivel se infiere automáticamente a partir de keywords en el texto.
+  - `"error"`, `"failed"`, `"cannot"`, `"not connected"`, `"no port"` → error (rojo)
+  - `"online"`, `"saved"` → success (verde)
+  - `"recording"`, `"paused"` → warning (naranja)
+  - resto → info (azul)
+- 25 llamadas migradas, cero residuos de `set_status`.

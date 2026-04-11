@@ -5164,29 +5164,26 @@ class SerialComWindow(QtWidgets.QWidget):
 
 
 class PPGMonitor(QtWidgets.QMainWindow):
-    def set_status(self, text, status_type="info"):
-        """
-        Appends a timestamped line to the status log, coloured by type.
-        types: 'info' (blue), 'success' (green), 'warning' (orange), 'error' (red)
-        """
-        colors = {
-            "success": "#00FF88",
-            "warning": "#FFDD44",
-            "error":   "#FF4444",
-            "info":    "#44AAFF",
-        }
-        icons = {
-            "success": "✔",
-            "warning": "⚠",
-            "error":   "✖",
-            "info":    "●",
-        }
-        fg = colors.get(status_type, colors["info"])
-        icon = icons.get(status_type, icons["info"])
+    def log(self, text):
+        """Appends a timestamped line to the log panel, colour inferred from text content."""
+        _ERROR_KEYWORDS   = ("error", "failed", "cannot", "not connected", "no port")
+        _SUCCESS_KEYWORDS = ("online", "saved")
+        _WARNING_KEYWORDS = ("recording", "paused")
+        tl = text.lower()
+        if any(k in tl for k in _ERROR_KEYWORDS):
+            level = "error"
+        elif any(k in tl for k in _SUCCESS_KEYWORDS):
+            level = "success"
+        elif any(k in tl for k in _WARNING_KEYWORDS):
+            level = "warning"
+        else:
+            level = "info"
+        colors = {"success": "#00FF88", "warning": "#FFDD44", "error": "#FF4444", "info": "#44AAFF"}
+        icons  = {"success": "✔",       "warning": "⚠",       "error": "✖",      "info": "●"}
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         self.log_panel.append(
             f'<span style="color:#888888;">[{ts}]</span> '
-            f'<span style="color:{fg};font-weight:normal;">{icon} {text}</span>'
+            f'<span style="color:{colors[level]};font-weight:normal;">{icons[level]} {text}</span>'
         )
         self.log_panel.verticalScrollBar().setValue(
             self.log_panel.verticalScrollBar().maximum()
@@ -5756,7 +5753,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.ser.write(('1' if mode == "M1" else '2').encode())
         self.frame_mode = mode
         self._update_frame_button()
-        self.set_status(f"Frame mode: ${mode}", "info")
+        self.log(f"Frame mode: ${mode}")
 
     def _send_lib_cmd(self, cmd):
         if not hasattr(self, 'ser') or not self.ser.is_open:
@@ -5766,7 +5763,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _reset_esp32(self):
         """Hardware-reset the ESP32 via RTS/DTR (ESP-Prog auto-reset circuit)."""
         if not hasattr(self, 'ser') or self.ser is None or not self.ser.is_open:
-            self.set_status("Not connected — cannot reset ESP32", "error")
+            self.log("Not connected — cannot reset ESP32")
             return
         try:
             self.ser.dtr = False   # IO0 high → run mode (not bootloader)
@@ -5774,9 +5771,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             time.sleep(0.1)
             self.ser.rts = False   # EN high → chip boots in run mode
             # DTR stays False: IO0 remains high → normal firmware, not bootloader
-            self.set_status("ESP32 reset triggered (RTS/DTR via ESP-Prog)", "info")
+            self.log("ESP32 reset triggered (RTS/DTR via ESP-Prog)")
         except Exception as e:
-            self.set_status(f"Reset failed: {e}", "error")
+            self.log(f"Reset failed: {e}")
 
     def _open_hrlab_default(self):
         self.btn_hrlab.setChecked(True)
@@ -5921,27 +5918,27 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.is_paused = self.btn_pause.isChecked()
         if self.is_paused:
             self.btn_pause.setText("RESUME\nCAPTURE")
-            self.set_status("Capture PAUSED", "warning")
+            self.log("Capture PAUSED")
         else:
             self.btn_pause.setText("PAUSE\nCAPTURE")
-            self.set_status(f"System ONLINE - Connected to {PORT} @ {BAUD}", "success")
+            self.log(f"System ONLINE - Connected to {PORT} @ {BAUD}")
 
     def auto_stop_save(self):
         if self.is_saving:
             self.btn_save.setChecked(False)
             self.toggle_save()
-            self.set_status("Stream ended (Auto-Stop 1000s)", "info")
+            self.log("Stream ended (Auto-Stop 1000s)")
 
     def auto_stop_save_raw(self):
         if self.is_saving_raw:
             self.btn_save_raw.setChecked(False)
             self.toggle_save_raw()
-            self.set_status("RAW stream ended (Auto-Stop 1000s)", "info")
+            self.log("RAW stream ended (Auto-Stop 1000s)")
 
     def toggle_save_raw(self):
         if self.is_paused:
             self.btn_save_raw.setChecked(False)
-            self.set_status("Cannot record RAW while capture is paused", "error")
+            self.log("Cannot record RAW while capture is paused")
             return
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.is_saving_raw = self.btn_save_raw.isChecked()
@@ -5954,10 +5951,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
                 else:
                     self.save_file_raw.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
-                self.set_status(f"RECORDING RAW (500 Hz): {filename}", "warning")
+                self.log(f"RECORDING RAW (500 Hz): {filename}")
                 self.auto_save_raw_timer.start(1000 * 1000)
             except Exception as e:
-                self.set_status(f"Error opening RAW file: {e}", "error")
+                self.log(f"Error opening RAW file: {e}")
                 self.is_saving_raw = False
                 self.btn_save_raw.setChecked(False)
         else:
@@ -5966,7 +5963,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if self.save_file_raw:
                 self.save_file_raw.close()
                 self.save_file_raw = None
-            self.set_status(f"System ONLINE - Connected to {PORT} @ {BAUD}", "success")
+            self.log(f"System ONLINE - Connected to {PORT} @ {BAUD}")
 
     def toggle_save(self):
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -5978,9 +5975,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
                     for i in range(len(self.data_sample_counter)):
                         f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_ppg[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
-                self.set_status(f"Snapshot saved to {filename}", "success")
+                self.log(f"Snapshot saved to {filename}")
             except Exception as e:
-                self.set_status(f"Error saving snapshot: {e}", "error")
+                self.log(f"Error saving snapshot: {e}")
         else:
             self.is_saving = self.btn_save.isChecked()
             if self.is_saving:
@@ -5992,10 +5989,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
                     else:
                         self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
-                    self.set_status(f"RECORDING LIVE: {filename}", "warning")
+                    self.log(f"RECORDING LIVE: {filename}")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
-                    self.set_status(f"Error opening save file: {e}", "error")
+                    self.log(f"Error opening save file: {e}")
                     self.is_saving = False
                     self.btn_save.setChecked(False)
             else:
@@ -6004,7 +6001,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if self.save_file:
                     self.save_file.close()
                     self.save_file = None
-                self.set_status(f"System ONLINE - Connected to {PORT} @ {BAUD}", "success")
+                self.log(f"System ONLINE - Connected to {PORT} @ {BAUD}")
 
     def _save_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -6062,7 +6059,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def _connect_serial(self, port: str):
         if not port:
-            self.set_status("No port selected", "error")
+            self.log("No port selected")
             return
         # Stop existing reader thread
         self._reader_stop.set()
@@ -6075,19 +6072,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
             try: self._serial_queue.get_nowait()
             except: break
         self._reader_stop.clear()
-        self.set_status(f"Connecting to {port}...", "info")
+        self.log(f"Connecting to {port}...")
         try:
             self.ser = serial.Serial(port, BAUD, timeout=0.1)
             self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
             self._reader_thread.start()
-            self.set_status(f"System ONLINE — {port} @ {BAUD}", "success")
+            self.log(f"System ONLINE — {port} @ {BAUD}")
             self.btn_port_connect.setStyleSheet(
                 "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
                 "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
             self.btn_port_connect.setText("CONNECTED")
         except Exception as e:
             self.ser = None
-            self.set_status(f"ERROR: Could not open {port} — {e}", "error")
+            self.log(f"ERROR: Could not open {port} — {e}")
             self.btn_port_connect.setStyleSheet(
                 "background-color: #3A1A1A; color: #FF4444; font-size: 18px; "
                 "font-weight: bold; padding: 4px; border: 1px solid #FF4444; border-radius: 4px;")
@@ -6162,16 +6159,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.active_lib = "MOW"
                             self.frame_mode = "M1"
                             self._update_lib_button()
-                            self.set_status("Active library: mow_afe4490", "info")
+                            self.log("Active library: mow_afe4490")
                         elif 'protocentral' in line.lower():
                             self.active_lib = "PROTOCENTRAL"
                             self.frame_mode = "M1"
                             self._update_lib_button()
-                            self.set_status("Active library: protocentral", "info")
+                            self.log("Active library: protocentral")
                         elif 'frame mode' in line.lower():
-                            self.set_status(line.lstrip('# '), "info")
+                            self.log(line.lstrip('# '))
                         elif line.startswith('# SYS:'):
-                            self.set_status(line[6:].strip(), "info")
+                            self.log(line[6:].strip())
                         continue
 
                     current_time_perf = time.perf_counter()
