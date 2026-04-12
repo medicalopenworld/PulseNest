@@ -6534,9 +6534,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             except Exception:
                 break
 
-    _STATS_HR_ROWS  = {11, 13, 15}   # HR1, HR2, HR3
-    _STATS_MEAN_COL = 2
-    _STATS_MAROON   = QtGui.QColor("#5C001A")
+    _STATS_HR_ROWS       = {11, 13, 15}   # HR1, HR2, HR3
+    _STATS_MEAN_COL      = 2
+    _STATS_MAROON        = QtGui.QColor("#5C001A")
+    _STATS_GREEN         = QtGui.QColor("#1A5C1A")
+    _STATS_SQI_THRESHOLD = 0.9
 
     def _update_stats_table(self):
         for row, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
@@ -6559,6 +6561,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.stats_table.setItem(row, col, item)
                 else:
                     item.setText(v)
+                if row in self._STATS_HR_ROWS and col == self._STATS_MEAN_COL:
+                    sqi_buf = self._stats_buf.get(name + "_SQI", [])
+                    sqi_mean = sum(sqi_buf) / len(sqi_buf) if sqi_buf else 0.0
+                    bg = self._STATS_GREEN if sqi_mean > self._STATS_SQI_THRESHOLD else self._STATS_MAROON
+                    item.setBackground(bg)
             self._stats_buf[name].clear()
 
     def update_data(self):

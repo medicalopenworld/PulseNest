@@ -4192,3 +4192,48 @@ El título del segundo plot (`p_filt`, "LP filtered signal (512-sample buffer)")
 - `src/main.cpp` (v0.8): eliminados todos los objetos, tareas, ISR y comandos de protocentral; eliminado `enum class ActiveLib`; comando `'p'` eliminado; comandos `'1'`/`'2'` ya no requieren condición `ActiveLib::MOW`
 - `ppg_plotter.py`: eliminada detección de `"Active library: protocentral"` en el parser serie
 - `CLAUDE.md`: actualizado para reflejar que la única librería es `mow_afe4490`
+
+
+## Sesión 2026-04-13 — SIGNAL STATS: color dinámico HR Mean según SQI
+
+**Cambio:** en la tabla SIGNAL STATS, las celdas "Mean" de HR1, HR2 y HR3 ahora cambian de color dinámicamente según el SQI correspondiente.
+
+- Verde (`#1A5C1A`) si `mean(HR*_SQI) > 0.9` durante el intervalo de stats
+- Rojo oscuro (`#5C001A`) en caso contrario (sin datos o SQI insuficiente)
+
+**Implementación:** en `_update_stats_table()`, al refrescar cada celda HR Mean, se calcula el mean del buffer `HR*_SQI` correspondiente y se aplica el color. Constantes de clase: `_STATS_GREEN`, `_STATS_SQI_THRESHOLD = 0.9`.
+
+
+## Sesión 2026-04-13 — test_hr3: nuevo test unitario para algoritmo HR3
+
+**Cambio:** creado `test/test_hr3/test_hr3.cpp` con 4 tests unitarios para el algoritmo HR3 (FFT + HPS).
+
+**Tests:**
+1. `test_hr3_not_valid_until_buffer_full` — SQI=0 si buffer no está lleno (HR3_BUF_RAW/2 = 2560 muestras)
+2. `test_hr3_60bpm` — señal multi-armónica a 1 Hz → HR3 converge a 60±5 BPM, SQI>0.7
+3. `test_hr3_120bpm` — señal multi-armónica a 2 Hz → HR3 converge a 120±5 BPM, SQI>0.7
+4. `test_hr3_flat_signal_invalid` — DC constante → SQI=0
+
+**Decisiones de diseño:**
+- Señal de test: fundamental + 2.º + 3.º armónico (no senoidal pura). HPS requiere energía en armónicos; una senoidal pura da HPS≈0 en todos los bins → SQI≈0.
+- Macro de aserción: `TEST_ASSERT_GREATER_THAN_FLOAT` (no `TEST_ASSERT_GREATER_THAN`). El macro genérico de Unity castea a UNITY_INT: 0.7f→0 y sqi<1.0→0, haciendo que el test nunca pase. HR3 SQI está siempre clampeado a ≤1.0 (a diferencia de HR2 que no está clampeado y puede ser >1.0).
+
+**Resultado:** 4/4 pasan en entorno native.
+
+
+## Sesión 2026-04-13 — test_hr1/hr2/hr3: corrección TEST_ASSERT_GREATER_THAN_FLOAT
+
+**Cambio:** en `test_hr1.cpp`, `test_hr2.cpp` y `test_hr3.cpp`, reemplazado `TEST_ASSERT_GREATER_THAN(0.7f, ...)` por `TEST_ASSERT_GREATER_THAN_FLOAT(0.7f, ...)`.
+
+**Motivo:** `TEST_ASSERT_GREATER_THAN` en Unity castea los argumentos a `UNITY_INT` (entero), convirtiendo `0.7f→0` y `sqi→0` para cualquier SQI en [0, 1). HR1 y HR2 pasaban por coincidencia (HR1 SQI es exactamente 1.0f con senoidal perfecta; HR2 SQI no está clampeado y puede ser ≥ 1.0). HR3 expuso el bug latente. La corrección robusta es usar el macro float en todos los tests SQI.
+
+
+## Sesión 2026-04-13 — test_hr1/hr2/hr3: tests con ruido añadido
+
+**Cambio:** añadidos 2 tests por algoritmo (`_60bpm_noisy`, `_120bpm_noisy`) en test_hr1.cpp, test_hr2.cpp y test_hr3.cpp.
+
+**Señal:** misma que los tests limpios + ruido uniforme ±10% de amplitud (~20 dB SNR). `srand(42)` para reproducibilidad.
+
+**Umbrales:** SQI > 0.3 (vs 0.7 en tests limpios), HR ± 8 BPM (vs ± 5). Verifican que los algoritmos no fallan ante ruido moderado, sin exigir la misma precisión que con señal perfecta.
+
+**Resultado:** 18/18 pasan (6 por algoritmo).

@@ -1,5 +1,6 @@
 #include <unity.h>
 #include <math.h>
+#include <stdlib.h>
 #include "mow_afe4490.h"
 
 // Helper: feed N samples of a sine at freq_hz (with DC offset) into HR1.
@@ -7,6 +8,16 @@
 static void feed_hr1_sine(MOW_AFE4490& afe, float freq_hz, float fs, int n_samples) {
     for (int i = 0; i < n_samples; i++) {
         float x = 500000.0f + 50000.0f * sinf(2.0f * (float)M_PI * freq_hz * i / fs);
+        afe.test_feed_hr1((int32_t)x);
+    }
+}
+
+// Helper: same as feed_hr1_sine but with uniform noise ±5000 (~10% of amplitude, ~20 dB SNR).
+// srand(42) called by the test before use for reproducibility.
+static void feed_hr1_sine_noisy(MOW_AFE4490& afe, float freq_hz, float fs, int n_samples) {
+    for (int i = 0; i < n_samples; i++) {
+        float noise = 5000.0f * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
+        float x = 500000.0f + 50000.0f * sinf(2.0f * (float)M_PI * freq_hz * i / fs) + noise;
         afe.test_feed_hr1((int32_t)x);
     }
 }
@@ -29,7 +40,7 @@ void test_hr1_not_valid_too_soon() {
 void test_hr1_60bpm() {
     MOW_AFE4490 afe;
     feed_hr1_sine(afe, 1.0f, 500.0f, 6000);  // 12 seconds — plenty of intervals
-    TEST_ASSERT_GREATER_THAN(0.7f, afe.test_hr1_sqi());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.7f, afe.test_hr1_sqi());
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 60.0f, afe.test_hr1());
 }
 
@@ -38,7 +49,7 @@ void test_hr1_60bpm() {
 void test_hr1_120bpm() {
     MOW_AFE4490 afe;
     feed_hr1_sine(afe, 2.0f, 500.0f, 6000);
-    TEST_ASSERT_GREATER_THAN(0.7f, afe.test_hr1_sqi());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.7f, afe.test_hr1_sqi());
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 120.0f, afe.test_hr1());
 }
 
@@ -51,11 +62,33 @@ void test_hr1_flat_signal_invalid() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
 }
 
+// ── Test 5: 60 BPM with noise (~20 dB SNR) ───────────────────────────────────
+// With uniform noise ±10% of amplitude, HR1 must still converge to 60 BPM ± 8
+// and produce a valid SQI (> 0.3). Noise raises RR jitter slightly, lowering SQI.
+void test_hr1_60bpm_noisy() {
+    MOW_AFE4490 afe;
+    srand(42);
+    feed_hr1_sine_noisy(afe, 1.0f, 500.0f, 6000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.3f, afe.test_hr1_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(8.0f, 60.0f, afe.test_hr1());
+}
+
+// ── Test 6: 120 BPM with noise (~20 dB SNR) ──────────────────────────────────
+void test_hr1_120bpm_noisy() {
+    MOW_AFE4490 afe;
+    srand(42);
+    feed_hr1_sine_noisy(afe, 2.0f, 500.0f, 6000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.3f, afe.test_hr1_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(8.0f, 120.0f, afe.test_hr1());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_hr1_not_valid_too_soon);
     RUN_TEST(test_hr1_60bpm);
     RUN_TEST(test_hr1_120bpm);
     RUN_TEST(test_hr1_flat_signal_invalid);
+    RUN_TEST(test_hr1_60bpm_noisy);
+    RUN_TEST(test_hr1_120bpm_noisy);
     return UNITY_END();
 }

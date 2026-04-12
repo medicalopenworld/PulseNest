@@ -8,6 +8,8 @@
 
 # Autogenerado por herramientas de build
 compile_commands.json
+test_results.xml
+test_results.json
 build_log.txt
 pio_build_log.txt
 pio_build_log_utf8.txt
