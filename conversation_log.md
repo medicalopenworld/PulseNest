@@ -4148,3 +4148,33 @@ En `_refresh_fft_plot` (línea ~4159), el texto "HPS" del título del panel FFT 
 
 En `_refresh_hr_plots` de HR3TEST, el título de `p_sqi` ahora muestra los valores instantáneos: `SQI fw: X.XX` en verde (#00CC66, dato firmware) y `py: X.XX` en amarillo (#FFDD44, dato script). Criterio de color verde=firmware / amarillo=script aplicado.
 
+
+## Sesión 2026-04-12 — ppg_plotter: HR3TEST color peak amarillo
+
+En el primer plot de HR3TEST (FFT+HPS):
+- Texto "peak=..." en el título: color `#00FF88` → `#FFDD44` (amarillo = cálculo del script).
+- Barra vertical `_peak_line` (pen + labelOpts): color `#00FF88` → `#FFDD44`.
+Criterio: todo lo calculado por el script Python usa amarillo `#FFDD44`.
+
+
+## Sesión 2026-04-12 — ppg_plotter: HR3TEST título segundo plot amarillo
+
+El título del segundo plot (`p_filt`, "LP filtered signal (512-sample buffer)") cambia de gris `#CCCCCC` a amarillo `#FFDD44`, consistente con la curva `FILT_PEN` que ya era amarilla (dato calculado por el script).
+
+
+## Sesión 2026-04-12 — ppg_plotter: HR3TEST títulos tercer y cuarto plot
+
+- Tercer plot (`p_hr`): el texto "HR3" del título pasa a blanco `#FFFFFF`; " fw: X bpm" sigue en verde, "py: X bpm" en amarillo, Δ en rojo.
+- Cuarto plot (`p_sqi`): el texto "SQI" del título pasa a blanco `#FFFFFF`; " fw: X.XX" sigue en verde, "py: X.XX" en amarillo.
+
+
+## Sesión 2026-04-12 — Análisis: HR3TEST pierde datos con varias ventanas abiertas
+
+**Síntoma reportado:** con varias ventanas abiertas, el pico de la FFT aparece a mayor frecuencia de lo esperado.
+
+**Análisis:** no hay pérdida real de muestras en la cola serie (thread dedicado + queue ilimitada). El problema es de rendimiento: con muchas ventanas abiertas, el QTimer de `update_data()` se retrasa (rendering PyQtGraph en hilo UI único). El `_hr3test_refresh_counter` incrementa UNA VEZ por llamada a `update_data()`, no por muestra. Esto hace que `update_plots()` — y con él `_calc.update()` — se llame menos veces en tiempo real. El usuario percibe saltos grandes en el pico FFT.
+
+**Causa raíz:** `HR3TestCalc._calc.update()` está dentro de `update_plots()`, throttled al refresco de display (10 Hz). Debería correr a 50 Hz independientemente del display.
+
+**Solución diseñada (pendiente de implementar):** mover `_calc.update(ir, SPO2_RECEIVED_FS)` a `update_data()` directamente, antes del bloque de throttle, siguiendo el modelo de HR1TEST (línea ~6649). Display sigue a 10 Hz, cálculo a 50 Hz.
+

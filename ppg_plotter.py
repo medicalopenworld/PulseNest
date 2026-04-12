@@ -3735,6 +3735,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
 
         self.p_fft  = _mp(0, "FFT + HPS Spectrum",       "norm. magnitude")
         self.p_filt = _mp(1, "LP filtered signal  (512-sample buffer)", "ADC counts")
+        self.p_filt.setTitle("<b style='color:#FFDD44'>LP filtered signal  (512-sample buffer)</b>")
         self.p_hr   = _mp(2, "HR3 (bpm)",                "BPM")
         self.p_sqi  = _mp(3, "SQI [0\u20131]",           "SQI", link_to=self.p_hr)
 
@@ -3761,8 +3762,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.curve_hps = self.p_fft.plot(pen=HPS_PEN, name="HPS")
         self._peak_line = pg.InfiniteLine(
             angle=90, pos=0, movable=False,
-            pen=pg.mkPen('#00FF88', width=2),
-            label='peak', labelOpts={'color': '#00FF88', 'position': 0.92})
+            pen=pg.mkPen('#FFDD44', width=2),
+            label='peak', labelOpts={'color': '#FFDD44', 'position': 0.92})
         self.p_fft.addItem(self._peak_line)
         self.p_fft.setXRange(0, 5.5)
         self.p_fft.setYRange(0, 1.05)
@@ -4139,12 +4140,12 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         def _fmt(v, d=1): return f"{v:.{d}f}" if not np.isnan(v) else "---"
         v_fw = _lv(hr_fw); v_py = _lv(hr_py); v_d = _lv(delta)
         self.p_hr.setTitle(
-            f"<b style='color:#00CC66'>HR3 fw: {_fmt(v_fw)} bpm</b>"
+            f"<b style='color:#FFFFFF'>HR3</b><b style='color:#00CC66'> fw: {_fmt(v_fw)} bpm</b>"
             f"  <b style='color:#FFDD44'>py: {_fmt(v_py)} bpm</b>"
             f"  <span style='color:#FF6666'>\u0394={_fmt(v_d)}</span>")
         s_fw = _lv(sqi_fw); s_py = _lv(sqi_py)
         self.p_sqi.setTitle(
-            f"<b style='color:#00CC66'>SQI fw: {_fmt(s_fw, 2)}</b>"
+            f"<b style='color:#FFFFFF'>SQI</b><b style='color:#00CC66'> fw: {_fmt(s_fw, 2)}</b>"
             f"  <b style='color:#FFDD44'>py: {_fmt(s_py, 2)}</b>")
 
     def _refresh_fft_plot(self):
@@ -4161,7 +4162,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                 sqi_at_peak = self._calc.hr_sqi
                 self.p_fft.setTitle(
                     f"<b style='color:#00CCFF'>FFT + <span style='color:#FF8800'>HPS</span></b>"
-                    f"  <span style='color:#00FF88'>peak={peak:.3f} Hz \u2192 {hr_at_peak:.1f} bpm"
+                    f"  <span style='color:#FFDD44'>peak={peak:.3f} Hz \u2192 {hr_at_peak:.1f} bpm"
                     f"  SQI={sqi_at_peak:.3f}</span>")
 
     def _refresh_filt_plot(self, t_hr):
