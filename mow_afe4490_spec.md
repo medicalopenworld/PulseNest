@@ -69,10 +69,10 @@ struct AFE4490Data {
     // Raw ADC outputs (6 signals from AFE4490)
     int32_t led2;       // LED2VAL  — RED raw           (frame: RED)
     int32_t led1;       // LED1VAL  — IR raw            (frame: IR)
-    int32_t aled2;      // ALED2VAL — ambient after LED2 (frame: AmbRED)
-    int32_t aled1;      // ALED1VAL — ambient after LED1 (frame: AmbIR)
-    int32_t led2_aled2; // LED2-ALED2 — RED ambient-corrected (frame: REDSub)
-    int32_t led1_aled1; // LED1-ALED1 — IR ambient-corrected  (frame: IRSub)
+    int32_t aled2;      // ALED2VAL — ambient after LED2 (frame: RED_Amb)
+    int32_t aled1;      // ALED1VAL — ambient after LED1 (frame: IR_Amb)
+    int32_t led2_aled2; // LED2-ALED2 — RED ambient-corrected (frame: RED_Sub)
+    int32_t led1_aled1; // LED1-ALED1 — IR ambient-corrected  (frame: IR_Sub)
     // Processed outputs
     int32_t ppg;        // filtered PPG of selected channel
     float   spo2;       // SpO2 in %
@@ -521,10 +521,10 @@ Incunest incubators export 10-second CSV files at 500 Hz (5000 samples). The for
 |---|---|---|
 | `RED`    | LED2VAL — RED raw          | `led2`       |
 | `IR`     | LED1VAL — IR raw           | `led1`       |
-| `AmbRED` | ALED2VAL — ambient after LED2 | `aled2`   |
-| `AmbIR`  | ALED1VAL — ambient after LED1 | `aled1`   |
-| `REDSub` | LED2-ALED2 — RED corrected | `led2_aled2` |
-| `IRSub`  | LED1-ALED1 — IR corrected  | `led1_aled1` |
+| `RED_Amb` | ALED2VAL — ambient after LED2 | `aled2`   |
+| `IR_Amb`  | ALED1VAL — ambient after LED1 | `aled1`   |
+| `RED_Sub` | LED2-ALED2 — RED corrected | `led2_aled2` |
+| `IR_Sub`  | LED1-ALED1 — IR corrected  | `led1_aled1` |
 
 **Parser rule:** the parser reads the CSV header row and finds the above columns **by name** (case-insensitive). Column order and extra columns are ignored. The parser aborts with a clear error if any of the six required columns is missing.
 
@@ -603,7 +603,7 @@ HR2 and HR3 are driven via `test_feed_hr2()` / `test_feed_hr3()`, which call the
 **Per-file result:** `<input_basename>_result.csv`
 
 ```
-SmpIdx,RED,IR,AmbRED,AmbIR,REDSub,IRSub,SpO2,SpO2SQI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI
+SmpIdx,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,SpO2,SpO2_SQI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI
 [,FW_HR1,FW_HR2,FW_HR3,FW_SpO2,delta_HR1,delta_HR2,delta_HR3,delta_SpO2]  ← if firmware columns present
 ```
 
@@ -635,10 +635,10 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 |         | tool. `MOW_OFFLINE` compile flag stubs Arduino/FreeRTOS and enables        |
 |         | `UNIT_TEST` API for algorithm-only builds. Hann window precomputation       |
 |         | moved to `_reset_algorithms()`. Input CSV: column-name-based parser,        |
-|         | format-agnostic, requires RED/IR/AmbRED/AmbIR/REDSub/IRSub. Output:        |
+|         | format-agnostic, requires RED/IR/RED_Amb/IR_Amb/RED_Sub/IR_Sub. Output:        |
 |         | per-file `_result.csv` + `batch_summary.csv`. Build: CMake, C++17, no      |
 |         | external deps. Optional firmware delta columns for equivalence checking.    |
-| v0.15   | HR3 SQI redesigned: from linear spectral concentration to HPS peak           |
+| v0.15   | HR3_SQI redesigned: from linear spectral concentration to HPS peak           |
 |         | prominence (`HPS[peak_bin] / Σ HPS[k]`). Eliminates harmonic inflation of   |
 |         | the denominator. No new buffer — `hps_sum` accumulated in the existing loop. |
 |         | Updated: `mow_afe4490.cpp` `_compute_hr3()`, `mow_afe4490.h` comment,       |
@@ -649,9 +649,9 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 |         | `$TIMING` serial frame emitted every ~5 s. `TIMING` window added to         |
 |         | `ppg_plotter.py` with green/orange/red budget indicator (budget = 2000 µs). |
 |         | Spec §8.4 added. Enabled in `platformio.ini` via `-DMOW_TIMING_STATS=1`.    |
-| v0.13   | SQI continuous [0–1] for all algorithms. HR1 SQI: CV-based. HR2 SQI:       |
-|         | normalised autocorrelation peak. HR3 SQI: spectral concentration.           |
-|         | SpO2 SQI: PI-based (clamp PI from 0.5%–2.0%). All SQI fields added to      |
+| v0.13   | SQI continuous [0–1] for all algorithms. HR1_SQI: CV-based. HR2_SQI:       |
+|         | normalised autocorrelation peak. HR3_SQI: spectral concentration.           |
+|         | SpO2_SQI: PI-based (clamp PI from 0.5%–2.0%). All SQI fields added to      |
 |         | `AFE4490Data` and $M1 frame. 4 TEST windows completed (SPO2TEST, HR1TEST,  |
 |         | HR2TEST, HR3TEST). ppg_plotter.py spec §8 updated.                          |
 | v0.12   | Added HR3 algorithm (FFT + HPS): `hr3`/`hr3_valid` in `AFE4490Data`,     |

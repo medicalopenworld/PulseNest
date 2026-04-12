@@ -23,6 +23,7 @@ src/AFE44x0.c.to_delete
 # Datos generados por ppg_plotter.py
 ppg_data_snap_*.csv
 ppg_data_stream_*.csv
+captures/
 
 # Offline runner — build y ficheros generados
 tools/offline_runner/build/

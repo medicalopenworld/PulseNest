@@ -23,8 +23,8 @@ namespace fs = std::filesystem;
 struct CsvRow {
     int32_t red    = 0;  // LED2VAL  — RED raw
     int32_t ir     = 0;  // LED1VAL  — IR raw
-    int32_t amb_red = 0; // ALED2VAL — ambient after LED2
-    int32_t amb_ir  = 0; // ALED1VAL — ambient after LED1
+    int32_t red_amb = 0; // ALED2VAL — ambient after LED2
+    int32_t ir_amb  = 0; // ALED1VAL — ambient after LED1
     int32_t red_sub = 0; // LED2-ALED2
     int32_t ir_sub  = 0; // LED1-ALED1
     // Optional firmware outputs (present if CSV contains FW_* columns)
@@ -98,7 +98,7 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows) {
 
     // Locate required columns by name (case-insensitive)
     auto cols = split_csv(header_line);
-    int idx_red = -1, idx_ir = -1, idx_amb_red = -1, idx_amb_ir = -1;
+    int idx_red = -1, idx_ir = -1, idx_red_amb = -1, idx_ir_amb = -1;
     int idx_red_sub = -1, idx_ir_sub = -1;
     int idx_fw_hr1 = -1, idx_fw_hr2 = -1, idx_fw_hr3 = -1, idx_fw_spo2 = -1;
 
@@ -106,20 +106,20 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows) {
         std::string c = to_lower(cols[i]);
         if      (c == "red")      idx_red     = i;
         else if (c == "ir")       idx_ir      = i;
-        else if (c == "ambred")   idx_amb_red = i;
-        else if (c == "ambir")    idx_amb_ir  = i;
-        else if (c == "redsub")   idx_red_sub = i;
-        else if (c == "irsub")    idx_ir_sub  = i;
+        else if (c == "red_amb")  idx_red_amb = i;
+        else if (c == "ir_amb")   idx_ir_amb  = i;
+        else if (c == "red_sub")  idx_red_sub = i;
+        else if (c == "ir_sub")   idx_ir_sub  = i;
         else if (c == "fw_hr1")   idx_fw_hr1  = i;
         else if (c == "fw_hr2")   idx_fw_hr2  = i;
         else if (c == "fw_hr3")   idx_fw_hr3  = i;
         else if (c == "fw_spo2")  idx_fw_spo2 = i;
     }
 
-    if (idx_red < 0 || idx_ir < 0 || idx_amb_red < 0 || idx_amb_ir < 0 ||
+    if (idx_red < 0 || idx_ir < 0 || idx_red_amb < 0 || idx_ir_amb < 0 ||
         idx_red_sub < 0 || idx_ir_sub < 0) {
         fprintf(stderr, "ERROR: %s is missing one or more required columns "
-                "(RED, IR, AmbRED, AmbIR, REDSub, IRSub)\n", path.string().c_str());
+                "(RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub)\n", path.string().c_str());
         return false;
     }
 
@@ -144,8 +144,8 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows) {
         CsvRow row;
         row.red     = get_i32(idx_red);
         row.ir      = get_i32(idx_ir);
-        row.amb_red = get_i32(idx_amb_red);
-        row.amb_ir  = get_i32(idx_amb_ir);
+        row.red_amb = get_i32(idx_red_amb);
+        row.ir_amb  = get_i32(idx_ir_amb);
         row.red_sub = get_i32(idx_red_sub);
         row.ir_sub  = get_i32(idx_ir_sub);
         row.has_fw  = has_fw;
@@ -178,8 +178,8 @@ static void process_file(const fs::path& input_path, std::ofstream& summary_csv)
     bool has_fw = rows[0].has_fw;
 
     // Header
-    out << "SmpIdx,RED,IR,AmbRED,AmbIR,REDSub,IRSub,"
-           "SpO2,SpO2SQI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI";
+    out << "SmpIdx,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,"
+           "SpO2,SpO2_SQI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
     if (has_fw)
         out << ",FW_HR1,FW_HR2,FW_HR3,FW_SpO2,delta_HR1,delta_HR2,delta_HR3,delta_SpO2";
     out << "\n";
@@ -209,7 +209,7 @@ static void process_file(const fs::path& input_path, std::ofstream& summary_csv)
 
         // Write result row
         out << idx << ","
-            << r.red << "," << r.ir << "," << r.amb_red << "," << r.amb_ir << ","
+            << r.red << "," << r.ir << "," << r.red_amb << "," << r.ir_amb << ","
             << r.red_sub << "," << r.ir_sub << ","
             << spo2 << "," << spo2_sqi << ","
             << hr1  << "," << hr1_sqi  << ","

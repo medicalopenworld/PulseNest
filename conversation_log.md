@@ -4178,3 +4178,17 @@ El título del segundo plot (`p_filt`, "LP filtered signal (512-sample buffer)")
 
 **Solución diseñada (pendiente de implementar):** mover `_calc.update(ir, SPO2_RECEIVED_FS)` a `update_data()` directamente, antes del bloque de throttle, siguiendo el modelo de HR1TEST (línea ~6649). Display sigue a 10 Hz, cálculo a 50 Hz.
 
+
+
+## Sesión 2026-04-12 — Eliminación de la librería Protocentral
+
+**Decisión:** eliminar completamente la librería `protocentral-afe4490-arduino` del proyecto.
+
+**Motivo:** protocentral fue descartada como referencia de validación (calidad algorítmica insuficiente). Solo queda `mow_afe4490` como librería activa.
+
+**Cambios realizados:**
+- Borrados: `src/protocentral_afe44xx.cpp`, `src/protocentral_hr_algorithm.cpp`, `src/Protocentral_spo2_algorithm.cpp`, `include/protocentral_afe44xx.h`, `include/protocentral_hr_algorithm.h`, `include/Protocentral_spo2_algorithm.h`, `include/SPO2.h`
+- `platformio.ini`: eliminada la dependencia `protocentral-afe4490-arduino.git`
+- `src/main.cpp` (v0.8): eliminados todos los objetos, tareas, ISR y comandos de protocentral; eliminado `enum class ActiveLib`; comando `'p'` eliminado; comandos `'1'`/`'2'` ya no requieren condición `ActiveLib::MOW`
+- `ppg_plotter.py`: eliminada detección de `"Active library: protocentral"` en el parser serie
+- `CLAUDE.md`: actualizado para reflejar que la única librería es `mow_afe4490`

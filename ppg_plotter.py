@@ -6593,11 +6593,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.frame_mode = "M1"
                             self._update_lib_button()
                             self.log("Active library: mow_afe4490")
-                        elif 'protocentral' in line.lower():
-                            self.active_lib = "PROTOCENTRAL"
-                            self.frame_mode = "M1"
-                            self._update_lib_button()
-                            self.log("Active library: protocentral")
                         elif 'frame mode' in line.lower():
                             self.log(line.lstrip('# '))
                         elif line.startswith('# SYS:'):

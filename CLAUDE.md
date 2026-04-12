@@ -7,7 +7,7 @@ Herramienta de test para validar el sistema PPG/SpO2 con el chip AFE4490, dentro
 El objetivo es verificar la lectura de señal PPG y el cálculo de SpO2 del AFE4490 de forma aislada, antes de integrarlo en el firmware principal de IncuNest.
 
 En el fichero project_info.md está la información del proyecto Incunest.
-En el fichero mow_afe4490_spec.md está la información de la nueva librería propia que se comparará con la de protocentral
+En el fichero mow_afe4490_spec.md está la información de la librería propia `mow_afe4490`
 En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 
 
@@ -17,13 +17,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 - **Framework:** Arduino + PlatformIO
 - **platformio.ini:** `platform = espressif32@6.6.0`, `framework = arduino`, `board = esp32-s3-devkitc-1`
 - **OS:** FreeRTOS (multitarea)
-- **Librería AFE4490:** ProtoCentral AFE4490 PPG and SpO2 boards library
-
-## Arquitectura de librerías y fases
-- **Fase 1 (actual):** implementación con `protocentral-afe4490-arduino`
-- **Fase 2 (próxima):** se añadirá la librería propia `mow_afe4490`
-- Ambas librerías coexistirán simultáneamente para poder **comparar** su comportamiento
-- No eliminar ni consolidar una librería sobre la otra — la coexistencia es intencional
+- **Librería AFE4490:** `mow_afe4490` (librería propia, en `lib/mow_afe4490/`)
 
 ## Especificación de mow_afe4490
 - Ver `mow_afe4490_spec.md` — leer antes de tocar cualquier cosa relacionada con mow_afe4490

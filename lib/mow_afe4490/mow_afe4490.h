@@ -55,10 +55,10 @@ struct AFE4490Data {
     // Raw ADC outputs (6 signals from AFE4490)
     int32_t led2;        // LED2VAL  — RED raw          (frame: RED)
     int32_t led1;        // LED1VAL  — IR raw           (frame: IR)
-    int32_t aled2;       // ALED2VAL — ambient after LED2 (frame: AmbRED)
-    int32_t aled1;       // ALED1VAL — ambient after LED1 (frame: AmbIR)
-    int32_t led2_aled2;  // LED2-ALED2 — RED ambient-corrected (frame: REDSub)
-    int32_t led1_aled1;  // LED1-ALED1 — IR ambient-corrected  (frame: IRSub)
+    int32_t aled2;       // ALED2VAL — ambient after LED2 (frame: RED_Amb)
+    int32_t aled1;       // ALED1VAL — ambient after LED1 (frame: IR_Amb)
+    int32_t led2_aled2;  // LED2-ALED2 — RED ambient-corrected (frame: RED_Sub)
+    int32_t led1_aled1;  // LED1-ALED1 — IR ambient-corrected  (frame: IR_Sub)
     // Processed outputs
     int32_t ppg;         // filtered PPG of selected channel
     float   spo2;        // SpO2 in %
