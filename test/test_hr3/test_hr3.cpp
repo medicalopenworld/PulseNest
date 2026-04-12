@@ -52,22 +52,23 @@ void test_hr3_not_valid_until_buffer_full() {
 
 // ── Test 2: 60 BPM (1 Hz sine) ───────────────────────────────────────────────
 // At 50 Hz decimated rate, 1 Hz → bin index 1 in a 512-point FFT (resolution ~0.098 Hz).
-// HR3 should converge to 60 BPM ± 5 via parabolic interpolation on the HPS peak.
-// SQI: a synthetic sine has dominant spectral energy at the fundamental → SQI > 0.7.
+// HR3 should converge to 60 BPM ± 2 via parabolic interpolation on the HPS peak.
+// SQI: dominant HPS peak at 1 Hz → SQI = 1.0. Threshold: > 0.95.
 void test_hr3_60bpm() {
     MOW_AFE4490 afe;
     feed_hr3_sine(afe, 1.0f, 500.0f, HR3_BUF_RAW + 1000);  // fill + margin
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.7f, afe.test_hr3_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(5.0f, 60.0f, afe.test_hr3());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr3_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 60.0f, afe.test_hr3());
 }
 
 // ── Test 3: 120 BPM (2 Hz sine) ──────────────────────────────────────────────
-// SQI: synthetic sine → dominant HPS peak at 2 Hz → SQI > 0.7.
+// SQI: dominant HPS peak at 2 Hz → SQI ≈ 0.73. Threshold: > 0.65.
+// HR precision limited by FFT bin width (~0.098 Hz = ~5.9 BPM at 2 Hz).
 void test_hr3_120bpm() {
     MOW_AFE4490 afe;
     feed_hr3_sine(afe, 2.0f, 500.0f, HR3_BUF_RAW + 1000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.7f, afe.test_hr3_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(5.0f, 120.0f, afe.test_hr3());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.65f, afe.test_hr3_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr3());
 }
 
 // ── Test 4: flat signal → hr3_valid false ────────────────────────────────────
@@ -82,13 +83,13 @@ void test_hr3_flat_signal_invalid() {
 
 // ── Test 5: 60 BPM with noise (~20 dB SNR) ───────────────────────────────────
 // With ±10% noise the HPS peak should remain dominant. HR3 must converge to
-// 60 BPM ± 8 and SQI > 0.3.
+// 60 BPM ± 2 and SQI > 0.95.
 void test_hr3_60bpm_noisy() {
     MOW_AFE4490 afe;
     srand(42);
     feed_hr3_sine_noisy(afe, 1.0f, 500.0f, HR3_BUF_RAW + 1000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.3f, afe.test_hr3_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(8.0f, 60.0f, afe.test_hr3());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr3_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 60.0f, afe.test_hr3());
 }
 
 // ── Test 6: 120 BPM with noise (~20 dB SNR) ──────────────────────────────────
@@ -96,8 +97,8 @@ void test_hr3_120bpm_noisy() {
     MOW_AFE4490 afe;
     srand(42);
     feed_hr3_sine_noisy(afe, 2.0f, 500.0f, HR3_BUF_RAW + 1000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.3f, afe.test_hr3_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(8.0f, 120.0f, afe.test_hr3());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.65f, afe.test_hr3_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr3());
 }
 
 int main() {

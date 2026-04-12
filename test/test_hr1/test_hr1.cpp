@@ -1,6 +1,5 @@
 #include <unity.h>
 #include <math.h>
-#include <stdlib.h>
 #include "mow_afe4490.h"
 
 // Helper: feed N samples of a sine at freq_hz (with DC offset) into HR1.
@@ -35,22 +34,22 @@ void test_hr1_not_valid_too_soon() {
 }
 
 // ── Test 2: 60 BPM (1 Hz sine) ───────────────────────────────────────────────
-// After enough samples, HR1 should converge to 60 BPM ± 5.
-// SQI is continuous: a synthetic sine has very low RR jitter → SQI should be high (> 0.7).
+// After enough samples, HR1 should converge to 60 BPM ± 1.
+// SQI: a synthetic sine has near-zero RR jitter → SQI ≈ 1.0. Threshold: > 0.95.
 void test_hr1_60bpm() {
     MOW_AFE4490 afe;
     feed_hr1_sine(afe, 1.0f, 500.0f, 6000);  // 12 seconds — plenty of intervals
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.7f, afe.test_hr1_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(5.0f, 60.0f, afe.test_hr1());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr1_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 60.0f, afe.test_hr1());
 }
 
 // ── Test 3: 120 BPM (2 Hz sine) ──────────────────────────────────────────────
-// SQI continuous: synthetic sine → low jitter → SQI > 0.7.
+// SQI continuous: synthetic sine → low jitter → SQI > 0.95.
 void test_hr1_120bpm() {
     MOW_AFE4490 afe;
     feed_hr1_sine(afe, 2.0f, 500.0f, 6000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.7f, afe.test_hr1_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(5.0f, 120.0f, afe.test_hr1());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr1_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 120.0f, afe.test_hr1());
 }
 
 // ── Test 4: out-of-range signal → hr1_valid false ────────────────────────────
@@ -63,14 +62,14 @@ void test_hr1_flat_signal_invalid() {
 }
 
 // ── Test 5: 60 BPM with noise (~20 dB SNR) ───────────────────────────────────
-// With uniform noise ±10% of amplitude, HR1 must still converge to 60 BPM ± 8
-// and produce a valid SQI (> 0.3). Noise raises RR jitter slightly, lowering SQI.
+// With uniform noise ±10% of amplitude, HR1 must still converge to 60 BPM ± 2
+// and SQI > 0.8. Noise raises RR jitter slightly, lowering SQI from 1.0 to ~0.99.
 void test_hr1_60bpm_noisy() {
     MOW_AFE4490 afe;
     srand(42);
     feed_hr1_sine_noisy(afe, 1.0f, 500.0f, 6000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.3f, afe.test_hr1_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(8.0f, 60.0f, afe.test_hr1());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.8f, afe.test_hr1_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 60.0f, afe.test_hr1());
 }
 
 // ── Test 6: 120 BPM with noise (~20 dB SNR) ──────────────────────────────────
@@ -78,8 +77,8 @@ void test_hr1_120bpm_noisy() {
     MOW_AFE4490 afe;
     srand(42);
     feed_hr1_sine_noisy(afe, 2.0f, 500.0f, 6000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.3f, afe.test_hr1_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(8.0f, 120.0f, afe.test_hr1());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.8f, afe.test_hr1_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr1());
 }
 
 int main() {
