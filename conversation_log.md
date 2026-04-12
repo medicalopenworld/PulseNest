@@ -3912,3 +3912,239 @@ No — la función no gestiona ningún estado. Es un `log_panel.append()` con ti
   - `"recording"`, `"paused"` → warning (naranja)
   - resto → info (azul)
 - 25 llamadas migradas, cero residuos de `set_status`.
+
+---
+
+## Sesión 2026-04-11 — LabCaptureWindow + offline_runner fixes
+
+### Tema: Nueva funcionalidad de captura controlada de laboratorio
+
+---
+
+**Fix previo commiteado: skip comment/empty lines antes del header CSV en offline_runner**
+El parser del offline_runner asumía que la primera línea era siempre el header. Se corrigió para saltar líneas vacías y líneas `#` antes del header. Commit `85b1be5`.
+
+---
+
+**Decisión: reemplazar "SAVE RAW (500 Hz)" por "CAPTURE LAB"**
+El botón antiguo iniciaba la grabación inmediatamente al pulsarse. El nuevo abre una ventana de configuración (`LabCaptureWindow`) antes de capturar. Motivación: las capturas serán enviadas al `mow_offline_runner` para análisis batch — necesitan metadatos y columnas bien definidas.
+
+---
+
+**Diseño de LabCaptureWindow — decisiones clave:**
+- **Nombre del botón:** `CAPTURE LAB` (sidebar) / `Lab Capture` (título de ventana).
+- **Pre-capture notes:** texto libre escrito como líneas `# comment` ANTES del header CSV. El offline_runner ya las salta (fix `85b1be5`).
+- **Post-capture notes:** texto libre escrito como líneas `# comment` DESPUÉS del último dato.
+- **Columnas obligatorias** (siempre incluidas, requeridas por offline_runner): `RED, IR, AmbRED, AmbIR, REDSub, IRSub`.
+- **Columnas opcionales:** PPG, SpO2→`FW_SpO2`, SpO2SQI, SpO2_R, PI, HR1→`FW_HR1`, HR1SQI, HR2→`FW_HR2`, HR2SQI, HR3→`FW_HR3`, HR3SQI. Las columnas FW_* usan el nombre que espera el offline_runner directamente.
+- **Dos modos de captura:** timed (N muestras, spin a su lado) + continuous (hasta STOP).
+- **Ventana persiste abierta** tras cada captura para permitir capturas consecutivas.
+- **Settings persistidos** en `ppg_plotter.ini` bajo `LabCaptureWindow/`: notas, dir, prefix, spin_samples, checkboxes.
+- **Compatibilidad offline_runner total:** CSV generado es procesable por `mow_offline_runner` sin conversión.
+
+---
+
+**Commit:** `b5e92e4` — feat(plotter): replace SAVE RAW with LabCaptureWindow
+
+**Fix 1:** fuentes subidas a 18px — insuficiente.
+**Fix 2:** subidas a 20px + `font-size: 20px` en el window stylesheet — no bastó.
+**Fix 3:** `_GRP` a 20px + selectores de tipo en todos los controles.
+**Fix 4:** texto sigue pequeño + ventana reducida sin pedirlo. Causa: altura 800px insuficiente para el contenido con 22px fonts, Qt comprime el layout. Solución: fonts a 22px, `setMinimumSize(680, 980)`, default `resize(720, 1050)`. Commit `fd14688`.
+**Fix 5 (esta sesión):** usuario pidió aumentar fuentes de 22px a 24px y cambiar color/borde de los checkboxes.
+- Todos los `font-size:22px` y `font-size: 22px` en `LabCaptureWindow` subidos a 24px: `_GRP`, window-level stylesheet, todos los controles (QPlainTextEdit, QLineEdit, QSpinBox, QLabel, QProgressBar, browse button).
+- Checkbox stylesheet actualizado: fondo `#1E2A1E`, borde `1px solid #4A7A4A`, `border-radius:3px`, `padding:3px 6px`. Al estar checked: fondo `#1E3A1E`, borde `#66BB44`.
+- Las fuentes en el Stats panel de PPGMonitor (3 líneas a 22px) permanecen a 22px — pertenecen a otra clase.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: notas 8 filas
+
+**Cambio:** `setFixedHeight(90)` → `setFixedHeight(250)` en `_pre_notes` y `_post_notes`.
+Con fuente 24px Consolas, 250px muestra ~8 filas visibles.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: revert notas height
+
+Revertido `setFixedHeight(250)` → `setFixedHeight(90)` en `_pre_notes` y `_post_notes`.
+El aumento a 8 filas rompió el layout — se vuelve a 3 filas (90px).
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: notas 8 filas (v2)
+
+**Cambio:** `setFixedHeight(90)` → `setFixedHeight(250)` en `_pre_notes` y `_post_notes` (+160px × 2 = +320px).
+Compensado aumentando `setMinimumSize(680, 980)` → `(680, 1300)` y `resize(720, 1050)` → `(720, 1370)`.
+Eliminada geometría guardada de `[LabCaptureWindow]` en `ppg_plotter.ini` para que arranque con el nuevo tamaño.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: notas elásticas al redimensionar
+
+`setFixedHeight(250)` → `setMinimumHeight(250)` en `_pre_notes` y `_post_notes`.
+`outer.addWidget(grp_pre/grp_post)` → `outer.addWidget(..., stretch=1)` para que absorban el espacio sobrante.
+Eliminado `outer.addStretch()` (absorbía el espacio en vez de las notas).
+Resultado: al crecer la ventana, Pre/Post-capture notes crecen a partes iguales; el resto de secciones mantienen altura fija.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: reorden de secciones
+
+Nuevo orden de secciones en LabCaptureWindow: Output → Capture → Pre-capture notes → Columns → Post-capture notes.
+Antes: Pre-notes → Columns → Output → Capture → Post-notes.
+Comportamiento elástico de las notas (stretch=1) sin cambios.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: Columns grid 3→6 columnas
+
+`grid_cols.addWidget(cb, i // 3, i % 3)` → `i // 6, i % 6`. Los 17 checkboxes se distribuyen en 3 filas × 6 columnas.
+
+
+## Sesión 2026-04-11 — Uniformidad de nombres de señales + estilo checkboxes
+
+### Nomenclatura de señales — patrón Signal_Metric
+
+Decisión: adoptar patrón `Signal_Metric` con guión bajo como separador, sin excepciones.
+Renombrado en `ppg_plotter.py`, `src/main.cpp`, `tools/offline_runner/main.cpp`, `mow_afe4490.h`, `mow_afe4490_spec.md`:
+
+| Antes | Después |
+|---|---|
+| AmbRED / Amb RED | RED_Amb |
+| AmbIR / Amb IR | IR_Amb |
+| REDSub / RED sub | RED_Sub |
+| IRSub / IR sub | IR_Sub |
+| SpO2SQI / SpO2 SQI | SpO2_SQI |
+| HR1SQI / HR1 SQI | HR1_SQI |
+| HR2SQI / HR2 SQI | HR2_SQI |
+| HR3SQI / HR3 SQI | HR3_SQI |
+
+`SpO2_R` ya era correcto — sin cambios.
+Inspiración para Amb/Sub: datasheet AFE4490 (ALED2VAL, LED2-ALED2VAL) → señal primero, descriptor después.
+Separador `=` elegido para el formato key=value de las notas de captura (robusto, sin ambigüedad de espacios).
+
+### Checkboxes LabCaptureWindow — contraste on/off
+
+Desmarcado: fondo `#1A1A1A`, borde `#3A4A3A`, texto gris `#777777`.
+Marcado: fondo `#2A5A2A`, borde `#77CC44`, texto blanco `#E0E0E0`.
+Contraste visual claramente diferenciable entre estados.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: checkbox estilo verde on/off
+
+Desmarcado: cuerpo `#0E2A0E`, borde `#2A5A2A`, texto gris `#777777`. Indicador `#0E2A0E`.
+Marcado: cuerpo `#2A6A2A`, borde `#77CC44`, texto blanco `#FFFFFF`. Indicador `#1A5A1A` + borde `#88EE55`.
+Truco para tick blanco: indicador oscuro → Qt elige blanco por contraste automáticamente.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: fix tick invisible en checkboxes
+
+Eliminadas las reglas `QCheckBox::indicator` y `QCheckBox::indicator:checked` — al sobreescribir el background del indicador Qt deja de renderizar la marca nativa.
+Solución: dejar que Qt dibuje el indicador nativamente; el contraste on/off se logra solo con el cuerpo del checkbox (verde oscuro/gris → verde medio/blanco).
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: tick blanco en checkboxes via SVG
+
+Problema: al sobreescribir `QCheckBox::indicator` background, Qt deja de renderizar el tick nativo.
+Solución: crear `check_white.svg` (polyline blanca, stroke 2.5px) en la raíz del proyecto y referenciarlo con `image: url(check_white.svg)` en `QCheckBox::indicator:checked`.
+Indicador final: unchecked=`#0E2A0E` + borde `#3A7A3A`; checked=`#1A5A1A` + borde `#88EE55` + tick blanco SVG.
+Cuerpo checkbox: unchecked=verde oscuro/texto gris; checked=`#2A6A2A`/texto blanco.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: checkbox clickable en toda su área
+
+Añadida clase `_FullClickCheckBox(QCheckBox)` que sobreescribe `hitButton()` para devolver `self.rect().contains(pos)`.
+Causa del problema: en algunos estilos Qt el área de click del QCheckBox se restringe al indicador + texto, ignorando el padding del stylesheet.
+Los checkboxes de LabCaptureWindow usan ahora `_FullClickCheckBox` en lugar de `QtWidgets.QCheckBox`.
+
+
+## Sesión 2026-04-11 — LabCaptureWindow: guardar checkboxes en tiempo real
+
+Bug: `_save_settings` solo se llamaba desde `closeEvent`, que no se ejecuta con `Stop-Process -Force`.
+Fix: conectar `cb.stateChanged` → `self._save_settings` en cada checkbox opcional. El ini se actualiza en el momento del cambio, sin depender del cierre de la ventana.
+
+
+## Sesión 2026-04-11 — Ajustes de fuente varios
+
+- LabCaptureWindow: fuentes 24px → 26px → 28px (ajuste iterativo hasta tamaño definitivo).
+- TimingWindow (líneas 4293 y 4303): `_lbl_stack` y cabecera "FreeRTOS Tasks" subidas de 11px a 22px.
+
+
+## Sesión 2026-04-12 — offline_runner: fix column header matching
+
+Bug crítico: el parser del offline_runner comparaba headers CSV en minúsculas contra los nombres antiguos (`ambred`, `ambir`, `redsub`, `irsub`). Con los nombres nuevos del protocolo nunca encontraba las columnas obligatorias y rechazaba todos los CSV.
+Fix: actualizar las 4 strings de comparación → `red_amb`, `ir_amb`, `red_sub`, `ir_sub`.
+Los identificadores C++ internos (`amb_red`, `amb_ir`, etc.) se mantienen — son cosmética sin riesgo de error.
+
+
+## Sesión 2026-04-12 — Consistencia nomenclatura señales + offline_runner
+
+### offline_runner/main.cpp
+- Índices renombrados: `idx_amb_red` → `idx_red_amb`, `idx_amb_ir` → `idx_ir_amb`.
+- Struct fields renombrados: `amb_red` → `red_amb`, `amb_ir` → `ir_amb`.
+- Consistencia total con el protocolo serie y los nombres de columna CSV.
+
+### ppg_plotter.py — _COLS línea 5203
+- `"SpO2 R"` → `"SpO2_R"`: inconsistencia con espacio que se escapó en el renombrado masivo.
+- La clave ini `check_SpO2_R` no cambia (`.replace(' ','_')` daba el mismo resultado).
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: prefijo FW_ en columnas opcionales CSV
+
+Todos los opcionales tienen ahora `FW_` en el nombre de columna CSV (segundo elemento de `_COLS`).
+Los labels de la UI (checkboxes) se mantienen sin prefijo para legibilidad.
+Razón: distinguir valores generados por firmware de los que podría calcular el offline_runner/script.
+Columnas afectadas: FW_PPG, FW_SpO2_SQI, FW_SpO2_R, FW_PI, FW_HR1_SQI, FW_HR2_SQI, FW_HR3_SQI.
+FW_SpO2, FW_HR1, FW_HR2, FW_HR3 ya tenían el prefijo — sin cambios.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: SmpCnt+Ts_us, grid 8 cols, checkbox padding
+
+- Añadidas columnas `SmpCnt`/`FW_SmpCnt` (p[1]) y `Ts_us`/`FW_Ts_us` (p[2]) al inicio de `_COLS` como opcionales. Aparecen primeras visualmente para parecer obligatorias.
+- Grid de checkboxes: 6 → 8 columnas (`i // 8, i % 8`). Total 19 checkboxes en 3 filas × 8 cols (última fila incompleta).
+- Padding de checkboxes reducido: `3px 6px` → `2px 3px` para que quepan mejor en 8 columnas.
+- FW_ en todos los opcionales: política consolidada (FW_SmpCnt, FW_Ts_us, FW_PPG, FW_SpO2_SQI, FW_SpO2_R, FW_PI, FW_HR1_SQI, FW_HR2_SQI, FW_HR3_SQI + los ya existentes FW_SpO2, FW_HR1/2/3).
+- Homogeneización en ppg_plotter.py: `data_amb_red/ir` → `data_red_amb/ir_amb`, `curve_amb_red/ir` → `curve_red_amb/ir_amb`.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: fix padding checkbox
+
+Padding horizontal: `2px 3px` → `2px 6px`. El texto de `SpO2_SQI` quedaba cortado con 3px.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: ancho mínimo checkboxes
+
+`cb.setMinimumWidth(150)` en cada checkbox. El padding interno no controla el ancho total cuando la QGridLayout comprime las celdas — el mínimo fuerza el espacio correcto.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: fix padding checkboxes (v2)
+
+Revertido `setMinimumWidth(150)` — forzaba todos los checkboxes demasiado anchos.
+Padding horizontal: `6px` → `10px` para que `SpO2_SQI` se muestre completo sin bloquear el ancho.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: setMinimumWidth(200) en checkboxes
+
+`cb.setMinimumWidth(200)` — fuerza ancho mínimo suficiente para mostrar "SpO2_SQI" completo con fuente 28px.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: ancho ventana para 8 columnas × 180px
+
+`cb.setMinimumWidth(180)` — ancho mínimo por checkbox.
+`setMinimumSize(1480, 1300)` y `resize(1480, 1370)` — ventana suficientemente ancha para 8 col × 180px sin solapamiento.
+Geometría guardada en ini borrada para que aplique el nuevo tamaño.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: setMinimumWidth 180→185
+
+Ajuste fino: `cb.setMinimumWidth(185)`.
+
+
+## Sesión 2026-04-12 — LabCaptureWindow: ancho ventana 1480→1510
+
+`setMinimumSize(1510, 1300)` y `resize(1510, 1370)` — compensación para 8 × 185px de checkbox.
+
+
+## Sesión 2026-04-12 — ppg_plotter: color "HPS" en título del gráfico FFT
+
+En `_refresh_fft_plot` (línea ~4159), el texto "HPS" del título del panel FFT ahora se muestra en naranja `#FF8800`, igual que `curve_hps`.
+
+
+## Sesión 2026-04-12 — ppg_plotter: título dinámico plot SQI en HR3TEST
+
+En `_refresh_hr_plots` de HR3TEST, el título de `p_sqi` ahora muestra los valores instantáneos: `SQI fw: X.XX` en verde (#00CC66, dato firmware) y `py: X.XX` en amarillo (#FFDD44, dato script). Criterio de color verde=firmware / amarillo=script aplicado.
+

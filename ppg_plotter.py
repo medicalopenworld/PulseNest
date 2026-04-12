@@ -603,7 +603,7 @@ class HR1TestCalc:
     Purpose: post-implementation verification — compare against firmware output to detect bugs.
 
     Processing chain per sample:
-      IRSub → IIR DC removal (τ=1.6 s) → negate (PPG polarity) →
+      IR_Sub → IIR DC removal (τ=1.6 s) → negate (PPG polarity) →
       moving average LP (cutoff ~5 Hz, len=fs/(2×5), max 64) →
       running maximum (×0.9999 decay) →
       threshold crossing (0.6 × running_max, refractory 0.2 s) →
@@ -740,7 +740,7 @@ class HR1TestCalc:
 
         Parameters
         ----------
-        ir_sub : float  — IRSub (LED1-ALED1) ADC value
+        ir_sub : float  — IR_Sub (LED1-ALED1) ADC value
         fs     : float  — sample rate (Hz)
         """
         if fs != self._fs:
@@ -828,7 +828,7 @@ class HR2TestCalc:
     Purpose: post-implementation verification.
 
     Processing chain per sample (at 50 Hz after firmware decimation):
-      IRSub → biquad BPF 0.5–5 Hz → circular buffer 400 samples →
+      IR_Sub → biquad BPF 0.5–5 Hz → circular buffer 400 samples →
       [every 25 samples] normalised autocorrelation over lags [0.185 s .. 137 samples] →
       first local max ≥ hr2_min_corr → parabolic interpolation → HR2 = 60/peak_lag_s
 
@@ -1902,7 +1902,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         parts = raw.split(',')
                         if len(parts) < 20 or parts[0] != '$M1':
                             continue
-                        # $M1,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,...
+                        # $M1,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,...
                         ts_us   = float(parts[2])
                         ir_sub  = float(parts[8])
                         red_sub = float(parts[7])
@@ -1910,7 +1910,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         R_fw    = float(parts[12])
                         sqi_fw  = float(parts[11])
                     elif is_raw:
-                        # Format: Timestamp_PC,Diff_us_PC,LibID,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,...
+                        # Format: Timestamp_PC,Diff_us_PC,LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,...
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
@@ -2589,7 +2589,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                         hr_fw  = float(parts[14])
                         sqi_fw = float(parts[15])
                     else:
-                        # LibID,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,...,HR1,HR1SQI,...
+                        # LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,...,HR1,HR1_SQI,...
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
@@ -3443,7 +3443,7 @@ class HR3TestCalc:
     Purpose: post-implementation verification.
 
     Processing chain per sample (at 50 Hz after firmware decimation):
-      IRSub → 2nd-order Butterworth LP 10 Hz → circular buffer 512 samples →
+      IR_Sub → 2nd-order Butterworth LP 10 Hz → circular buffer 512 samples →
       [every 25 samples] mean subtraction → Hann window → rfft →
       HPS: P[k]·P[2k]·P[3k] → argmax in HR range → parabolic interpolation
       → HR3 = peak_freq × 60
@@ -4142,6 +4142,10 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             f"<b style='color:#00CC66'>HR3 fw: {_fmt(v_fw)} bpm</b>"
             f"  <b style='color:#FFDD44'>py: {_fmt(v_py)} bpm</b>"
             f"  <span style='color:#FF6666'>\u0394={_fmt(v_d)}</span>")
+        s_fw = _lv(sqi_fw); s_py = _lv(sqi_py)
+        self.p_sqi.setTitle(
+            f"<b style='color:#00CC66'>SQI fw: {_fmt(s_fw, 2)}</b>"
+            f"  <b style='color:#FFDD44'>py: {_fmt(s_py, 2)}</b>")
 
     def _refresh_fft_plot(self):
         freqs = self._calc.last_freqs
@@ -4156,7 +4160,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                 hr_at_peak = peak * 60.0
                 sqi_at_peak = self._calc.hr_sqi
                 self.p_fft.setTitle(
-                    f"<b style='color:#00CCFF'>FFT + HPS</b>"
+                    f"<b style='color:#00CCFF'>FFT + <span style='color:#FF8800'>HPS</span></b>"
                     f"  <span style='color:#00FF88'>peak={peak:.3f} Hz \u2192 {hr_at_peak:.1f} bpm"
                     f"  SQI={sqi_at_peak:.3f}</span>")
 
@@ -4290,7 +4294,7 @@ class TimingWindow(QtWidgets.QMainWindow):
         # Stack free (Task A)
         self._lbl_stack = QtWidgets.QLabel("Stack free: —")
         self._lbl_stack.setAlignment(QtCore.Qt.AlignRight)
-        self._lbl_stack.setStyleSheet("color: #888888; font-size: 11px;")
+        self._lbl_stack.setStyleSheet("color: #888888; font-size: 22px;")
         self._lbl_stack.setToolTip(_make_tooltip(
             "Stack free",
             "Remaining stack of the mow_afe4490 FreeRTOS task (Task A), in 4-byte words "
@@ -4300,7 +4304,7 @@ class TimingWindow(QtWidgets.QMainWindow):
         # ── FreeRTOS task list section ──────────────────────────────────────────
         lbl_tasks_hdr = QtWidgets.QLabel("  FreeRTOS Tasks (avg CPU since boot)")
         lbl_tasks_hdr.setStyleSheet(
-            "background: #1E2E3E; color: #88BBDD; font-size: 11px; font-weight: bold; padding: 3px;")
+            "background: #1E2E3E; color: #88BBDD; font-size: 22px; font-weight: bold; padding: 3px;")
         lbl_tasks_hdr.setToolTip(_make_tooltip(
             "FreeRTOS task list",
             "CPU% = ulRunTimeCounter / total_time × 100 (cumulative average since boot).\n"
@@ -4944,8 +4948,8 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             "Represents environmental light interference on the RED channel."))
         self.check_red_sub.setToolTip(_make_tooltip(
             "RED (clean)",
-            "RED minus ambient: RED − AmbRED. Ambient-subtracted RED signal. "
-            "Primary input to the SpO2 algorithm. Field: REDSub."))
+            "RED minus ambient: RED − RED_Amb. Ambient-subtracted RED signal. "
+            "Primary input to the SpO2 algorithm. Field: RED_Sub."))
         for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub):
             sidebar.addWidget(w)
 
@@ -4965,8 +4969,8 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             "Represents environmental light interference on the IR channel."))
         self.check_ir_sub.setToolTip(_make_tooltip(
             "IR (clean)",
-            "IR minus ambient: IR − AmbIR. Ambient-subtracted IR signal. "
-            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: IRSub."))
+            "IR minus ambient: IR − IR_Amb. Ambient-subtracted IR signal. "
+            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: IR_Sub."))
         for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub):
             sidebar.addWidget(w)
 
@@ -4988,7 +4992,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
 
         self.p1 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
         self.curve_red      = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
-        self.curve_amb_red  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
+        self.curve_red_amb  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
         self.curve_red_sub  = self.p1.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
         self.p1.showGrid(x=True, y=True, alpha=0.3)
 
@@ -4996,7 +5000,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
 
         self.p2 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
         self.curve_ir      = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
-        self.curve_amb_ir  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
+        self.curve_ir_amb  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
         self.curve_ir_sub  = self.p2.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
         self.p2.showGrid(x=True, y=True, alpha=0.3)
 
@@ -5032,17 +5036,17 @@ class PPGPlotsWindow(QtWidgets.QWidget):
 
         # ── Checkbox → curve visibility ───────────────────────────────────────
         self.check_red_raw.stateChanged.connect(lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
-        self.check_red_amb.stateChanged.connect(lambda: self.curve_amb_red.setVisible(self.check_red_amb.isChecked()))
+        self.check_red_amb.stateChanged.connect(lambda: self.curve_red_amb.setVisible(self.check_red_amb.isChecked()))
         self.check_red_sub.stateChanged.connect(lambda: self.curve_red_sub.setVisible(self.check_red_sub.isChecked()))
         self.check_ir_raw.stateChanged.connect( lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
-        self.check_ir_amb.stateChanged.connect( lambda: self.curve_amb_ir.setVisible(self.check_ir_amb.isChecked()))
+        self.check_ir_amb.stateChanged.connect( lambda: self.curve_ir_amb.setVisible(self.check_ir_amb.isChecked()))
         self.check_ir_sub.stateChanged.connect( lambda: self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked()))
 
         self.curve_red.setVisible(False)
-        self.curve_amb_red.setVisible(False)
+        self.curve_red_amb.setVisible(False)
         self.curve_red_sub.setVisible(True)
         self.curve_ir.setVisible(False)
-        self.curve_amb_ir.setVisible(False)
+        self.curve_ir_amb.setVisible(False)
         self.curve_ir_sub.setVisible(True)
 
         outer.addWidget(hint)
@@ -5051,7 +5055,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
                      data_spo2, data_spo2_sqi, data_spo2_r,
                      data_hr1_sqi, data_hr2_sqi, data_hr3_sqi,
                      data_red, data_ir,
-                     data_amb_red, data_amb_ir, data_red_sub, data_ir_sub):
+                     data_red_amb, data_ir_amb, data_red_sub, data_ir_sub):
         self.p_spo2.setTitle(
             f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b>"
             f" &nbsp; <b style='color:#888888'>SQI: {data_spo2_sqi[-1]:.2f}</b>"
@@ -5068,8 +5072,8 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.curve_hr3.setData(list(data_hr3))
         self.curve_red.setData(list(data_red))
         self.curve_ir.setData(list(data_ir))
-        self.curve_amb_red.setData(list(data_amb_red))
-        self.curve_amb_ir.setData(list(data_amb_ir))
+        self.curve_red_amb.setData(list(data_red_amb))
+        self.curve_ir_amb.setData(list(data_ir_amb))
         self.curve_red_sub.setData(list(data_red_sub))
         self.curve_ir_sub.setData(list(data_ir_sub))
 
@@ -5093,7 +5097,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI"
+        "LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI"
     )
 
     def __init__(self, main_monitor):
@@ -5163,6 +5167,12 @@ class SerialComWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
 
+class _FullClickCheckBox(QtWidgets.QCheckBox):
+    """QCheckBox that responds to clicks anywhere in its bounding rect."""
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+
 class LabCaptureWindow(QtWidgets.QMainWindow):
     """Controlled lab capture window.
 
@@ -5173,7 +5183,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
     CSV format (compatible with mow_offline_runner):
       - Pre-capture notes as '# ...' lines before the column header.
-      - Mandatory columns: RED, IR, AmbRED, AmbIR, REDSub, IRSub.
+      - Mandatory columns: RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub.
       - Optional FW columns: FW_SpO2, FW_HR1, FW_HR2, FW_HR3 (offline_runner names).
       - Post-capture notes as '# ...' lines after the last data row.
     """
@@ -5181,34 +5191,36 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     # (display label, csv column name, M1-parts index after '$', mandatory)
     # M1 parts layout (after stripping '$' and checksum):
     #   [0]=LibID  [1]=SmpCnt  [2]=Ts_us
-    #   [3]=RED  [4]=IR  [5]=AmbRED  [6]=AmbIR  [7]=REDSub  [8]=IRSub
-    #   [9]=PPG  [10]=SpO2  [11]=SpO2SQI  [12]=SpO2_R  [13]=PI
-    #   [14]=HR1  [15]=HR1SQI  [16]=HR2  [17]=HR2SQI  [18]=HR3  [19]=HR3SQI
+    #   [3]=RED  [4]=IR  [5]=RED_Amb  [6]=IR_Amb  [7]=RED_Sub  [8]=IR_Sub
+    #   [9]=PPG  [10]=SpO2  [11]=SpO2_SQI  [12]=SpO2_R  [13]=PI
+    #   [14]=HR1  [15]=HR1_SQI  [16]=HR2  [17]=HR2_SQI  [18]=HR3  [19]=HR3_SQI
     _COLS = [
-        ("RED",      "RED",      3,  True),
-        ("IR",       "IR",       4,  True),
-        ("AmbRED",   "AmbRED",   5,  True),
-        ("AmbIR",    "AmbIR",    6,  True),
-        ("REDSub",   "REDSub",   7,  True),
-        ("IRSub",    "IRSub",    8,  True),
-        ("PPG",      "PPG",      9,  False),
-        ("SpO2",     "FW_SpO2", 10,  False),
-        ("SpO2 SQI", "SpO2SQI", 11,  False),
-        ("SpO2 R",   "SpO2_R",  12,  False),
-        ("PI",       "PI",      13,  False),
-        ("HR1",      "FW_HR1",  14,  False),
-        ("HR1 SQI",  "HR1SQI",  15,  False),
-        ("HR2",      "FW_HR2",  16,  False),
-        ("HR2 SQI",  "HR2SQI",  17,  False),
-        ("HR3",      "FW_HR3",  18,  False),
-        ("HR3 SQI",  "HR3SQI",  19,  False),
+        ("SmpCnt",   "FW_SmpCnt",  1,  False),
+        ("Ts_us",    "FW_Ts_us",   2,  False),
+        ("RED",      "RED",        3,  True),
+        ("IR",       "IR",         4,  True),
+        ("RED_Amb",  "RED_Amb",    5,  True),
+        ("IR_Amb",   "IR_Amb",     6,  True),
+        ("RED_Sub",  "RED_Sub",    7,  True),
+        ("IR_Sub",   "IR_Sub",     8,  True),
+        ("PPG",      "FW_PPG",      9,  False),
+        ("SpO2",     "FW_SpO2",    10,  False),
+        ("SpO2_SQI", "FW_SpO2_SQI", 11,  False),
+        ("SpO2_R",   "FW_SpO2_R",  12,  False),
+        ("PI",       "FW_PI",      13,  False),
+        ("HR1",      "FW_HR1",     14,  False),
+        ("HR1_SQI",  "FW_HR1_SQI", 15,  False),
+        ("HR2",      "FW_HR2",     16,  False),
+        ("HR2_SQI",  "FW_HR2_SQI", 17,  False),
+        ("HR3",      "FW_HR3",     18,  False),
+        ("HR3_SQI",  "FW_HR3_SQI", 19,  False),
     ]
 
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
         self.setWindowTitle("Lab Capture")
-        self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 22px;")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 28px;")
         self._setup_ui()
         self._load_settings()
 
@@ -5220,49 +5232,9 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        _GRP = ("QGroupBox { color: #FFAA44; font-weight: bold; font-size: 22px; "
+        _GRP = ("QGroupBox { color: #FFAA44; font-weight: bold; font-size: 28px; "
                 "border: 1px solid #555; margin-top: 8px; } "
                 "QGroupBox::title { subcontrol-origin: margin; left: 8px; }")
-
-        # ── Pre-capture notes ──────────────────────────────────────────────
-        grp_pre = QtWidgets.QGroupBox("Pre-capture notes")
-        grp_pre.setStyleSheet(_GRP)
-        vbox_pre = QtWidgets.QVBoxLayout(grp_pre)
-        self._pre_notes = QtWidgets.QPlainTextEdit()
-        self._pre_notes.setPlaceholderText(
-            "Subject ID, session conditions, operator name, …\n"
-            "Each line will be written as a # comment before the CSV header.")
-        self._pre_notes.setFixedHeight(90)
-        self._pre_notes.setStyleSheet(
-            "QPlainTextEdit { background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:22px; }")
-        self._pre_notes.setToolTip(_make_tooltip(
-            "Pre-capture notes",
-            "Free-form text written as # comment lines at the top of the CSV file, "
-            "before the column header. Use it for subject ID, session conditions, "
-            "operator name, etc."))
-        vbox_pre.addWidget(self._pre_notes)
-        outer.addWidget(grp_pre)
-
-        # ── Columns ────────────────────────────────────────────────────────
-        grp_cols = QtWidgets.QGroupBox("Columns")
-        grp_cols.setStyleSheet(_GRP)
-        grid_cols = QtWidgets.QGridLayout(grp_cols)
-        grid_cols.setSpacing(4)
-        self._checks = {}
-        for i, (label, csv_name, _, mandatory) in enumerate(self._COLS):
-            cb = QtWidgets.QCheckBox(label)
-            cb.setChecked(True)
-            cb.setStyleSheet("QCheckBox { font-size:22px; color:#E0E0E0; }")
-            if mandatory:
-                cb.setEnabled(False)
-                cb.setToolTip(_make_tooltip(
-                    label,
-                    f"Always included — required by the offline runner (column: {csv_name})."))
-            else:
-                cb.setToolTip(_make_tooltip(label, f"Optional column: {csv_name}."))
-            self._checks[label] = cb
-            grid_cols.addWidget(cb, i // 3, i % 3)
-        outer.addWidget(grp_cols)
 
         # ── Output ─────────────────────────────────────────────────────────
         grp_out = QtWidgets.QGroupBox("Output")
@@ -5272,28 +5244,28 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
         dir_row = QtWidgets.QHBoxLayout()
         self._edit_dir = QtWidgets.QLineEdit()
-        self._edit_dir.setStyleSheet("QLineEdit { background:#2A2A2A; color:#FFDD44; font-size:22px; }")
+        self._edit_dir.setStyleSheet("QLineEdit { background:#2A2A2A; color:#FFDD44; font-size:28px; }")
         self._edit_dir.setToolTip(_make_tooltip(
             "Output directory", "Folder where capture CSV files are saved."))
         dir_row.addWidget(self._edit_dir)
         btn_browse = QtWidgets.QPushButton("Browse…")
-        btn_browse.setStyleSheet("font-size:22px; padding:4px 10px;")
+        btn_browse.setStyleSheet("font-size:28px; padding:4px 10px;")
         btn_browse.clicked.connect(self._browse_dir)
         btn_browse.setToolTip(_make_tooltip(
             "Browse", "Choose the output directory for captured CSV files."))
         dir_row.addWidget(btn_browse)
         _lbl_dir = QtWidgets.QLabel("Directory:")
-        _lbl_dir.setStyleSheet("QLabel { color:#CCCCCC; font-size:22px; }")
+        _lbl_dir.setStyleSheet("QLabel { color:#CCCCCC; font-size:28px; }")
         form_out.addRow(_lbl_dir, dir_row)
 
         self._edit_prefix = QtWidgets.QLineEdit()
         self._edit_prefix.setPlaceholderText("lab_capture")
-        self._edit_prefix.setStyleSheet("QLineEdit { background:#2A2A2A; color:#FFDD44; font-size:22px; }")
+        self._edit_prefix.setStyleSheet("QLineEdit { background:#2A2A2A; color:#FFDD44; font-size:28px; }")
         self._edit_prefix.setToolTip(_make_tooltip(
             "Filename prefix",
             "The captured file is named <prefix>_<YYYYMMDD_HHMMSS>.csv"))
         _lbl_pfx = QtWidgets.QLabel("Filename prefix:")
-        _lbl_pfx.setStyleSheet("QLabel { color:#CCCCCC; font-size:22px; }")
+        _lbl_pfx.setStyleSheet("QLabel { color:#CCCCCC; font-size:28px; }")
         form_out.addRow(_lbl_pfx, self._edit_prefix)
         outer.addWidget(grp_out)
 
@@ -5317,14 +5289,14 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._spin_samples.setValue(5000)
         self._spin_samples.setSingleStep(500)
         self._spin_samples.setStyleSheet(
-            "QSpinBox { background:#2A2A2A; color:#FFDD44; font-size:22px; padding:4px; }")
+            "QSpinBox { background:#2A2A2A; color:#FFDD44; font-size:28px; padding:4px; }")
         self._spin_samples.setToolTip(_make_tooltip(
             "Sample count",
             "Number of 500 Hz samples to record in a timed capture. "
             "5000 samples = 10 seconds at 500 Hz."))
         row_timed.addWidget(self._spin_samples)
         lbl_smp = QtWidgets.QLabel("samples")
-        lbl_smp.setStyleSheet("QLabel { font-size:22px; color:#AAAAAA; }")
+        lbl_smp.setStyleSheet("QLabel { font-size:28px; color:#AAAAAA; }")
         row_timed.addWidget(lbl_smp)
         vbox_cap.addLayout(row_timed)
 
@@ -5353,16 +5325,65 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._progress.setTextVisible(True)
         self._progress.setStyleSheet(
             "QProgressBar { background:#2A2A2A; border:1px solid #555; color:#FFF; "
-            "font-size:22px; text-align:center; } "
+            "font-size:28px; text-align:center; } "
             "QProgressBar::chunk { background:#33AA55; }")
         vbox_cap.addWidget(self._progress)
 
         self._lbl_status = QtWidgets.QLabel("IDLE")
         self._lbl_status.setAlignment(QtCore.Qt.AlignCenter)
         self._lbl_status.setStyleSheet(
-            "QLabel { font-size:22px; color:#AAAAAA; font-weight:bold; }")
+            "QLabel { font-size:28px; color:#AAAAAA; font-weight:bold; }")
         vbox_cap.addWidget(self._lbl_status)
         outer.addWidget(grp_cap)
+
+        # ── Pre-capture notes ──────────────────────────────────────────────
+        grp_pre = QtWidgets.QGroupBox("Pre-capture notes")
+        grp_pre.setStyleSheet(_GRP)
+        vbox_pre = QtWidgets.QVBoxLayout(grp_pre)
+        self._pre_notes = QtWidgets.QPlainTextEdit()
+        self._pre_notes.setPlaceholderText(
+            "Subject ID, session conditions, operator name, …\n"
+            "Each line will be written as a # comment before the CSV header.")
+        self._pre_notes.setMinimumHeight(250)
+        self._pre_notes.setStyleSheet(
+            "QPlainTextEdit { background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:28px; }")
+        self._pre_notes.setToolTip(_make_tooltip(
+            "Pre-capture notes",
+            "Free-form text written as # comment lines at the top of the CSV file, "
+            "before the column header. Use it for subject ID, session conditions, "
+            "operator name, etc."))
+        vbox_pre.addWidget(self._pre_notes)
+        outer.addWidget(grp_pre, stretch=1)
+
+        # ── Columns ────────────────────────────────────────────────────────
+        grp_cols = QtWidgets.QGroupBox("Columns")
+        grp_cols.setStyleSheet(_GRP)
+        grid_cols = QtWidgets.QGridLayout(grp_cols)
+        grid_cols.setSpacing(4)
+        self._checks = {}
+        for i, (label, csv_name, _, mandatory) in enumerate(self._COLS):
+            cb = _FullClickCheckBox(label)
+            cb.setMinimumWidth(185)
+            cb.setChecked(True)
+            cb.setStyleSheet(
+                "QCheckBox { font-size:28px; color:#777777; background:#0E2A0E; "
+                "border:1px solid #2A5A2A; border-radius:3px; padding:2px 10px; }"
+                "QCheckBox::indicator { width:20px; height:20px; border:2px solid #3A7A3A; "
+                "background:#0E2A0E; border-radius:2px; }"
+                "QCheckBox::indicator:checked { background:#1A5A1A; border-color:#88EE55; "
+                "image: url(check_white.svg); }"
+                "QCheckBox:checked { color:#FFFFFF; background:#2A6A2A; border-color:#77CC44; }")
+            if mandatory:
+                cb.setEnabled(False)
+                cb.setToolTip(_make_tooltip(
+                    label,
+                    f"Always included — required by the offline runner (column: {csv_name})."))
+            else:
+                cb.setToolTip(_make_tooltip(label, f"Optional column: {csv_name}."))
+                cb.stateChanged.connect(self._save_settings)
+            self._checks[label] = cb
+            grid_cols.addWidget(cb, i // 8, i % 8)
+        outer.addWidget(grp_cols)
 
         # ── Post-capture notes ─────────────────────────────────────────────
         grp_post = QtWidgets.QGroupBox("Post-capture notes")
@@ -5372,27 +5393,25 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._post_notes.setPlaceholderText(
             "Observations after the capture: signal quality, artefacts, …\n"
             "Written as # comment lines at the end of the CSV file.")
-        self._post_notes.setFixedHeight(90)
+        self._post_notes.setMinimumHeight(250)
         self._post_notes.setStyleSheet(
-            "QPlainTextEdit { background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:22px; }")
+            "QPlainTextEdit { background:#1A1A1A; color:#CCCCCC; font-family:Consolas; font-size:28px; }")
         self._post_notes.setToolTip(_make_tooltip(
             "Post-capture notes",
             "Free-form text written as # comment lines at the bottom of the CSV file, "
             "after the last data row. Use it for signal quality observations, artefacts, etc."))
         vbox_post.addWidget(self._post_notes)
-        outer.addWidget(grp_post)
-
-        outer.addStretch()
+        outer.addWidget(grp_post, stretch=1)
 
     # ── Settings ─────────────────────────────────────────────────────────────
     def _load_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        self.setMinimumSize(680, 980)
+        self.setMinimumSize(1510, 1300)
         geom = s.value("LabCaptureWindow/geometry")
         if geom:
             self.restoreGeometry(geom)
         else:
-            self.resize(720, 1050)
+            self.resize(1510, 1370)
         self._pre_notes.setPlainText(
             s.value("LabCaptureWindow/pre_notes",  "", type=str))
         self._post_notes.setPlainText(
@@ -5489,7 +5508,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         name = os.path.basename(filepath)
         self._lbl_status.setText(f"CAPTURING → {name}")
         self._lbl_status.setStyleSheet(
-            "QLabel { font-size:22px; color:#FFDD44; font-weight:bold; }")
+            "QLabel { font-size:28px; color:#FFDD44; font-weight:bold; }")
 
     def on_capture_progress(self, count: int, target: int):
         if target > 0:
@@ -5507,7 +5526,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         name = os.path.basename(filepath)
         self._lbl_status.setText(f"DONE  {count} samples → {name}")
         self._lbl_status.setStyleSheet(
-            "QLabel { font-size:22px; color:#00FF88; font-weight:bold; }")
+            "QLabel { font-size:28px; color:#00FF88; font-weight:bold; }")
 
     # ── Close ─────────────────────────────────────────────────────────────────
     def closeEvent(self, event):
@@ -5564,8 +5583,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_spo2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_red = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ir  = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_amb_ir = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_amb_red = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_ir_amb = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_red_amb = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ir_sub = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_red_sub = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr2      = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
@@ -5633,21 +5652,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
             # Order mirrors the $M1/$P1 serial frame. Row indices: HR1=11, HR2=13, HR3=15.
             ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
-            ("Amb RED",  "data_amb_red",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
-            ("Amb IR",   "data_amb_ir",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
-            ("RED sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
-            ("IR sub",   "data_ir_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
+            ("RED_Amb",  "data_red_amb",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
+            ("IR_Amb",   "data_ir_amb",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
+            ("RED_Sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
+            ("IR_Sub",   "data_ir_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
             ("PPG",      "data_ppg",      "Filtered PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Units: ADC counts."),
             ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (mow_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
-            ("SpO2 SQI", "data_spo2_sqi", "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference."),
+            ("SpO2_SQI", "data_spo2_sqi", "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference."),
             ("SpO2_R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
             ("PI",       "data_pi",       "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion."),
             ("HR1",      "data_hr1",      "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR1 SQI",  "data_hr1_sqi",  "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range."),
+            ("HR1_SQI",  "data_hr1_sqi",  "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range."),
             ("HR2",      "data_hr2",      "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR2 SQI",  "data_hr2_sqi",  "HR2 Signal Quality Index [0–1]. Normalised autocorrelation value at the dominant RR lag: SQI = acorr[peak_lag] / acorr[0]. High value = strong, clear periodicity. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range."),
+            ("HR2_SQI",  "data_hr2_sqi",  "HR2 Signal Quality Index [0–1]. Normalised autocorrelation value at the dominant RR lag: SQI = acorr[peak_lag] / acorr[0]. High value = strong, clear periodicity. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range."),
             ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR3 SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
+            ("HR3_SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         
@@ -5825,12 +5844,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
         self.btn_frame_m1.setToolTip(_make_tooltip(
             "$M1 — FULL frame",
-            "Full frame mode: 19 fields — SmpCnt, Ts_us, RED, IR, AmbRED, AmbIR, REDSub, IRSub, "
-            "PPG, SpO2, SpO2SQI, SpO2_R, PI, HR1, HR1SQI, HR2, HR2SQI, HR3, HR3SQI + checksum. "
+            "Full frame mode: 19 fields — SmpCnt, Ts_us, RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub, "
+            "PPG, SpO2, SpO2_SQI, SpO2_R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI + checksum. "
             "Use for algorithm analysis and calibration."))
         self.btn_frame_m2.setToolTip(_make_tooltip(
             "$M2 — RAW frame",
-            "Raw frame mode: only raw ADC values — SmpCnt, Ts_us, RED, IR, AmbRED, AmbIR + checksum. "
+            "Raw frame mode: only raw ADC values — SmpCnt, Ts_us, RED, IR, RED_Amb, IR_Amb + checksum. "
             "Lower bandwidth. Use when only raw signal capture is needed."))
         self.sidebar_layout.addWidget(self.btn_frame_m1)
         self.sidebar_layout.addWidget(self.btn_frame_m2)
@@ -5885,7 +5904,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "HR3LAB",
             "Show or hide the HR3 FFT/HPS analysis window. "
             "Displays FFT spectrum, Harmonic Product Spectrum and HR1/HR2/HR3 comparison in real time. "
-            "HR3 uses a 512-sample Hann window + rfft + HPS on the IR sub-signal at 50 Hz."))
+            "HR3 uses a 512-sample Hann window + rfft + HPS on the IR_Sub-signal at 50 Hz."))
         self.sidebar_layout.addWidget(self.btn_hr3lab)
 
         self.btn_spo2lab = QtWidgets.QPushButton("SPO2LAB")
@@ -5966,7 +5985,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.log_panel.setStyleSheet("""
             QTextEdit {
                 background-color: #1A1A2E; color: #E0E0E0;
-                font-family: monospace; font-size: 26px;
+                font-family: monospace; font-size: 28px;
                 border: 1px solid #333355; border-radius: 6px; padding: 4px 8px;
             }
         """)
@@ -6010,7 +6029,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.stats_table.setStyleSheet("""
             QTableWidget {
                 background-color: #111111; color: #E0E0E0;
-                font-family: monospace; font-size: 26px;
+                font-family: monospace; font-size: 28px;
                 gridline-color: #2A2A2A; border: none;
             }
             QHeaderView::section {
@@ -6335,7 +6354,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         parts = raw_line[1:].split('*')[0].split(',')   # strip '$' and checksum
         n = len(parts)
         is_m2 = (n >= 1 and parts[0] == "M2")
-        # M2 parts layout: [0]=M2 [1]=cnt [2]=RED [3]=IR [4]=AmbRED [5]=AmbIR [6]=REDSub [7]=IRSub
+        # M2 parts layout: [0]=M2 [1]=cnt [2]=RED [3]=IR [4]=RED_Amb [5]=IR_Amb [6]=RED_Sub [7]=IR_Sub
         _M2_MAP = {3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7}
 
         row_vals = []
@@ -6383,9 +6402,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             filename = f"ppg_data_snap_{now_str}.csv"
             try:
                 with open(filename, "w") as f:
-                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
+                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
                     for i in range(len(self.data_sample_counter)):
-                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_amb_red[i]},{self.data_amb_ir[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_ppg[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
+                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_red_amb[i]},{self.data_ir_amb[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_ppg[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
                 self.log(f"Snapshot saved to {filename}")
             except Exception as e:
                 self.log(f"Error saving snapshot: {e}")
@@ -6397,9 +6416,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 try:
                     self.save_file = open(filename, "w")
                     if self.frame_mode == "M2":
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,AmbRED,AmbIR,REDSub,IRSub\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,RED_Amb,IR_Amb,RED_Sub,IR_Sub\n")
                     else:
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,AmbRED,AmbIR,REDSub,IRSub,PPG,SpO2,SpO2SQI,SpO2_R,PI,HR1,HR1SQI,HR2,HR2SQI,HR3,HR3SQI\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
                     self.log(f"RECORDING LIVE: {filename}")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -6686,16 +6705,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     parts = line[1:].split('*')[0].split(',')  # strip leading '$' and trailing checksum
                     if len(parts) >= 20:
                         try:
-                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:RED, 4:IR, 5:AmbRED, 6:AmbIR, 7:REDSub, 8:IRSub,
-                            # 9:PPG, 10:SpO2, 11:SpO2SQI, 12:SpO2_R, 13:PI, 14:HR1, 15:HR1SQI, 16:HR2, 17:HR2SQI, 18:HR3, 19:HR3SQI
+                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:RED, 4:IR, 5:RED_Amb, 6:IR_Amb, 7:RED_Sub, 8:IR_Sub,
+                            # 9:PPG, 10:SpO2, 11:SpO2_SQI, 12:SpO2_R, 13:PI, 14:HR1, 15:HR1_SQI, 16:HR2, 17:HR2_SQI, 18:HR3, 19:HR3_SQI
                             self.data_lib_id.append(parts[0])
                             p = [float(x) for x in parts[1:20]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(p[1])
                             self.data_red.append(p[2])
                             self.data_ir.append(p[3])
-                            self.data_amb_red.append(p[4])
-                            self.data_amb_ir.append(p[5])
+                            self.data_red_amb.append(p[4])
+                            self.data_ir_amb.append(p[5])
                             self.data_red_sub.append(p[6])
                             self.data_ir_sub.append(p[7])
                             self.data_ppg.append(p[8])
@@ -6709,14 +6728,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr2_sqi.append(p[16])
                             self.data_hr3.append(p[17])
                             self.data_hr3_sqi.append(p[18])
-                            self.hr3_calc.update(p[7], SPO2_RECEIVED_FS)  # IRSub for HR3Lab diagnostics
+                            self.hr3_calc.update(p[7], SPO2_RECEIVED_FS)  # IR_Sub for HR3Lab diagnostics
                             # Stats buffers
                             for sname, attr, _ in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
                         else: _new_data = True
                     elif parts[0] == "M2" and len(parts) >= 8:
-                        # $M2,cnt,led2(RED),led1(IR),aled2(AmbRED),aled1(AmbIR),led2_aled2(REDSub),led1_aled1(IRSub)
+                        # $M2,cnt,led2(RED),led1(IR),aled2(RED_Amb),aled1(IR_Amb),led2_aled2(RED_Sub),led1_aled1(IR_Sub)
                         try:
                             self.data_lib_id.append(parts[0])
                             p = [float(x) for x in parts[1:8]]
@@ -6727,8 +6746,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr1.append(-1.0)
                             self.data_red.append(p[1])
                             self.data_ir.append(p[2])
-                            self.data_amb_red.append(p[3])
-                            self.data_amb_ir.append(p[4])
+                            self.data_red_amb.append(p[3])
+                            self.data_ir_amb.append(p[4])
                             self.data_red_sub.append(p[5])
                             self.data_ir_sub.append(p[6])
                             self.data_hr2.append(-1.0)
@@ -6756,7 +6775,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
                             self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
                             self.data_red, self.data_ir,
-                            self.data_amb_red, self.data_amb_ir, self.data_red_sub, self.data_ir_sub)
+                            self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub)
 
                 if _new_data:
                     self._hrlab_refresh_counter += 1
