@@ -4278,3 +4278,42 @@ El título del segundo plot (`p_filt`, "LP filtered signal (512-sample buffer)")
 - HR3 (HPS/FFT) a 1 Hz tiene SQI=1.0, pero a 2 Hz baja a ~0.73. Esto es intrínseco: la resolución del bin FFT es ~0.098 Hz = ~5.9 BPM en la zona de 120 BPM, lo que dificulta que el pico domine sobre los vecinos.
 
 **Resultado:** 30/30 tests pasan con los nuevos umbrales.
+
+
+## Sesión 2026-04-13 — Rename mow → incunest en toda la librería y el proyecto
+
+**Cambio:** rename completo de todos los identificadores con "mow" a "incunest":
+- Carpeta `lib/mow_afe4490/` → `lib/incunest_afe4490/`
+- Ficheros: `mow_afe4490.{h,cpp,_platform_stub.h}` → `incunest_afe4490.*`
+- Spec: `mow_afe4490_spec.md` → `incunest_afe4490_spec.md`
+- Clase C++: `MOW_AFE4490` → `INCUNEST_AFE4490`
+- Macros: `MOW_AFE4490_*` → `INCUNEST_AFE4490_*`, `MOW_OFFLINE` → `INCUNEST_OFFLINE`, `MOW_TIMING_STATS` → `INCUNEST_TIMING_STATS`
+- FreeRTOS: `Mow_Task`, `"mow_hr2"`, `"mow_hr3"` → `Incunest_Task`, `"incunest_hr2"`, `"incunest_hr3"`
+- Funciones firmware: `start_mow()`, `stop_mow()` → `start_incunest()`, `stop_incunest()`
+- Variables: `mow_sample_count`, `g_mow_task`, `MowFrameMode`, `g_mow_frame_mode` → `incunest_*`
+- Offline runner: `mow_offline_runner` → `incunest_offline_runner`
+- Repo GitHub renombrado a `incunest_afe4490_test`. Remote local actualizado.
+
+**Decisión:** mantener `afe4490` en el nombre (no sustituir por `ppg`). La librería es un driver de hardware para el chip AFE4490, no una interfaz PPG genérica. Si en el futuro se añade otro sensor PPG, quedarían como `incunest_afe4490` vs `incunest_max30102`.
+
+**Resultado:** 31/31 tests pasan. Sin residuos de "mow" en el código fuente.
+
+
+## Sesión 2026-04-13 — fix(hr3): SQI se desplomaba a ~0.5 a 85 BPM
+
+**Problema observado:** con el simulador PPG a 85 BPM, el SQI de HR3 bajaba a ~0.5 sin razón aparente.
+
+**Diagnóstico:** 85 BPM = 1.417 Hz = bin 14.5 — exactamente entre dos bins FFT (peor caso de leakage inter-bin). El HPS = P[k]·P[2k]·P[3k] es un *producto* de tres espectros de potencia. Con la ventana Hann, una distribución 50/50 entre bins adyacentes hace que el HPS peak baje a ~12% del valor ideal (pérdida cúbica: 0.5³ = 0.125). Consecuencia: el pico no domina el resto del espectro HPS → SQI ≈ 0.5 aunque la señal sea perfectamente limpia.
+
+**Fix aplicado (`_compute_hr3()`):** interpolación parabólica sobre los valores HPS en los tres puntos (peak_bin−1, peak_bin, peak_bin+1) para calcular el valor real del pico a la posición fraccionaria. Este valor interpolado se usa como numerador del SQI, en lugar del valor entero `peak_hps`. Consistente con la interpolación parabólica ya existente para calcular la frecuencia a partir de P[k].
+
+**Fórmula SQI actualizada (spec §5.4, v0.17):**
+```
+HPS_interp = interpolación parabólica de HPS en (peak_bin-1, peak_bin, peak_bin+1)
+fraction   = HPS_interp / Σ HPS[k]
+SQI        = clamp((fraction - baseline) / (1 - baseline), 0, 1)
+```
+
+**Test nuevo:** `test_hr3_85bpm` — señal multi-armónica a 85 BPM, verifica SQI > 0.80 y HR ± 2 BPM.
+
+**Resultado:** 31/31 tests pasan. Spec bumpeada a v0.17.
