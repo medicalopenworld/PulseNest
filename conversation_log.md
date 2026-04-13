@@ -4317,3 +4317,19 @@ SQI        = clamp((fraction - baseline) / (1 - baseline), 0, 1)
 **Test nuevo:** `test_hr3_85bpm` — señal multi-armónica a 85 BPM, verifica SQI > 0.80 y HR ± 2 BPM.
 
 **Resultado:** 31/31 tests pasan. Spec bumpeada a v0.17.
+
+
+## Sesión 2026-04-13 — fix(hr2): SQI sesgado por estimador biased de autocorrelación
+
+**Problema observado:** con el simulador MS100 (señal casi perfecta), HR1 y HR3 dan SQI ≈ 1.0 pero HR2 da SQI ≈ 0.9.
+
+**Diagnóstico:** el estimador de autocorrelación era biased. El numerador suma (N−τ) términos pero el denominador (acorr0 = Σ x²) refleja N términos. Para una señal perfectamente periódica, el SQI máximo teórico es (N−τ)/N, no 1.0. A 60 BPM (τ=50, N=400): (400−50)/400 = 0.875. A 120 BPM (τ=25): 375/400 = 0.9375. El SQI observado ~0.9 encajaba exactamente con la HR del simulador.
+
+**Fix aplicado:**
+- `_compute_hr2()` en `incunest_afe4490.cpp`: cambio de `sum / acorr0` a `sum * N / (acorr0 * (N−τ))` — estimador no sesgado.
+- `HR2TestCalc.update()` en `ppg_plotter.py`: misma corrección con `acorr * n / (acorr0_val * n_terms)`.
+- `test_hr2.cpp`: umbrales actualizados (clean: >0.80→>0.95, noisy: >0.75→>0.80).
+- Tooltip HR2_SQI en ppg_plotter.py actualizado.
+- Spec bumpeada a v0.18, §5.3 y changelog.
+
+**Resultado:** 31/31 tests pasan. HR2 SQI ahora ≈ 1.0 con señal limpia, consistente con HR1 y HR3.

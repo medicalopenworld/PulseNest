@@ -1,4 +1,4 @@
-# incunest_afe4490 — Specification v0.17
+# incunest_afe4490 — Specification v0.18
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -306,11 +306,15 @@ Independent second HR algorithm running in parallel with HR1 on the same `led1_a
 | `hr2_min_lag_s` | 0.22 s | Min RR lag (~272 BPM max) |
 | `hr2_min_corr` | 0.5 | Normalised correlation threshold for valid peak |
 
-`hr2_sqi` is a continuous [0–1] quality metric equal to the normalised autocorrelation value at the dominant lag:
+`hr2_sqi` is a continuous [0–1] quality metric equal to the **unbiased** normalised autocorrelation value at the dominant lag:
 
 ```
-SQI = acorr[peak_lag]    (already normalised to [0, 1] by acorr[0] = Σ x²)
+acorr_unbiased[τ] = Σ_{i=0}^{N-τ-1} x[i]·x[i+τ]  /  (acorr0 · (N−τ)/N)
+acorr0            = Σ_{i=0}^{N-1} x[i]²
+SQI               = acorr_unbiased[peak_lag]
 ```
+
+The unbiased correction factor `N/(N−τ)` compensates for the finite-window effect: the biased estimator (dividing by `acorr0` alone) systematically underestimates because its numerator sums only `N−τ` terms while `acorr0` reflects `N` terms. Without this correction a perfectly periodic signal at 60 BPM (τ=50, N=400) would yield SQI = 350/400 = 0.875 even with zero noise. With the correction, a clean periodic signal yields SQI ≈ 1.0 regardless of the HR.
 
 A value close to 1 means the signal is strongly periodic at the detected RR period. `hr2_min_corr = 0.5` acts as the minimum threshold below which no peak is reported and SQI is forced to 0. If the buffer is not yet full or no valid peak is found, SQI = 0.
 
@@ -636,6 +640,14 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 
 | Version | Description                                                                 |
 |---------|-----------------------------------------------------------------------------|
+| v0.18   | HR2_SQI: unbiased normalised autocorrelation. Previous biased estimator     |
+|         | systematically capped SQI at (N−τ)/N ≈ 0.875 at 60 BPM (τ=50, N=400)     |
+|         | even for a perfectly clean signal. Fix: divide by `acorr0·(N−τ)/N`         |
+|         | instead of `acorr0`. Clean signal now yields SQI ≈ 1.0 at all HR.          |
+|         | Updated: `_compute_hr2()` in `incunest_afe4490.cpp`, `HR2TestCalc.update()` |
+|         | in `ppg_plotter.py`, `test_hr2.cpp` (thresholds raised to >0.95 clean,     |
+|         | >0.80 noisy). Spec §5.3. Observed with MS100 simulator: HR2 SQI ~0.9       |
+|         | vs HR1/HR3 ~1.0 — now consistent.                                           |
 | v0.17   | HR3_SQI: parabolic interpolation on HPS values (not P[k]) in numerator.    |
 |         | Fixes SQI collapse at inter-bin frequencies (e.g. 85 BPM = bin 14.5):      |
 |         | cubic product loss in HPS reduced SQI to ~0.5 for clean signals. Now SQI   |

@@ -41,21 +41,22 @@ void test_hr2_not_valid_until_buffer_full() {
 // ── Test 2: 60 BPM (1 Hz sine) ───────────────────────────────────────────────
 // At 50 Hz decimated rate, 1 Hz → period = 50 samples lag.
 // HR2 should converge to 60 BPM ± 1.
-// SQI: normalised autocorrelation at fundamental lag → SQI ≈ 0.875. Threshold: > 0.80.
+// SQI: unbiased normalised autocorrelation at fundamental lag → SQI ≈ 1.0 for
+// clean periodic signal (finite-window bias corrected). Threshold: > 0.95.
 void test_hr2_60bpm() {
     INCUNEST_AFE4490 afe;
     feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW + 1000);  // fill + margin
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.80f, afe.test_hr2_sqi());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 60.0f, afe.test_hr2());
 }
 
 // ── Test 3: 120 BPM (2 Hz sine) ──────────────────────────────────────────────
 // At 50 Hz decimated rate, 2 Hz → period = 25 samples lag.
-// SQI continuous: synthetic sine → high autocorrelation peak → SQI > 0.85.
+// SQI: unbiased normalised autocorrelation → SQI ≈ 1.0 for clean signal. Threshold: > 0.95.
 void test_hr2_120bpm() {
     INCUNEST_AFE4490 afe;
     feed_hr2_sine(afe, 2.0f, 500.0f, HR2_BUF_RAW + 1000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.85f, afe.test_hr2_sqi());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 120.0f, afe.test_hr2());
 }
 
@@ -71,12 +72,13 @@ void test_hr2_flat_signal_invalid() {
 
 // ── Test 5: 60 BPM with noise (~20 dB SNR) ───────────────────────────────────
 // Autocorrelation is robust to additive noise. With ±10% noise HR2 must still
-// converge to 60 BPM ± 1 and SQI > 0.75. Noise barely changes autocorrelation shape.
+// converge to 60 BPM ± 1 and SQI > 0.80 (unbiased; noise lowers peak but correction
+// raises it slightly vs. biased). Noise barely changes autocorrelation shape.
 void test_hr2_60bpm_noisy() {
     INCUNEST_AFE4490 afe;
     srand(42);
     feed_hr2_sine_noisy(afe, 1.0f, 500.0f, HR2_BUF_RAW + 1000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.75f, afe.test_hr2_sqi());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.80f, afe.test_hr2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 60.0f, afe.test_hr2());
 }
 
@@ -85,7 +87,7 @@ void test_hr2_120bpm_noisy() {
     INCUNEST_AFE4490 afe;
     srand(42);
     feed_hr2_sine_noisy(afe, 2.0f, 500.0f, HR2_BUF_RAW + 1000);
-    TEST_ASSERT_GREATER_THAN_FLOAT(0.75f, afe.test_hr2_sqi());
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.80f, afe.test_hr2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 120.0f, afe.test_hr2());
 }
 

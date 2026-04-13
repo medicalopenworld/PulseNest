@@ -959,13 +959,19 @@ class HR2TestCalc:
         seg = np.roll(self._buf, -self._buf_idx)
         self.last_filtered = seg.copy()
 
-        # Normalised autocorrelation using scipy.signal.correlate (full, FFT)
+        # Unbiased normalised autocorrelation using scipy.signal.correlate (full, FFT).
+        # Each lag τ is corrected by n/(n-τ) to eliminate the finite-window bias: the
+        # biased estimator (/ acorr[0]) underestimates because the numerator sums only
+        # (n-τ) terms while acorr[0] = Σ x² sums n terms. Unbiased correction restores
+        # SQI ≈ 1.0 for a clean periodic signal regardless of lag (mirrors firmware fix).
         n = len(seg)
         max_lag = min(self.max_lag, n - 1)
         full = signal.correlate(seg, seg, mode='full', method='fft')
         acorr = full[n - 1: n - 1 + max_lag + 1]
-        if acorr[0] != 0:
-            acorr = acorr / acorr[0]
+        acorr0_val = float(acorr[0])
+        if acorr0_val != 0:
+            n_terms = np.maximum(n - np.arange(len(acorr)), 1)
+            acorr = acorr * n / (acorr0_val * n_terms)
         lags_s = np.arange(len(acorr)) / fs
 
         self.last_acorr  = acorr
@@ -5665,7 +5671,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("HR1",      "data_hr1",      "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM."),
             ("HR1_SQI",  "data_hr1_sqi",  "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range."),
             ("HR2",      "data_hr2",      "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR2_SQI",  "data_hr2_sqi",  "HR2 Signal Quality Index [0–1]. Normalised autocorrelation value at the dominant RR lag: SQI = acorr[peak_lag] / acorr[0]. High value = strong, clear periodicity. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range."),
+            ("HR2_SQI",  "data_hr2_sqi",  "HR2 Signal Quality Index [0–1]. Unbiased normalised autocorrelation at the dominant RR lag: SQI = acorr[τ] / (acorr[0]·(N−τ)/N). Unbiased correction removes finite-window underestimation — clean signal yields SQI ≈ 1.0 at all HR. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range."),
             ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
             ("HR3_SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
         ]

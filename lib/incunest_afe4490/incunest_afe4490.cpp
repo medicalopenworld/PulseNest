@@ -1180,12 +1180,17 @@ void INCUNEST_AFE4490::_compute_hr2() {
     int   max_lag = hr2_acorr_max_lag;
     int   n_lags  = max_lag - min_lag + 1;
 
+    // Unbiased normalised autocorrelation: divide by (acorr0 * (N-lag)/N) instead of acorr0.
+    // The biased estimator (/ acorr0) systematically underestimates because its numerator
+    // sums only (N-lag) terms while the denominator reflects N terms. For a perfectly
+    // periodic signal this yields SQI = (N-lag)/N < 1 — e.g. ~0.875 at 60 BPM (lag=50,
+    // N=400). The unbiased correction restores SQI ≈ 1.0 for a clean periodic signal.
     float acorr_buf[hr2_acorr_max_lag + 1];
     for (int lag = min_lag; lag <= max_lag; lag++) {
-        float sum = 0.0f;
-        int   n   = hr2_buf_len - lag;
+        float sum   = 0.0f;
+        int   n     = hr2_buf_len - lag;
         for (int i = 0; i < n; i++) sum += _hr2_seg[i] * _hr2_seg[i + lag];
-        acorr_buf[lag - min_lag] = sum / acorr0;
+        acorr_buf[lag - min_lag] = (n > 0) ? sum * (float)hr2_buf_len / (acorr0 * (float)n) : 0.0f;
     }
 
     int   peak_idx = -1;
