@@ -1,5 +1,6 @@
 // incunest_afe4490 — Test firmware: incunest_afe4490 validation
-// v0.8 — ESP32-S3 (in3ator V15), Arduino + FreeRTOS
+// v0.9 — ESP32-S3 (Incunest V15/V16), Arduino + FreeRTOS
+// Board pins defined in platformio.ini build_flags per environment.
 
 #define SERIAL_DOWNSAMPLING_RATIO 1
 
@@ -15,9 +16,13 @@
 #include <esp_mac.h>
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
-#define AFE4490_CS_PIN      21
-#define AFE4490_PWDN_PIN     0
-#define AFE4490_DRDY_PIN 45
+// Defined in platformio.ini build_flags per board environment (incunest_V15 / incunest_V16).
+// Required: AFE4490_CS_PIN, AFE4490_DRDY_PIN, AFE4490_PWDN_PIN,
+//           AFE4490_SCK_PIN, AFE4490_MISO_PIN, AFE4490_MOSI_PIN
+#if !defined(AFE4490_CS_PIN) || !defined(AFE4490_DRDY_PIN) || !defined(AFE4490_PWDN_PIN) || \
+    !defined(SPI_SCK_PIN) || !defined(SPI_MISO_PIN) || !defined(SPI_MOSI_PIN)
+  #error "Board pin definitions missing — select a valid environment (incunest_V15 or incunest_V16)"
+#endif
 
 inline void Serial_printf(const char *fmt, ...) {
     char buffer[128];
@@ -181,6 +186,10 @@ void Cmd_Task(void *pvParameters) {
 void setup() {
     Serial.setTxBufferSize(1024);  // enlarge USB-CDC TX buffer (default ~256) to reduce corruption at 500 Hz
     Serial.begin(921600);
+    vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
+
+    // Startup banner
+    Serial.printf("# incunest_afe4490 test firmware v0.9 [%s] — Medical Open World\n", BOARD_VERSION);
 
     // System info — shown in ppg_plotter log on startup/reset (prefix "# SYS:")
     {
@@ -201,8 +210,9 @@ void setup() {
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
 
-    SPI.begin(36, 37, 35, -1);  // CLK=36, MOSI=37, MISO=35, CS=-1 (managed per device).
-                                // Called here and not inside each library: SPI is a shared bus —
+    SPI.begin(SPI_SCK_PIN, SPI_MISO_PIN, SPI_MOSI_PIN, -1);
+                                // CS=-1: managed per device via AFE4490_CS_PIN.
+                                // Called here and not inside the library: SPI is a shared bus —
                                 // multiple devices can coexist via beginTransaction()/endTransaction().
                                 // Calling SPI.begin() inside a library would risk reinitialising the
                                 // bus and breaking other devices sharing it.

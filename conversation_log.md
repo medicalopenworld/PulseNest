@@ -4333,3 +4333,54 @@ SQI        = clamp((fraction - baseline) / (1 - baseline), 0, 1)
 - Spec bumpeada a v0.18, §5.3 y changelog.
 
 **Resultado:** 31/31 tests pasan. HR2 SQI ahora ≈ 1.0 con señal limpia, consistente con HR1 y HR3.
+
+
+## Sesión 2026-04-13 — Multi-board: environments incunest_V15 / incunest_V16
+
+**Contexto:** nueva placa Incunest V16 con mismo chip ESP32-S3. Único pin diferente respecto a V15: DRDY (45→17). Resto idéntico.
+
+**Decisión de diseño (comparativa de 4 opciones):** pines en `platformio.ini` como build_flags. Descartadas: `#ifdef` en `main.cpp` (mezcla config/código), `board.h` dedicado (fichero extra innecesario para pocos pines), pines en `incunest_afe4490.h` (rompe genericidad de la librería). El proyecto IncuNest padre usa `board.h` porque gestiona decenas de periféricos — aquí no aplica.
+
+**Cambios aplicados:**
+- `platformio.ini`: sección base `[base_incunest_esp32s3]` con settings compartidos y pines SCK/MISO/MOSI/CS/PWDN. `[env:incunest_V15]` (DRDY=45) y `[env:incunest_V16]` (DRDY=17) heredan la base. Renombrado desde `in3ator_V15`.
+- `main.cpp`: eliminados `#define` hardcodeados, `SPI.begin()` usa símbolos, guard `#error` si faltan pines, cabecera actualizada a v0.9.
+
+**Resultado:** ambos environments compilan correctamente.
+
+
+## Sesión 2026-04-13 — Renombrado AFE4490_SCK/MISO/MOSI_PIN → SPI_SCK/MISO/MOSI_PIN
+
+**Motivo:** los pines SCK/MISO/MOSI pertenecen al bus SPI compartido, no al chip AFE4490. El prefijo `AFE4490_` era semánticamente incorrecto y confuso si en el futuro se añade otro dispositivo al bus.
+
+**Cambios:** `platformio.ini` y `main.cpp` — tres símbolos renombrados. Sin cambio funcional.
+
+
+## Sesión 2026-04-13 — Actualización examples/basic/main.cpp
+
+**Cambios:** añadidos `SPI_SCK_PIN/MISO_PIN/MOSI_PIN` como `#define` explícitos (apropiado para un ejemplo — el usuario los adapta a su placa), `SPI.begin()` usa los símbolos, corregido comentario erróneo MOSI/MISO, versión actualizada a v0.18.
+
+
+## Sesión 2026-04-13 — Startup banner + BOARD_VERSION
+
+**Cambio:** añadido mensaje de bienvenida antes del bloque `# SYS:` en `setup()`:
+```
+# incunest_afe4490 test firmware v0.9 [incunest_V16] — Medical Open World
+```
+
+**Implementación:** `BOARD_VERSION` definido como string en cada environment de `platformio.ini` (`-DBOARD_VERSION=\"incunest_V15\"` / `\"incunest_V16\"`). `PIOENV` no es un macro C automático — requiere pasarse explícitamente.
+
+**Pendiente:** verificar en placa V16 que el pin DRDY correcto. Ambos environments (V15/V16) dan DRDY timeout — el pin real de la V16 está por confirmar con el esquemático.
+
+
+## Sesión 2026-04-13 — Fix: banner no aparecía tras reset desde script
+
+**Problema:** el mensaje de bienvenida se enviaba antes de que la conexión USB CDC estuviera estable, por lo que los bytes se perdían. Los mensajes `# SYS:` sí aparecían porque llegaban más tarde (tras las llamadas a `esp_chip_info()` etc.).
+
+**Fix:** añadido `vTaskDelay(pdMS_TO_TICKS(500))` después de `Serial.begin()` para dar tiempo a que la conexión USB CDC se estabilice antes de imprimir el banner.
+
+
+## Sesión 2026-04-13 — Eliminación residuos Protocentral
+
+**Cambios:**
+- `ppg_plotter.py`: eliminado botón `PROTOCENTRAL` y su tooltip. Limpiado `_update_lib_button` para no referenciar `btn_lib_pc`. El comando `'p'` ya no existe en el firmware.
+- `README.md`: eliminadas referencias a Protocentral como testbed de comparación y al comando `'p'`. Actualizado hardware (V15/V16), comandos de flash con environments, estructura del proyecto y baud rate (921600).

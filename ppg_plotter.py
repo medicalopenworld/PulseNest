@@ -5824,19 +5824,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.sidebar_layout.addWidget(label_library)
 
         self.btn_lib_incunest = QtWidgets.QPushButton("INCUNEST")
-        self.btn_lib_pc  = QtWidgets.QPushButton("PROTOCENTRAL")
         self.btn_lib_incunest.clicked.connect(lambda: self._send_lib_cmd('m'))
-        self.btn_lib_pc.clicked.connect(lambda:  self._send_lib_cmd('p'))
         self.btn_lib_incunest.setToolTip(_make_tooltip(
             "LIBRARY: INCUNEST",
-            "Switch the firmware to use the custom incunest_afe4490 library (lib/incunest_afe4490). "
-            "Sends 'm' command over serial. The button stays highlighted while INCUNEST is active."))
-        self.btn_lib_pc.setToolTip(_make_tooltip(
-            "LIBRARY: PROTOCENTRAL",
-            "Switch the firmware to use the ProtoCentral AFE4490 Arduino library. "
-            "Sends 'p' command over serial. The button stays highlighted while PROTOCENTRAL is active."))
+            "Active library: incunest_afe4490 (lib/incunest_afe4490). "
+            "Sends 'm' command over serial."))
         self.sidebar_layout.addWidget(self.btn_lib_incunest)
-        self.sidebar_layout.addWidget(self.btn_lib_pc)
         self._update_lib_button()
 
         self.sidebar_layout.addSpacing(10)
@@ -6117,9 +6110,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_lib_incunest.setStyleSheet(
             self.STYLE_LIB_ACTIVE.format(bg="#3A2A00", fg="#FFAA00", bgh="#4A3800")
             if incunest_active else self.STYLE_LIB_INACTIVE)
-        self.btn_lib_pc.setStyleSheet(
-            self.STYLE_LIB_ACTIVE.format(bg="#3A2A00", fg="#FFAA00", bgh="#4A3800")
-            if not incunest_active else self.STYLE_LIB_INACTIVE)
         if hasattr(self, 'btn_frame_m1'):
             self._update_frame_button()
 

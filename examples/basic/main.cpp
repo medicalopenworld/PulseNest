@@ -1,5 +1,5 @@
 // incunest_afe4490 — Basic Example
-// Library version: v0.14 — ESP32-S3, Arduino + FreeRTOS
+// Library version: v0.18 — ESP32-S3, Arduino + FreeRTOS
 // Spec: incunest_afe4490_spec.md
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 //
@@ -31,6 +31,9 @@
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
 // Adapt these to your board's actual wiring.
+#define SPI_SCK_PIN       36   // SPI clock
+#define SPI_MISO_PIN      37   // SPI MISO
+#define SPI_MOSI_PIN      35   // SPI MOSI
 #define AFE4490_CS_PIN    21   // SPI chip select (active low)
 #define AFE4490_DRDY_PIN  45   // Data-ready interrupt — input, managed by library
 #define AFE4490_PWDN_PIN   0   // Power-down / hard reset — output, managed here
@@ -106,9 +109,8 @@ void setup() {
     while (!Serial) {}  // wait for Serial ready (USB CDC on ESP32-S3)
 
     // Step 1: initialise the SPI bus.
-    // Pins: CLK=36, MOSI=37, MISO=35, CS=-1 (CS is managed per device via CS_PIN).
-    // Must be done before afe.begin().
-    SPI.begin(36, 37, 35, -1);
+    // CS=-1: managed per device via AFE4490_CS_PIN. Must be called before afe.begin().
+    SPI.begin(SPI_SCK_PIN, SPI_MISO_PIN, SPI_MOSI_PIN, -1);
 
     // Step 2: hard-reset the AFE4490 via PWDN pin.
     // The library does not manage PWDN — do it here before begin().
