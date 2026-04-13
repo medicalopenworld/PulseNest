@@ -6015,13 +6015,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.spin_stats_interval.setToolTip(_make_tooltip(
             "Stats update interval",
             "How often the Signal Stats table recalculates and resets its running statistics "
-            "(Last / Mean / Min / Max). Range: 1–60 s."))
+            "(Last / Mean / Max-Min / Min / Max). Range: 1–60 s."))
         stats_header.addWidget(stats_interval_lbl)
         stats_header.addWidget(self.spin_stats_interval)
         stats_vbox.addLayout(stats_header)
 
-        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 5)
-        self.stats_table.setHorizontalHeaderLabels(["Signal", "Last", "Mean", "Min", "Max"])
+        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 6)
+        self.stats_table.setHorizontalHeaderLabels(["Signal", "Last", "Mean", "Max-Min", "Min", "Max"])
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.stats_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
@@ -6040,7 +6040,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QTableWidget::item { padding: 6px 10px; }
         """)
         self.stats_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        for col in range(1, 5):
+        for col in range(1, 6):
             self.stats_table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
         self.stats_table.verticalHeader().setDefaultSectionSize(40)
 
@@ -6054,7 +6054,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             item.setForeground(QtGui.QColor("#AAAAAA"))
             item.setToolTip(rich_tip)
             self.stats_table.setItem(row, 0, item)
-            for col in range(1, 5):
+            for col in range(1, 6):
                 it = QtWidgets.QTableWidgetItem("---")
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 it.setToolTip(rich_tip)
@@ -6544,9 +6544,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 mean = sum(buf) / len(buf)
                 lo   = min(buf)
                 hi   = max(buf)
-                vals = [f"{last:.2f}", f"{mean:.2f}", f"{lo:.2f}", f"{hi:.2f}"]
+                vals = [f"{last:.2f}", f"{mean:.2f}", f"{hi - lo:.2f}", f"{lo:.2f}", f"{hi:.2f}"]
             else:
-                vals = ["---", "---", "---", "---"]
+                vals = ["---", "---", "---", "---", "---"]
             for col, v in enumerate(vals, start=1):
                 item = self.stats_table.item(row, col)
                 if item is None:

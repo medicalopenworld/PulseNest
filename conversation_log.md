@@ -4384,3 +4384,8 @@ SQI        = clamp((fraction - baseline) / (1 - baseline), 0, 1)
 **Cambios:**
 - `ppg_plotter.py`: eliminado botón `PROTOCENTRAL` y su tooltip. Limpiado `_update_lib_button` para no referenciar `btn_lib_pc`. El comando `'p'` ya no existe en el firmware.
 - `README.md`: eliminadas referencias a Protocentral como testbed de comparación y al comando `'p'`. Actualizado hardware (V15/V16), comandos de flash con environments, estructura del proyecto y baud rate (921600).
+
+
+## Sesión 2026-04-13 — SIGNAL STATS: nueva columna Max-Min
+
+**Cambio:** añadida columna "Max-Min" entre "Mean" y "Min" en la tabla SIGNAL STATS de ppg_plotter.py. Muestra hi−lo del intervalo de actualización. Cambios: columnas 5→6, header labels, init loop range(1,5)→range(1,6), vals en _update_stats_table, tooltip del spin_stats_interval.
