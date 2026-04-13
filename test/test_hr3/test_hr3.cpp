@@ -1,9 +1,9 @@
 #include <unity.h>
 #include <math.h>
 #include <stdlib.h>
-#include "mow_afe4490.h"
+#include "incunest_afe4490.h"
 
-// HR3 constants (mirror of mow_afe4490.cpp namespace)
+// HR3 constants (mirror of incunest_afe4490.cpp namespace)
 static constexpr int HR3_BUF_LEN      = 512;   // decimated samples
 static constexpr int HR3_DECIM_FACTOR = 10;
 static constexpr int HR3_BUF_RAW      = HR3_BUF_LEN * HR3_DECIM_FACTOR;  // 5120 raw samples
@@ -12,7 +12,7 @@ static constexpr int HR3_BUF_RAW      = HR3_BUF_LEN * HR3_DECIM_FACTOR;  // 5120
 // HR3 uses the Harmonic Product Spectrum (HPS = P[k]*P[2k]*P[3k]), which requires energy
 // at the harmonic frequencies to produce a clear peak. A pure sine would yield near-zero HPS
 // at all bins and SQI ≈ 0. All harmonics stay below the 10 Hz LP filter cutoff for freq_hz ≤ 3 Hz.
-static void feed_hr3_sine(MOW_AFE4490& afe, float freq_hz, float fs, int n_samples) {
+static void feed_hr3_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
     for (int i = 0; i < n_samples; i++) {
         float t = (float)i / fs;
         float x = 500000.0f
@@ -25,7 +25,7 @@ static void feed_hr3_sine(MOW_AFE4490& afe, float freq_hz, float fs, int n_sampl
 
 // Helper: same as feed_hr3_sine but with uniform noise ±4000 (~10% of fundamental, ~20 dB SNR).
 // srand(42) called by the test before use for reproducibility.
-static void feed_hr3_sine_noisy(MOW_AFE4490& afe, float freq_hz, float fs, int n_samples) {
+static void feed_hr3_sine_noisy(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
     for (int i = 0; i < n_samples; i++) {
         float t = (float)i / fs;
         float noise = 4000.0f * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
@@ -45,7 +45,7 @@ void tearDown() {}
 // HR3 needs HR3_BUF_LEN decimated samples before computing FFT. After half that,
 // hr3_valid must be false.
 void test_hr3_not_valid_until_buffer_full() {
-    MOW_AFE4490 afe;
+    INCUNEST_AFE4490 afe;
     feed_hr3_sine(afe, 1.0f, 500.0f, HR3_BUF_RAW / 2);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr3_sqi());
 }
@@ -55,7 +55,7 @@ void test_hr3_not_valid_until_buffer_full() {
 // HR3 should converge to 60 BPM ± 2 via parabolic interpolation on the HPS peak.
 // SQI: dominant HPS peak at 1 Hz → SQI = 1.0. Threshold: > 0.95.
 void test_hr3_60bpm() {
-    MOW_AFE4490 afe;
+    INCUNEST_AFE4490 afe;
     feed_hr3_sine(afe, 1.0f, 500.0f, HR3_BUF_RAW + 1000);  // fill + margin
     TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr3_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 60.0f, afe.test_hr3());
@@ -65,7 +65,7 @@ void test_hr3_60bpm() {
 // SQI: dominant HPS peak at 2 Hz → SQI ≈ 0.73. Threshold: > 0.65.
 // HR precision limited by FFT bin width (~0.098 Hz = ~5.9 BPM at 2 Hz).
 void test_hr3_120bpm() {
-    MOW_AFE4490 afe;
+    INCUNEST_AFE4490 afe;
     feed_hr3_sine(afe, 2.0f, 500.0f, HR3_BUF_RAW + 1000);
     TEST_ASSERT_GREATER_THAN_FLOAT(0.65f, afe.test_hr3_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr3());
@@ -75,7 +75,7 @@ void test_hr3_120bpm() {
 // A constant DC signal has zero AC energy after the LP filter.
 // The FFT output is flat → no dominant HPS peak → SQI must be 0.
 void test_hr3_flat_signal_invalid() {
-    MOW_AFE4490 afe;
+    INCUNEST_AFE4490 afe;
     for (int i = 0; i < HR3_BUF_RAW + 1000; i++)
         afe.test_feed_hr3(500000);  // constant DC, no PPG pulses
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr3_sqi());
@@ -85,7 +85,7 @@ void test_hr3_flat_signal_invalid() {
 // With ±10% noise the HPS peak should remain dominant. HR3 must converge to
 // 60 BPM ± 2 and SQI > 0.95.
 void test_hr3_60bpm_noisy() {
-    MOW_AFE4490 afe;
+    INCUNEST_AFE4490 afe;
     srand(42);
     feed_hr3_sine_noisy(afe, 1.0f, 500.0f, HR3_BUF_RAW + 1000);
     TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr3_sqi());
@@ -94,7 +94,7 @@ void test_hr3_60bpm_noisy() {
 
 // ── Test 6: 120 BPM with noise (~20 dB SNR) ──────────────────────────────────
 void test_hr3_120bpm_noisy() {
-    MOW_AFE4490 afe;
+    INCUNEST_AFE4490 afe;
     srand(42);
     feed_hr3_sine_noisy(afe, 2.0f, 500.0f, HR3_BUF_RAW + 1000);
     TEST_ASSERT_GREATER_THAN_FLOAT(0.65f, afe.test_hr3_sqi());

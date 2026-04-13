@@ -1,4 +1,4 @@
-# mow_afe4490 — Specification v0.16
+# incunest_afe4490 — Specification v0.16
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -156,7 +156,7 @@ Cleanly shuts down the library:
 
 After `stop()`, `begin()` can be called again to restart from a clean state. Configuration (sample rate, LED current, filter, etc.) is preserved across `stop()`/`begin()` cycles.
 
-**Typical use:** hot-swap between mow_afe4490 and protocentral at runtime without recompiling.
+**Typical use:** hot-swap between incunest_afe4490 and protocentral at runtime without recompiling.
 
 ---
 
@@ -211,11 +211,11 @@ enum class AFE4490Stage2Gain {
 
 ## 4. Compile-time parameters
 
-Overridable in `mow_afe4490.h` before compilation:
+Overridable in `incunest_afe4490.h` before compilation:
 
 ```cpp
-#define MOW_AFE4490_QUEUE_SIZE      10   // number of samples in the FreeRTOS queue
-#define MOW_AFE4490_TASK_PRIORITY   5    // internal task priority
+#define INCUNEST_AFE4490_QUEUE_SIZE      10   // number of samples in the FreeRTOS queue
+#define INCUNEST_AFE4490_TASK_PRIORITY   5    // internal task priority
 ```
 
 **Full queue behaviour:** oldest item is discarded to always keep the most recent sample.
@@ -339,7 +339,7 @@ Independent third HR algorithm running in parallel with HR1 and HR2 on `led1_ale
 | HPS harmonics | 2, 3 | P[k]·P[2k]·P[3k] |
 | HPS search cap | `nyquist/3` | Ensures 3rd harmonic stays within Nyquist band |
 
-**Stack note:** `_hr3_fft[1024]` (4096 bytes complex buffer) is stored as a class member (heap). `MOW_AFE4490_TASK_STACK` default increased to 8192 to accommodate `cosf`/`sinf` stack usage during butterfly stages.
+**Stack note:** `_hr3_fft[1024]` (4096 bytes complex buffer) is stored as a class member (heap). `INCUNEST_AFE4490_TASK_STACK` default increased to 8192 to accommodate `cosf`/`sinf` stack usage during butterfly stages.
 
 `hr3_sqi` is a continuous [0–1] quality metric based on HPS peak prominence: the fraction of total HPS energy at the detected peak bin, relative to the sum of all HPS values across the search range:
 
@@ -427,7 +427,7 @@ SNR_improvement = sqrt(num)    →  num=8: ×2.83,  num=10: ×3.16
 
 ## 8. Validation tooling — ppg_plotter.py
 
-The `ppg_plotter.py` script is the primary validation tool for the mow_afe4490 library.
+The `ppg_plotter.py` script is the primary validation tool for the incunest_afe4490 library.
 It contains two distinct categories of windows with different purposes and lifecycles.
 
 ### 8.1 LAB windows (pre-implementation)
@@ -473,7 +473,7 @@ This three-way relationship (spec → firmware, spec → Python mirror, firmware
 
 The `TIMING` window in `ppg_plotter.py` displays per-algorithm CPU execution times measured in firmware, parsed from `$TIMING` diagnostic frames.
 
-**Compile-time flag:** `MOW_TIMING_STATS` (default 0). Set to 1 via `platformio.ini` `build_flags` to enable. When 0, all instrumentation code is compiled out with zero overhead.
+**Compile-time flag:** `INCUNEST_TIMING_STATS` (default 0). Set to 1 via `platformio.ini` `build_flags` to enable. When 0, all instrumentation code is compiled out with zero overhead.
 
 **Frame format:**
 ```
@@ -481,7 +481,7 @@ $TIMING,hr1_mean,hr1_max,hr2_mean,hr2_max,hr3_mean,hr3_max,
         spo2_mean,spo2_max,cycle_mean,cycle_max,stack_free*XX
 ```
 - All time values in **µs** (measured with `esp_timer_get_time()`, resolution 1 µs)
-- `stack_free`: remaining stack of the mow_afe4490 FreeRTOS task in 4-byte words (`uxTaskGetStackHighWaterMark`)
+- `stack_free`: remaining stack of the incunest_afe4490 FreeRTOS task in 4-byte words (`uxTaskGetStackHighWaterMark`)
 - Checksum: XOR of all bytes between `$` and `*` (NMEA style)
 - Emitted every `ts_emit_interval = 2500` samples (~5 s at 500 Hz); stats reset after each emission
 
@@ -503,15 +503,15 @@ $TIMING,hr1_mean,hr1_max,hr2_mean,hr2_max,hr3_mean,hr3_max,
 **Implementation notes:**
 - Individual algo timers are in `_process_sample()`; cycle timer is in `_task_body()`
 - `_emit_timing()` is a private method; formats and sends the frame, then resets all `TimingStat` accumulators
-- `TimingStat` struct (fields: `max_us`, `sum_us`, `count`) lives in the private section of `MOW_AFE4490`, guarded by `#if MOW_TIMING_STATS`
+- `TimingStat` struct (fields: `max_us`, `sum_us`, `count`) lives in the private section of `INCUNEST_AFE4490`, guarded by `#if INCUNEST_TIMING_STATS`
 
 ---
 
-## 9. Offline runner — `mow_offline_runner`
+## 9. Offline runner — `incunest_offline_runner`
 
 ### 9.1 Purpose
 
-A native C++ command-line tool that runs the mow_afe4490 algorithms (HR1, HR2, HR3, SpO2) on CSV files received from real Incunest incubators, without any hardware. Used to calibrate and improve the Incunest firmware using real neonatal PPG data.
+A native C++ command-line tool that runs the incunest_afe4490 algorithms (HR1, HR2, HR3, SpO2) on CSV files received from real Incunest incubators, without any hardware. Used to calibrate and improve the Incunest firmware using real neonatal PPG data.
 
 ### 9.2 Input CSV format
 
@@ -530,45 +530,45 @@ Incunest incubators export 10-second CSV files at 500 Hz (5000 samples). The for
 
 **Optional firmware result columns:** if the CSV also contains columns `FW_HR1`, `FW_HR2`, `FW_HR3`, `FW_SpO2`, the runner includes them in the output and adds delta columns (`delta_HR1`, etc.) for algorithm equivalence checking. These columns do not affect calibration — their sole purpose is to verify that the offline C++ runner and the firmware produce identical results.
 
-### 9.3 Compile-time flag: `MOW_OFFLINE`
+### 9.3 Compile-time flag: `INCUNEST_OFFLINE`
 
-To compile `mow_afe4490.cpp` without Arduino, SPI, or FreeRTOS, define `MOW_OFFLINE` before including the header. This flag:
+To compile `incunest_afe4490.cpp` without Arduino, SPI, or FreeRTOS, define `INCUNEST_OFFLINE` before including the header. This flag:
 
-1. Replaces all platform includes with `mow_afe4490_platform_stub.h` (type stubs only).
+1. Replaces all platform includes with `incunest_afe4490_platform_stub.h` (type stubs only).
 2. Disables `begin()`, `stop()`, `getData()`, the ISR, and all FreeRTOS objects.
 3. Implicitly enables `UNIT_TEST`, exposing `test_feed_*` / `test_hr*` / `test_spo2*` methods.
 4. Keeps all algorithm methods (`_update_hr1`, `_update_hr2`, `_update_hr3`, `_update_spo2`, `_reset_algorithms`, `_recalc_rate_params`, `_biquad_process`) fully functional.
 
-`MOW_OFFLINE` is never defined in firmware builds. It is only used by the offline runner and any future native unit tests.
+`INCUNEST_OFFLINE` is never defined in firmware builds. It is only used by the offline runner and any future native unit tests.
 
-### 9.4 `mow_afe4490_platform_stub.h`
+### 9.4 `incunest_afe4490_platform_stub.h`
 
-Thin stub (~30 lines) located at `lib/mow_afe4490/mow_afe4490_platform_stub.h` — alongside the library header that includes it. Provides:
+Thin stub (~30 lines) located at `lib/incunest_afe4490/incunest_afe4490_platform_stub.h` — alongside the library header that includes it. Provides:
 
 - Standard integer types (`uint8_t`, `int32_t`, etc.) via `<cstdint>`
 - `inline uint32_t millis() { return 0; }` (not used by algorithms, present to avoid linker error)
-- `SemaphoreHandle_t`, `QueueHandle_t`, `TaskHandle_t` as `void*` typedefs (never accessed under `MOW_OFFLINE`)
+- `SemaphoreHandle_t`, `QueueHandle_t`, `TaskHandle_t` as `void*` typedefs (never accessed under `INCUNEST_OFFLINE`)
 - `IRAM_ATTR` as empty macro
 - `portTICK_PERIOD_MS` as `1`
 
-No Arduino-specific classes (`Serial`, `SPI`, `SPIClass`) are needed — they are all guarded by `#ifndef MOW_OFFLINE` in the library.
+No Arduino-specific classes (`Serial`, `SPI`, `SPIClass`) are needed — they are all guarded by `#ifndef INCUNEST_OFFLINE` in the library.
 
-### 9.5 Changes required in `mow_afe4490.h` / `.cpp`
+### 9.5 Changes required in `incunest_afe4490.h` / `.cpp`
 
 | Change | Location | Reason |
 |---|---|---|
-| Wrap platform includes in `#ifdef MOW_OFFLINE` / `#else` | `mow_afe4490.h` top | Avoid Arduino/FreeRTOS headers on native build |
-| Wrap `begin()`, `stop()`, `getData()`, ISR, task methods in `#ifndef MOW_OFFLINE` | `mow_afe4490.h` + `.cpp` | These are hardware-only |
-| Move Hann window precomputation from `begin()` to `_reset_algorithms()` | `mow_afe4490.cpp` | `begin()` is disabled under `MOW_OFFLINE`; `_reset_algorithms()` is available |
-| `#define UNIT_TEST` when `MOW_OFFLINE` is defined | `mow_afe4490.h` | Expose `test_feed_*` API |
+| Wrap platform includes in `#ifdef INCUNEST_OFFLINE` / `#else` | `incunest_afe4490.h` top | Avoid Arduino/FreeRTOS headers on native build |
+| Wrap `begin()`, `stop()`, `getData()`, ISR, task methods in `#ifndef INCUNEST_OFFLINE` | `incunest_afe4490.h` + `.cpp` | These are hardware-only |
+| Move Hann window precomputation from `begin()` to `_reset_algorithms()` | `incunest_afe4490.cpp` | `begin()` is disabled under `INCUNEST_OFFLINE`; `_reset_algorithms()` is available |
+| `#define UNIT_TEST` when `INCUNEST_OFFLINE` is defined | `incunest_afe4490.h` | Expose `test_feed_*` API |
 
 ### 9.6 File structure
 
 ```
-lib/mow_afe4490/
-  mow_afe4490.h              — library header (includes mow_afe4490_platform_stub.h when MOW_OFFLINE)
-  mow_afe4490.cpp            — library implementation
-  mow_afe4490_platform_stub.h    — Arduino/FreeRTOS type stubs (used by the library, not the runner)
+lib/incunest_afe4490/
+  incunest_afe4490.h              — library header (includes incunest_afe4490_platform_stub.h when INCUNEST_OFFLINE)
+  incunest_afe4490.cpp            — library implementation
+  incunest_afe4490_platform_stub.h    — Arduino/FreeRTOS type stubs (used by the library, not the runner)
 
 tools/
   offline_runner/
@@ -576,16 +576,16 @@ tools/
     main.cpp                 — CSV reader, algorithm driver, output writer
 ```
 
-The runner includes `../../lib/mow_afe4490/mow_afe4490.cpp` directly via CMake `target_sources`. No subproject, no installation, no package manager.
+The runner includes `../../lib/incunest_afe4490/incunest_afe4490.cpp` directly via CMake `target_sources`. No subproject, no installation, no package manager.
 
 ### 9.7 Execution flow
 
 ```
-mow_offline_runner <path>     // path = CSV file or directory of CSV files
+incunest_offline_runner <path>     // path = CSV file or directory of CSV files
 
 for each CSV file:
     parse header → locate required columns by name
-    MOW_AFE4490 afe (default constructor, no begin())
+    INCUNEST_AFE4490 afe (default constructor, no begin())
     afe._reset_algorithms()   // zeroes state + precomputes Hann window
     for each row:
         afe.test_feed_spo2(led1_aled1, led2_aled2)
@@ -619,8 +619,8 @@ Timestamp,File,N_samples,SpO2_mean,SpO2_SQI_mean,HR1_mean,HR1_SQI_mean,HR2_mean,
 cd tools/offline_runner
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-build/mow_offline_runner path/to/file.csv
-build/mow_offline_runner path/to/directory/
+build/incunest_offline_runner path/to/file.csv
+build/incunest_offline_runner path/to/directory/
 ```
 
 Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11). No external libraries.
@@ -631,8 +631,8 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 
 | Version | Description                                                                 |
 |---------|-----------------------------------------------------------------------------|
-| v0.16   | Offline runner specification added (§9): `mow_offline_runner` native C++   |
-|         | tool. `MOW_OFFLINE` compile flag stubs Arduino/FreeRTOS and enables        |
+| v0.16   | Offline runner specification added (§9): `incunest_offline_runner` native C++   |
+|         | tool. `INCUNEST_OFFLINE` compile flag stubs Arduino/FreeRTOS and enables        |
 |         | `UNIT_TEST` API for algorithm-only builds. Hann window precomputation       |
 |         | moved to `_reset_algorithms()`. Input CSV: column-name-based parser,        |
 |         | format-agnostic, requires RED/IR/RED_Amb/IR_Amb/RED_Sub/IR_Sub. Output:        |
@@ -641,14 +641,14 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 | v0.15   | HR3_SQI redesigned: from linear spectral concentration to HPS peak           |
 |         | prominence (`HPS[peak_bin] / Σ HPS[k]`). Eliminates harmonic inflation of   |
 |         | the denominator. No new buffer — `hps_sum` accumulated in the existing loop. |
-|         | Updated: `mow_afe4490.cpp` `_compute_hr3()`, `mow_afe4490.h` comment,       |
+|         | Updated: `incunest_afe4490.cpp` `_compute_hr3()`, `incunest_afe4490.h` comment,       |
 |         | `HR3TestCalc` in `ppg_plotter.py`, spec §5.4.                               |
-| v0.14   | Timing instrumentation: `MOW_TIMING_STATS` compile-time flag, `TimingStat` |
+| v0.14   | Timing instrumentation: `INCUNEST_TIMING_STATS` compile-time flag, `TimingStat` |
 |         | struct, `_emit_timing()` private method. Measures HR1/HR2/HR3/SpO2 per-call |
 |         | time and full cycle time (SPI + all algos) with `esp_timer_get_time()`.      |
 |         | `$TIMING` serial frame emitted every ~5 s. `TIMING` window added to         |
 |         | `ppg_plotter.py` with green/orange/red budget indicator (budget = 2000 µs). |
-|         | Spec §8.4 added. Enabled in `platformio.ini` via `-DMOW_TIMING_STATS=1`.    |
+|         | Spec §8.4 added. Enabled in `platformio.ini` via `-DINCUNEST_TIMING_STATS=1`.    |
 | v0.13   | SQI continuous [0–1] for all algorithms. HR1_SQI: CV-based. HR2_SQI:       |
 |         | normalised autocorrelation peak. HR3_SQI: spectral concentration.           |
 |         | SpO2_SQI: PI-based (clamp PI from 0.5%–2.0%). All SQI fields added to      |
@@ -657,7 +657,7 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 | v0.12   | Added HR3 algorithm (FFT + HPS): `hr3`/`hr3_valid` in `AFE4490Data`,     |
 |         | `setHR3Filter()` in API, section 5.4. Self-contained radix-2 DIT FFT     |
 |         | in anonymous namespace. `_recalc_biquad_lp()` for LP anti-aliasing.      |
-|         | `MOW_AFE4490_TASK_STACK` default 4096→8192. Architecture diagrams         |
+|         | `INCUNEST_AFE4490_TASK_STACK` default 4096→8192. Architecture diagrams         |
 |         | (sections 1.1 and 1.3) updated. $M1 serial trama field 17 = HR3.        |
 | v0.11   | HR reported range corrected per ISO 80601-2-61 + neonatal use:           |
 |         | **[30, 250] → [25, 300] BPM**. Guard band updated to [22, 303] BPM.      |
@@ -682,7 +682,7 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 | v0.7    | Added `stop()` (section 2.6): clean shutdown — detaches ISR, deletes       |
 |         | internal task and FreeRTOS objects, resets algorithm state. Allows          |
 |         | `begin()` to be called again. Added `_reset_algorithms()` (private).       |
-|         | Enables hot-swap between mow_afe4490 and protocentral at runtime.          |
+|         | Enables hot-swap between incunest_afe4490 and protocentral at runtime.          |
 | v0.6    | Biquad coefficients computed dynamically (`_recalc_biquad()`). Formula:    |
 |         | bilinear transform on a 2nd-order Butterworth bandpass prototype.          |
 |         | Coefficients moved from namespace constants to members `_bq_b0..a2`.       |
@@ -702,11 +702,11 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 | v0.3    | Configurable NUMAV: added `setNumAverages(uint8_t num)` to the API.        |
 |         | Section 11.1 with NUMAV_max formula, table by PRF, clamping behaviour and  |
 |         | SNR effect. `setSampleRate()` recalculates NUMAV_max.                      |
-|         | **First implementation:** `include/mow_afe4490.h` and                      |
-|         | `src/mow_afe4490.cpp` generated. Pending hardware validation.              |
+|         | **First implementation:** `include/incunest_afe4490.h` and                      |
+|         | `src/incunest_afe4490.cpp` generated. Pending hardware validation.              |
 | v0.2    | Added section 11 with comparative register tables (timing, analog, control,|
 |         | init sequence). Sources: AFE44x0.h EVM TI v1.4, Datasheet AFE4490 Table 2,|
-|         | Protocentral src/. mow_afe4490 values justified register by register.      |
+|         | Protocentral src/. incunest_afe4490 values justified register by register.      |
 |         | Updated defaults: NUMAV=7, ENSEPGAIN=0, Stage2 disabled.                   |
 | v0.1    | Initial complete specification                                              |
 
@@ -725,7 +725,7 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ### 11.1 Timing registers (PRF = 500 Hz, AFECLK = 4 MHz, 1 count = 0.25 µs)
 
-| Register | AFE44x0.h (PRF=500) | Datasheet Table 2 | Protocentral (src/) | **mow_afe4490** | **Rationale** |
+| Register | AFE44x0.h (PRF=500) | Datasheet Table 2 | Protocentral (src/) | **incunest_afe4490** | **Rationale** |
 |---|---|---|---|---|---|
 | PRPCOUNT | 7999 | 7999 (t29) | 7999 | **7999** | PRF=500Hz: (4,000,000/500)−1=7999 |
 | LED2LEDSTC | 6000 | 6000 (t3) | 6000 | **6000** | LED2 starts exactly at the beginning of its phase (75% of period) |
@@ -768,7 +768,7 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ### 11.2 Analog configuration
 
-| Register / Field | AFE44x0.h (EVM) | Datasheet | Protocentral (src/) | **mow_afe4490** | **Rationale** |
+| Register / Field | AFE44x0.h (EVM) | Datasheet | Protocentral (src/) | **incunest_afe4490** | **Rationale** |
 |---|---|---|---|---|---|
 | **TIAGAIN** | 0x00C006 | — | 0x000000 | **0x000000** | Minimal config: RF=500kΩ, CF=5pF, Stage2 off, ENSEPGAIN=0 |
 | → ENSEPGAIN | 1 | — | 0 | **0** | With 0, both channels use TIAGAIN for the TIA. Simplifies configuration. Enable if independent gain per channel is needed |
@@ -797,7 +797,7 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ### 11.3 Control registers
 
-| Register / Field | AFE44x0.h (EVM) | Datasheet | Protocentral (src/) | **mow_afe4490** | **Rationale** |
+| Register / Field | AFE44x0.h (EVM) | Datasheet | Protocentral (src/) | **incunest_afe4490** | **Rationale** |
 |---|---|---|---|---|---|
 | **CONTROL0** | 0x000000 | — | 0x000000→0x000008 | **0x000008 in init** | SW_RST ensures known state. Self-clearing. EVM does no explicit SW_RST — risk if chip was left in inconsistent state |
 | **CONTROL1** | 0x000107 | — | 0x010707 | **0x000107** | TIMEREN=1, NUMAV=7, no outputs on ALM pins |
@@ -811,7 +811,7 @@ This section documents the exact value of each AFE4490 register written by the l
 
 ### 11.4 Initialisation sequence
 
-| Step | AFE44x0.h (EVM) | Protocentral (src/) | **mow_afe4490** | **Rationale** |
+| Step | AFE44x0.h (EVM) | Protocentral (src/) | **incunest_afe4490** | **Rationale** |
 |---|---|---|---|---|
 | 1 | — | PDN low 500ms → PDN high 500ms | **PDN low 500ms → PDN high 500ms** | Hard reset before any SPI communication. 500ms is conservative but safe; datasheet does not specify minimum |
 | 2 | CONTROL0=0x000000 | CONTROL0=0x000000 | **CONTROL0=0x000000** | Ensures SPI write mode (SPI_READ=0) |

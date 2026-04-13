@@ -1,25 +1,25 @@
-// mow_afe4490.cpp — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
+// incunest_afe4490.cpp — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
 // Library version: v0.16 — ESP32-S3, Arduino + FreeRTOS
-// Spec: mow_afe4490_spec.md
+// Spec: incunest_afe4490_spec.md
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
-#include "mow_afe4490.h"
-#ifndef MOW_OFFLINE
+#include "incunest_afe4490.h"
+#ifndef INCUNEST_OFFLINE
 #include "esp_log.h"
 #endif
 #include <math.h>
 #include <string.h>
-#if MOW_TIMING_STATS && !defined(MOW_OFFLINE)
+#if INCUNEST_TIMING_STATS && !defined(INCUNEST_OFFLINE)
 #include "esp_timer.h"
 #endif
 
-#ifdef MOW_OFFLINE
+#ifdef INCUNEST_OFFLINE
 [[maybe_unused]] static const char* TAG = "";
 #define ESP_LOGE(tag, ...) ((void)0)
 #define ESP_LOGI(tag, ...) ((void)0)
 #define ESP_LOGW(tag, ...) ((void)0)
 #else
-static const char* TAG = "mow_afe4490";
+static const char* TAG = "incunest_afe4490";
 #endif
 
 namespace {
@@ -190,12 +190,12 @@ namespace {
 // Singleton pointer used by the static ISR trampoline (_drdy_isr_static) to reach
 // the class instance. Static members must be defined exactly once in a .cpp file;
 // the declaration in the header only reserves the name.
-#ifndef MOW_OFFLINE
-MOW_AFE4490* MOW_AFE4490::_g_instance = nullptr;
+#ifndef INCUNEST_OFFLINE
+INCUNEST_AFE4490* INCUNEST_AFE4490::_g_instance = nullptr;
 #endif
 
 // ── Constructor / destructor ──────────────────────────────────────────────────
-MOW_AFE4490::MOW_AFE4490()
+INCUNEST_AFE4490::INCUNEST_AFE4490()
     : _pin_cs(-1), _pin_drdy(-1),
       _drdy_sem(nullptr), _spi_mutex(nullptr), _state_mutex(nullptr),
       _data_queue(nullptr), _task_handle(nullptr),
@@ -242,8 +242,8 @@ MOW_AFE4490::MOW_AFE4490()
     _reset_algorithms();
 }
 
-MOW_AFE4490::~MOW_AFE4490() {
-#ifndef MOW_OFFLINE
+INCUNEST_AFE4490::~INCUNEST_AFE4490() {
+#ifndef INCUNEST_OFFLINE
     if (_task_handle)      { vTaskDelete(_task_handle);      _task_handle      = nullptr; }
     if (_hr2_task_handle)  { vTaskDelete(_hr2_task_handle);  _hr2_task_handle  = nullptr; }
     if (_hr3_task_handle)  { vTaskDelete(_hr3_task_handle);  _hr3_task_handle  = nullptr; }
@@ -261,8 +261,8 @@ MOW_AFE4490::~MOW_AFE4490() {
 // Requires SPI.begin() to have been called beforehand. This library intentionally
 // does not call SPI.begin() to avoid reinitialising the bus and interfering with
 // other SPI devices. Only SPI.beginTransaction() / endTransaction() are used here.
-#ifndef MOW_OFFLINE
-void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
+#ifndef INCUNEST_OFFLINE
+void INCUNEST_AFE4490::begin(int pin_cs, int pin_drdy) {
     _pin_cs   = pin_cs;
     _pin_drdy = pin_drdy;
     _g_instance = this;
@@ -273,7 +273,7 @@ void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
     _drdy_sem    = xSemaphoreCreateBinary();
     _spi_mutex   = xSemaphoreCreateMutex();
     _state_mutex = xSemaphoreCreateMutex();
-    _data_queue  = xQueueCreate(MOW_AFE4490_QUEUE_SIZE, sizeof(AFE4490Data));
+    _data_queue  = xQueueCreate(INCUNEST_AFE4490_QUEUE_SIZE, sizeof(AFE4490Data));
     _hr2_calc_sem = xSemaphoreCreateBinary();
     _hr3_calc_sem = xSemaphoreCreateBinary();
 
@@ -293,32 +293,32 @@ void MOW_AFE4490::begin(int pin_cs, int pin_drdy) {
     attachInterrupt(digitalPinToInterrupt(_pin_drdy), _drdy_isr_static, RISING);
 
     xTaskCreatePinnedToCore(
-        _task_trampoline,     "mow_afe4490",
-        MOW_AFE4490_TASK_STACK, this,
-        MOW_AFE4490_TASK_PRIORITY, &_task_handle, 1);
+        _task_trampoline,     "incunest_afe4490",
+        INCUNEST_AFE4490_TASK_STACK, this,
+        INCUNEST_AFE4490_TASK_PRIORITY, &_task_handle, 1);
 
     xTaskCreatePinnedToCore(
-        _hr2_task_trampoline, "mow_hr2",
-        MOW_AFE4490_HR2_TASK_STACK, this,
-        MOW_AFE4490_HR23_TASK_PRIORITY, &_hr2_task_handle, 1);
+        _hr2_task_trampoline, "incunest_hr2",
+        INCUNEST_AFE4490_HR2_TASK_STACK, this,
+        INCUNEST_AFE4490_HR23_TASK_PRIORITY, &_hr2_task_handle, 1);
 
     xTaskCreatePinnedToCore(
-        _hr3_task_trampoline, "mow_hr3",
-        MOW_AFE4490_HR3_TASK_STACK, this,
-        MOW_AFE4490_HR23_TASK_PRIORITY, &_hr3_task_handle, 1);
+        _hr3_task_trampoline, "incunest_hr3",
+        INCUNEST_AFE4490_HR3_TASK_STACK, this,
+        INCUNEST_AFE4490_HR23_TASK_PRIORITY, &_hr3_task_handle, 1);
 
     ESP_LOGI(TAG, "Started: PRF=%u Hz, NUMAV=%u", _sample_rate_hz, _num_averages);
 }
 #endif
 
 // ── Configuration setters ─────────────────────────────────────────────────────
-void MOW_AFE4490::setSampleRate(uint16_t hz) {
+void INCUNEST_AFE4490::setSampleRate(uint16_t hz) {
     if (hz < 63 || hz > 5000) {
         ESP_LOGE(TAG, "setSampleRate: %u Hz out of range [63, 5000]", hz);
         return;
     }
 
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
 
@@ -339,7 +339,7 @@ void MOW_AFE4490::setSampleRate(uint16_t hz) {
 
     _recalc_rate_params();
 
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_timing_regs();
         _apply_control_regs();
@@ -348,7 +348,7 @@ void MOW_AFE4490::setSampleRate(uint16_t hz) {
 #endif
 }
 
-void MOW_AFE4490::setNumAverages(uint8_t num) {
+void INCUNEST_AFE4490::setNumAverages(uint8_t num) {
     if (num == 0) num = 1;
 
     uint8_t numav_max = (uint8_t)((5000u / _sample_rate_hz) - 1u);
@@ -361,11 +361,11 @@ void MOW_AFE4490::setNumAverages(uint8_t num) {
         num = clamped;
     }
 
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
     _num_averages = num;
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_control_regs();
         xSemaphoreGive(_spi_mutex);
@@ -373,12 +373,12 @@ void MOW_AFE4490::setNumAverages(uint8_t num) {
 #endif
 }
 
-void MOW_AFE4490::setLED1Current(float mA) {
-#ifndef MOW_OFFLINE
+void INCUNEST_AFE4490::setLED1Current(float mA) {
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
     _led1_current_mA = constrain(mA, 0.0f, (float)_led_range_mA);
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
@@ -386,12 +386,12 @@ void MOW_AFE4490::setLED1Current(float mA) {
 #endif
 }
 
-void MOW_AFE4490::setLED2Current(float mA) {
-#ifndef MOW_OFFLINE
+void INCUNEST_AFE4490::setLED2Current(float mA) {
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
     _led2_current_mA = constrain(mA, 0.0f, (float)_led_range_mA);
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
@@ -399,16 +399,16 @@ void MOW_AFE4490::setLED2Current(float mA) {
 #endif
 }
 
-void MOW_AFE4490::setLEDRange(uint8_t mA) {
+void INCUNEST_AFE4490::setLEDRange(uint8_t mA) {
     if (mA != 75 && mA != 150) {
         ESP_LOGE(TAG, "setLEDRange: must be 75 or 150 mA");
         return;
     }
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
     _led_range_mA = mA;
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
@@ -416,12 +416,12 @@ void MOW_AFE4490::setLEDRange(uint8_t mA) {
 #endif
 }
 
-void MOW_AFE4490::setTIAGain(AFE4490TIAGain gain) {
-#ifndef MOW_OFFLINE
+void INCUNEST_AFE4490::setTIAGain(AFE4490TIAGain gain) {
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
     _tia_gain = gain;
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
@@ -429,12 +429,12 @@ void MOW_AFE4490::setTIAGain(AFE4490TIAGain gain) {
 #endif
 }
 
-void MOW_AFE4490::setTIACF(AFE4490TIACF cf) {
-#ifndef MOW_OFFLINE
+void INCUNEST_AFE4490::setTIACF(AFE4490TIACF cf) {
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
     _tia_cf = cf;
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
@@ -442,12 +442,12 @@ void MOW_AFE4490::setTIACF(AFE4490TIACF cf) {
 #endif
 }
 
-void MOW_AFE4490::setStage2Gain(AFE4490Stage2Gain gain) {
-#ifndef MOW_OFFLINE
+void INCUNEST_AFE4490::setStage2Gain(AFE4490Stage2Gain gain) {
+#ifndef INCUNEST_OFFLINE
     if (_initialized) xSemaphoreTake(_spi_mutex, portMAX_DELAY);
 #endif
     _stage2_gain = gain;
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     if (_initialized) {
         _apply_analog_regs();
         xSemaphoreGive(_spi_mutex);
@@ -455,7 +455,7 @@ void MOW_AFE4490::setStage2Gain(AFE4490Stage2Gain gain) {
 #endif
 }
 
-void MOW_AFE4490::setPPGChannel(AFE4490Channel channel) {
+void INCUNEST_AFE4490::setPPGChannel(AFE4490Channel channel) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _ppg_channel = channel;
     // Reset filter state: changing channel means a different signal enters the filter
@@ -467,7 +467,7 @@ void MOW_AFE4490::setPPGChannel(AFE4490Channel channel) {
     if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
-void MOW_AFE4490::setFilter(AFE4490Filter type, float f_low_hz, float f_high_hz) {
+void INCUNEST_AFE4490::setFilter(AFE4490Filter type, float f_low_hz, float f_high_hz) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _filter_type        = type;
     _ppg_bpf.f_low      = f_low_hz;
@@ -481,7 +481,7 @@ void MOW_AFE4490::setFilter(AFE4490Filter type, float f_low_hz, float f_high_hz)
     if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
-void MOW_AFE4490::setHR2Filter(float f_low_hz, float f_high_hz) {
+void INCUNEST_AFE4490::setHR2Filter(float f_low_hz, float f_high_hz) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _hr2_bpf.f_low      = f_low_hz;
     _hr2_bpf.f_high     = f_high_hz;
@@ -491,7 +491,7 @@ void MOW_AFE4490::setHR2Filter(float f_low_hz, float f_high_hz) {
     if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
-void MOW_AFE4490::setHR3Filter(float f_high_hz) {
+void INCUNEST_AFE4490::setHR3Filter(float f_high_hz) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _hr3_lpf.f_high     = f_high_hz;
     _recalc_biquad_lp(_hr3_lpf);
@@ -500,7 +500,7 @@ void MOW_AFE4490::setHR3Filter(float f_high_hz) {
     if (_initialized) xSemaphoreGive(_state_mutex);
 }
 
-void MOW_AFE4490::setSpO2Coefficients(float a, float b) {
+void INCUNEST_AFE4490::setSpO2Coefficients(float a, float b) {
     if (_initialized) xSemaphoreTake(_state_mutex, portMAX_DELAY);
     _spo2_a = a;
     _spo2_b = b;
@@ -508,15 +508,15 @@ void MOW_AFE4490::setSpO2Coefficients(float a, float b) {
 }
 
 // ── getData() ─────────────────────────────────────────────────────────────────
-#ifndef MOW_OFFLINE
-bool MOW_AFE4490::getData(AFE4490Data& data) {
+#ifndef INCUNEST_OFFLINE
+bool INCUNEST_AFE4490::getData(AFE4490Data& data) {
     return xQueueReceive(_data_queue, &data, 0) == pdTRUE;
 }
 #endif
 
 // ── stop() ────────────────────────────────────────────────────────────────────
-#ifndef MOW_OFFLINE
-void MOW_AFE4490::stop() {
+#ifndef INCUNEST_OFFLINE
+void INCUNEST_AFE4490::stop() {
     if (!_initialized) return;
 
     detachInterrupt(digitalPinToInterrupt(_pin_drdy));
@@ -544,7 +544,7 @@ void MOW_AFE4490::stop() {
 #endif
 
 // ── _reset_algorithms() ───────────────────────────────────────────────────────
-void MOW_AFE4490::_reset_algorithms() {
+void INCUNEST_AFE4490::_reset_algorithms() {
     _dc_ir  = 0.0f; _dc_red  = 0.0f;
     _ac2_ir = 0.0f; _ac2_red = 0.0f;
     _spo2_sample_count = 0;
@@ -573,14 +573,14 @@ void MOW_AFE4490::_reset_algorithms() {
     _hr2_result = 0.0f; _hr2_sqi_result = 0.0f;
     _hr3_result = 0.0f; _hr3_sqi_result = 0.0f;
     _current_data = AFE4490Data{};
-    // Precompute Hann window — needed for HR3 FFT (moved here from begin() to support MOW_OFFLINE)
+    // Precompute Hann window — needed for HR3 FFT (moved here from begin() to support INCUNEST_OFFLINE)
     for (int i = 0; i < hr3_buf_len; i++)
         _hr3_hann[i] = 0.5f * (1.0f - cosf(2.0f * pi * (float)i / (float)(hr3_buf_len - 1)));
 }
 
 // ── SPI primitives ────────────────────────────────────────────────────────────
-#ifndef MOW_OFFLINE
-void MOW_AFE4490::_write_reg(uint8_t addr, uint32_t data) {
+#ifndef INCUNEST_OFFLINE
+void INCUNEST_AFE4490::_write_reg(uint8_t addr, uint32_t data) {
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
     digitalWrite(_pin_cs, LOW);
     SPI.transfer(addr);
@@ -592,7 +592,7 @@ void MOW_AFE4490::_write_reg(uint8_t addr, uint32_t data) {
 }
 
 // Raw read — caller must have enabled SPI_READ in CONTROL0 beforehand
-uint32_t MOW_AFE4490::_read_spi_raw(uint8_t addr) {
+uint32_t INCUNEST_AFE4490::_read_spi_raw(uint8_t addr) {
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
     digitalWrite(_pin_cs, LOW);
     SPI.transfer(addr);
@@ -604,7 +604,7 @@ uint32_t MOW_AFE4490::_read_spi_raw(uint8_t addr) {
     return data;
 }
 
-uint32_t MOW_AFE4490::_read_reg(uint8_t addr) {
+uint32_t INCUNEST_AFE4490::_read_reg(uint8_t addr) {
     _write_reg(REG_CONTROL0, ctrl0_spi_read);
     uint32_t val = _read_spi_raw(addr);
     _write_reg(REG_CONTROL0, 0x000000UL);
@@ -612,14 +612,14 @@ uint32_t MOW_AFE4490::_read_reg(uint8_t addr) {
 }
 #endif
 
-int32_t MOW_AFE4490::_sign_extend_22(uint32_t raw) {
+int32_t INCUNEST_AFE4490::_sign_extend_22(uint32_t raw) {
     // AFE4490 ADC output is 22-bit two's complement in bits [21:0]
     return ((int32_t)(raw << 10)) >> 10;
 }
 
 // ── Chip init ─────────────────────────────────────────────────────────────────
-#ifndef MOW_OFFLINE
-void MOW_AFE4490::_chip_init() {
+#ifndef INCUNEST_OFFLINE
+void INCUNEST_AFE4490::_chip_init() {
     // Step 2: Set SPI write mode
     _write_reg(REG_CONTROL0, 0x000000UL);
 
@@ -640,7 +640,7 @@ void MOW_AFE4490::_chip_init() {
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
-void MOW_AFE4490::_apply_timing_regs() {
+void INCUNEST_AFE4490::_apply_timing_regs() {
     // Datasheet Table 2 formulas, PRF = _sample_rate_hz
     // AFECLK = 4 MHz → 1 count = 0.25 µs
     const uint32_t afeclk          = 4000000UL;
@@ -689,14 +689,14 @@ void MOW_AFE4490::_apply_timing_regs() {
     _write_reg(REG_PRPCOUNT,     prp);                      // t29
 }
 
-uint32_t MOW_AFE4490::_build_tiagain() {
+uint32_t INCUNEST_AFE4490::_build_tiagain() {
     uint32_t reg = rf_code[(int)_tia_gain];       // bits [2:0]
     reg         |= cf_code[(int)_tia_cf];         // bits [7:3]
     reg         |= stg2_code[(int)_stage2_gain];  // bits [10:8] + bit[14]
     return reg;
 }
 
-void MOW_AFE4490::_apply_analog_regs() {
+void INCUNEST_AFE4490::_apply_analog_regs() {
     uint32_t tia = _build_tiagain();
 
     // TIAGAIN and TIA_AMB_GAIN get the same RF/CF/Stage2 bits.
@@ -717,14 +717,14 @@ void MOW_AFE4490::_apply_analog_regs() {
     _write_reg(REG_CONTROL2, 0x000000UL);
 }
 
-void MOW_AFE4490::_apply_control_regs() {
+void INCUNEST_AFE4490::_apply_control_regs() {
     // CONTROL1: TIMEREN | NUMAV
     uint8_t numav = (_num_averages > 0) ? (_num_averages - 1u) : 0u;
     _write_reg(REG_CONTROL1, ctrl1_timeren | numav);
 }
-#endif  // !MOW_OFFLINE
+#endif  // !INCUNEST_OFFLINE
 
-void MOW_AFE4490::_recalc_rate_params() {
+void INCUNEST_AFE4490::_recalc_rate_params() {
     float fs              = (float)_sample_rate_hz;
     _spo2_warmup_samples    = (uint32_t)(spo2_warmup_s   * fs);
     _hr1_refractory_samples = (uint32_t)(hr_refractory_s * fs);
@@ -739,7 +739,7 @@ void MOW_AFE4490::_recalc_rate_params() {
     _recalc_biquad_lp(_hr3_lpf);
 }
 
-void MOW_AFE4490::_recalc_biquad_lp(BiquadFilter& filt) {
+void INCUNEST_AFE4490::_recalc_biquad_lp(BiquadFilter& filt) {
     // 2nd-order Butterworth low-pass via bilinear transform.
     // Uses filt.f_high as the -3 dB cutoff frequency.
     // DC gain = 1.0; state unchanged (caller is responsible for resetting if needed).
@@ -755,7 +755,7 @@ void MOW_AFE4490::_recalc_biquad_lp(BiquadFilter& filt) {
     filt.a2    = (1.0f - sqrt2 * Ohm + Ohm2) / d;
 }
 
-void MOW_AFE4490::_recalc_biquad(BiquadFilter& filt) {
+void INCUNEST_AFE4490::_recalc_biquad(BiquadFilter& filt) {
     // 2nd-order Butterworth bandpass via bilinear transform.
     // Analog prototype: H(s) = BW·s / (s² + BW·s + Ω₀²)
     float fs    = (float)_sample_rate_hz;
@@ -774,17 +774,17 @@ void MOW_AFE4490::_recalc_biquad(BiquadFilter& filt) {
 
 // ── FreeRTOS task ─────────────────────────────────────────────────────────────
 // FreeRTOS requires the task entry point to be a plain C function (static or free function).
-// _task_trampoline satisfies that requirement: it receives the MOW_AFE4490 instance pointer
+// _task_trampoline satisfies that requirement: it receives the INCUNEST_AFE4490 instance pointer
 // via the pvParameters argument and immediately forwards execution to _task_body(), which is
 // the actual member function with full access to private state. This pattern (trampoline +
 // member body) is the standard idiom for running a C++ method as a FreeRTOS task.
-#ifndef MOW_OFFLINE
-void MOW_AFE4490::_task_trampoline(void* pv) {
-    static_cast<MOW_AFE4490*>(pv)->_task_body();
+#ifndef INCUNEST_OFFLINE
+void INCUNEST_AFE4490::_task_trampoline(void* pv) {
+    static_cast<INCUNEST_AFE4490*>(pv)->_task_body();
     vTaskDelete(nullptr); // should never reach here
 }
 
-void MOW_AFE4490::_task_body() {
+void INCUNEST_AFE4490::_task_body() {
     for (;;) {
         // Block until DRDY fires (100 ms watchdog — warns if chip stops outputting)
         if (xSemaphoreTake(_drdy_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -793,7 +793,7 @@ void MOW_AFE4490::_task_body() {
         }
 
         // _spi_mutex: protects the SPI bus while reading all 6 channels.
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
         uint64_t _t_cycle = esp_timer_get_time();
 #endif
         xSemaphoreTake(_spi_mutex, portMAX_DELAY);
@@ -813,7 +813,7 @@ void MOW_AFE4490::_task_body() {
         xSemaphoreTake(_state_mutex, portMAX_DELAY);
         _process_sample(led1, led2, aled1, aled2, led1_diff, led2_diff);
         xSemaphoreGive(_state_mutex);
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
         _ts_cycle.update(esp_timer_get_time() - _t_cycle);
         if (++_ts_emit_counter >= ts_emit_interval) {
             _ts_emit_counter = 0;
@@ -829,16 +829,16 @@ void MOW_AFE4490::_task_body() {
 // attachInterrupt() and forwards the call to the actual member ISR (_drdy_isr) via
 // the singleton pointer _g_instance. The null-check guards against a spurious interrupt
 // arriving after stop() has cleared _g_instance.
-void IRAM_ATTR MOW_AFE4490::_drdy_isr_static() {
+void IRAM_ATTR INCUNEST_AFE4490::_drdy_isr_static() {
     if (_g_instance) _g_instance->_drdy_isr();
 }
 
-void IRAM_ATTR MOW_AFE4490::_drdy_isr() {
+void IRAM_ATTR INCUNEST_AFE4490::_drdy_isr() {
     BaseType_t woken = pdFALSE;
     xSemaphoreGiveFromISR(_drdy_sem, &woken);
     portYIELD_FROM_ISR(woken);
 }
-#endif  // !MOW_OFFLINE
+#endif  // !INCUNEST_OFFLINE
 
 // ── Signal processing ─────────────────────────────────────────────────────────
 
@@ -848,7 +848,7 @@ void IRAM_ATTR MOW_AFE4490::_drdy_isr() {
 //   y_ss  = x0 * (b0+b1+b2) / (1+a1+a2)   (= 0 for a bandpass filter)
 //   v1_ss = y_ss - b0*x0
 //   v2_ss = b2*x0 - a2*y_ss
-float MOW_AFE4490::_biquad_process(float x, BiquadFilter& filt) {
+float INCUNEST_AFE4490::_biquad_process(float x, BiquadFilter& filt) {
     if (filt.needs_precharge) {
         float y_ss      = x * (filt.b0 + filt.b1 + filt.b2) / (1.0f + filt.a1 + filt.a2);
         filt.state.v1   = y_ss - filt.b0 * x;
@@ -861,7 +861,7 @@ float MOW_AFE4490::_biquad_process(float x, BiquadFilter& filt) {
     return y;
 }
 
-void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int32_t aled2,
+void INCUNEST_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int32_t aled2,
                                    int32_t led1_aled1, int32_t led2_aled2) {
     // Select PPG source
     float raw_ppg;
@@ -903,7 +903,7 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
 
     // SpO2 uses ambient-corrected channels (unfiltered, spec §1.3)
     // HR1 runs fully in this task. HR2/HR3 fast paths run here; slow computation in Task B/C.
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
     { uint64_t _t = esp_timer_get_time(); _update_spo2(led1_aled1, led2_aled2); _ts_spo2.update(esp_timer_get_time() - _t); }
     { uint64_t _t = esp_timer_get_time(); _update_hr1(led1_aled1);              _ts_hr1.update(esp_timer_get_time() - _t); }
     uint64_t _t_hr2 = esp_timer_get_time();
@@ -921,7 +921,7 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
         }
     }
 
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
     _ts_hr2.update(esp_timer_get_time() - _t_hr2);
     uint64_t _t_hr3 = esp_timer_get_time();
 #endif
@@ -935,7 +935,7 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
         }
     }
 
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
     _ts_hr3.update(esp_timer_get_time() - _t_hr3);
 #endif
 
@@ -955,8 +955,8 @@ void MOW_AFE4490::_process_sample(int32_t led1, int32_t led2, int32_t aled1, int
 //                hr2cmp_mean,hr2cmp_max,hr3cmp_mean,hr3cmp_max,stack_free*XX
 // Task A fast-path (first 10 values): budget reference = 2000 µs (1/500 Hz).
 // Task B/C compute (values 11-14): CPU load % = mean / 500000 µs (0.5 s period).
-#if MOW_TIMING_STATS && !defined(MOW_OFFLINE)
-void MOW_AFE4490::_emit_timing() {
+#if INCUNEST_TIMING_STATS && !defined(INCUNEST_OFFLINE)
+void INCUNEST_AFE4490::_emit_timing() {
     UBaseType_t stack_free = uxTaskGetStackHighWaterMark(nullptr);
     char buf[256];
     int n = snprintf(buf, sizeof(buf),
@@ -984,14 +984,14 @@ void MOW_AFE4490::_emit_timing() {
 // stack_words = uxTaskGetStackHighWaterMark() for each task handle.
 // Does NOT use uxTaskGetSystemState() — avoids requiring configUSE_TRACE_FACILITY=1
 // in the precompiled Arduino ESP32 FreeRTOS library.
-void MOW_AFE4490::_emit_tasks() {
+void INCUNEST_AFE4490::_emit_tasks() {
     uint64_t window_us = (uint64_t)ts_emit_interval * 1000000u / _sample_rate_hz;
 
     struct LibTask { const char* name; uint64_t sum_us; TaskHandle_t handle; };
     LibTask lib_tasks[] = {
-        { "mow_afe4490", _ts_cycle.sum_us,        _task_handle      },
-        { "mow_hr2",     _ts_hr2_compute.sum_us,   _hr2_task_handle  },
-        { "mow_hr3",     _ts_hr3_compute.sum_us,   _hr3_task_handle  },
+        { "incunest_afe4490", _ts_cycle.sum_us,        _task_handle      },
+        { "incunest_hr2",     _ts_hr2_compute.sum_us,   _hr2_task_handle  },
+        { "incunest_hr3",     _ts_hr3_compute.sum_us,   _hr3_task_handle  },
     };
     for (const auto& t : lib_tasks) {
         uint32_t pct_x10 = (window_us > 0) ?
@@ -1016,7 +1016,7 @@ void MOW_AFE4490::_emit_tasks() {
 // SpO2 = a - b * R
 // ir_corr  : IR  signal ambient-corrected (led1 - aled1)
 // red_corr : RED signal ambient-corrected (led2 - aled2)
-void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
+void INCUNEST_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
     float ir  = (float)ir_corr;
     float red = (float)red_corr;
 
@@ -1072,7 +1072,7 @@ void MOW_AFE4490::_update_spo2(int32_t ir_corr, int32_t red_corr) {
 // Adaptive-threshold peak detection on filtered PPG.
 // Threshold = 0.6 × running_max; refractory = _hr1_refractory_samples.
 // HR reported from average of 5 consecutive RR intervals.
-void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
+void INCUNEST_AFE4490::_update_hr1(int32_t led1_aled1) {
     _hr1_sample_idx++;
 
     // DC removal: IIR estimator (tau = hr1_dc_tau_s), then negate for conventional PPG polarity (peaks up)
@@ -1142,7 +1142,7 @@ void MOW_AFE4490::_update_hr1(int32_t led1_aled1) {
 
 // Fast path: called every raw sample from Task A.
 // Returns true when the computation window fires (buffer full, interval elapsed).
-bool MOW_AFE4490::_update_hr2_sample(int32_t led1_aled1) {
+bool INCUNEST_AFE4490::_update_hr2_sample(int32_t led1_aled1) {
     float filtered = -_biquad_process((float)led1_aled1, _hr2_bpf);
 
     _hr2_decim_counter++;
@@ -1162,14 +1162,14 @@ bool MOW_AFE4490::_update_hr2_sample(int32_t led1_aled1) {
 
 // Linearize circular buffer (oldest → newest) into _hr2_seg.
 // Called under _state_mutex by Task A immediately before signalling Task B.
-void MOW_AFE4490::_linearize_hr2() {
+void INCUNEST_AFE4490::_linearize_hr2() {
     for (int i = 0; i < hr2_buf_len; i++)
         _hr2_seg[i] = _hr2_buf[(_hr2_buf_idx + i) % hr2_buf_len];
 }
 
 // Slow path: autocorrelation on _hr2_seg → _hr2_result / _hr2_sqi_result.
 // Called by Task B. Reads only _hr2_seg (no other shared state written).
-void MOW_AFE4490::_compute_hr2() {
+void INCUNEST_AFE4490::_compute_hr2() {
     float acorr0 = 0.0f;
     for (int i = 0; i < hr2_buf_len; i++) acorr0 += _hr2_seg[i] * _hr2_seg[i];
     if (acorr0 < 1.0f) { _hr2_sqi_result = 0.0f; return; }
@@ -1220,7 +1220,7 @@ void MOW_AFE4490::_compute_hr2() {
 }
 
 // Synchronous wrapper kept for unit-test compatibility.
-void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
+void INCUNEST_AFE4490::_update_hr2(int32_t led1_aled1) {
     if (!_update_hr2_sample(led1_aled1)) return;
     _linearize_hr2();
     _compute_hr2();
@@ -1232,7 +1232,7 @@ void MOW_AFE4490::_update_hr2(int32_t led1_aled1) {
 
 // Fast path: called every raw sample from Task A.
 // Returns true when the computation window fires (buffer full, interval elapsed).
-bool MOW_AFE4490::_update_hr3_sample(int32_t led1_aled1) {
+bool INCUNEST_AFE4490::_update_hr3_sample(int32_t led1_aled1) {
     float filtered = -_biquad_process((float)led1_aled1, _hr3_lpf);  // negate: peaks up
 
     _hr3_decim_counter++;
@@ -1252,7 +1252,7 @@ bool MOW_AFE4490::_update_hr3_sample(int32_t led1_aled1) {
 
 // Linearize circular buffer + DC removal + Hann window → complex FFT input in _hr3_fft.
 // Called under _state_mutex by Task A immediately before signalling Task C.
-void MOW_AFE4490::_linearize_hr3() {
+void INCUNEST_AFE4490::_linearize_hr3() {
     float mean = 0.0f;
     for (int i = 0; i < hr3_buf_len; i++)
         mean += _hr3_buf[(_hr3_buf_idx + i) % hr3_buf_len];
@@ -1267,7 +1267,7 @@ void MOW_AFE4490::_linearize_hr3() {
 
 // Slow path: FFT + HPS on _hr3_fft → _hr3_result / _hr3_sqi_result.
 // Called by Task C. Reads/writes only _hr3_fft and result floats (no other shared state).
-void MOW_AFE4490::_compute_hr3() {
+void INCUNEST_AFE4490::_compute_hr3() {
     // ── In-place radix-2 DIT FFT ──
     _fft_r2(_hr3_fft, hr3_buf_len);
 
@@ -1327,7 +1327,7 @@ void MOW_AFE4490::_compute_hr3() {
 }
 
 // Synchronous wrapper kept for unit-test compatibility.
-void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
+void INCUNEST_AFE4490::_update_hr3(int32_t led1_aled1) {
     if (!_update_hr3_sample(led1_aled1)) return;
     _linearize_hr3();
     _compute_hr3();
@@ -1336,9 +1336,9 @@ void MOW_AFE4490::_update_hr3(int32_t led1_aled1) {
 }
 
 // ── HR2 async task (Task B) ────────────────────────────────────────────────────
-#ifndef MOW_OFFLINE
-void MOW_AFE4490::_hr2_task_trampoline(void* pv) {
-    static_cast<MOW_AFE4490*>(pv)->_hr2_task_body();
+#ifndef INCUNEST_OFFLINE
+void INCUNEST_AFE4490::_hr2_task_trampoline(void* pv) {
+    static_cast<INCUNEST_AFE4490*>(pv)->_hr2_task_body();
     vTaskDelete(nullptr);
 }
 
@@ -1346,11 +1346,11 @@ void MOW_AFE4490::_hr2_task_trampoline(void* pv) {
 //   1. Runs autocorrelation on the already-linearized _hr2_seg snapshot.
 //   2. Takes _state_mutex to write results into _current_data.
 //   3. Clears _hr2_computing so Task A knows the slot is free.
-void MOW_AFE4490::_hr2_task_body() {
+void INCUNEST_AFE4490::_hr2_task_body() {
     for (;;) {
         xSemaphoreTake(_hr2_calc_sem, portMAX_DELAY);
 
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
         { uint64_t _t = esp_timer_get_time(); _compute_hr2(); _ts_hr2_compute.update(esp_timer_get_time() - _t); }
 #else
         _compute_hr2();  // reads _hr2_seg only — no shared-state write
@@ -1364,12 +1364,12 @@ void MOW_AFE4490::_hr2_task_body() {
         _hr2_computing = false;  // release slot after results committed
     }
 }
-#endif  // !MOW_OFFLINE
+#endif  // !INCUNEST_OFFLINE
 
 // ── HR3 async task (Task C) ────────────────────────────────────────────────────
-#ifndef MOW_OFFLINE
-void MOW_AFE4490::_hr3_task_trampoline(void* pv) {
-    static_cast<MOW_AFE4490*>(pv)->_hr3_task_body();
+#ifndef INCUNEST_OFFLINE
+void INCUNEST_AFE4490::_hr3_task_trampoline(void* pv) {
+    static_cast<INCUNEST_AFE4490*>(pv)->_hr3_task_body();
     vTaskDelete(nullptr);
 }
 
@@ -1377,11 +1377,11 @@ void MOW_AFE4490::_hr3_task_trampoline(void* pv) {
 //   1. Runs FFT + HPS on the already-prepared _hr3_fft buffer.
 //   2. Takes _state_mutex to write results into _current_data.
 //   3. Clears _hr3_computing so Task A knows the slot is free.
-void MOW_AFE4490::_hr3_task_body() {
+void INCUNEST_AFE4490::_hr3_task_body() {
     for (;;) {
         xSemaphoreTake(_hr3_calc_sem, portMAX_DELAY);
 
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
         { uint64_t _t = esp_timer_get_time(); _compute_hr3(); _ts_hr3_compute.update(esp_timer_get_time() - _t); }
 #else
         _compute_hr3();  // reads/writes _hr3_fft only — no other shared state
@@ -1395,4 +1395,4 @@ void MOW_AFE4490::_hr3_task_body() {
         _hr3_computing = false;  // release slot after results committed
     }
 }
-#endif  // !MOW_OFFLINE
+#endif  // !INCUNEST_OFFLINE

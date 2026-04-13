@@ -1,14 +1,14 @@
-# mow_afe4490_test
+# incunest_afe4490_test
 
-**mow_afe4490_test** is a validation tool for the library mow_afe4490.
+**incunest_afe4490_test** is a validation tool for the library incunest_afe4490.
 
-**mow_afe4490** is a library (driver + algorithms) for AFE4490, implemented in `mow_afe4490.h` and `mow_afe4490.cpp`
+**incunest_afe4490** is a library (driver + algorithms) for AFE4490, implemented in `incunest_afe4490.h` and `incunest_afe4490.cpp`
 
 **AFE4490** is an Analog Front End chip designed by Texas Instruments for pulse oximetry applications using photoplethysmography (PPG)
 
 This repository is developed as part of the **IncuNest** project, open-source neonatal incubator by [Medical Open World](https://medicalopenworld.org).
 
-The goal is to verify PPG signal quality and SpO2/HR calculation in isolation, before integrating the AFE4490 into the main IncuNest firmware. It also serves as a comparison testbed between the Protocentral library and the in-house `mow_afe4490` library.
+The goal is to verify PPG signal quality and SpO2/HR calculation in isolation, before integrating the AFE4490 into the main IncuNest firmware. It also serves as a comparison testbed between the Protocentral library and the in-house `incunest_afe4490` library.
 This repository includes firmware code and a python script to visualize serial output
 
 ## Hardware
@@ -35,7 +35,7 @@ pio device monitor --port COM15 --baud 115200
 ```
 
 To select which library to use, switch at runtime via serial commands:
-- `m` → mow_afe4490
+- `m` → incunest_afe4490
 - `p` → Protocentral AFE44XX
 
 ## PPG Plotter
@@ -49,9 +49,9 @@ python ppg_plotter.py
 ## Project structure
 
 ```
-include/mow_afe4490.h     — In-house AFE4490 library (API)
-src/mow_afe4490.cpp       — In-house AFE4490 library (implementation)
-mow_afe4490_spec.md       — Library design specification
+include/incunest_afe4490.h     — In-house AFE4490 library (API)
+src/incunest_afe4490.cpp       — In-house AFE4490 library (implementation)
+incunest_afe4490_spec.md       — Library design specification
 src/main.cpp              — Test firmware (dual-library harness)
 ppg_plotter.py            — Real-time PPG/SpO2/HR visualizer
 conversation_log.md       — Session-by-session design decisions log

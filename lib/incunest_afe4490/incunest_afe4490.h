@@ -1,15 +1,15 @@
 #pragma once
 
-// mow_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
+// incunest_afe4490 — Medical Open World AFE4490 driver + PPG algorithms (HR, SpO2)
 // Library version: v0.16 — ESP32-S3, Arduino + FreeRTOS
-// Spec: mow_afe4490_spec.md
+// Spec: incunest_afe4490_spec.md
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
-#ifdef MOW_OFFLINE
+#ifdef INCUNEST_OFFLINE
   #ifndef UNIT_TEST
     #define UNIT_TEST
   #endif
-  #include "mow_afe4490_platform_stub.h"
+  #include "incunest_afe4490_platform_stub.h"
 #else
   #include <Arduino.h>
   #include <SPI.h>
@@ -21,32 +21,32 @@
 #endif
 
 // ── Compile-time configuration (override before including this header) ────────
-#ifndef MOW_AFE4490_QUEUE_SIZE
-#define MOW_AFE4490_QUEUE_SIZE      10
+#ifndef INCUNEST_AFE4490_QUEUE_SIZE
+#define INCUNEST_AFE4490_QUEUE_SIZE      10
 #endif
 
-#ifndef MOW_AFE4490_TASK_PRIORITY
-#define MOW_AFE4490_TASK_PRIORITY   5
+#ifndef INCUNEST_AFE4490_TASK_PRIORITY
+#define INCUNEST_AFE4490_TASK_PRIORITY   5
 #endif
 
-#ifndef MOW_AFE4490_TASK_STACK
-#define MOW_AFE4490_TASK_STACK      8192  // increased from 4096: HR3 FFT calls cosf/sinf which needs extra stack
+#ifndef INCUNEST_AFE4490_TASK_STACK
+#define INCUNEST_AFE4490_TASK_STACK      8192  // increased from 4096: HR3 FFT calls cosf/sinf which needs extra stack
 #endif
 
-#ifndef MOW_AFE4490_HR2_TASK_STACK
-#define MOW_AFE4490_HR2_TASK_STACK  3072  // acorr_buf[138] on stack + overhead
+#ifndef INCUNEST_AFE4490_HR2_TASK_STACK
+#define INCUNEST_AFE4490_HR2_TASK_STACK  3072  // acorr_buf[138] on stack + overhead
 #endif
 
-#ifndef MOW_AFE4490_HR3_TASK_STACK
-#define MOW_AFE4490_HR3_TASK_STACK  2048  // FFT data lives in _hr3_fft member, minimal stack
+#ifndef INCUNEST_AFE4490_HR3_TASK_STACK
+#define INCUNEST_AFE4490_HR3_TASK_STACK  2048  // FFT data lives in _hr3_fft member, minimal stack
 #endif
 
-#ifndef MOW_AFE4490_HR23_TASK_PRIORITY
-#define MOW_AFE4490_HR23_TASK_PRIORITY  (MOW_AFE4490_TASK_PRIORITY - 1)
+#ifndef INCUNEST_AFE4490_HR23_TASK_PRIORITY
+#define INCUNEST_AFE4490_HR23_TASK_PRIORITY  (INCUNEST_AFE4490_TASK_PRIORITY - 1)
 #endif
 
-#ifndef MOW_TIMING_STATS
-#define MOW_TIMING_STATS 0
+#ifndef INCUNEST_TIMING_STATS
+#define INCUNEST_TIMING_STATS 0
 #endif
 
 // ── Public data struct ────────────────────────────────────────────────────────
@@ -116,17 +116,17 @@ enum class AFE4490Stage2Gain {
     GAIN_12DB
 };
 
-// ── MOW_AFE4490 class ─────────────────────────────────────────────────────────
-class MOW_AFE4490 {
+// ── INCUNEST_AFE4490 class ─────────────────────────────────────────────────────────
+class INCUNEST_AFE4490 {
 public:
-    MOW_AFE4490();
-    ~MOW_AFE4490();
+    INCUNEST_AFE4490();
+    ~INCUNEST_AFE4490();
 
     // Initialization — configures chip with defaults, attaches DRDY ISR, starts task.
     // Requires SPI.begin() to have been called beforehand by the application.
     // This library does not call SPI.begin() internally to avoid interfering with
     // other SPI devices sharing the same bus.
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     void begin(int pin_cs, int pin_drdy);
 #endif
 
@@ -151,13 +151,13 @@ public:
     void setHR3Filter(float f_high_hz = 10.0f);
 
     // Data retrieval — non-blocking; returns true if data was available
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     bool getData(AFE4490Data& data);
 #endif
 
     // Shutdown — detaches ISR, deletes internal task and FreeRTOS objects, resets state.
     // After stop(), begin() can be called again to restart.
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     void stop();
 #endif
 
@@ -166,7 +166,7 @@ public:
     void setSpO2Coefficients(float a, float b);
 
     // ISR entry point (must be public for static trampoline)
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     void _drdy_isr();
 #endif
 
@@ -186,7 +186,7 @@ private:
     };
 
     // ── SPI primitives ────────────────────────────────────────────────────────
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     void     _write_reg(uint8_t addr, uint32_t data);
     uint32_t _read_spi_raw(uint8_t addr);   // assumes SPI_READ already enabled
     uint32_t _read_reg(uint8_t addr);       // handles SPI_READ enable/disable
@@ -203,7 +203,7 @@ private:
     void _recalc_biquad_lp(BiquadFilter& filt);
 
     // Chip init
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     void _chip_init();
     void _apply_timing_regs();
     void _apply_analog_regs();
@@ -212,7 +212,7 @@ private:
 #endif
 
     // FreeRTOS task
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     static void _task_trampoline(void* pv);
     void _task_body();
 #endif
@@ -241,7 +241,7 @@ private:
     void _compute_hr3();                          // FFT+HPS on _hr3_fft → _hr3_result/_hr3_sqi_result
 
     // HR2/HR3 async FreeRTOS tasks
-#ifndef MOW_OFFLINE
+#ifndef INCUNEST_OFFLINE
     static void _hr2_task_trampoline(void* pv);
     void _hr2_task_body();
     static void _hr3_task_trampoline(void* pv);
@@ -277,7 +277,7 @@ private:
     float             _hr3_result;      // written by Task C
     float             _hr3_sqi_result;
 
-#if MOW_TIMING_STATS
+#if INCUNEST_TIMING_STATS
     // ── Timing instrumentation ─────────────────────────────────────────────────
     struct TimingStat {
         uint64_t max_us = 0;
@@ -390,18 +390,18 @@ private:
     AFE4490Data _current_data;
 
     // ── Static ISR trampoline ──
-    // _g_instance holds a pointer to the single active MOW_AFE4490 object so that
+    // _g_instance holds a pointer to the single active INCUNEST_AFE4490 object so that
     // _drdy_isr_static (a plain C-compatible function required by attachInterrupt)
     // can forward the interrupt to the correct instance.
     //
-    // LIMITATION: only one MOW_AFE4490 instance is supported at a time. A second
+    // LIMITATION: only one INCUNEST_AFE4490 instance is supported at a time. A second
     // instance would overwrite _g_instance and its DRDY interrupts would be routed
     // to the wrong object. To support two AFE4490 chips, either:
     //   - add a second static ISR + pointer pair, or
     //   - switch to ESP-IDF gpio_isr_handler_add(), which passes a void* argument
     //     per handler, eliminating the need for a singleton pointer altogether.
-#ifndef MOW_OFFLINE
-    static MOW_AFE4490* _g_instance;
+#ifndef INCUNEST_OFFLINE
+    static INCUNEST_AFE4490* _g_instance;
     static void IRAM_ATTR _drdy_isr_static();
 #endif
 

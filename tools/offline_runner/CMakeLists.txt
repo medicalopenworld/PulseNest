@@ -7,17 +7,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Offline runner executable
 add_executable(mow_offline_runner
     main.cpp
-    ../../lib/mow_afe4490/mow_afe4490.cpp
+    ../../lib/incunest_afe4490/incunest_afe4490.cpp
 )
 
 target_compile_definitions(mow_offline_runner PRIVATE
-    MOW_OFFLINE=1
-    MOW_TIMING_STATS=0
+    INCUNEST_OFFLINE=1
+    INCUNEST_TIMING_STATS=0
 )
 
 # Include paths: library headers (mow_offline_platform.h lives alongside the library)
 target_include_directories(mow_offline_runner PRIVATE
-    ../../lib/mow_afe4490
+    ../../lib/incunest_afe4490
 )
 
 # Math library (needed on Linux/macOS; harmless on Windows/MSVC)

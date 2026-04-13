@@ -25,11 +25,11 @@
 
 ## Pendientes documentación
 
-- [ ] **Actualizar `mow_afe4490_spec.md` — arquitectura async FreeRTOS** — documentar en §6 la separación en 3 tareas (Task A muestreo prio 5, Task B HR2 prio 4, Task C HR3 prio 4) con semáforos binarios, mediciones de CPU% y stack.
+- [ ] **Actualizar `incunest_afe4490_spec.md` — arquitectura async FreeRTOS** — documentar en §6 la separación en 3 tareas (Task A muestreo prio 5, Task B HR2 prio 4, Task C HR3 prio 4) con semáforos binarios, mediciones de CPU% y stack.
 
 ---
 
-## Pendientes firmware (mow_afe4490 / main.cpp)
+## Pendientes firmware (incunest_afe4490 / main.cpp)
 
 - [ ] **HR1 — derivada antes de buscar picos** — aplicar derivada a la señal filtrada antes del detector de picos para mejorar la precisión en la localización del frente de subida.
 - [x] **Flash y validar HR2** con simulador — valores coherentes con HR1 confirmados (2026-03-31).
@@ -62,7 +62,7 @@
 
 ## Estrategia de test
 
-- [x] **Tests unitarios de algoritmos en PC (env:native)** — 20/20 PASSED (2026-03-31): biquad (5), HR1 (4), HR2 (4), SpO2 (6). Infraestructura: lib/mow_afe4490/, test/stubs/, env:native.
+- [x] **Tests unitarios de algoritmos en PC (env:native)** — 20/20 PASSED (2026-03-31): biquad (5), HR1 (4), HR2 (4), SpO2 (6). Infraestructura: lib/incunest_afe4490/, test/stubs/, env:native.
 - [ ] **Dataset de referencia con simulador MS100** — capturar CSVs con ppg_plotter.py a SpO2 y HR conocidas (p.ej. 98%, 90%, 80% / 60, 80, 100 bpm); usar como ground truth para regresión: si cambia el algoritmo, verificar que los valores no se desvían del golden dataset.
 - [ ] **Dataset de referencia con sujetos reales** — capturar medidas simultáneas con el AFE4490 y equipos de referencia clínicos (pulsioxímetro de referencia, co-oxímetro si disponible) sobre voluntarios sanos; registrar SpO2 y HR de ambos sistemas para calcular sesgo, RMSE y límites de acuerdo (Bland-Altman). Condiciones a cubrir: reposo, tras ejercicio, distintas saturaciones si es posible.
 
@@ -76,7 +76,7 @@
 
 ---
 
-## Backlog funcionalidades avanzadas (mow_afe4490)
+## Backlog funcionalidades avanzadas (incunest_afe4490)
 
 > No implementar hasta que el usuario lo pida explícitamente.
 

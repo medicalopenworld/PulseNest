@@ -1,13 +1,13 @@
 # CLAUDE.md — Pulsioximeter Test (AFE4490)
 
-https://github.com/acuesta-mow/mow_afe4490_test
+https://github.com/acuesta-mow/incunest_afe4490_test
 
 ## Este proyecto
 Herramienta de test para validar el sistema PPG/SpO2 con el chip AFE4490, dentro del proyecto mayor **IncuNest** (incubadora neonatal open-source de Medical Open World).
 El objetivo es verificar la lectura de señal PPG y el cálculo de SpO2 del AFE4490 de forma aislada, antes de integrarlo en el firmware principal de IncuNest.
 
 En el fichero project_info.md está la información del proyecto Incunest.
-En el fichero mow_afe4490_spec.md está la información de la librería propia `mow_afe4490`
+En el fichero incunest_afe4490_spec.md está la información de la librería propia `incunest_afe4490`
 En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 
 
@@ -17,12 +17,12 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 - **Framework:** Arduino + PlatformIO
 - **platformio.ini:** `platform = espressif32@6.6.0`, `framework = arduino`, `board = esp32-s3-devkitc-1`
 - **OS:** FreeRTOS (multitarea)
-- **Librería AFE4490:** `mow_afe4490` (librería propia, en `lib/mow_afe4490/`)
+- **Librería AFE4490:** `incunest_afe4490` (librería propia, en `lib/incunest_afe4490/`)
 
-## Especificación de mow_afe4490
-- Ver `mow_afe4490_spec.md` — leer antes de tocar cualquier cosa relacionada con mow_afe4490
+## Especificación de incunest_afe4490
+- Ver `incunest_afe4490_spec.md` — leer antes de tocar cualquier cosa relacionada con incunest_afe4490
 - La spec y la librería están **versionadas juntas** (misma versión semántica)
-- **Regla obligatoria:** cualquier modificación de diseño en la librería debe reflejarse inmediatamente en `mow_afe4490_spec.md`, sin necesidad de que el usuario lo pida explícitamente
+- **Regla obligatoria:** cualquier modificación de diseño en la librería debe reflejarse inmediatamente en `incunest_afe4490_spec.md`, sin necesidad de que el usuario lo pida explícitamente
 - Objetivo: cada versión de la spec debe ser capaz por sí sola de regenerar la librería correspondiente
 
 ## Herramientas del proyecto

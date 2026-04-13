@@ -1,10 +1,10 @@
-// mow_offline_runner — Offline batch processor for mow_afe4490 algorithms
+// incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
 // Library version: v0.16 — native/offline (no hardware)
-// Spec: mow_afe4490_spec.md §9
+// Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
-#define MOW_OFFLINE 1
-#include "mow_afe4490.h"
+#define INCUNEST_OFFLINE 1
+#include "incunest_afe4490.h"
 
 #include <cstdio>
 #include <cstring>
@@ -185,7 +185,7 @@ static void process_file(const fs::path& input_path, std::ofstream& summary_csv)
     out << "\n";
 
     // Instantiate library in offline mode — constructor calls _reset_algorithms() + Hann precompute
-    MOW_AFE4490 afe;
+    INCUNEST_AFE4490 afe;
 
     FileSummary summary;
     summary.filename = input_path.filename().string();
@@ -267,7 +267,7 @@ static void process_file(const fs::path& input_path, std::ofstream& summary_csv)
 // ── Main ──────────────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: mow_offline_runner <file.csv | directory>\n");
+        fprintf(stderr, "Usage: incunest_offline_runner <file.csv | directory>\n");
         return 1;
     }
 
@@ -312,7 +312,7 @@ int main(int argc, char* argv[]) {
         summary_csv << "Timestamp,File,N_samples,SpO2_mean,SpO2_SQI_mean,"
                        "HR1_mean,HR1_SQI_mean,HR2_mean,HR3_mean,valid_spo2_pct\n";
 
-    printf("mow_offline_runner — processing %zu file(s)\n", files.size());
+    printf("incunest_offline_runner — processing %zu file(s)\n", files.size());
     for (const auto& f : files) {
         printf("  %s\n", f.filename().string().c_str());
         process_file(f, summary_csv);

@@ -4237,3 +4237,44 @@ El título del segundo plot (`p_filt`, "LP filtered signal (512-sample buffer)")
 **Umbrales:** SQI > 0.3 (vs 0.7 en tests limpios), HR ± 8 BPM (vs ± 5). Verifican que los algoritmos no fallan ante ruido moderado, sin exigir la misma precisión que con señal perfecta.
 
 **Resultado:** 18/18 pasan (6 por algoritmo).
+
+
+## Sesión 2026-04-13 — test_hr1/hr2/hr3: calibración de umbrales con valores reales
+
+**Contexto:** Los umbrales anteriores (SQI>0.7/0.3, HR±5/8 BPM) eran estimaciones sin datos. Se instrumentó temporalmente cada test con `printf` para capturar los valores reales.
+
+**Valores medidos (señal de test sintética):**
+
+| Algoritmo | Señal       | HR medido | SQI medido |
+|-----------|-------------|-----------|------------|
+| HR1       | 60bpm clean | 60.00     | 1.0000     |
+| HR1       | 120bpm clean| 120.00    | 1.0000     |
+| HR1       | 60bpm noisy | 60.02     | 0.9900     |
+| HR1       | 120bpm noisy| 120.00    | 0.9761     |
+| HR2       | 60bpm clean | 60.06     | 0.8750     |
+| HR2       | 120bpm clean| 120.00    | 0.9375     |
+| HR2       | 60bpm noisy | 60.04     | 0.8753     |
+| HR2       | 120bpm noisy| 119.99    | 0.9374     |
+| HR3       | 60bpm clean | 59.40     | 1.0000     |
+| HR3       | 120bpm clean| 119.82    | 0.7303     |
+| HR3       | 60bpm noisy | 59.40     | 1.0000     |
+| HR3       | 120bpm noisy| 119.82    | 0.7287     |
+
+**Nuevos umbrales (margen ~25% respecto al valor medido):**
+
+| Algoritmo | Señal   | SQI (antes→ahora) | HR ±BPM (antes→ahora) |
+|-----------|---------|-------------------|-----------------------|
+| HR1 clean | ambas   | >0.7 → >0.95      | ±5 → ±1               |
+| HR1 noisy | ambas   | >0.3 → >0.80      | ±8 → ±2               |
+| HR2 60bpm | clean   | >0.7 → >0.80      | ±5 → ±1               |
+| HR2 120bpm| clean   | >0.7 → >0.85      | ±5 → ±1               |
+| HR2       | noisy   | >0.3 → >0.75      | ±8 → ±1               |
+| HR3 60bpm | ambas   | >0.7/0.3 → >0.95  | ±5/8 → ±2             |
+| HR3 120bpm| ambas   | >0.7/0.3 → >0.65  | ±5/8 → ±2             |
+
+**Observaciones:**
+- HR1 es el más preciso (SQI=1.0 exacto, HR exactísimo). La senoidal perfecta produce jitter RR = 0.
+- HR2 (autocorrelación) tiene SQI algo menor (~0.875) pero HR muy preciso. El ruido no cambia significativamente la forma de la autocorrelación.
+- HR3 (HPS/FFT) a 1 Hz tiene SQI=1.0, pero a 2 Hz baja a ~0.73. Esto es intrínseco: la resolución del bin FFT es ~0.098 Hz = ~5.9 BPM en la zona de 120 BPM, lo que dificulta que el pico domine sobre los vecinos.
+
+**Resultado:** 30/30 tests pasan con los nuevos umbrales.

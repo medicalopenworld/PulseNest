@@ -205,7 +205,7 @@ SPO2_RECEIVED_FS   = 50.0  # AFE4490 @ 500 Hz, SERIAL_DOWNSAMPLING_RATIO=10
 class SpO2LocalCalc:
     """Replicates firmware _update_spo2() in Python for independent verification.
 
-    Constants must match mow_afe4490.cpp:
+    Constants must match incunest_afe4490.cpp:
       dc_iir_tau_s=1.6, ac_ema_tau_s=1.0, spo2_min_dc=1000,
       warmup_s=5, spo2_a=104, spo2_b=17, spo2_min=70, spo2_max=100.
     """
@@ -448,7 +448,7 @@ class HRFFTCalc:
 class SpO2TestCalc:
     """SpO2 algorithm mirror for SPO2TEST window.
 
-    Independent reimplementation of firmware _update_spo2() from mow_afe4490_spec.md §5.1.
+    Independent reimplementation of firmware _update_spo2() from incunest_afe4490_spec.md §5.1.
     Purpose: post-implementation verification — compare against firmware output to detect bugs.
 
     All parameters default to firmware values from spec. The user can modify them in
@@ -462,7 +462,7 @@ class SpO2TestCalc:
       SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1)  [forced to 0 if SpO2 out of range]
     """
 
-    # Firmware defaults — must match mow_afe4490_spec.md §5.1 and mow_afe4490.cpp constants
+    # Firmware defaults — must match incunest_afe4490_spec.md §5.1 and incunest_afe4490.cpp constants
     FW_DC_IIR_TAU_S = 1.6
     FW_AC_EMA_TAU_S = 1.0
     FW_SPO2_MIN_DC  = 1000.0
@@ -599,7 +599,7 @@ class SpO2TestCalc:
 class HR1TestCalc:
     """HR1 algorithm mirror for HR1TEST window.
 
-    Independent reimplementation of firmware _update_hr1() from mow_afe4490_spec.md §5.2.
+    Independent reimplementation of firmware _update_hr1() from incunest_afe4490_spec.md §5.2.
     Purpose: post-implementation verification — compare against firmware output to detect bugs.
 
     Processing chain per sample:
@@ -615,7 +615,7 @@ class HR1TestCalc:
     PPGMonitor feeds this calc at full 500 Hz (before decimation).
     """
 
-    # Firmware defaults — must match mow_afe4490_spec.md §5.2
+    # Firmware defaults — must match incunest_afe4490_spec.md §5.2
     FW_DC_IIR_TAU_S      = 1.6
     FW_MA_CUTOFF_HZ      = 5.0
     FW_MA_MAX_LEN        = 64
@@ -824,7 +824,7 @@ class HR1TestCalc:
 class HR2TestCalc:
     """HR2 algorithm mirror for HR2TEST window.
 
-    Independent reimplementation of firmware _update_hr2() from mow_afe4490_spec.md §5.3.
+    Independent reimplementation of firmware _update_hr2() from incunest_afe4490_spec.md §5.3.
     Purpose: post-implementation verification.
 
     Processing chain per sample (at 50 Hz after firmware decimation):
@@ -1513,7 +1513,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
     """SPO2TEST — post-implementation verification window for the SpO2 algorithm.
 
     Runs an independent Python mirror of the firmware SpO2 algorithm (SpO2TestCalc,
-    derived from mow_afe4490_spec.md §5.1) and compares its output against the firmware
+    derived from incunest_afe4490_spec.md §5.1) and compares its output against the firmware
     values received over serial.
 
     Two data modes:
@@ -2218,7 +2218,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
     """HR1TEST — post-implementation verification window for the HR1 algorithm.
 
     Runs an independent Python mirror of the firmware HR1 algorithm (HR1TestCalc,
-    derived from mow_afe4490_spec.md §5.2) and compares its output against firmware values.
+    derived from incunest_afe4490_spec.md §5.2) and compares its output against firmware values.
 
     PPGMonitor feeds HR1TestCalc at full 500 Hz (before decimation) in live mode.
     Offline mode: load a raw CSV (500 Hz) for exact comparison, or decimated (50 Hz)
@@ -2859,7 +2859,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
     """HR2TEST — post-implementation verification window for the HR2 algorithm.
 
     Runs an independent Python mirror of the firmware HR2 algorithm (HR2TestCalc,
-    derived from mow_afe4490_spec.md §5.3) and compares against firmware output.
+    derived from incunest_afe4490_spec.md §5.3) and compares against firmware output.
 
     The mirror runs at the decimated rate (50 Hz default) fed from PPGMonitor.update_plots().
     Offline mode: load any recorded CSV.
@@ -3439,7 +3439,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 class HR3TestCalc:
     """HR3 algorithm mirror for HR3TEST window.
 
-    Independent reimplementation of firmware _update_hr3() from mow_afe4490_spec.md §5.4.
+    Independent reimplementation of firmware _update_hr3() from incunest_afe4490_spec.md §5.4.
     Purpose: post-implementation verification.
 
     Processing chain per sample (at 50 Hz after firmware decimation):
@@ -3635,7 +3635,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
     """HR3TEST — post-implementation verification window for the HR3 algorithm.
 
     Runs an independent Python mirror of the firmware HR3 algorithm (HR3TestCalc,
-    derived from mow_afe4490_spec.md §5.4) and compares against firmware output.
+    derived from incunest_afe4490_spec.md §5.4) and compares against firmware output.
 
     The mirror runs at the decimated rate (50 Hz default) fed from PPGMonitor.update_plots().
     Offline mode: load any recorded CSV.
@@ -4298,7 +4298,7 @@ class TimingWindow(QtWidgets.QMainWindow):
         self._lbl_stack.setStyleSheet("color: #888888; font-size: 22px;")
         self._lbl_stack.setToolTip(_make_tooltip(
             "Stack free",
-            "Remaining stack of the mow_afe4490 FreeRTOS task (Task A), in 4-byte words "
+            "Remaining stack of the incunest_afe4490 FreeRTOS task (Task A), in 4-byte words "
             "(uxTaskGetStackHighWaterMark). Low values risk stack overflow."))
         vbox.addWidget(self._lbl_stack)
 
@@ -4391,9 +4391,9 @@ class TimingWindow(QtWidgets.QMainWindow):
         self._lbl_stack.setText(f"Stack free: {stack_free} words  |  Last update: {now}")
 
     _TASK_LABELS = {
-        "mow_afe4490": "mow_afe4490 (Task A)",
-        "mow_hr2":     "mow_hr2 (Task B)",
-        "mow_hr3":     "mow_hr3 (Task C)",
+        "incunest_afe4490": "incunest_afe4490 (Task A)",
+        "incunest_hr2":     "incunest_hr2 (Task B)",
+        "incunest_hr3":     "incunest_hr3 (Task C)",
     }
 
     def update_tasks(self, tasks):
@@ -4696,12 +4696,12 @@ class HRLabWindow(QtWidgets.QMainWindow):
 
         self._hr_refresh_counter = 0
 
-        # Stateful mow biquad filter state
-        self._mow_zi         = None   # biquad state (2 floats)
-        self._mow_filt_buf   = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        # Stateful incunest biquad filter state
+        self._incunest_zi         = None   # biquad state (2 floats)
+        self._incunest_filt_buf   = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self._last_sample_cnt = None
-        self._mow_fs_cached  = None
-        self._mow_ba_cached  = None   # cached (b, a) coefficients — recomputed only when fs changes
+        self._incunest_fs_cached  = None
+        self._incunest_ba_cached  = None   # cached (b, a) coefficients — recomputed only when fs changes
 
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         geom = s.value("HRLabWindow/geometry")
@@ -4732,8 +4732,8 @@ class HRLabWindow(QtWidgets.QMainWindow):
             self._splitter.setSizes([col_a, col_bc, w - col_a - col_bc])
 
     @staticmethod
-    def _mow_biquad_coeffs(fs, f_low, f_high):
-        """Replicate mow_afe4490::_recalc_biquad() exactly (bilinear transform)."""
+    def _incunest_biquad_coeffs(fs, f_low, f_high):
+        """Replicate incunest_afe4490::_recalc_biquad() exactly (bilinear transform)."""
         k    = 2.0 * fs
         o_low = k * np.tan(np.pi * f_low  / fs)
         o_hi  = k * np.tan(np.pi * f_high / fs)
@@ -4753,19 +4753,19 @@ class HRLabWindow(QtWidgets.QMainWindow):
         nyq = fs / 2.0
         high_norm = 3.7 / nyq
 
-        # Plot 2A: mow_afe4490 biquad — stateful, processes only new samples
-        mow_filtered = None
+        # Plot 2A: incunest_afe4490 biquad — stateful, processes only new samples
+        incunest_filtered = None
         if high_norm < 1.0:
             try:
                 # Recompute coefficients only when fs changes
-                if fs != self._mow_fs_cached or self._mow_ba_cached is None:
-                    self._mow_ba_cached = self._mow_biquad_coeffs(fs, 0.5, 3.7)
-                    self._mow_fs_cached = fs
-                    self._mow_zi = None   # force filter reset on coefficient change
-                b, a = self._mow_ba_cached
+                if fs != self._incunest_fs_cached or self._incunest_ba_cached is None:
+                    self._incunest_ba_cached = self._incunest_biquad_coeffs(fs, 0.5, 3.7)
+                    self._incunest_fs_cached = fs
+                    self._incunest_zi = None   # force filter reset on coefficient change
+                b, a = self._incunest_ba_cached
 
                 cur_cnt = int(sample_counter_data[-1])
-                reset = self._mow_zi is None or self._last_sample_cnt is None
+                reset = self._incunest_zi is None or self._last_sample_cnt is None
 
                 if not reset:
                     n_new = (cur_cnt - self._last_sample_cnt) // 10  # SERIAL_DOWNSAMPLING_RATIO=10
@@ -4775,23 +4775,23 @@ class HRLabWindow(QtWidgets.QMainWindow):
                 if reset:
                     # First call or anomaly: warm up on full buffer
                     zi_init = signal.lfilter_zi(b, a) * data[0]
-                    full_out, self._mow_zi = signal.lfilter(b, a, data, zi=zi_init)
-                    self._mow_filt_buf = deque(full_out, maxlen=WINDOW_SIZE)
+                    full_out, self._incunest_zi = signal.lfilter(b, a, data, zi=zi_init)
+                    self._incunest_filt_buf = deque(full_out, maxlen=WINDOW_SIZE)
                 else:
                     new_samples = data[-n_new:]
-                    new_out, self._mow_zi = signal.lfilter(b, a, new_samples, zi=self._mow_zi)
-                    self._mow_filt_buf.extend(new_out)
+                    new_out, self._incunest_zi = signal.lfilter(b, a, new_samples, zi=self._incunest_zi)
+                    self._incunest_filt_buf.extend(new_out)
 
                 self._last_sample_cnt = cur_cnt
-                mow_filtered = np.array(self._mow_filt_buf)
-                self.curve_2a.setData(mow_filtered)
+                incunest_filtered = np.array(self._incunest_filt_buf)
+                self.curve_2a.setData(incunest_filtered)
             except Exception:
                 pass
 
         # Plots 4 & 5: autocorrelation-based HR, refreshed at 5 Hz
         self._hr_refresh_counter += 1
         refresh_every = max(1, int(round(fs / 5.0)))
-        if self._hr_refresh_counter >= refresh_every and mow_filtered is not None:
+        if self._hr_refresh_counter >= refresh_every and incunest_filtered is not None:
             self._hr_refresh_counter = 0
             window_n  = int(round(4.0 * fs))
             max_lag_n = int(round((60.0 / 22.0) * fs))  # covers guard band minimum 22 BPM
@@ -4821,10 +4821,10 @@ class HRLabWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
-            # Plot 2B: xcorr_v1 on mow BPF
-            if len(mow_filtered) >= needed:
+            # Plot 2B: xcorr_v1 on incunest BPF
+            if len(incunest_filtered) >= needed:
                 try:
-                    r = _estimate_hr_xcorr_v1(mow_filtered[-needed:], fs, max_lag_n)
+                    r = _estimate_hr_xcorr_v1(incunest_filtered[-needed:], fs, max_lag_n)
                     hr_color = _HR_COLOR[r.hr_status]
                     self.curve_2b.setData(r.lags_s, r.acorr)
                     self.p_2b.setXRange(0, max_lag_s)
@@ -4855,10 +4855,10 @@ class HRLabWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
-            # Plot 2C: autocorr_v2 on mow BPF (single vector, only window_n samples)
-            if len(mow_filtered) >= window_n:
+            # Plot 2C: autocorr_v2 on incunest BPF (single vector, only window_n samples)
+            if len(incunest_filtered) >= window_n:
                 try:
-                    r = _estimate_hr_autocorr_v2(mow_filtered[-window_n:], fs, max_lag_n)
+                    r = _estimate_hr_autocorr_v2(incunest_filtered[-window_n:], fs, max_lag_n)
                     hr_color = _HR_COLOR[r.hr_status]
                     self.curve_2c.setData(r.lags_s, r.acorr)
                     self.p_2c.setXRange(0, max_lag_s)
@@ -5182,7 +5182,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     triggering a 500 Hz CSV capture.  The window stays open after each
     capture so consecutive sessions can be started without reconfiguring.
 
-    CSV format (compatible with mow_offline_runner):
+    CSV format (compatible with incunest_offline_runner):
       - Pre-capture notes as '# ...' lines before the column header.
       - Mandatory columns: RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub.
       - Optional FW columns: FW_SpO2, FW_HR1, FW_HR2, FW_HR3 (offline_runner names).
@@ -5599,8 +5599,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.is_paused = False
         self.last_time = None
-        self.active_lib = "MOW"   # must match default in main.cpp (start_mow)
-        self.frame_mode = "M1"    # must match default in main.cpp (MowFrameMode::FULL)
+        self.active_lib = "INCUNEST"   # must match default in main.cpp (start_incunest)
+        self.frame_mode = "M1"    # must match default in main.cpp (IncunestFrameMode::FULL)
         
         self.is_saving = False
         self.save_file = None
@@ -5658,7 +5658,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("RED_Sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
             ("IR_Sub",   "data_ir_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
             ("PPG",      "data_ppg",      "Filtered PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Units: ADC counts."),
-            ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (mow_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
+            ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
             ("SpO2_SQI", "data_spo2_sqi", "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference."),
             ("SpO2_R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
             ("PI",       "data_pi",       "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion."),
@@ -5817,19 +5817,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
         label_library.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
         self.sidebar_layout.addWidget(label_library)
 
-        self.btn_lib_mow = QtWidgets.QPushButton("MOW")
+        self.btn_lib_incunest = QtWidgets.QPushButton("INCUNEST")
         self.btn_lib_pc  = QtWidgets.QPushButton("PROTOCENTRAL")
-        self.btn_lib_mow.clicked.connect(lambda: self._send_lib_cmd('m'))
+        self.btn_lib_incunest.clicked.connect(lambda: self._send_lib_cmd('m'))
         self.btn_lib_pc.clicked.connect(lambda:  self._send_lib_cmd('p'))
-        self.btn_lib_mow.setToolTip(_make_tooltip(
+        self.btn_lib_incunest.setToolTip(_make_tooltip(
             "LIBRARY: MOW",
-            "Switch the firmware to use the custom mow_afe4490 library (lib/mow_afe4490). "
+            "Switch the firmware to use the custom incunest_afe4490 library (lib/incunest_afe4490). "
             "Sends 'm' command over serial. The button stays highlighted while MOW is active."))
         self.btn_lib_pc.setToolTip(_make_tooltip(
             "LIBRARY: PROTOCENTRAL",
             "Switch the firmware to use the ProtoCentral AFE4490 Arduino library. "
             "Sends 'p' command over serial. The button stays highlighted while PROTOCENTRAL is active."))
-        self.sidebar_layout.addWidget(self.btn_lib_mow)
+        self.sidebar_layout.addWidget(self.btn_lib_incunest)
         self.sidebar_layout.addWidget(self.btn_lib_pc)
         self._update_lib_button()
 
@@ -5932,7 +5932,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Post-implementation verification window for the SpO2 algorithm. "
             "Runs an independent Python mirror of the firmware SpO2 algorithm and compares "
             "its output against the firmware values. Supports live and offline (CSV) modes. "
-            "See mow_afe4490_spec.md §5.1 and §8.2."))
+            "See incunest_afe4490_spec.md §5.1 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_spo2test)
 
         self.btn_hr1test = QtWidgets.QPushButton("HR1TEST")
@@ -5943,7 +5943,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "HR1TEST",
             "Post-implementation verification window for the HR1 algorithm (threshold peak detection). "
             "Python mirror runs at 500 Hz (full serial rate) in live mode. "
-            "See mow_afe4490_spec.md §5.2 and §8.2."))
+            "See incunest_afe4490_spec.md §5.2 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_hr1test)
 
         self.btn_hr2test = QtWidgets.QPushButton("HR2TEST")
@@ -5953,7 +5953,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hr2test.setToolTip(_make_tooltip(
             "HR2TEST",
             "Post-implementation verification window for the HR2 algorithm (autocorrelation). "
-            "Mirror runs at the decimated rate. See mow_afe4490_spec.md §5.3 and §8.2."))
+            "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.3 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_hr2test)
 
         self.btn_hr3test = QtWidgets.QPushButton("HR3TEST")
@@ -5963,7 +5963,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hr3test.setToolTip(_make_tooltip(
             "HR3TEST",
             "Post-implementation verification window for the HR3 algorithm (FFT + HPS). "
-            "Mirror runs at the decimated rate. See mow_afe4490_spec.md §5.4 and §8.2."))
+            "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.4 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_hr3test)
 
         self.btn_timing = QtWidgets.QPushButton("TIMING")
@@ -5974,7 +5974,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "TIMING — Algorithm CPU Budget",
             "Opens the timing diagnostics window. Shows per-algorithm mean/max execution time "
             "(µs) and remaining FreeRTOS stack, parsed from $TIMING frames emitted by the firmware "
-            "every ~5 s. Requires MOW_TIMING_STATS=1 in firmware. "
+            "every ~5 s. Requires INCUNEST_TIMING_STATS=1 in firmware. "
             "Cycle budget = 2000 µs (1 sample period at 500 Hz)."))
         self.sidebar_layout.addWidget(self.btn_timing)
 
@@ -6107,24 +6107,24 @@ class PPGMonitor(QtWidgets.QMainWindow):
     """
 
     def _update_lib_button(self):
-        mow_active = (self.active_lib == "MOW")
-        self.btn_lib_mow.setStyleSheet(
+        incunest_active = (self.active_lib == "INCUNEST")
+        self.btn_lib_incunest.setStyleSheet(
             self.STYLE_LIB_ACTIVE.format(bg="#3A2A00", fg="#FFAA00", bgh="#4A3800")
-            if mow_active else self.STYLE_LIB_INACTIVE)
+            if incunest_active else self.STYLE_LIB_INACTIVE)
         self.btn_lib_pc.setStyleSheet(
             self.STYLE_LIB_ACTIVE.format(bg="#3A2A00", fg="#FFAA00", bgh="#4A3800")
-            if not mow_active else self.STYLE_LIB_INACTIVE)
+            if not incunest_active else self.STYLE_LIB_INACTIVE)
         if hasattr(self, 'btn_frame_m1'):
             self._update_frame_button()
 
     def _update_frame_button(self):
-        mow_active = (self.active_lib == "MOW")
+        incunest_active = (self.active_lib == "INCUNEST")
         m1_active = (self.frame_mode == "M1")
         for btn, is_active in ((self.btn_frame_m1, m1_active), (self.btn_frame_m2, not m1_active)):
-            btn.setEnabled(mow_active)
+            btn.setEnabled(incunest_active)
             btn.setStyleSheet(
                 self.STYLE_LIB_ACTIVE.format(bg="#002A3A", fg="#44AAFF", bgh="#003A4A")
-                if (mow_active and is_active) else self.STYLE_LIB_INACTIVE)
+                if (incunest_active and is_active) else self.STYLE_LIB_INACTIVE)
 
     def _send_frame_cmd(self, mode):
         if not hasattr(self, 'ser') or not self.ser.is_open:
@@ -6591,15 +6591,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     except: continue
                     if not line: continue
 
-                    # Confirmation messages from ESP32 (e.g. "# Switched to mow_afe4490")
+                    # Confirmation messages from ESP32 (e.g. "# Switched to incunest_afe4490")
                     if line.startswith('#'):
                         if self.serialcom_window is not None:
                             self.serialcom_window.append_line(line)
-                        if 'mow' in line.lower() and 'frame' not in line.lower():
-                            self.active_lib = "MOW"
+                        if 'incunest' in line.lower() and 'frame' not in line.lower():
+                            self.active_lib = "INCUNEST"
                             self.frame_mode = "M1"
                             self._update_lib_button()
-                            self.log("Active library: mow_afe4490")
+                            self.log("Active library: incunest_afe4490")
                         elif 'frame mode' in line.lower():
                             self.log(line.lstrip('# '))
                         elif line.startswith('# SYS:'):

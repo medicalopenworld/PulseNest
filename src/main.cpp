@@ -1,9 +1,9 @@
-// mow_afe4490 — Test firmware: mow_afe4490 validation
+// incunest_afe4490 — Test firmware: incunest_afe4490 validation
 // v0.8 — ESP32-S3 (in3ator V15), Arduino + FreeRTOS
 
 #define SERIAL_DOWNSAMPLING_RATIO 1
 
-#include "mow_afe4490.h"
+#include "incunest_afe4490.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -37,16 +37,16 @@ static uint8_t frame_xor_chk(const char* p, int len) {
 }
 
 // ── Mow frame mode ────────────────────────────────────────────────────────────
-enum class MowFrameMode { M1, M2 };  // M1=full frame (default), M2=raw ADC only
-volatile MowFrameMode g_mow_frame_mode = MowFrameMode::M1;
+enum class IncunestFrameMode { M1, M2 };  // M1=full frame (default), M2=raw ADC only
+volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M1;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Library — mow_afe4490
+// Library — incunest_afe4490
 // ═══════════════════════════════════════════════════════════════════════════════
-MOW_AFE4490              mow;
-TaskHandle_t             g_mow_task        = nullptr;
-static volatile uint32_t mow_sample_count  = 0;
-static volatile uint32_t mow_tx_dropped   = 0;  // frames skipped: TX buffer too full at frame start
+INCUNEST_AFE4490              afe;
+TaskHandle_t             g_incunest_task        = nullptr;
+static volatile uint32_t incunest_sample_count  = 0;
+static volatile uint32_t incunest_tx_dropped   = 0;  // frames skipped: TX buffer too full at frame start
 
 // ── Ambient-subtraction consistency check (temporary — remove #define to disable)
 // Verifies that the hardware-subtracted values (led1_aled1, led2_aled2) equal the
@@ -71,25 +71,25 @@ static void chk_amb_sub(const AFE4490Data& d) {
 }
 #endif  // CHK_AMB_SUB
 
-void Mow_Task(void *pvParameters) {
+void Incunest_Task(void *pvParameters) {
     for (;;) {
         AFE4490Data data;
-        if (mow.getData(data)) {
-            mow_sample_count++;
+        if (afe.getData(data)) {
+            incunest_sample_count++;
 #ifdef CHK_AMB_SUB
             chk_amb_sub(data);
 #endif
-            if (mow_sample_count % SERIAL_DOWNSAMPLING_RATIO == 0) {  // send only 1 out of N samples to avoid saturating the serial port
+            if (incunest_sample_count % SERIAL_DOWNSAMPLING_RATIO == 0) {  // send only 1 out of N samples to avoid saturating the serial port
                 // Diagnostic: count frames where TX buffer has < 30 bytes free (nearly full —
                 // next Serial.print will likely block or drop bytes).
-                if (Serial.availableForWrite() < 30) mow_tx_dropped++;
+                if (Serial.availableForWrite() < 30) incunest_tx_dropped++;
 
-                if (g_mow_frame_mode == MowFrameMode::M1) {
+                if (g_incunest_frame_mode == IncunestFrameMode::M1) {
                     // $M1,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI
                     char buf[384];
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M1,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
-                        (unsigned long)mow_sample_count,
+                        (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
                         (long)data.led2,       // RED
                         (long)data.led1,       // IR
@@ -115,7 +115,7 @@ void Mow_Task(void *pvParameters) {
                     char buf[128];
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M2,%lu,%ld,%ld,%ld,%ld,%ld,%ld",
-                        (unsigned long)mow_sample_count,
+                        (unsigned long)incunest_sample_count,
                         (long)data.led2, (long)data.led1,
                         (long)data.aled2, (long)data.aled1,
                         (long)data.led2_aled2, (long)data.led1_aled1);
@@ -125,36 +125,36 @@ void Mow_Task(void *pvParameters) {
                 }
 
                 // Periodic TX health report (~every 10 s at 500 Hz)
-                if (mow_sample_count % 5000 == 0)
+                if (incunest_sample_count % 5000 == 0)
                     Serial_printf("# STAT n=%lu tx_dropped=%lu\n",
-                                  (unsigned long)mow_sample_count, (unsigned long)mow_tx_dropped);
+                                  (unsigned long)incunest_sample_count, (unsigned long)incunest_tx_dropped);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.
     }
 }
 
-void start_mow() {
-    // Hard reset via PWDN (mow does not manage this pin)
+void start_incunest() {
+    // Hard reset via PWDN (afe does not manage this pin)
     pinMode(AFE4490_PWDN_PIN, OUTPUT);
     digitalWrite(AFE4490_PWDN_PIN, LOW);
     vTaskDelay(pdMS_TO_TICKS(100));
     digitalWrite(AFE4490_PWDN_PIN, HIGH);
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    mow_sample_count = 0;
-    mow.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN);
-    mow.setFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
-    xTaskCreatePinnedToCore(Mow_Task, "MOW", 8192, NULL, 3, &g_mow_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
-    Serial.println("# mow_afe4490 started");
+    incunest_sample_count = 0;
+    afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN);
+    afe.setFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
+    xTaskCreatePinnedToCore(Incunest_Task, "INCUNEST", 8192, NULL, 3, &g_incunest_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
+    Serial.println("# incunest_afe4490 started");
 }
 
-void stop_mow() {
-    if (g_mow_task) {
-        vTaskDelete(g_mow_task);
-        g_mow_task = nullptr;
+void stop_incunest() {
+    if (g_incunest_task) {
+        vTaskDelete(g_incunest_task);
+        g_incunest_task = nullptr;
     }
-    mow.stop();
+    afe.stop();
 }
 
 // ── Command task ──────────────────────────────────────────────────────────────
@@ -166,10 +166,10 @@ void Cmd_Task(void *pvParameters) {
         if (Serial.available()) {
             char cmd = (char)Serial.read();
             if (cmd == '1') {
-                g_mow_frame_mode = MowFrameMode::M1;
+                g_incunest_frame_mode = IncunestFrameMode::M1;
                 Serial.println("# Frame mode: $M1 (full)");
             } else if (cmd == '2') {
-                g_mow_frame_mode = MowFrameMode::M2;
+                g_incunest_frame_mode = IncunestFrameMode::M2;
                 Serial.println("# Frame mode: $M2 (raw)");
             }
         }
@@ -209,7 +209,7 @@ void setup() {
 
     xTaskCreatePinnedToCore(Cmd_Task, "CMD", 2048, NULL, 2, NULL, 0);
 
-    start_mow();
+    start_incunest();
 }
 
 void loop() {}
