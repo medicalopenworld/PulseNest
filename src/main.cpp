@@ -36,7 +36,7 @@ static uint8_t frame_xor_chk(const char* p, int len) {
     return chk;
 }
 
-// ── Mow frame mode ────────────────────────────────────────────────────────────
+// ── Incunest frame mode ────────────────────────────────────────────────────────────
 enum class IncunestFrameMode { M1, M2 };  // M1=full frame (default), M2=raw ADC only
 volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M1;
 

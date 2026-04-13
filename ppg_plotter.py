@@ -5822,9 +5822,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_lib_incunest.clicked.connect(lambda: self._send_lib_cmd('m'))
         self.btn_lib_pc.clicked.connect(lambda:  self._send_lib_cmd('p'))
         self.btn_lib_incunest.setToolTip(_make_tooltip(
-            "LIBRARY: MOW",
+            "LIBRARY: INCUNEST",
             "Switch the firmware to use the custom incunest_afe4490 library (lib/incunest_afe4490). "
-            "Sends 'm' command over serial. The button stays highlighted while MOW is active."))
+            "Sends 'm' command over serial. The button stays highlighted while INCUNEST is active."))
         self.btn_lib_pc.setToolTip(_make_tooltip(
             "LIBRARY: PROTOCENTRAL",
             "Switch the firmware to use the ProtoCentral AFE4490 Arduino library. "
