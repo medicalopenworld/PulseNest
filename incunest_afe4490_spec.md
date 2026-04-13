@@ -1,4 +1,4 @@
-# incunest_afe4490 — Specification v0.16
+# incunest_afe4490 — Specification v0.17
 
 Medical Open World proprietary library for the AFE4490 chip (PPG/SpO2 pulse oximeter).
 Designed for ESP32-S3 with Arduino + FreeRTOS. Phase 2 of the AFE4490 test project.
@@ -341,15 +341,20 @@ Independent third HR algorithm running in parallel with HR1 and HR2 on `led1_ale
 
 **Stack note:** `_hr3_fft[1024]` (4096 bytes complex buffer) is stored as a class member (heap). `INCUNEST_AFE4490_TASK_STACK` default increased to 8192 to accommodate `cosf`/`sinf` stack usage during butterfly stages.
 
-`hr3_sqi` is a continuous [0–1] quality metric based on HPS peak prominence: the fraction of total HPS energy at the detected peak bin, relative to the sum of all HPS values across the search range:
+`hr3_sqi` is a continuous [0–1] quality metric based on HPS peak prominence: the fraction of total HPS energy at the interpolated peak, relative to the sum of all HPS values across the search range:
 
 ```
-fraction = HPS[peak_bin] / Σ HPS[k]   (k across search range)
-baseline = 1 / N_bins                  (flat-HPS reference)
-SQI      = clamp((fraction − baseline) / (1 − baseline), 0, 1)
+HPS_interp = parabolic interpolation of HPS at (peak_bin-1, peak_bin, peak_bin+1)
+fraction   = HPS_interp / Σ HPS[k]   (k across search range)
+baseline   = 1 / N_bins               (flat-HPS reference)
+SQI        = clamp((fraction − baseline) / (1 − baseline), 0, 1)
 ```
 
-`baseline` is the fraction a single bin would hold if HPS were uniformly distributed across the `N_bins` bins of the search range (~48 bins). Using the HPS domain instead of the linear spectrum avoids harmonic inflation of the denominator: since HPS = P[k]·P[2k]·P[3k], only the true fundamental accumulates power from all three harmonics simultaneously, so the peak bin naturally dominates the HPS sum when the signal is periodic. A clean PPG signal → SQI approaches 1. A diffuse or noisy spectrum → SQI ≈ 0. If the buffer is not yet full, the HPS peak is outside [25, 300] BPM, or the HPS sum is zero, SQI = 0.
+`baseline` is the fraction a single bin would hold if HPS were uniformly distributed across the `N_bins` bins of the search range (~48 bins). Using the HPS domain instead of the linear spectrum avoids harmonic inflation of the denominator: since HPS = P[k]·P[2k]·P[3k], only the true fundamental accumulates power from all three harmonics simultaneously, so the peak bin naturally dominates the HPS sum when the signal is periodic.
+
+**Why parabolic interpolation on HPS (not on P[k]):** when the true fundamental falls between FFT bins (e.g. 85 BPM = bin 14.5), the Hann window splits energy between adjacent bins. Because HPS is a *product* of three power spectra, the split is cubic — a 50 % energy split at each harmonic yields only ~12 % of the ideal single-bin HPS, collapsing SQI to ~0.5 even for a clean signal. Applying parabolic interpolation directly to the HPS values recovers the true peak height at the fractional bin position, consistent with how `delta` is already used to interpolate the frequency estimate.
+
+A clean PPG signal → SQI approaches 1. A diffuse or noisy spectrum → SQI ≈ 0. If the buffer is not yet full, the HPS peak is outside [25, 300] BPM, or the HPS sum is zero, SQI = 0.
 
 ### 5.5 HR algorithms roadmap
 
@@ -631,6 +636,10 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 
 | Version | Description                                                                 |
 |---------|-----------------------------------------------------------------------------|
+| v0.17   | HR3_SQI: parabolic interpolation on HPS values (not P[k]) in numerator.    |
+|         | Fixes SQI collapse at inter-bin frequencies (e.g. 85 BPM = bin 14.5):      |
+|         | cubic product loss in HPS reduced SQI to ~0.5 for clean signals. Now SQI   |
+|         | > 0.80 across all frequencies. New unit test: `test_hr3_85bpm`. (§5.4)     |
 | v0.16   | Offline runner specification added (§9): `incunest_offline_runner` native C++   |
 |         | tool. `INCUNEST_OFFLINE` compile flag stubs Arduino/FreeRTOS and enables        |
 |         | `UNIT_TEST` API for algorithm-only builds. Hann window precomputation       |

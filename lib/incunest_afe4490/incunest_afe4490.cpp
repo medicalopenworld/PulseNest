@@ -1314,11 +1314,34 @@ void INCUNEST_AFE4490::_compute_hr3() {
     float hr3 = 60.0f * peak_freq;
     if (hr3 >= hr_min_bpm && hr3 <= hr_max_bpm) {
         _hr3_result = hr3;
-        // SQI: HPS peak prominence — fraction of total HPS energy at the detected bin.
-        // Using HPS domain avoids harmonic inflation of the denominator (spec §5.4).
+        // SQI: HPS peak prominence — fraction of total HPS energy at the interpolated peak.
+        //
+        // Problem with integer-bin HPS: when the true fundamental falls between bins k and k+1
+        // (e.g. 85 BPM = bin 14.5), the Hann window splits energy across both bins. Since
+        // HPS = P[k]*P[2k]*P[3k] is a *product*, the loss is cubic — a 50% split at each
+        // harmonic yields only ~12% of the ideal HPS peak, making the peak appear non-dominant
+        // and collapsing SQI to ~0.5 even for a clean signal.
+        //
+        // Fix: parabolic interpolation on the HPS values themselves, consistent with how delta
+        // is already used to interpolate the frequency. This recovers the true HPS peak height
+        // at the fractional bin position.
+        auto hps_at = [&](int k) -> float {
+            float p1 = _hr3_fft[2*k]   * _hr3_fft[2*k]   + _hr3_fft[2*k+1]   * _hr3_fft[2*k+1];
+            float p2 = _hr3_fft[4*k]   * _hr3_fft[4*k]   + _hr3_fft[4*k+1]   * _hr3_fft[4*k+1];
+            float p3 = _hr3_fft[6*k]   * _hr3_fft[6*k]   + _hr3_fft[6*k+1]   * _hr3_fft[6*k+1];
+            return p1 * p2 * p3;
+        };
+        float hps_p = hps_at(peak_bin - 1);
+        float hps_n = hps_at(peak_bin + 1);
+        float hps_denom = hps_p - 2.0f * peak_hps + hps_n;
+        // Parabolic peak value: h(delta) = h0 - (hp-hn)^2 / (8*(hp-2*h0+hn))
+        float hps_interp = (hps_denom < 0.0f)
+            ? peak_hps - 0.125f * (hps_p - hps_n) * (hps_p - hps_n) / hps_denom
+            : peak_hps;
+
         int   n_bins   = search_max - search_min + 1;
         float baseline = (n_bins > 1) ? 1.0f / (float)n_bins : 0.0f;
-        float fraction = (hps_sum > 0.0f) ? peak_hps / hps_sum : 0.0f;
+        float fraction = (hps_sum > 0.0f) ? hps_interp / hps_sum : 0.0f;
         float sqi      = (n_bins > 1) ? (fraction - baseline) / (1.0f - baseline) : 0.0f;
         _hr3_sqi_result = fmaxf(0.0f, fminf(1.0f, sqi));
     } else {

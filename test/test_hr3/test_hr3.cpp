@@ -71,6 +71,17 @@ void test_hr3_120bpm() {
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr3());
 }
 
+// ── Test 3b: 85 BPM (worst-case inter-bin frequency) ─────────────────────────
+// 85 BPM = 1.4167 Hz → bin 14.506, exactly halfway between bins 14 and 15.
+// Without HPS interpolation, the cubic product loss reduces SQI to ~0.5 even
+// for a clean signal. With parabolic HPS interpolation SQI must stay > 0.80.
+void test_hr3_85bpm() {
+    INCUNEST_AFE4490 afe;
+    feed_hr3_sine(afe, 85.0f / 60.0f, 500.0f, HR3_BUF_RAW + 1000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.80f, afe.test_hr3_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 85.0f, afe.test_hr3());
+}
+
 // ── Test 4: flat signal → hr3_valid false ────────────────────────────────────
 // A constant DC signal has zero AC energy after the LP filter.
 // The FFT output is flat → no dominant HPS peak → SQI must be 0.
@@ -106,6 +117,7 @@ int main() {
     RUN_TEST(test_hr3_not_valid_until_buffer_full);
     RUN_TEST(test_hr3_60bpm);
     RUN_TEST(test_hr3_120bpm);
+    RUN_TEST(test_hr3_85bpm);
     RUN_TEST(test_hr3_flat_signal_invalid);
     RUN_TEST(test_hr3_60bpm_noisy);
     RUN_TEST(test_hr3_120bpm_noisy);
