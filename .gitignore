@@ -6,6 +6,9 @@
 # Claude Code — configuración local (rutas de máquina, permisos locales)
 .claude/
 
+# Junction local a incunest_afe4490 (no trackear — es un enlace de máquina)
+lib/incunest_afe4490/
+
 # Autogenerado por herramientas de build
 compile_commands.json
 test_results.xml
