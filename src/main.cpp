@@ -1,4 +1,4 @@
-// incunest_afe4490 — Test firmware: incunest_afe4490 validation
+// PulseNest — Test firmware for incunest_afe4490 validation
 // v0.9 — ESP32-S3 (Incunest V15/V16), Arduino + FreeRTOS
 // Board pins defined in platformio.ini build_flags per environment.
 
@@ -162,20 +162,115 @@ void stop_incunest() {
     afe.stop();
 }
 
+// ── AFE4490Config enum → string helpers ───────────────────────────────────────
+static const char* tia_gain_str(AFE4490TIAGain g) {
+    switch (g) {
+        case AFE4490TIAGain::RF_10K:  return "10K";
+        case AFE4490TIAGain::RF_25K:  return "25K";
+        case AFE4490TIAGain::RF_50K:  return "50K";
+        case AFE4490TIAGain::RF_100K: return "100K";
+        case AFE4490TIAGain::RF_250K: return "250K";
+        case AFE4490TIAGain::RF_500K: return "500K";
+        case AFE4490TIAGain::RF_1M:   return "1M";
+        default:                      return "?";
+    }
+}
+static const char* tia_cf_str(AFE4490TIACF cf) {
+    switch (cf) {
+        case AFE4490TIACF::CF_5P:   return "5p";
+        case AFE4490TIACF::CF_10P:  return "10p";
+        case AFE4490TIACF::CF_20P:  return "20p";
+        case AFE4490TIACF::CF_30P:  return "30p";
+        case AFE4490TIACF::CF_55P:  return "55p";
+        case AFE4490TIACF::CF_155P: return "155p";
+        default:                    return "?";
+    }
+}
+static const char* stage2_str(AFE4490Stage2Gain g) {
+    switch (g) {
+        case AFE4490Stage2Gain::GAIN_0DB:   return "0dB";
+        case AFE4490Stage2Gain::GAIN_3_5DB: return "3.5dB";
+        case AFE4490Stage2Gain::GAIN_6DB:   return "6dB";
+        case AFE4490Stage2Gain::GAIN_9_5DB: return "9.5dB";
+        case AFE4490Stage2Gain::GAIN_12DB:  return "12dB";
+        default:                            return "?";
+    }
+}
+static const char* channel_str(AFE4490Channel ch) {
+    switch (ch) {
+        case AFE4490Channel::LED1:       return "LED1";
+        case AFE4490Channel::LED2:       return "LED2";
+        case AFE4490Channel::ALED1:      return "ALED1";
+        case AFE4490Channel::ALED2:      return "ALED2";
+        case AFE4490Channel::LED1_ALED1: return "LED1_ALED1";
+        case AFE4490Channel::LED2_ALED2: return "LED2_ALED2";
+        default:                         return "?";
+    }
+}
+static const char* filter_str(AFE4490Filter f) {
+    switch (f) {
+        case AFE4490Filter::NONE:           return "NONE";
+        case AFE4490Filter::MOVING_AVERAGE: return "MA";
+        case AFE4490Filter::BUTTERWORTH:    return "BW";
+        default:                            return "?";
+    }
+}
+
+// Emit a $CFG frame with the current AFE4490 configuration.
+// Called from Cmd_Task (low priority) — safe to call Serial.print() here;
+// the UART hardware buffer serialises writes from all tasks.
+static void send_cfg_frame() {
+    AFE4490Config cfg = afe.getConfig();
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char buf[320];
+    int n = snprintf(buf, sizeof(buf) - 6,
+        "$CFG,sr=%u,numav=%u,led1=%.2f,led2=%.2f,range=%u"
+        ",tia=%s,cf=%s,stg2=%s,ch=%s,flt=%s"
+        ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
+        ",spo2a=%.4f,spo2b=%.4f"
+        ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X",
+        cfg.sample_rate_hz, cfg.num_averages,
+        cfg.led1_current_mA, cfg.led2_current_mA, (unsigned)cfg.led_range_mA,
+        tia_gain_str(cfg.tia_gain), tia_cf_str(cfg.tia_cf), stage2_str(cfg.stage2_gain),
+        channel_str(cfg.ppg_channel), filter_str(cfg.filter_type),
+        cfg.filter_f_low_hz, cfg.filter_f_high_hz,
+        cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,
+        cfg.spo2_a, cfg.spo2_b,
+        BOARD_VERSION,
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+    Serial.print(buf);
+}
+
 // ── Command task ──────────────────────────────────────────────────────────────
-// Accepts single-character commands over Serial (host → ESP32):
-//   '1' → frame mode $M1 (full)
-//   '2' → frame mode $M2 (raw ADC only)
+// Accepts commands over Serial (host → ESP32):
+//   '1'      → frame mode $M1 (full)
+//   '2'      → frame mode $M2 (raw ADC only)
+//   '$CFG?\n'→ emit $CFG frame with current AFE4490 configuration
+// Multi-byte commands are accumulated until '\n'.
 void Cmd_Task(void *pvParameters) {
+    char cmd_buf[32];
+    int  cmd_len = 0;
     for (;;) {
-        if (Serial.available()) {
-            char cmd = (char)Serial.read();
-            if (cmd == '1') {
-                g_incunest_frame_mode = IncunestFrameMode::M1;
-                Serial.println("# Frame mode: $M1 (full)");
-            } else if (cmd == '2') {
-                g_incunest_frame_mode = IncunestFrameMode::M2;
-                Serial.println("# Frame mode: $M2 (raw)");
+        while (Serial.available()) {
+            char c = (char)Serial.read();
+            if (c == '\r') continue;  // ignore CR from CRLF line endings
+            if (c == '\n' || cmd_len >= (int)sizeof(cmd_buf) - 1) {
+                cmd_buf[cmd_len] = '\0';
+                if (cmd_len == 1 && cmd_buf[0] == '1') {
+                    g_incunest_frame_mode = IncunestFrameMode::M1;
+                    Serial.println("# Frame mode: $M1 (full)");
+                } else if (cmd_len == 1 && cmd_buf[0] == '2') {
+                    g_incunest_frame_mode = IncunestFrameMode::M2;
+                    Serial.println("# Frame mode: $M2 (raw)");
+                } else if (strcmp(cmd_buf, "$CFG?") == 0) {
+                    send_cfg_frame();
+                }
+                cmd_len = 0;
+            } else {
+                cmd_buf[cmd_len++] = c;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -189,7 +284,10 @@ void setup() {
     vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
 
     // Startup banner
-    Serial.printf("# incunest_afe4490 test firmware v0.9 [%s] — Medical Open World\n", BOARD_VERSION);
+    Serial.printf("# PulseNest v0.9 | incunest_afe4490 v" INCUNEST_AFE4490_VERSION
+                  "+sha." INCUNEST_GIT_HASH
+                  " | build: " __DATE__ " " __TIME__
+                  " | Board: %s — Medical Open World\n", BOARD_VERSION);
 
     // System info — shown in pulsenest_lab log on startup/reset (prefix "# SYS:")
     {
@@ -217,7 +315,7 @@ void setup() {
                                 // Calling SPI.begin() inside a library would risk reinitialising the
                                 // bus and breaking other devices sharing it.
 
-    xTaskCreatePinnedToCore(Cmd_Task, "CMD", 2048, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(Cmd_Task, "CMD", 4096, NULL, 2, NULL, 0);
 
     start_incunest();
 }

@@ -5232,6 +5232,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 28px;")
         self._setup_ui()
         self._load_settings()
+        self.main_monitor._cfg_listener = self._on_cfg_received
 
     # ── UI ───────────────────────────────────────────────────────────────────
     def _setup_ui(self):
@@ -5349,6 +5350,19 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         grp_pre = QtWidgets.QGroupBox("Pre-capture notes")
         grp_pre.setStyleSheet(_GRP)
         vbox_pre = QtWidgets.QVBoxLayout(grp_pre)
+
+        btn_row_pre = QtWidgets.QHBoxLayout()
+        self._btn_read_cfg = QtWidgets.QPushButton("Read chip config")
+        self._btn_read_cfg.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#2A3D5A; color:#AACCFF;")
+        self._btn_read_cfg.setToolTip(_make_tooltip(
+            "Read chip config",
+            "Sends $CFG? to the ESP32 and inserts the current AFE4490 configuration "
+            "into the pre-capture notes field."))
+        self._btn_read_cfg.clicked.connect(self._on_read_cfg)
+        btn_row_pre.addWidget(self._btn_read_cfg)
+        btn_row_pre.addStretch()
+        vbox_pre.addLayout(btn_row_pre)
+
         self._pre_notes = QtWidgets.QPlainTextEdit()
         self._pre_notes.setPlaceholderText(
             "Subject ID, session conditions, operator name, …\n"
@@ -5448,6 +5462,15 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             if not mandatory:
                 key = f"LabCaptureWindow/check_{label.replace(' ', '_')}"
                 s.setValue(key, self._checks[label].isChecked())
+
+    # ── Chip config readback ──────────────────────────────────────────────────
+    def _on_read_cfg(self):
+        if not self.main_monitor.request_chip_config():
+            self._lbl_status.setText("Not connected — cannot read chip config")
+
+    def _on_cfg_received(self, text):
+        existing = self._pre_notes.toPlainText().strip()
+        self._pre_notes.setPlainText((existing + "\n\n" + text if existing else text).strip())
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _browse_dir(self):
@@ -5626,7 +5649,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.is_paused = False
         self.last_time = None
-        self.active_lib = "INCUNEST"   # must match default in main.cpp (start_incunest)
         self.frame_mode = "M1"    # must match default in main.cpp (IncunestFrameMode::FULL)
         
         self.is_saving = False
@@ -5842,21 +5864,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.sidebar_layout.addSpacing(20)
 
-        label_library = QtWidgets.QLabel("LIBRARY")
-        label_library.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
-        self.sidebar_layout.addWidget(label_library)
-
-        self.btn_lib_incunest = QtWidgets.QPushButton("INCUNEST")
-        self.btn_lib_incunest.clicked.connect(lambda: self._send_lib_cmd('m'))
-        self.btn_lib_incunest.setToolTip(_make_tooltip(
-            "LIBRARY: INCUNEST",
-            "Active library: incunest_afe4490 (lib/incunest_afe4490). "
-            "Sends 'm' command over serial."))
-        self.sidebar_layout.addWidget(self.btn_lib_incunest)
-        self._update_lib_button()
-
-        self.sidebar_layout.addSpacing(10)
-
         label_frame = QtWidgets.QLabel("FRAME MODE")
         label_frame.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
         self.sidebar_layout.addWidget(label_frame)
@@ -6047,8 +6054,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.stats_table.setHorizontalHeaderLabels(["Signal", "Last", "Mean", "Max-Min", "Min", "Max"])
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.stats_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        self.stats_table.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.stats_table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
+        self.stats_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
         self.stats_table.setStyleSheet("""
             QTableWidget {
                 background-color: #111111; color: #E0E0E0;
@@ -6061,6 +6068,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 padding: 6px; border: 1px solid #2A2A2A;
             }
             QTableWidget::item { padding: 6px 10px; }
+            QTableWidget::item:selected {
+                background-color: #2A4A6A; color: #FFFFFF;
+            }
         """)
         self.stats_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         for col in range(1, 6):
@@ -6088,6 +6098,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.stats_table.setItemDelegate(
             _StatsHighlightDelegate(self._stats_highlighted, self.stats_table))
         self.stats_table.cellClicked.connect(self._on_stats_cell_clicked)
+        _copy_sc = QtWidgets.QShortcut(QtGui.QKeySequence.Copy, self.stats_table)
+        _copy_sc.activated.connect(self._copy_stats_selection)
         stats_vbox.addWidget(self.stats_table)
 
         # ── Right side: stats table + log panel ───────────────────────────────
@@ -6105,6 +6117,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._serial_queue = queue.Queue()
         self._reader_stop = threading.Event()
         self._reader_thread = None
+        self._cfg_listener = None  # callable(text) set by LabCaptureWindow
 
         self._populate_ports()
         self._restore_settings()
@@ -6131,22 +6144,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         QPushButton:hover { background-color: #2A2A2A; }
     """
 
-    def _update_lib_button(self):
-        incunest_active = (self.active_lib == "INCUNEST")
-        self.btn_lib_incunest.setStyleSheet(
-            self.STYLE_LIB_ACTIVE.format(bg="#3A2A00", fg="#FFAA00", bgh="#4A3800")
-            if incunest_active else self.STYLE_LIB_INACTIVE)
-        if hasattr(self, 'btn_frame_m1'):
-            self._update_frame_button()
-
     def _update_frame_button(self):
-        incunest_active = (self.active_lib == "INCUNEST")
         m1_active = (self.frame_mode == "M1")
         for btn, is_active in ((self.btn_frame_m1, m1_active), (self.btn_frame_m2, not m1_active)):
-            btn.setEnabled(incunest_active)
             btn.setStyleSheet(
                 self.STYLE_LIB_ACTIVE.format(bg="#002A3A", fg="#44AAFF", bgh="#003A4A")
-                if (incunest_active and is_active) else self.STYLE_LIB_INACTIVE)
+                if is_active else self.STYLE_LIB_INACTIVE)
 
     def _send_frame_cmd(self, mode):
         if not hasattr(self, 'ser') or not self.ser.is_open:
@@ -6154,12 +6157,48 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.ser.write(('1' if mode == "M1" else '2').encode())
         self.frame_mode = mode
         self._update_frame_button()
-        self.log(f"Frame mode: ${mode}")
 
-    def _send_lib_cmd(self, cmd):
-        if not hasattr(self, 'ser') or not self.ser.is_open:
-            return
-        self.ser.write(cmd.encode())
+    def request_chip_config(self):
+        """Send $CFG? to ESP32. Response arrives asynchronously via _on_cfg_frame_received()."""
+        if not hasattr(self, 'ser') or self.ser is None or not self.ser.is_open:
+            return False
+        self.log("CFG request sent → $CFG?")
+        self.ser.write(b'$CFG?\n')
+        return True
+
+    def _on_cfg_frame_received(self, line):
+        """Parse a $CFG frame, log each field, and deliver formatted text to _cfg_listener."""
+        kv = {}
+        for part in line[len('$CFG,'):].split(','):
+            if '=' in part:
+                k, v = part.split('=', 1)
+                kv[k] = v
+        ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_lines = [
+            f"CFG response — {ts}",
+            f"  board={kv.get('board','?')}  mac={kv.get('mac','?')}",
+            f"  sr={kv.get('sr','?')} Hz  numav={kv.get('numav','?')}",
+            f"  led1={kv.get('led1','?')} mA  led2={kv.get('led2','?')} mA  range={kv.get('range','?')} mA",
+            f"  tia={kv.get('tia','?')} Ω  cf={kv.get('cf','?')}  stg2={kv.get('stg2','?')}",
+            f"  ch={kv.get('ch','?')}  flt={kv.get('flt','?')} [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]",
+            f"  hr2={kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz  hr3={kv.get('hr3h','?')} Hz",
+            f"  spo2 a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}",
+        ]
+        for l in log_lines:
+            self.log(l)
+        text = (
+            f"AFE4490 config — {ts}\n"
+            f"  Board: {kv.get('board','?')}   MAC: {kv.get('mac','?')}\n"
+            f"  Sample rate: {kv.get('sr','?')} Hz   NUMAV: {kv.get('numav','?')}\n"
+            f"  LED1: {kv.get('led1','?')} mA   LED2: {kv.get('led2','?')} mA   Range: {kv.get('range','?')} mA\n"
+            f"  TIA: {kv.get('tia','?')} Ω   CF: {kv.get('cf','?')}   Stage2: {kv.get('stg2','?')}\n"
+            f"  PPG channel: {kv.get('ch','?')}   Filter: {kv.get('flt','?')} [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
+            f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
+            f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}"
+        )
+        if self._cfg_listener is not None:
+            self._cfg_listener(text)
+
 
     def _reset_esp32(self):
         """Hardware-reset the ESP32 via RTS/DTR (ESP-Prog auto-reset circuit)."""
@@ -6583,6 +6622,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
         encoded = ";".join(f"{r},{c}" for r, c in sorted(self._stats_highlighted))
         s.setValue("PPGMonitor/stats_highlighted", encoded)
 
+    def _copy_stats_selection(self):
+        selected = self.stats_table.selectedIndexes()
+        if not selected:
+            return
+        rows = sorted({idx.row() for idx in selected})
+        cols = sorted({idx.column() for idx in selected})
+        lines = []
+        for r in rows:
+            cells = []
+            for c in cols:
+                item = self.stats_table.item(r, c)
+                cells.append(item.text() if item else "")
+            lines.append("\t".join(cells))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+
     def _update_stats_table(self):
         for row, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
             buf = self._stats_buf[name]
@@ -6643,10 +6697,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         if self.serialcom_window is not None:
                             self.serialcom_window.append_line(line)
                         if 'incunest' in line.lower() and 'frame' not in line.lower():
-                            self.active_lib = "INCUNEST"
                             self.frame_mode = "M1"
-                            self._update_lib_button()
-                            self.log("Active library: incunest_afe4490")
+                            self._update_frame_button()
+                            import re as _re
+                            _vm = _re.search(r'incunest_afe4490\s+(v\S+)', line)
+                            if _vm:
+                                self.log(f"Active library: incunest_afe4490 {_vm.group(1)}")
+                                _tsm = _re.search(r'build:\s*([^|]+)', line)
+                                if _tsm:
+                                    self.log(f"Build: {_tsm.group(1).strip()}")
+                                _bm = _re.search(r'Board:\s*(\S+)', line)
+                                if _bm:
+                                    self.log(f"Board: {_bm.group(1)}")
                         elif 'frame mode' in line.lower():
                             self.log(line.lstrip('# '))
                         elif line.startswith('# SYS:'):
@@ -6738,6 +6800,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if line.startswith('$TASKS_END'):
                         if self.timing_window is not None:
                             self.timing_window.update_tasks(self._pending_tasks)
+                        continue
+
+                    # $CFG: chip configuration response (reply to $CFG? command)
+                    if line.startswith('$CFG,'):
+                        self._on_cfg_frame_received(line)
                         continue
 
                     # Decimation: skip N-1 out of every N data frames for console + plots

@@ -4459,3 +4459,191 @@ Creada `pulsenest_lab_spec.md` v1.0 en PulseNest. Cubre: protocolo serial, clase
 lib_deps =
     https://github.com/medicalopenworld/incunest_afe4490.git#v0.18
 ```
+
+
+---
+
+## Sesión 2026-04-14b
+
+### Tema: SIGNAL STATS — celdas seleccionables y copiables
+
+**Pregunta clave:** ¿Cómo hacer que la tabla SIGNAL STATS permita seleccionar celdas arrastrando el ratón y copiarlas al clipboard?
+
+**Decisiones:**
+- `setSelectionMode` cambiado de `NoSelection` a `ContiguousSelection` + `setSelectionBehavior(SelectItems)` — permite seleccionar rangos arrastrando.
+- Eliminado `setFocusPolicy(NoFocus)` para que el widget reciba eventos de teclado.
+- Añadido `QTableWidget::item:selected { background-color: #2A4A6A; }` para resaltado visual de selección.
+- Añadido `QShortcut(Ctrl+C)` en la tabla que llama a `_copy_stats_selection()`.
+- `_copy_stats_selection()`: copia las celdas seleccionadas al clipboard en formato TSV (tab-separated), compatible con Excel/LibreOffice Calc.
+- El mecanismo de highlight persistente por click (`_stats_highlighted` + `_StatsHighlightDelegate`) no se modificó — sigue funcionando de forma independiente.
+
+---
+
+## Sesión 2026-04-14c
+
+### Tema: incunest_afe4490 v0.19 — getConfig() / AFE4490Config
+
+**Pregunta clave:** ¿Cómo añadir lectura de los parámetros de configuración del chip AFE4490?
+
+**Decisiones:**
+- Nuevo struct `AFE4490Config` en el header: agrupa todos los parámetros configurables (sample_rate_hz, num_averages, led1/2_current_mA, led_range_mA, tia_gain, tia_cf, stage2_gain, ppg_channel, filter_type, filter_f_low/high_hz, hr2_f_low/high_hz, hr3_f_high_hz, spo2_a/b).
+- Nuevo método `AFE4490Config getConfig()` en la API pública.
+- Implementación: toma `_spi_mutex` para los campos de hardware (sample rate, LED, TIA, stage2) y `_state_mutex` para los campos de señal/filtros/SpO2, siguiendo el mismo patrón que los setters. Seguro antes y después de `begin()`.
+- Librería bumpeada a **v0.19** (h, cpp, library.json, spec).
+- Spec actualizada: §2.3b (nueva sección), §10 (historial v0.19).
+
+---
+
+## Sesión 2026-04-14d
+
+### Tema: Botón "Read chip config" en Lab Capture + comando $CFG? en firmware
+
+**Pregunta clave:** ¿Cómo añadir un botón en Lab Capture que pida la configuración del AFE4490 por serie y la inserte en Pre-capture notes, sin distorsionar el stream de medidas?
+
+**Decisiones:**
+
+**Firmware (main.cpp):**
+- `Cmd_Task` extendido: acumula bytes hasta `\n` en lugar de leer un carácter a la vez. Mantiene compatibilidad con `'1'` y `'2'` (single-char). Nuevo comando: `$CFG?\n`.
+- Helpers estáticos: `tia_gain_str`, `tia_cf_str`, `stage2_str`, `channel_str`, `filter_str` — convierten los enums de `AFE4490Config` a string.
+- `send_cfg_frame()`: llama a `afe.getConfig()`, formatea la trama `$CFG,...*XX\r\n` con checksum XOR NMEA. Sin mutex adicional: el buffer UART del hardware serializa las escrituras entre tareas.
+
+**Script (pulsenest_lab.py):**
+- `PPGMonitor._cfg_listener`: atributo callable (None por defecto), registrable por LabCaptureWindow.
+- `PPGMonitor.request_chip_config()`: envía `b'$CFG?\n'` al puerto serie. Devuelve False si no conectado.
+- `PPGMonitor._on_cfg_frame_received(line)`: parsea los campos key=value del frame `$CFG`, formatea texto legible, llama a `_cfg_listener`.
+- Parser serial: handler `$CFG,` añadido antes de la decimación (igual que `$TIMING`, `$TASK`).
+- `LabCaptureWindow`: botón "Read chip config" en cabecera del grupo Pre-capture notes.
+- `_on_read_cfg()`: llama a `request_chip_config()`, muestra aviso si no conectado.
+- `_on_cfg_received(text)`: añade el texto al final de `_pre_notes` (con separador si ya hay contenido).
+- Listener registrado en `__init__` de LabCaptureWindow.
+
+**Pendiente:** compilar y flashear el firmware con los cambios (nuevo `Cmd_Task` + `send_cfg_frame`).
+
+---
+
+## Sesión 2026-04-14e
+
+### Tema: Correcciones post-flash + banner de versión
+
+**Problemas detectados y resueltos:**
+
+1. **Bug en `_on_cfg_frame_received`**: línea espuria `self.log(f"Frame mode: ${mode}")` (variable `mode` inexistente). Eliminada. Añadido logging completo de la respuesta (7 líneas en el log). Añadido `self.log("CFG request sent → $CFG?")` en `request_chip_config()`.
+
+2. **Build fallaba con v0.19**: PlatformIO usaba la caché git (v0.18) en lugar de los archivos locales. Causa: `lib_deps` apunta a git y el include path era `.pio/libdeps/...` (v0.18), no la junction local. Solución: commit + push v0.19 a git, limpiar caché libdeps, rebuild.
+
+3. **Banner de versión**: actualizado para mostrar ambas versiones (firmware + librería) y añadir "Board:":
+   - Antes: `# incunest_afe4490 test firmware v0.9 [incunest_V15] — Medical Open World`
+   - Después: `# PulseNest v0.9 | incunest_afe4490 v0.19 | Board: incunest_V15 — Medical Open World`
+
+**Cambios en incunest_afe4490:**
+- Añadido `#define INCUNEST_AFE4490_VERSION "0.19"` en el header.
+- Commit `d759054` pusheado a master.
+
+**Nota de arquitectura (lib_deps):** PlatformIO siempre descarga la librería desde git para V15/V16. La junction local `lib/incunest_afe4490/` no se usa como include path. Para usar cambios locales hay que hacer commit+push a git y limpiar `.pio/libdeps/`.
+
+---
+
+## Sesión 2026-04-14f
+
+### Tema: Versión de librería en traza "Active library:"
+
+**Cambio:** El log "Active library:" ahora extrae la versión directamente del banner del firmware (`# PulseNest v0.9 | incunest_afe4490 v0.19 | Board: ...`) con regex `incunest_afe4490\s+(v[\d.]+)`. Resultado: `Active library: incunest_afe4490 v0.19`. Si el banner no incluye versión, se muestra `Active library: incunest_afe4490` (sin cambio de comportamiento).
+
+---
+
+## Sesión 2026-04-14g
+
+### Tema: Eliminación del botón INCUNEST (librería única)
+
+**Cambios en pulsenest_lab.py:**
+- Eliminados del sidebar: label "LIBRARY" + botón "INCUNEST" + llamada a `_update_lib_button()`.
+- Eliminado `active_lib` del `__init__` (ya no tiene sentido con una sola librería).
+- Eliminado método `_update_lib_button()` (actualizaba estilo del botón eliminado).
+- Eliminado método `_send_lib_cmd()` (solo lo usaba el botón eliminado).
+- Simplificado `_update_frame_button()`: eliminado `incunest_active`, los botones M1/M2 siempre habilitados.
+- En el parser serial: sustituido `self.active_lib = "INCUNEST"` + `_update_lib_button()` por `_update_frame_button()` directamente.
+
+---
+
+## Sesión 2026-04-14h
+
+### Tema: Fix traza "Active library:" duplicada al resetear el ESP32
+
+**Problema:** Al resetear el ESP32, la traza "Active library: incunest_afe4490" aparecía dos veces: la primera con versión, la segunda sin versión.
+
+**Causa raíz:** El parser del script disparaba el log "Active library:" para cualquier línea `#` que contuviera "incunest" y no contuviera "frame". El firmware envía dos líneas que cumplen esta condición:
+1. `# PulseNest v0.9 | incunest_afe4490 v0.19 | Board: ...` — tiene versión → correcto
+2. `# incunest_afe4490 started` (emitida desde `start_incunest()`) — sin versión → duplicado incorrecto
+
+**Fix (pulsenest_lab.py):** La traza "Active library:" ahora solo se emite cuando el regex `incunest_afe4490\s+(v[\d.]+)` encuentra la versión en la línea. Si no hay versión, el `frame_mode = "M1"` y `_update_frame_button()` siguen ejecutándose (la línea sigue siendo útil), pero no se genera el log duplicado.
+
+---
+
+## Sesión 2026-04-14i
+
+### Tema: Log de versión de placa al resetear el ESP32
+
+**Cambio (pulsenest_lab.py):** Al detectar el banner del firmware (línea con `incunest_afe4490 vX.XX`), se añade una segunda traza en el log con la versión de placa extraída del campo `Board:`:
+- `Active library: incunest_afe4490 v0.19`
+- `Board: incunest_V15`
+
+Regex: `r'Board:\s*(\S+)'` aplicado sobre la misma línea del banner. Solo se emite si el campo `Board:` está presente.
+
+---
+
+## Sesión 2026-04-14j
+
+### Tema: Fix stack overflow en Cmd_Task + color botón "Read chip config" + migración a placa V16
+
+**Migración a incunest_V16:**
+- La placa física es V16 (DRDY_PIN=17), no V15 (DRDY_PIN=45). Solo hay que flashear con el environment correcto: `pio run -e incunest_V16 -t upload --upload-port COM15`.
+- La librería cacheada era v0.18 para V16 → limpiado `.pio/libdeps/incunest_V16/` y rebuildeado con v0.19.
+
+**Bug: stack overflow en Cmd_Task → crash → reinicio del ESP32:**
+- Síntoma: pulsar "Read chip config" producía las mismas trazas que el botón "RESET ESP32".
+- Causa raíz: `Cmd_Task` tenía solo 2048 bytes de stack. `send_cfg_frame()` pone en el stack `char buf[256]` + `AFE4490Config cfg` (~68 bytes) + overhead de `snprintf` con múltiples `%f` (~300-400 bytes en newlib/ESP32). Stack overflow → crash → reboot → banner de startup.
+- Los comandos `'1'` y `'2'` no llaman a `send_cfg_frame()` por eso funcionaban bien.
+- Fix: `Cmd_Task` stack 2048 → 4096 bytes en `main.cpp`.
+
+**Botón "Read chip config" (pulsenest_lab.py):**
+- Añadido fondo más claro: `background-color:#2A3D5A; color:#AACCFF`.
+
+---
+
+## Sesión 2026-04-14k
+
+### Tema: Board y MAC en la trama $CFG
+
+**Cambios en main.cpp:**
+- `send_cfg_frame()`: añadidos campos `board` y `mac` al frame `$CFG` (key=value, coherente con el resto). Buffer ampliado de 256 a 320 bytes para acomodar los nuevos campos. La MAC se obtiene con `esp_read_mac()` (header `esp_mac.h` ya incluido).
+- Formato: `...,board=incunest_V16,mac=XX:XX:XX:XX:XX:XX*chk`
+
+**Cambios en pulsenest_lab.py:**
+- `_on_cfg_frame_received()`: añadida línea de log `board=...  mac=...` (segunda línea tras el timestamp).
+- Texto Pre-capture notes: añadida línea `Board: ...   MAC: ...` al bloque de texto insertado.
+
+---
+
+## Sesión 2026-04-14l
+
+### Tema: Hash git + timestamp de compilación en el banner del firmware
+
+**Motivación:** combinar hash git (trazabilidad del código) con timestamp (identificar cuándo se compiló).
+
+**Nuevo fichero: `scripts/pre_build_hash.py`**
+- PlatformIO `extra_scripts` pre-build en Python.
+- Extrae el hash git corto de `.pio/libdeps/<env>/incunest_afe4490` con `git rev-parse --short HEAD`.
+- Inyecta `-DINCUNEST_GIT_HASH=\"xxxxxxx\"` en los flags de compilación.
+- Fallback a `"unknown"` si git no está disponible o el directorio no existe.
+
+**`platformio.ini`:** añadido `extra_scripts = pre:scripts/pre_build_hash.py` en `[base_incunest_esp32s3]`.
+
+**`main.cpp`:** banner actualizado con concatenación de literales en tiempo de compilación (cero overhead runtime):
+```
+# PulseNest v0.9 | incunest_afe4490 v0.19+sha.d759054 | build: Apr 14 2026 15:23:01 | Board: incunest_V16
+```
+
+**`pulsenest_lab.py`:** parser del banner actualizado:
+- Regex `v[\d.]+` → `v\S+` para capturar también `+sha.xxxxxxx`.
+- Añadida extracción del campo `build:` → log `Build: Apr 14 2026 15:23:01`.
+- Al conectar aparecen tres trazas: `Active library:`, `Build:`, `Board:`.
