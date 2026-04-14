@@ -1,4 +1,4 @@
-# CLAUDE.md — Pulsioximeter Test (AFE4490)
+# CLAUDE.md — PulseNest (AFE4490)
 
 https://github.com/acuesta-mow/incunest_afe4490_test
 
@@ -27,7 +27,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 
 ## Herramientas del proyecto
 - **Firmware ESP32-S3:** validación de señal PPG y SpO2 en la placa in3ator
-- **`ppg_plotter.py`:** script Python para visualizar, analizar y capturar las señales PPG (forma parte del proyecto, no es un script auxiliar)
+- **`pulsenest_lab.py`:** script Python para visualizar, analizar y capturar las señales PPG (forma parte del proyecto, no es un script auxiliar)
 
 ## Log de conversaciones
 - Ver `conversation_log.md` — historial de decisiones de diseño tomadas en cada sesión
@@ -36,7 +36,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 ## Reglas de desarrollo (obligatorias)
 
 1. **Nunca usar `delay()`** — usar `vTaskDelay()` con `pdMS_TO_TICKS()`.
-6. **Idioma del código fuente:** todo el código, comentarios, identificadores y textos de interfaz de usuario (botones, labels, tooltips, mensajes de estado, cabeceras de tabla, títulos de ventana) deben estar en **inglés** (sin excepción). Aplica a firmware C++, `ppg_plotter.py` y cualquier otro fichero del proyecto.
+6. **Idioma del código fuente:** todo el código, comentarios, identificadores y textos de interfaz de usuario (botones, labels, tooltips, mensajes de estado, cabeceras de tabla, títulos de ventana) deben estar en **inglés** (sin excepción). Aplica a firmware C++, `pulsenest_lab.py` y cualquier otro fichero del proyecto.
 2. **Thread-safe** — proteger recursos compartidos con mutex (`SemaphoreHandle_t`).
 3. **Manejo de errores SPI/I2C** — siempre comprobar el resultado de las comunicaciones.
 4. **Pines desde `main.h`** — no hardcodear pines, seguir las definiciones del diccionario global.

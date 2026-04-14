@@ -37,7 +37,7 @@ pio device monitor --port COM15 --baud 921600
 Real-time signal visualizer. Requires Python 3 with `pyqtgraph`, `pyserial`, `numpy`, `scipy`.
 
 ```bash
-pythonw ppg_plotter.py
+pythonw pulsenest_lab.py
 ```
 
 ## Project structure
@@ -49,7 +49,7 @@ lib/incunest_afe4490/          — AFE4490 library (driver + algorithms)
 incunest_afe4490_spec.md       — Library design specification
 src/main.cpp                   — Test firmware
 examples/basic/main.cpp        — Minimal integration example
-ppg_plotter.py                 — Real-time PPG/SpO2/HR visualizer
+pulsenest_lab.py                 — Real-time PPG/SpO2/HR visualizer
 test/                          — Native unit tests (PlatformIO)
 conversation_log.md            — Session-by-session design decisions log
 ```

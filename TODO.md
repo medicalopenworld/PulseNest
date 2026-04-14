@@ -1,4 +1,4 @@
-# TODO — Pulsioximeter Test (AFE4490)
+# TODO — PulseNest (AFE4490)
 
 > Mantenido de forma incremental. Añadir items al final de cada sección; marcar como `[x]` cuando se completen.
 
@@ -33,7 +33,7 @@
 
 - [ ] **HR1 — derivada antes de buscar picos** — aplicar derivada a la señal filtrada antes del detector de picos para mejorar la precisión en la localización del frente de subida.
 - [x] **Flash y validar HR2** con simulador — valores coherentes con HR1 confirmados (2026-03-31).
-- [x] **HR3 — FFT** — algoritmo FFT + HPS implementado en firmware (2026-04-08): LP 10 Hz → decimate ×10 → buffer 512 → Hann → FFT radix-2 DIT → HPS (P[k]·P[2k]·P[3k]) → interpolación parabólica. Expuesto en trama M1 (campo 17). ppg_plotter.py actualizado.
+- [x] **HR3 — FFT** — algoritmo FFT + HPS implementado en firmware (2026-04-08): LP 10 Hz → decimate ×10 → buffer 512 → Hann → FFT radix-2 DIT → HPS (P[k]·P[2k]·P[3k]) → interpolación parabólica. Expuesto en trama M1 (campo 17). pulsenest_lab.py actualizado.
 - [ ] **HR4 — AMDF (Average Magnitude Difference Function)** — estimación de HR mediante AMDF normalizado: `AMDF_n[τ] = AMDF[τ] / (AMDF_mean + ε)` para invarianza ante cambios de amplitud. Ventana adaptativa: ajustar el tamaño de la ventana de análisis en función de la estimación de HR previa (al menos 2–3 ciclos). Threshold dinámico: el mínimo válido se acepta sólo si cae por debajo de una fracción configurable del valor medio de AMDF (p.ej. 0.6·mean), descartando mínimos espurios en señales ruidosas. Alternativa robusta a la autocorrelación, especialmente en señales con baja SNR o formas de onda asimétricas. Evaluar como método independiente y comparar con HR1/HR2/HR3.
 - [ ] **HR5 — Peak detection** — detección del frente de subida mediante derivada de la señal filtrada (máximo de la derivada = pendiente máxima ascendente), como mejora de precisión sobre el threshold crossing de HR1.
 - [ ] **Fiabilidad (confidence) de HR1, HR2, HR3** — calcular un valor porcentual de fiabilidad para cada algoritmo:
@@ -54,7 +54,7 @@
 - [ ] **Validación general con hardware real** (la mayoría de pruebas se han hecho con simulador).
 - [ ] **Validar algoritmo HR en condiciones adversas:** (1) baja perfusión, (2) luz ambiental, (3) artefactos por movimiento.
 - [ ] **Probe presence detection** — diseñar estrategia y algoritmo explícito de detección de presencia del sensor. Actualmente es implícita (umbral DC en SpO2, PI en SQI); se necesita un módulo propio, genérico y configurable.
-- [ ] **Verificación de consistencia `LED1_ALED1 == LED1 − ALED1`** — comprobar que el valor hardware del registro `LED1_ALED1VAL` (0x2F) coincide con la resta software `LED1 − ALED1` (y lo mismo para `LED2_ALED2`). Una discrepancia indicaría un problema de lectura SPI o de sincronización. Implementar tanto en firmware (assert/log) como opcionalmente en `ppg_plotter.py` (diagnóstico visual de la diferencia en tiempo real).
+- [ ] **Verificación de consistencia `LED1_ALED1 == LED1 − ALED1`** — comprobar que el valor hardware del registro `LED1_ALED1VAL` (0x2F) coincide con la resta software `LED1 − ALED1` (y lo mismo para `LED2_ALED2`). Una discrepancia indicaría un problema de lectura SPI o de sincronización. Implementar tanto en firmware (assert/log) como opcionalmente en `pulsenest_lab.py` (diagnóstico visual de la diferencia en tiempo real).
 - [ ] **Registro DIAG (0x30)** — utilizar el registro de diagnóstico del AFE4490 (`DIAG`, address 0x30) para diagnosticar el estado del sistema, especialmente el estado de la sonda (LED abierto/cortocircuito, fotodiodo, etc.).
 - [ ] **Detección de luz ambiental excesiva** — chequear si ALED1/ALED2 superan un umbral que indique que el sensor no está bien colocado; emitir aviso (flag en `AFE4490Data` o log serie).
 
@@ -63,12 +63,12 @@
 ## Estrategia de test
 
 - [x] **Tests unitarios de algoritmos en PC (env:native)** — 20/20 PASSED (2026-03-31): biquad (5), HR1 (4), HR2 (4), SpO2 (6). Infraestructura: lib/incunest_afe4490/, test/stubs/, env:native.
-- [ ] **Dataset de referencia con simulador MS100** — capturar CSVs con ppg_plotter.py a SpO2 y HR conocidas (p.ej. 98%, 90%, 80% / 60, 80, 100 bpm); usar como ground truth para regresión: si cambia el algoritmo, verificar que los valores no se desvían del golden dataset.
+- [ ] **Dataset de referencia con simulador MS100** — capturar CSVs con pulsenest_lab.py a SpO2 y HR conocidas (p.ej. 98%, 90%, 80% / 60, 80, 100 bpm); usar como ground truth para regresión: si cambia el algoritmo, verificar que los valores no se desvían del golden dataset.
 - [ ] **Dataset de referencia con sujetos reales** — capturar medidas simultáneas con el AFE4490 y equipos de referencia clínicos (pulsioxímetro de referencia, co-oxímetro si disponible) sobre voluntarios sanos; registrar SpO2 y HR de ambos sistemas para calcular sesgo, RMSE y límites de acuerdo (Bland-Altman). Condiciones a cubrir: reposo, tras ejercicio, distintas saturaciones si es posible.
 
 ---
 
-## Pendientes ppg_plotter.py
+## Pendientes pulsenest_lab.py
 
 - [x] **HR3LabWindow** — renombrado de HRLab2Window; implementado con espectro FFT, señal filtrada, comparativa HR1/HR2/HR3 y barra de diagnóstico (2026-04-07).
 - [x] **Control de decimación en ventana principal** — spinbox "1 de cada N tramas" (defecto 10); aplica a consola y gráficas (2026-03-31).

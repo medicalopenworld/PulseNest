@@ -434,9 +434,9 @@ SNR_improvement = sqrt(num)    →  num=8: ×2.83,  num=10: ×3.16
 
 ---
 
-## 8. Validation tooling — ppg_plotter.py
+## 8. Validation tooling — pulsenest_lab.py
 
-The `ppg_plotter.py` script is the primary validation tool for the incunest_afe4490 library.
+The `pulsenest_lab.py` script is the primary validation tool for the incunest_afe4490 library.
 It contains two distinct categories of windows with different purposes and lifecycles.
 
 ### 8.1 LAB windows (pre-implementation)
@@ -480,7 +480,7 @@ This three-way relationship (spec → firmware, spec → Python mirror, firmware
 
 ### 8.4 TIMING window (diagnostics)
 
-The `TIMING` window in `ppg_plotter.py` displays per-algorithm CPU execution times measured in firmware, parsed from `$TIMING` diagnostic frames.
+The `TIMING` window in `pulsenest_lab.py` displays per-algorithm CPU execution times measured in firmware, parsed from `$TIMING` diagnostic frames.
 
 **Compile-time flag:** `INCUNEST_TIMING_STATS` (default 0). Set to 1 via `platformio.ini` `build_flags` to enable. When 0, all instrumentation code is compiled out with zero overhead.
 
@@ -645,7 +645,7 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 |         | even for a perfectly clean signal. Fix: divide by `acorr0·(N−τ)/N`         |
 |         | instead of `acorr0`. Clean signal now yields SQI ≈ 1.0 at all HR.          |
 |         | Updated: `_compute_hr2()` in `incunest_afe4490.cpp`, `HR2TestCalc.update()` |
-|         | in `ppg_plotter.py`, `test_hr2.cpp` (thresholds raised to >0.95 clean,     |
+|         | in `pulsenest_lab.py`, `test_hr2.cpp` (thresholds raised to >0.95 clean,     |
 |         | >0.80 noisy). Spec §5.3. Observed with MS100 simulator: HR2 SQI ~0.9       |
 |         | vs HR1/HR3 ~1.0 — now consistent.                                           |
 | v0.17   | HR3_SQI: parabolic interpolation on HPS values (not P[k]) in numerator.    |
@@ -663,18 +663,18 @@ Requires C++17 and a standard compiler (g++ ≥ 10, MSVC ≥ 2019, clang ≥ 11)
 |         | prominence (`HPS[peak_bin] / Σ HPS[k]`). Eliminates harmonic inflation of   |
 |         | the denominator. No new buffer — `hps_sum` accumulated in the existing loop. |
 |         | Updated: `incunest_afe4490.cpp` `_compute_hr3()`, `incunest_afe4490.h` comment,       |
-|         | `HR3TestCalc` in `ppg_plotter.py`, spec §5.4.                               |
+|         | `HR3TestCalc` in `pulsenest_lab.py`, spec §5.4.                               |
 | v0.14   | Timing instrumentation: `INCUNEST_TIMING_STATS` compile-time flag, `TimingStat` |
 |         | struct, `_emit_timing()` private method. Measures HR1/HR2/HR3/SpO2 per-call |
 |         | time and full cycle time (SPI + all algos) with `esp_timer_get_time()`.      |
 |         | `$TIMING` serial frame emitted every ~5 s. `TIMING` window added to         |
-|         | `ppg_plotter.py` with green/orange/red budget indicator (budget = 2000 µs). |
+|         | `pulsenest_lab.py` with green/orange/red budget indicator (budget = 2000 µs). |
 |         | Spec §8.4 added. Enabled in `platformio.ini` via `-DINCUNEST_TIMING_STATS=1`.    |
 | v0.13   | SQI continuous [0–1] for all algorithms. HR1_SQI: CV-based. HR2_SQI:       |
 |         | normalised autocorrelation peak. HR3_SQI: spectral concentration.           |
 |         | SpO2_SQI: PI-based (clamp PI from 0.5%–2.0%). All SQI fields added to      |
 |         | `AFE4490Data` and $M1 frame. 4 TEST windows completed (SPO2TEST, HR1TEST,  |
-|         | HR2TEST, HR3TEST). ppg_plotter.py spec §8 updated.                          |
+|         | HR2TEST, HR3TEST). pulsenest_lab.py spec §8 updated.                          |
 | v0.12   | Added HR3 algorithm (FFT + HPS): `hr3`/`hr3_valid` in `AFE4490Data`,     |
 |         | `setHR3Filter()` in API, section 5.4. Self-contained radix-2 DIT FFT     |
 |         | in anonymous namespace. `_recalc_biquad_lp()` for LP anti-aliasing.      |

@@ -191,7 +191,7 @@ void setup() {
     // Startup banner
     Serial.printf("# incunest_afe4490 test firmware v0.9 [%s] — Medical Open World\n", BOARD_VERSION);
 
-    // System info — shown in ppg_plotter log on startup/reset (prefix "# SYS:")
+    // System info — shown in pulsenest_lab log on startup/reset (prefix "# SYS:")
     {
         esp_chip_info_t chip;
         esp_chip_info(&chip);

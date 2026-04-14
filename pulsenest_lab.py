@@ -195,7 +195,9 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 # --- CONFIGURACIÓN ---
 PORT = 'COM15'
 BAUD = 921600
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppg_plotter.ini")
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_lab.ini")
+CAPTURES_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
+os.makedirs(CAPTURES_DIR, exist_ok=True)
 WINDOW_SIZE        = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10)
 PPG_WINDOW_SIZE    = 500   # 10 s — same as WINDOW_SIZE
 SPO2_CAL_BUFSIZE   = 3000  # 60 s @ 50 Hz — rolling buffer for SpO2LabWindow
@@ -1380,7 +1382,7 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
             self._lbl_status.setText("No points to export.")
             return
         now_str  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"spo2_cal_{now_str}.csv"
+        filename = os.path.join(CAPTURES_DIR, f"spo2_cal_{now_str}.csv")
         try:
             with open(filename, "w") as f:
                 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2033,7 +2035,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Export", "No data to export.")
             return
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"spo2test_{now_str}.csv"
+        filename = os.path.join(CAPTURES_DIR, f"spo2test_{now_str}.csv")
         spo2_fw = self._arr_spo2_fw if self._offline_mode else np.array(self._buf_spo2_fw)
         spo2_py = self._arr_spo2_py if self._offline_mode else np.array(self._buf_spo2_py)
         R_fw    = self._arr_R_fw    if self._offline_mode else np.array(self._buf_R_fw)
@@ -2701,7 +2703,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Export", "No data to export.")
             return
         now_str  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"hr1test_{now_str}.csv"
+        filename = os.path.join(CAPTURES_DIR, f"hr1test_{now_str}.csv")
         try:
             calc = self._get_live_calc() if not self._offline_mode else self._offline_calc
             with open(filename, 'w') as f:
@@ -3304,7 +3306,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Export", "No data to export.")
             return
         now_str  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"hr2test_{now_str}.csv"
+        filename = os.path.join(CAPTURES_DIR, f"hr2test_{now_str}.csv")
         hr_fw = np.array(self._buf_hr_fw); hr_py = np.array(self._buf_hr_py)
         sqi_fw = np.array(self._buf_sqi_fw); sqi_py = np.array(self._buf_sqi_py)
         try:
@@ -4043,7 +4045,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Export", "No data to export.")
             return
         now_str  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"hr3test_{now_str}.csv"
+        filename = os.path.join(CAPTURES_DIR, f"hr3test_{now_str}.csv")
         hr_fw  = np.array(self._buf_hr_fw);  hr_py  = np.array(self._buf_hr_py)
         sqi_fw = np.array(self._buf_sqi_fw); sqi_py = np.array(self._buf_sqi_py)
         try:
@@ -5423,9 +5425,8 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             s.value("LabCaptureWindow/pre_notes",  "", type=str))
         self._post_notes.setPlainText(
             s.value("LabCaptureWindow/post_notes", "", type=str))
-        default_dir = os.path.dirname(os.path.abspath(__file__))
         self._edit_dir.setText(
-            s.value("LabCaptureWindow/output_dir", default_dir, type=str))
+            s.value("LabCaptureWindow/output_dir", CAPTURES_DIR, type=str))
         self._edit_prefix.setText(
             s.value("LabCaptureWindow/filename_prefix", "lab_capture", type=str))
         self._spin_samples.setValue(
@@ -5466,7 +5467,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = self._edit_dir.text().strip()
         if not out_dir or not os.path.isdir(out_dir):
-            out_dir = os.path.dirname(os.path.abspath(__file__))
+            out_dir = CAPTURES_DIR
         return os.path.join(out_dir, f"{prefix}_{ts}.csv")
 
     def _set_capturing(self, is_capturing: bool):
@@ -5547,6 +5548,26 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
+class _StatsHighlightDelegate(QtWidgets.QStyledItemDelegate):
+    """Draws a gold border around cells that the user has manually highlighted."""
+    _BORDER_COLOR = QtGui.QColor("#FFD700")
+    _BORDER_WIDTH = 3
+
+    def __init__(self, highlighted: set, parent=None):
+        super().__init__(parent)
+        self._highlighted = highlighted
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        if (index.row(), index.column()) in self._highlighted:
+            painter.save()
+            pen = QtGui.QPen(self._BORDER_COLOR, self._BORDER_WIDTH)
+            painter.setPen(pen)
+            r = option.rect.adjusted(2, 2, -2, -2)
+            painter.drawRect(r)
+            painter.restore()
+
+
 class PPGMonitor(QtWidgets.QMainWindow):
     def log(self, text):
         """Appends a timestamped line to the log panel, colour inferred from text content."""
@@ -5609,12 +5630,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.frame_mode = "M1"    # must match default in main.cpp (IncunestFrameMode::FULL)
         
         self.is_saving = False
+        self._sub_mismatch_count = 0   # RED_Sub / IR_Sub integrity check counter
         self.save_file = None
         self.save_file_chk = None
         self._chk_filename = None
         if save_chk:
             now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._chk_filename = f"ppg_chk_{now_str}.csv"
+            self._chk_filename = os.path.join(CAPTURES_DIR, f"ppg_chk_{now_str}.csv")
             try:
                 self.save_file_chk = open(self._chk_filename, "w", buffering=1)
                 self.save_file_chk.write("Timestamp_PC,Diff_us_PC,CHK_OK,RawFrame\n")
@@ -5676,6 +5698,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("HR3_SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
+        self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
@@ -6062,6 +6085,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     it.setBackground(_MAROON)
                 self.stats_table.setItem(row, col, it)
 
+        self.stats_table.setItemDelegate(
+            _StatsHighlightDelegate(self._stats_highlighted, self.stats_table))
+        self.stats_table.cellClicked.connect(self._on_stats_cell_clicked)
         stats_vbox.addWidget(self.stats_table)
 
         # ── Right side: stats table + log panel ───────────────────────────────
@@ -6396,7 +6422,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         if self.is_paused:
             self.btn_save.setChecked(False)
-            filename = f"ppg_data_snap_{now_str}.csv"
+            filename = os.path.join(CAPTURES_DIR, f"ppg_data_snap_{now_str}.csv")
             try:
                 with open(filename, "w") as f:
                     f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
@@ -6409,7 +6435,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.is_saving = self.btn_save.isChecked()
             if self.is_saving:
                 self.btn_save.setText("STOP\nRECORDING")
-                filename = f"ppg_data_stream_{now_str}.csv"
+                filename = os.path.join(CAPTURES_DIR, f"ppg_data_stream_{now_str}.csv")
                 try:
                     self.save_file = open(filename, "w")
                     if self.frame_mode == "M2":
@@ -6471,6 +6497,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.right_splitter.restoreState(splitter)
         self.spin_decim.setValue(         s.value("PPGMonitor/spin_decim",          10,  type=int))
         self.spin_stats_interval.setValue(s.value("PPGMonitor/spin_stats_interval", 1,   type=int))
+        encoded = s.value("PPGMonitor/stats_highlighted", "", type=str)
+        self._stats_highlighted.clear()
+        if encoded:
+            for token in encoded.split(";"):
+                parts = token.split(",")
+                if len(parts) == 2:
+                    try:
+                        self._stats_highlighted.add((int(parts[0]), int(parts[1])))
+                    except ValueError:
+                        pass
         port = s.value("PPGMonitor/combo_port", PORT)
         idx = self.combo_port.findText(port)
         if idx >= 0:
@@ -6536,6 +6572,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
     _STATS_SQI_THRESHOLD = 0.9
 
+    def _on_stats_cell_clicked(self, row, col):
+        key = (row, col)
+        if key in self._stats_highlighted:
+            self._stats_highlighted.discard(key)
+        else:
+            self._stats_highlighted.add(key)
+        self.stats_table.viewport().update()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        encoded = ";".join(f"{r},{c}" for r, c in sorted(self._stats_highlighted))
+        s.setValue("PPGMonitor/stats_highlighted", encoded)
+
     def _update_stats_table(self):
         for row, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
             buf = self._stats_buf[name]
@@ -6544,7 +6591,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 mean = sum(buf) / len(buf)
                 lo   = min(buf)
                 hi   = max(buf)
-                vals = [f"{last:.2f}", f"{mean:.2f}", f"{hi - lo:.2f}", f"{lo:.2f}", f"{hi:.2f}"]
+                if row < 6:  # raw ADC signals: integer, thousands-separated with narrow space
+                    def _fmt(v): return f"{v:,.0f}".replace(",", "\u202f")
+                else:
+                    def _fmt(v): return f"{v:.2f}"
+                vals = [_fmt(last), _fmt(mean), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
             else:
                 vals = ["---", "---", "---", "---", "---"]
             for col, v in enumerate(vals, start=1):
@@ -6728,6 +6779,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr3.append(p[17])
                             self.data_hr3_sqi.append(p[18])
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS)  # IR_Sub for HR3Lab diagnostics
+                            # Integrity check: RED_Sub and IR_Sub must equal hardware-subtracted values
+                            red_sub_exp = int(p[2]) - int(p[4])   # RED - RED_Amb
+                            ir_sub_exp  = int(p[3]) - int(p[5])   # IR  - IR_Amb
+                            red_sub_fw  = int(p[6])
+                            ir_sub_fw   = int(p[7])
+                            if red_sub_fw != red_sub_exp or ir_sub_fw != ir_sub_exp:
+                                self._sub_mismatch_count += 1
+                                if self._sub_mismatch_count <= 5 or self._sub_mismatch_count % 100 == 0:
+                                    self.log(
+                                        f"[CHK] SUB MISMATCH #{self._sub_mismatch_count}"
+                                        f" SmpCnt={int(p[0])}"
+                                        f" RED_Sub={red_sub_fw} exp={red_sub_exp} Δ={red_sub_fw - red_sub_exp}"
+                                        f" IR_Sub={ir_sub_fw} exp={ir_sub_exp} Δ={ir_sub_fw - ir_sub_exp}"
+                                    )
                             # Stats buffers
                             for sname, attr, _ in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
@@ -6951,6 +7016,7 @@ if __name__ == "__main__":
     app.setStyleSheet(
         "QToolTip { background-color: #5500AA; color: #F0F0F0; "
         "border: 2px solid #FFE066; padding: 8px; }"
+        "QMenu { min-width: 360px; }"
     )
     window = PPGMonitor(save_chk=args.save_chk, save_chk_duration=args.save_chk_duration)
     window.show()
