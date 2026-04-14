@@ -1,4 +1,4 @@
-# Log de conversaciones — Pulsioximeter Test (AFE4490)
+# Log de conversaciones — PulseNest (AFE4490)
 
 ---
 
@@ -4389,3 +4389,73 @@ SQI        = clamp((fraction - baseline) / (1 - baseline), 0, 1)
 ## Sesión 2026-04-13 — SIGNAL STATS: nueva columna Max-Min
 
 **Cambio:** añadida columna "Max-Min" entre "Mean" y "Min" en la tabla SIGNAL STATS de ppg_plotter.py. Muestra hi−lo del intervalo de actualización. Cambios: columnas 5→6, header labels, init loop range(1,5)→range(1,6), vals en _update_stats_table, tooltip del spin_stats_interval.
+
+
+## Sesión 2026-04-14 — SIGNAL STATS: resaltado manual de celdas con borde dorado
+
+**Cambio:** click en cualquier celda de SIGNAL STATS → borde dorado (#FFD700, 3px) mediante `_StatsHighlightDelegate`. Segundo click quita el resaltado. Las celdas resaltadas se persisten en `ppg_plotter.ini` (clave `PPGMonitor/stats_highlighted`, formato `row,col;row,col`). No interfiere con los colores SQI de HR1/HR2/HR3 (el delegate pinta el borde encima).
+
+
+## Sesión 2026-04-14 — QMenu min-width para submenús de plots
+
+**Cambio:** añadido `QMenu { min-width: 360px; }` al stylesheet global de la aplicación. Corrige los submenús del botón derecho de los plots pyqtgraph que aparecían demasiado estrechos para leerlos.
+
+
+## Sesión 2026-04-14 — Chequeo integridad RED_Sub / IR_Sub por trama
+
+**Cambio:** en el parsing de tramas M1 en vivo, se verifica que `RED_Sub == RED - RED_Amb` e `IR_Sub == IR - IR_Amb`. Si hay discrepancia, se loguea en Serial Console como `[CHK] SUB MISMATCH #N` con SmpCnt y Δ por canal. Los primeros 5 se loguan siempre; luego uno de cada 100. Contador `_sub_mismatch_count` en PPGMonitor.
+
+**Motivación:** investigar si los picos esporádicos en la señal DC-removed de HR1TEST se originan en el firmware (datos incoherentes entre campos del frame) o en hardware (transitorio real en IR_Sub).
+
+
+## Sesión 2026-04-14 — SIGNAL STATS: formato entero con separador de millares para señales brutas
+
+**Cambio:** en `_update_stats_table`, las primeras 6 filas (RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub — ADC counts) se formatean sin decimales y con separador de millares de espacio fino tipográfico (`\u202f`), p.ej. `1 234 567`. El resto de señales mantiene 2 decimales.
+
+
+## Sesión 2026-04-13 — Capturas redirigidas a carpeta captures/
+
+**Cambio:** todas las capturas del script se guardan ahora en la subcarpeta `captures/` (creada automáticamente al arrancar). Afecta a 9 puntos de escritura: `ppg_data_stream`, `ppg_data_snap`, `ppg_chk`, `spo2_cal`, `spo2test`, `hr1test`, `hr2test`, `hr3test` y `LabCaptureWindow` (directorio por defecto y fallback). Añadida constante `CAPTURES_DIR` junto a `SETTINGS_FILE`.
+
+
+## Sesión 2026-04-14 — Rename y reubicación del proyecto: PulseNest
+
+**Cambio:** el proyecto ha sido renombrado de `Pulsioximeter_test` a **PulseNest** y reubicado de `C:\PRJ\MOW\Misc\AFE4490\Pulsioximeter_test_PABLO\Pulsioximeter_test` a `C:\PRJ\MOW\PulseNest`.
+
+**Motivación:** el nombre PulseNest encaja con la nomenclatura del ecosistema (IncuNest), y la nueva ubicación refleja que el proyecto ha madurado de herramienta de test a proyecto propio dentro de Medical Open World.
+
+**Ficheros actualizados:**
+- `CLAUDE.md`, `TODO.md`, `project_info.md`, `conversation_log.md`: título actualizado a PulseNest
+- `ppg_plotter.ini`: `output_dir` apuntando a `C:/PRJ/MOW/PulseNest/captures`
+- Memorias de Claude Code: paths de comandos pio y pythonw actualizados a nueva ubicación
+
+
+## Sesión 2026-04-14 — Extracción librería + workflows GitHub
+
+### Eliminación repo viejo
+Eliminado `acuesta-mow/incunest_afe4490_test` (repo obsoleto). El repo activo es `medicalopenworld/PulseNest`.
+
+### Extracción de incunest_afe4490 a repo propio
+**Decisión:** la librería vive en su propio repo `medicalopenworld/incunest_afe4490`. PulseNest la consume via `lib_deps = ...#master` durante desarrollo.
+
+**Motivo:** ciclos de vida independientes, changelog limpio, lib_deps semántico para Pablo/Juan en IncuNest.
+
+**Cambios:**
+- Nuevo repo `medicalopenworld/incunest_afe4490` — ficheros: `.h`, `.cpp`, `_platform_stub.h`, `incunest_afe4490_spec.md`, `library.json`, `README.md`, `examples/basic/main.cpp`. Tag `v0.18` creado.
+- PulseNest: eliminados `lib/incunest_afe4490/` e `incunest_afe4490_spec.md`. `platformio.ini` actualizado con `lib_deps = ...#master`. `CLAUDE.md` actualizado.
+- Versión en headers corregida de v0.16 a v0.18.
+
+### Junction local para desarrollo simultáneo
+`PulseNest\lib\incunest_afe4490\` → junction → `C:\PRJ\MOW\incunest_afe4490\`. PlatformIO usa los ficheros locales directamente. `.gitignore` de PulseNest ignora `lib/incunest_afe4490/`. Son dos repos independientes — se commitean por separado.
+
+### Spec pulsenest_lab.py
+Creada `pulsenest_lab_spec.md` v1.0 en PulseNest. Cubre: protocolo serial, clases de algoritmos, layout UI, subventanas, outputs CSV, persistencia .ini, convenciones de color.
+
+### Primera versión compartida de la librería
+`medicalopenworld/incunest_afe4490` tag `v0.18` — primera versión disponible para Pablo y Juan.
+
+**Mensaje para Pablo/Juan:**
+```ini
+lib_deps =
+    https://github.com/medicalopenworld/incunest_afe4490.git#v0.18
+```
