@@ -1,6 +1,6 @@
-# incunest_afe4490_test
+# PulseNest
 
-**incunest_afe4490_test** is a validation tool for the library incunest_afe4490.
+**PulseNest** is a validation tool for the library incunest_afe4490.
 
 **incunest_afe4490** is a library (driver + algorithms) for AFE4490, implemented in `incunest_afe4490.h` and `incunest_afe4490.cpp`
 

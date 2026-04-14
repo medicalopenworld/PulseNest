@@ -1,6 +1,6 @@
 # CLAUDE.md — PulseNest (AFE4490)
 
-https://github.com/acuesta-mow/incunest_afe4490_test
+https://github.com/medicalopenworld/PulseNest
 
 ## Este proyecto
 Herramienta de test para validar el sistema PPG/SpO2 con el chip AFE4490, dentro del proyecto mayor **IncuNest** (incubadora neonatal open-source de Medical Open World).
