@@ -28,7 +28,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 
 ## Herramientas del proyecto
 - **Firmware ESP32-S3:** validación de señal PPG y SpO2 en la placa in3ator
-- **`pulsenest_lab.py`:** script Python para visualizar, analizar y capturar las señales PPG (forma parte del proyecto, no es un script auxiliar)
+- **`pulsenest_lab.py`:** script Python para visualizar, analizar y capturar las señales PPG (forma parte del proyecto, no es un script auxiliar). Ver `pulsenest_lab_spec.md` antes de modificarlo.
 
 ## Log de conversaciones
 - Ver `conversation_log.md` — historial de decisiones de diseño tomadas en cada sesión
