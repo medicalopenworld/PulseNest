@@ -7,7 +7,8 @@ Herramienta de test para validar el sistema PPG/SpO2 con el chip AFE4490, dentro
 El objetivo es verificar la lectura de señal PPG y el cálculo de SpO2 del AFE4490 de forma aislada, antes de integrarlo en el firmware principal de IncuNest.
 
 En el fichero project_info.md está la información del proyecto Incunest.
-En el fichero incunest_afe4490_spec.md está la información de la librería propia `incunest_afe4490`
+La librería `incunest_afe4490` vive en su propio repo: https://github.com/medicalopenworld/incunest_afe4490
+La spec `incunest_afe4490_spec.md` vive en ese repo (no en PulseNest)
 En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 
 
@@ -17,11 +18,11 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 - **Framework:** Arduino + PlatformIO
 - **platformio.ini:** `platform = espressif32@6.6.0`, `framework = arduino`, `board = esp32-s3-devkitc-1`
 - **OS:** FreeRTOS (multitarea)
-- **Librería AFE4490:** `incunest_afe4490` (librería propia, en `lib/incunest_afe4490/`)
+- **Librería AFE4490:** `incunest_afe4490` — repo propio: https://github.com/medicalopenworld/incunest_afe4490 (consumida via `lib_deps` en `platformio.ini`)
 
 ## Especificación de incunest_afe4490
-- Ver `incunest_afe4490_spec.md` — leer antes de tocar cualquier cosa relacionada con incunest_afe4490
-- La spec y la librería están **versionadas juntas** (misma versión semántica)
+- Ver `incunest_afe4490_spec.md` en https://github.com/medicalopenworld/incunest_afe4490 — leer antes de tocar cualquier cosa relacionada con incunest_afe4490
+- La spec y la librería están **versionadas juntas** (misma versión semántica) en el repo de la librería
 - **Regla obligatoria:** cualquier modificación de diseño en la librería debe reflejarse inmediatamente en `incunest_afe4490_spec.md`, sin necesidad de que el usuario lo pida explícitamente
 - Objetivo: cada versión de la spec debe ser capaz por sí sola de regenerar la librería correspondiente
 
