@@ -4647,3 +4647,91 @@ Regex: `r'Board:\s*(\S+)'` aplicado sobre la misma línea del banner. Solo se em
 - Regex `v[\d.]+` → `v\S+` para capturar también `+sha.xxxxxxx`.
 - Añadida extracción del campo `build:` → log `Build: Apr 14 2026 15:23:01`.
 - Al conectar aparecen tres trazas: `Active library:`, `Build:`, `Board:`.
+
+---
+
+## Sesión 2026-04-14m
+
+### Tema: Splitters con persistencia INI en todas las ventanas
+
+**Objetivo:** añadir QSplitter entre plots y sidebars en todas las ventanas del script, guardando posición en `pulsenest_lab.ini`.
+
+**Ventanas completadas (sesión anterior):**
+- SpO2TestWindow, HR1TestWindow, HR2TestWindow, HR3TestWindow: `self._splitter` + INI.
+- HR3LabWindow, HRLabWindow: `self._splitter` ya existía, añadida persistencia INI.
+- SpO2LabWindow: ya tenía INI completo.
+
+**Ventanas completadas (esta sesión):**
+
+**PPGMonitor:**
+- Eliminada `content_layout = QtWidgets.QHBoxLayout()`.
+- Sidebar (`self.sidebar_layout`) envuelto en `_sidebar_container` (QWidget).
+- Nuevo `self.main_splitter` (QSplitter Horizontal) entre sidebar y `self.right_splitter`.
+- `_save_settings()`: guarda `PPGMonitor/main_splitter`.
+- `_restore_settings()`: restaura o aplica defecto `[340, 1200]`.
+
+**PPGPlotsWindow:**
+- Eliminado `root = QHBoxLayout()`.
+- Nuevo `self._splitter` (QSplitter Horizontal) entre sidebar (`sb_widget`) y plots.
+- Eliminado `sb_widget.setFixedWidth(180)` (el splitter gestiona el tamaño).
+- Nuevo `self._plots_splitter` (QSplitter Vertical) dentro del área de plots.
+- `graphics_layout` (RED/IR) en slot superior del `_plots_splitter`.
+- Bottom row (PPG/SpO2/HR) convertida de QHBoxLayout a `_bottom_splitter` (QSplitter Horizontal), añadido al slot inferior de `_plots_splitter`.
+- INI: `PPGPlotsWindow/splitter` y `PPGPlotsWindow/plots_splitter` en `__init__`, `closeEvent` y `_save_settings` de PPGMonitor.
+
+**Ventanas sin splitter (no aplicable):**
+- TimingWindow: solo tabla, sin paneles múltiples.
+- LabCaptureWindow: solo formulario, sin paneles múltiples.
+
+---
+
+## Sesión 2026-04-15 — Auto-CF: selección automática de capacidad TIA
+
+**Tema:** Cálculo automático de `_tia_cf` (capacidad de realimentación del TIA del AFE4490) en función de la frecuencia de muestreo (`_sample_rate_hz`), la resistencia TIA (`_tia_gain` = RF) y el tiempo de settle de los LEDs antes de que el ADC tome la muestra.
+
+**Decisiones tomadas:**
+
+1. **Fórmula del settle time adaptativo:**
+   - Margen = `max(50, floor(q × 0.10))` counts, donde `q = afeclk / (4 × Fs)` (ventana LED-on)
+   - Mínimo: 12.5 µs (50 counts a 4 MHz) — floor que cubre RF_500K/CF_5P al límite
+   - A 500 Hz: margen = 200 counts = 50 µs (era 50 counts = 12.5 µs fijo)
+   - El mismo margen lo usan `_apply_timing_regs()` y `_recalc_tia_cf()` — siempre sincronizados vía `_compute_settle_margin()`
+
+2. **Criterio de selección CF:**
+   - Restricción: `5τ ≤ settle_time` → `CF ≤ settle_time / (5 × RF)` (5 tau = error < 0.7%)
+   - Se selecciona el mayor enum `AFE4490TIACF` cuyo valor físico en pF satisface la restricción
+   - Fallback: CF_5P (mínimo absoluto)
+
+3. **Impacto en la configuración por defecto (500 Hz, RF_500K):**
+   - Antes: CF_5P (5 pF) — tau=2.5 µs, 5τ=12.5 µs (al límite con margen fijo)
+   - Ahora: CF_20P (20 pF) — tau=10 µs, 5τ=50 µs (con margen adaptativo)
+   - f_polo TIA: 63.7 kHz → 15.9 kHz (bien por encima de la banda PPG 0.5–20 Hz)
+
+4. **Implementación:**
+   - `_compute_settle_margin()` → uint32_t: método privado const, usado por ambos callers
+   - `_recalc_tia_cf()` → void: selecciona CF; llamado desde `_recalc_rate_params()` y `setTIAGain()`
+   - `setTIACF()` sigue disponible para override manual; puede ser reoverridenado por `setTIAGain()` / `setSampleRate()`
+   - Constantes en anonymous namespace: `afeclk`, `tia_rf_ohm[]`, `tia_cf_pF[]`, `tia_settle_fraction=0.10`, `tia_settle_min=50`, `tia_n_tau=5.0`
+
+5. **Spec:** v0.19 → v0.20. Sección §7.2 añadida con tabla de CF por RF a 500 Hz.
+
+---
+
+## Sesión 2026-04-15 (cont.) — Documentación comportamiento getData() y cola interna
+
+**Tema:** Análisis y documentación del comportamiento de `getData()` en función de la frecuencia de consumo respecto a la frecuencia de muestreo del AFE (500 Hz).
+
+**Conclusiones del análisis:**
+
+- `getData()` es no bloqueante (`xQueueReceive(..., 0)`)
+- La cola (10 items, `INCUNEST_AFE4490_QUEUE_SIZE`) actúa como buffer de jitter
+- Cuando la cola está llena, el productor descarta el más antiguo e inserta el más reciente (líneas 1020–1024 .cpp)
+- El consumidor siempre saca por el frente (FIFO)
+- Con consumidor consistentemente más lento (< 500 Hz): cola llena en estado estacionario → retardo fijo de **10 × T_muestreo = 20 ms** + muestras intermedias descartadas
+- Los algoritmos internos (HR1/HR2/HR3/SpO2) procesan todas las muestras a 500 Hz independientemente de la frecuencia de consumo
+
+**Cambios realizados:**
+
+- `incunest_afe4490_spec.md` §2.5: tabla de comportamiento por frecuencia de consumo añadida
+- `incunest_afe4490.h`: comentario Doxygen completo sobre `getData()` con los 4 casos (> 500 Hz, ≈ 500 Hz, jitter ocasional, consistentemente < 500 Hz)
+- Pendiente "documentar estrategia de cola" eliminado de la lista de pendientes (ya completado)

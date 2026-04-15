@@ -1,4 +1,4 @@
-Este proyecto, Pulsioximeter_test, es una pequeña herramienta de test para el sistema PPG AFE4490 
+Este proyecto, PulseNest, es una pequeña herramienta de test para el sistema PPG AFE4490
 dentro de un proyecto más grande llamado IncuNest.
 
 La información del proyecto IncuNest es la siguiente:
