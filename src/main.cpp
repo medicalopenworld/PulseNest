@@ -216,6 +216,29 @@ static const char* filter_str(AFE4490Filter f) {
     }
 }
 
+// Emit a $TCFG frame with all 28 raw timing register values read from the chip.
+// Format: $TCFG,t1=<v>,...,t28=<v>*XX
+static void send_tcfg_frame() {
+    AFE4490TimingConfig t = afe.getTimingConfig();
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf) - 6,
+        "$TCFG"
+        ",t1=%lu,t2=%lu,t3=%lu,t4=%lu,t5=%lu,t6=%lu,t7=%lu"
+        ",t8=%lu,t9=%lu,t10=%lu,t11=%lu,t12=%lu,t13=%lu,t14=%lu"
+        ",t15=%lu,t16=%lu,t17=%lu,t18=%lu,t19=%lu,t20=%lu"
+        ",t21=%lu,t22=%lu,t23=%lu,t24=%lu,t25=%lu,t26=%lu,t27=%lu,t28=%lu",
+        (unsigned long)t.t1,  (unsigned long)t.t2,  (unsigned long)t.t3,  (unsigned long)t.t4,
+        (unsigned long)t.t5,  (unsigned long)t.t6,  (unsigned long)t.t7,  (unsigned long)t.t8,
+        (unsigned long)t.t9,  (unsigned long)t.t10, (unsigned long)t.t11, (unsigned long)t.t12,
+        (unsigned long)t.t13, (unsigned long)t.t14, (unsigned long)t.t15, (unsigned long)t.t16,
+        (unsigned long)t.t17, (unsigned long)t.t18, (unsigned long)t.t19, (unsigned long)t.t20,
+        (unsigned long)t.t21, (unsigned long)t.t22, (unsigned long)t.t23, (unsigned long)t.t24,
+        (unsigned long)t.t25, (unsigned long)t.t26, (unsigned long)t.t27, (unsigned long)t.t28);
+    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+    Serial.print(buf);
+}
+
 // Emit a $CFG frame with the current AFE4490 configuration.
 // Called from Cmd_Task (low priority) — safe to call Serial.print() here;
 // the UART hardware buffer serialises writes from all tasks.
@@ -242,16 +265,144 @@ static void send_cfg_frame() {
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
     Serial.print(buf);
+    send_tcfg_frame();  // always emit timing config alongside $CFG
+}
+
+// ── $SET command helpers ───────────────────────────────────────────────────────
+// Parse enum strings used in $CFG frames (same vocabulary as tia_gain_str etc.)
+static bool parse_tia_gain(const char* s, AFE4490TIAGain& out) {
+    if      (strcmp(s, "10K")  == 0) { out = AFE4490TIAGain::RF_10K;  return true; }
+    else if (strcmp(s, "25K")  == 0) { out = AFE4490TIAGain::RF_25K;  return true; }
+    else if (strcmp(s, "50K")  == 0) { out = AFE4490TIAGain::RF_50K;  return true; }
+    else if (strcmp(s, "100K") == 0) { out = AFE4490TIAGain::RF_100K; return true; }
+    else if (strcmp(s, "250K") == 0) { out = AFE4490TIAGain::RF_250K; return true; }
+    else if (strcmp(s, "500K") == 0) { out = AFE4490TIAGain::RF_500K; return true; }
+    else if (strcmp(s, "1M")   == 0) { out = AFE4490TIAGain::RF_1M;   return true; }
+    return false;
+}
+static bool parse_tia_cf(const char* s, AFE4490TIACF& out) {
+    if      (strcmp(s, "5p")   == 0) { out = AFE4490TIACF::CF_5P;   return true; }
+    else if (strcmp(s, "10p")  == 0) { out = AFE4490TIACF::CF_10P;  return true; }
+    else if (strcmp(s, "20p")  == 0) { out = AFE4490TIACF::CF_20P;  return true; }
+    else if (strcmp(s, "30p")  == 0) { out = AFE4490TIACF::CF_30P;  return true; }
+    else if (strcmp(s, "55p")  == 0) { out = AFE4490TIACF::CF_55P;  return true; }
+    else if (strcmp(s, "155p") == 0) { out = AFE4490TIACF::CF_155P; return true; }
+    return false;
+}
+static bool parse_stage2(const char* s, AFE4490Stage2Gain& out) {
+    if      (strcmp(s, "0dB")   == 0) { out = AFE4490Stage2Gain::GAIN_0DB;   return true; }
+    else if (strcmp(s, "3.5dB") == 0) { out = AFE4490Stage2Gain::GAIN_3_5DB; return true; }
+    else if (strcmp(s, "6dB")   == 0) { out = AFE4490Stage2Gain::GAIN_6DB;   return true; }
+    else if (strcmp(s, "9.5dB") == 0) { out = AFE4490Stage2Gain::GAIN_9_5DB; return true; }
+    else if (strcmp(s, "12dB")  == 0) { out = AFE4490Stage2Gain::GAIN_12DB;  return true; }
+    return false;
+}
+
+// Process a validated $SET command (key and value already split, checksum verified).
+// Hardware params (LED, TIA, gain) are applied hot via the library setters.
+// Sample rate requires stop/restart to recalculate timing registers and algorithm state.
+static void apply_set_cmd(const char* key, const char* val) {
+    if (strcmp(key, "led1") == 0) {
+        afe.setLED1Current(atof(val));
+        Serial_printf("# SET led1=%.2f mA\n", atof(val));
+    } else if (strcmp(key, "led2") == 0) {
+        afe.setLED2Current(atof(val));
+        Serial_printf("# SET led2=%.2f mA\n", atof(val));
+    } else if (strcmp(key, "ledrange") == 0) {
+        int r = atoi(val);
+        if (r == 75 || r == 150) {
+            afe.setLEDRange((uint8_t)r);
+            Serial_printf("# SET ledrange=%d mA\n", r);
+        } else {
+            Serial_printf("$ERR,ledrange,invalid (75 or 150)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "tiagain") == 0) {
+        AFE4490TIAGain g;
+        if (parse_tia_gain(val, g)) {
+            afe.setTIAGain(g);
+            Serial_printf("# SET tiagain=%s\n", val);
+        } else {
+            Serial_printf("$ERR,tiagain,invalid (10K/25K/50K/100K/250K/500K/1M)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "tiacf") == 0) {
+        AFE4490TIACF cf;
+        if (parse_tia_cf(val, cf)) {
+            afe.setTIACF(cf);
+            Serial_printf("# SET tiacf=%s\n", val);
+        } else {
+            Serial_printf("$ERR,tiacf,invalid (5p/10p/20p/30p/55p/155p)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "stg2") == 0) {
+        AFE4490Stage2Gain g;
+        if (parse_stage2(val, g)) {
+            afe.setStage2Gain(g);
+            Serial_printf("# SET stg2=%s\n", val);
+        } else {
+            Serial_printf("$ERR,stg2,invalid (0dB/3.5dB/6dB/9.5dB/12dB)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "numav") == 0) {
+        int n = atoi(val);
+        if (n >= 1 && n <= 128) {
+            afe.setNumAverages((uint8_t)n);
+            Serial_printf("# SET numav=%d\n", n);
+        } else {
+            Serial_printf("$ERR,numav,invalid (1-128)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "sr") == 0) {
+        int hz = atoi(val);
+        if (hz >= 63 && hz <= 5000) {
+            Serial_printf("# SET sr=%d Hz — restarting...\n", hz);
+            stop_incunest();
+            afe.setSampleRate((uint16_t)hz);
+            start_incunest();
+        } else {
+            Serial_printf("$ERR,sr,invalid (63-5000)\r\n");
+            return;
+        }
+    } else {
+        // Timing registers t1–t28 (register addresses 0x01–0x1C)
+        static const struct { const char* key; uint8_t addr; } timing_regs[] = {
+            {"t1",0x01},{"t2",0x02},{"t3",0x03},{"t4",0x04},
+            {"t5",0x05},{"t6",0x06},{"t7",0x07},{"t8",0x08},
+            {"t9",0x09},{"t10",0x0A},{"t11",0x0B},{"t12",0x0C},
+            {"t13",0x0D},{"t14",0x0E},{"t15",0x0F},{"t16",0x10},
+            {"t17",0x11},{"t18",0x12},{"t19",0x13},{"t20",0x14},
+            {"t21",0x15},{"t22",0x16},{"t23",0x17},{"t24",0x18},
+            {"t25",0x19},{"t26",0x1A},{"t27",0x1B},{"t28",0x1C},
+        };
+        for (const auto& r : timing_regs) {
+            if (strcmp(key, r.key) == 0) {
+                uint32_t v = (uint32_t)strtoul(val, nullptr, 10);
+                if (v > 65535UL) {
+                    Serial_printf("$ERR,%s,out of range (0-65535)\r\n", key);
+                    return;
+                }
+                afe.setTimingReg(r.addr, v);
+                Serial_printf("# SET %s(0x%02X)=%lu\n", key, r.addr, (unsigned long)v);
+                send_tcfg_frame();
+                return;  // $TCFG emitted; no $CFG needed for timing-only changes
+            }
+        }
+        Serial_printf("$ERR,%s,unknown key\r\n", key);
+        return;
+    }
+    send_cfg_frame();
 }
 
 // ── Command task ──────────────────────────────────────────────────────────────
 // Accepts commands over Serial (host → ESP32):
-//   '1'      → frame mode $M1 (full)
-//   '2'      → frame mode $M2 (raw ADC only)
-//   '$CFG?\n'→ emit $CFG frame with current AFE4490 configuration
+//   '1'           → frame mode $M1 (full)
+//   '2'           → frame mode $M2 (raw ADC only)
+//   '$CFG?\n'     → emit $CFG frame with current AFE4490 configuration
+//   '$SET,k,v*XX' → set hardware parameter k to value v (XOR checksum verified)
 // Multi-byte commands are accumulated until '\n'.
 void Cmd_Task(void *pvParameters) {
-    char cmd_buf[32];
+    char cmd_buf[64];
     int  cmd_len = 0;
     for (;;) {
         while (Serial.available()) {
@@ -267,6 +418,25 @@ void Cmd_Task(void *pvParameters) {
                     Serial.println("# Frame mode: $M2 (raw)");
                 } else if (strcmp(cmd_buf, "$CFG?") == 0) {
                     send_cfg_frame();
+                } else if (strncmp(cmd_buf, "$SET,", 5) == 0) {
+                    // Verify XOR checksum: $SET,key,val*XX
+                    char* star = strrchr(cmd_buf, '*');
+                    if (star && (star - cmd_buf) >= 5) {
+                        uint8_t expected = (uint8_t)strtoul(star + 1, nullptr, 16);
+                        uint8_t actual   = frame_xor_chk(cmd_buf + 1, (int)(star - cmd_buf) - 1);
+                        if (actual == expected) {
+                            *star = '\0';  // terminate before '*'
+                            // Split "SET,key,val" into key and val
+                            char* body = cmd_buf + 5;  // skip "$SET,"
+                            char* comma = strchr(body, ',');
+                            if (comma) {
+                                *comma = '\0';
+                                apply_set_cmd(body, comma + 1);
+                            }
+                        } else {
+                            Serial_printf("$ERR,checksum,got %02X expected %02X\r\n", actual, expected);
+                        }
+                    }
                 }
                 cmd_len = 0;
             } else {

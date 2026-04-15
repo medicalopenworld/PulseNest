@@ -4456,6 +4456,370 @@ class TimingWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
+class HWConfigWindow(QtWidgets.QMainWindow):
+    """AFE4490 hardware parameter control window.
+
+    Sends $SET,key,value*XX commands to the ESP32 to change hardware parameters
+    at runtime. Populates from incoming $CFG frames. Each parameter has its own
+    Set button so changes can be applied individually during lab sessions.
+    """
+
+    # TIA gain options — same strings as tia_gain_str() in main.cpp
+    TIA_GAINS  = ["10K", "25K", "50K", "100K", "250K", "500K", "1M"]
+    TIA_CFS    = ["5p", "10p", "20p", "30p", "55p", "155p"]
+    STG2_GAINS = ["0dB", "3.5dB", "6dB", "9.5dB", "12dB"]
+    LED_RANGES = ["75", "150"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_monitor = parent
+        self.setWindowTitle("HW CONFIG — AFE4490")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HWConfigWindow/geometry")
+        if geom: self.restoreGeometry(geom)
+        else:    self.resize(560, 900)
+        self._setup_ui()
+        self._on_read_cfg()  # auto-read chip config on open
+
+    # ── UI ────────────────────────────────────────────────────────────────────
+    def _setup_ui(self):
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        vbox = QtWidgets.QVBoxLayout(central)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(12, 10, 12, 10)
+
+        # Read-from-chip button
+        btn_read = QtWidgets.QPushButton("Read from chip  ($CFG?)")
+        btn_read.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#2A3D5A; color:#AACCFF;")
+        btn_read.clicked.connect(self._on_read_cfg)
+        btn_read.setToolTip(_make_tooltip(
+            "Read from chip ($CFG?)",
+            "Sends $CFG? to the ESP32 and updates all controls with the actual "
+            "current chip configuration."))
+        vbox.addWidget(btn_read)
+
+        # ── LED Currents ──────────────────────────────────────────────────────
+        grp_led = QtWidgets.QGroupBox("LED Currents")
+        grp_led.setStyleSheet("QGroupBox { font-size:26px; font-weight:bold; color:#AACCFF; "
+                              "border:1px solid #334466; border-radius:6px; margin-top:8px; padding-top:6px; }"
+                              "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }")
+        form_led = QtWidgets.QFormLayout(grp_led)
+        form_led.setSpacing(6)
+
+        self._spin_led1 = QtWidgets.QDoubleSpinBox()
+        self._spin_led1.setRange(0.0, 150.0)
+        self._spin_led1.setDecimals(2)
+        self._spin_led1.setSuffix(" mA")
+        self._spin_led1.setStyleSheet("background-color:#202020; color:#E0E0E0;")
+        self._spin_led1.setToolTip(_make_tooltip("LED1 current (IR)",
+            "Drive current for the IR LED. Range depends on LED range setting (75 or 150 mA full-scale). "
+            "Sends $SET,led1,<value>."))
+        form_led.addRow("LED1 (IR)", self._make_row(self._spin_led1, "led1", lambda: f"{self._spin_led1.value():.2f}"))
+
+        self._spin_led2 = QtWidgets.QDoubleSpinBox()
+        self._spin_led2.setRange(0.0, 150.0)
+        self._spin_led2.setDecimals(2)
+        self._spin_led2.setSuffix(" mA")
+        self._spin_led2.setStyleSheet("background-color:#202020; color:#E0E0E0;")
+        self._spin_led2.setToolTip(_make_tooltip("LED2 current (RED)",
+            "Drive current for the RED LED. Range depends on LED range setting (75 or 150 mA full-scale). "
+            "Sends $SET,led2,<value>."))
+        form_led.addRow("LED2 (RED)", self._make_row(self._spin_led2, "led2", lambda: f"{self._spin_led2.value():.2f}"))
+
+        self._combo_ledrange = QtWidgets.QComboBox()
+        self._combo_ledrange.addItems(self.LED_RANGES)
+        self._combo_ledrange.setToolTip(_make_tooltip("LED full-scale range",
+            "Sets the LED current DAC full-scale: 75 mA or 150 mA. "
+            "Affects the meaning of the LED1/LED2 current values. "
+            "Sends $SET,ledrange,<75|150>."))
+        form_led.addRow("Range", self._make_row(self._combo_ledrange, "ledrange",
+                                                lambda: self._combo_ledrange.currentText()))
+        vbox.addWidget(grp_led)
+
+        # ── TIA Gain ──────────────────────────────────────────────────────────
+        grp_tia = QtWidgets.QGroupBox("TIA Gain")
+        grp_tia.setStyleSheet(grp_led.styleSheet())
+        form_tia = QtWidgets.QFormLayout(grp_tia)
+        form_tia.setSpacing(6)
+
+        self._combo_tiagain = QtWidgets.QComboBox()
+        self._combo_tiagain.addItems(self.TIA_GAINS)
+        self._combo_tiagain.setToolTip(_make_tooltip("TIA feedback resistance (RF)",
+            "Transimpedance amplifier feedback resistor for LED measurement phases. "
+            "Higher RF → more gain → smaller LED current needed, but lower headroom. "
+            "Sends $SET,tiagain,<value>."))
+        form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain, "tiagain",
+                                                   lambda: self._combo_tiagain.currentText()))
+
+        self._combo_tiacf = QtWidgets.QComboBox()
+        self._combo_tiacf.addItems(self.TIA_CFS)
+        self._combo_tiacf.setToolTip(_make_tooltip("TIA feedback capacitance (CF)",
+            "Feedback capacitor in parallel with RF. Larger CF reduces bandwidth and noise "
+            "but slows the TIA response. 5 pF is the default (widest bandwidth). "
+            "Sends $SET,tiacf,<value>."))
+        form_tia.addRow("CF", self._make_row(self._combo_tiacf, "tiacf",
+                                              lambda: self._combo_tiacf.currentText()))
+
+        self._combo_stg2 = QtWidgets.QComboBox()
+        self._combo_stg2.addItems(self.STG2_GAINS)
+        self._combo_stg2.setToolTip(_make_tooltip("Stage 2 amplifier gain",
+            "Post-TIA amplifier gain. 0 dB disables Stage 2. Use higher values to amplify "
+            "weak signals without increasing TIA gain (avoids TIA saturation). "
+            "Sends $SET,stg2,<value>."))
+        form_tia.addRow("Stage 2", self._make_row(self._combo_stg2, "stg2",
+                                                   lambda: self._combo_stg2.currentText()))
+        vbox.addWidget(grp_tia)
+
+        # ── Sampling ──────────────────────────────────────────────────────────
+        grp_samp = QtWidgets.QGroupBox("Sampling")
+        grp_samp.setStyleSheet(grp_led.styleSheet())
+        form_samp = QtWidgets.QFormLayout(grp_samp)
+        form_samp.setSpacing(6)
+
+        self._spin_sr = QtWidgets.QSpinBox()
+        self._spin_sr.setRange(63, 5000)
+        self._spin_sr.setSuffix(" Hz")
+        self._spin_sr.setStyleSheet("background-color:#202020; color:#E0E0E0;")
+        self._spin_sr.setToolTip(_make_tooltip("Sample rate",
+            "ADC sample rate in Hz (63–5000). Changing this requires a chip restart "
+            "(brief data gap ~200 ms). Also recalculates all algorithm time constants. "
+            "Sends $SET,sr,<value>."))
+        lbl_sr_warn = QtWidgets.QLabel("⚠ restarts chip")
+        lbl_sr_warn.setStyleSheet("color:#FFAA44; font-size:22px;")
+        row_sr = QtWidgets.QHBoxLayout()
+        row_sr.addWidget(self._spin_sr)
+        row_sr.addWidget(lbl_sr_warn)
+        row_sr.addWidget(self._make_set_btn("sr", lambda: str(self._spin_sr.value())))
+        form_samp.addRow("Sample rate", row_sr)
+
+        self._spin_numav = QtWidgets.QSpinBox()
+        self._spin_numav.setRange(1, 128)
+        self._spin_numav.setStyleSheet("background-color:#202020; color:#E0E0E0;")
+        self._spin_numav.setToolTip(_make_tooltip("ADC averages",
+            "Number of ADC hardware averages per sample (1 = no averaging). Higher values "
+            "reduce noise but lower effective sample rate. Max allowed = floor(5000 / sr). "
+            "Sends $SET,numav,<value>."))
+        form_samp.addRow("Averages", self._make_row(self._spin_numav, "numav",
+                                                    lambda: str(self._spin_numav.value())))
+        vbox.addWidget(grp_samp)
+
+        # ── Timing Registers ──────────────────────────────────────────────────
+        grp_timing = QtWidgets.QGroupBox("Timing Registers  (AFECLK = 4 MHz → 1 count = 0.25 µs)")
+        grp_timing.setStyleSheet(grp_led.styleSheet())
+        timing_vbox = QtWidgets.QVBoxLayout(grp_timing)
+        timing_vbox.setSpacing(4)
+        timing_vbox.setContentsMargins(6, 24, 6, 6)
+
+        self._lbl_timing_status = QtWidgets.QLabel("No timing data — click 'Read from chip'")
+        self._lbl_timing_status.setStyleSheet("color:#AAAAAA; font-size:20px;")
+        self._lbl_timing_status.setWordWrap(True)
+        timing_vbox.addWidget(self._lbl_timing_status)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(150)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        inner = QtWidgets.QWidget()
+        inner.setStyleSheet("background: transparent;")
+        form_t = QtWidgets.QFormLayout(inner)
+        form_t.setSpacing(1)
+        form_t.setContentsMargins(4, 1, 4, 1)
+        scroll.setWidget(inner)
+        timing_vbox.addWidget(scroll, stretch=1)
+        vbox.addWidget(grp_timing, stretch=1)
+
+        self._timing_spins = {}
+
+        _TIMING_REGS = [
+            ('t1',  'LED2STC',      'LED2 sample window start. Must be ≥ t3 (LED turn-on).'),
+            ('t2',  'LED2ENDC',     'LED2 sample window end. Must be ≤ t4 (LED turn-off).'),
+            ('t3',  'LED2LEDSTC',   'LED2 LED turn-on. Must be ≤ t1 (sample start).'),
+            ('t4',  'LED2LEDENDC',  'LED2 LED turn-off. Must be ≥ t2 (sample end).'),
+            ('t5',  'ALED2STC',     'Ambient LED2 sample window start.'),
+            ('t6',  'ALED2ENDC',    'Ambient LED2 sample window end. ADC conv (t15) must start after this.'),
+            ('t7',  'LED1STC',      'LED1 sample window start. Must be ≥ t9 (LED turn-on).'),
+            ('t8',  'LED1ENDC',     'LED1 sample window end. Must be ≤ t10 (LED turn-off).'),
+            ('t9',  'LED1LEDSTC',   'LED1 LED turn-on. Must be ≤ t7 (sample start).'),
+            ('t10', 'LED1LEDENDC',  'LED1 LED turn-off. Must be ≥ t8 (sample end).'),
+            ('t11', 'ALED1STC',     'Ambient LED1 sample window start.'),
+            ('t12', 'ALED1ENDC',    'Ambient LED1 sample window end. ADC conv (t19) must start after this.'),
+            ('t13', 'LED2CONVST',   'LED2 ADC conversion start. Must be ≥ t2 and ≥ t21 (ADC reset 0).'),
+            ('t14', 'LED2CONVEND',  'LED2 ADC conversion end.'),
+            ('t15', 'ALED2CONVST',  'ALED2 ADC conversion start. Must be ≥ t6 and ≥ t23 (ADC reset 1).'),
+            ('t16', 'ALED2CONVEND', 'ALED2 ADC conversion end.'),
+            ('t17', 'LED1CONVST',   'LED1 ADC conversion start. Must be ≥ t8 and ≥ t25 (ADC reset 2).'),
+            ('t18', 'LED1CONVEND',  'LED1 ADC conversion end.'),
+            ('t19', 'ALED1CONVST',  'ALED1 ADC conversion start. Must be ≥ t12 and ≥ t27 (ADC reset 3).'),
+            ('t20', 'ALED1CONVEND', 'ALED1 ADC conversion end.'),
+            ('t21', 'ADCRSTSTCT0',  'ADC reset 0 start (LED2 channel). Must be ≤ t13 (conv start).'),
+            ('t22', 'ADCRSTENDCT0', 'ADC reset 0 end.'),
+            ('t23', 'ADCRSTSTCT1',  'ADC reset 1 start (ALED2 channel). Must be ≤ t15.'),
+            ('t24', 'ADCRSTENDCT1', 'ADC reset 1 end.'),
+            ('t25', 'ADCRSTSTCT2',  'ADC reset 2 start (LED1 channel). Must be ≤ t17.'),
+            ('t26', 'ADCRSTENDCT2', 'ADC reset 2 end.'),
+            ('t27', 'ADCRSTSTCT3',  'ADC reset 3 start (ALED1 channel). Must be ≤ t19.'),
+            ('t28', 'ADCRSTENDCT3', 'ADC reset 3 end.'),
+        ]
+
+        for key, reg_name, tip in _TIMING_REGS:
+            sp = QtWidgets.QSpinBox()
+            sp.setRange(0, 65535)
+            sp.setStyleSheet("font-size:22px; background-color:#202020; color:#E0E0E0;")
+            sp.setToolTip(_make_tooltip(f"{key} — {reg_name}",
+                tip + f"\nSends $SET,{key},<value>."))
+            sp.valueChanged.connect(self._on_timing_changed)
+            self._timing_spins[key] = sp
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(sp, stretch=1)
+            row.addWidget(self._make_timing_set_btn(key))
+            lbl = f"{key}  {reg_name}"
+            form_t.addRow(lbl, row)
+
+        # Status bar
+        self._statusbar = self.statusBar()
+        self._statusbar.setStyleSheet("font-size:22px; color:#AAAAAA;")
+        self._statusbar.showMessage("No data — click 'Read from chip' or wait for $CFG frame")
+
+    def _make_set_btn(self, key: str, value_fn) -> QtWidgets.QPushButton:
+        """Create a 'Set' button that sends $SET,key,value*XX."""
+        btn = QtWidgets.QPushButton("Set")
+        btn.setStyleSheet("font-size:24px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
+        btn.setFixedWidth(70)
+        btn.clicked.connect(lambda: self._send_set(key, value_fn()))
+        return btn
+
+    def _make_row(self, widget, key: str, value_fn) -> QtWidgets.QHBoxLayout:
+        """Wrap a control and its Set button in an HBoxLayout."""
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(widget, stretch=1)
+        row.addWidget(self._make_set_btn(key, value_fn))
+        return row
+
+    def _make_timing_set_btn(self, key: str) -> QtWidgets.QPushButton:
+        """Set button for a timing register — warns on constraint violations before sending."""
+        btn = QtWidgets.QPushButton("Set")
+        btn.setStyleSheet("font-size:22px; padding:2px 8px; background-color:#1E3A1E; color:#88FF88;")
+        btn.setFixedWidth(60)
+        btn.clicked.connect(lambda: self._send_timing_set(key))
+        return btn
+
+    # ── Timing constraint validation ──────────────────────────────────────────
+    def _validate_timing(self) -> list:
+        """Return list of constraint-violation description strings (empty = all OK)."""
+        t = {k: sp.value() for k, sp in self._timing_spins.items()}
+        v = []
+        # Each phase: start < end
+        for s, e, name in [
+            ('t1','t2','LED2 sample'), ('t3','t4','LED2 drive'),
+            ('t5','t6','ALED2 sample'), ('t7','t8','LED1 sample'),
+            ('t9','t10','LED1 drive'), ('t11','t12','ALED1 sample'),
+            ('t13','t14','LED2 conv'), ('t15','t16','ALED2 conv'),
+            ('t17','t18','LED1 conv'), ('t19','t20','ALED1 conv'),
+            ('t21','t22','ADC rst0'), ('t23','t24','ADC rst1'),
+            ('t25','t26','ADC rst2'), ('t27','t28','ADC rst3'),
+        ]:
+            if t[s] >= t[e]:
+                v.append(f"{name}: {s}({t[s]}) ≥ {e}({t[e]})")
+        # Cross-phase ordering (LED encompass, conv > sample, reset < conv) requires
+        # modular arithmetic with the PRF period — omitted to avoid false positives
+        # in circular configurations where a phase wraps across the cycle boundary.
+        return v
+
+    def _on_timing_changed(self):
+        """Called whenever any timing spinbox changes — updates the validation label."""
+        violations = self._validate_timing()
+        if violations:
+            preview = " | ".join(violations[:2])
+            if len(violations) > 2: preview += f" (+{len(violations)-2} more)"
+            self._lbl_timing_status.setText(f"⚠ {preview}")
+            self._lbl_timing_status.setStyleSheet("color:#FF8844; font-size:20px;")
+        else:
+            self._lbl_timing_status.setText("OK — no constraint violations")
+            self._lbl_timing_status.setStyleSheet("color:#88FF88; font-size:20px;")
+
+    def _send_timing_set(self, key: str):
+        """Send $SET for a timing register. Warns if constraints are violated (does not block)."""
+        violations = self._validate_timing()
+        if violations:
+            msg = f"⚠ Sent with violation: {violations[0]}"
+            if len(violations) > 1: msg += f" (+{len(violations)-1} more)"
+            self._statusbar.showMessage(msg)
+        self._send_set(key, str(self._timing_spins[key].value()))
+
+    # ── Serial communication ──────────────────────────────────────────────────
+    def _send_set(self, key: str, value: str):
+        mm = self.main_monitor
+        if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
+            self._statusbar.showMessage("Not connected")
+            return
+        payload = f"$SET,{key},{value}"
+        chk = 0
+        for c in payload[1:]:
+            chk ^= ord(c)
+        cmd = f"{payload}*{chk:02X}\r\n"
+        mm._cfg_notify_lab_capture = False  # $CFG confirmation from $SET must not go to LabCapture notes
+        mm._cfg_notify_hw_config   = True   # but must update HWConfigWindow controls
+        mm.ser.write(cmd.encode())
+        mm.log(f"→ {cmd.strip()}")
+        self._statusbar.showMessage(f"Sent: {cmd.strip()}  — waiting for $CFG confirmation…")
+
+    def _on_read_cfg(self):
+        mm = self.main_monitor
+        if mm is None or not mm.request_chip_config(notify_lab_capture=False, notify_hw_config=True):
+            self._statusbar.showMessage("Not connected")
+
+    # ── Update controls from $CFG key-value dict ──────────────────────────────
+    def update_from_cfg(self, kv: dict):
+        """Populate controls from a parsed $CFG key-value dict."""
+        def set_spin_float(spin, key):
+            try: spin.setValue(float(kv[key]))
+            except (KeyError, ValueError): pass
+
+        def set_spin_int(spin, key):
+            try: spin.setValue(int(kv[key]))
+            except (KeyError, ValueError): pass
+
+        def set_combo(combo, key):
+            v = kv.get(key)
+            if v is None: return
+            idx = combo.findText(v)
+            if idx >= 0: combo.setCurrentIndex(idx)
+
+        set_spin_float(self._spin_led1,    'led1')
+        set_spin_float(self._spin_led2,    'led2')
+        set_combo(self._combo_ledrange,    'range')
+        set_combo(self._combo_tiagain,     'tia')
+        set_combo(self._combo_tiacf,       'cf')
+        set_combo(self._combo_stg2,        'stg2')
+        set_spin_int(self._spin_sr,        'sr')
+        set_spin_int(self._spin_numav,     'numav')
+        self._statusbar.showMessage("Config loaded from chip")
+
+    def update_from_tcfg(self, kv: dict):
+        """Populate timing controls from a parsed $TCFG key-value dict."""
+        for key, sp in self._timing_spins.items():
+            v = kv.get(key)
+            if v is not None:
+                try:
+                    sp.blockSignals(True)
+                    sp.setValue(int(v))
+                    sp.blockSignals(False)
+                except ValueError:
+                    pass
+        self._on_timing_changed()  # validate after bulk load
+        self._statusbar.showMessage("Timing config loaded from chip")
+
+    def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("HWConfigWindow/geometry", self.saveGeometry())
+        mm = self.main_monitor
+        self.main_monitor = None
+        if mm is not None and hasattr(mm, 'btn_hw_config'):
+            mm.btn_hw_config.setChecked(False)
+            mm.hw_config_window = None
+        super().closeEvent(event)
+
+
 class HR3LabWindow(QtWidgets.QMainWindow):
     """Diagnostic window for the HR3 (FFT-based) algorithm.
 
@@ -5678,6 +6042,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr2test_window   = None
         self.hr3test_window   = None
         self.timing_window    = None
+        self.hw_config_window = None
         self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
         # Render throttle rates (all relative to ~50 Hz update_data calls)
         self._PPGPLOTS_REFRESH_EVERY  = 2   # 25 Hz — smooth plot animation
@@ -5809,13 +6174,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.sidebar_layout.addSpacing(12)
 
-        self.btn_pause = QtWidgets.QPushButton("PAUSE\nCAPTURE")
+        self.btn_pause = QtWidgets.QPushButton("FREEZE\nDISPLAY")
         self.btn_pause.setCheckable(True)
         self.btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.btn_pause.setToolTip(_make_tooltip(
-            "PAUSE CAPTURE",
-            "Pause or resume live data display. The serial port stays open and data "
+            "FREEZE DISPLAY",
+            "Freeze or resume the live data display. The serial port stays open and data "
             "keeps flowing; only the UI plots and stats are frozen."))
         self.sidebar_layout.addWidget(self.btn_pause)
 
@@ -6007,6 +6372,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Cycle budget = 2000 µs (1 sample period at 500 Hz)."))
         self.sidebar_layout.addWidget(self.btn_timing)
 
+        self.btn_hw_config = QtWidgets.QPushButton("HW CONFIG")
+        self.btn_hw_config.setCheckable(True)
+        self.btn_hw_config.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_hw_config.clicked.connect(self.toggle_hw_config)
+        self.btn_hw_config.setToolTip(_make_tooltip(
+            "HW CONFIG — AFE4490 Parameters",
+            "Opens the hardware configuration window. Allows changing AFE4490 parameters "
+            "(LED current, TIA gain, sample rate, etc.) at runtime via $SET commands, "
+            "without reflashing. Confirmation arrives as an updated $CFG frame."))
+        self.sidebar_layout.addWidget(self.btn_hw_config)
+
         self.sidebar_layout.addStretch()
 
         # ── Log panel (right of sidebar, fills remaining space) ───────────────
@@ -6158,10 +6534,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.frame_mode = mode
         self._update_frame_button()
 
-    def request_chip_config(self):
-        """Send $CFG? to ESP32. Response arrives asynchronously via _on_cfg_frame_received()."""
+    def request_chip_config(self, notify_lab_capture=True, notify_hw_config=False):
+        """Send $CFG? to ESP32. Response arrives asynchronously via _on_cfg_frame_received().
+        notify_lab_capture: forward response to _cfg_listener (LabCaptureWindow Pre-capture notes).
+        notify_hw_config: update HWConfigWindow controls with received values."""
         if not hasattr(self, 'ser') or self.ser is None or not self.ser.is_open:
             return False
+        self._cfg_notify_lab_capture = notify_lab_capture
+        self._cfg_notify_hw_config   = notify_hw_config
         self.log("CFG request sent → $CFG?")
         self.ser.write(b'$CFG?\n')
         return True
@@ -6196,8 +6576,23 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
             f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}"
         )
-        if self._cfg_listener is not None:
+        if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', True):
             self._cfg_listener(text)
+        if self.hw_config_window is not None and getattr(self, '_cfg_notify_hw_config', False):
+            self.hw_config_window.update_from_cfg(kv)
+        self._cfg_notify_lab_capture = True   # reset to defaults after each frame
+        self._cfg_notify_hw_config   = False
+
+    def _on_tcfg_frame_received(self, line):
+        """Parse a $TCFG frame and deliver timing values to HWConfigWindow (if open)."""
+        kv = {}
+        for part in line[len('$TCFG,'):].split(','):
+            if '=' in part:
+                k, v = part.split('=', 1)
+                kv[k] = v
+        self.log(f"[TCFG] received ({len(kv)} timing registers)")
+        if self.hw_config_window is not None:
+            self.hw_config_window.update_from_tcfg(kv)
 
 
     def _reset_esp32(self):
@@ -6345,6 +6740,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_timing.setChecked(True)
         self.toggle_timing()
 
+    def _open_hw_config_default(self):
+        self.btn_hw_config.setChecked(True)
+        self.toggle_hw_config()
+
     def toggle_timing(self):
         if self.btn_timing.isChecked():
             self.timing_window = TimingWindow(self)
@@ -6353,6 +6752,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if self.timing_window is not None:
                 self.timing_window.close()
                 self.timing_window = None
+
+    def toggle_hw_config(self):
+        if self.btn_hw_config.isChecked():
+            self.hw_config_window = HWConfigWindow(self)
+            self.hw_config_window.show()
+        else:
+            if self.hw_config_window is not None:
+                self.hw_config_window.main_monitor = None
+                self.hw_config_window.close()
+                self.hw_config_window = None
 
     def _open_lab_capture_default(self):
         self.btn_lab_capture.setChecked(True)
@@ -6445,10 +6854,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
         if self.is_paused:
-            self.btn_pause.setText("RESUME\nCAPTURE")
-            self.log("Capture PAUSED")
+            self.btn_pause.setText("RESUME\nDISPLAY")
+            self.log("Display FROZEN")
         else:
-            self.btn_pause.setText("PAUSE\nCAPTURE")
+            self.btn_pause.setText("FREEZE\nDISPLAY")
             self.log(f"System ONLINE - Connected to {PORT} @ {BAUD}")
 
     def auto_stop_save(self):
@@ -6512,6 +6921,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
         s.setValue("PPGMonitor/timing_open",      self.timing_window      is not None)
+        s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
         # Persist geometry of all open subwindows (survives taskkill; also saved in their closeEvent)
         if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",   self.ppgplots_window.saveGeometry())
@@ -6524,6 +6934,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
         if self.timing_window        is not None: s.setValue("TimingWindow/geometry",       self.timing_window.saveGeometry())
+        if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
         if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
 
     def _restore_settings(self):
@@ -6586,6 +6997,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
                 "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
             self.btn_port_connect.setText("CONNECTED")
+            if self.hw_config_window is not None:
+                QtCore.QTimer.singleShot(2000, self.hw_config_window._on_read_cfg)
         except Exception as e:
             self.ser = None
             self.log(f"ERROR: Could not open {port} — {e}")
@@ -6802,9 +7215,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.timing_window.update_tasks(self._pending_tasks)
                         continue
 
-                    # $CFG: chip configuration response (reply to $CFG? command)
+                    # $CFG: chip configuration response (reply to $CFG? or $SET command)
                     if line.startswith('$CFG,'):
                         self._on_cfg_frame_received(line)
+                        continue
+
+                    # $TCFG: raw timing register values (reply to $CFG? or $SET t1..t28)
+                    if line.startswith('$TCFG,'):
+                        self._on_tcfg_frame_received(line)
+                        continue
+
+                    # $ERR: firmware rejected a $SET command
+                    if line.startswith('$ERR,'):
+                        self.log(f"⚠ FIRMWARE ERROR: {line}")
+                        if self.hw_config_window is not None:
+                            self.hw_config_window._statusbar.showMessage(f"Error: {line}")
                         continue
 
                     # Decimation: skip N-1 out of every N data frames for console + plots
@@ -6983,6 +7408,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr3test_default)
         if s.value("PPGMonitor/timing_open",       False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_timing_default)
+        if s.value("PPGMonitor/hw_config_open",    False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_hw_config_default)
         if s.value("PPGMonitor/labcapture_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_lab_capture_default)
         QtCore.QTimer.singleShot(300, self._bring_all_to_front)
@@ -6999,7 +7426,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for w in [self, self.ppgplots_window, self.serialcom_window,
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
-                  self.hr3test_window, self.timing_window, self.lab_capture_window]:
+                  self.hr3test_window, self.timing_window, self.hw_config_window, self.lab_capture_window]:
             if w is not None:
                 w.show()
                 w.raise_()
@@ -7057,6 +7484,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.hr3test_window.close()
         if self.timing_window is not None:
             self.timing_window.close()
+        if self.hw_config_window is not None:
+            self.hw_config_window.main_monitor = None
+            self.hw_config_window.close()
         if self.lab_capture_window is not None:
             self.lab_capture_window.main_monitor = None
             self.lab_capture_window.close()

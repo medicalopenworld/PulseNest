@@ -4735,3 +4735,186 @@ Regex: `r'Board:\s*(\S+)'` aplicado sobre la misma línea del banner. Solo se em
 - `incunest_afe4490_spec.md` §2.5: tabla de comportamiento por frecuencia de consumo añadida
 - `incunest_afe4490.h`: comentario Doxygen completo sobre `getData()` con los 4 casos (> 500 Hz, ≈ 500 Hz, jitter ocasional, consistentemente < 500 Hz)
 - Pendiente "documentar estrategia de cola" eliminado de la lista de pendientes (ya completado)
+
+---
+
+## Sesión 2026-04-15 (cont.) — Datasheet URL + versión v0.20
+
+**Tema:** Añadir referencia al datasheet oficial del AFE4490 en todos los ficheros relevantes.
+
+**URL:** https://www.ti.com/lit/ds/symlink/afe4490.pdf
+
+**Cambios realizados:**
+- `README.md`: sección References añadida con enlace al datasheet
+- `incunest_afe4490_spec.md`: URL en cabecera, §7.1 y §11 (reference sources)
+- `incunest_afe4490.h`: URL en cabecera + versión v0.19 → v0.20
+- `incunest_afe4490.cpp`: URL en cabecera + versión v0.19 → v0.20
+
+---
+
+## Sesión — 2026-04-15
+
+### Tema: Clasificación de parámetros y Parameters Reference en la spec
+
+**Preguntas clave:**
+- ¿Qué tipos de parámetros afectan a los resultados de la librería?
+- ¿Dónde documentarlos?
+- ¿Cómo tratar los factores de entorno/condición física que están fuera del alcance de la librería?
+
+**Decisiones tomadas:**
+1. **Clasificación en 5 capas**: (1) hardware AFE4490, (2) pre-procesado compartido, (3) parámetros por algoritmo (SpO2/HR1/HR2/HR3), (4) rango/validación, (5) entorno/condición física
+2. **Toda la documentación de parámetros va en `incunest_afe4490_spec.md`** — es la única fuente de verdad que puede regenerar la librería
+3. **Los factores de entorno** (perfusión, luz ambiental, movimiento, sonda) **no son parámetros configurables** pero sus efectos son observables a través de los campos SQI y raw de `AFE4490Data`. Se documentan explícitamente como out-of-scope.
+4. **Spec actualizada a v0.21**: nueva §10 "Parameters Reference" con subsecciones §10.1–§10.8. Secciones anteriores §10–§12 renumeradas a §11–§13.
+
+**Cambios realizados:**
+- `incunest_afe4490_spec.md`: v0.20 → v0.21, §10 Parameters Reference añadida (8 subsecciones), Version history movida a §13 (final del documento), §11 AFE4490 register config, §12 Bibliographic references
+
+---
+
+## Sesión — 2026-04-15 (continuación)
+
+### Tema: Remote Parameter Control — diseño e implementación fase 1 (parámetros hardware AFE4490)
+
+**Preguntas clave:**
+- ¿Qué estrategia seguir para cambiar parámetros de la librería en tiempo de ensayo sin reflashear?
+- ¿Qué parámetros hardware del AFE4490 exponer en esta primera fase?
+- ¿Apply individual por parámetro o Apply All?
+- ¿Los parámetros `amb_tiagain`/`amb_tiacf` (TIA_AMB_GAIN) son implementables directamente?
+
+**Decisiones tomadas:**
+1. **Protocolo:** trama NMEA-style `$SET,key,value*XX\r\n` (PC → ESP32). Checksum XOR idéntico al de las tramas de datos existentes. Confirmación: el firmware responde con `$CFG` actualizado, o `$ERR,key,reason` si el valor es inválido.
+2. **Apply individual por parámetro** — botón "Set" por control en la ventana. Más ergonómico en lab (cambios aislados durante medidas).
+3. **8 parámetros en fase 1:** `led1`, `led2`, `ledrange`, `tiagain`, `tiacf`, `stg2`, `sr`, `numav`. Los analógicos se aplican en caliente (los setters ya escriben SPI directo bajo `_spi_mutex`). `sr` requiere stop/restart (recalcula timing y algoritmos).
+4. **`amb_tiagain`/`amb_tiacf` aplazados:** la librería tiene ENSEPGAIN=0 en TIAGAIN (bit 15), por lo que TIA_AMB_GAIN RF/CF son ignorados por el chip. Añadirlos requeriría activar ENSEPGAIN=1, que es un cambio de diseño independiente. Se diseñarán en una iteración futura.
+5. **Timing registers** (0x01–0x1C): aplazados para una iteración futura. Son 20 registros interdependientes; un error puede dejar el chip en estado inválido.
+6. **TX_REF** (CONTROL2 bit): aplazado. Valor actual hardcodeado a 0 (0.75 V). Requiere verificar el datasheet antes de exponer.
+
+**Cambios realizados:**
+- `src/main.cpp`: `cmd_buf` 32→64 bytes; helpers `parse_tia_gain()`, `parse_tia_cf()`, `parse_stage2()`; función `apply_set_cmd()` con lógica stop/restart para `sr`; `Cmd_Task` ampliado para parsear `$SET,key,val*XX` con verificación de checksum.
+- `pulsenest_lab.py`: nueva clase `HWConfigWindow` (8 controles con botón Set individual, se puebla desde `$CFG`, geometría persistente); botón `HW CONFIG` en sidebar; `_on_cfg_frame_received()` actualiza `HWConfigWindow` si está abierta; `$ERR` frames mostrados en log y statusbar; ventana integrada en save/restore/raise/close.
+- `pulsenest_lab.py`: botón `btn_pause` renombrado de "PAUSE CAPTURE" / "RESUME CAPTURE" a "FREEZE DISPLAY" / "RESUME DISPLAY" (más preciso: el puerto serial y la recepción de datos no se interrumpen, solo se congela la visualización).
+- `pulsenest_lab.py`: `HWConfigWindow` refactorizada para usar el patrón `main_monitor` (igual que el resto de ventanas del proyecto): `self.main_monitor = parent` en `__init__`, reemplazados todos los `self.parent()` por `self.main_monitor`, y añadido `main_monitor = None` antes de cada `close()` en `toggle_hw_config()` y `PPGMonitor.closeEvent()` para evitar callbacks recursivos durante el cierre.
+- `pulsenest_lab.py`: corregido bug por el que `btn_read` de `HWConfigWindow` escribía en Pre-capture notes de `LabCaptureWindow`, y `btn_read_cfg` de `LabCaptureWindow` actualizaba los controles de `HWConfigWindow`. Solución: dos flags independientes en `PPGMonitor` (`_cfg_notify_lab_capture`, `_cfg_notify_hw_config`) que controlan a quién se enruta cada `$CFG` recibido. `request_chip_config()` ampliado con parámetros `notify_lab_capture` y `notify_hw_config`. Cada ventana activa solo su propio flag. Los flags se resetean a sus valores por defecto (`True`/`False`) tras cada frame procesado.
+
+---
+
+## Sesión 2026-04-15 (continuación) — Timing registers t1–t28
+
+### Tema: Implementación completa del acceso a los 28 registros de timing del AFE4490
+
+### Cambios implementados
+
+**`lib/incunest_afe4490/incunest_afe4490.h`** (ya estaba de sesión anterior):
+- Struct `AFE4490TimingConfig` con 28 campos t1–t28
+- Declaraciones `getTimingConfig()` y `setTimingReg(uint8_t addr, uint32_t value)`
+
+**`lib/incunest_afe4490/incunest_afe4490.cpp`** (ya estaba de sesión anterior):
+- `getTimingConfig()`: activa SPI_READ, lee los 28 registros (0x01–0x1C) bajo `_spi_mutex`, emite struct
+- `setTimingReg()`: escribe un registro bajo `_spi_mutex`
+
+**`src/main.cpp`**:
+- `send_tcfg_frame()`: ya existía; emite `$TCFG,t1=<v>,...,t28=<v>*XX`
+- `send_cfg_frame()`: ampliada para llamar `send_tcfg_frame()` al final → $CFG? siempre emite también $TCFG
+- `apply_set_cmd()`: añadida tabla de lookup (t1–t28 → addr 0x01–0x1C); `$SET,tN,v` escribe el registro vía `setTimingReg()` y emite `send_tcfg_frame()` (sin $CFG, solo $TCFG); rango validado: 0–65535
+
+**`pulsenest_lab.py`**:
+- `PPGMonitor._on_tcfg_frame_received()`: parsea `$TCFG`, siempre entrega a `hw_config_window` si está abierta
+- Reader loop: nuevo handler `if line.startswith('$TCFG,')` antes de `$ERR`
+- `HWConfigWindow._setup_ui()`: nuevo grupo "Timing Registers" con QScrollArea (altura fija 400 px), 28 QSpinBox (0–65535) con etiqueta `tN  REGNAME`, botón Set individual, y label de validación
+- `HWConfigWindow._make_timing_set_btn()`: botón Set para timing (llama `_send_timing_set`)
+- `HWConfigWindow._validate_timing()`: comprueba 14 pares start<end, enclosing LED, conv≥sample-end, reset≤conv-start → lista de violaciones
+- `HWConfigWindow._on_timing_changed()`: actualiza label verde/naranja en tiempo real
+- `HWConfigWindow._send_timing_set()`: avisa de violaciones en statusbar pero no bloquea el envío
+- `HWConfigWindow.update_from_tcfg()`: puebla los 28 spinboxes bloqueando señales, luego valida
+- Tamaño de ventana por defecto: 520×560 → 560×900
+
+### Decisiones de diseño
+- $TCFG siempre se enruta a HWConfigWindow sin depender de los flags `_cfg_notify_*` (es información exclusiva de esa ventana)
+- Las violaciones de constraint advierten pero no bloquean el envío (el usuario puede estar ajustando valores de forma incremental)
+- Rango firmware: 0–65535 (cubre cualquier PRF a ≥63 Hz con AFECLK=4 MHz)
+- Workaround build: los cambios de librería se sincronizan manualmente a `.pio/libdeps/incunest_V16/` mientras no se haga push a GitHub (la lib_deps apunta a GitHub)
+
+---
+
+## Sesión 2026-04-15 (fix menor) — HWConfigWindow scroll resize
+
+- `pulsenest_lab.py`: en `HWConfigWindow`, el scroll area del grupo Timing Registers cambia de `setFixedHeight(400)` a `setMinimumHeight(150)` + `stretch=1` en ambos `addWidget` (scroll dentro de timing_vbox, y grp_timing dentro de vbox). Ahora al agrandar la ventana crece el scroll, no el label de validación.
+
+---
+
+## Sesión 2026-04-15 (fix validación timing) — Opción A: sólo checks intra-par
+
+- `pulsenest_lab.py` `HWConfigWindow._validate_timing()`: eliminados todos los checks inter-fase (LED encompass, conv > sample end, reset < conv start) porque requieren aritmética modular con el período PRF para ser correctos en configuraciones circulares. Sólo se mantienen los 14 checks intra-par (start < end dentro de cada fase), que son siempre válidos independientemente del layout circular.
+
+---
+
+## Sesión 2026-04-15 (fix layout) — Margen superior grp_timing
+
+- `pulsenest_lab.py` `HWConfigWindow._setup_ui()`: `timing_vbox.setContentsMargins` top 6→18 px para que `_lbl_timing_status` no tape el título del QGroupBox "Timing Registers".
+
+---
+
+## Sesión 2026-04-15 (fix layout 2) — Margen superior grp_timing
+
+- `pulsenest_lab.py`: `timing_vbox.setContentsMargins` top 18→24 px (ajuste fino).
+
+---
+
+## Sesión 2026-04-15 (fix layout 3) — Márgenes form_t
+
+- `pulsenest_lab.py`: `form_t.setContentsMargins` top/bottom 4→1 px (compactar filas del scroll de timing).
+
+---
+
+## Sesión 2026-04-15 (fix layout 4) — Spacing form_t
+
+- `pulsenest_lab.py`: `form_t.setSpacing` 3→1 px para reducir la altura de cada fila del scroll de timing.
+
+---
+
+## Sesión 2026-04-15 (fix layout 5) — Fondo HWConfigWindow
+
+- `pulsenest_lab.py`: fondo de `HWConfigWindow` cambiado de `#121212` a `#2A2A2A` (gris más claro).
+
+---
+
+## Sesión 2026-04-15 (fix layout 6) — Fondo spinboxes timing
+
+- `pulsenest_lab.py`: fondo de `HWConfigWindow` revertido a `#121212`. Spinboxes del grupo Timing Registers: `background-color:#3A3A3A; color:#E0E0E0` para distinguirlos visualmente del fondo de la ventana.
+
+---
+
+## Sesión 2026-04-16 (fix layout 7) — Fondo spinboxes HWConfigWindow
+
+- `pulsenest_lab.py`: fondo de todos los `QSpinBox` y `QDoubleSpinBox` de `HWConfigWindow` unificado a `#252525` (gris oscuro) mediante regla en el stylesheet global de la ventana. Eliminado el `background-color` inline previo de los spinboxes de timing.
+
+---
+
+## Sesión 2026-04-16 (fix layout 8) — Fondo spinboxes timing
+
+- `pulsenest_lab.py`: revertido cambio de stylesheet global de `HWConfigWindow`. Spinboxes del grupo Timing Registers: `background-color` ajustado a `#202020`.
+
+---
+
+## Sesión 2026-04-16 (fix layout 9) — Fondo #202020 en todos los spinboxes de HWConfigWindow
+
+- `pulsenest_lab.py`: `background-color:#202020; color:#E0E0E0` aplicado a `_spin_led1`, `_spin_led2`, `_spin_sr`, `_spin_numav` (igual que los spinboxes del grupo Timing Registers).
+
+---
+
+## Sesión 2026-04-16 — Auto-lectura config al abrir HWConfigWindow
+
+- `pulsenest_lab.py` `HWConfigWindow.__init__()`: añadida llamada `self._on_read_cfg()` al final del constructor para leer automáticamente la configuración del chip ($CFG? + $TCFG) cada vez que se abre la ventana. El botón "Read from chip" se mantiene para lecturas manuales adicionales.
+
+---
+
+## Sesión 2026-04-16 — Fix auto-lectura HWConfigWindow al arranque
+
+- `pulsenest_lab.py`: la auto-lectura en `__init__` fallaba si el puerto serie aún no estaba abierto. Fix: tras una conexión serie exitosa, si `hw_config_window` está abierta se lanza `_on_read_cfg()` con `QTimer.singleShot(500ms)` para dar tiempo al ESP32 a arrancar antes de enviar `$CFG?`.
+
+---
+
+## Sesión 2026-04-16 — Fix delay auto-lectura HWConfigWindow
+
+- `pulsenest_lab.py`: delay del `QTimer.singleShot` para auto-lectura al conectar 500→2000 ms. El ESP32 puede tardar hasta ~1.5 s en arrancar tras el reset por apertura del puerto serie.
