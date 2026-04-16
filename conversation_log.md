@@ -4990,3 +4990,75 @@ Fix: en `_connect_serial()`, el `QTimer.singleShot` usa un lambda que evalúa `s
 **Fix 3 — `_reset_esp32`:** añadido `QTimer.singleShot(2500ms, _on_read_cfg)` tras el reset (mismo delay que al conectar el puerto), para dar tiempo al ESP32 a arrancar antes de solicitar la config.
 
 El caso de conectar el puerto ya estaba cubierto con el timer de 2500ms en `_connect_serial`.
+
+---
+
+## Sesión 2026-04-16b — Botón "Set all" en HWConfigWindow
+
+**Petición:** añadir botón "Set all" a la derecha del botón "Read from chip" en HWConfigWindow, que configure todos los parámetros de una sola vez.
+
+**Implementación:**
+- Los dos botones van en un `QHBoxLayout` en la parte superior de la ventana (`btn_top_row`).
+- `btn_read` ocupa el espacio disponible (`stretch=1`); `btn_set_all` tiene ancho fijo al texto.
+- Estilo verde igual a los botones "Set" individuales (`#1E3A1E` / `#88FF88`).
+- Método `_on_set_all()`: envía `$SET` para los 8 parámetros HW (led1, led2, ledrange, tiagain, tiacf, stg2, sr, numav) y después para todos los registros de timing t1–t28 iterando `self._timing_spins`.
+- Tras cada envío marca el widget como clean (color normal).
+- Si hay violaciones de constraints de timing, la status bar lo muestra con `⚠`; si todo OK, muestra "Set all — sent N parameters".
+- Tooltip descriptivo con `_make_tooltip()`.
+
+---
+
+## Sesión 2026-04-16c — Botones "Read from file" / "Save to file" en HWConfigWindow
+
+**Petición:** añadir dos botones de fichero a la izquierda del botón "Read from chip" en HWConfigWindow.
+
+**Formato de fichero elegido:** plain key=value, extensión `.pncfg`. Claves idénticas a las del protocolo `$SET`. Cabecera con fecha/hora como comentario `#`.
+
+**Implementación:**
+- Fila superior (izq → der): `[Read from file]` `[Save to file]` `[Read from chip ($CFG?)]` `[Set all]`
+- Estilo ámbar (`#2D2010` / `#FFCC66`) para distinguirlos de azules (chip) y verdes (set).
+- `_on_save_to_file`: guarda todos los valores de la UI (led1, led2, ledrange, tiagain, tiacf, stg2, sr, numav, t1–t28) al fichero seleccionado.
+- `_on_read_from_file`: carga el fichero y aplica valores **sin** suprimir dirty marking (`_updating_from_cfg` queda en False). Los valores que cambien disparan `valueChanged`/`currentIndexChanged` → se marcan rojos automáticamente. Los que coinciden con la UI actual no emiten señal → quedan limpios.
+- Último directorio guardado en `QSettings` bajo `HWConfigWindow/last_file_dir`.
+- Añadido `from pathlib import Path` a los imports globales.
+
+---
+
+## Sesión 2026-04-16d — Comentarios inline en fichero .pncfg
+
+**Petición:** añadir nombre de registro y descripción como comentario a la derecha de cada parámetro en el fichero .pncfg guardado por "Save to file".
+
+**Implementación:**
+- `_TIMING_REGS` movida de variable local en `_setup_ui` a atributo de clase, para que sea accesible desde `_on_save_to_file`.
+- Helper `kv_line(key, value, comment)` formatea cada línea con `key=value` alineado a 20 chars y `# comment` a la derecha.
+- Comentarios para parámetros HW: descripciones cortas (p.ej. "LED1 (IR) — IR LED drive current (mA)").
+- Comentarios para timing t1–t28: `reg_name — tip` extraídos directamente de `_TIMING_REGS`.
+- Parser `_on_read_from_file` actualizado: `v.split("#")[0].strip()` para ignorar comentarios inline al leer.
+
+---
+
+## Sesión 2026-04-16e — Ajuste padding comentarios .pncfg
+
+Reducido el padding entre `key=value` y `# comment` de 20 a 15 caracteres en `kv_line()`.
+
+---
+
+## Sesión 2026-04-16f — Revertido ajuste padding comentarios .pncfg
+
+Revertido el cambio de padding de 15 a 20 caracteres en `kv_line()`. Padding queda en 20.
+
+---
+
+## Sesión 2026-04-16g — Rehecho ajuste padding + fix kill pythonw
+
+Rehecho: padding `kv_line()` de 20 → 15 caracteres en fichero .pncfg.
+
+Fix relanzado: `taskkill /F /IM pythonw.exe` no mata los procesos en este entorno. Solución: `powershell -Command "Get-Process pythonw | Stop-Process -Force"`.
+
+---
+
+## Sesión 2026-04-16h — Bloqueo rueda ratón en spins/combos de HWConfigWindow
+
+**Problema:** los QSpinBox y QComboBox cambiaban de valor al pasar la rueda del ratón por encima aunque no estuvieran activos, produciendo cambios indeseados.
+
+**Solución:** clase `_WheelBlockFilter(QObject)` con `eventFilter` que ignora `QEvent.Wheel` si el widget no tiene foco. Se instala en todos los spins y combos de HWConfigWindow al final de `_setup_ui`, y se fija `FocusPolicy = StrongFocus` en cada uno.

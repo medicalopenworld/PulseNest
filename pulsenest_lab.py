@@ -1,5 +1,6 @@
 import sys
 import os
+from pathlib import Path
 import serial
 from serial.tools import list_ports
 import threading
@@ -4456,6 +4457,15 @@ class TimingWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
+class _WheelBlockFilter(QtCore.QObject):
+    """Event filter that blocks mouse-wheel events on a widget unless it has focus."""
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
+
 class HWConfigWindow(QtWidgets.QMainWindow):
     """AFE4490 hardware parameter control window.
 
@@ -4487,6 +4497,38 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._updating_from_cfg = False
         self._setup_ui()
 
+    # Timing register definitions: (key, reg_name, description)
+    _TIMING_REGS = [
+        ('t1',  'LED2STC',      'LED2 sample window start. Must be ≥ t3 (LED turn-on).'),
+        ('t2',  'LED2ENDC',     'LED2 sample window end. Must be ≤ t4 (LED turn-off).'),
+        ('t3',  'LED2LEDSTC',   'LED2 LED turn-on. Must be ≤ t1 (sample start).'),
+        ('t4',  'LED2LEDENDC',  'LED2 LED turn-off. Must be ≥ t2 (sample end).'),
+        ('t5',  'ALED2STC',     'Ambient LED2 sample window start.'),
+        ('t6',  'ALED2ENDC',    'Ambient LED2 sample window end. ADC conv (t15) must start after this.'),
+        ('t7',  'LED1STC',      'LED1 sample window start. Must be ≥ t9 (LED turn-on).'),
+        ('t8',  'LED1ENDC',     'LED1 sample window end. Must be ≤ t10 (LED turn-off).'),
+        ('t9',  'LED1LEDSTC',   'LED1 LED turn-on. Must be ≤ t7 (sample start).'),
+        ('t10', 'LED1LEDENDC',  'LED1 LED turn-off. Must be ≥ t8 (sample end).'),
+        ('t11', 'ALED1STC',     'Ambient LED1 sample window start.'),
+        ('t12', 'ALED1ENDC',    'Ambient LED1 sample window end. ADC conv (t19) must start after this.'),
+        ('t13', 'LED2CONVST',   'LED2 ADC conversion start. Must be ≥ t2 and ≥ t21 (ADC reset 0).'),
+        ('t14', 'LED2CONVEND',  'LED2 ADC conversion end.'),
+        ('t15', 'ALED2CONVST',  'ALED2 ADC conversion start. Must be ≥ t6 and ≥ t23 (ADC reset 1).'),
+        ('t16', 'ALED2CONVEND', 'ALED2 ADC conversion end.'),
+        ('t17', 'LED1CONVST',   'LED1 ADC conversion start. Must be ≥ t8 and ≥ t25 (ADC reset 2).'),
+        ('t18', 'LED1CONVEND',  'LED1 ADC conversion end.'),
+        ('t19', 'ALED1CONVST',  'ALED1 ADC conversion start. Must be ≥ t12 and ≥ t27 (ADC reset 3).'),
+        ('t20', 'ALED1CONVEND', 'ALED1 ADC conversion end.'),
+        ('t21', 'ADCRSTSTCT0',  'ADC reset 0 start (LED2 channel). Must be ≤ t13 (conv start).'),
+        ('t22', 'ADCRSTENDCT0', 'ADC reset 0 end.'),
+        ('t23', 'ADCRSTSTCT1',  'ADC reset 1 start (ALED2 channel). Must be ≤ t15.'),
+        ('t24', 'ADCRSTENDCT1', 'ADC reset 1 end.'),
+        ('t25', 'ADCRSTSTCT2',  'ADC reset 2 start (LED1 channel). Must be ≤ t17.'),
+        ('t26', 'ADCRSTENDCT2', 'ADC reset 2 end.'),
+        ('t27', 'ADCRSTSTCT3',  'ADC reset 3 start (ALED1 channel). Must be ≤ t19.'),
+        ('t28', 'ADCRSTENDCT3', 'ADC reset 3 end.'),
+    ]
+
     # ── UI ────────────────────────────────────────────────────────────────────
     def _setup_ui(self):
         central = QtWidgets.QWidget()
@@ -4495,7 +4537,28 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         vbox.setSpacing(6)
         vbox.setContentsMargins(12, 10, 12, 10)
 
-        # Read-from-chip button
+        # Top button row: file ops + Read from chip + Set all
+        btn_top_row = QtWidgets.QHBoxLayout()
+
+        btn_read_file = QtWidgets.QPushButton("Read from file")
+        btn_read_file.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#2D2010; color:#FFCC66;")
+        btn_read_file.clicked.connect(self._on_read_from_file)
+        btn_read_file.setToolTip(_make_tooltip(
+            "Read from file (.pncfg)",
+            "Opens a .pncfg file and loads its values into the UI controls. "
+            "Values that differ from the current UI state are highlighted in red "
+            "to indicate they have not yet been sent to the hardware."))
+        btn_top_row.addWidget(btn_read_file)
+
+        btn_save_file = QtWidgets.QPushButton("Save to file")
+        btn_save_file.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#2D2010; color:#FFCC66;")
+        btn_save_file.clicked.connect(self._on_save_to_file)
+        btn_save_file.setToolTip(_make_tooltip(
+            "Save to file (.pncfg)",
+            "Saves all current UI values to a .pncfg file. "
+            "Does not read from or write to the hardware — only captures the UI state."))
+        btn_top_row.addWidget(btn_save_file)
+
         btn_read = QtWidgets.QPushButton("Read from chip  ($CFG?)")
         btn_read.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#2A3D5A; color:#AACCFF;")
         btn_read.clicked.connect(self._on_read_cfg)
@@ -4503,7 +4566,18 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Read from chip ($CFG?)",
             "Sends $CFG? to the ESP32 and updates all controls with the actual "
             "current chip configuration."))
-        vbox.addWidget(btn_read)
+        btn_top_row.addWidget(btn_read, stretch=1)
+
+        btn_set_all = QtWidgets.QPushButton("Set all")
+        btn_set_all.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#1E3A1E; color:#88FF88;")
+        btn_set_all.clicked.connect(self._on_set_all)
+        btn_set_all.setToolTip(_make_tooltip(
+            "Set all parameters",
+            "Sends $SET for every parameter in this window (LED currents, TIA gain, "
+            "sample rate, averages and all timing registers t1–t28) in one shot."))
+        btn_top_row.addWidget(btn_set_all)
+
+        vbox.addLayout(btn_top_row)
 
         # ── LED Currents ──────────────────────────────────────────────────────
         grp_led = QtWidgets.QGroupBox("LED Currents")
@@ -4638,38 +4712,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
         self._timing_spins = {}
 
-        _TIMING_REGS = [
-            ('t1',  'LED2STC',      'LED2 sample window start. Must be ≥ t3 (LED turn-on).'),
-            ('t2',  'LED2ENDC',     'LED2 sample window end. Must be ≤ t4 (LED turn-off).'),
-            ('t3',  'LED2LEDSTC',   'LED2 LED turn-on. Must be ≤ t1 (sample start).'),
-            ('t4',  'LED2LEDENDC',  'LED2 LED turn-off. Must be ≥ t2 (sample end).'),
-            ('t5',  'ALED2STC',     'Ambient LED2 sample window start.'),
-            ('t6',  'ALED2ENDC',    'Ambient LED2 sample window end. ADC conv (t15) must start after this.'),
-            ('t7',  'LED1STC',      'LED1 sample window start. Must be ≥ t9 (LED turn-on).'),
-            ('t8',  'LED1ENDC',     'LED1 sample window end. Must be ≤ t10 (LED turn-off).'),
-            ('t9',  'LED1LEDSTC',   'LED1 LED turn-on. Must be ≤ t7 (sample start).'),
-            ('t10', 'LED1LEDENDC',  'LED1 LED turn-off. Must be ≥ t8 (sample end).'),
-            ('t11', 'ALED1STC',     'Ambient LED1 sample window start.'),
-            ('t12', 'ALED1ENDC',    'Ambient LED1 sample window end. ADC conv (t19) must start after this.'),
-            ('t13', 'LED2CONVST',   'LED2 ADC conversion start. Must be ≥ t2 and ≥ t21 (ADC reset 0).'),
-            ('t14', 'LED2CONVEND',  'LED2 ADC conversion end.'),
-            ('t15', 'ALED2CONVST',  'ALED2 ADC conversion start. Must be ≥ t6 and ≥ t23 (ADC reset 1).'),
-            ('t16', 'ALED2CONVEND', 'ALED2 ADC conversion end.'),
-            ('t17', 'LED1CONVST',   'LED1 ADC conversion start. Must be ≥ t8 and ≥ t25 (ADC reset 2).'),
-            ('t18', 'LED1CONVEND',  'LED1 ADC conversion end.'),
-            ('t19', 'ALED1CONVST',  'ALED1 ADC conversion start. Must be ≥ t12 and ≥ t27 (ADC reset 3).'),
-            ('t20', 'ALED1CONVEND', 'ALED1 ADC conversion end.'),
-            ('t21', 'ADCRSTSTCT0',  'ADC reset 0 start (LED2 channel). Must be ≤ t13 (conv start).'),
-            ('t22', 'ADCRSTENDCT0', 'ADC reset 0 end.'),
-            ('t23', 'ADCRSTSTCT1',  'ADC reset 1 start (ALED2 channel). Must be ≤ t15.'),
-            ('t24', 'ADCRSTENDCT1', 'ADC reset 1 end.'),
-            ('t25', 'ADCRSTSTCT2',  'ADC reset 2 start (LED1 channel). Must be ≤ t17.'),
-            ('t26', 'ADCRSTENDCT2', 'ADC reset 2 end.'),
-            ('t27', 'ADCRSTSTCT3',  'ADC reset 3 start (ALED1 channel). Must be ≤ t19.'),
-            ('t28', 'ADCRSTENDCT3', 'ADC reset 3 end.'),
-        ]
-
-        for key, reg_name, tip in _TIMING_REGS:
+        for key, reg_name, tip in self._TIMING_REGS:
             sp = QtWidgets.QSpinBox()
             sp.setRange(0, 65535)
             sp.setStyleSheet("font-size:22px; background-color:#202020; color:#E0E0E0;")
@@ -4691,6 +4734,15 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._statusbar = self.statusBar()
         self._statusbar.setStyleSheet("font-size:22px; color:#AAAAAA;")
         self._statusbar.showMessage("No data — click 'Read from chip' or wait for $CFG frame")
+
+        # Block accidental wheel changes — only active when the widget has focus
+        self._wheel_filter = _WheelBlockFilter(self)
+        for w in ([self._spin_led1, self._spin_led2, self._combo_ledrange,
+                   self._combo_tiagain, self._combo_tiacf, self._combo_stg2,
+                   self._spin_sr, self._spin_numav]
+                  + list(self._timing_spins.values())):
+            w.setFocusPolicy(QtCore.Qt.StrongFocus)
+            w.installEventFilter(self._wheel_filter)
 
     def _make_set_btn(self, key: str, value_fn, widget=None) -> QtWidgets.QPushButton:
         """Create a 'Set' button that sends $SET,key,value*XX."""
@@ -4809,6 +4861,129 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         mm = self.main_monitor
         if mm is None or not mm.request_chip_config(notify_lab_capture=False, notify_hw_config=True):
             self._statusbar.showMessage("Not connected")
+
+    def _on_set_all(self):
+        """Send $SET for every parameter in the window."""
+        hw_params = [
+            ("led1",     f"{self._spin_led1.value():.2f}",         self._spin_led1),
+            ("led2",     f"{self._spin_led2.value():.2f}",         self._spin_led2),
+            ("ledrange", self._combo_ledrange.currentText(),        self._combo_ledrange),
+            ("tiagain",  self._combo_tiagain.currentText(),         self._combo_tiagain),
+            ("tiacf",    self._combo_tiacf.currentText(),           self._combo_tiacf),
+            ("stg2",     self._combo_stg2.currentText(),            self._combo_stg2),
+            ("sr",       str(self._spin_sr.value()),                self._spin_sr),
+            ("numav",    str(self._spin_numav.value()),             self._spin_numav),
+        ]
+        for key, value, widget in hw_params:
+            self._send_set(key, value)
+            self._mark_clean(widget)
+        violations = self._validate_timing()
+        for key, sp in self._timing_spins.items():
+            self._send_set(key, str(sp.value()))
+            self._mark_clean(sp)
+        n = len(hw_params) + len(self._timing_spins)
+        if violations:
+            msg = f"Set all ({n} params) — ⚠ timing violation: {violations[0]}"
+            if len(violations) > 1:
+                msg += f" (+{len(violations)-1} more)"
+            self._statusbar.showMessage(msg)
+        else:
+            self._statusbar.showMessage(f"Set all — sent {n} parameters")
+
+    # ── File load / save ──────────────────────────────────────────────────────
+    _FILE_FILTER   = "PulseNest Config (*.pncfg);;All files (*)"
+    _LAST_DIR_KEY  = "HWConfigWindow/last_file_dir"
+
+    def _file_last_dir(self) -> str:
+        return QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
+            self._LAST_DIR_KEY, str(Path.home()))
+
+    def _file_save_last_dir(self, path: str):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue(self._LAST_DIR_KEY, str(Path(path).parent))
+
+    def _on_save_to_file(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save HW Config", self._file_last_dir(), self._FILE_FILTER)
+        if not path:
+            return
+        if not path.endswith(".pncfg"):
+            path += ".pncfg"
+        self._file_save_last_dir(path)
+
+        def kv_line(key, value, comment):
+            entry = f"{key}={value}"
+            return f"{entry:<15}# {comment}"
+
+        lines = [
+            "# PulseNest HW Config",
+            f"# Saved: {QtCore.QDateTime.currentDateTime().toString('yyyy-MM-dd hh:mm:ss')}",
+            kv_line("led1",     f"{self._spin_led1.value():.2f}",        "LED1 (IR) — IR LED drive current (mA)"),
+            kv_line("led2",     f"{self._spin_led2.value():.2f}",        "LED2 (RED) — RED LED drive current (mA)"),
+            kv_line("ledrange", self._combo_ledrange.currentText(),       "LED full-scale range (75 or 150 mA)"),
+            kv_line("tiagain",  self._combo_tiagain.currentText(),        "TIA feedback resistance (RF)"),
+            kv_line("tiacf",    self._combo_tiacf.currentText(),          "TIA feedback capacitance (CF)"),
+            kv_line("stg2",     self._combo_stg2.currentText(),           "Stage 2 amplifier gain"),
+            kv_line("sr",       str(self._spin_sr.value()),               "Sample rate (Hz) — restarts chip on change"),
+            kv_line("numav",    str(self._spin_numav.value()),            "ADC averages per sample"),
+        ]
+        timing_info = {key: (reg_name, tip) for key, reg_name, tip in self._TIMING_REGS}
+        for key, sp in self._timing_spins.items():
+            reg_name, tip = timing_info[key]
+            lines.append(kv_line(key, str(sp.value()), f"{reg_name} — {tip}"))
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            self._statusbar.showMessage(f"Saved: {path}")
+        except Exception as e:
+            self._statusbar.showMessage(f"Save failed: {e}")
+
+    def _on_read_from_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Open HW Config", self._file_last_dir(), self._FILE_FILTER)
+        if not path:
+            return
+        self._file_save_last_dir(path)
+        kv = {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, _, v = line.partition("=")
+                        kv[k.strip()] = v.split("#")[0].strip()
+        except Exception as e:
+            self._statusbar.showMessage(f"Read failed: {e}")
+            return
+
+        # Apply values without suppressing dirty marking — changed values go red automatically
+        def set_spin_float(spin, key):
+            try: spin.setValue(float(kv[key]))
+            except (KeyError, ValueError): pass
+
+        def set_spin_int(spin, key):
+            try: spin.setValue(int(kv[key]))
+            except (KeyError, ValueError): pass
+
+        def set_combo(combo, key):
+            if key in kv:
+                idx = combo.findText(kv[key])
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+
+        set_spin_float(self._spin_led1,        "led1")
+        set_spin_float(self._spin_led2,        "led2")
+        set_combo(self._combo_ledrange,        "ledrange")
+        set_combo(self._combo_tiagain,         "tiagain")
+        set_combo(self._combo_tiacf,           "tiacf")
+        set_combo(self._combo_stg2,            "stg2")
+        set_spin_int(self._spin_sr,            "sr")
+        set_spin_int(self._spin_numav,         "numav")
+        for key, sp in self._timing_spins.items():
+            set_spin_int(sp, key)
+        self._statusbar.showMessage(f"Loaded: {path}")
 
     # ── Update controls from $CFG key-value dict ──────────────────────────────
     def update_from_cfg(self, kv: dict):
