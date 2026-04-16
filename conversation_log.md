@@ -4918,3 +4918,75 @@ Regex: `r'Board:\s*(\S+)'` aplicado sobre la misma línea del banner. Solo se em
 ## Sesión 2026-04-16 — Fix delay auto-lectura HWConfigWindow
 
 - `pulsenest_lab.py`: delay del `QTimer.singleShot` para auto-lectura al conectar 500→2000 ms. El ESP32 puede tardar hasta ~1.5 s en arrancar tras el reset por apertura del puerto serie.
+
+---
+
+## Sesión 2026-04-16 — Indicador dirty/clean en HWConfigWindow
+
+- `pulsenest_lab.py` `HWConfigWindow`: cuando el usuario cambia el valor de un control sin haberlo enviado, el texto se pone en rojo (#FF4444). Al pulsar "Set" el color vuelve al normal (#E0E0E0).
+  - Constantes de clase `_SPIN_SS_CLEAN/DIRTY` y `_TSPIN_SS_CLEAN/DIRTY`
+  - Flag `_updating_from_cfg` para evitar marcar dirty durante actualizaciones desde $CFG/$TCFG
+  - `_mark_dirty(widget)` / `_mark_clean(widget)`: aplican el stylesheet correcto según tipo (spinbox normal, timing spinbox, combobox)
+  - `_make_row()`: conecta `valueChanged`/`currentIndexChanged` a `_mark_dirty` y pasa el widget al botón Set
+  - `_make_set_btn()`: acepta `widget` opcional y llama `_mark_clean` tras el envío
+  - `_spin_sr`: señal y widget añadidos manualmente (no pasa por `_make_row`)
+  - Timing spinboxes: señal `_mark_dirty` añadida junto a `_on_timing_changed`
+  - `_make_timing_set_btn()`: llama `_mark_clean` tras el envío
+  - `update_from_cfg()`: protegido con `_updating_from_cfg = True/False`
+
+---
+
+## Sesión 2026-04-16 — Reset color dirty al recargar config en HWConfigWindow
+
+- `pulsenest_lab.py`: `update_from_cfg()` llama `_mark_clean` en los 8 controles principales tras actualizar. `update_from_tcfg()` llama `_mark_clean` en todos los timing spinboxes tras actualizar. Así al cargar config (botón o auto al arrancar) todos los widgets vuelven al color normal.
+
+---
+
+## Sesión 2026-04-16 — Fix auto-lectura HWConfigWindow al arranque (2ª iteración)
+
+Diagnóstico: al arrancar el script, `_connect_serial()` se ejecuta en línea (antes de que `_restore_settings()` haya creado `hw_config_window` vía `QTimer.singleShot(0,...)`). El timer anterior capturaba `self.hw_config_window` (que era `None`) y no se creaba.
+
+Fix: en `_connect_serial()`, el `QTimer.singleShot` usa un lambda que evalúa `self.hw_config_window` en el momento de dispararse (2500 ms después), no en el momento de crearse. Para entonces `_open_hw_config_default()` ya ha creado la ventana. Cuando la ventana se abre manualmente, `__init__` sigue llamando `_on_read_cfg()` directamente (puerto ya estable).
+
+---
+
+## Sesión 2026-04-16 — Corrección tooltip wavelength IR
+
+**Pregunta:** LED2 es IR o RED?
+**Respuesta:** LED2 = RED (660 nm), LED1 = IR.
+
+**Cambio:** tooltip de la señal IR en `pulsenest_lab.py` (línea 6119) actualizado de `~880 nm` a `~880–940 nm` para reflejar el rango típico de LEDs IR en sondas SpO2. Información meramente orientativa.
+
+**Cambio:** tamaño de letra de todos los tooltips reducido en `_make_tooltip()`: nombre 32→30 px, texto 30→24 px.
+
+**Cambio:** en `HWConfigWindow`, los labels de los Timing Registers ahora se crean como `QLabel` explícito (en lugar de string pasado a `addRow`), con el mismo tooltip que el spinbox. Así el tooltip aparece tanto sobre el número como sobre el texto de la izquierda.
+
+**Cambio:** todas las ventanas secundarias (`HRLabWindow`, `PPGPlotsWindow`, `SerialComWindow`, `HR3LabWindow`, `SpO2LabWindow`, `SpO2TestWindow`, `HR1TestWindow`, `HR2TestWindow`, `HR3TestWindow`, `TimingWindow`, `HWConfigWindow`) ahora se instancian con `parent=None` en lugar de `self`. Criterio: todas las ventanas deben aparecer como entradas independientes en Alt-TAB de Windows (comportamiento estándar en apps de instrumentación).
+
+**Fix:** al relanzar el script, usar siempre PowerShell (`Get-Process pythonw | Stop-Process -Force`) en lugar de `taskkill`, que no es fiable desde Git Bash en este sistema.
+
+---
+
+## Sesión 2026-04-16 — Fix botones que se quedaban en rojo al cerrar ventanas con Alt-F4
+
+**Problema:** una sesión anterior cambió todas las ventanas secundarias a `parent=None` para independencia en Alt-TAB, pero no inyectó `main_monitor = self` tras la construcción. Al cerrar con Alt-F4, el `closeEvent` de cada ventana intentaba acceder a `self.main_monitor` (o `self.parent()`) para llamar `setChecked(False)` en el botón, pero ambas referencias eran `None` → el botón se quedaba en rojo (checked) aunque la ventana estuviera cerrada.
+
+**Fix:** en cada función `toggle_X()`, añadida la línea `window.main_monitor = self` entre la construcción con `Window(None)` y el `show()`. Ventanas afectadas (11): `HRLabWindow`, `PPGPlotsWindow`, `SerialComWindow`, `HR3LabWindow`, `SpO2LabWindow`, `SpO2TestWindow`, `HR1TestWindow`, `HR2TestWindow`, `HR3TestWindow`, `TimingWindow`, `HWConfigWindow`.
+
+**Fix adicional `TimingWindow`:** su `closeEvent` usaba `self.parent()` en lugar de `self.main_monitor` (inconsistente con el resto). Cambiado a `getattr(self, 'main_monitor', None)` para alinearlo con el patrón del resto de ventanas.
+
+---
+
+## Sesión 2026-04-16 — Auto-lectura HW CONFIG al abrir ventana y tras RESET ESP32
+
+**Problema:** la ventana HW CONFIG no mostraba valores actuales al abrirse ni tras pulsar RESET ESP32 — había que pulsar manualmente "Read from chip".
+
+**Causa raíz:** `_on_read_cfg()` se llamaba en `HWConfigWindow.__init__()` cuando `main_monitor` era aún `None` (se asigna después en `toggle_hw_config`), por lo que mostraba "Not connected" y no hacía nada.
+
+**Fix 1 — `__init__`:** eliminada la llamada `_on_read_cfg()` del constructor (inútil con `main_monitor=None`).
+
+**Fix 2 — `toggle_hw_config`:** añadido `QTimer.singleShot(200ms, _on_read_cfg)` tras inyectar `main_monitor` y hacer `show()`. Cubre el caso de abrir la ventana con el ESP32 ya corriendo.
+
+**Fix 3 — `_reset_esp32`:** añadido `QTimer.singleShot(2500ms, _on_read_cfg)` tras el reset (mismo delay que al conectar el puerto), para dar tiempo al ESP32 a arrancar antes de solicitar la config.
+
+El caso de conectar el puerto ya estaba cubierto con el timer de 2500ms en `_connect_serial`.

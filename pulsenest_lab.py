@@ -1057,10 +1057,10 @@ def _make_tooltip(name: str, text: str) -> str:
     return (
         "<table width='540' style='background-color:#5500AA; border-radius:6px;'>"
         "<tr><td style='padding:8px;'>"
-        "<span style='font-size:32px; font-weight:bold; color:#FFE066;'>"
+        "<span style='font-size:30px; font-weight:bold; color:#FFE066;'>"
         f"{name}"
         "</span><br/>"
-        "<span style='font-size:30px; white-space:normal; color:#F0F0F0;'>"
+        "<span style='font-size:24px; white-space:normal; color:#F0F0F0;'>"
         f"{text}"
         "</span></td></tr></table>"
     )
@@ -4449,10 +4449,10 @@ class TimingWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("TimingWindow/geometry", self.saveGeometry())
-        parent = self.parent()
-        if parent is not None and hasattr(parent, 'btn_timing'):
-            parent.btn_timing.setChecked(False)
-            parent.timing_window = None
+        mm = getattr(self, 'main_monitor', None)
+        if mm is not None and hasattr(mm, 'btn_timing'):
+            mm.btn_timing.setChecked(False)
+            mm.timing_window = None
         super().closeEvent(event)
 
 
@@ -4470,6 +4470,12 @@ class HWConfigWindow(QtWidgets.QMainWindow):
     STG2_GAINS = ["0dB", "3.5dB", "6dB", "9.5dB", "12dB"]
     LED_RANGES = ["75", "150"]
 
+    # Stylesheets for clean/dirty states
+    _SPIN_SS_CLEAN  = "background-color:#202020; color:#E0E0E0;"
+    _SPIN_SS_DIRTY  = "background-color:#202020; color:#FF4444;"
+    _TSPIN_SS_CLEAN = "font-size:22px; background-color:#202020; color:#E0E0E0;"
+    _TSPIN_SS_DIRTY = "font-size:22px; background-color:#202020; color:#FF4444;"
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_monitor = parent
@@ -4478,8 +4484,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HWConfigWindow/geometry")
         if geom: self.restoreGeometry(geom)
         else:    self.resize(560, 900)
+        self._updating_from_cfg = False
         self._setup_ui()
-        self._on_read_cfg()  # auto-read chip config on open
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _setup_ui(self):
@@ -4587,10 +4593,11 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Sends $SET,sr,<value>."))
         lbl_sr_warn = QtWidgets.QLabel("⚠ restarts chip")
         lbl_sr_warn.setStyleSheet("color:#FFAA44; font-size:22px;")
+        self._spin_sr.valueChanged.connect(lambda _=None: self._mark_dirty(self._spin_sr))
         row_sr = QtWidgets.QHBoxLayout()
         row_sr.addWidget(self._spin_sr)
         row_sr.addWidget(lbl_sr_warn)
-        row_sr.addWidget(self._make_set_btn("sr", lambda: str(self._spin_sr.value())))
+        row_sr.addWidget(self._make_set_btn("sr", lambda: str(self._spin_sr.value()), self._spin_sr))
         form_samp.addRow("Sample rate", row_sr)
 
         self._spin_numav = QtWidgets.QSpinBox()
@@ -4669,11 +4676,15 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             sp.setToolTip(_make_tooltip(f"{key} — {reg_name}",
                 tip + f"\nSends $SET,{key},<value>."))
             sp.valueChanged.connect(self._on_timing_changed)
+            sp.valueChanged.connect(lambda _=None, w=sp: self._mark_dirty(w))
             self._timing_spins[key] = sp
             row = QtWidgets.QHBoxLayout()
             row.addWidget(sp, stretch=1)
             row.addWidget(self._make_timing_set_btn(key))
-            lbl = f"{key}  {reg_name}"
+            lbl = QtWidgets.QLabel(f"{key}  {reg_name}")
+            lbl.setStyleSheet("font-size:22px; color:#E0E0E0;")
+            lbl.setToolTip(_make_tooltip(f"{key} — {reg_name}",
+                tip + f"\nSends $SET,{key},<value>."))
             form_t.addRow(lbl, row)
 
         # Status bar
@@ -4681,19 +4692,27 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._statusbar.setStyleSheet("font-size:22px; color:#AAAAAA;")
         self._statusbar.showMessage("No data — click 'Read from chip' or wait for $CFG frame")
 
-    def _make_set_btn(self, key: str, value_fn) -> QtWidgets.QPushButton:
+    def _make_set_btn(self, key: str, value_fn, widget=None) -> QtWidgets.QPushButton:
         """Create a 'Set' button that sends $SET,key,value*XX."""
         btn = QtWidgets.QPushButton("Set")
         btn.setStyleSheet("font-size:24px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
         btn.setFixedWidth(70)
-        btn.clicked.connect(lambda: self._send_set(key, value_fn()))
+        def on_click():
+            self._send_set(key, value_fn())
+            if widget is not None:
+                self._mark_clean(widget)
+        btn.clicked.connect(on_click)
         return btn
 
     def _make_row(self, widget, key: str, value_fn) -> QtWidgets.QHBoxLayout:
         """Wrap a control and its Set button in an HBoxLayout."""
+        if isinstance(widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+            widget.valueChanged.connect(lambda _=None: self._mark_dirty(widget))
+        elif isinstance(widget, QtWidgets.QComboBox):
+            widget.currentIndexChanged.connect(lambda _=None: self._mark_dirty(widget))
         row = QtWidgets.QHBoxLayout()
         row.addWidget(widget, stretch=1)
-        row.addWidget(self._make_set_btn(key, value_fn))
+        row.addWidget(self._make_set_btn(key, value_fn, widget))
         return row
 
     def _make_timing_set_btn(self, key: str) -> QtWidgets.QPushButton:
@@ -4701,8 +4720,30 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         btn = QtWidgets.QPushButton("Set")
         btn.setStyleSheet("font-size:22px; padding:2px 8px; background-color:#1E3A1E; color:#88FF88;")
         btn.setFixedWidth(60)
-        btn.clicked.connect(lambda: self._send_timing_set(key))
+        def on_click():
+            self._send_timing_set(key)
+            self._mark_clean(self._timing_spins[key])
+        btn.clicked.connect(on_click)
         return btn
+
+    # ── Dirty / clean state ───────────────────────────────────────────────────
+    def _mark_dirty(self, widget):
+        """Turn widget text red to signal an unsent change."""
+        if getattr(self, '_updating_from_cfg', False):
+            return
+        if isinstance(widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+            ss = self._TSPIN_SS_DIRTY if widget in self._timing_spins.values() else self._SPIN_SS_DIRTY
+            widget.setStyleSheet(ss)
+        elif isinstance(widget, QtWidgets.QComboBox):
+            widget.setStyleSheet("color:#FF4444;")
+
+    def _mark_clean(self, widget):
+        """Restore normal text color after a successful send."""
+        if isinstance(widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+            ss = self._TSPIN_SS_CLEAN if widget in self._timing_spins.values() else self._SPIN_SS_CLEAN
+            widget.setStyleSheet(ss)
+        elif isinstance(widget, QtWidgets.QComboBox):
+            widget.setStyleSheet("")
 
     # ── Timing constraint validation ──────────────────────────────────────────
     def _validate_timing(self) -> list:
@@ -4786,14 +4827,22 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             idx = combo.findText(v)
             if idx >= 0: combo.setCurrentIndex(idx)
 
-        set_spin_float(self._spin_led1,    'led1')
-        set_spin_float(self._spin_led2,    'led2')
-        set_combo(self._combo_ledrange,    'range')
-        set_combo(self._combo_tiagain,     'tia')
-        set_combo(self._combo_tiacf,       'cf')
-        set_combo(self._combo_stg2,        'stg2')
-        set_spin_int(self._spin_sr,        'sr')
-        set_spin_int(self._spin_numav,     'numav')
+        self._updating_from_cfg = True
+        try:
+            set_spin_float(self._spin_led1,    'led1')
+            set_spin_float(self._spin_led2,    'led2')
+            set_combo(self._combo_ledrange,    'range')
+            set_combo(self._combo_tiagain,     'tia')
+            set_combo(self._combo_tiacf,       'cf')
+            set_combo(self._combo_stg2,        'stg2')
+            set_spin_int(self._spin_sr,        'sr')
+            set_spin_int(self._spin_numav,     'numav')
+        finally:
+            self._updating_from_cfg = False
+        for w in (self._spin_led1, self._spin_led2, self._combo_ledrange,
+                  self._combo_tiagain, self._combo_tiacf, self._combo_stg2,
+                  self._spin_sr, self._spin_numav):
+            self._mark_clean(w)
         self._statusbar.showMessage("Config loaded from chip")
 
     def update_from_tcfg(self, kv: dict):
@@ -4807,6 +4856,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
                     sp.blockSignals(False)
                 except ValueError:
                     pass
+        for sp in self._timing_spins.values():
+            self._mark_clean(sp)
         self._on_timing_changed()  # validate after bulk load
         self._statusbar.showMessage("Timing config loaded from chip")
 
@@ -6067,7 +6118,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             # (display_name, data_attr, tooltip_description)
             # Order mirrors the $M1/$P1 serial frame. Row indices: HR1=11, HR2=13, HR3=15.
             ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
-            ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
+            ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("RED_Amb",  "data_red_amb",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
             ("IR_Amb",   "data_ir_amb",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
             ("RED_Sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
@@ -6607,6 +6658,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.ser.rts = False   # EN high → chip boots in run mode
             # DTR stays False: IO0 remains high → normal firmware, not bootloader
             self.log("ESP32 reset triggered (RTS/DTR via ESP-Prog)")
+            QtCore.QTimer.singleShot(2500,
+                lambda: self.hw_config_window._on_read_cfg() if self.hw_config_window is not None else None)
         except Exception as e:
             self.log(f"Reset failed: {e}")
 
@@ -6616,7 +6669,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_hrlab(self):
         if self.btn_hrlab.isChecked():
-            self.hrlab_window = HRLabWindow(self)
+            self.hrlab_window = HRLabWindow(None)
+            self.hrlab_window.main_monitor = self
             self.hrlab_window.show()
         else:
             if self.hrlab_window is not None:
@@ -6630,7 +6684,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_ppgplots(self):
         if self.btn_ppgplots.isChecked():
-            self.ppgplots_window = PPGPlotsWindow(self)
+            self.ppgplots_window = PPGPlotsWindow(None)
+            self.ppgplots_window.main_monitor = self
             self.ppgplots_window.show()
         else:
             if self.ppgplots_window is not None:
@@ -6644,7 +6699,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_serialcom(self):
         if self.btn_serialcom.isChecked():
-            self.serialcom_window = SerialComWindow(self)
+            self.serialcom_window = SerialComWindow(None)
+            self.serialcom_window.main_monitor = self
             self.serialcom_window.show()
         else:
             if self.serialcom_window is not None:
@@ -6658,7 +6714,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_hr3lab(self):
         if self.btn_hr3lab.isChecked():
-            self.hr3lab_window = HR3LabWindow(self)
+            self.hr3lab_window = HR3LabWindow(None)
+            self.hr3lab_window.main_monitor = self
             self.hr3lab_window.show()
         else:
             if self.hr3lab_window is not None:
@@ -6672,7 +6729,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_spo2lab(self):
         if self.btn_spo2lab.isChecked():
-            self.spo2lab_window = SpO2LabWindow(self)
+            self.spo2lab_window = SpO2LabWindow(None)
+            self.spo2lab_window.main_monitor = self
             self.spo2lab_window.show()
         else:
             if self.spo2lab_window is not None:
@@ -6686,7 +6744,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_spo2test(self):
         if self.btn_spo2test.isChecked():
-            self.spo2test_window = SpO2TestWindow(self)
+            self.spo2test_window = SpO2TestWindow(None)
+            self.spo2test_window.main_monitor = self
             self.spo2test_window.show()
         else:
             if self.spo2test_window is not None:
@@ -6700,7 +6759,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_hr1test(self):
         if self.btn_hr1test.isChecked():
-            self.hr1test_window = HR1TestWindow(self)
+            self.hr1test_window = HR1TestWindow(None)
+            self.hr1test_window.main_monitor = self
             self.hr1test_window.show()
         else:
             if self.hr1test_window is not None:
@@ -6714,7 +6774,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_hr2test(self):
         if self.btn_hr2test.isChecked():
-            self.hr2test_window = HR2TestWindow(self)
+            self.hr2test_window = HR2TestWindow(None)
+            self.hr2test_window.main_monitor = self
             self.hr2test_window.show()
         else:
             if self.hr2test_window is not None:
@@ -6728,7 +6789,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_hr3test(self):
         if self.btn_hr3test.isChecked():
-            self.hr3test_window = HR3TestWindow(self)
+            self.hr3test_window = HR3TestWindow(None)
+            self.hr3test_window.main_monitor = self
             self.hr3test_window.show()
         else:
             if self.hr3test_window is not None:
@@ -6746,7 +6808,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_timing(self):
         if self.btn_timing.isChecked():
-            self.timing_window = TimingWindow(self)
+            self.timing_window = TimingWindow(None)
+            self.timing_window.main_monitor = self
             self.timing_window.show()
         else:
             if self.timing_window is not None:
@@ -6755,8 +6818,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def toggle_hw_config(self):
         if self.btn_hw_config.isChecked():
-            self.hw_config_window = HWConfigWindow(self)
+            self.hw_config_window = HWConfigWindow(None)
+            self.hw_config_window.main_monitor = self
             self.hw_config_window.show()
+            QtCore.QTimer.singleShot(200, self.hw_config_window._on_read_cfg)
         else:
             if self.hw_config_window is not None:
                 self.hw_config_window.main_monitor = None
@@ -6997,8 +7062,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
                 "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
             self.btn_port_connect.setText("CONNECTED")
-            if self.hw_config_window is not None:
-                QtCore.QTimer.singleShot(2000, self.hw_config_window._on_read_cfg)
+            QtCore.QTimer.singleShot(2500,
+                lambda: self.hw_config_window._on_read_cfg() if self.hw_config_window is not None else None)
         except Exception as e:
             self.ser = None
             self.log(f"ERROR: Could not open {port} — {e}")
