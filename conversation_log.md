@@ -5062,3 +5062,63 @@ Fix relanzado: `taskkill /F /IM pythonw.exe` no mata los procesos en este entorn
 **Problema:** los QSpinBox y QComboBox cambiaban de valor al pasar la rueda del ratón por encima aunque no estuvieran activos, produciendo cambios indeseados.
 
 **Solución:** clase `_WheelBlockFilter(QObject)` con `eventFilter` que ignora `QEvent.Wheel` si el widget no tiene foco. Se instala en todos los spins y combos de HWConfigWindow al final de `_setup_ui`, y se fija `FocusPolicy = StrongFocus` en cada uno.
+
+---
+
+## Sesión 2026-04-17 — Ventana Diagnostics (AFE4490 Diagnostic Module)
+
+**Petición:** añadir botón en sidebar que abra ventana con resultados del Diagnostic Module del AFE4490.
+
+**Fuente:** datasheet AFE4490 sección 8.4.3.3 (Table 3, Figure 130). El módulo chequea 9 tipos de fallo en secuencia y devuelve 11 flags en el registro DIAG (0x30, 13 bits significativos).
+
+**Protocolo:** `$DIAG?` → `$DIAG,XXXXXX*YY\r\n` (6 dígitos hex del registro DIAG de 24 bits).
+
+**Implementación:**
+
+*Librería incunest_afe4490 (V15 y V16):*
+- Nuevo método público `uint32_t runDiagnostics()`:
+  - Retiene `_spi_mutex` durante todo el diagnóstico (~10 ms).
+  - Motivo: el data task escribe `CONTROL0=0` tras cada lectura ADC (línea 848 del .cpp), lo que borraría DIAG_EN y aborta el diagnóstico. Con mutex retenido se bloquea el data task esos 10 ms (~2-3 muestras perdidas, aceptable para one-shot).
+  - Secuencia: CONTROL0=0x000004 (DIAG_EN) → delay 10 ms → CONTROL0=0x000001 (SPI_READ) → leer REG_DIAG → CONTROL0=0x000000.
+- Spec `incunest_afe4490_spec.md`: añadida sección 2.3c con tabla completa de bits y justificación del mutex. Actualizada nota del registro ALARM.
+
+*Firmware main.cpp:*
+- Nuevo comando `$DIAG?` en `Cmd_Task`: llama `afe.runDiagnostics()` y emite frame `$DIAG,XXXXXX*YY`.
+
+*Python pulsenest_lab.py:*
+- Nueva clase `DiagnosticsWindow`: tabla de 13 flags (OK verde / FAULT rojo), raw hex, botón "Run diagnostic ($DIAG?)", status bar, save/restore geometry.
+- Botón `DIAGNOSTICS` en sidebar (después de HW CONFIG).
+- Parser `$DIAG,` en serial reader → `_on_diag_frame_received()`.
+- `diag_window` gestionado igual que las demás ventanas secundarias (toggle, closeEvent, close-all).
+
+---
+
+## Sesión 2026-04-17b — runDiagnostics en repo real + documentación platformio.ini
+
+### Corrección: runDiagnostics() solo existía en la caché de PlatformIO
+
+**Problema detectado:** `runDiagnostics()` fue añadida en la sesión anterior directamente en `.pio\libdeps\incunest_V16\incunest_afe4490` (caché de PlatformIO), no en el repo real `C:\PRJ\MOW\incunest_afe4490`. Si PlatformIO limpiaba la caché, la función se perdía.
+
+**Corrección:** se copió `runDiagnostics()` al repo real de la librería:
+- `incunest_afe4490.h`: declaración pública bajo `#ifndef INCUNEST_OFFLINE`
+- `incunest_afe4490.cpp`: implementación completa (igual que en la caché)
+- `incunest_afe4490_spec.md`: bumped a v0.22, añadida sección 2.5b con tabla de 13 bits y justificación del mutex
+- Commit + push a GitHub: `feat: v0.22 — runDiagnostics() hardware self-test`
+
+### Documentación del sistema de dos fuentes en platformio.ini
+
+**Contexto aclarado:** la librería existe en dos lugares por razones distintas:
+- `C:\PRJ\MOW\incunest_afe4490` → repo local de la librería (fuente de verdad)
+- `C:\PRJ\MOW\PulseNest\lib\incunest_afe4490` → symlink al repo local (creado en sesión anterior)
+- `C:\PRJ\MOW\PulseNest\.pio\libdeps\...\incunest_afe4490` → caché de PlatformIO (descargada de GitHub)
+
+**Resolución de PlatformIO (prioridad):**
+1. `lib/` del proyecto → usa symlink → repo local (sin push necesario)
+2. `lib_deps` URL GitHub → fallback para otras máquinas / CI
+
+**Documentado en `platformio.ini`:** comentario explicativo con ambas opciones y comando `mklink` para reproducir el symlink en máquina nueva. Commit + push a PulseNest.
+
+### Build y flash
+
+- Build para `incunest_V16` (V15 no compila: usa `AFE4490TimingConfig`/`setTimingReg` que solo existen en V16).
+- Flash OK en COM15 tras cerrar pulsenest_lab.py.
