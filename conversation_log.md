@@ -5122,3 +5122,18 @@ Fix relanzado: `taskkill /F /IM pythonw.exe` no mata los procesos en este entorn
 
 - Build para `incunest_V16` (V15 no compila: usa `AFE4490TimingConfig`/`setTimingReg` que solo existen en V16).
 - Flash OK en COM15 tras cerrar pulsenest_lab.py.
+
+---
+
+## Sesión 2026-04-17c — Limpieza platformio.ini y flujo de librería
+
+**Tema:** reorganización del sistema de dependencias de `incunest_afe4490` y documentación de `platformio.ini`.
+
+**Decisiones:**
+
+- Eliminada la URL de GitHub de `lib_deps` en `platformio.ini`. La librería se sirve exclusivamente desde `lib/incunest_afe4490` (symlink o copia directa). Esto elimina la caché redundante en `.pio\libdeps\` que podía ser editada por error.
+- Documentadas dos opciones en `platformio.ini`:
+  - **Opción A (desarrollador de librería):** symlink `lib/incunest_afe4490` → repo local. Cambios visibles en el siguiente build sin push.
+  - **Opción B (usuario de librería):** clone directo en `lib/incunest_afe4490`. Sin symlink ni permisos de administrador.
+- Nota añadida para advertir que los paths del ejemplo son específicos de la máquina de referencia y deben adaptarse.
+- Build verificado OK con `incunest_V16` sin `lib_deps`.
