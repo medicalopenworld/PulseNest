@@ -5353,3 +5353,22 @@ Los que modifican parámetros usados en `_recalc_rate_params()` llaman a ese mé
 - `incunest_afe4490/incunest_afe4490.h` — struct, setters, private members
 - `incunest_afe4490/incunest_afe4490.cpp` — constructor, _recalc_rate_params, algoritmos, getConfig, setters
 - `incunest_afe4490/incunest_afe4490_spec.md` — struct §2.3b, nueva §2.5, changelog v0.21
+
+---
+
+## Sesión 2026-04-24b
+
+### Tema: Prefijos de dominio en miembros privados de INCUNEST_AFE4490
+
+**Decisión:**
+Se aplican los mismos prefijos de dominio a los miembros privados de la clase (19 renombrados):
+
+- `afe_` (8): `_sample_rate_hz`→`_afe_sample_rate_hz`, `_num_averages`→`_afe_adc_averages`, `_led1/2_current_mA`→`_afe_led1/2_current_mA`, `_led_range_mA`→`_afe_led_range_mA`, `_tia_gain`→`_afe_tia_gain`, `_tia_cf`→`_afe_tia_cf`, `_stage2_gain`→`_afe_stage2_gain`
+- `ppgdisp_` (5): `_ppg_channel`→`_ppgdisp_channel`, `_filter_type`→`_ppgdisp_filter_type`, `_ppg_bpf`→`_ppgdisp_bpf`, `_ma_buf/idx/sum`→`_ppgdisp_ma_buf/idx/sum`
+- `spo2_` (6): `_dc_iir_alpha`→`_spo2_dc_iir_alpha`, `_ac_ema_beta`→`_spo2_ac_ema_beta`, `_dc_ir/red`→`_spo2_dc_ir/red`, `_ac2_ir/red`→`_spo2_ac2_ir/red`
+
+La función privada `_recalc_tia_cf()` también renombrada a `_recalc_afe_tia_cf()` por coherencia.
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.h`
+- `incunest_afe4490/incunest_afe4490.cpp`
