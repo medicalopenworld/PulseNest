@@ -5325,3 +5325,31 @@ Los miembros privados (`_sample_rate_hz`, etc.) no se tocan — son implementaci
 - `incunest_afe4490/incunest_afe4490.cpp` — bloque `getConfig()`
 - `incunest_afe4490/incunest_afe4490_spec.md` — definición del struct en §2.3b
 - `PulseNest/src/main.cpp` — accesos `cfg.xxx` en el serializador `$CFG`
+
+---
+
+## Sesión 2026-04-24
+
+### Tema: Exposición de parámetros de algoritmo en AFE4490Config
+
+**Decisión:**
+Se exponen en `AFE4490Config` y se hacen configurables en runtime 16 parámetros que estaban hardcoded como `static constexpr`:
+
+- **SpO2 (8):** `spo2_warmup_s`, `spo2_dc_iir_tau_s`, `spo2_ac_ema_tau_s`, `spo2_min`, `spo2_max`, `spo2_min_dc`, `spo2_pi_sqi_lo`, `spo2_pi_sqi_hi`
+- **HR1 (3):** `hr1_dc_tau_s`, `hr1_ma_cutoff_hz`, `hr1_sqi_cv_max`
+- **HR2 (2):** `hr2_min_corr`, `hr2_update_interval`
+- **HR3 (1):** `hr3_update_interval`
+- **HR global (2):** `hr_min_bpm`, `hr_max_bpm`
+
+`hr_search_{min,max}_bpm` ya no son constexpr: se derivan en el algoritmo como `_hr_{min,max}_bpm ± 3 BPM`.
+`hr2_min_lag_s` también eliminado: se calcula inline como `60 / (_hr_max_bpm + 3) * fs2`.
+`hr2_update_interval` y `hr3_update_interval` pasan de `static constexpr int` a miembros de instancia `_hr2/3_update_interval`.
+
+Se añaden 13 setters (`setSpO2WarmupS`, `setSpO2DcIirTauS`, `setSpO2AcEmaTauS`, `setSpO2Range`, `setSpO2MinDC`, `setSpO2PiSqiThresholds`, `setHR1DcTauS`, `setHR1MaCutoffHz`, `setHR1SqiCvMax`, `setHR2MinCorr`, `setHR2UpdateInterval`, `setHR3UpdateInterval`, `setHRValidRange`).
+
+Los que modifican parámetros usados en `_recalc_rate_params()` llaman a ese método internamente.
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.h` — struct, setters, private members
+- `incunest_afe4490/incunest_afe4490.cpp` — constructor, _recalc_rate_params, algoritmos, getConfig, setters
+- `incunest_afe4490/incunest_afe4490_spec.md` — struct §2.3b, nueva §2.5, changelog v0.21
