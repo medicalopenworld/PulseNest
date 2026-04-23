@@ -5372,3 +5372,24 @@ La función privada `_recalc_tia_cf()` también renombrada a `_recalc_afe_tia_cf
 **Ficheros modificados:**
 - `incunest_afe4490/incunest_afe4490.h`
 - `incunest_afe4490/incunest_afe4490.cpp`
+
+---
+
+## Sesión 2026-04-24c
+
+### Tema: Prefijos de dominio en constexpr del namespace anónimo + reorganización
+
+**Decisión 1:** `dc_iir_tau_s` y `ac_ema_tau_s` carecían de prefijo → renombrados a `spo2_dc_iir_tau_s` y `spo2_ac_ema_tau_s`.
+
+**Decisión 2:** Las "Algorithm time constants" eran un grupo legacy que mezclaba dominios. Se reorganizan todos los constexpr del namespace anónimo por dominio:
+- `// ── Math ──` → pi
+- `// ── SpO2 ──` → spo2_warmup_s, spo2_dc_iir_tau_s, spo2_ac_ema_tau_s, spo2_a/b_default, spo2_min/max, spo2_clamp_margin, spo2_min_dc, spo2_pi_sqi_lo/hi
+- `// ── HR1 ──` → hr1_dc_tau_s, hr1_ma_cutoff_hz, hr1_sqi_cv_max
+- `// ── HR2 ──` → hr2_min_corr
+- `// ── HR3 ──` → hr3_decim_factor
+- `// ── HR (all) ──` → hr_refractory_s, hr_min_bpm, hr_max_bpm
+
+**Decisión 3:** Eliminados 3 constexpr muertos: `hr2_min_lag_s`, `hr_search_min_bpm`, `hr_search_max_bpm` (ya habían sido reemplazados inline en sesión anterior).
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.cpp`
