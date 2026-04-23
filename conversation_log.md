@@ -5393,3 +5393,13 @@ La función privada `_recalc_tia_cf()` también renombrada a `_recalc_afe_tia_cf
 
 **Ficheros modificados:**
 - `incunest_afe4490/incunest_afe4490.cpp`
+
+---
+
+## Sesión 2026-04-24d
+
+### Tema: Verificación firmware tras refactoring de prefijos
+
+Firmware subido con `incunest_V16` y verificado en placa. El LED de la sonda funcionó correctamente tras el upload — el problema inicial era de conexión/timing hardware, no del código. Todos los renombrados de prefijos de dominio (private members, constexpr namespace) son correctos.
+
+`pulsenest_lab.py` tiene cambios pendientes de commitear (de sesión anterior, no relacionados con el refactoring de hoy).
