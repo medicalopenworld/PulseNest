@@ -253,11 +253,11 @@ static void send_cfg_frame() {
         ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
         ",spo2a=%.4f,spo2b=%.4f"
         ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X",
-        cfg.sample_rate_hz, cfg.num_averages,
-        cfg.led1_current_mA, cfg.led2_current_mA, (unsigned)cfg.led_range_mA,
-        tia_gain_str(cfg.tia_gain), tia_cf_str(cfg.tia_cf), stage2_str(cfg.stage2_gain),
-        channel_str(cfg.ppg_channel), filter_str(cfg.filter_type),
-        cfg.filter_f_low_hz, cfg.filter_f_high_hz,
+        cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
+        cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
+        tia_gain_str(cfg.afe_tia_gain), tia_cf_str(cfg.afe_tia_cf), stage2_str(cfg.afe_stage2_gain),
+        channel_str(cfg.ppgdisp_channel), filter_str(cfg.ppgdisp_filter_type),
+        cfg.ppgdisp_f_low_hz, cfg.ppgdisp_f_high_hz,
         cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,
         cfg.spo2_a, cfg.spo2_b,
         BOARD_VERSION,
@@ -347,7 +347,7 @@ static void apply_set_cmd(const char* key, const char* val) {
     } else if (strcmp(key, "numav") == 0) {
         int n = atoi(val);
         if (n >= 1 && n <= 128) {
-            afe.setNumAverages((uint8_t)n);
+            afe.setAdcAverages((uint8_t)n);
             Serial_printf("# SET numav=%d\n", n);
         } else {
             Serial_printf("$ERR,numav,invalid (1-128)\r\n");
@@ -400,6 +400,7 @@ static void apply_set_cmd(const char* key, const char* val) {
 //   '2'           → frame mode $M2 (raw ADC only)
 //   '$CFG?\n'     → emit $CFG frame with current AFE4490 configuration
 //   '$SET,k,v*XX' → set hardware parameter k to value v (XOR checksum verified)
+//   '$DIAG?\n'    → run AFE4490 diagnostics, emit $DIAG,XXXXXX*YY frame
 // Multi-byte commands are accumulated until '\n'.
 void Cmd_Task(void *pvParameters) {
     char cmd_buf[64];
@@ -418,6 +419,14 @@ void Cmd_Task(void *pvParameters) {
                     Serial.println("# Frame mode: $M2 (raw)");
                 } else if (strcmp(cmd_buf, "$CFG?") == 0) {
                     send_cfg_frame();
+                } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
+                    uint32_t diag_val = afe.runDiagnostics();
+                    char buf[32];
+                    int n = snprintf(buf, sizeof(buf) - 6, "$DIAG,%06lX",
+                                     (unsigned long)diag_val);
+                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+                    Serial.print(buf);
                 } else if (strncmp(cmd_buf, "$SET,", 5) == 0) {
                     // Verify XOR checksum: $SET,key,val*XX
                     char* star = strrchr(cmd_buf, '*');

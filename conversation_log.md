@@ -5137,3 +5137,191 @@ Fix relanzado: `taskkill /F /IM pythonw.exe` no mata los procesos en este entorn
   - **Opción B (usuario de librería):** clone directo en `lib/incunest_afe4490`. Sin symlink ni permisos de administrador.
 - Nota añadida para advertir que los paths del ejemplo son específicos de la máquina de referencia y deben adaptarse.
 - Build verificado OK con `incunest_V16` sin `lib_deps`.
+
+---
+
+## Sesión 2026-04-17d — Fix runDiagnostics() en incunest_afe4490
+
+**Tema:** corrección del comportamiento de `runDiagnostics()` durante la adquisición continua de datos.
+
+**Análisis:**
+
+- Pregunta inicial: ¿continúa la recepción de datos durante `runDiagnostics()`?
+- Traza exacta: `runDiagnostics()` sostenía `_spi_mutex` durante 10 ms (incluyendo `vTaskDelay`). `_task_body()` (prioridad 5) bloqueaba en el mutex. La semáfora binaria `_drdy_sem` colapsaba los DRDY intermedios.
+- Resultado antes del fix: 5 DRDYs en 10 ms → solo 2 lecturas post-diagnóstico (back-to-back sin DRDY entre medias, potencialmente duplicadas), 3 muestras perdidas.
+- La `_data_queue` no puede compensar: es un buffer de muestras ya procesadas, no de registros ADC del chip.
+
+**Decisión de diseño:**
+
+- Fix dentro de la librería (transparente para el usuario): flag `_diag_active`.
+- `runDiagnostics()` activa el flag → toma mutex brevemente para escribir DIAG_EN → libera mutex → duerme 10 ms → lee DIAG → desactiva flag.
+- `_task_body()` añade dos checks: fast path tras `_drdy_sem` y race guard tras `_spi_mutex`.
+- Durante los 10 ms, `_task_body()` consume cada DRDY limpiamente sin tocar el SPI bus. Reanudación limpia en el siguiente DRDY real.
+- El gap de ~10 ms (≈5 muestras a 500 Hz) es inevitable por limitación hardware.
+- Mejoras respecto al código anterior: sin hold largo del mutex, sin lecturas espurias post-diagnóstico, sin inversión de prioridad.
+
+**Ficheros modificados:**
+
+- `incunest_afe4490/incunest_afe4490.h` — v0.20 → v0.22: `volatile bool _diag_active` en sección FreeRTOS privada.
+- `incunest_afe4490/incunest_afe4490.cpp` — constructor inicializa `_diag_active(false)`; `runDiagnostics()` y `_task_body()` actualizados.
+- `incunest_afe4490/incunest_afe4490_spec.md` — v0.22: sección 2.5b reescrita, entrada v0.22 en changelog.
+
+---
+
+## Sesión 2026-04-17e — Simplificación race guard en _task_body()
+
+**Tema:** eliminación del race guard redundante en `_task_body()`.
+
+**Análisis:**
+
+- La línea 937 (`if (_diag_active) { xSemaphoreGive(_spi_mutex); continue; }`) era un race guard para el caso en que `runDiagnostics()` activara el flag entre la comprobación rápida (línea 930) y el `xSemaphoreTake(_spi_mutex)` (línea 936).
+- En esta plataforma la race es imposible: `_task_body` (prioridad 5) y `Cmd_Task` (prioridad 2) están ambas en core 0. FreeRTOS no puede preemptar una tarea de mayor prioridad en favor de una de menor sin llamada bloqueante. Entre líneas 930 y 936 no hay ninguna.
+- La línea 937 se eliminó. Comportamiento observable idéntico.
+
+**Ficheros modificados:**
+
+- `incunest_afe4490/incunest_afe4490.cpp` — eliminada línea de race guard en `_task_body()`.
+
+---
+
+## Sesión 2026-04-18 — Muestra repetida durante runDiagnostics()
+
+**Tema:** mejora del comportamiento durante el diagnóstico: sustituir el gap de muestras por repetición de la última muestra válida.
+
+**Análisis previo (correcciones):**
+- Gap vs. muestra repetida en filtros IIR: ambas opciones producen la misma discontinuidad en la entrada del filtro al reanudar (`|nueva_muestra - última_válida|`). El estado del filtro sí se preserva con el gap, pero el salto al reanudar es igual en ambos casos.
+- Gap vs. muestra repetida en HR1/HR2/HR3: el gap rompe el equiespaciado temporal que asumen autocorrelación (HR2) y FFT (HR3), introduciendo distorsión de fase y espectral. La muestra repetida preserva la continuidad temporal — es claramente superior.
+- HR1: el gap introduce error temporal en los intervalos RR (el índice de muestras no avanza). La muestra repetida preserva el timing.
+
+**Decisión:** implementar muestra repetida. Es equivalente en filtros IIR y mejor en HR1/HR2/HR3.
+
+**Implementación:**
+- En `_task_body()`, cuando `_diag_active=true`, en lugar de `continue` directo se copia `_current_data` a la queue bajo `_state_mutex`, preservando la misma lógica de drop-oldest que usa `_process_sample()`.
+- Completamente transparente para el usuario de la librería.
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.cpp` — `_task_body()`: muestra repetida bajo `_state_mutex` durante diagnóstico.
+- `incunest_afe4490/incunest_afe4490_spec.md` — §2.5b y changelog v0.22 actualizados con el rationale.
+
+---
+
+## Sesión 2026-04-19 — runDiagnostics: parámetro diag_holdoff_ms
+
+**Tema:** añadir post-diagnostic holdoff a `runDiagnostics()` para neutralizar los artefactos de re-asentamiento del front-end analógico tras el diagnóstico.
+
+**Debate de diseño:**
+- Propuesta inicial de Claude: suspender los algoritmos durante el holdoff.
+- Corrección de Alex: los algoritmos nunca se detienen. El holdoff debe sustituir las muestras problemáticas por datos congelados con la menor influencia posible en los algoritmos.
+- Análisis: un outlier de diagnóstico (spike grande) es mucho más dañino para HR1/HR2/HR3/SpO2 que un valor constante repetido. Los filtros IIR/BPF/LP absorben entrada constante con salida AC ≈ 0. El valor repetido es la estrategia correcta.
+- Orden de asignación en `runDiagnostics()`: `_diag_holdoff_samples` se escribe ANTES de limpiar `_diag_active` para evitar la race condition.
+- Valor por defecto: 100 ms (~50 muestras a 500 Hz), cubre holgadamente el peor caso de re-asentamiento analógico.
+- diag_holdoff_ms=0: observar artefactos reales (útil para debugging).
+
+**Decisión:** implementar `runDiagnostics(uint32_t diag_holdoff_ms = 100)`.
+- Los raw ADC values se guardan en cada ciclo normal de `_task_body()` y se reutilizan durante el holdoff.
+- `_process_sample()` se llama con los valores congelados → los algoritmos procesan normalmente entrada neutral.
+- Acceso a `_diag_last_*` exclusivo de `_task_body()` → sin mutex necesario.
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.h` — nueva firma, nuevos miembros privados, v0.23.
+- `incunest_afe4490/incunest_afe4490.cpp` — constructor, `runDiagnostics()`, `_task_body()`.
+- `incunest_afe4490/incunest_afe4490_spec.md` — §2.5b y changelog v0.23.
+
+---
+
+## Sesión 2026-04-21 — diag_holdoff_ms: ajuste del valor por defecto
+
+**Tema:** revisión del default de `diag_holdoff_ms` en `runDiagnostics()`.
+
+**Análisis:** 100 ms era excesivo. El tiempo de re-asentamiento real del TIA es 5τ = RF×CF×5. Peor caso (RF_1M + CF_155P): 5τ ≈ 775 µs, menos de un sample a 500 Hz. Con margen conservador de 2-3 ciclos PRP, 10 ms cubre holgadamente el peor caso.
+
+**Decisión:** default cambiado de 100 ms a **10 ms** (~5 samples a 500 Hz).
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.h` — default `diag_holdoff_ms = 10`, comentario actualizado con justificación de settling.
+- `incunest_afe4490/incunest_afe4490_spec.md` — §2.5b y changelog v0.23 actualizados.
+
+---
+
+## Sesión 2026-04-21b — Persistencia de DiagnosticsWindow
+
+**Tema:** la ventana DIAGNOSTICS no recordaba su estado abierto/cerrado al cerrar el script de forma forzada.
+
+**Causa:** `_save_settings()` guardaba la geometría de `DiagnosticsWindow` pero no la clave `PPGMonitor/diagnostics_open`. `_restore_settings()` tampoco la reabría. `_bring_all_to_front()` tampoco incluía `diag_window`.
+
+**Fix:** 4 cambios en `pulsenest_lab.py`:
+1. `_save_settings()` — añadida clave `PPGMonitor/diagnostics_open`.
+2. Nuevo método `_open_diagnostics_default()` — patrón idéntico al resto de ventanas.
+3. `_restore_settings()` — reabrir `DiagnosticsWindow` si `diagnostics_open` era True.
+4. `_bring_all_to_front()` — añadida `diag_window` a la lista de ventanas a traer al frente.
+
+---
+
+## Sesión 2026-04-21c — Lab Capture CSV: encoding UTF-8-sig
+
+**Tema:** el CSV de Lab Capture fallaba al guardar caracteres como "Ω" (TIA: 500K Ω).
+
+**Causa:** `open(filepath, "w", buffering=1)` sin `encoding` → Python usa cp1252 (Windows default) → Ω (U+03A9) no existe en cp1252 → excepción.
+
+**Decisión:** `encoding="utf-8-sig"` (UTF-8 con BOM). Cubre cualquier Unicode en notas del usuario y en cadenas de config. Excel en Windows detecta el BOM y abre el CSV correctamente.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — línea `open(filepath, "w", buffering=1)` → `open(filepath, "w", buffering=1, encoding="utf-8-sig")`.
+
+---
+
+## Sesión 2026-04-23 — Diagnóstico outlier serial + fix validación checksum $M1/$M2
+
+**Tema:** outlier simultáneo en los 6 canales recibidos en pulsenest_lab.py.
+
+**Diagnóstico:**
+- Valores RED=20,969,268,024 e IR=129,815,102 superan el límite 24-bit del AFE4490 (2²⁴=16,777,216) → imposible que vengan del AFE.
+- Los campos 3–6 del frame corrupto coinciden con los valores normales de los campos 1–4 → frame desplazado dos posiciones. Causa: byte separador perdido en UART que concatenó dígitos adyacentes.
+- La validación XOR ya existía en el script (líneas 7561–7583), pero tenía una laguna: frames `$M1`/`$M2` sin campo `*XX` pasaban sin validar (el `else` no los rechazaba).
+- El firmware tiene `chk_amb_sub` para verificar `led_sub == led - aled` a nivel AFE/SPI, pero está desactivado (`// #define CHK_AMB_SUB`). Es una capa ortogonal (errores AFE vs. errores UART), no necesita acoplarse al check Python.
+
+**Fix implementado (`pulsenest_lab.py`):**
+Tres casos nuevos de rechazo de frames `$M1`/`$M2`:
+1. `*XX` presente pero mal formado (`len ≠ 2`) → rechazado + log `# BAD CHK (malformed *field)`.
+2. `*XX` ausente en frame de datos → rechazado + log `# BAD CHK (no checksum field)` + `chk_ok=0` en fichero `--save-chk`.
+3. Frames sin `*XX` que no sean datos (`$ERR`, etc.) → siguen pasando sin cambio.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — bloque de validación checksum NMEA en el hilo serial.
+
+---
+
+## Sesión 2026-04-23
+
+### Tema: Renombrado de `setNumAverages` → `setAdcAverages`
+
+**Decisión:**
+`setNumAverages` era ambiguo (podría referirse a promedios en algoritmos de cálculo). Se renombra a `setAdcAverages` para dejar claro que el averaging ocurre en la fase de adquisición ADC (hardware), no en el software.
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.h` — declaración del método
+- `incunest_afe4490/incunest_afe4490.cpp` — definición + log de error interno
+- `incunest_afe4490/incunest_afe4490_spec.md` — todas las ocurrencias (§2.3, §7.x, tabla de parámetros, tabla registro CONTROL1, changelog v0.3)
+- `PulseNest/src/main.cpp` — llamada en el handler del protocolo $SET
+
+---
+
+## Sesión 2026-04-23b
+
+### Tema: Prefijos de dominio en `AFE4490Config`
+
+**Decisión:**
+Los campos del struct `AFE4490Config` se renombran con prefijos de dominio para que cada campo sea inequívocamente identificable sin leer su comentario:
+
+- `afe_` → parámetros del chip AFE4490 (escritos vía SPI): `afe_sample_rate_hz`, `afe_adc_averages`, `afe_led1_current_mA`, `afe_led2_current_mA`, `afe_led_range_mA`, `afe_tia_gain`, `afe_tia_cf`, `afe_stage2_gain`
+- `ppgdisp_` → parámetros de visualización PPG (procesado en ESP32, sin escritura HW): `ppgdisp_channel`, `ppgdisp_filter_type`, `ppgdisp_f_low_hz`, `ppgdisp_f_high_hz`
+- `hr2_`, `hr3_`, `spo2_` → sin cambio (ya tenían prefijo)
+
+El patrón es ahora consistente: todos los campos del struct tienen prefijo de subsistema.
+Los miembros privados (`_sample_rate_hz`, etc.) no se tocan — son implementación interna.
+
+**Ficheros modificados:**
+- `incunest_afe4490/incunest_afe4490.h` — struct `AFE4490Config`
+- `incunest_afe4490/incunest_afe4490.cpp` — bloque `getConfig()`
+- `incunest_afe4490/incunest_afe4490_spec.md` — definición del struct en §2.3b
+- `PulseNest/src/main.cpp` — accesos `cfg.xxx` en el serializador `$CFG`
