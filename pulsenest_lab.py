@@ -1048,6 +1048,30 @@ ACTION_BUTTON_STYLE = """
 
 _MOUSE_HINT = "pyqtgraph: use mouse buttons and wheel on plots and axes to zoom/pan (right-click for more options)"
 
+# ── Monkey-patch pyqtgraph ViewBoxMenu ────────────────────────────────────────
+# pyqtgraph's axisCtrlTemplate sets Form.setMaximumSize(QSize(200, ...)) which
+# hard-limits axis submenu widgets to 200 px wide. No CSS can override a
+# programmatic setMaximumWidth. We patch ViewBoxMenu.__init__ to remove that
+# limit after construction so all plots created anywhere in the app benefit.
+def _patch_viewbox_menu():
+    from pyqtgraph.graphicsItems.ViewBox.ViewBoxMenu import ViewBoxMenu as _VBMenu
+    _orig = _VBMenu.__init__
+    def _patched(self, view):
+        _orig(self, view)
+        for action in self.actions():
+            submenu = action.menu()
+            if submenu is None:
+                continue
+            submenu.setMinimumWidth(380)
+            for sub_action in submenu.actions():
+                if isinstance(sub_action, QtWidgets.QWidgetAction):
+                    w = sub_action.defaultWidget()
+                    if w is not None:
+                        w.setMaximumWidth(16777215)   # remove 200 px hard-cap
+                        w.setMinimumWidth(360)
+    _VBMenu.__init__ = _patched
+_patch_viewbox_menu()
+
 
 def _make_tooltip(name: str, text: str) -> str:
     """Build a rich-text HTML tooltip with a vivid purple background.
@@ -4457,6 +4481,148 @@ class TimingWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
+class DiagnosticsWindow(QtWidgets.QMainWindow):
+    """AFE4490 hardware diagnostics window.
+
+    Sends $DIAG? to the ESP32, which runs the built-in diagnostic sequence
+    (datasheet section 8.4.3.3, ~10 ms) and returns the DIAG register (0x30).
+    Displays all 13 diagnostic flags with OK / FAULT status.
+    """
+
+    # (bit, flag_name, module, description)
+    _DIAG_FLAGS = [
+        (12, "PD_ALM",    "PD",  "Power-down alarm — summary flag for all PD-side faults"),
+        (11, "LED_ALM",   "LED", "LED alarm — summary flag for all LED-side faults"),
+        (10, "LED1OPEN",  "LED", "LED1 open circuit detected"),
+        ( 9, "LED2OPEN",  "LED", "LED2 open circuit detected"),
+        ( 8, "LEDSC",     "LED", "LED short circuit detected"),
+        ( 7, "OUTPSHGND", "LED", "Tx OUTP line shorted to GND cable"),
+        ( 6, "OUTNSHGND", "LED", "Tx OUTN line shorted to GND cable"),
+        ( 5, "PDOC",      "PD",  "Photodiode open circuit detected"),
+        ( 4, "PDSC",      "PD",  "Photodiode short circuit detected"),
+        ( 3, "INNSCGND",  "PD",  "Rx INN cable shorted to GND cable"),
+        ( 2, "INPSCGND",  "PD",  "Rx INP cable shorted to GND cable"),
+        ( 1, "INNSCLED",  "PD",  "Rx INN cable shorted to LED cable"),
+        ( 0, "INPSCLED",  "PD",  "Rx INP cable shorted to LED cable"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_monitor = parent
+        self.setWindowTitle("AFE4490 Diagnostics")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
+            "DiagnosticsWindow/geometry")
+        if geom: self.restoreGeometry(geom)
+        else:    self.resize(720, 580)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        vbox = QtWidgets.QVBoxLayout(central)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(12, 10, 12, 10)
+
+        btn_run = QtWidgets.QPushButton("Run diagnostic  ($DIAG?)")
+        btn_run.setStyleSheet("font-size:26px; padding:4px 14px; "
+                              "background-color:#2A3D5A; color:#AACCFF;")
+        btn_run.clicked.connect(self._on_run)
+        btn_run.setToolTip(_make_tooltip(
+            "Run diagnostic ($DIAG?)",
+            "Sends $DIAG? to the ESP32. The AFE4490 runs its built-in hardware "
+            "diagnostic sequence (~10 ms) and returns the DIAG register (0x30). "
+            "Checks for LED open/short, photodiode faults, and cable shorts."))
+        vbox.addWidget(btn_run)
+
+        raw_row = QtWidgets.QHBoxLayout()
+        raw_row.addWidget(QtWidgets.QLabel("Raw DIAG register (0x30):"))
+        self._lbl_raw = QtWidgets.QLabel("—")
+        self._lbl_raw.setStyleSheet("color:#AACCFF; font-family:monospace;")
+        raw_row.addWidget(self._lbl_raw)
+        raw_row.addStretch()
+        vbox.addLayout(raw_row)
+
+        grp = QtWidgets.QGroupBox("Diagnostic Flags  (AFE4490 datasheet Table 3 / Figure 130)")
+        grp.setStyleSheet(
+            "QGroupBox { font-size:24px; font-weight:bold; color:#AACCFF; "
+            "border:1px solid #334466; border-radius:6px; margin-top:8px; padding-top:6px; }"
+            "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }")
+        grid = QtWidgets.QGridLayout(grp)
+        grid.setSpacing(4)
+        grid.setContentsMargins(8, 24, 8, 8)
+
+        for col, (txt, w) in enumerate([("Bit",6),("Flag",10),("Mod",5),("Status",8),("Description",None)]):
+            lbl = QtWidgets.QLabel(txt)
+            lbl.setStyleSheet("font-weight:bold; color:#AACCFF; font-size:22px;")
+            grid.addWidget(lbl, 0, col)
+
+        self._status_labels = {}
+        for row, (bit, name, module, desc) in enumerate(self._DIAG_FLAGS, start=1):
+            lbl_bit = QtWidgets.QLabel(f"D{bit}")
+            lbl_bit.setStyleSheet("color:#888888; font-size:22px; font-family:monospace;")
+            lbl_name = QtWidgets.QLabel(name)
+            lbl_name.setStyleSheet("color:#E0E0E0; font-size:22px; font-family:monospace;")
+            lbl_mod = QtWidgets.QLabel(module)
+            lbl_mod.setStyleSheet("color:#AAAAAA; font-size:22px;")
+            lbl_status = QtWidgets.QLabel("—")
+            lbl_status.setStyleSheet("color:#555555; font-size:22px; font-weight:bold;")
+            lbl_status.setFixedWidth(90)
+            lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+            lbl_desc = QtWidgets.QLabel(desc)
+            lbl_desc.setStyleSheet("color:#AAAAAA; font-size:20px;")
+            lbl_desc.setWordWrap(True)
+            grid.addWidget(lbl_bit,    row, 0)
+            grid.addWidget(lbl_name,   row, 1)
+            grid.addWidget(lbl_mod,    row, 2)
+            grid.addWidget(lbl_status, row, 3)
+            grid.addWidget(lbl_desc,   row, 4)
+            self._status_labels[bit] = lbl_status
+
+        grid.setColumnStretch(4, 1)
+        vbox.addWidget(grp, stretch=1)
+
+        self._statusbar = self.statusBar()
+        self._statusbar.setStyleSheet("font-size:22px; color:#AAAAAA;")
+        self._statusbar.showMessage("No data — click 'Run diagnostic'")
+
+    def _on_run(self):
+        mm = self.main_monitor
+        if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
+            self._statusbar.showMessage("Not connected")
+            return
+        mm.ser.write(b"$DIAG?\n")
+        mm.log("→ $DIAG?")
+        self._statusbar.showMessage("Sent $DIAG? — waiting for response (~10 ms)…")
+
+    def update_from_diag(self, raw: int):
+        self._lbl_raw.setText(f"0x{raw:06X}")
+        fault_count = 0
+        for bit, name, module, desc in self._DIAG_FLAGS:
+            lbl = self._status_labels[bit]
+            if (raw >> bit) & 1:
+                lbl.setText("FAULT")
+                lbl.setStyleSheet("color:#FF4444; font-size:22px; font-weight:bold;")
+                fault_count += 1
+            else:
+                lbl.setText("OK")
+                lbl.setStyleSheet("color:#44FF44; font-size:22px; font-weight:bold;")
+        if fault_count == 0:
+            self._statusbar.showMessage(f"All OK — no faults detected  (0x{raw:06X})")
+        else:
+            self._statusbar.showMessage(
+                f"Diagnostic complete — {fault_count} fault(s) detected  (0x{raw:06X})")
+
+    def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
+            "DiagnosticsWindow/geometry", self.saveGeometry())
+        mm = self.main_monitor
+        if mm is not None and hasattr(mm, 'btn_diagnostics'):
+            mm.btn_diagnostics.setChecked(False)
+            mm.diag_window = None
+        super().closeEvent(event)
+
+
 class _WheelBlockFilter(QtCore.QObject):
     """Event filter that blocks mouse-wheel events on a widget unless it has focus."""
     def eventFilter(self, obj, event):
@@ -5650,7 +5816,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
 
         outer.addWidget(hint)
 
-    def update_plots(self, data_ppg, data_hr1, data_hr2, data_hr3,
+    def update_plots(self, data_ppgdisp, data_hr1, data_hr2, data_hr3,
                      data_spo2, data_spo2_sqi, data_spo2_r,
                      data_hr1_sqi, data_hr2_sqi, data_hr3_sqi,
                      data_red, data_ir,
@@ -5664,7 +5830,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             f" &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.1f}</b><b style='color:#888888'> [{data_hr2_sqi[-1]:.2f}]</b>"
             f" &nbsp; <b style='color:#00CCFF'>HR3: {data_hr3[-1]:.1f}</b><b style='color:#888888'> [{data_hr3_sqi[-1]:.2f}]</b>"
             f" <b style='color:#AAAAAA'>bpm</b>")
-        self.curve_ppg.setData(list(data_ppg)[-PPG_WINDOW_SIZE:])
+        self.curve_ppg.setData(list(data_ppgdisp)[-PPG_WINDOW_SIZE:])
         self.curve_spo2.setData(list(data_spo2))
         self.curve_hr1.setData(list(data_hr1))
         self.curve_hr2.setData(list(data_hr2))
@@ -5688,6 +5854,244 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         if self.main_monitor is not None:
             self.main_monitor.btn_ppgplots.setChecked(False)
             self.main_monitor.ppgplots_window = None
+        super().closeEvent(event)
+
+
+class PPGSignalsWindow(QtWidgets.QWidget):
+    """Floating window with the 6 raw AFE4490 signals (RED/IR raw·amb·sub) and PPGdisp."""
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("PPG Signals")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._setup_ui()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("PPGSignalsWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1400, 900)
+        self.check_red_raw.setChecked(s.value("PPGSignalsWindow/check_red_raw", False, type=bool))
+        self.check_red_amb.setChecked(s.value("PPGSignalsWindow/check_red_amb", False, type=bool))
+        self.check_red_sub.setChecked(s.value("PPGSignalsWindow/check_red_sub", True,  type=bool))
+        self.check_ir_raw.setChecked( s.value("PPGSignalsWindow/check_ir_raw",  False, type=bool))
+        self.check_ir_amb.setChecked( s.value("PPGSignalsWindow/check_ir_amb",  False, type=bool))
+        self.check_ir_sub.setChecked( s.value("PPGSignalsWindow/check_ir_sub",  True,  type=bool))
+
+    def _setup_ui(self):
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        root = QtWidgets.QHBoxLayout()
+        outer.addLayout(root)
+
+        hint = QtWidgets.QLabel(_MOUSE_HINT)
+        hint.setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic; padding: 2px 6px;")
+
+        # ── Checkbox sidebar ──────────────────────────────────────────────────
+        sidebar = QtWidgets.QVBoxLayout()
+
+        def create_check(label, color, checked):
+            cb = QtWidgets.QCheckBox(label)
+            cb.setChecked(checked)
+            cb.setStyleSheet(f"""
+                QCheckBox {{ color: {color}; font-size: 16px; padding: 2px; }}
+                QCheckBox::indicator {{
+                    width: 24px; height: 24px; border: 2px solid #555555;
+                    border-radius: 4px; background-color: #1A1A1A;
+                }}
+                QCheckBox::indicator:checked {{
+                    background-color: #666666; border: 2px solid #BBBBBB;
+                    image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAdUlEQVR4nO2UQQ7AIAgEWf//5+21aYQFIpfGvRhJnFGJgqRNfGjrwiqCdKzCVB2DRAFC22RnWoAAAAAElFTkSuQmCC");
+                }}
+            """)
+            return cb
+
+        lbl_red = QtWidgets.QLabel("RED")
+        lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 10px;")
+        sidebar.addWidget(lbl_red)
+        self.check_red_raw = create_check("RED (raw)",   "#FFFFFF", False)
+        self.check_red_amb = create_check("Ambient RED", "#00FFFF", False)
+        self.check_red_sub = create_check("RED (clean)", "#FF8888", True)
+        self.check_red_raw.setToolTip(_make_tooltip(
+            "RED (raw)",
+            "Raw RED LED ADC reading directly from the AFE4490. "
+            "Includes ambient light contamination. Field: RED in the M1 frame."))
+        self.check_red_amb.setToolTip(_make_tooltip(
+            "Ambient RED",
+            "Ambient light sampled during the RED LED off period (aled2). "
+            "Represents environmental light interference on the RED channel."))
+        self.check_red_sub.setToolTip(_make_tooltip(
+            "RED (clean)",
+            "RED minus ambient: RED − RED_Amb. Ambient-subtracted RED signal. "
+            "Primary input to the SpO2 algorithm. Field: RED_Sub."))
+        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub):
+            sidebar.addWidget(w)
+
+        lbl_ir = QtWidgets.QLabel("IR")
+        lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 20px;")
+        sidebar.addWidget(lbl_ir)
+        self.check_ir_raw = create_check("IR (raw)",    "#FFFFFF", False)
+        self.check_ir_amb = create_check("Ambient IR",  "#00FFFF", False)
+        self.check_ir_sub = create_check("IR (clean)",  "#88CCFF", True)
+        self.check_ir_raw.setToolTip(_make_tooltip(
+            "IR (raw)",
+            "Raw IR LED ADC reading directly from the AFE4490. "
+            "Includes ambient light contamination. Field: IR in the M1 frame."))
+        self.check_ir_amb.setToolTip(_make_tooltip(
+            "Ambient IR",
+            "Ambient light sampled during the IR LED off period (aled1). "
+            "Represents environmental light interference on the IR channel."))
+        self.check_ir_sub.setToolTip(_make_tooltip(
+            "IR (clean)",
+            "IR minus ambient: IR − IR_Amb. Ambient-subtracted IR signal. "
+            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: IR_Sub."))
+        for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub):
+            sidebar.addWidget(w)
+
+        sidebar.addStretch()
+        sb_widget = QtWidgets.QWidget()
+        sb_widget.setLayout(sidebar)
+        sb_widget.setFixedWidth(180)
+        root.addWidget(sb_widget)
+
+        # ── Plots: RED / IR / PPGdisp in a single GraphicsLayoutWidget ────────
+        self.graphics_layout = pg.GraphicsLayoutWidget()
+        root.addWidget(self.graphics_layout)
+
+        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
+        self.curve_red     = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
+        self.curve_red_amb = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
+        self.curve_red_sub = self.p1.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
+        self.p1.showGrid(x=True, y=True, alpha=0.3)
+        self.p1.getAxis('left').setWidth(80)
+
+        self.graphics_layout.nextRow()
+
+        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
+        self.curve_ir     = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
+        self.curve_ir_amb = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
+        self.curve_ir_sub = self.p2.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
+        self.p2.showGrid(x=True, y=True, alpha=0.3)
+        self.p2.getAxis('left').setWidth(80)
+
+        self.graphics_layout.nextRow()
+
+        self.p3 = self.graphics_layout.addPlot(title="<b style='color:#AAFFAA'>PPGdisp</b>")
+        self.curve_ppgdisp = self.p3.plot(pen=pg.mkPen('#AAFFAA', width=2), name="PPGdisp")
+        self.p3.showGrid(x=True, y=True, alpha=0.3)
+        self.p3.getAxis('left').setWidth(80)
+
+        # ── Checkbox → curve visibility ───────────────────────────────────────
+        self.check_red_raw.stateChanged.connect(lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
+        self.check_red_amb.stateChanged.connect(lambda: self.curve_red_amb.setVisible(self.check_red_amb.isChecked()))
+        self.check_red_sub.stateChanged.connect(lambda: self.curve_red_sub.setVisible(self.check_red_sub.isChecked()))
+        self.check_ir_raw.stateChanged.connect( lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
+        self.check_ir_amb.stateChanged.connect( lambda: self.curve_ir_amb.setVisible(self.check_ir_amb.isChecked()))
+        self.check_ir_sub.stateChanged.connect( lambda: self.curve_ir_sub.setVisible(self.check_ir_sub.isChecked()))
+
+        self.curve_red.setVisible(False)
+        self.curve_red_amb.setVisible(False)
+        self.curve_red_sub.setVisible(True)
+        self.curve_ir.setVisible(False)
+        self.curve_ir_amb.setVisible(False)
+        self.curve_ir_sub.setVisible(True)
+
+        outer.addWidget(hint)
+
+    def update_plots(self, data_red, data_ir, data_red_amb, data_ir_amb,
+                     data_red_sub, data_ir_sub, data_ppgdisp):
+        self.curve_red.setData(list(data_red))
+        self.curve_ir.setData(list(data_ir))
+        self.curve_red_amb.setData(list(data_red_amb))
+        self.curve_ir_amb.setData(list(data_ir_amb))
+        self.curve_red_sub.setData(list(data_red_sub))
+        self.curve_ir_sub.setData(list(data_ir_sub))
+        self.curve_ppgdisp.setData(list(data_ppgdisp)[-PPG_WINDOW_SIZE:])
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("PPGSignalsWindow/geometry",       self.saveGeometry())
+        s.setValue("PPGSignalsWindow/check_red_raw",  self.check_red_raw.isChecked())
+        s.setValue("PPGSignalsWindow/check_red_amb",  self.check_red_amb.isChecked())
+        s.setValue("PPGSignalsWindow/check_red_sub",  self.check_red_sub.isChecked())
+        s.setValue("PPGSignalsWindow/check_ir_raw",   self.check_ir_raw.isChecked())
+        s.setValue("PPGSignalsWindow/check_ir_amb",   self.check_ir_amb.isChecked())
+        s.setValue("PPGSignalsWindow/check_ir_sub",   self.check_ir_sub.isChecked())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_signals.setChecked(False)
+            self.main_monitor.signals_window = None
+        super().closeEvent(event)
+
+
+class AlgoResultsWindow(QtWidgets.QWidget):
+    """Floating window with SpO2 (top) and HR1/HR2/HR3 (bottom) algorithm results."""
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("Algorithm Results")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._setup_ui()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("AlgoResultsWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(900, 700)
+
+    def _setup_ui(self):
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        hint = QtWidgets.QLabel(_MOUSE_HINT)
+        hint.setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic; padding: 2px 6px;")
+
+        self.graphics_layout = pg.GraphicsLayoutWidget()
+        outer.addWidget(self.graphics_layout, stretch=1)
+
+        self.p_spo2 = self.graphics_layout.addPlot(title="<b style='color:#44FF88'>SpO2 (%)</b>")
+        self.curve_spo2 = self.p_spo2.plot(pen=pg.mkPen('#44FF88', width=3))
+        self.p_spo2.setYRange(50, 100)
+        self.p_spo2.showGrid(x=True, y=True, alpha=0.3)
+
+        self.graphics_layout.nextRow()
+
+        self.p_hr = self.graphics_layout.addPlot(title="<b style='color:#FFDD44'>HEART RATE (BPM)</b>")
+        self.curve_hr1 = self.p_hr.plot(pen=pg.mkPen('#FFDD44', width=3),   name="HR1")
+        self.curve_hr2 = self.p_hr.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
+        self.curve_hr3 = self.p_hr.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="HR3")
+        self.p_hr.setYRange(40, 180)
+        self.p_hr.showGrid(x=True, y=True, alpha=0.3)
+
+        outer.addWidget(hint)
+
+    def update_plots(self, data_spo2, data_spo2_sqi, data_spo2_r,
+                     data_hr1, data_hr2, data_hr3,
+                     data_hr1_sqi, data_hr2_sqi, data_hr3_sqi):
+        self.p_spo2.setTitle(
+            f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b>"
+            f" &nbsp; <b style='color:#888888'>SQI: {data_spo2_sqi[-1]:.2f}</b>"
+            f" &nbsp; <b style='color:#AAAAAA'>R: {data_spo2_r[-1]:.4f}</b>")
+        self.p_hr.setTitle(
+            f"<b style='color:#FFDD44'>HR1: {data_hr1[-1]:.1f}</b><b style='color:#888888'> [{data_hr1_sqi[-1]:.2f}]</b>"
+            f" &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.1f}</b><b style='color:#888888'> [{data_hr2_sqi[-1]:.2f}]</b>"
+            f" &nbsp; <b style='color:#00CCFF'>HR3: {data_hr3[-1]:.1f}</b><b style='color:#888888'> [{data_hr3_sqi[-1]:.2f}]</b>"
+            f" <b style='color:#AAAAAA'>bpm</b>")
+        self.curve_spo2.setData(list(data_spo2))
+        self.curve_hr1.setData(list(data_hr1))
+        self.curve_hr2.setData(list(data_hr2))
+        self.curve_hr3.setData(list(data_hr3))
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("AlgoResultsWindow/geometry", self.saveGeometry())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_results.setChecked(False)
+            self.main_monitor.results_window = None
         super().closeEvent(event)
 
 
@@ -6219,7 +6623,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_lib_id = deque(["?"]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_sample_counter = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_timestamp_us = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_ppg = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_ppgdisp = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr1 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_spo2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_red = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
@@ -6258,6 +6662,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             except Exception as e:
                 print(f"[save-chk] Error opening file: {e}")
         self.ppgplots_window  = None
+        self.signals_window   = None
+        self.results_window   = None
         self.serialcom_window = None
         self.hrlab_window     = None
         self.spo2lab_window   = None
@@ -6269,6 +6675,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr3test_window   = None
         self.timing_window    = None
         self.hw_config_window = None
+        self.diag_window      = None
         self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
         # Render throttle rates (all relative to ~50 Hz update_data calls)
         self._PPGPLOTS_REFRESH_EVERY  = 2   # 25 Hz — smooth plot animation
@@ -6278,6 +6685,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._HR2TEST_REFRESH_EVERY   = 5   # 10 Hz
         self._HR3TEST_REFRESH_EVERY   = 5   # 10 Hz
         self._ppgplots_refresh_counter = 0
+        self._signals_refresh_counter  = 0
+        self._results_refresh_counter  = 0
         self._hrlab_refresh_counter    = 0
         self._spo2lab_refresh_counter  = 0
         self._hr3lab_refresh_counter   = 0
@@ -6298,7 +6707,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("IR_Amb",   "data_ir_amb",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
             ("RED_Sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
             ("IR_Sub",   "data_ir_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
-            ("PPG",      "data_ppg",      "Filtered PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Units: ADC counts."),
+            ("PPGdisp",  "data_ppgdisp",      "Display-ready PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Ready for rendering on graphical displays. Units: ADC counts."),
             ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
             ("SpO2_SQI", "data_spo2_sqi", "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference."),
             ("SpO2_R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
@@ -6421,14 +6830,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Filename: ppg_data_<timestamp>.csv"))
         self.sidebar_layout.addWidget(self.btn_save)
 
-        self.btn_lab_capture = QtWidgets.QPushButton("CAPTURE\nLAB")
+        self.btn_lab_capture = QtWidgets.QPushButton("CAPTURE\nLAB *")
         self.btn_lab_capture.setCheckable(True)
         self.btn_lab_capture.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_lab_capture.clicked.connect(self.toggle_lab_capture)
         self.btn_lab_capture.setToolTip(_make_tooltip(
-            "CAPTURE LAB",
+            "CAPTURE LAB *",
             "Open the Lab Capture window to configure and trigger controlled 500 Hz "
-            "CSV captures for offline algorithm analysis."))
+            "CSV captures for offline algorithm analysis.<br/>"
+            "* = runs at full 500 Hz rate, unaffected by the Decimation setting."))
         self.sidebar_layout.addWidget(self.btn_lab_capture)
 
         self.sidebar_layout.addSpacing(20)
@@ -6493,6 +6903,28 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Throttled to 25 Hz to keep CPU load low."))
         self.sidebar_layout.addWidget(self.btn_ppgplots)
 
+        self.btn_signals = QtWidgets.QPushButton("SIGNALS")
+        self.btn_signals.setCheckable(True)
+        self.btn_signals.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_signals.clicked.connect(self.toggle_signals)
+        self.btn_signals.setToolTip(_make_tooltip(
+            "SIGNALS",
+            "Show or hide the PPG Signals window. "
+            "Displays the 6 raw AFE4490 channels (RED/IR raw, ambient, clean) "
+            "and the PPGdisp display-ready signal. Throttled to 25 Hz."))
+        self.sidebar_layout.addWidget(self.btn_signals)
+
+        self.btn_results = QtWidgets.QPushButton("RESULTS")
+        self.btn_results.setCheckable(True)
+        self.btn_results.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_results.clicked.connect(self.toggle_results)
+        self.btn_results.setToolTip(_make_tooltip(
+            "RESULTS",
+            "Show or hide the Algorithm Results window. "
+            "Displays SpO2 (top) and HR1/HR2/HR3 (bottom) algorithm outputs with SQI. "
+            "Throttled to 10 Hz."))
+        self.sidebar_layout.addWidget(self.btn_results)
+
         self.btn_serialcom = QtWidgets.QPushButton("SERIALCOM")
         self.btn_serialcom.setCheckable(True)
         self.btn_serialcom.setStyleSheet(ACTION_BUTTON_STYLE)
@@ -6555,15 +6987,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "See incunest_afe4490_spec.md §5.1 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_spo2test)
 
-        self.btn_hr1test = QtWidgets.QPushButton("HR1TEST")
+        self.btn_hr1test = QtWidgets.QPushButton("HR1TEST *")
         self.btn_hr1test.setCheckable(True)
         self.btn_hr1test.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_hr1test.clicked.connect(self.toggle_hr1test)
         self.btn_hr1test.setToolTip(_make_tooltip(
-            "HR1TEST",
+            "HR1TEST *",
             "Post-implementation verification window for the HR1 algorithm (threshold peak detection). "
             "Python mirror runs at 500 Hz (full serial rate) in live mode. "
-            "See incunest_afe4490_spec.md §5.2 and §8.2."))
+            "See incunest_afe4490_spec.md §5.2 and §8.2.<br/>"
+            "* = runs at full 500 Hz rate, unaffected by the Decimation setting."))
         self.sidebar_layout.addWidget(self.btn_hr1test)
 
         self.btn_hr2test = QtWidgets.QPushButton("HR2TEST")
@@ -6608,6 +7041,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "(LED current, TIA gain, sample rate, etc.) at runtime via $SET commands, "
             "without reflashing. Confirmation arrives as an updated $CFG frame."))
         self.sidebar_layout.addWidget(self.btn_hw_config)
+
+        self.btn_diagnostics = QtWidgets.QPushButton("DIAGNOSTICS")
+        self.btn_diagnostics.setCheckable(True)
+        self.btn_diagnostics.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_diagnostics.clicked.connect(self.toggle_diagnostics)
+        self.btn_diagnostics.setToolTip(_make_tooltip(
+            "DIAGNOSTICS — AFE4490 fault detection",
+            "Opens the diagnostics window. Sends $DIAG? to the ESP32, which runs "
+            "the AFE4490 built-in diagnostic sequence (~10 ms) and reports LED, "
+            "photodiode, and cable fault flags (datasheet section 8.4.3.3)."))
+        self.sidebar_layout.addWidget(self.btn_diagnostics)
 
         self.sidebar_layout.addStretch()
 
@@ -6820,6 +7264,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hw_config_window is not None:
             self.hw_config_window.update_from_tcfg(kv)
 
+    def _on_diag_frame_received(self, line):
+        """Parse a $DIAG frame and update DiagnosticsWindow (if open)."""
+        # Format: $DIAG,XXXXXX*YY
+        try:
+            raw = int(line[len('$DIAG,'):].split('*')[0].strip(), 16)
+        except (ValueError, IndexError):
+            self.log(f"⚠ Malformed $DIAG frame: {line}")
+            return
+        self.log(f"[DIAG] 0x{raw:06X}")
+        if self.diag_window is not None:
+            self.diag_window.update_from_diag(raw)
 
     def _reset_esp32(self):
         """Hardware-reset the ESP32 via RTS/DTR (ESP-Prog auto-reset circuit)."""
@@ -6856,6 +7311,36 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _open_ppgplots_default(self):
         self.btn_ppgplots.setChecked(True)
         self.toggle_ppgplots()
+
+    def _open_signals_default(self):
+        self.btn_signals.setChecked(True)
+        self.toggle_signals()
+
+    def toggle_signals(self):
+        if self.btn_signals.isChecked():
+            self.signals_window = PPGSignalsWindow(None)
+            self.signals_window.main_monitor = self
+            self.signals_window.show()
+        else:
+            if self.signals_window is not None:
+                self.signals_window.main_monitor = None
+                self.signals_window.close()
+                self.signals_window = None
+
+    def _open_results_default(self):
+        self.btn_results.setChecked(True)
+        self.toggle_results()
+
+    def toggle_results(self):
+        if self.btn_results.isChecked():
+            self.results_window = AlgoResultsWindow(None)
+            self.results_window.main_monitor = self
+            self.results_window.show()
+        else:
+            if self.results_window is not None:
+                self.results_window.main_monitor = None
+                self.results_window.close()
+                self.results_window = None
 
     def toggle_ppgplots(self):
         if self.btn_ppgplots.isChecked():
@@ -6981,6 +7466,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hw_config.setChecked(True)
         self.toggle_hw_config()
 
+    def _open_diagnostics_default(self):
+        self.btn_diagnostics.setChecked(True)
+        self.toggle_diagnostics()
+
     def toggle_timing(self):
         if self.btn_timing.isChecked():
             self.timing_window = TimingWindow(None)
@@ -7003,6 +7492,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hw_config_window.close()
                 self.hw_config_window = None
 
+    def toggle_diagnostics(self):
+        if self.btn_diagnostics.isChecked():
+            self.diag_window = DiagnosticsWindow(None)
+            self.diag_window.main_monitor = self
+            self.diag_window.show()
+        else:
+            if self.diag_window is not None:
+                self.diag_window.main_monitor = None
+                self.diag_window.close()
+                self.diag_window = None
+
     def _open_lab_capture_default(self):
         self.btn_lab_capture.setChecked(True)
         self.toggle_lab_capture()
@@ -7024,7 +7524,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.log("Cannot capture LAB while paused")
             return
         try:
-            f = open(filepath, "w", buffering=1)
+            f = open(filepath, "w", buffering=1, encoding="utf-8-sig")
             if pre_notes.strip():
                 for txt in pre_notes.splitlines():
                     f.write(f"# {txt}\n")
@@ -7115,7 +7615,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 with open(filename, "w") as f:
                     f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
                     for i in range(len(self.data_sample_counter)):
-                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_red_amb[i]},{self.data_ir_amb[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_ppg[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
+                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_red_amb[i]},{self.data_ir_amb[i]},{self.data_red_sub[i]},{self.data_ir_sub[i]},{self.data_ppgdisp[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
                 self.log(f"Snapshot saved to {filename}")
             except Exception as e:
                 self.log(f"Error saving snapshot: {e}")
@@ -7152,6 +7652,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/spin_stats_interval", self.spin_stats_interval.value())
         s.setValue("PPGMonitor/combo_port",     self.combo_port.currentText())
         s.setValue("PPGMonitor/ppgplots_open",  self.ppgplots_window  is not None)
+        s.setValue("PPGMonitor/signals_open",   self.signals_window   is not None)
+        s.setValue("PPGMonitor/results_open",   self.results_window   is not None)
         s.setValue("PPGMonitor/serialcom_open", self.serialcom_window is not None)
         s.setValue("PPGMonitor/hrlab_open",     self.hrlab_window     is not None)
         s.setValue("PPGMonitor/spo2lab_open",   self.spo2lab_window   is not None)
@@ -7162,10 +7664,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
         s.setValue("PPGMonitor/timing_open",      self.timing_window      is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
+        s.setValue("PPGMonitor/diagnostics_open", self.diag_window         is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
         # Persist geometry of all open subwindows (survives taskkill; also saved in their closeEvent)
-        if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",   self.ppgplots_window.saveGeometry())
-        if self.serialcom_window is not None: s.setValue("SerialComWindow/geometry",  self.serialcom_window.saveGeometry())
+        if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",    self.ppgplots_window.saveGeometry())
+        if self.signals_window   is not None: s.setValue("PPGSignalsWindow/geometry",  self.signals_window.saveGeometry())
+        if self.results_window   is not None: s.setValue("AlgoResultsWindow/geometry", self.results_window.saveGeometry())
+        if self.serialcom_window is not None: s.setValue("SerialComWindow/geometry",   self.serialcom_window.saveGeometry())
         if self.hrlab_window     is not None: s.setValue("HRLabWindow/geometry",      self.hrlab_window.saveGeometry())
         if self.spo2lab_window   is not None: s.setValue("SpO2LabWindow/geometry",    self.spo2lab_window.saveGeometry())
         if self.hr3lab_window    is not None: s.setValue("HR3LabWindow/geometry",     self.hr3lab_window.saveGeometry())
@@ -7175,6 +7680,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
         if self.timing_window        is not None: s.setValue("TimingWindow/geometry",       self.timing_window.saveGeometry())
         if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
+        if self.diag_window          is not None: s.setValue("DiagnosticsWindow/geometry",  self.diag_window.saveGeometry())
         if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
 
     def _restore_settings(self):
@@ -7376,8 +7882,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if not line.startswith('$'):
                         continue
 
-                    # Verify and strip NMEA-style XOR checksum (*XX) if present
+                    # Verify and strip NMEA-style XOR checksum (*XX) if present.
+                    # $M1/$M2 data frames always carry *XX; reject them if missing or malformed.
                     chk_ok = 1
+                    is_data_frame = line.startswith('$M1,') or line.startswith('$M2,')
                     if '*' in line:
                         star_pos = line.rfind('*')
                         chk_field = line[star_pos + 1:]
@@ -7394,12 +7902,27 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                             f"# BAD CHK (got {computed_chk:02X} exp {expected_chk:02X}): {line[:70]}")
                             except ValueError:
                                 pass
+                        else:
+                            # *XX field present but not exactly 2 hex chars — malformed
+                            if is_data_frame:
+                                chk_ok = 0
+                                if self.serialcom_window is not None:
+                                    self.serialcom_window.append_line(
+                                        f"# BAD CHK (malformed *field): {line[:70]}")
                         if self.save_file_chk is not None:
                             self.save_file_chk.write(f"{timestamp},{diff_us:>5},{chk_ok},{line}\n")
                         line = line[:star_pos]  # strip *XX for field parsing and CSV
                         if not chk_ok:
                             continue
                     else:
+                        # No *XX field — reject data frames, pass through others ($ERR, comments)
+                        if is_data_frame:
+                            if self.serialcom_window is not None:
+                                self.serialcom_window.append_line(
+                                    f"# BAD CHK (no checksum field): {line[:70]}")
+                            if self.save_file_chk is not None:
+                                self.save_file_chk.write(f"{timestamp},{diff_us:>5},0,{line}\n")
+                            continue
                         if self.save_file_chk is not None:
                             self.save_file_chk.write(f"{timestamp},{diff_us:>5},{chk_ok},{line}\n")
 
@@ -7465,6 +7988,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self._on_tcfg_frame_received(line)
                         continue
 
+                    # $DIAG: hardware diagnostic result (reply to $DIAG?)
+                    if line.startswith('$DIAG,'):
+                        self._on_diag_frame_received(line)
+                        continue
+
                     # $ERR: firmware rejected a $SET command
                     if line.startswith('$ERR,'):
                         self.log(f"⚠ FIRMWARE ERROR: {line}")
@@ -7499,7 +8027,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_ir_amb.append(p[5])
                             self.data_red_sub.append(p[6])
                             self.data_ir_sub.append(p[7])
-                            self.data_ppg.append(p[8])
+                            self.data_ppgdisp.append(p[8])
                             self.data_spo2.append(p[9])
                             self.data_spo2_sqi.append(p[10])
                             self.data_spo2_r.append(p[11])
@@ -7537,7 +8065,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             p = [float(x) for x in parts[1:8]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(0.0)
-                            self.data_ppg.append(0.0)
+                            self.data_ppgdisp.append(0.0)
                             self.data_spo2.append(-1.0)
                             self.data_hr1.append(-1.0)
                             self.data_red.append(p[1])
@@ -7567,17 +8095,35 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if self.ppgplots_window is not None and self._ppgplots_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
                         self._ppgplots_refresh_counter = 0
                         self.ppgplots_window.update_plots(
-                            self.data_ppg, self.data_hr1, self.data_hr2, self.data_hr3,
+                            self.data_ppgdisp, self.data_hr1, self.data_hr2, self.data_hr3,
                             self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
                             self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
                             self.data_red, self.data_ir,
                             self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub)
 
+                    # PPGSignalsWindow: throttled to 25 Hz
+                    self._signals_refresh_counter += 1
+                    if self.signals_window is not None and self._signals_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
+                        self._signals_refresh_counter = 0
+                        self.signals_window.update_plots(
+                            self.data_red, self.data_ir,
+                            self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub,
+                            self.data_ppgdisp)
+
+                    # AlgoResultsWindow: throttled to 10 Hz
+                    self._results_refresh_counter += 1
+                    if self.results_window is not None and self._results_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                        self._results_refresh_counter = 0
+                        self.results_window.update_plots(
+                            self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
+                            self.data_hr1, self.data_hr2, self.data_hr3,
+                            self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi)
+
                 if _new_data:
                     self._hrlab_refresh_counter += 1
                     if self.hrlab_window is not None and self._hrlab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
                         self._hrlab_refresh_counter = 0
-                        self.hrlab_window.update_plots(self.data_ppg, self.data_timestamp_us, self.data_sample_counter)
+                        self.hrlab_window.update_plots(self.data_ppgdisp, self.data_timestamp_us, self.data_sample_counter)
 
                     self._spo2lab_refresh_counter += 1
                     if self.spo2lab_window is not None and self._spo2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
@@ -7630,6 +8176,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         if s.value("PPGMonitor/ppgplots_open",  True,  type=bool):
             QtCore.QTimer.singleShot(0, self._open_ppgplots_default)
+        if s.value("PPGMonitor/signals_open",   False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_signals_default)
+        if s.value("PPGMonitor/results_open",   False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_results_default)
         if s.value("PPGMonitor/serialcom_open", True,  type=bool):
             QtCore.QTimer.singleShot(0, self._open_serialcom_default)
         if s.value("PPGMonitor/hr3lab_open",    True,  type=bool):
@@ -7650,6 +8200,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_timing_default)
         if s.value("PPGMonitor/hw_config_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hw_config_default)
+        if s.value("PPGMonitor/diagnostics_open",  False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_diagnostics_default)
         if s.value("PPGMonitor/labcapture_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_lab_capture_default)
         QtCore.QTimer.singleShot(300, self._bring_all_to_front)
@@ -7663,10 +8215,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         my_tid  = kernel32.GetCurrentThreadId()
         if fg_tid != my_tid:
             user32.AttachThreadInput(my_tid, fg_tid, True)
-        for w in [self, self.ppgplots_window, self.serialcom_window,
+        for w in [self, self.ppgplots_window, self.signals_window, self.results_window, self.serialcom_window,
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
-                  self.hr3test_window, self.timing_window, self.hw_config_window, self.lab_capture_window]:
+                  self.hr3test_window, self.timing_window, self.hw_config_window,
+                  self.diag_window, self.lab_capture_window]:
             if w is not None:
                 w.show()
                 w.raise_()
@@ -7702,6 +8255,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.ppgplots_window is not None:
             self.ppgplots_window.main_monitor = None
             self.ppgplots_window.close()
+        if self.signals_window is not None:
+            self.signals_window.main_monitor = None
+            self.signals_window.close()
+        if self.results_window is not None:
+            self.results_window.main_monitor = None
+            self.results_window.close()
         if self.serialcom_window is not None:
             self.serialcom_window.main_monitor = None
             self.serialcom_window.close()
@@ -7727,6 +8286,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hw_config_window is not None:
             self.hw_config_window.main_monitor = None
             self.hw_config_window.close()
+        if self.diag_window is not None:
+            self.diag_window.main_monitor = None
+            self.diag_window.close()
         if self.lab_capture_window is not None:
             self.lab_capture_window.main_monitor = None
             self.lab_capture_window.close()
@@ -7753,7 +8315,8 @@ if __name__ == "__main__":
     app.setStyleSheet(
         "QToolTip { background-color: #5500AA; color: #F0F0F0; "
         "border: 2px solid #FFE066; padding: 8px; }"
-        "QMenu { min-width: 360px; }"
+        "QMenu { min-width: 360px; } "
+        "QMenu::item { min-width: 340px; padding: 4px 20px 4px 28px; }"
     )
     window = PPGMonitor(save_chk=args.save_chk, save_chk_duration=args.save_chk_duration)
     window.show()

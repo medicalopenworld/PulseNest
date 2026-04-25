@@ -5403,3 +5403,83 @@ La función privada `_recalc_tia_cf()` también renombrada a `_recalc_afe_tia_cf
 Firmware subido con `incunest_V16` y verificado en placa. El LED de la sonda funcionó correctamente tras el upload — el problema inicial era de conexión/timing hardware, no del código. Todos los renombrados de prefijos de dominio (private members, constexpr namespace) son correctos.
 
 `pulsenest_lab.py` tiene cambios pendientes de commitear (de sesión anterior, no relacionados con el refactoring de hoy).
+
+---
+
+## Sesión 2026-04-25d
+
+### Tema: PPGSignalsWindow — alineación horizontal de los ejes Y
+
+**Problema:** Los tres plots (RED, IR, PPGdisp) tenían el eje Y izquierdo de ancho variable según el número de dígitos del rango, desalineando las áreas de plot.
+
+**Decisión:** `setWidth(80)` en el `AxisItem` izquierdo de `p1`, `p2` y `p3`. Ancho fijo de 80 px garantiza alineación independientemente del rango Y.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — tres llamadas `getAxis('left').setWidth(80)` en `PPGSignalsWindow._setup_ui`.
+
+---
+
+## Sesión 2026-04-25c
+
+### Tema: Fix ancho controles en submenús de plots (monkey-patch ViewBoxMenu)
+
+**Problema:** Los controles (spinboxes, radiobuttons) dentro de los submenús "X axis" / "Y axis" del menú contextual de pyqtgraph seguían siendo estrechos a pesar de `QMenu { min-width: 360px }`. Causa raíz: `axisCtrlTemplate_generic.py` hace `Form.setMaximumSize(QSize(200, ...))` — un límite programático que ningún CSS puede superar.
+
+**Decisión:** Monkey-patch de `ViewBoxMenu.__init__` aplicado una vez al arrancar el script. Tras la inicialización original, itera los submenús, llama `w.setMaximumWidth(16777215)` (elimina el límite de 200 px) y `w.setMinimumWidth(360)` sobre cada widget de los `QWidgetAction`. Se aplica a todos los plots del script sin necesidad de modificar pyqtgraph.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — función `_patch_viewbox_menu()` añadida tras `_MOUSE_HINT`.
+
+---
+
+## Sesión 2026-04-25b
+
+### Tema: Fix QMenu::item min-width en menús contextuales de plots
+
+**Problema:** `QMenu { min-width: 360px; }` ampliaba el marco del menú pero los items (`QMenu::item`) no se estiraban para llenarlo — el contenido seguía estrecho.
+
+**Decisión:** Añadir `QMenu::item { min-width: 340px; padding: 4px 20px 4px 28px; }` al stylesheet global para forzar que las filas de texto ocupen el ancho completo del menú.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — stylesheet global actualizado.
+
+---
+
+## Sesión 2026-04-25
+
+### Tema: Nueva tarea prioridad máxima + división de PPGPlotsWindow
+
+**Tarea añadida (prioridad máxima):** Resolver saturación del ADC del AFE4490 por exceso de luz ambiental intensa (cerca de ventana). Guardada en memoria `project_ambient_saturation_task.md`.
+
+**División de PPGPlotsWindow en dos ventanas:**
+
+**Decisión de diseño:** PPGPlotsWindow mezclaba señales AFE4490 con resultados de algoritmos. Se separa en dos ventanas independientes.
+
+- **PPGSignalsWindow** (botón `SIGNALS`): muestra las 6 señales del AFE4490 (RED raw/amb/sub, IR raw/amb/sub) + señal PPGdisp (antes llamada PPG en el script). 3 plots en columna dentro de un GraphicsLayoutWidget. Sidebar con checkboxes RED/IR idéntico al anterior. Throttle 25 Hz.
+- **AlgoResultsWindow** (botón `RESULTS`): muestra SpO2 (arriba) + HR1/HR2/HR3 (abajo). 2 plots en columna. Sin sidebar. Throttle 10 Hz.
+
+**Rename:** `data_ppg` → `data_ppgdisp` en todo el script Python. El campo de la trama serie sigue siendo `PPG` (viene del firmware). El label en la tabla SIGNAL STATS pasa de `PPG` a `PPGdisp`.
+
+**PPGPlotsWindow:** se mantiene intacta por ahora. Se eliminará cuando se confirme que las dos nuevas ventanas cubren toda su funcionalidad.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — nuevas clases `PPGSignalsWindow` y `AlgoResultsWindow`, botones `SIGNALS`/`RESULTS`, métodos toggle/open, loop de refresh, showEvent, closeEvent, bring-to-front.
+
+---
+
+## Sesión 2026-04-24e
+
+### Tema: Indicador visual `*` en botones del sidebar para ventanas a 500 Hz
+
+**Pregunta:** ¿Qué ventanas del sidebar trabajan con señales PPG sin diezmar (antes del gate de `spin_decim`)?
+
+**Análisis:** Solo dos ventanas reciben datos PPG a tasa completa (500 Hz), antes del gate de decimación:
+- **HR1TEST** — `hr1test_calc.update()` se alimenta a 500 Hz (el display sí usa datos decimados)
+- **CAPTURE LAB** — guarda a tasa completa antes del gate
+
+El resto (PPGPlots, HRLab, HR3Lab, SpO2Lab, SpO2Test, HR2TEST, HR3TEST, SerialCom) usan datos decimados. Timing, HW Config y Diagnostics no son PPG — reciben tramas de control propias que no pasan por el gate.
+
+**Decisión:** Añadir `*` al label de los botones `HR1TEST` y `CAPTURE LAB` para indicar visualmente que operan a frecuencia original. El tooltip de cada uno explica: `* = runs at full 500 Hz rate, unaffected by the Decimation setting`.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — labels `"HR1TEST *"` / `"CAPTURE\nLAB *"` y tooltips actualizados; la explicación del `*` comienza tras `<br/>` (salto de línea HTML)
