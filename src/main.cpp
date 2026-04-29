@@ -249,13 +249,15 @@ static void send_cfg_frame() {
     char buf[320];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$CFG,sr=%u,numav=%u,led1=%.2f,led2=%.2f,range=%u"
-        ",tia=%s,cf=%s,stg2=%s,ch=%s,flt=%s"
+        ",tia=%s,cf=%s,stg2=%s,ambdac=%u"
+        ",ch=%s,flt=%s"
         ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
         ",spo2a=%.4f,spo2b=%.4f"
         ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X",
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         tia_gain_str(cfg.afe_tia_gain), tia_cf_str(cfg.afe_tia_cf), stage2_str(cfg.afe_stage2_gain),
+        (unsigned)cfg.afe_ambdac_uA,
         channel_str(cfg.ppgdisp_channel), filter_str(cfg.ppgdisp_filter_type),
         cfg.ppgdisp_f_low_hz, cfg.ppgdisp_f_high_hz,
         cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,
@@ -351,6 +353,15 @@ static void apply_set_cmd(const char* key, const char* val) {
             Serial_printf("# SET numav=%d\n", n);
         } else {
             Serial_printf("$ERR,numav,invalid (1-128)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "ambdac") == 0) {
+        int uA = atoi(val);
+        if (uA >= 0 && uA <= 10) {
+            afe.setAmbDac((uint8_t)uA);
+            Serial_printf("# SET ambdac=%d uA\n", uA);
+        } else {
+            Serial_printf("$ERR,ambdac,invalid (0-10)\r\n");
             return;
         }
     } else if (strcmp(key, "sr") == 0) {

@@ -5467,6 +5467,40 @@ Firmware subido con `incunest_V16` y verificado en placa. El LED de la sonda fun
 
 ---
 
+## Sesión 2026-04-28 — AMBDAC: hardware ambient cancellation exposed + RSQM design
+
+### Tema: Saturación ADC por luz ambiental (PRIORIDAD MÁXIMA)
+
+**Problema:** El AFE4490 hace cancelación de ambiente por hardware (LED_on − LED_off), pero si aled1/aled2 saturan el ADC durante la fase LED_off, la sustracción falla. El registro DIAG (0x30) no tiene bit de saturación ambiental — la detección debe ser por software.
+
+**Solución a corto plazo:** Exponer AMBDAC (único parámetro de cancelación ambiental hardware) en la ventana HW CONFIG para que el usuario pueda ajustarlo cuando la señal ambiental sea excesiva.
+
+### Decisiones de diseño — RawSignalQualityMonitor (RSQM)
+
+Se diseñó una arquitectura de supervisión de señal en bruto:
+- **Nombre:** `RawSignalQualityMonitor` (RSQM)
+- **Ejecución:** inline en `_process_sample()` (Task A, 500 Hz) — no es una FreeRTOS task separada
+- **Salida por muestra:** `float rsqi` [0.0–1.0] + `uint16_t diag_code` (bitmask)
+- **RSQI v1:** binario (1.0 = limpio, 0.0 = problema); v2: continuo
+- **RSQI único** = min(IR quality, RED quality) — no por canal
+- **DiagCode:** bit0 AMB_SAT_IR, bit1 AMB_SAT_RED, bit2 SIGNAL_WEAK_IR, bit3 SIGNAL_WEAK_RED, bit4 HW_SETTLING (reservado), bit5 HW_ADJUSTED (reservado)
+- **RSQM NO modifica SQI** de ningún algoritmo consumidor — cada algoritmo decide
+- **HR2/HR3:** opción B — contador de muestras inválidas por ventana (sin buffer por muestra)
+- **"Raw"** = lo que entrega el AFE con su configuración actual; las correcciones HW afectan muestras futuras, no la actual
+- v2 del RSQM coincide con project_agc_readjust_task (AGC dinámico)
+- **Implementación aplazada** — guardada en memory/project_rsqm_task.md
+
+### Tarea implementada esta sesión: AMBDAC en HW CONFIG
+
+**Parámetro:** AMBDAC[3:0] en TIA_AMB_GAIN D19:D16 (4-bit, 0–10 µA, 1 µA/step).
+
+**Ficheros modificados:**
+- `incunest_afe4490.h` — `setAmbDac(uint8_t uA)` setter, `afe_ambdac_uA` en `AFE4490Config`, `_afe_ambdac_uA` private member
+- `incunest_afe4490.cpp` — constructor init, setter con `_apply_analog_regs()`, `_apply_analog_regs()` aplica `tia | ((uint32_t)_afe_ambdac_uA << 16)` a TIA_AMB_GAIN, `getConfig()` rellena campo
+- `src/main.cpp` — `apply_set_cmd()` case `"ambdac"`, `send_cfg_frame()` añade campo `ambdac=%u`
+- `pulsenest_lab.py` — nuevo `QGroupBox("Ambient Cancellation")` entre TIA Gain y Sampling, `_spin_ambdac` QSpinBox 0–10 µA, actualizado `_on_set_all`, `_on_save_to_file`, `_on_read_from_file`, `update_from_cfg`
+- `incunest_afe4490_spec.md` — `setAmbDac()` en API, `afe_ambdac_uA` en AFE4490Config, tabla parámetros actualizada, versión bump v0.24→v0.25
+
 ## Sesión 2026-04-24e
 
 ### Tema: Indicador visual `*` en botones del sidebar para ventanas a 500 Hz

@@ -4817,6 +4817,25 @@ class HWConfigWindow(QtWidgets.QMainWindow):
                                                    lambda: self._combo_stg2.currentText()))
         vbox.addWidget(grp_tia)
 
+        # ── Ambient Cancellation ───────────────────────────────────────────────
+        grp_amb = QtWidgets.QGroupBox("Ambient Cancellation")
+        grp_amb.setStyleSheet(grp_led.styleSheet())
+        form_amb = QtWidgets.QFormLayout(grp_amb)
+        form_amb.setSpacing(6)
+
+        self._spin_ambdac = QtWidgets.QSpinBox()
+        self._spin_ambdac.setRange(0, 10)
+        self._spin_ambdac.setSuffix(" µA")
+        self._spin_ambdac.setStyleSheet("background-color:#202020; color:#E0E0E0;")
+        self._spin_ambdac.setToolTip(_make_tooltip("Ambient cancellation DAC (AMBDAC)",
+            "Injects a cancellation current before Stage 2 to reduce ambient light contribution "
+            "in the ADC. AMBDAC[3:0] in TIA_AMB_GAIN register D19:D16. Range 0–10 µA (1 µA/step). "
+            "Use when aled1/aled2 are large due to strong ambient light (e.g. near window). "
+            "Sends $SET,ambdac,<value>."))
+        form_amb.addRow("AMBDAC", self._make_row(self._spin_ambdac, "ambdac",
+                                                 lambda: str(self._spin_ambdac.value())))
+        vbox.addWidget(grp_amb)
+
         # ── Sampling ──────────────────────────────────────────────────────────
         grp_samp = QtWidgets.QGroupBox("Sampling")
         grp_samp.setStyleSheet(grp_led.styleSheet())
@@ -5037,6 +5056,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             ("tiagain",  self._combo_tiagain.currentText(),         self._combo_tiagain),
             ("tiacf",    self._combo_tiacf.currentText(),           self._combo_tiacf),
             ("stg2",     self._combo_stg2.currentText(),            self._combo_stg2),
+            ("ambdac",   str(self._spin_ambdac.value()),            self._spin_ambdac),
             ("sr",       str(self._spin_sr.value()),                self._spin_sr),
             ("numav",    str(self._spin_numav.value()),             self._spin_numav),
         ]
@@ -5090,6 +5110,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             kv_line("tiagain",  self._combo_tiagain.currentText(),        "TIA feedback resistance (RF)"),
             kv_line("tiacf",    self._combo_tiacf.currentText(),          "TIA feedback capacitance (CF)"),
             kv_line("stg2",     self._combo_stg2.currentText(),           "Stage 2 amplifier gain"),
+            kv_line("ambdac",   str(self._spin_ambdac.value()),           "Ambient cancellation DAC current (µA) — AMBDAC[3:0] in TIA_AMB_GAIN D19:D16"),
             kv_line("sr",       str(self._spin_sr.value()),               "Sample rate (Hz) — restarts chip on change"),
             kv_line("numav",    str(self._spin_numav.value()),            "ADC averages per sample"),
         ]
@@ -5145,6 +5166,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         set_combo(self._combo_tiagain,         "tiagain")
         set_combo(self._combo_tiacf,           "tiacf")
         set_combo(self._combo_stg2,            "stg2")
+        set_spin_int(self._spin_ambdac,        "ambdac")
         set_spin_int(self._spin_sr,            "sr")
         set_spin_int(self._spin_numav,         "numav")
         for key, sp in self._timing_spins.items():
@@ -5176,13 +5198,14 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             set_combo(self._combo_tiagain,     'tia')
             set_combo(self._combo_tiacf,       'cf')
             set_combo(self._combo_stg2,        'stg2')
+            set_spin_int(self._spin_ambdac,    'ambdac')
             set_spin_int(self._spin_sr,        'sr')
             set_spin_int(self._spin_numav,     'numav')
         finally:
             self._updating_from_cfg = False
         for w in (self._spin_led1, self._spin_led2, self._combo_ledrange,
                   self._combo_tiagain, self._combo_tiacf, self._combo_stg2,
-                  self._spin_sr, self._spin_numav):
+                  self._spin_ambdac, self._spin_sr, self._spin_numav):
             self._mark_clean(w)
         self._statusbar.showMessage("Config loaded from chip")
 

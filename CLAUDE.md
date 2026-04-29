@@ -13,7 +13,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 
 
 ## Hardware y entorno
-- **MCU:** ESP32-S3 (placa in3ator V15)
+- **MCU:** ESP32-S3 (placa IncuNest V16)
 - **Sensor:** AFE4490 por SPI
 - **Framework:** Arduino + PlatformIO
 - **platformio.ini:** `platform = espressif32@6.6.0`, `framework = arduino`, `board = esp32-s3-devkitc-1`
@@ -27,7 +27,7 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 - Objetivo: cada versión de la spec debe ser capaz por sí sola de regenerar la librería correspondiente
 
 ## Herramientas del proyecto
-- **Firmware ESP32-S3:** validación de señal PPG y SpO2 en la placa in3ator
+- **Firmware ESP32-S3:** validación de señal PPG y SpO2 en la placa IncuNest V16
 - **`pulsenest_lab.py`:** script Python para visualizar, analizar y capturar las señales PPG (forma parte del proyecto, no es un script auxiliar). Ver `pulsenest_lab_spec.md` antes de modificarlo.
 
 ## Log de conversaciones
@@ -51,5 +51,5 @@ En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
 ## Contexto del proyecto padre (IncuNest)
 - Repo: https://github.com/medicalopenworld/IncuNest/tree/master/Firmware
 - Arquitectura de tareas FreeRTOS: `sensors_Task`, `PID_Task`, `UI_Task`, `Security_Task`, `Comm_Tasks`
-- HAL con versiones de placa: V13, V14, V15 (pines en `include/board.h`)
+- HAL con versiones de placa: V13, V14, V15, V16 (pines en `include/board.h`)
 - Depuración mediante flags en `main.h` y macros `logI`, `logE`, `logAlarm`

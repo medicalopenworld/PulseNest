@@ -4,14 +4,14 @@ dentro de un proyecto más grande llamado IncuNest.
 La información del proyecto IncuNest es la siguiente:
 
 ================================================================================
-PROYECTO: INCUNEST FIRMWARE (MOTHERBOARD V15) - CONTEXTO MAESTRO INDEXADO
+PROYECTO: INCUNEST FIRMWARE (MOTHERBOARD V16) - CONTEXTO MAESTRO INDEXADO
 ================================================================================
 
 1. DESCRIPCIÓN GENERAL
     1.1 Nombre: IncuNest (Desarrollado por Medical Open World).
                 https://github.com/medicalopenworld/IncuNest/tree/master/Firmware
     1.2 Objetivo: Incubadora neonatal de código abierto de alta fiabilidad.
-    1.3 Hardware: placa propietaria que utiliza ESP32-S3 y AFE4490 (Revisión actual V15).
+    1.3 Hardware: placa propietaria que utiliza ESP32-S3 y AFE4490 (Revisión actual V16).
     1.4 Framework: SDK Arduino con IDE Antigravity y extensión PlatformIO
 	1.5 Extracto de platformio.ini: 
 			"platform = espressif32@6.6.0
@@ -71,7 +71,7 @@ PROYECTO: INCUNEST FIRMWARE (MOTHERBOARD V15) - CONTEXTO MAESTRO INDEXADO
 		Gráficos y Pantalla: TFT_eSPI (la que dibuja los menús) y Adafruit_GFX.
 		Comunicaciones: TinyGSM (para que el modem SIM800 hable con internet) y ThingsBoard (para enviar los datos a la nube).
 		Datos: ArduinoJson para empaquetar la información antes de enviarla.
-	7.6 HAL personalizada (Hardware Abstraction Layer) con diferentes versiones de placa (V13,V14,V15)
+	7.6 HAL personalizada (Hardware Abstraction Layer) con diferentes versiones de placa (V13,V14,V15,V16)
 		Configuración de pines (include/board.h)
 		Driver propio: src/in3ator_humidifier.cpp (driver específico)
 	7.7 Sistema de Particiones y Almacenamiento
