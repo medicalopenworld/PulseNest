@@ -5542,3 +5542,52 @@ El resto (PPGPlots, HRLab, HR3Lab, SpO2Lab, SpO2Test, HR2TEST, HR3TEST, SerialCo
 
 **Ficheros modificados:**
 - `pulsenest_lab.py` — labels `"HR1TEST *"` / `"CAPTURE\nLAB *"` y tooltips actualizados; la explicación del `*` comienza tras `<br/>` (salto de línea HTML)
+
+## Sesión 2026-04-30 — Diseño HGAC + fix cierre ventanas secundarias
+
+### Tema 1: Diseño conceptual del sistema de control analógico (RSQM + HGAC)
+
+**Discusión:** El control del exceso de luz ambiental y la degradación de señal puede gestionarse mediante un sistema que controle LEDCURRENT, RF, RG y AMBDAC. Se debatió si este sistema (HGAC) debería estar dentro del RSQM o ser un módulo separado.
+
+**Decisiones de diseño:**
+
+- **Nombre acordado:** HGAC (Hardware Gain/Ambient Controller)
+- **Separación obligatoria de RSQM y HGAC:** RSQM observa y califica (por muestra, 500 Hz). HGAC actúa sobre hardware (~2 Hz, sobre condición sostenida). Los artefactos de movimiento son detectables por RSQM pero NO son corregibles por HGAC.
+- **Entrada de HGAC:** `RSQMResult` completo (no raw ADC). Incluye `diag_code` (qué está mal) + `amb_ir_pct`, `amb_red_pct`, `sig_ir_pct`, `sig_red_pct` (cuánto ajustar). El RSQM normaliza los counts ADC → HGAC no conoce el formato del AFE4490.
+- **No ahora:** Módulo HWSETTER descartado por prematuro. Los setters de la librería ya cubren esa función. Si en el futuro hay 3+ escritores concurrentes, se reconsiderará.
+- **Orden de implementación:** RSQM primero → validar en banco → HGAC después.
+- **Política de ficheros de tarea en memory/:** Completadas → conservar con `status: done`. Canceladas/obsoletas/absorbidas → borrar.
+
+**Preguntas abiertas de HGAC (pendientes de respuesta del usuario):**
+- Paso de ajuste: ¿fijo o proporcional al error?
+- RF/RG compartidos (ENSEPGAIN=0): política ante IR saturado y RED débil simultáneamente
+- AMBDAC: ¿por canal o compartido? (verificar datasheet)
+- Conflicto AMB_SAT + SIGNAL_WEAK simultáneos con RF/RG implicados
+- Histéresis alrededor del punto de operación objetivo
+- Límites de ajuste seguros por parámetro
+- Tiempo de ventana de acumulación de diag_code antes de actuar
+
+**Cambios en memory/:**
+- Creado `project_hgac_task.md` — diseño conceptual HGAC completo
+- Eliminados `project_ambient_saturation_task.md` (absorbida por RSQM) y `project_agc_readjust_task.md` (absorbida por HGAC)
+- Creado `feedback_memory_file_policy.md` — política de gestión de ficheros de tarea
+
+### Tema 2: Bug — ventanas secundarias no se cerraban al cerrar el script
+
+**Síntoma:** Al cerrar la ventana principal de `pulsenest_lab.py`, las ventanas secundarias (PPGSignalsWindow, AlgoResultsWindow, etc.) permanecían abiertas.
+
+**Causa raíz:** En `PPGMonitor.closeEvent()`, la línea:
+```python
+if hasattr(self, '_reader_thread'):
+    self._reader_thread.join(timeout=1.0)
+```
+`_reader_thread` se inicializa a `None` en `__init__` y solo se asigna a un thread real al conectar un puerto serie. `hasattr()` devuelve `True` (el atributo existe), pero el valor es `None` → `None.join()` lanza `AttributeError` → `closeEvent` aborta antes de llegar a las llamadas `close()` de las ventanas secundarias. El `QCloseEvent` se acepta por defecto y la ventana principal se cierra, dejando las secundarias huérfanas. Bug latente solo cuando no hay puerto serie conectado.
+
+**Fix:**
+```python
+if hasattr(self, '_reader_thread') and self._reader_thread is not None:
+    self._reader_thread.join(timeout=1.0)
+```
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — `PPGMonitor.closeEvent()`: añadido `and self._reader_thread is not None`

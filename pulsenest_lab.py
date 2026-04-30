@@ -8271,7 +8271,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.save_file_chk.close()
         if hasattr(self, '_reader_stop'):
             self._reader_stop.set()
-        if hasattr(self, '_reader_thread'):
+        if hasattr(self, '_reader_thread') and self._reader_thread is not None:
             self._reader_thread.join(timeout=1.0)
         if hasattr(self, 'ser') and self.ser.is_open:
             self.ser.close()
