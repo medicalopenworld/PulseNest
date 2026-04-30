@@ -5501,6 +5501,31 @@ Se diseñó una arquitectura de supervisión de señal en bruto:
 - `pulsenest_lab.py` — nuevo `QGroupBox("Ambient Cancellation")` entre TIA Gain y Sampling, `_spin_ambdac` QSpinBox 0–10 µA, actualizado `_on_set_all`, `_on_save_to_file`, `_on_read_from_file`, `update_from_cfg`
 - `incunest_afe4490_spec.md` — `setAmbDac()` en API, `afe_ambdac_uA` en AFE4490Config, tabla parámetros actualizada, versión bump v0.24→v0.25
 
+## Sesión 2026-04-29 — Fix AMBDAC: STAGE2EN2 requerido + nuevas tareas
+
+### Tema: AMBDAC no producía ningún efecto en las señales
+
+**Diagnóstico:** AMBDAC requiere que Stage 2 esté activo para tener efecto. Stage 2 no es solo un amplificador — es el bloque encargado de la cancelación ambiental. El bit STAGE2EN2 (D14 de TIA_AMB_GAIN) activa Stage 2 para las fases ambientales (aled1/aled2). Con `stg2=0dB` (Stage 2 desactivado), nuestro código escribía `0x000000` en TIAGAIN → bit D14=0, y al copiar `tia` a TIA_AMB_GAIN también quedaba STAGE2EN2=0 → AMBDAC sin efecto.
+
+**Hallazgo clave (usuario):** STAGE2EN1 (TIAGAIN D14) y STAGE2EN2 (TIA_AMB_GAIN D14) son independientes incluso con ENSEPGAIN=0. AMBDAC actúa inyectando corriente en Stage 2; sin STAGE2EN2=1, la corriente no tiene camino al ADC.
+
+**Fix aplicado:** En `_apply_analog_regs()`, cuando `_afe_ambdac_uA > 0`, se fuerza STAGE2EN2=1 en TIA_AMB_GAIN independientemente del Stage 2 de los canales LED:
+```cpp
+uint32_t amb = tia | ((uint32_t)_afe_ambdac_uA << 16);
+if (_afe_ambdac_uA > 0) amb |= 0x004000UL;  // STAGE2EN2 required for AMBDAC
+_write_reg(REG_TIA_AMB_GAIN, amb);
+```
+
+**Ficheros modificados:**
+- `incunest_afe4490.cpp` — `_apply_analog_regs()`: fix + comentarios actualizados
+- `incunest_afe4490_spec.md` — tabla parámetros y version bump v0.25 → v0.25b
+
+### Nuevas tareas añadidas
+
+- **Tarea #5:** Investigar por qué hay bleed de LEDs en la medida ambiental (probablemente timing)
+- **Tarea #6:** Detector de sonda desconectada en RSQM (todos los canales ~-4000 counts)
+- **Tarea #7:** Estudiar efecto de FLTRCNRSEL en tiempo de asentamiento post-diagnóstico (500 Hz: ~28 ms, 1000 Hz: ~16 ms)
+
 ## Sesión 2026-04-24e
 
 ### Tema: Indicador visual `*` en botones del sidebar para ventanas a 500 Hz
