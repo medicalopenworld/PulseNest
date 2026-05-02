@@ -5591,3 +5591,46 @@ if hasattr(self, '_reader_thread') and self._reader_thread is not None:
 
 **Ficheros modificados:**
 - `pulsenest_lab.py` — `PPGMonitor.closeEvent()`: añadido `and self._reader_thread is not None`
+
+## Sesión 2026-05-02 — RSQM diseño ampliado + HR3 explicación + hr_min_bpm
+
+### Tema 1: RSQM — rsqi como float + HPS-Index + PI-Index
+
+**Decisiones:**
+- `rsqi` será `float` [0.0–1.0] desde v1 (aunque v1 sea binario), pensando en v2 continuo.
+- v1: `rsqi = (diag_code == 0) ? 1.0f : 0.0f` (binario)
+- v2: función de PI-Index + HPS-Index + diag_flags
+
+**HPS-Index (propuesta para v2):**
+Detecta si la señal tiene estructura armónica periódica coherente con un pulso cardíaco. Requiere buffer (~2–4 s), FFT + HPS. No es stateless → necesita Task D propia (como HR2/HR3). Actualiza cada ~2–4 s.
+
+**PI-Index (propuesta para v2):**
+`PI = AC_amplitude / DC_level × 100%`. Bajo coste, calculable en ventana ~1 s. Detecta señal débil aunque sea periódica. No distingue ruido periódico de PPG real.
+
+**Colaboración PI + HPS:**
+Se complementan: PI detecta señal débil, HPS detecta falta de periodicidad. Un artefacto de movimiento rítmico puede engañar al PI pero no al HPS.
+
+**Arquitectura RSQM con tres capas:**
+- Capa rápida (stateless, 500 Hz): AMB_SAT, SIGNAL_WEAK, PROBE_OFF → Task A
+- PI-Index (ventana ~1 s): Task A, overhead mínimo
+- HPS-Index (ventana ~2–4 s, FFT): Task D propia
+
+### Tema 2: HR3 — revisión del algoritmo
+
+Revisado el código completo de HR3. Pipeline confirmado:
+- LP filter (biquad, 10 Hz) → decimación ×10 → buffer circular 512 muestras (10.24 s @ 50 Hz)
+- Resolución: 0.098 Hz/bin = 5.9 BPM/bin
+- Linearización: DC removal + ventana Hann precomputada
+- FFT radix-2 DIT 512 puntos (Task C)
+- HPS = P[k]·P[2k]·P[3k], búsqueda en rango [hr_min, hr_max] con guard band ±3 BPM
+- Interpolación parabólica sobre espectro Y sobre HPS (fix inter-bin energy split cúbico)
+- SQI = prominencia del pico HPS normalizada: `(fraction - baseline) / (1 - baseline)`
+
+HR1, HR2, HR3 comparten `hr_min_bpm` y `hr_max_bpm` (rango ISO 80601-2-61, uso neonatal).
+
+### Tema 3: hr_min_bpm 25 → 30 BPM
+
+**Decisión del usuario:** cambiar el límite inferior de HR de 25 a 30 BPM.
+
+**Ficheros modificados:**
+- `incunest_afe4490.cpp` — `hr_min_bpm = 30.0f` (era 25.0f). Aplica a HR1, HR2 y HR3.
