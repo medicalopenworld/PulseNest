@@ -5651,3 +5651,13 @@ Revisados los filtros de los 4 algoritmos:
 
 **Ficheros modificados:**
 - `incunest_afe4490.cpp` — `hr_max_bpm = 260.0f` (era 300.0f). Aplica a HR1, HR2 y HR3.
+
+## Sesión 2026-05-02c — rename hr_refractory_s → hr1_refractory_s
+
+**Decisión:** `hr_refractory_s` renombrado a `hr1_refractory_s` ya que solo lo utiliza HR1 (para calcular `_hr1_refractory_samples`). Coherente con el prefijo `hr1_` del resto de parámetros del algoritmo.
+
+Comentario actualizado: "covers 303 BPM" → "covers 263 BPM guard band" (refleja el nuevo hr_max_bpm=260 + guard band de 3 BPM).
+
+**Ficheros modificados:**
+- `incunest_afe4490.cpp` — constexpr renombrado + comentario actualizado
+- `incunest_afe4490_spec.md` — 5 ocurrencias renombradas
