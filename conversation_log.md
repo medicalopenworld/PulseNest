@@ -5661,3 +5661,10 @@ Comentario actualizado: "covers 303 BPM" → "covers 263 BPM guard band" (reflej
 **Ficheros modificados:**
 - `incunest_afe4490.cpp` — constexpr renombrado + comentario actualizado
 - `incunest_afe4490_spec.md` — 5 ocurrencias renombradas
+
+## Sesión 2026-05-02d — mover hr1_refractory_s a sección HR1
+
+`hr1_refractory_s` estaba en la sección `// ── HR (all algorithms)` del bloque de constexpr. Movida a `// ── HR1` donde le corresponde por ser un parámetro exclusivo de ese algoritmo.
+
+**Ficheros modificados:**
+- `incunest_afe4490.cpp` — `hr1_refractory_s` movida a sección HR1
