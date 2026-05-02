@@ -5634,3 +5634,20 @@ HR1, HR2, HR3 comparten `hr_min_bpm` y `hr_max_bpm` (rango ISO 80601-2-61, uso n
 
 **Ficheros modificados:**
 - `incunest_afe4490.cpp` — `hr_min_bpm = 30.0f` (era 25.0f). Aplica a HR1, HR2 y HR3.
+
+## Sesión 2026-05-02b — hr_max_bpm + revisión de filtros
+
+### Tema 1: Revisión de filtros por algoritmo
+
+Revisados los filtros de los 4 algoritmos:
+- **SpO2:** IIR DC removal (τ=1.6s) + EMA AC² (τ=1.0s). Sin biquad.
+- **HR1:** IIR DC removal (τ=1.6s) + Moving Average LP (cutoff 5 Hz, buffer hasta 64 muestras). Sin biquad.
+- **HR2:** Butterworth bandpass biquad (0.5–5 Hz) + decimación ×10.
+- **HR3:** Butterworth low-pass biquad (10 Hz) + decimación ×10 + ventana Hann 512 puntos.
+
+### Tema 2: hr_max_bpm 300 → 260 BPM
+
+**Decisión del usuario:** cambiar el límite superior de HR de 300 a 260 BPM.
+
+**Ficheros modificados:**
+- `incunest_afe4490.cpp` — `hr_max_bpm = 260.0f` (era 300.0f). Aplica a HR1, HR2 y HR3.
