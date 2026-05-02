@@ -5668,3 +5668,17 @@ Comentario actualizado: "covers 303 BPM" → "covers 263 BPM guard band" (reflej
 
 **Ficheros modificados:**
 - `incunest_afe4490.cpp` — `hr1_refractory_s` movida a sección HR1
+
+## Sesión 2026-05-02e — HR3: LP → BP (0.4–15 Hz)
+
+**Decisión:** Cambiar el filtro de HR3 de paso bajo (10 Hz) a paso banda (0.4–15 Hz).
+
+**Razones:**
+- Upper 15 Hz (antes 10 Hz): el 3er armónico de 260 BPM es 13 Hz — con 10 Hz quedaba atenuado, con 15 Hz se preserva → mejor HPS a FC alta.
+- Lower 0.4 Hz: elimina DC y deriva de baseline lenta antes de la FFT. Más robusto que el DC removal por resta de media en `_linearize_hr3()`.
+- Anti-aliasing sigue siendo seguro: 15 Hz << 25 Hz (Nyquist de 50 Hz decimado).
+
+**Ficheros modificados:**
+- `incunest_afe4490.h` — `_hr3_lpf` → `_hr3_bpf`; `hr3_f_low_hz` añadido a `AFE4490Config`; `setHR3Filter()` actualizado a dos parámetros
+- `incunest_afe4490.cpp` — init, `setHR3Filter()`, `getConfig()`, `_reset_algorithms()`, `_recalc_rate_params()`, `_update_hr3_sample()` actualizados
+- `incunest_afe4490_spec.md` — API, struct y tabla de parámetros actualizados
