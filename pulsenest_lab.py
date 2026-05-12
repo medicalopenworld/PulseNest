@@ -1434,8 +1434,9 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
 
     # ── Update (called from main monitor loop) ────────────────────────────────
 
-    def update_plots(self, data_ir_sub, data_red_sub, data_spo2, data_spo2_r,
-                     data_timestamp_us, data_sample_counter):
+    def update_algorithms(self, data_ir_sub, data_red_sub, data_spo2, data_spo2_r,
+                          data_timestamp_us, data_sample_counter):
+        """Run per-sample algorithm (called from PPGMonitor._process_serial_queue_tick)."""
         n = len(data_sample_counter)
         if n == 0:
             return
@@ -1481,6 +1482,11 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
                     buf.append(nan)
 
         self._last_sample_cnt = data_sample_counter[-1]
+
+    def update_plots(self):
+        """Render pre-computed buffers (called from PPGMonitor._refresh_plots_tick)."""
+        if not self._buf_t:
+            return
 
         t_arr = np.array(self._buf_t)
 
@@ -1572,6 +1578,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._calc            = SpO2TestCalc()
         self._last_sample_cnt = -1
         self._t0_us           = None
+        self._last_r          = None
         self._offline_mode    = False
 
         # Rolling buffers (live mode)
@@ -2090,8 +2097,9 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     # ── Live update (called from PPGMonitor) ──────────────────────────────────
 
-    def update_plots(self, data_ir_sub, data_red_sub, data_spo2, data_spo2_r,
-                     data_spo2_sqi, data_timestamp_us, data_sample_counter):
+    def update_algorithms(self, data_ir_sub, data_red_sub, data_spo2, data_spo2_r,
+                          data_spo2_sqi, data_timestamp_us, data_sample_counter):
+        """Run per-sample algorithm (called from PPGMonitor._process_serial_queue_tick)."""
         if self._offline_mode:
             return
         n = len(data_sample_counter)
@@ -2109,6 +2117,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         new_indices.reverse()
 
         nan = float('nan')
+        r = None
         for i in new_indices:
             ts     = float(data_timestamp_us[i])
             ir     = float(data_ir_sub[i])
@@ -2144,7 +2153,15 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             self._buf_rms_ir.append(r['rms_ac_ir'])
             self._buf_rms_red.append(r['rms_ac_red'])
 
+        self._last_r = r
         self._last_sample_cnt = data_sample_counter[-1]
+
+    def update_plots(self):
+        """Render pre-computed buffers (called from PPGMonitor._refresh_plots_tick)."""
+        if self._offline_mode:
+            return
+        if not self._buf_t:
+            return
 
         arr_t     = np.array(self._buf_t)
         arr_spo2_fw  = np.array(self._buf_spo2_fw)
@@ -2190,8 +2207,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                    _last_valid(arr_sqi_py),  _last_valid(arr_dc_ir),  _last_valid(arr_dc_red),
                    _last_valid(arr_rms_ir),  _last_valid(arr_rms_red)]
         # PI and DC/AC from python mirror
-        if r and not r['warmup']:
-            py_vals[2] = r.get('pi', float('nan'))
+        if self._last_r and not self._last_r['warmup']:
+            py_vals[2] = self._last_r.get('pi', float('nan'))
         dec = [1, 5, 2, 3, 0, 0, 1, 1]
         for row in range(8):
             fv = fw_vals[row]
@@ -3366,8 +3383,9 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 
     # ── Live update ───────────────────────────────────────────────────────────
 
-    def update_plots(self, data_ir_sub, data_hr2, data_hr2_sqi,
-                     data_timestamp_us, data_sample_counter):
+    def update_algorithms(self, data_ir_sub, data_hr2, data_hr2_sqi,
+                          data_timestamp_us, data_sample_counter):
+        """Run per-sample algorithm (called from PPGMonitor._process_serial_queue_tick)."""
         if self._offline_mode:
             return
         n = len(data_sample_counter)
@@ -3409,6 +3427,13 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             self._buf_sqi_py.append(sqi_py)
 
         self._last_sample_cnt = data_sample_counter[-1]
+
+    def update_plots(self):
+        """Render pre-computed buffers (called from PPGMonitor._refresh_plots_tick)."""
+        if self._offline_mode:
+            return
+        if not self._buf_t:
+            return
 
         arr_t = np.array(self._buf_t)
         arr_hr_fw = np.array(self._buf_hr_fw); arr_hr_py = np.array(self._buf_hr_py)
@@ -4160,7 +4185,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            # _calc.update() is called per-sample in PPGMonitor.update_data()
+            # _calc.update() is called per-sample in PPGMonitor._process_serial_queue_tick()
             _c     = self._get_live_calc()
             hr_fw  = hr_f  if hr_f  > 0 else nan
             sqi_fw = sqi_f if sqi_f >= 0 else nan
@@ -4253,6 +4278,203 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         if self.main_monitor is not None:
             self.main_monitor.btn_hr3test.setChecked(False)
             self.main_monitor.hr3test_window = None
+        super().closeEvent(event)
+
+
+class PythonTimingWindow(QtWidgets.QMainWindow):
+    """PYTHON TIMING — real-time performance diagnostics for the pulsenest_lab.py script.
+
+    Displays mean and max execution time (ms) for each measured component:
+      Section A — Loop timers: _process_serial_queue_tick() drain and _refresh_plots_tick() total.
+      Section B — Algorithms: per-window update_algorithms() time (runs in drain, 20ms budget).
+      Section C — Render: per-window update_plots() time (runs in render, 200ms budget).
+
+    Stats are computed over a rolling window of the last 50 measurements.
+    The status bar reflects the drain timer vs its 20ms budget.
+    """
+
+    _SERIAL_TICK_BUDGET_MS  = 20.0    # ms — drain timer period
+    _PLOTS_TICK_BUDGET_MS = 200.0   # ms — render timer period
+    _WARN_PCT         = 75.0    # % — warning threshold
+    _CRIT_PCT         = 100.0   # % — critical threshold
+
+    # (key, display name, budget_ms)
+    _LOOP_ROWS = [
+        ("drain",  "_process_serial_queue_tick() drain",    _SERIAL_TICK_BUDGET_MS),
+        ("render", "_refresh_plots_tick() total", _PLOTS_TICK_BUDGET_MS),
+    ]
+    _SERIAL_TICK_ALGO_ROWS = [
+        ("algo_spo2lab",  "SPO2LAB   |  SpO2LabWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
+        ("algo_spo2test", "SPO2TEST  |  SpO2TestWindow.update_algorithms()", _SERIAL_TICK_BUDGET_MS),
+        ("algo_hr2test",  "HR2TEST   |  HR2TestWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
+    ]
+    _PLOTS_TICK_ROWS = [
+        ("plot_ppgplots", "PPGPLOTS  |  PPGPlotsWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
+        ("plot_signals",  "SIGNALS   |  PPGSignalsWindow.update_plots()",  _PLOTS_TICK_BUDGET_MS),
+        ("plot_results",  "RESULTS   |  AlgoResultsWindow.update_plots()", _PLOTS_TICK_BUDGET_MS),
+        ("plot_hrlab",    "HR2LAB    |  HRLabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
+        ("plot_spo2lab",  "SPO2LAB   |  SpO2LabWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr3lab",   "HR3LAB    |  HR3LabWindow.update_plots()",      _PLOTS_TICK_BUDGET_MS),
+        ("plot_spo2test", "SPO2TEST  |  SpO2TestWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr1test",  "HR1TEST * |  HR1TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr2test",  "HR2TEST   |  HR2TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr3test",  "HR3TEST   |  HR3TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("PYTHON TIMING — Script Performance")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
+            "PythonTimingWindow/geometry")
+        if geom: self.restoreGeometry(geom)
+        else:    self.resize(560, 760)
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        vbox = QtWidgets.QVBoxLayout(central)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(6)
+
+        # Status bar (drain budget)
+        self._lbl_status = QtWidgets.QLabel("Waiting for data…")
+        self._lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+        self._lbl_status.setStyleSheet(
+            "background: #1A2A1A; color: #888888; font-size: 13px; "
+            "font-weight: bold; padding: 4px; border-radius: 4px;")
+        self._lbl_status.setToolTip(_make_tooltip(
+            "Drain timer status",
+            f"GREEN:  drain max < {self._WARN_PCT:.0f}% of {self._SERIAL_TICK_BUDGET_MS:.0f} ms budget.\n"
+            f"ORANGE: drain max {self._WARN_PCT:.0f}–{self._CRIT_PCT:.0f}% (tight).\n"
+            f"RED:    drain max > {self._CRIT_PCT:.0f}% (OVER BUDGET — serial data may be delayed)."))
+        vbox.addWidget(self._lbl_status)
+
+        # Build table: 2 + 3 + 10 data rows + 3 section headers = 18 rows
+        n_rows = 1 + len(self._LOOP_ROWS) + 1 + len(self._SERIAL_TICK_ALGO_ROWS) + 1 + len(self._PLOTS_TICK_ROWS)
+        self._table = QtWidgets.QTableWidget(n_rows, 4)
+        self._table.setHorizontalHeaderLabels(["Component", "Mean (ms)", "Max (ms)", "% Budget"])
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
+        self._table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        for col in (1, 2, 3):
+            self._table.horizontalHeader().setSectionResizeMode(
+                col, QtWidgets.QHeaderView.ResizeToContents)
+        self._table.setToolTip(_make_tooltip(
+            "Python timing table",
+            "Execution time per component measured with time.perf_counter().\n"
+            "Stats computed over the last 50 measurements.\n"
+            "Drain budget = 20 ms (timer period). Render budget = 200 ms (timer period).\n"
+            "Color: white < 75%, orange 75–100%, red > 100%."))
+
+        _hdr_style = "background: #1E2E3E; color: #88BBDD; font-size: 11px; font-weight: bold;"
+
+        self._row_map = {}  # key → physical row index
+
+        def _add_section(phys_row, label):
+            self._table.setSpan(phys_row, 0, 1, 4)
+            item = QtWidgets.QTableWidgetItem(f"  {label}")
+            item.setFlags(QtCore.Qt.ItemIsEnabled)
+            item.setBackground(QtGui.QColor("#1E2E3E"))
+            item.setForeground(QtGui.QColor("#88BBDD"))
+            item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            self._table.setItem(phys_row, 0, item)
+            return phys_row + 1
+
+        def _add_data_rows(phys_row, row_defs):
+            for key, name, _ in row_defs:
+                item = QtWidgets.QTableWidgetItem(f"  {name}")
+                item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+                self._table.setItem(phys_row, 0, item)
+                for col in (1, 2, 3):
+                    cell = QtWidgets.QTableWidgetItem("—")
+                    cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                    self._table.setItem(phys_row, col, cell)
+                self._row_map[key] = phys_row
+                phys_row += 1
+            return phys_row
+
+        r = 0
+        r = _add_section(r, f"Loop timers  —  drain budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms  |  render budget {self._PLOTS_TICK_BUDGET_MS:.0f} ms")
+        r = _add_data_rows(r, self._LOOP_ROWS)
+        r = _add_section(r, f"Algorithms — update_algorithms()  (budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms)")
+        r = _add_data_rows(r, self._SERIAL_TICK_ALGO_ROWS)
+        r = _add_section(r, f"Render — update_plots()  (budget {self._PLOTS_TICK_BUDGET_MS:.0f} ms)")
+        r = _add_data_rows(r, self._PLOTS_TICK_ROWS)
+
+        vbox.addWidget(self._table)
+
+        # Last update label
+        self._lbl_last = QtWidgets.QLabel("Last update: —")
+        self._lbl_last.setAlignment(QtCore.Qt.AlignRight)
+        self._lbl_last.setStyleSheet("color: #888888; font-size: 11px;")
+        vbox.addWidget(self._lbl_last)
+
+    def update_timing(self, stats):
+        """Update table from stats dict: {key: (mean_ms, max_ms)}.
+        Called periodically from PPGMonitor._refresh_plots_tick().
+        """
+        import datetime
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+
+        all_rows = self._LOOP_ROWS + self._SERIAL_TICK_ALGO_ROWS + self._PLOTS_TICK_ROWS
+        drain_val = stats.get("drain")
+        drain_max = drain_val[1] if drain_val is not None else 0.0
+
+        for key, _, budget_ms in all_rows:
+            val = stats.get(key)
+            phys_row = self._row_map.get(key)
+            if phys_row is None:
+                continue
+            if val is None:
+                # Window is closed — reset to "—"
+                for col in (1, 2, 3):
+                    self._table.item(phys_row, col).setText("—")
+                    self._table.item(phys_row, col).setForeground(QtGui.QColor("#888888"))
+                continue
+            mean_ms, max_ms = val
+            pct = (max_ms / budget_ms * 100.0) if budget_ms > 0 else 0.0
+            self._table.item(phys_row, 1).setText(f"{mean_ms:.2f}")
+            self._table.item(phys_row, 2).setText(f"{max_ms:.2f}")
+            self._table.item(phys_row, 3).setText(f"{pct:.1f}%")
+            if pct > self._CRIT_PCT:
+                colour = "#FF4444"
+            elif pct > self._WARN_PCT:
+                colour = "#FFA500"
+            else:
+                colour = "#E0E0E0"
+            for col in (1, 2, 3):
+                self._table.item(phys_row, col).setForeground(QtGui.QColor(colour))
+
+        # Status bar (drain)
+        drain_pct = (drain_max / self._SERIAL_TICK_BUDGET_MS * 100.0)
+        if drain_pct > self._CRIT_PCT:
+            self._lbl_status.setText(
+                f"OVER BUDGET  drain_max={drain_max:.1f} ms > {self._SERIAL_TICK_BUDGET_MS:.0f} ms  [{now}]")
+            self._lbl_status.setStyleSheet(
+                "background: #3A0000; color: #FF4444; font-size: 13px; "
+                "font-weight: bold; padding: 4px; border-radius: 4px;")
+        elif drain_pct > self._WARN_PCT:
+            self._lbl_status.setText(
+                f"TIGHT  drain_max={drain_max:.1f} ms  (budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms)  [{now}]")
+            self._lbl_status.setStyleSheet(
+                "background: #2A1A00; color: #FFA500; font-size: 13px; "
+                "font-weight: bold; padding: 4px; border-radius: 4px;")
+        else:
+            self._lbl_status.setText(
+                f"OK  drain_max={drain_max:.1f} ms  (budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms)  [{now}]")
+            self._lbl_status.setStyleSheet(
+                "background: #1A3A1A; color: #44FF44; font-size: 13px; "
+                "font-weight: bold; padding: 4px; border-radius: 4px;")
+
+        self._lbl_last.setText(f"Last update: {now}  (rolling 50 samples)")
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("PythonTimingWindow/geometry", self.saveGeometry())
+        if hasattr(self, 'main_monitor') and self.main_monitor is not None:
+            self.main_monitor.btn_python_timing.setChecked(False)
+            self.main_monitor.python_timing_window = None
         super().closeEvent(event)
 
 
@@ -6211,7 +6433,7 @@ class SerialComWindow(QtWidgets.QWidget):
         self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
 
     def append_lines(self, lines):
-        """Batch append a list of lines (called from update_data loop)."""
+        """Batch append a list of lines (called from _process_serial_queue_tick loop)."""
         if not lines:
             return
         self.console.appendPlainText('\n'.join(lines))
@@ -6738,6 +6960,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr3test_window   = None
         self.hr3test_calc     = HR3TestCalc()
         self.esp32_timing_window    = None
+        self.python_timing_window   = None
         self.hw_config_window = None
         self.diag_window      = None
         self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
@@ -6759,8 +6982,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._hr1test_refresh_counter  = 0
         self._hr2test_refresh_counter  = 0
         self._hr3test_refresh_counter  = 0
+        self._pytiming_refresh_counter = 0
         self._decim_counter = 0
         self.hr3_calc = HRFFTCalc()
+
+        # ── Python timing rolling buffers (last 50 measurements, in ms) ──────────
+        _pt_keys = [
+            'drain', 'render',
+            'algo_spo2lab', 'algo_spo2test', 'algo_hr2test',
+            'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hrlab',
+            'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
+            'plot_hr1test', 'plot_hr2test', 'plot_hr3test',
+        ]
+        self._py_timing = {k: deque(maxlen=50) for k in _pt_keys}
 
         # ── Stats table buffers (reset every N seconds) ───────────────────────
         self._STATS_SIGNALS = [
@@ -7096,6 +7330,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Cycle budget = 2000 µs (1 sample period at 500 Hz)."))
         self.sidebar_layout.addWidget(self.btn_esp32_timing)
 
+        self.btn_python_timing = QtWidgets.QPushButton("PYTHON\nTIMING")
+        self.btn_python_timing.setCheckable(True)
+        self.btn_python_timing.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_python_timing.clicked.connect(self.toggle_python_timing)
+        self.btn_python_timing.setToolTip(_make_tooltip(
+            "PYTHON TIMING — Script Performance",
+            "Opens the Python timing diagnostics window. Shows mean/max execution time (ms) "
+            "for _process_serial_queue_tick() drain and _refresh_plots_tick() total, plus per-window algorithm "
+            "and render times. Stats computed over a rolling window of the last 50 measurements. "
+            "Drain budget = 20 ms, render budget = 200 ms."))
+        self.sidebar_layout.addWidget(self.btn_python_timing)
+
         self.btn_hw_config = QtWidgets.QPushButton("HW CONFIG")
         self.btn_hw_config.setCheckable(True)
         self.btn_hw_config.setStyleSheet(ACTION_BUTTON_STYLE)
@@ -7235,11 +7481,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._connect_serial(self.combo_port.currentText())
             
         self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self.update_data)
+        self.timer.timeout.connect(self._process_serial_queue_tick)
         self.timer.start(20)
 
         self._render_timer = QtCore.QTimer()
-        self._render_timer.timeout.connect(self._render_update)
+        self._render_timer.timeout.connect(self._refresh_plots_tick)
         self._render_timer.start(200)
         
     STYLE_LIB_ACTIVE = """
@@ -7539,7 +7785,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_diagnostics.setChecked(True)
         self.toggle_diagnostics()
 
-    def toggle_timing(self):
+    def _open_python_timing_default(self):
+        self.btn_python_timing.setChecked(True)
+        self.toggle_python_timing()
+
+    def toggle_python_timing(self):
+        if self.btn_python_timing.isChecked():
+            self.python_timing_window = PythonTimingWindow(None)
+            self.python_timing_window.main_monitor = self
+            self.python_timing_window.show()
+        else:
+            if self.python_timing_window is not None:
+                self.python_timing_window.close()
+                self.python_timing_window = None
+
+    def toggle_esp32_timing(self):
         if self.btn_esp32_timing.isChecked():
             self.esp32_timing_window = Esp32TimingWindow(None)
             self.esp32_timing_window.main_monitor = self
@@ -7731,7 +7991,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr1test_open",  self.hr1test_window  is not None)
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
-        s.setValue("PPGMonitor/esp32_timing_open",      self.esp32_timing_window      is not None)
+        s.setValue("PPGMonitor/esp32_timing_open",   self.esp32_timing_window   is not None)
+        s.setValue("PPGMonitor/python_timing_open",  self.python_timing_window  is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
         s.setValue("PPGMonitor/diagnostics_open", self.diag_window         is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
@@ -7747,7 +8008,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hr1test_window   is not None: s.setValue("HR1TestWindow/geometry",    self.hr1test_window.saveGeometry())
         if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
-        if self.esp32_timing_window        is not None: s.setValue("Esp32TimingWindow/geometry",       self.esp32_timing_window.saveGeometry())
+        if self.esp32_timing_window  is not None: s.setValue("Esp32TimingWindow/geometry",   self.esp32_timing_window.saveGeometry())
+        if self.python_timing_window is not None: s.setValue("PythonTimingWindow/geometry", self.python_timing_window.saveGeometry())
         if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
         if self.diag_window          is not None: s.setValue("DiagnosticsWindow/geometry",  self.diag_window.saveGeometry())
         if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
@@ -7897,7 +8159,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     item.setBackground(bg)
             self._stats_buf[name].clear()
 
-    def update_data(self):
+    def _process_serial_queue_tick(self):
         _t0_drain = time.perf_counter()
         try:
             _new_data = False
@@ -8153,6 +8415,27 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if _console_lines and self.serialcom_window is not None:
                     self.serialcom_window.append_lines(_console_lines)
 
+                if _new_data:
+                    if self.spo2lab_window is not None:
+                        _t0a = time.perf_counter()
+                        self.spo2lab_window.update_algorithms(
+                            self.data_ir_sub, self.data_red_sub,
+                            self.data_spo2, self.data_spo2_r,
+                            self.data_timestamp_us, self.data_sample_counter)
+                        self._py_timing['algo_spo2lab'].append((time.perf_counter() - _t0a) * 1000)
+                    if self.spo2test_window is not None:
+                        _t0a = time.perf_counter()
+                        self.spo2test_window.update_algorithms(
+                            self.data_ir_sub, self.data_red_sub,
+                            self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
+                            self.data_timestamp_us, self.data_sample_counter)
+                        self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
+                    if self.hr2test_window is not None:
+                        _t0a = time.perf_counter()
+                        self.hr2test_window.update_algorithms(
+                            self.data_ir_sub, self.data_hr2, self.data_hr2_sqi,
+                            self.data_timestamp_us, self.data_sample_counter)
+                        self._py_timing['algo_hr2test'].append((time.perf_counter() - _t0a) * 1000)
                 if _new_data and not self.is_paused:
                     self._render_pending = True
 
@@ -8160,10 +8443,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             print(f"Error en loop: {e}")
 
         _drain_ms = (time.perf_counter() - _t0_drain) * 1000
+        self._py_timing['drain'].append(_drain_ms)
         if _drain_ms > 15:
             print(f"[DRAIN] {_drain_ms:.1f} ms")
 
-    def _render_update(self):
+    def _refresh_plots_tick(self):
         """Render timer slot (50 ms). Decoupled from queue drain so rendering
         delays never affect serial data ingestion."""
         if not self._render_pending:
@@ -8176,83 +8460,126 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._ppgplots_refresh_counter += 1
             if self.ppgplots_window is not None and self._ppgplots_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
                 self._ppgplots_refresh_counter = 0
+                _t0p = time.perf_counter()
                 self.ppgplots_window.update_plots(
                     self.data_ppgdisp, self.data_hr1, self.data_hr2, self.data_hr3,
                     self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
                     self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
                     self.data_red, self.data_ir,
                     self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub)
+                self._py_timing['plot_ppgplots'].append((time.perf_counter() - _t0p) * 1000)
 
             # PPGSignalsWindow: throttled to 20 Hz
             self._signals_refresh_counter += 1
             if self.signals_window is not None and self._signals_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
                 self._signals_refresh_counter = 0
+                _t0p = time.perf_counter()
                 self.signals_window.update_plots(
                     self.data_red, self.data_ir,
                     self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub,
                     self.data_ppgdisp)
+                self._py_timing['plot_signals'].append((time.perf_counter() - _t0p) * 1000)
 
             # AlgoResultsWindow: throttled to 10 Hz
             self._results_refresh_counter += 1
             if self.results_window is not None and self._results_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
                 self._results_refresh_counter = 0
+                _t0p = time.perf_counter()
                 self.results_window.update_plots(
                     self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
                     self.data_hr1, self.data_hr2, self.data_hr3,
                     self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi)
+                self._py_timing['plot_results'].append((time.perf_counter() - _t0p) * 1000)
 
             self._hrlab_refresh_counter += 1
             if self.hrlab_window is not None and self._hrlab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
                 self._hrlab_refresh_counter = 0
+                _t0p = time.perf_counter()
                 self.hrlab_window.update_plots(self.data_ppgdisp, self.data_timestamp_us, self.data_sample_counter)
+                self._py_timing['plot_hrlab'].append((time.perf_counter() - _t0p) * 1000)
 
             self._spo2lab_refresh_counter += 1
             if self.spo2lab_window is not None and self._spo2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
                 self._spo2lab_refresh_counter = 0
-                self.spo2lab_window.update_plots(
-                    self.data_ir_sub, self.data_red_sub,
-                    self.data_spo2, self.data_spo2_r,
-                    self.data_timestamp_us, self.data_sample_counter)
+                _t0p = time.perf_counter()
+                self.spo2lab_window.update_plots()
+                self._py_timing['plot_spo2lab'].append((time.perf_counter() - _t0p) * 1000)
 
             self._hr3lab_refresh_counter += 1
             if self.hr3lab_window is not None and self._hr3lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
                 self._hr3lab_refresh_counter = 0
+                _t0p = time.perf_counter()
                 self.hr3lab_window.update_plots(
                     self.data_hr1, self.data_hr2, self.data_hr3, self.hr3_calc)
+                self._py_timing['plot_hr3lab'].append((time.perf_counter() - _t0p) * 1000)
 
             self._spo2test_refresh_counter += 1
             if self.spo2test_window is not None and self._spo2test_refresh_counter >= self._SPOST_REFRESH_EVERY:
                 self._spo2test_refresh_counter = 0
-                self.spo2test_window.update_plots(
-                    self.data_ir_sub, self.data_red_sub,
-                    self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
-                    self.data_timestamp_us, self.data_sample_counter)
+                _t0p = time.perf_counter()
+                self.spo2test_window.update_plots()
+                self._py_timing['plot_spo2test'].append((time.perf_counter() - _t0p) * 1000)
 
             self._hr1test_refresh_counter += 1
             if self.hr1test_window is not None and self._hr1test_refresh_counter >= self._HR1TEST_REFRESH_EVERY:
                 self._hr1test_refresh_counter = 0
+                _t0p = time.perf_counter()
                 self.hr1test_window.update_plots(
                     self.data_hr1, self.data_hr1_sqi,
                     self.data_timestamp_us, self.data_sample_counter)
+                self._py_timing['plot_hr1test'].append((time.perf_counter() - _t0p) * 1000)
 
             self._hr2test_refresh_counter += 1
             if self.hr2test_window is not None and self._hr2test_refresh_counter >= self._HR2TEST_REFRESH_EVERY:
                 self._hr2test_refresh_counter = 0
-                self.hr2test_window.update_plots(
-                    self.data_ir_sub, self.data_hr2, self.data_hr2_sqi,
-                    self.data_timestamp_us, self.data_sample_counter)
+                _t0p = time.perf_counter()
+                self.hr2test_window.update_plots()
+                self._py_timing['plot_hr2test'].append((time.perf_counter() - _t0p) * 1000)
 
             self._hr3test_refresh_counter += 1
             if self.hr3test_window is not None and self._hr3test_refresh_counter >= self._HR3TEST_REFRESH_EVERY:
                 self._hr3test_refresh_counter = 0
+                _t0p = time.perf_counter()
                 self.hr3test_window.update_plots(
                     self.data_ir_sub, self.data_hr3, self.data_hr3_sqi,
                     self.data_timestamp_us, self.data_sample_counter)
+                self._py_timing['plot_hr3test'].append((time.perf_counter() - _t0p) * 1000)
+
+            # PythonTimingWindow: refresh every ~1 s (5 render ticks at 200 ms)
+            self._pytiming_refresh_counter += 1
+            if self.python_timing_window is not None and self._pytiming_refresh_counter >= 5:
+                self._pytiming_refresh_counter = 0
+                # Clear timing deques for windows that are currently closed
+                if self.ppgplots_window  is None: self._py_timing['plot_ppgplots'].clear()
+                if self.signals_window   is None: self._py_timing['plot_signals'].clear()
+                if self.results_window   is None: self._py_timing['plot_results'].clear()
+                if self.hrlab_window     is None: self._py_timing['plot_hrlab'].clear()
+                if self.spo2lab_window   is None:
+                    self._py_timing['plot_spo2lab'].clear()
+                    self._py_timing['algo_spo2lab'].clear()
+                if self.hr3lab_window    is None: self._py_timing['plot_hr3lab'].clear()
+                if self.spo2test_window  is None:
+                    self._py_timing['plot_spo2test'].clear()
+                    self._py_timing['algo_spo2test'].clear()
+                if self.hr1test_window   is None: self._py_timing['plot_hr1test'].clear()
+                if self.hr2test_window   is None:
+                    self._py_timing['plot_hr2test'].clear()
+                    self._py_timing['algo_hr2test'].clear()
+                if self.hr3test_window   is None: self._py_timing['plot_hr3test'].clear()
+                _pt_stats = {}
+                for k, q in self._py_timing.items():
+                    if q:
+                        _d = list(q)
+                        _pt_stats[k] = (sum(_d) / len(_d), max(_d))
+                    else:
+                        _pt_stats[k] = None  # window closed — show "—"
+                self.python_timing_window.update_timing(_pt_stats)
 
         except Exception as e:
             print(f"Error en render: {e}")
 
         _render_ms = (time.perf_counter() - _t0_render) * 1000
+        self._py_timing['render'].append(_render_ms)
         if _render_ms > 15:
             print(f"[RENDER] {_render_ms:.1f} ms")
 
@@ -8281,8 +8608,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr2test_default)
         if s.value("PPGMonitor/hr3test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr3test_default)
-        if s.value("PPGMonitor/esp32_timing_open",       False, type=bool):
+        if s.value("PPGMonitor/esp32_timing_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_esp32_timing_default)
+        if s.value("PPGMonitor/python_timing_open",  False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_python_timing_default)
         if s.value("PPGMonitor/hw_config_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hw_config_default)
         if s.value("PPGMonitor/diagnostics_open",  False, type=bool):
@@ -8368,6 +8697,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.hr3test_window.close()
         if self.esp32_timing_window is not None:
             self.esp32_timing_window.close()
+        if self.python_timing_window is not None:
+            self.python_timing_window.close()
         if self.hw_config_window is not None:
             self.hw_config_window.main_monitor = None
             self.hw_config_window.close()

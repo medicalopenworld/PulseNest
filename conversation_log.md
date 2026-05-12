@@ -5917,3 +5917,134 @@ Renombrados todos los identificadores internos para reflejar la asociación con 
 
 **Ficheros modificados:**
 - `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12e — Opción 2: mover algoritmos fuera de _render_update()
+
+### Problema
+Los algoritmos de SpO2LabWindow, SpO2TestWindow y HR2TestWindow se ejecutaban dentro de `_render_update()`, bloqueando el render y causando distorsión temporal cuando las ventanas secundarias estaban abiertas.
+
+### Decisión
+Separar el cálculo del render siguiendo el mismo patrón que `hr3test_calc`:
+- **`update_algorithms(data...)`** — ejecutado desde `PPGMonitor.update_data()` (timer 20 ms): itera muestras nuevas, llama al `_calc.update()`, rellena los deques de buffer.
+- **`update_plots()`** — ejecutado desde `PPGMonitor._render_update()` (timer 200 ms): solo convierte buffers a arrays y llama a `setData()`. Sin algoritmos.
+
+### Cambios
+- `SpO2LabWindow.update_plots(data...)` → `update_algorithms(data...)` + `update_plots()` (sin args)
+- `SpO2TestWindow.update_plots(data...)` → `update_algorithms(data...)` + `update_plots()` (sin args); añadido `self._last_r` para pasar el último resultado del calc al render
+- `HR2TestWindow.update_plots(data...)` → `update_algorithms(data...)` + `update_plots()` (sin args)
+- `PPGMonitor.update_data()`: llama a `spo2lab_window.update_algorithms()`, `spo2test_window.update_algorithms()`, `hr2test_window.update_algorithms()` cuando `_new_data`
+- `PPGMonitor._render_update()`: llama a las tres `update_plots()` sin argumentos
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12f — Fix: toggle_timing → toggle_esp32_timing
+
+**Bug:** `AttributeError: 'PPGMonitor' object has no attribute 'toggle_esp32_timing'` al arrancar el script. El renombrado de identificadores ESP32 TIMING de la sesión anterior había omitido renombrar la definición del método `toggle_timing` a `toggle_esp32_timing`.
+
+**Fix:** renombrado `def toggle_timing(self):` → `def toggle_esp32_timing(self):` en `pulsenest_lab.py`.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12g — PYTHON TIMING window
+
+### Objetivo
+Crear ventana de diagnóstico de rendimiento del script Python, simétrica a ESP32 TIMING.
+
+### Implementación
+- Nueva clase `PythonTimingWindow` con tabla de 3 secciones:
+  - **Loop timers**: `update_data()` drain (budget 20ms) y `_render_update()` total (budget 200ms)
+  - **Algorithms**: tiempo de `update_algorithms()` para SpO2Lab, SpO2Test, HR2Test
+  - **Render**: tiempo de `update_plots()` para cada ventana (PPGPlots, Signals, Results, HRLab, SpO2Lab, HR3Lab, SpO2Test, HR1Test, HR2Test, HR3Test)
+- Columnas: Component | Mean (ms) | Max (ms) | % Budget
+- Status bar OK/TIGHT/OVERLOAD basado en drain_max vs 20ms
+- Color: blanco < 75%, naranja 75-100%, rojo > 100%
+- Rolling buffer de 50 mediciones por componente (`deque(maxlen=50)`) en `PPGMonitor._py_timing`
+- Se actualiza cada ~1s (5 render ticks a 200ms)
+
+### Instrumentación añadida
+- `update_data()`: wrap con `time.perf_counter()` de cada `update_algorithms()` + append `_drain_ms` a `_py_timing['drain']`
+- `_render_update()`: wrap de cada `update_plots()` + append `_render_ms` a `_py_timing['render']`
+
+### Botón / persistencia
+- Botón `PYTHON TIMING` en sidebar, debajo de `ESP32 TIMING`
+- QSettings: `"PythonTimingWindow/geometry"`, `"PPGMonitor/python_timing_open"`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12h — PYTHON TIMING: fix valores al cerrar ventana
+
+**Bug:** al cerrar una ventana secundaria, sus filas en PYTHON TIMING mantenían el último valor en lugar de volver a "—".
+
+**Causa:** los deques `_py_timing` conservaban los datos históricos aunque la ventana estuviera cerrada.
+
+**Fix:**
+- En el bloque de refresh de `_pytiming_refresh_counter` (`_render_update()`): limpiar los deques de las ventanas que estén a `None` antes de calcular las stats. Los deques vacíos producen `None` en el dict de stats.
+- En `PythonTimingWindow.update_timing()`: manejar `None` → mostrar "—" en gris (#888888) para las filas sin datos.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12i — PYTHON TIMING: nombre de botón en cada fila
+
+**Cambio:** prefijo con el nombre del botón de UI en cada fila de `_ALGO_ROWS` y `_PLOT_ROWS`:
+- `SPO2LAB`, `SPO2TEST`, `HR2TEST` en sección Algorithms
+- `PPGPLOTS`, `SIGNALS`, `RESULTS`, `HR2LAB`, `SPO2LAB`, `HR3LAB`, `SPO2TEST`, `HR1TEST *`, `HR2TEST`, `HR3TEST` en sección Render
+
+Los nombres de botón coinciden exactamente con los textos visibles en la sidebar.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12j — PYTHON TIMING: añadir identificador de código a cada fila
+
+**Cambio:** cada fila muestra ahora TANTO el nombre del botón como el identificador de código:
+- Formato: `"BTNNAME  |  ClassName.method()"`
+- Ejemplos: `"SPO2LAB  |  SpO2LabWindow.update_algorithms()"`, `"HR2TEST  |  HR2TestWindow.update_plots()"`
+- Loop timers sin botón se mantienen como estaban: `"update_data() drain"`, `"_render_update() total"`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12k — PYTHON TIMING: budget visible en sección Loop timers
+
+**Cambio:** el header de la sección "Loop timers" ahora indica los budgets de ambas filas:
+`"Loop timers  —  drain budget 20 ms  |  render budget 200 ms"`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13 — Rename: update_data/_render_update y constantes PYTHON TIMING
+
+### Métodos renombrados (replace_all)
+- `update_data()` → `_process_serial_queue_tick()`
+- `_render_update()` → `_refresh_plots_tick()`
+
+### Constantes renombradas en PythonTimingWindow (replace_all)
+- `_DRAIN_BUDGET_MS` → `_SERIAL_TICK_BUDGET_MS`
+- `_RENDER_BUDGET_MS` → `_PLOTS_TICK_BUDGET_MS`
+- `_ALGO_ROWS` → `_SERIAL_TICK_ALGO_ROWS`
+- `_PLOT_ROWS` → `_PLOTS_TICK_ROWS`
+
+**Motivación:** nombres más descriptivos para facilitar el diagnóstico de los ticks del timer (investigación de tiempos de ejecución).
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
