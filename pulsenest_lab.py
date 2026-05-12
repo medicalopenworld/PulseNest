@@ -1699,6 +1699,10 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self.p_ac.addLegend()
         self.curve_rms_ir  = self.p_ac.plot(pen=IR2_PEN, name="RMS AC IR")
         self.curve_rms_red = self.p_ac.plot(pen=R2_PEN,  name="RMS AC RED")
+        for _c in (self.curve_dc_ir, self.curve_dc_red,
+                   self.curve_rms_ir, self.curve_rms_red):
+            _c.setDownsampling(auto=True, method='peak')
+            _c.setClipToView(True)
 
         # ── Right: parameters + table ─────────────────────────────────────────
         right = QtWidgets.QWidget()
@@ -2375,6 +2379,10 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         self.curve_ma_filtered = self.p_chain.plot(pen=MAF_PEN, name="MA-filtered")
         self.curve_running_max = self.p_chain.plot(pen=MAX_PEN, name="running max")
         self.curve_threshold   = self.p_chain.plot(pen=THR_PEN, name="threshold")
+        for _c in (self.curve_dc_removed, self.curve_ma_filtered,
+                   self.curve_running_max, self.curve_threshold):
+            _c.setDownsampling(auto=True, method='peak')
+            _c.setClipToView(True)
         self.scatter_peaks     = pg.ScatterPlotItem(
             size=10, pen=pg.mkPen(None), brush=pg.mkBrush('#00FF88'))
         self.p_chain.addItem(self.scatter_peaks)
@@ -3019,6 +3027,8 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             label='min_corr', labelOpts={'color': '#FF3333', 'position': 0.95})
         self.p_acorr.addItem(self._min_corr_line)
         self.curve_acorr = self.p_acorr.plot(pen=ACORR_PEN, name="acorr")
+        self.curve_acorr.setDownsampling(auto=True, method='peak')
+        self.curve_acorr.setClipToView(True)
         self._peak_line  = pg.InfiniteLine(
             angle=90, pos=0, movable=False,
             pen=pg.mkPen('#00FF88', width=2),
@@ -3026,6 +3036,8 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         self.p_acorr.addItem(self._peak_line)
 
         self.curve_filt   = self.p_filt.plot(pen=FILT_PEN)
+        self.curve_filt.setDownsampling(auto=True, method='peak')
+        self.curve_filt.setClipToView(True)
         self.p_hr.addLegend()
         self.curve_hr_fw  = self.p_hr.plot(pen=FW_PEN,  name="HR2 fw")
         self.curve_hr_py  = self.p_hr.plot(pen=PY_PEN,  name="HR2 py")
@@ -3476,7 +3488,7 @@ class HR3TestCalc:
     Purpose: post-implementation verification.
 
     Processing chain per sample (at 50 Hz after firmware decimation):
-      IR_Sub → 2nd-order Butterworth LP 10 Hz → circular buffer 512 samples →
+      IR_Sub → 2nd-order Butterworth BP 0.4–15 Hz → circular buffer 512 samples →
       [every 25 samples] mean subtraction → Hann window → rfft →
       HPS: P[k]·P[2k]·P[3k] → argmax in HR range → parabolic interpolation
       → HR3 = peak_freq × 60
@@ -3495,17 +3507,19 @@ class HR3TestCalc:
     """
 
     FW_FS            = 50.0
-    FW_LP_CUTOFF_HZ  = 10.0
+    FW_BP_LOW_HZ     = 0.4
+    FW_BP_HIGH_HZ    = 15.0
     FW_BUF_LEN       = 512
     FW_UPDATE_N      = 25
     FW_HPS_HARMONICS = 3        # k = 2, 3  (multiply 2 additional harmonic downsamples)
-    FW_HR_MIN_BPM    = 25.0
-    FW_HR_MAX_BPM    = 300.0
-    FW_HR_SEARCH_MIN = 22.0     # guard band −3 BPM
-    FW_HR_SEARCH_MAX = 303.0    # guard band +3 BPM
+    FW_HR_MIN_BPM    = 30.0
+    FW_HR_MAX_BPM    = 260.0
+    FW_HR_SEARCH_MIN = 27.0     # guard band −3 BPM
+    FW_HR_SEARCH_MAX = 263.0    # guard band +3 BPM
 
     def __init__(self):
-        self.lp_cutoff_hz  = self.FW_LP_CUTOFF_HZ
+        self.bp_low_hz     = self.FW_BP_LOW_HZ
+        self.bp_high_hz    = self.FW_BP_HIGH_HZ
         self.buf_len       = self.FW_BUF_LEN
         self.update_n      = self.FW_UPDATE_N
         self.hps_harmonics = self.FW_HPS_HARMONICS
@@ -3540,7 +3554,8 @@ class HR3TestCalc:
         self.last_peak_freq    = 0.0
 
     def reset_to_defaults(self):
-        self.lp_cutoff_hz  = self.FW_LP_CUTOFF_HZ
+        self.bp_low_hz     = self.FW_BP_LOW_HZ
+        self.bp_high_hz    = self.FW_BP_HIGH_HZ
         self.buf_len       = self.FW_BUF_LEN
         self.update_n      = self.FW_UPDATE_N
         self.hps_harmonics = self.FW_HPS_HARMONICS
@@ -3549,16 +3564,17 @@ class HR3TestCalc:
     @property
     def using_defaults(self):
         return (
-            self.lp_cutoff_hz  == self.FW_LP_CUTOFF_HZ  and
-            self.buf_len       == self.FW_BUF_LEN        and
-            self.update_n      == self.FW_UPDATE_N       and
+            self.bp_low_hz     == self.FW_BP_LOW_HZ     and
+            self.bp_high_hz    == self.FW_BP_HIGH_HZ    and
+            self.buf_len       == self.FW_BUF_LEN       and
+            self.update_n      == self.FW_UPDATE_N      and
             self.hps_harmonics == self.FW_HPS_HARMONICS
         )
 
     def _recalc_filter(self, fs):
         self._fs = fs
         nyq = fs / 2.0
-        self._b, self._a = signal.butter(2, min(self.lp_cutoff_hz / nyq, 0.9999), btype='low')
+        self._b, self._a = signal.butter(2, [self.bp_low_hz / nyq, min(self.bp_high_hz / nyq, 0.9999)], btype='band')
         self._zi = signal.lfilter_zi(self._b, self._a) * 0.0
         self._buf = np.zeros(self.buf_len)
         self._buf_idx    = 0
@@ -3577,7 +3593,7 @@ class HR3TestCalc:
         if fs != self._fs or self._b is None:
             self._recalc_filter(fs)
 
-        # LP filter
+        # BP filter
         filtered, self._zi = signal.lfilter(self._b, self._a, [float(ir_sub)], zi=self._zi)
         filtered = filtered[0]
 
@@ -3587,6 +3603,9 @@ class HR3TestCalc:
         if self._buf_count < self.buf_len:
             self._buf_count += 1
 
+        # Always update display buffer (cheap: just reorder the circular buffer)
+        self.last_filtered_buf = np.roll(self._buf, -self._buf_idx)
+
         self._update_ctr += 1
         if self._update_ctr < self.update_n:
             return self.hr_bpm, self.hr_sqi
@@ -3595,9 +3614,8 @@ class HR3TestCalc:
         if self._buf_count < self.buf_len:
             return self.hr_bpm, self.hr_sqi
 
-        # Ordered buffer (oldest first)
-        seg_raw = np.roll(self._buf, -self._buf_idx)
-        self.last_filtered_buf = seg_raw.copy()
+        # Ordered buffer (oldest first) — reuse display buffer already computed above
+        seg_raw = self.last_filtered_buf
 
         # Mean subtraction → Hann window → rfft
         seg      = seg_raw - seg_raw.mean()
@@ -3688,7 +3706,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
-        self._calc            = HR3TestCalc()
+        self._offline_calc    = HR3TestCalc()
         self._last_sample_cnt = -1
         self._t0_us           = None
         self._offline_mode    = False
@@ -3803,6 +3821,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.p_fft.addLegend()
 
         self.curve_filt  = self.p_filt.plot(pen=FILT_PEN)
+        self.curve_filt.setDownsampling(auto=True, method='peak')
+        self.curve_filt.setClipToView(True)
         self.p_hr.addLegend()
         self.curve_hr_fw = self.p_hr.plot(pen=FW_PEN,  name="HR3 fw")
         self.curve_hr_py = self.p_hr.plot(pen=PY_PEN,  name="HR3 py")
@@ -3842,14 +3862,18 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             w.setRange(lo, hi); w.setValue(val); w.setStyleSheet(_sp_s)
             return w
 
-        self._spin_lp_cutoff   = _dspin(0.5, 20.0, HR3TestCalc.FW_LP_CUTOFF_HZ, 1, 0.5, " Hz")
+        self._spin_bp_low      = _dspin(0.1, 5.0,  HR3TestCalc.FW_BP_LOW_HZ,  1, 0.1, " Hz")
+        self._spin_bp_high     = _dspin(5.0, 25.0, HR3TestCalc.FW_BP_HIGH_HZ, 1, 0.5, " Hz")
         self._spin_buf_len     = _ispin(128,  1024, HR3TestCalc.FW_BUF_LEN)
         self._spin_upd_n       = _ispin(1,    200,  HR3TestCalc.FW_UPDATE_N)
         self._spin_harmonics   = _ispin(2,    5,    HR3TestCalc.FW_HPS_HARMONICS)
 
-        self._spin_lp_cutoff.setToolTip(_make_tooltip("LP cutoff",
-            "Butterworth low-pass filter cutoff frequency [Hz]. "
-            "Firmware default: 10 Hz. Anti-aliasing before virtual decimation."))
+        self._spin_bp_low.setToolTip(_make_tooltip("BP low cutoff",
+            "Butterworth bandpass lower cutoff [Hz]. "
+            "Firmware default: 0.4 Hz. Removes DC and baseline drift."))
+        self._spin_bp_high.setToolTip(_make_tooltip("BP high cutoff",
+            "Butterworth bandpass upper cutoff [Hz]. "
+            "Firmware default: 15 Hz. Preserves 3rd harmonic of 260 BPM (13 Hz)."))
         self._spin_buf_len.setToolTip(_make_tooltip("Buffer length",
             "Circular buffer length [samples]. "
             "Firmware default: 512 (10.24 s at 50 Hz). Determines FFT frequency resolution."))
@@ -3865,12 +3889,13 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             lbl.setStyleSheet(_lbl_s)
             form.addRow(lbl, widget)
 
-        _row("LP cutoff:",        self._spin_lp_cutoff)
+        _row("BP low cutoff:",    self._spin_bp_low)
+        _row("BP high cutoff:",   self._spin_bp_high)
         _row("Buffer length:",    self._spin_buf_len)
         _row("Update every N:",   self._spin_upd_n)
         _row("HPS harmonics:",    self._spin_harmonics)
 
-        for sp in [self._spin_lp_cutoff, self._spin_buf_len,
+        for sp in [self._spin_bp_low, self._spin_bp_high, self._spin_buf_len,
                    self._spin_upd_n, self._spin_harmonics]:
             sp.valueChanged.connect(self._on_param_changed)
 
@@ -3915,27 +3940,40 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR3TestWindow/geometry")
         if geom: self.restoreGeometry(geom)
 
+    def _get_live_calc(self):
+        """Return the HR3TestCalc for live mode (owned by PPGMonitor)."""
+        if self.main_monitor is not None and hasattr(self.main_monitor, 'hr3test_calc'):
+            return self.main_monitor.hr3test_calc
+        return self._offline_calc
+
+    def _active_calc(self):
+        """Return offline or live calc depending on mode."""
+        return self._offline_calc if self._offline_mode else self._get_live_calc()
+
     def _on_param_changed(self):
-        self._calc.lp_cutoff_hz  = self._spin_lp_cutoff.value()
-        self._calc.buf_len       = self._spin_buf_len.value()
-        self._calc.update_n      = self._spin_upd_n.value()
-        self._calc.hps_harmonics = self._spin_harmonics.value()
-        self._calc.reset()
+        calc = self._active_calc()
+        calc.bp_low_hz     = self._spin_bp_low.value()
+        calc.bp_high_hz    = self._spin_bp_high.value()
+        calc.buf_len       = self._spin_buf_len.value()
+        calc.update_n      = self._spin_upd_n.value()
+        calc.hps_harmonics = self._spin_harmonics.value()
+        calc.reset()
         self._update_status_indicator()
 
     def _reset_to_defaults(self):
-        for sp, attr in [(self._spin_lp_cutoff, 'FW_LP_CUTOFF_HZ'),
+        for sp, attr in [(self._spin_bp_low,    'FW_BP_LOW_HZ'),
+                         (self._spin_bp_high,   'FW_BP_HIGH_HZ'),
                          (self._spin_buf_len,   'FW_BUF_LEN'),
                          (self._spin_upd_n,     'FW_UPDATE_N'),
                          (self._spin_harmonics, 'FW_HPS_HARMONICS')]:
             sp.blockSignals(True)
             sp.setValue(getattr(HR3TestCalc, attr))
             sp.blockSignals(False)
-        self._calc.reset_to_defaults()
+        self._active_calc().reset_to_defaults()
         self._update_status_indicator()
 
     def _update_status_indicator(self):
-        if self._calc.using_defaults:
+        if self._active_calc().using_defaults:
             self._lbl_status.setText("● FIRMWARE DEFAULTS")
             self._lbl_status.setStyleSheet(
                 "font-size: 20px; font-weight: bold; color: #00CC66; padding: 4px 10px; "
@@ -4013,12 +4051,13 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             if abs(fs - std_fs) < std_fs * 0.2:
                 fs = float(std_fs); break
 
-        self._calc.reset_to_defaults()
-        self._calc.lp_cutoff_hz  = self._spin_lp_cutoff.value()
-        self._calc.buf_len       = self._spin_buf_len.value()
-        self._calc.update_n      = self._spin_upd_n.value()
-        self._calc.hps_harmonics = self._spin_harmonics.value()
-        self._calc.reset()
+        self._offline_calc.reset_to_defaults()
+        self._offline_calc.bp_low_hz     = self._spin_bp_low.value()
+        self._offline_calc.bp_high_hz    = self._spin_bp_high.value()
+        self._offline_calc.buf_len       = self._spin_buf_len.value()
+        self._offline_calc.update_n      = self._spin_upd_n.value()
+        self._offline_calc.hps_harmonics = self._spin_harmonics.value()
+        self._offline_calc.reset()
 
         nan = float('nan')
         n = len(rows_ir_sub)
@@ -4030,10 +4069,10 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         arr_sqi_py = np.full(n, nan)
 
         for i, ir in enumerate(rows_ir_sub):
-            self._calc.update(ir, fs)
-            if self._calc.hr_bpm > 0:
-                arr_hr_py[i]  = self._calc.hr_bpm
-                arr_sqi_py[i] = self._calc.hr_sqi
+            self._offline_calc.update(ir, fs)
+            if self._offline_calc.hr_bpm > 0:
+                arr_hr_py[i]  = self._offline_calc.hr_bpm
+                arr_sqi_py[i] = self._offline_calc.hr_sqi
 
         arr_delta = arr_hr_fw - arr_hr_py
 
@@ -4055,7 +4094,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         for buf in [self._buf_t, self._buf_hr_fw, self._buf_hr_py,
                     self._buf_hr_delta, self._buf_sqi_fw, self._buf_sqi_py]:
             buf.clear()
-        self._calc.reset()
+        self._get_live_calc().reset()
         self.statusBar().showMessage(_MOUSE_HINT)
         for c in [self.curve_fft, self.curve_hps, self.curve_filt,
                   self.curve_hr_fw, self.curve_hr_py,
@@ -4076,9 +4115,10 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         try:
             with open(filename, 'w') as f:
                 f.write(f"# HR3TEST export — {datetime.datetime.now()}\n")
-                f.write(f"# lp_cutoff={self._calc.lp_cutoff_hz:.1f} Hz, "
-                        f"buf={self._calc.buf_len}, update_n={self._calc.update_n}, "
-                        f"hps_harmonics={self._calc.hps_harmonics}\n")
+                _c = self._active_calc()
+                f.write(f"# bp={_c.bp_low_hz:.1f}-{_c.bp_high_hz:.1f} Hz, "
+                        f"buf={_c.buf_len}, update_n={_c.update_n}, "
+                        f"hps_harmonics={_c.hps_harmonics}\n")
                 f.write("t_s,hr3_fw,hr3_py,hr3_delta,sqi_fw,sqi_py\n")
                 nan = float('nan')
                 for i in range(len(t)):
@@ -4120,12 +4160,12 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            self._calc.update(ir, SPO2_RECEIVED_FS)
-
+            # _calc.update() is called per-sample in PPGMonitor.update_data()
+            _c     = self._get_live_calc()
             hr_fw  = hr_f  if hr_f  > 0 else nan
             sqi_fw = sqi_f if sqi_f >= 0 else nan
-            hr_py  = self._calc.hr_bpm if self._calc.hr_bpm > 0 else nan
-            sqi_py = self._calc.hr_sqi if self._calc.hr_bpm > 0 else nan
+            hr_py  = _c.hr_bpm if _c.hr_bpm > 0 else nan
+            sqi_py = _c.hr_sqi if _c.hr_bpm > 0 else nan
             delta  = (hr_fw - hr_py) if not (np.isnan(hr_fw) or np.isnan(hr_py)) else nan
 
             self._buf_t.append(t_s)
@@ -4150,7 +4190,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         def _lv(arr): v = arr[~np.isnan(arr)]; return v[-1] if len(v) else float('nan')
         def _fmt(v, d=1): return f"{v:.{d}f}" if not np.isnan(v) else "---"
         fw_v = [_lv(arr_hr_fw), _lv(arr_sf), float('nan')]
-        py_v = [_lv(arr_hr_py), _lv(arr_sp), self._calc.last_peak_freq]
+        py_v = [_lv(arr_hr_py), _lv(arr_sp), self._get_live_calc().last_peak_freq]
         dec  = [1, 3, 3]
         for row in range(3):
             fv = fw_v[row]; pv = py_v[row]
@@ -4182,27 +4222,29 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             f"  <b style='color:#FFDD44'>py: {_fmt(s_py, 2)}</b>")
 
     def _refresh_fft_plot(self):
-        freqs = self._calc.last_freqs
-        spec  = self._calc.last_spectrum
-        hps   = self._calc.last_hps
+        c     = self._active_calc()
+        freqs = c.last_freqs
+        spec  = c.last_spectrum
+        hps   = c.last_hps
         if len(freqs) > 0 and len(spec) > 0:
             self.curve_fft.setData(freqs, spec)
             self.curve_hps.setData(freqs, hps)
-            peak = self._calc.last_peak_freq
+            peak = c.last_peak_freq
             if peak > 0:
                 self._peak_line.setValue(peak)
                 hr_at_peak = peak * 60.0
-                sqi_at_peak = self._calc.hr_sqi
+                sqi_at_peak = c.hr_sqi
                 self.p_fft.setTitle(
                     f"<b style='color:#00CCFF'>FFT + <span style='color:#FF8800'>HPS</span></b>"
                     f"  <span style='color:#FFDD44'>peak={peak:.3f} Hz \u2192 {hr_at_peak:.1f} bpm"
                     f"  SQI={sqi_at_peak:.3f}</span>")
 
     def _refresh_filt_plot(self, t_hr):
-        filt = self._calc.last_filtered_buf
+        c    = self._active_calc()
+        filt = c.last_filtered_buf
         if len(filt) > 0 and len(t_hr) > 0:
             t_end = t_hr[-1]
-            fs = self._calc._fs if self._calc._fs > 0 else HR3TestCalc.FW_FS
+            fs = c._fs if c._fs > 0 else HR3TestCalc.FW_FS
             filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
             self.curve_filt.setData(filt_t, filt)
 
@@ -4214,7 +4256,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
-class TimingWindow(QtWidgets.QMainWindow):
+class Esp32TimingWindow(QtWidgets.QMainWindow):
     """Timing diagnostics window — shows per-algorithm CPU time from $TIMING frames.
 
     Two sections:
@@ -4240,8 +4282,8 @@ class TimingWindow(QtWidgets.QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("TIMING — CPU Budget & Load")
-        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("TimingWindow/geometry")
+        self.setWindowTitle("ESP32 TIMING — CPU Budget & Load")
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("Esp32TimingWindow/geometry")
         if geom: self.restoreGeometry(geom)
         else:    self.resize(640, 980)
 
@@ -4361,7 +4403,7 @@ class TimingWindow(QtWidgets.QMainWindow):
             "CPU% is cumulative since boot — not a per-interval snapshot."))
         vbox.addWidget(self._tasks_table)
 
-    def update_timing(self, hr1_mean, hr1_max, hr2fp_mean, hr2fp_max,
+    def esp32_update_timing(self, hr1_mean, hr1_max, hr2fp_mean, hr2fp_max,
                       hr3fp_mean, hr3fp_max, spo2_mean, spo2_max,
                       cycle_mean, cycle_max,
                       hr2cmp_mean, hr2cmp_max, hr3cmp_mean, hr3cmp_max,
@@ -4429,7 +4471,7 @@ class TimingWindow(QtWidgets.QMainWindow):
         "incunest_hr3":     "incunest_hr3 (Task C)",
     }
 
-    def update_tasks(self, tasks):
+    def esp32_update_tasks(self, tasks):
         """Rebuild the FreeRTOS task table from a list of (name, pct_x10, stack) tuples."""
         # Sort by CPU% descending
         sorted_tasks = sorted(tasks, key=lambda t: t[1], reverse=True)
@@ -4473,7 +4515,7 @@ class TimingWindow(QtWidgets.QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("TimingWindow/geometry", self.saveGeometry())
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("Esp32TimingWindow/geometry", self.saveGeometry())
         mm = getattr(self, 'main_monitor', None)
         if mm is not None and hasattr(mm, 'btn_timing'):
             mm.btn_timing.setChecked(False)
@@ -5412,8 +5454,6 @@ class HRLabWindow(QtWidgets.QMainWindow):
         main_layout = QtWidgets.QVBoxLayout(central)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(5)
-
-        pg.setConfigOptions(antialias=True)
 
         # QSplitter for exact column proportions (1:1:1)
         self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -6696,17 +6736,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr1test_calc     = HR1TestCalc()
         self.hr2test_window   = None
         self.hr3test_window   = None
-        self.timing_window    = None
+        self.hr3test_calc     = HR3TestCalc()
+        self.esp32_timing_window    = None
         self.hw_config_window = None
         self.diag_window      = None
         self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
-        # Render throttle rates (all relative to ~50 Hz update_data calls)
-        self._PPGPLOTS_REFRESH_EVERY  = 2   # 25 Hz — smooth plot animation
-        self._SUBWIN_REFRESH_EVERY    = 5   # 10 Hz — SpO2/HR3 change slowly
-        self._SPOST_REFRESH_EVERY     = 5   # 10 Hz
-        self._HR1TEST_REFRESH_EVERY   = 5   # 10 Hz
-        self._HR2TEST_REFRESH_EVERY   = 5   # 10 Hz
-        self._HR3TEST_REFRESH_EVERY   = 5   # 10 Hz
+        # Render throttle rates (relative to 50ms _render_timer ticks)
+        self._PPGPLOTS_REFRESH_EVERY  = 1   # 20 Hz — smooth plot animation
+        self._SUBWIN_REFRESH_EVERY    = 2   # 10 Hz — SpO2/HR3 change slowly
+        self._SPOST_REFRESH_EVERY     = 2   # 10 Hz
+        self._HR1TEST_REFRESH_EVERY   = 2   # 10 Hz
+        self._HR2TEST_REFRESH_EVERY   = 2   # 10 Hz
+        self._HR3TEST_REFRESH_EVERY   = 2   # 10 Hz
+        self._render_pending          = False
         self._ppgplots_refresh_counter = 0
         self._signals_refresh_counter  = 0
         self._results_refresh_counter  = 0
@@ -7042,17 +7084,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.4 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_hr3test)
 
-        self.btn_timing = QtWidgets.QPushButton("TIMING")
-        self.btn_timing.setCheckable(True)
-        self.btn_timing.setStyleSheet(ACTION_BUTTON_STYLE)
-        self.btn_timing.clicked.connect(self.toggle_timing)
-        self.btn_timing.setToolTip(_make_tooltip(
-            "TIMING — Algorithm CPU Budget",
-            "Opens the timing diagnostics window. Shows per-algorithm mean/max execution time "
+        self.btn_esp32_timing = QtWidgets.QPushButton("ESP32\nTIMING")
+        self.btn_esp32_timing.setCheckable(True)
+        self.btn_esp32_timing.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_esp32_timing.clicked.connect(self.toggle_esp32_timing)
+        self.btn_esp32_timing.setToolTip(_make_tooltip(
+            "ESP32 TIMING — Algorithm CPU Budget",
+            "Opens the ESP32 timing diagnostics window. Shows per-algorithm mean/max execution time "
             "(µs) and remaining FreeRTOS stack, parsed from $TIMING frames emitted by the firmware "
             "every ~5 s. Requires INCUNEST_TIMING_STATS=1 in firmware. "
             "Cycle budget = 2000 µs (1 sample period at 500 Hz)."))
-        self.sidebar_layout.addWidget(self.btn_timing)
+        self.sidebar_layout.addWidget(self.btn_esp32_timing)
 
         self.btn_hw_config = QtWidgets.QPushButton("HW CONFIG")
         self.btn_hw_config.setCheckable(True)
@@ -7195,6 +7237,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_data)
         self.timer.start(20)
+
+        self._render_timer = QtCore.QTimer()
+        self._render_timer.timeout.connect(self._render_update)
+        self._render_timer.start(200)
         
     STYLE_LIB_ACTIVE = """
         QPushButton {{
@@ -7482,8 +7528,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hr3test_window = None
 
     def _open_timing_default(self):
-        self.btn_timing.setChecked(True)
-        self.toggle_timing()
+        self.btn_esp32_timing.setChecked(True)
+        self.toggle_esp32_timing()
 
     def _open_hw_config_default(self):
         self.btn_hw_config.setChecked(True)
@@ -7494,14 +7540,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.toggle_diagnostics()
 
     def toggle_timing(self):
-        if self.btn_timing.isChecked():
-            self.timing_window = TimingWindow(None)
-            self.timing_window.main_monitor = self
-            self.timing_window.show()
+        if self.btn_esp32_timing.isChecked():
+            self.esp32_timing_window = Esp32TimingWindow(None)
+            self.esp32_timing_window.main_monitor = self
+            self.esp32_timing_window.show()
         else:
-            if self.timing_window is not None:
-                self.timing_window.close()
-                self.timing_window = None
+            if self.esp32_timing_window is not None:
+                self.esp32_timing_window.close()
+                self.esp32_timing_window = None
 
     def toggle_hw_config(self):
         if self.btn_hw_config.isChecked():
@@ -7685,7 +7731,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr1test_open",  self.hr1test_window  is not None)
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
-        s.setValue("PPGMonitor/timing_open",      self.timing_window      is not None)
+        s.setValue("PPGMonitor/esp32_timing_open",      self.esp32_timing_window      is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
         s.setValue("PPGMonitor/diagnostics_open", self.diag_window         is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
@@ -7701,7 +7747,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hr1test_window   is not None: s.setValue("HR1TestWindow/geometry",    self.hr1test_window.saveGeometry())
         if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
-        if self.timing_window        is not None: s.setValue("TimingWindow/geometry",       self.timing_window.saveGeometry())
+        if self.esp32_timing_window        is not None: s.setValue("Esp32TimingWindow/geometry",       self.esp32_timing_window.saveGeometry())
         if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
         if self.diag_window          is not None: s.setValue("DiagnosticsWindow/geometry",  self.diag_window.saveGeometry())
         if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
@@ -7852,14 +7898,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._stats_buf[name].clear()
 
     def update_data(self):
-        if self.is_paused:
-            # Drain queue to prevent memory buildup while paused
-            try:
-                while True:
-                    self._serial_queue.get_nowait()
-            except queue.Empty:
-                pass
-            return
+        _t0_drain = time.perf_counter()
         try:
             _new_data = False
             _console_lines = []
@@ -7971,12 +8010,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if line.startswith('$TIMING,'):
                         _console_lines.append(csv_line)
                         self._pending_tasks = []  # reset task accumulator for new cycle
-                        if self.timing_window is not None:
+                        if self.esp32_timing_window is not None:
                             _tp = line[1:].split('*')[0].split(',')
                             if len(_tp) >= 16:
                                 try:
                                     vals = [int(x) for x in _tp[1:16]]
-                                    self.timing_window.update_timing(*vals)
+                                    self.esp32_timing_window.esp32_update_timing(*vals)
                                 except (ValueError, IndexError):
                                     pass
                         continue
@@ -7997,8 +8036,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     # $TASKS_END: all $TASK frames for this cycle have been received
                     if line.startswith('$TASKS_END'):
-                        if self.timing_window is not None:
-                            self.timing_window.update_tasks(self._pending_tasks)
+                        if self.esp32_timing_window is not None:
+                            self.esp32_timing_window.esp32_update_tasks(self._pending_tasks)
                         continue
 
                     # $CFG: chip configuration response (reply to $CFG? or $SET command)
@@ -8062,6 +8101,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr3.append(p[17])
                             self.data_hr3_sqi.append(p[18])
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS)  # IR_Sub for HR3Lab diagnostics
+                            if self.hr3test_window is not None:
+                                self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS)
                             # Integrity check: RED_Sub and IR_Sub must equal hardware-subtracted values
                             red_sub_exp = int(p[2]) - int(p[4])   # RED - RED_Amb
                             ir_sub_exp  = int(p[3]) - int(p[5])   # IR  - IR_Amb
@@ -8112,87 +8153,108 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if _console_lines and self.serialcom_window is not None:
                     self.serialcom_window.append_lines(_console_lines)
 
-                if _new_data:
-                    # PPGPlotsWindow: throttled to 25 Hz (every 2 calls)
-                    self._ppgplots_refresh_counter += 1
-                    if self.ppgplots_window is not None and self._ppgplots_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
-                        self._ppgplots_refresh_counter = 0
-                        self.ppgplots_window.update_plots(
-                            self.data_ppgdisp, self.data_hr1, self.data_hr2, self.data_hr3,
-                            self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
-                            self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
-                            self.data_red, self.data_ir,
-                            self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub)
-
-                    # PPGSignalsWindow: throttled to 25 Hz
-                    self._signals_refresh_counter += 1
-                    if self.signals_window is not None and self._signals_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
-                        self._signals_refresh_counter = 0
-                        self.signals_window.update_plots(
-                            self.data_red, self.data_ir,
-                            self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub,
-                            self.data_ppgdisp)
-
-                    # AlgoResultsWindow: throttled to 10 Hz
-                    self._results_refresh_counter += 1
-                    if self.results_window is not None and self._results_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
-                        self._results_refresh_counter = 0
-                        self.results_window.update_plots(
-                            self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
-                            self.data_hr1, self.data_hr2, self.data_hr3,
-                            self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi)
-
-                if _new_data:
-                    self._hrlab_refresh_counter += 1
-                    if self.hrlab_window is not None and self._hrlab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
-                        self._hrlab_refresh_counter = 0
-                        self.hrlab_window.update_plots(self.data_ppgdisp, self.data_timestamp_us, self.data_sample_counter)
-
-                    self._spo2lab_refresh_counter += 1
-                    if self.spo2lab_window is not None and self._spo2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
-                        self._spo2lab_refresh_counter = 0
-                        self.spo2lab_window.update_plots(
-                            self.data_ir_sub, self.data_red_sub,
-                            self.data_spo2, self.data_spo2_r,
-                            self.data_timestamp_us, self.data_sample_counter)
-
-                    self._hr3lab_refresh_counter += 1
-                    if self.hr3lab_window is not None and self._hr3lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
-                        self._hr3lab_refresh_counter = 0
-                        self.hr3lab_window.update_plots(
-                            self.data_hr1, self.data_hr2, self.data_hr3, self.hr3_calc)
-
-                    self._spo2test_refresh_counter += 1
-                    if self.spo2test_window is not None and self._spo2test_refresh_counter >= self._SPOST_REFRESH_EVERY:
-                        self._spo2test_refresh_counter = 0
-                        self.spo2test_window.update_plots(
-                            self.data_ir_sub, self.data_red_sub,
-                            self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
-                            self.data_timestamp_us, self.data_sample_counter)
-
-                    self._hr1test_refresh_counter += 1
-                    if self.hr1test_window is not None and self._hr1test_refresh_counter >= self._HR1TEST_REFRESH_EVERY:
-                        self._hr1test_refresh_counter = 0
-                        self.hr1test_window.update_plots(
-                            self.data_hr1, self.data_hr1_sqi,
-                            self.data_timestamp_us, self.data_sample_counter)
-
-                    self._hr2test_refresh_counter += 1
-                    if self.hr2test_window is not None and self._hr2test_refresh_counter >= self._HR2TEST_REFRESH_EVERY:
-                        self._hr2test_refresh_counter = 0
-                        self.hr2test_window.update_plots(
-                            self.data_ir_sub, self.data_hr2, self.data_hr2_sqi,
-                            self.data_timestamp_us, self.data_sample_counter)
-
-                    self._hr3test_refresh_counter += 1
-                    if self.hr3test_window is not None and self._hr3test_refresh_counter >= self._HR3TEST_REFRESH_EVERY:
-                        self._hr3test_refresh_counter = 0
-                        self.hr3test_window.update_plots(
-                            self.data_ir_sub, self.data_hr3, self.data_hr3_sqi,
-                            self.data_timestamp_us, self.data_sample_counter)
+                if _new_data and not self.is_paused:
+                    self._render_pending = True
 
         except Exception as e:
             print(f"Error en loop: {e}")
+
+        _drain_ms = (time.perf_counter() - _t0_drain) * 1000
+        if _drain_ms > 15:
+            print(f"[DRAIN] {_drain_ms:.1f} ms")
+
+    def _render_update(self):
+        """Render timer slot (50 ms). Decoupled from queue drain so rendering
+        delays never affect serial data ingestion."""
+        if not self._render_pending:
+            return
+        self._render_pending = False
+
+        _t0_render = time.perf_counter()
+        try:
+            # PPGPlotsWindow: throttled to 20 Hz (every render tick)
+            self._ppgplots_refresh_counter += 1
+            if self.ppgplots_window is not None and self._ppgplots_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
+                self._ppgplots_refresh_counter = 0
+                self.ppgplots_window.update_plots(
+                    self.data_ppgdisp, self.data_hr1, self.data_hr2, self.data_hr3,
+                    self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
+                    self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
+                    self.data_red, self.data_ir,
+                    self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub)
+
+            # PPGSignalsWindow: throttled to 20 Hz
+            self._signals_refresh_counter += 1
+            if self.signals_window is not None and self._signals_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:
+                self._signals_refresh_counter = 0
+                self.signals_window.update_plots(
+                    self.data_red, self.data_ir,
+                    self.data_red_amb, self.data_ir_amb, self.data_red_sub, self.data_ir_sub,
+                    self.data_ppgdisp)
+
+            # AlgoResultsWindow: throttled to 10 Hz
+            self._results_refresh_counter += 1
+            if self.results_window is not None and self._results_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                self._results_refresh_counter = 0
+                self.results_window.update_plots(
+                    self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
+                    self.data_hr1, self.data_hr2, self.data_hr3,
+                    self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi)
+
+            self._hrlab_refresh_counter += 1
+            if self.hrlab_window is not None and self._hrlab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                self._hrlab_refresh_counter = 0
+                self.hrlab_window.update_plots(self.data_ppgdisp, self.data_timestamp_us, self.data_sample_counter)
+
+            self._spo2lab_refresh_counter += 1
+            if self.spo2lab_window is not None and self._spo2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                self._spo2lab_refresh_counter = 0
+                self.spo2lab_window.update_plots(
+                    self.data_ir_sub, self.data_red_sub,
+                    self.data_spo2, self.data_spo2_r,
+                    self.data_timestamp_us, self.data_sample_counter)
+
+            self._hr3lab_refresh_counter += 1
+            if self.hr3lab_window is not None and self._hr3lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                self._hr3lab_refresh_counter = 0
+                self.hr3lab_window.update_plots(
+                    self.data_hr1, self.data_hr2, self.data_hr3, self.hr3_calc)
+
+            self._spo2test_refresh_counter += 1
+            if self.spo2test_window is not None and self._spo2test_refresh_counter >= self._SPOST_REFRESH_EVERY:
+                self._spo2test_refresh_counter = 0
+                self.spo2test_window.update_plots(
+                    self.data_ir_sub, self.data_red_sub,
+                    self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
+                    self.data_timestamp_us, self.data_sample_counter)
+
+            self._hr1test_refresh_counter += 1
+            if self.hr1test_window is not None and self._hr1test_refresh_counter >= self._HR1TEST_REFRESH_EVERY:
+                self._hr1test_refresh_counter = 0
+                self.hr1test_window.update_plots(
+                    self.data_hr1, self.data_hr1_sqi,
+                    self.data_timestamp_us, self.data_sample_counter)
+
+            self._hr2test_refresh_counter += 1
+            if self.hr2test_window is not None and self._hr2test_refresh_counter >= self._HR2TEST_REFRESH_EVERY:
+                self._hr2test_refresh_counter = 0
+                self.hr2test_window.update_plots(
+                    self.data_ir_sub, self.data_hr2, self.data_hr2_sqi,
+                    self.data_timestamp_us, self.data_sample_counter)
+
+            self._hr3test_refresh_counter += 1
+            if self.hr3test_window is not None and self._hr3test_refresh_counter >= self._HR3TEST_REFRESH_EVERY:
+                self._hr3test_refresh_counter = 0
+                self.hr3test_window.update_plots(
+                    self.data_ir_sub, self.data_hr3, self.data_hr3_sqi,
+                    self.data_timestamp_us, self.data_sample_counter)
+
+        except Exception as e:
+            print(f"Error en render: {e}")
+
+        _render_ms = (time.perf_counter() - _t0_render) * 1000
+        if _render_ms > 15:
+            print(f"[RENDER] {_render_ms:.1f} ms")
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -8219,8 +8281,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr2test_default)
         if s.value("PPGMonitor/hr3test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr3test_default)
-        if s.value("PPGMonitor/timing_open",       False, type=bool):
-            QtCore.QTimer.singleShot(0, self._open_timing_default)
+        if s.value("PPGMonitor/esp32_timing_open",       False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_esp32_timing_default)
         if s.value("PPGMonitor/hw_config_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hw_config_default)
         if s.value("PPGMonitor/diagnostics_open",  False, type=bool):
@@ -8241,7 +8303,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for w in [self, self.ppgplots_window, self.signals_window, self.results_window, self.serialcom_window,
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
-                  self.hr3test_window, self.timing_window, self.hw_config_window,
+                  self.hr3test_window, self.esp32_timing_window, self.hw_config_window,
                   self.diag_window, self.lab_capture_window]:
             if w is not None:
                 w.show()
@@ -8304,8 +8366,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.hr2test_window.close()
         if self.hr3test_window is not None:
             self.hr3test_window.close()
-        if self.timing_window is not None:
-            self.timing_window.close()
+        if self.esp32_timing_window is not None:
+            self.esp32_timing_window.close()
         if self.hw_config_window is not None:
             self.hw_config_window.main_monitor = None
             self.hw_config_window.close()
@@ -8327,6 +8389,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
+
+    # GPU rendering — must be set before any PlotWidget is created.
+    # useOpenGL=True offloads curve rasterization to the GPU (dramatically
+    # faster than software antialiasing, especially for >1000-point curves).
+    pg.setConfigOptions(antialias=True, useOpenGL=True)
 
     class _FastTipStyle(QtWidgets.QProxyStyle):
         def styleHint(self, hint, option=None, widget=None, returnData=None):

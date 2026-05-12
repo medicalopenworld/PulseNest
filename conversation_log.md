@@ -5682,3 +5682,238 @@ Comentario actualizado: "covers 303 BPM" → "covers 263 BPM guard band" (reflej
 - `incunest_afe4490.h` — `_hr3_lpf` → `_hr3_bpf`; `hr3_f_low_hz` añadido a `AFE4490Config`; `setHR3Filter()` actualizado a dos parámetros
 - `incunest_afe4490.cpp` — init, `setHR3Filter()`, `getConfig()`, `_reset_algorithms()`, `_recalc_rate_params()`, `_update_hr3_sample()` actualizados
 - `incunest_afe4490_spec.md` — API, struct y tabla de parámetros actualizados
+
+## Sesión 2026-05-03a — HR3TEST: LP → BP + correcciones HR range
+
+### Tema 1: Actualización HR3TestCalc en pulsenest_lab.py
+
+La ventana HR3TEST del script usaba filtro paso bajo (10 Hz) y rangos de HR 25–300 BPM, desalineados con el firmware actualizado en sesiones anteriores.
+
+**Cambios realizados en `HR3TestCalc`:**
+- Filtro: `FW_LP_CUTOFF_HZ=10.0` → `FW_BP_LOW_HZ=0.4`, `FW_BP_HIGH_HZ=15.0`
+- Atributo instancia: `lp_cutoff_hz` → `bp_low_hz` + `bp_high_hz`
+- `_recalc_filter()`: `butter(..., btype='low')` → `butter(..., [bp_low/nyq, bp_high/nyq], btype='band')`
+- HR range constants: min 25→30, max 300→260, search_min 22→27, search_max 303→263
+- UI: spin `_spin_lp_cutoff` reemplazado por `_spin_bp_low` + `_spin_bp_high`
+- Export: comentario `lp_cutoff=...` → `bp=0.4-15.0 Hz`
+
+**Razón:** la FFT y HPS de HR3TEST ahora filtran correctamente las frecuencias por debajo de 0.4 Hz, alineándose con el filtro BP del firmware.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — clase `HR3TestCalc` y ventana `HR3TestWindow`
+
+## Sesión 2026-05-05a — HR3TEST: fix velocidad p_hr + refactorización calc
+
+### Problema
+El plot `p_hr` en HR3TestWindow avanzaba más lento que el eje X. Causa raíz: `HR3TestCalc.update()` se llamaba dentro de `update_plots()`, que está throttled a 10 Hz de display. El cálculo FFT/HPS perdía muestras cuando había retraso en el hilo UI.
+
+### Causa raíz identificada
+Misma causa documentada en `project_hr3test_calc_fix.md`: `_calc.update()` throttled junto con el render. En contraste, HR1TEST ya tenía el patrón correcto: `hr1test_calc.update()` se llama a 500 Hz en `PPGMonitor.update_data()`, fuera del throttle.
+
+### Fix aplicado — patrón HR1TEST
+1. **PPGMonitor:** añadido `self.hr3test_calc = HR3TestCalc()` y llamada per-sample en `update_data()` (50 Hz, antes del bloque throttle):
+   ```python
+   if self.hr3test_window is not None:
+       self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS)
+   ```
+2. **HR3TestWindow:** refactorización de `_calc`:
+   - `self._calc` → `self._offline_calc` (solo modo offline)
+   - Añadidos `_get_live_calc()` → `main_monitor.hr3test_calc` y `_active_calc()` → selecciona offline o live
+   - `update_plots()`: eliminada llamada `_calc.update()`, usa `_get_live_calc()` para leer resultados
+   - `_on_param_changed()`, `_reset_to_defaults()`, `_update_status_indicator()`: usan `_active_calc()`
+   - `_load_csv()`: usa `self._offline_calc` explícitamente
+   - `_clear_offline()`: resetea `_get_live_calc()`
+   - `_refresh_fft_plot()`, `_refresh_filt_plot()`, `_export_csv()`: usan `_active_calc()`
+
+### Otras mejoras de la sesión (pre-sesión, completadas en sesión anterior)
+- `HR3TestCalc`: LP 10 Hz → BP 0.4–15 Hz (alineado con firmware)
+- HR range: min 25→30, max 300→260 BPM
+- Export comment: `lp_cutoff=` → `bp=0.4-15.0 Hz`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — HR3TestWindow y PPGMonitor.update_data()
+
+---
+
+## Sesión 2026-05-06
+
+### Tema: HR3TEST — spin controls + FFT/HPS display below 0.4 Hz
+
+**Preguntas:**
+1. ¿Los spin controls de HR3TEST son editables o de solo lectura?
+2. La FFT y HPS ploteados muestran contenido por debajo de 0.4 Hz.
+
+**Decisiones:**
+1. Los spin controls son completamente editables — `valueChanged` → `_on_param_changed()` actualiza `HR3TestCalc` y hace reset. Botón "RESET TO DEFAULTS" los restaura a valores firmware.
+2. Bug de display: `last_spectrum` y `last_hps` almacenaban el espectro completo (0–25 Hz). El buffer sí está BP-filtrado pero los bins fuera de banda eran visibles. Fix: zerear bins fuera de `[bp_low_hz, bp_high_hz]` antes de guardar para display (puramente cosmético, el algoritmo ya usa solo la HR search range).
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — `HR3TestCalc.update()`: zereo de bins fuera de BP en `disp_spec` y `disp_hps`
+
+### Addendum 2026-05-06b
+
+**Cambio revertido:** Se deshizo el zereo de bins fuera de BP en `HR3TestCalc.update()`. `last_spectrum` y `last_hps` vuelven a almacenar el espectro completo sin enmascarar.
+
+## Sesión 2026-05-11 — Fix HR3TEST plot 2: desincronización eje X / curva
+
+### Problema
+En HR3TestWindow, el eje X del plot 2 (BP filtered signal) avanzaba más rápido que la curva de datos.
+
+### Causa raíz
+`last_filtered_buf` solo se actualizaba dentro del bloque FFT, que se ejecuta cada `update_n = 25` muestras (0.5 s). Sin embargo, `_refresh_filt_plot()` usa `t_hr[-1]` (timestamp más reciente) como `t_end` en cada render:
+
+```python
+filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
+```
+
+Resultado: `filt_t` se desplazaba a la derecha en cada render (50 Hz), pero `filt` (los datos) permanecía congelado entre ciclos FFT (2 Hz) → desincronización visible entre eje X y curva.
+
+### Fix
+`last_filtered_buf` movido fuera del bloque FFT para actualizarse en cada muestra. El coste es mínimo (`np.roll` + reutilización del array). Dentro del bloque FFT, `seg_raw` reutiliza `last_filtered_buf` ya calculado.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — `HR3TestCalc.update()`: `last_filtered_buf` actualizado por muestra, no por ciclo FFT
+
+## Sesión 2026-05-11b — Fix sample drops al abrir ventanas secundarias
+
+### Problema
+Al abrir cualquier ventana secundaria (PPGPLOTS, HR3TEST, etc.) los plots mostraban huecos en la señal. Al cerrarla la señal volvía a ser correcta.
+
+### Causa raíz
+`update_data()` (QTimer 20ms) hacía dos cosas en el mismo slot:
+1. Drenar la cola serie → actualizar deques (rápido)
+2. Llamar a todos los `update_plots()` de las ventanas abiertas (lento — pyqtgraph rendering)
+
+Cuando el rendering tardaba más de 20ms, el timer no podía dispararse a tiempo, la cola acumulaba muestras y los plots mostraban saltos al drenar en ráfagas.
+
+### Fix: separación drain / render en dos timers
+- `self.timer` (20ms) → `update_data()`: solo drena la cola + per-sample calcs + consola. Nunca bloqueado por rendering.
+- `self._render_timer` (50ms) → `_render_update()`: todos los `update_plots()`. Puede tardar sin afectar la ingesta de datos.
+- `self._render_pending`: flag booleano que comunica si hay datos nuevos desde el drain al render.
+- Throttle counters adaptados a la nueva base de 50ms: `_PPGPLOTS_REFRESH_EVERY=1` (20Hz), `_SUBWIN_REFRESH_EVERY=2` (10Hz).
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — nuevo `_render_timer` + `_render_update()`, `update_data()` sin rendering, throttle constants actualizados
+
+---
+
+## Sesión 2026-05-11c — Fix rendimiento: OpenGL + downsampling en TEST windows
+
+### Problema
+La separación drain/render (sesión b) no fue suficiente: el slot `_render_update()` seguía siendo demasiado lento porque pyqtgraph renderizaba todas las curvas con antialiasing por software (2–5× más lento que GPU). Las ventanas TEST acumulan hasta 3000 puntos por curva → hasta 72.000 puntos antialiased por tick de render.
+
+### Causa raíz
+1. `pg.setConfigOptions(antialias=True)` en `HRLabWindow.__init__()` → antialiasing CPU-only en todas las curvas.
+2. TEST windows (HR1TEST, HR2TEST, HR3TEST, SpO2TEST) usan `_HR_BUF = SPO2_CAL_BUFSIZE = 3000` → buffers enormes renderizados en bruto cada 50ms.
+
+### Fix aplicado
+1. **`pg.setConfigOptions(antialias=True, useOpenGL=True)`** añadido en `__main__` justo después de `app = QtWidgets.QApplication(sys.argv)`, antes de crear cualquier widget. El flag `useOpenGL=True` delega el rasterizado de curvas a la GPU.
+2. **Eliminado** el `pg.setConfigOptions(antialias=True)` duplicado de `HRLabWindow.__init__()` (estaba sobreescribiendo con modo CPU-only).
+3. **`setDownsampling(auto=True, method='peak')` + `setClipToView(True)`** aplicados a todas las curvas de forma de onda en TEST windows con buffers de 3000 puntos:
+   - HR1TEST: `curve_dc_removed`, `curve_ma_filtered`, `curve_running_max`, `curve_threshold`
+   - HR2TEST: `curve_acorr`, `curve_filt`
+   - HR3TEST: `curve_filt`
+   - SpO2TEST: `curve_dc_ir`, `curve_dc_red`, `curve_rms_ir`, `curve_rms_red`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-11d — Diagnóstico timing render/drain
+
+### Problema
+El fix de OpenGL + downsampling (sesión c) no resolvió la distorsión temporal. Se necesita medir cuánto tarda realmente `_render_update()` y `update_data()` para identificar el cuello de botella.
+
+### Cambios
+Añadidas trazas de diagnóstico condicionales (>15 ms):
+- `[RENDER] Xms` — imprime si `_render_update()` tarda más de 15 ms
+- `[DRAIN] Xms` — imprime si `update_data()` tarda más de 15 ms
+
+Uso: lanzar con `python pulsenest_lab.py` (no `pythonw`) para ver salida por consola, abrir ventanas secundarias y observar qué slot es el lento.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12 — FREEZE DISPLAY: solo parar render, no algoritmos
+
+### Contexto
+Se aclaró que cuando render bloquea el hilo Qt, todo se para temporalmente (drain + algoritmos). Los datos no se pierden del buffer serie, pero los algoritmos se congelan hasta que render termina. El firmware ESP32 no se ve afectado.
+
+### Cambio
+`FREEZE DISPLAY` anteriormente descartaba todos los datos en cola y salía de `update_data()` sin ejecutar algoritmos.
+
+Nuevo comportamiento:
+- `update_data()` sigue corriendo normalmente (drain completo + todos los algoritmos)
+- Solo se suprime `_render_pending = True` cuando `is_paused`
+- Los plots quedan congelados pero HR/SpO2 siguen calculándose
+
+Objetivo diagnóstico: activar FREEZE DISPLAY y observar si desaparecen los `[DRAIN]` >15ms. Si sí → rendering es el cuello de botella confirmado.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12b — Análisis exhaustivo + render timer 50ms→200ms
+
+### Análisis
+Investigación completa de `update_data()` y `_render_update()`. Hallazgos clave:
+
+**Cálculos de algoritmos dentro de `_render_update()` (incorrecto):**
+- `SpO2LabWindow.update_plots()` línea 1465: `_local_calc.update()` por muestra — SpO2 completo en render
+- `SpO2TestWindow.update_plots()` línea 2124: `_calc.update()` por muestra — SpO2 completo en render
+- `HR2TestWindow.update_plots()` línea 3396: `_calc.update()` por muestra — HR2 autocorrelación en render
+
+**Trabajo Python pesado en render por tick:**
+- Backward scan O(n) en hasta 9 ventanas para encontrar muestras nuevas
+- `np.array(deque)` múltiples veces por ventana y por tick
+- `setTitle()` HTML + múltiples `curve.setData()` × ventanas abiertas
+
+### Fix aplicado (Opción 1 — inmediata)
+`_render_timer.start(50)` → `_render_timer.start(200)` — render a 5 Hz en lugar de 20 Hz.
+El render ocupa el hilo Qt 4× menos; drain y algoritmos corren sin interferencia.
+
+### Pendiente (Opción 2)
+Mover `SpO2LabWindow._local_calc`, `SpO2TestWindow._calc`, `HR2TestWindow._calc` a `update_data()`, igual que `hr3test_calc`. Los `update_plots()` solo leerían resultados ya calculados.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12c — Renombrado TIMING → ESP32 TIMING
+
+Renombrados los textos visibles al usuario en la ventana de timing del ESP32:
+- Título de ventana: `"TIMING — CPU Budget & Load"` → `"ESP32 TIMING — CPU Budget & Load"`
+- Botón sidebar: `"TIMING"` → `"ESP32\nTIMING"`
+- Tooltip: actualizado con prefijo "ESP32"
+
+Nombres internos (`TimingWindow`, `timing_window`) sin cambios.
+Pendiente: crear ventana similar "PYTHON TIMING" para medir tiempos del script Python.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-12d — Renombrado completo de identificadores internos de la ventana TIMING
+
+Renombrados todos los identificadores internos para reflejar la asociación con el ESP32:
+
+| Antes | Después |
+|---|---|
+| `class TimingWindow` | `class Esp32TimingWindow` |
+| `self.timing_window` | `self.esp32_timing_window` |
+| `self.btn_timing` | `self.btn_esp32_timing` |
+| `self.toggle_timing` / `def toggle_timing` | `self.toggle_esp32_timing` / `def toggle_esp32_timing` |
+| `self._open_timing_default` / `def _open_timing_default` | `self._open_esp32_timing_default` / `def _open_esp32_timing_default` |
+| `def update_timing` / `.update_timing(` | `def esp32_update_timing` / `.esp32_update_timing(` |
+| `def update_tasks` / `.update_tasks(` | `def esp32_update_tasks` / `.esp32_update_tasks(` |
+| `"TimingWindow/geometry"` (QSettings) | `"Esp32TimingWindow/geometry"` |
+| `"PPGMonitor/timing_open"` (QSettings) | `"PPGMonitor/esp32_timing_open"` |
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
