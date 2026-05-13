@@ -6048,3 +6048,296 @@ Los nombres de botón coinciden exactamente con los textos visibles en la sideba
 
 **Ficheros modificados:**
 - `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13b — Rename _SERIAL_TICK_ALGO_ROWS + cross-reference comments
+
+### Cambios
+- `_SERIAL_TICK_ALGO_ROWS` → `_SERIAL_TICK_ROWS` (simetría con `_PLOTS_TICK_ROWS`)
+- Comentarios en constantes de `PythonTimingWindow`:
+  - `_SERIAL_TICK_BUDGET_MS` → `# ms — timer period → _process_serial_queue_tick()`
+  - `_PLOTS_TICK_BUDGET_MS` → `# ms — timer period → _refresh_plots_tick()`
+  - `_SERIAL_TICK_ROWS` → `# algorithms timed inside _process_serial_queue_tick()`
+  - `_PLOTS_TICK_ROWS` → `# renderers timed inside _refresh_plots_tick()`
+- Docstrings en métodos de `PPGMonitor` citando las constantes asociadas:
+  - `_process_serial_queue_tick()`: cita `_SERIAL_TICK_BUDGET_MS` y `_SERIAL_TICK_ROWS`
+  - `_refresh_plots_tick()`: cita `_PLOTS_TICK_BUDGET_MS` y `_PLOTS_TICK_ROWS`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13c — PYTHON TIMING: interval rows para los dos ticks
+
+### Motivación
+Los rows existentes miden duración de cada tick. Los nuevos miden el intervalo real entre llamadas consecutivas, permitiendo detectar jitter del timer Qt.
+
+### Cambios
+- `_LOOP_ROWS`: 2 filas nuevas:
+  - `("drain_interval",  "_process_serial_queue_tick() interval", _SERIAL_TICK_BUDGET_MS)`
+  - `("render_interval", "_refresh_plots_tick() interval",        _PLOTS_TICK_BUDGET_MS)`
+- `_pt_keys`: añadidas claves `'drain_interval'` y `'render_interval'`
+- `_last_drain_t = None` y `_last_render_t = None` inicializados junto a `_py_timing`
+- `_process_serial_queue_tick()`: mide intervalo desde `_last_drain_t` al inicio del tick
+- `_refresh_plots_tick()`: mide intervalo desde `_last_render_t`, después del guard `_render_pending` (intervalo real de render ~200 ms, igual al budget)
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13d — PYTHON TIMING: rename "total" → "render" en Loop timers
+
+**Cambio:** `_refresh_plots_tick() total` → `_refresh_plots_tick() render` para consistencia con `_process_serial_queue_tick() drain`. Ambas filas de duración quedan nombradas por la operación que realizan.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13e — PYTHON TIMING: budget 2× para interval rows
+
+**Problema:** las filas `drain_interval` y `render_interval` aparecían en rojo porque el intervalo nominal ≈ budget → 100% → umbral crítico.
+
+**Fix:** budget de las interval rows = 2× el período nominal:
+- `drain_interval`  → `_SERIAL_TICK_BUDGET_MS * 2` = 40 ms
+- `render_interval` → `_PLOTS_TICK_BUDGET_MS * 2`  = 400 ms
+
+Verde = timer puntual, amarillo = jitter moderado, rojo = retraso severo.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13f — PYTHON TIMING: lbl_status global (peor fila de la tabla)
+
+### Motivación
+El `lbl_status` anterior solo monitorizaba el drain, dando una falsa sensación de "OK" aunque otras filas estuvieran en rojo/amarillo.
+
+### Cambios
+- `update_timing()`: se rastrea `worst_pct` / `worst_label` a lo largo del loop de todas las filas
+- Status bar muestra el estado de la **peor fila** de la tabla completa:
+  - `ALL OK  [HH:MM:SS]` — gris neutro (`#E0E0E0`) cuando todo < 75% budget
+  - `TIGHT  —  <label>  [HH:MM:SS]` — naranja cuando la peor fila está al 75–100%
+  - `OVER BUDGET  —  <label>  [HH:MM:SS]` — rojo cuando alguna fila supera el budget
+- Font size: 13px → 15px
+- Color OK: verde brillante `#44FF44` → gris neutro `#E0E0E0` (consistente con tabla)
+- Tooltip actualizado para reflejar el nuevo comportamiento global
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13g — PYTHON TIMING: rename "Loop timers" → "Tick timers" + _LOOP_ROWS → _TICK_ROWS
+
+**Cambio:** "Loop timers" → "Tick timers" (header de sección y constante `_LOOP_ROWS` → `_TICK_ROWS`) para consistencia con los nombres de los métodos `_process_serial_queue_tick()` y `_refresh_plots_tick()`.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13h — PYTHON TIMING: columna Budget (ms) en la tabla
+
+### Motivación
+Las filas `interval` usaban un budget 2× interno (40 ms / 400 ms) invisible para el usuario, que veía "20 ms" en el header pero "102%" en el %. La columna Budget explicita el budget de cada fila individualmente.
+
+### Cambios
+- Tabla: 4 → 5 columnas (`Component | Budget (ms) | Mean (ms) | Max (ms) | % Budget`)
+- `_add_data_rows`: muestra `budget_ms` en col 1 (gris, estático)
+- `_add_section`: span 4 → 5
+- `update_timing()`: columnas de datos 1,2,3 → 2,3,4
+- Header sección "Tick timers": eliminado el texto redundante "drain budget X ms | render budget Y ms"
+- Tooltip tabla actualizado
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13i — PYTHON TIMING: Budget column movida a posición 3
+
+**Cambio:** orden de columnas `Component | Budget | Mean | Max | %` → `Component | Mean | Budget | Max | %`
+
+Budget queda como referencia visual entre Mean y Max, y justo antes de `% Budget` (que resulta de Max÷Budget).
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13j — T1: pasar sample_counter a HR1TestCalc, HRFFTCalc, HR3TestCalc
+
+### Contexto
+Investigación de pérdida de muestras antes de llegar a los algoritmos. Pipeline de detección de huecos diseñado en 3 puntos:
+- **Punto A**: tamaño de `_serial_queue` (cola ilimitada — no descarta, pero puede acumularse)
+- **Punto B**: `_process_serial_queue_tick()` al ingestar en `data_sample_counter`
+- **Punto C**: en cada consumidor individual
+
+### T1 — preparar firmas para gap detection (T2)
+3 calcs que solo recibían `(value, fs)` ahora aceptan `sample_counter=None` (opcional, sin romper otros callers):
+- `HR1TestCalc.update(ir_sub, fs, sample_counter=None)` — pre-decimación 500 Hz; call site pasa `int(_p500[1])`
+- `HRFFTCalc.update(led1_aled1, fs, sample_counter=None)` — post-decimación (hr3_calc); call site pasa `int(p[0])`
+- `HR3TestCalc.update(ir_sub, fs, sample_counter=None)` — post-decimación; call site pasa `int(p[0])`
+
+Los otros 3 consumidores (`SpO2LabWindow`, `SpO2TestWindow`, `HR2TestWindow`) ya recibían `data_sample_counter`.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13k — T2: detección de huecos en el pipeline de muestras
+
+### Contexto
+Investigación de pérdida de muestras antes de llegar a los algoritmos. Continuación de T1.
+
+### Arquitectura de detección (3 puntos)
+```
+ESP32 → UART → _serial_reader → _serial_queue → _process_serial_queue_tick() → algoritmos
+                                      ↑ Punto A          ↑ Punto B                ↑ Punto C
+```
+- **Punto A**: `_serial_queue` es ilimitada (no descarta); se monitoriza su tamaño instantáneo
+- **Punto B**: primer punto de detección real en Python (al ingestar en `data_sample_counter`)
+- **Punto C**: en cada consumidor individual (6 consumidores)
+
+### Cambios
+
+**Calcs (HR1TestCalc, HRFFTCalc, HR3TestCalc)**:
+- `__init__`: añadidos `_last_counter=None`, `_nominal_step=None`, `gap_count=0`
+- `update()`: detección de huecos con auto-detección del paso nominal (1 para HR1Test pre-decim, decim_factor para los demás)
+
+**Window consumers (SpO2LabWindow, SpO2TestWindow, HR2TestWindow)**:
+- `__init__`: añadidos `_nominal_step=None`, `gap_count=0`
+- `update_algorithms()`: detección de huecos sobre `new_indices` (los índices de muestras nuevas ya calculados)
+
+**PPGMonitor**:
+- `__init__`: `_last_ingested_counter=None`, `_gaps_B=0`, `_last_queue_size=0`
+- `_process_serial_queue_tick()`: captura `qsize()` al inicio (Punto A); gap detection tras append a `data_sample_counter` en M1 y M2 (Punto B)
+
+**PythonTimingWindow**:
+- `_GAP_ROWS`: 8 filas (queue_size, gap_B, hr1test, hr3lab, hr3test, spo2lab, spo2test, hr2test)
+- Nueva sección `"Sample gaps"` en la tabla; columna `Max` repurposada como contador
+- `update_timing(stats, gaps=None)`: nuevo parámetro `gaps`; verde si 0, rojo si >0; queue_size: naranja>10, rojo>50
+- Call site en `_refresh_plots_tick()`: construye `_pt_gaps` y lo pasa a `update_timing()`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13l — PYTHON TIMING: sub-header de columnas en sección Sample gaps
+
+**Cambio:** añadida fila de sub-header en negrita encima de "Queue size" en la sección Sample gaps, con las etiquetas "Component" y "Count" en las columnas relevantes. Aclara que la columna Max tiene significado distinto (contador entero) en esta sección.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13m — PYTHON TIMING: simplificar texto del section header de Sample gaps
+
+**Cambios:**
+- Section header: `"Sample gaps — 'Max' col = lost samples (queue: instantaneous | others: since connect)"` → `"Sample gaps — lost samples since connect"`
+- Fila `gap_queue`: eliminado `[instantaneous]` del label (redundante con el sub-header)
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13n — PYTHON TIMING: Queue size con mean y max rolling
+
+**Cambio:** la fila `Queue size (frames)` ahora muestra mean (col 1) y max (col 3) sobre ventana de 50 muestras, igual que las filas de timing. Antes mostraba solo el valor instantáneo.
+
+- `_last_queue_size` (escalar) → `_queue_size_buf` (deque maxlen=50)
+- `_process_serial_queue_tick()`: `append(qsize())` en cada tick
+- Call site en `_refresh_plots_tick()`: pasa tupla `(mean, max)` en `_pt_gaps['gap_queue']`
+- `update_timing()`: caso `gap_queue` muestra mean en col 1 y max en col 3; color según max (>10 naranja, >50 rojo)
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13t — Gap B log via _sig_log → self.log() (sin consola)
+
+**Problema:** `print()` en `_serial_reader` es inútil porque el script se lanza con `pythonw` (sin consola).
+
+**Cambio:** reemplazado `print()` por señal Qt `_sig_log` que entrega el mensaje al hilo principal → `self.log()` lo muestra en el panel de log de la UI.
+
+- `PPGMonitor._sig_log = QtCore.Signal(str)` — señal de clase (thread-safe por diseño Qt)
+- `__init__`: `self._sig_log.connect(self.log)`
+- `_serial_reader`: `self._sig_log.emit(f"[GAP B] {_gap} samples lost (cnt {_last_cnt}→{_cnt})")`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13s — Ampliar buffer RX serial (mitigación pérdida de frames)
+
+**Causa:** al abrir ventanas Qt, el hilo principal retiene el GIL durante decenas de ms (construcción de widgets Python). `_serial_reader` no puede re-adquirir el GIL para llamar a `readline()`, frames se acumulan en el buffer OS. Si el buffer por defecto (~4 KB ≈ 80 frames) se llena, el driver descarta bytes → gaps en Punto B.
+
+**Fix provisional:** `self.ser.set_buffer_size(rx_size=65536)` justo después de abrir el puerto. Da ~1300 frames de margen en lugar de ~80, suficiente para absorber picos de contención de GIL.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13r — Gap detection Punto B movido a _serial_reader
+
+**Cambio:** detección de gaps Punto B movida del tick `_process_serial_queue_tick()` al hilo `_serial_reader`. Ventaja: detección en el punto más temprano posible (instante de llegada del frame), con traza `print()` inmediata cuando se detecta un gap.
+
+- `_serial_reader()`: añadido contador local `_last_cnt`; compara counter de cada frame `$M1`/`$M2` raw (bytes); si `gap > 0` incrementa `self._gaps_B` y emite `[GAP B] N samples lost (cnt X→Y)`
+- `_process_serial_queue_tick()`: eliminado bloque Punto B (redundante)
+- `__init__`: eliminado `_last_ingested_counter`; simplificado comentario de `_gaps_B`
+- `self._gaps_B` es safe desde el hilo lector: CPython GIL protege `+= n` en int
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13q — PYTHON TIMING: variable names al inicio del label (fix visibilidad)
+
+**Problema:** con col 0 en modo `Stretch`, los `[varname]` al final del texto quedaban cortados fuera del borde de la ventana. Solo era visible la variable de la fila más corta ("Ingestion [PPGMonitor._gaps_B]").
+
+**Fix:** movido `[varname]` al inicio de cada label en `_TICK_ROWS`, `_SERIAL_TICK_ROWS`, `_PLOTS_TICK_ROWS` y `_GAP_ROWS`. Al estar al principio siempre es lo primero visible aunque la columna sea estrecha.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13p — PYTHON TIMING: nombres de variable en todas las filas
+
+**Cambio:** añadido el nombre de la variable Python entre corchetes `[varname]` al final de cada label en `_TICK_ROWS`, `_SERIAL_TICK_ROWS`, `_PLOTS_TICK_ROWS` y `_GAP_ROWS`. Objetivo: facilitar la búsqueda en el código fuente desde la ventana PYTHON TIMING.
+
+- Tick timers: `[_py_timing['drain']]`, `[_last_drain_t]`, `[_py_timing['render']]`, `[_last_render_t]`
+- Algo/Plot rows: `[_py_timing['key']]` con el key exacto de cada fila
+- Gap rows: `[PPGMonitor._queue_size_buf]`, `[PPGMonitor._gaps_B]`, `[PPGMonitor.hr1test_calc.gap_count]`, `[PPGMonitor.hr3_calc.gap_count]`, `[PPGMonitor.hr3test_calc.gap_count]`, `[SpO2LabWindow.gap_count]`, `[SpO2TestWindow.gap_count]`, `[HR2TestWindow.gap_count]`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-13o — PYTHON TIMING: fix _gaps_B (Punto B movido a pre-decimation)
+
+**Problema:** `_gaps_B` parecía un simple contador de tramas en lugar de medir gaps reales. Causa raíz: el bloque de detección Punto B estaba ubicado después del bloque de decimación (`if self._decim_counter % self.spin_decim.value() != 0: continue`), por lo que solo veía frames decimados. Entre dos frames decimados consecutivos el contador firmware salta `decim_factor` posiciones → `gap = decim_factor - 1` se acumulaba en cada frame aunque no hubiera pérdidas reales.
+
+**Fix:** Punto B movido a antes del bloque de decimación, donde se ven todos los frames raw. Entre frames consecutivos el contador debe saltar exactamente 1; cualquier diferencia mayor indica una pérdida real.
+
+**Cambios:**
+- Añadido bloque Punto B antes de `if self._decim_counter % ...` en `_process_serial_queue_tick()`
+- Eliminado bloque Punto B del interior del bloque M1 post-decimación
+- Eliminado bloque Punto B del interior del bloque M2 post-decimación
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`

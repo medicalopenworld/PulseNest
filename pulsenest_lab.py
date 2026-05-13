@@ -320,6 +320,10 @@ class HRFFTCalc:
         self.last_harmonic_ratio = 0.0
         self.last_filtered_buf     = np.zeros(self.BUF_LEN)
         self.last_hps              = np.zeros(self.BUF_LEN // 2 + 1)
+        # Gap detection (data_sample_counter continuity — Punto C, post-decimation)
+        self._last_counter = None
+        self._nominal_step = None
+        self.gap_count     = 0
 
     def _recalc_params(self, fs):
         self._fs      = fs
@@ -344,10 +348,19 @@ class HRFFTCalc:
         self.hr_bpm   = 0.0
         self.hr_valid = False
 
-    def update(self, led1_aled1, fs):
+    def update(self, led1_aled1, fs, sample_counter=None):
         """Process one sample. Returns (hr_bpm, hr_valid)."""
         if fs != self._fs:
             self._recalc_params(fs)
+
+        if sample_counter is not None:
+            if self._last_counter is not None:
+                step = sample_counter - self._last_counter
+                if self._nominal_step is None:
+                    self._nominal_step = step
+                elif step > self._nominal_step:
+                    self.gap_count += step - self._nominal_step
+            self._last_counter = sample_counter
 
         # LP filter (anti-aliasing before virtual decimation; magnitude-only FFT → no need to negate)
         x = float(led1_aled1)
@@ -669,6 +682,10 @@ class HR1TestCalc:
         self.hr_bpm           = 0.0
         self.hr_sqi           = 0.0
         self.rr_buf_copy      = []   # copy of _rr_buf, updated on each peak
+        # Gap detection (data_sample_counter continuity — Punto C, pre-decimation)
+        self._last_counter = None
+        self._nominal_step = None
+        self.gap_count     = 0
 
     def reset(self):
         """Reset all filter state. Preserves user parameters."""
@@ -738,16 +755,25 @@ class HR1TestCalc:
         self._hr_bpm       = 0.0
         self._hr_sqi       = 0.0
 
-    def update(self, ir_sub, fs):
+    def update(self, ir_sub, fs, sample_counter=None):
         """Process one sample at full firmware rate.
 
         Parameters
         ----------
-        ir_sub : float  — IR_Sub (LED1-ALED1) ADC value
-        fs     : float  — sample rate (Hz)
+        ir_sub         : float — IR_Sub (LED1-ALED1) ADC value
+        fs             : float — sample rate (Hz)
+        sample_counter : int | None — data_sample_counter from serial frame (for gap detection)
         """
         if fs != self._fs:
             self._recalc_params(fs)
+        if sample_counter is not None:
+            if self._last_counter is not None:
+                step = sample_counter - self._last_counter
+                if self._nominal_step is None:
+                    self._nominal_step = step
+                elif step > self._nominal_step:
+                    self.gap_count += step - self._nominal_step
+            self._last_counter = sample_counter
 
         # 1. IIR DC removal
         self._dc_est = self._dc_alpha * self._dc_est + (1.0 - self._dc_alpha) * ir_sub
@@ -1112,6 +1138,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         # ── State ─────────────────────────────────────────────────────────────
         self._local_calc      = SpO2LocalCalc()
         self._last_sample_cnt = -1
+        self._nominal_step    = None   # gap detection
+        self.gap_count        = 0      # gap detection: lost samples since connect
         self._t0_us           = None
         self._cal_points      = []   # list of (spo2_ref, R_fw_mean, R_loc_mean)
 
@@ -1451,6 +1479,20 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
             return
         new_indices.reverse()
 
+        # Gap detection: check for missing samples in new batch
+        _counters = [int(data_sample_counter[i]) for i in new_indices]
+        if self._nominal_step is None and len(_counters) >= 2:
+            self._nominal_step = _counters[1] - _counters[0]
+        if self._last_sample_cnt > 0 and self._nominal_step is not None:
+            _gap = _counters[0] - self._last_sample_cnt - self._nominal_step
+            if _gap > 0:
+                self.gap_count += _gap
+        if self._nominal_step is not None:
+            for _j in range(len(_counters) - 1):
+                _step = _counters[_j + 1] - _counters[_j]
+                if _step > self._nominal_step:
+                    self.gap_count += _step - self._nominal_step
+
         nan = float('nan')
         for i in new_indices:
             ts     = float(data_timestamp_us[i])
@@ -1577,6 +1619,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
         self._calc            = SpO2TestCalc()
         self._last_sample_cnt = -1
+        self._nominal_step    = None   # gap detection
+        self.gap_count        = 0      # gap detection: lost samples since connect
         self._t0_us           = None
         self._last_r          = None
         self._offline_mode    = False
@@ -2115,6 +2159,20 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         if not new_indices:
             return
         new_indices.reverse()
+
+        # Gap detection: check for missing samples in new batch
+        _counters = [int(data_sample_counter[i]) for i in new_indices]
+        if self._nominal_step is None and len(_counters) >= 2:
+            self._nominal_step = _counters[1] - _counters[0]
+        if self._last_sample_cnt > 0 and self._nominal_step is not None:
+            _gap = _counters[0] - self._last_sample_cnt - self._nominal_step
+            if _gap > 0:
+                self.gap_count += _gap
+        if self._nominal_step is not None:
+            for _j in range(len(_counters) - 1):
+                _step = _counters[_j + 1] - _counters[_j]
+                if _step > self._nominal_step:
+                    self.gap_count += _step - self._nominal_step
 
         nan = float('nan')
         r = None
@@ -2939,6 +2997,8 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 
         self._calc            = HR2TestCalc()
         self._last_sample_cnt = -1
+        self._nominal_step    = None   # gap detection
+        self.gap_count        = 0      # gap detection: lost samples since connect
         self._t0_us           = None
         self._offline_mode    = False
 
@@ -3401,6 +3461,20 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             return
         new_indices.reverse()
 
+        # Gap detection: check for missing samples in new batch
+        _counters = [int(data_sample_counter[i]) for i in new_indices]
+        if self._nominal_step is None and len(_counters) >= 2:
+            self._nominal_step = _counters[1] - _counters[0]
+        if self._last_sample_cnt > 0 and self._nominal_step is not None:
+            _gap = _counters[0] - self._last_sample_cnt - self._nominal_step
+            if _gap > 0:
+                self.gap_count += _gap
+        if self._nominal_step is not None:
+            for _j in range(len(_counters) - 1):
+                _step = _counters[_j + 1] - _counters[_j]
+                if _step > self._nominal_step:
+                    self.gap_count += _step - self._nominal_step
+
         nan = float('nan')
         for i in new_indices:
             ts    = float(data_timestamp_us[i])
@@ -3564,6 +3638,10 @@ class HR3TestCalc:
         self.last_hps          = np.zeros(n_fft)
         self.last_peak_freq    = 0.0
         self.last_filtered_buf = np.zeros(self.FW_BUF_LEN)
+        # Gap detection (data_sample_counter continuity — Punto C, post-decimation)
+        self._last_counter = None
+        self._nominal_step = None
+        self.gap_count     = 0
 
     def reset(self):
         self._fs        = 0.0
@@ -3613,10 +3691,18 @@ class HR3TestCalc:
         self.hr_bpm = 0.0
         self.hr_sqi = 0.0
 
-    def update(self, ir_sub, fs):
+    def update(self, ir_sub, fs, sample_counter=None):
         """Process one 50 Hz sample. Returns (hr_bpm, hr_sqi)."""
         if fs != self._fs or self._b is None:
             self._recalc_filter(fs)
+        if sample_counter is not None:
+            if self._last_counter is not None:
+                step = sample_counter - self._last_counter
+                if self._nominal_step is None:
+                    self._nominal_step = step
+                elif step > self._nominal_step:
+                    self.gap_count += step - self._nominal_step
+            self._last_counter = sample_counter
 
         # BP filter
         filtered, self._zi = signal.lfilter(self._b, self._a, [float(ir_sub)], zi=self._zi)
@@ -4285,7 +4371,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
     """PYTHON TIMING — real-time performance diagnostics for the pulsenest_lab.py script.
 
     Displays mean and max execution time (ms) for each measured component:
-      Section A — Loop timers: _process_serial_queue_tick() drain and _refresh_plots_tick() total.
+      Section A — Tick timers: _process_serial_queue_tick() drain and _refresh_plots_tick() total.
       Section B — Algorithms: per-window update_algorithms() time (runs in drain, 20ms budget).
       Section C — Render: per-window update_plots() time (runs in render, 200ms budget).
 
@@ -4293,32 +4379,45 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
     The status bar reflects the drain timer vs its 20ms budget.
     """
 
-    _SERIAL_TICK_BUDGET_MS  = 20.0    # ms — drain timer period
-    _PLOTS_TICK_BUDGET_MS = 200.0   # ms — render timer period
+    _SERIAL_TICK_BUDGET_MS  = 20.0    # ms — timer period → _process_serial_queue_tick()
+    _PLOTS_TICK_BUDGET_MS = 200.0   # ms — timer period → _refresh_plots_tick()
     _WARN_PCT         = 75.0    # % — warning threshold
     _CRIT_PCT         = 100.0   # % — critical threshold
 
     # (key, display name, budget_ms)
-    _LOOP_ROWS = [
-        ("drain",  "_process_serial_queue_tick() drain",    _SERIAL_TICK_BUDGET_MS),
-        ("render", "_refresh_plots_tick() total", _PLOTS_TICK_BUDGET_MS),
+    _TICK_ROWS = [
+        ("drain",           "[_py_timing['drain']]          _process_serial_queue_tick()",           _SERIAL_TICK_BUDGET_MS),
+        ("drain_interval",  "[_last_drain_t]                _process_serial_queue_tick() interval",  _SERIAL_TICK_BUDGET_MS * 2),
+        ("render",          "[_py_timing['render']]         _refresh_plots_tick()",                  _PLOTS_TICK_BUDGET_MS),
+        ("render_interval", "[_last_render_t]               _refresh_plots_tick() interval",         _PLOTS_TICK_BUDGET_MS * 2),
     ]
-    _SERIAL_TICK_ALGO_ROWS = [
-        ("algo_spo2lab",  "SPO2LAB   |  SpO2LabWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
-        ("algo_spo2test", "SPO2TEST  |  SpO2TestWindow.update_algorithms()", _SERIAL_TICK_BUDGET_MS),
-        ("algo_hr2test",  "HR2TEST   |  HR2TestWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
+    _SERIAL_TICK_ROWS = [  # algorithms timed inside _process_serial_queue_tick()
+        ("algo_spo2lab",  "[_py_timing['algo_spo2lab']]   SPO2LAB   |  SpO2LabWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
+        ("algo_spo2test", "[_py_timing['algo_spo2test']]  SPO2TEST  |  SpO2TestWindow.update_algorithms()", _SERIAL_TICK_BUDGET_MS),
+        ("algo_hr2test",  "[_py_timing['algo_hr2test']]   HR2TEST   |  HR2TestWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
     ]
-    _PLOTS_TICK_ROWS = [
-        ("plot_ppgplots", "PPGPLOTS  |  PPGPlotsWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
-        ("plot_signals",  "SIGNALS   |  PPGSignalsWindow.update_plots()",  _PLOTS_TICK_BUDGET_MS),
-        ("plot_results",  "RESULTS   |  AlgoResultsWindow.update_plots()", _PLOTS_TICK_BUDGET_MS),
-        ("plot_hrlab",    "HR2LAB    |  HRLabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
-        ("plot_spo2lab",  "SPO2LAB   |  SpO2LabWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
-        ("plot_hr3lab",   "HR3LAB    |  HR3LabWindow.update_plots()",      _PLOTS_TICK_BUDGET_MS),
-        ("plot_spo2test", "SPO2TEST  |  SpO2TestWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
-        ("plot_hr1test",  "HR1TEST * |  HR1TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
-        ("plot_hr2test",  "HR2TEST   |  HR2TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
-        ("plot_hr3test",  "HR3TEST   |  HR3TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+    _PLOTS_TICK_ROWS = [  # renderers timed inside _refresh_plots_tick()
+        ("plot_ppgplots", "[_py_timing['plot_ppgplots']]  PPGPLOTS  |  PPGPlotsWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
+        ("plot_signals",  "[_py_timing['plot_signals']]   SIGNALS   |  PPGSignalsWindow.update_plots()",  _PLOTS_TICK_BUDGET_MS),
+        ("plot_results",  "[_py_timing['plot_results']]   RESULTS   |  AlgoResultsWindow.update_plots()", _PLOTS_TICK_BUDGET_MS),
+        ("plot_hrlab",    "[_py_timing['plot_hrlab']]     HR2LAB    |  HRLabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
+        ("plot_spo2lab",  "[_py_timing['plot_spo2lab']]   SPO2LAB   |  SpO2LabWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr3lab",   "[_py_timing['plot_hr3lab']]    HR3LAB    |  HR3LabWindow.update_plots()",      _PLOTS_TICK_BUDGET_MS),
+        ("plot_spo2test", "[_py_timing['plot_spo2test']]  SPO2TEST  |  SpO2TestWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr1test",  "[_py_timing['plot_hr1test']]   HR1TEST * |  HR1TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr2test",  "[_py_timing['plot_hr2test']]   HR2TEST   |  HR2TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr3test",  "[_py_timing['plot_hr3test']]   HR3TEST   |  HR3TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+    ]
+    # (key, display name) — 'Max' column repurposed as count; queue=instantaneous, others=since connect
+    _GAP_ROWS = [
+        ("gap_queue",    "[PPGMonitor._queue_size_buf]          Queue size (frames)"),
+        ("gap_B",        "[PPGMonitor._gaps_B]                  Ingestion"),
+        ("gap_hr1test",  "[PPGMonitor.hr1test_calc.gap_count]   HR1TEST"),
+        ("gap_hr3lab",   "[PPGMonitor.hr3_calc.gap_count]       HR3LAB"),
+        ("gap_hr3test",  "[PPGMonitor.hr3test_calc.gap_count]   HR3TEST"),
+        ("gap_spo2lab",  "[SpO2LabWindow.gap_count]             SPO2LAB"),
+        ("gap_spo2test", "[SpO2TestWindow.gap_count]            SPO2TEST"),
+        ("gap_hr2test",  "[HR2TestWindow.gap_count]             HR2TEST"),
     ]
 
     def __init__(self, parent=None):
@@ -4343,36 +4442,37 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
             "background: #1A2A1A; color: #888888; font-size: 13px; "
             "font-weight: bold; padding: 4px; border-radius: 4px;")
         self._lbl_status.setToolTip(_make_tooltip(
-            "Drain timer status",
-            f"GREEN:  drain max < {self._WARN_PCT:.0f}% of {self._SERIAL_TICK_BUDGET_MS:.0f} ms budget.\n"
-            f"ORANGE: drain max {self._WARN_PCT:.0f}–{self._CRIT_PCT:.0f}% (tight).\n"
-            f"RED:    drain max > {self._CRIT_PCT:.0f}% (OVER BUDGET — serial data may be delayed)."))
+            "Overall timing status",
+            f"Shows the worst row across the entire table.\n"
+            f"GRAY:   all rows within {self._WARN_PCT:.0f}% of their budget (ALL OK).\n"
+            f"ORANGE: worst row at {self._WARN_PCT:.0f}–{self._CRIT_PCT:.0f}% of budget (TIGHT).\n"
+            f"RED:    worst row exceeded budget (OVER BUDGET)."))
         vbox.addWidget(self._lbl_status)
 
-        # Build table: 2 + 3 + 10 data rows + 3 section headers = 18 rows
-        n_rows = 1 + len(self._LOOP_ROWS) + 1 + len(self._SERIAL_TICK_ALGO_ROWS) + 1 + len(self._PLOTS_TICK_ROWS)
-        self._table = QtWidgets.QTableWidget(n_rows, 4)
-        self._table.setHorizontalHeaderLabels(["Component", "Mean (ms)", "Max (ms)", "% Budget"])
+        n_rows = (1 + len(self._TICK_ROWS) + 1 + len(self._SERIAL_TICK_ROWS) +
+                  1 + len(self._PLOTS_TICK_ROWS) + 1 + 1 + len(self._GAP_ROWS))
+        self._table = QtWidgets.QTableWidget(n_rows, 5)
+        self._table.setHorizontalHeaderLabels(["Component", "Mean (ms)", "Budget (ms)", "Max (ms)", "% Budget"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
         self._table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        for col in (1, 2, 3):
+        for col in (1, 2, 3, 4):
             self._table.horizontalHeader().setSectionResizeMode(
                 col, QtWidgets.QHeaderView.ResizeToContents)
         self._table.setToolTip(_make_tooltip(
             "Python timing table",
             "Execution time per component measured with time.perf_counter().\n"
             "Stats computed over the last 50 measurements.\n"
-            "Drain budget = 20 ms (timer period). Render budget = 200 ms (timer period).\n"
-            "Color: white < 75%, orange 75–100%, red > 100%."))
+            "Color: white < 75% of budget, orange 75–100%, red > 100%."))
 
         _hdr_style = "background: #1E2E3E; color: #88BBDD; font-size: 11px; font-weight: bold;"
 
-        self._row_map = {}  # key → physical row index
+        self._row_map     = {}  # key → physical row index (timing rows)
+        self._gap_row_map = {}  # key → physical row index (gap rows)
 
         def _add_section(phys_row, label):
-            self._table.setSpan(phys_row, 0, 1, 4)
+            self._table.setSpan(phys_row, 0, 1, 5)
             item = QtWidgets.QTableWidgetItem(f"  {label}")
             item.setFlags(QtCore.Qt.ItemIsEnabled)
             item.setBackground(QtGui.QColor("#1E2E3E"))
@@ -4382,11 +4482,15 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
             return phys_row + 1
 
         def _add_data_rows(phys_row, row_defs):
-            for key, name, _ in row_defs:
+            for key, name, budget_ms in row_defs:
                 item = QtWidgets.QTableWidgetItem(f"  {name}")
                 item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
                 self._table.setItem(phys_row, 0, item)
-                for col in (1, 2, 3):
+                budget_item = QtWidgets.QTableWidgetItem(f"{budget_ms:.0f}")
+                budget_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                budget_item.setForeground(QtGui.QColor("#888888"))
+                self._table.setItem(phys_row, 2, budget_item)
+                for col in (1, 3, 4):
                     cell = QtWidgets.QTableWidgetItem("—")
                     cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                     self._table.setItem(phys_row, col, cell)
@@ -4394,13 +4498,42 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
                 phys_row += 1
             return phys_row
 
+        def _add_gap_rows(phys_row, row_defs):
+            # Column sub-header
+            _col_labels = {0: "Component", 3: "Count"}
+            for col in (0, 1, 2, 3, 4):
+                text = _col_labels.get(col, "—")
+                cell = QtWidgets.QTableWidgetItem(f"  {text}" if col == 0 else text)
+                cell.setFlags(QtCore.Qt.ItemIsEnabled)
+                cell.setTextAlignment(
+                    (QtCore.Qt.AlignLeft if col == 0 else QtCore.Qt.AlignRight) | QtCore.Qt.AlignVCenter)
+                font = cell.font(); font.setBold(True); cell.setFont(font)
+                cell.setForeground(QtGui.QColor("#AAAAAA"))
+                cell.setBackground(QtGui.QColor("#1A1A1A"))
+                self._table.setItem(phys_row, col, cell)
+            phys_row += 1
+            for key, name in row_defs:
+                item = QtWidgets.QTableWidgetItem(f"  {name}")
+                item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+                self._table.setItem(phys_row, 0, item)
+                for col in (1, 2, 3, 4):
+                    cell = QtWidgets.QTableWidgetItem("—")
+                    cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                    cell.setForeground(QtGui.QColor("#888888"))
+                    self._table.setItem(phys_row, col, cell)
+                self._gap_row_map[key] = phys_row
+                phys_row += 1
+            return phys_row
+
         r = 0
-        r = _add_section(r, f"Loop timers  —  drain budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms  |  render budget {self._PLOTS_TICK_BUDGET_MS:.0f} ms")
-        r = _add_data_rows(r, self._LOOP_ROWS)
+        r = _add_section(r, "Tick timers")
+        r = _add_data_rows(r, self._TICK_ROWS)
         r = _add_section(r, f"Algorithms — update_algorithms()  (budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms)")
-        r = _add_data_rows(r, self._SERIAL_TICK_ALGO_ROWS)
+        r = _add_data_rows(r, self._SERIAL_TICK_ROWS)
         r = _add_section(r, f"Render — update_plots()  (budget {self._PLOTS_TICK_BUDGET_MS:.0f} ms)")
         r = _add_data_rows(r, self._PLOTS_TICK_ROWS)
+        r = _add_section(r, "Sample gaps  —  lost samples since connect")
+        r = _add_gap_rows(r, self._GAP_ROWS)
 
         vbox.addWidget(self._table)
 
@@ -4410,62 +4543,84 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         self._lbl_last.setStyleSheet("color: #888888; font-size: 11px;")
         vbox.addWidget(self._lbl_last)
 
-    def update_timing(self, stats):
-        """Update table from stats dict: {key: (mean_ms, max_ms)}.
+    def update_timing(self, stats, gaps=None):
+        """Update table from stats dict: {key: (mean_ms, max_ms)} and gaps dict: {key: int}.
         Called periodically from PPGMonitor._refresh_plots_tick().
         """
         import datetime
         now = datetime.datetime.now().strftime("%H:%M:%S")
 
-        all_rows = self._LOOP_ROWS + self._SERIAL_TICK_ALGO_ROWS + self._PLOTS_TICK_ROWS
-        drain_val = stats.get("drain")
-        drain_max = drain_val[1] if drain_val is not None else 0.0
+        all_rows = self._TICK_ROWS + self._SERIAL_TICK_ROWS + self._PLOTS_TICK_ROWS
+        worst_pct   = 0.0
+        worst_label = ""
 
-        for key, _, budget_ms in all_rows:
+        for key, label, budget_ms in all_rows:
             val = stats.get(key)
             phys_row = self._row_map.get(key)
             if phys_row is None:
                 continue
             if val is None:
                 # Window is closed — reset to "—"
-                for col in (1, 2, 3):
+                for col in (1, 3, 4):
                     self._table.item(phys_row, col).setText("—")
                     self._table.item(phys_row, col).setForeground(QtGui.QColor("#888888"))
                 continue
             mean_ms, max_ms = val
             pct = (max_ms / budget_ms * 100.0) if budget_ms > 0 else 0.0
             self._table.item(phys_row, 1).setText(f"{mean_ms:.2f}")
-            self._table.item(phys_row, 2).setText(f"{max_ms:.2f}")
-            self._table.item(phys_row, 3).setText(f"{pct:.1f}%")
+            self._table.item(phys_row, 3).setText(f"{max_ms:.2f}")
+            self._table.item(phys_row, 4).setText(f"{pct:.1f}%")
             if pct > self._CRIT_PCT:
                 colour = "#FF4444"
             elif pct > self._WARN_PCT:
                 colour = "#FFA500"
             else:
                 colour = "#E0E0E0"
-            for col in (1, 2, 3):
+            for col in (1, 3, 4):
                 self._table.item(phys_row, col).setForeground(QtGui.QColor(colour))
+            if pct > worst_pct:
+                worst_pct   = pct
+                worst_label = label
 
-        # Status bar (drain)
-        drain_pct = (drain_max / self._SERIAL_TICK_BUDGET_MS * 100.0)
-        if drain_pct > self._CRIT_PCT:
-            self._lbl_status.setText(
-                f"OVER BUDGET  drain_max={drain_max:.1f} ms > {self._SERIAL_TICK_BUDGET_MS:.0f} ms  [{now}]")
+        # Status bar — global worst row
+        if worst_pct > self._CRIT_PCT:
+            self._lbl_status.setText(f"OVER BUDGET  —  {worst_label}  [{now}]")
             self._lbl_status.setStyleSheet(
-                "background: #3A0000; color: #FF4444; font-size: 13px; "
+                "background: #3A0000; color: #FF4444; font-size: 15px; "
                 "font-weight: bold; padding: 4px; border-radius: 4px;")
-        elif drain_pct > self._WARN_PCT:
-            self._lbl_status.setText(
-                f"TIGHT  drain_max={drain_max:.1f} ms  (budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms)  [{now}]")
+        elif worst_pct > self._WARN_PCT:
+            self._lbl_status.setText(f"TIGHT  —  {worst_label}  [{now}]")
             self._lbl_status.setStyleSheet(
-                "background: #2A1A00; color: #FFA500; font-size: 13px; "
+                "background: #2A1A00; color: #FFA500; font-size: 15px; "
                 "font-weight: bold; padding: 4px; border-radius: 4px;")
         else:
-            self._lbl_status.setText(
-                f"OK  drain_max={drain_max:.1f} ms  (budget {self._SERIAL_TICK_BUDGET_MS:.0f} ms)  [{now}]")
+            self._lbl_status.setText(f"ALL OK  [{now}]")
             self._lbl_status.setStyleSheet(
-                "background: #1A3A1A; color: #44FF44; font-size: 13px; "
+                "background: #1A1A1A; color: #E0E0E0; font-size: 15px; "
                 "font-weight: bold; padding: 4px; border-radius: 4px;")
+
+        # Gap rows
+        if gaps is not None:
+            for key, _ in self._GAP_ROWS:
+                val      = gaps.get(key)
+                phys_row = self._gap_row_map.get(key)
+                if phys_row is None:
+                    continue
+                if val is None:
+                    self._table.item(phys_row, 3).setText("—")
+                    self._table.item(phys_row, 3).setForeground(QtGui.QColor("#888888"))
+                elif key == "gap_queue":
+                    # val is (mean, max) tuple
+                    mean_q, max_q = val
+                    self._table.item(phys_row, 1).setText(f"{mean_q:.1f}")
+                    self._table.item(phys_row, 3).setText(str(max_q))
+                    colour = "#FF4444" if max_q > 50 else "#FFA500" if max_q > 10 else "#E0E0E0"
+                    self._table.item(phys_row, 1).setForeground(QtGui.QColor(colour))
+                    self._table.item(phys_row, 3).setForeground(QtGui.QColor(colour))
+                else:
+                    self._table.item(phys_row, 3).setText(str(val))
+                    colour = "#FF4444" if val > 0 else "#E0E0E0"
+                    self._table.item(phys_row, 3).setForeground(QtGui.QColor(colour))
 
         self._lbl_last.setText(f"Last update: {now}  (rolling 50 samples)")
 
@@ -6871,6 +7026,8 @@ class _StatsHighlightDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class PPGMonitor(QtWidgets.QMainWindow):
+    _sig_log = QtCore.Signal(str)  # thread-safe log: emit from any thread, delivered to main thread
+
     def log(self, text):
         """Appends a timestamped line to the log panel, colour inferred from text content."""
         _ERROR_KEYWORDS   = ("error", "failed", "cannot", "not connected", "no port")
@@ -6898,7 +7055,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def __init__(self, save_chk=False, save_chk_duration=15):
         super().__init__()
-        
+        self._sig_log.connect(self.log)  # thread-safe: emit from _serial_reader, delivered to main thread
+
         # Configuración Ventana Principal
         self.setWindowTitle("AFE4490 Advanced Monitor (by Medical Open World)")
         self.resize(1800, 1100)
@@ -6988,13 +7146,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         # ── Python timing rolling buffers (last 50 measurements, in ms) ──────────
         _pt_keys = [
-            'drain', 'render',
+            'drain', 'drain_interval', 'render', 'render_interval',
             'algo_spo2lab', 'algo_spo2test', 'algo_hr2test',
             'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hrlab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
             'plot_hr1test', 'plot_hr2test', 'plot_hr3test',
         ]
         self._py_timing = {k: deque(maxlen=50) for k in _pt_keys}
+        self._last_drain_t  = None   # for drain_interval measurement
+        self._last_render_t = None   # for render_interval measurement
+        self._gaps_B = 0  # Punto B gap detection (updated in _serial_reader thread)
+        self._queue_size_buf        = deque(maxlen=50)  # Punto A: serial queue depth history
 
         # ── Stats table buffers (reset every N seconds) ───────────────────────
         self._STATS_SIGNALS = [
@@ -8067,6 +8229,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.log(f"Connecting to {port}...")
         try:
             self.ser = serial.Serial(port, BAUD, timeout=0.1)
+            self.ser.set_buffer_size(rx_size=65536)  # reduce frame loss during GIL contention
             self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
             self._reader_thread.start()
             self.log(f"System ONLINE — {port} @ {BAUD}")
@@ -8086,11 +8249,24 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def _serial_reader(self):
         """Dedicated thread: reads serial lines at full rate into a queue.
-        Completely decoupled from the UI so no frames are lost during rendering."""
+        Completely decoupled from the UI so no frames are lost during rendering.
+        Gap detection (Punto B): checks sample counter on every raw M1/M2 frame."""
+        _last_cnt = None
         while not self._reader_stop.is_set() and self.ser is not None:
             try:
                 line = self.ser.readline()
                 if line:
+                    if line.startswith(b'$M1,') or line.startswith(b'$M2,'):
+                        try:
+                            _cnt = int(line[1:].split(b',')[1])
+                            if _last_cnt is not None:
+                                _gap = _cnt - _last_cnt - 1
+                                if _gap > 0:
+                                    self._gaps_B += _gap
+                                    self._sig_log.emit(f"[GAP B] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
+                            _last_cnt = _cnt
+                        except (ValueError, IndexError):
+                            pass
                     self._serial_queue.put(line)
             except Exception:
                 break
@@ -8160,7 +8336,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._stats_buf[name].clear()
 
     def _process_serial_queue_tick(self):
+        """Drain the serial queue and run per-sample algorithms.
+        Timing budget: PythonTimingWindow._SERIAL_TICK_BUDGET_MS.
+        Algorithm rows: PythonTimingWindow._SERIAL_TICK_ROWS."""
         _t0_drain = time.perf_counter()
+        if self._last_drain_t is not None:
+            self._py_timing['drain_interval'].append((_t0_drain - self._last_drain_t) * 1000)
+        self._last_drain_t = _t0_drain
+        self._queue_size_buf.append(self._serial_queue.qsize())  # Punto A
         try:
             _new_data = False
             _console_lines = []
@@ -8261,7 +8444,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         _p500 = line[1:].split(',')
                         if len(_p500) >= 9 and _p500[0] == 'M1':
                             try:
-                                self.hr1test_calc.update(float(_p500[8]), 500.0)
+                                self.hr1test_calc.update(float(_p500[8]), 500.0, int(_p500[1]))
                             except (ValueError, IndexError):
                                 pass
 
@@ -8362,9 +8545,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr2_sqi.append(p[16])
                             self.data_hr3.append(p[17])
                             self.data_hr3_sqi.append(p[18])
-                            self.hr3_calc.update(p[7], SPO2_RECEIVED_FS)  # IR_Sub for HR3Lab diagnostics
+                            self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # IR_Sub for HR3Lab diagnostics
                             if self.hr3test_window is not None:
-                                self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS)
+                                self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
                             # Integrity check: RED_Sub and IR_Sub must equal hardware-subtracted values
                             red_sub_exp = int(p[2]) - int(p[4])   # RED - RED_Amb
                             ir_sub_exp  = int(p[3]) - int(p[5])   # IR  - IR_Amb
@@ -8449,12 +8632,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def _refresh_plots_tick(self):
         """Render timer slot (50 ms). Decoupled from queue drain so rendering
-        delays never affect serial data ingestion."""
+        delays never affect serial data ingestion.
+        Timing budget: PythonTimingWindow._PLOTS_TICK_BUDGET_MS.
+        Render rows: PythonTimingWindow._PLOTS_TICK_ROWS."""
         if not self._render_pending:
             return
         self._render_pending = False
 
         _t0_render = time.perf_counter()
+        if self._last_render_t is not None:
+            self._py_timing['render_interval'].append((_t0_render - self._last_render_t) * 1000)
+        self._last_render_t = _t0_render
         try:
             # PPGPlotsWindow: throttled to 20 Hz (every render tick)
             self._ppgplots_refresh_counter += 1
@@ -8573,7 +8761,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         _pt_stats[k] = (sum(_d) / len(_d), max(_d))
                     else:
                         _pt_stats[k] = None  # window closed — show "—"
-                self.python_timing_window.update_timing(_pt_stats)
+                _pt_gaps = {
+                    'gap_queue':    (sum(self._queue_size_buf) / len(self._queue_size_buf),
+                                     max(self._queue_size_buf)) if self._queue_size_buf else (0, 0),
+                    'gap_B':        self._gaps_B,
+                    'gap_hr1test':  self.hr1test_calc.gap_count,
+                    'gap_hr3lab':   self.hr3_calc.gap_count,
+                    'gap_hr3test':  self.hr3test_calc.gap_count,
+                    'gap_spo2lab':  self.spo2lab_window.gap_count  if self.spo2lab_window  is not None else None,
+                    'gap_spo2test': self.spo2test_window.gap_count if self.spo2test_window is not None else None,
+                    'gap_hr2test':  self.hr2test_window.gap_count  if self.hr2test_window  is not None else None,
+                }
+                self.python_timing_window.update_timing(_pt_stats, _pt_gaps)
 
         except Exception as e:
             print(f"Error en render: {e}")
