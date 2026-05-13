@@ -7026,7 +7026,7 @@ class _StatsHighlightDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class PPGMonitor(QtWidgets.QMainWindow):
-    _sig_log = QtCore.Signal(str)  # thread-safe log: emit from any thread, delivered to main thread
+    _sig_log = QtCore.pyqtSignal(str)  # thread-safe log: emit from any thread, delivered to main thread
 
     def log(self, text):
         """Appends a timestamped line to the log panel, colour inferred from text content."""
@@ -7055,7 +7055,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def __init__(self, save_chk=False, save_chk_duration=15):
         super().__init__()
-        self._sig_log.connect(self.log)  # thread-safe: emit from _serial_reader, delivered to main thread
+        self._sig_log.connect(self.log, QtCore.Qt.QueuedConnection)  # thread-safe: always queued to main thread even from non-QThread
 
         # Configuración Ventana Principal
         self.setWindowTitle("AFE4490 Advanced Monitor (by Medical Open World)")
@@ -8252,6 +8252,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         Completely decoupled from the UI so no frames are lost during rendering.
         Gap detection (Punto B): checks sample counter on every raw M1/M2 frame."""
         _last_cnt = None
+        _last_cnt = None
         while not self._reader_stop.is_set() and self.ser is not None:
             try:
                 line = self.ser.readline()
@@ -8261,7 +8262,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             _cnt = int(line[1:].split(b',')[1])
                             if _last_cnt is not None:
                                 _gap = _cnt - _last_cnt - 1
-                                if _gap > 0:
+                                if 0 < _gap <= 5000:  # >5000 (10 s) → corrupted frame, discard
                                     self._gaps_B += _gap
                                     self._sig_log.emit(f"[GAP B] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
                             _last_cnt = _cnt

@@ -6264,6 +6264,52 @@ ESP32 → UART → _serial_reader → _serial_queue → _process_serial_queue_ti
 
 ---
 
+## Sesión 2026-05-14d — _gaps_B: ignorar gaps > 5000 (tramas corruptas)
+
+**Causa de valores desorbitados:** tramas con checksum incorrecto llegan a `_serial_reader` con un campo contador corrupto que pasa `int()` pero contiene basura. El checksum se verifica en `_process_serial_queue_tick()` pero no en `_serial_reader`.
+
+**Fix elegido:** threshold `0 < _gap <= 5000` (10 s a 500 Hz). Cualquier gap mayor se descarta silenciosamente como trama corrupta. Alternativa descartada: verificar checksum NMEA en `_serial_reader` (trabajo innecesario, ya hecho en el tick).
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14c — Revertido: tracking M1/M2 separado en _serial_reader
+
+**Motivo:** la hipótesis de que los contadores M1/M2 eran independientes resultó incorrecta. Revertido a `_last_cnt` único para M1 y M2. La causa real de los valores desorbitados en `_gaps_B` está pendiente de investigación.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14b — Fix: Signal → pyqtSignal (PyQt5)
+
+**Error:** `AttributeError: module 'PyQt5.QtCore' has no attribute 'Signal'` — `Signal` es sintaxis PySide2/PySide6; en PyQt5 la clase equivalente es `pyqtSignal`.
+
+**Fix:** `QtCore.Signal(str)` → `QtCore.pyqtSignal(str)`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14a — Gap B: fix contadores M1/M2 separados + QueuedConnection
+
+**Problema 1 — _gaps_B desorbitado:** `_last_cnt` mezclaba M1 y M2 en la misma variable. Si sus contadores no son consecutivos (modos distintos, reinicio), el salto entre el último M2 y el siguiente M1 generaba gaps falsos enormes.
+
+**Fix:** tracking separado con `_last_cnt_m1` y `_last_cnt_m2`. Solo se comparan M1→M1 y M2→M2. El log indica el tipo: `[GAP B/M1]` o `[GAP B/M2]`.
+
+**Problema 2 — log messages no aparecían:** `threading.Thread` no es `QThread`, PyQt5 entregaba la señal como `DirectConnection` en el hilo lector. Modificar widgets Qt desde hilo no-GUI → descartado silenciosamente.
+
+**Fix:** `self._sig_log.connect(self.log, QtCore.Qt.QueuedConnection)` fuerza entrega en el hilo principal.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
 ## Sesión 2026-05-13t — Gap B log via _sig_log → self.log() (sin consola)
 
 **Problema:** `print()` en `_serial_reader` es inútil porque el script se lanza con `pythonw` (sin consola).
