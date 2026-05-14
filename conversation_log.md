@@ -6555,3 +6555,73 @@ Actualizado en `_connect_serial()` y `_connect_udp()`.
 - B) Enviar UDP cada 2 frames (250 Hz) para confirmar si el cuello de botella es la cola TX del ESP32
 - C) TCP en lugar de UDP
 - D) Acumular varios frames en un solo datagrama UDP
+
+---
+
+## Sesión 2026-05-15 — UDP_BATCH_SIZE: acumulación de N frames por datagrama
+
+### Motivación
+Pérdidas de frames por UDP causadas por saturación de la cola TX lwIP del ESP32 a 500 Hz (un `udp.endPacket()` cada 2 ms). Se implementa la opción D extendida: parámetro configurable `UDP_BATCH_SIZE` (default 10) para acumular N frames por datagrama.
+
+### Consecuencias del batching
+- **TX queue pressure:** 500 datagramas/s → 50/s (×10 reducción)
+- **Latencia añadida:** máx. N×2 ms = 20 ms — irrelevante para diagnóstico
+- **Tamaño datagrama:** 10 × ~200 bytes = ~2000 bytes — dentro del MTU WiFi. Límite seguro: N≤12.
+- **Python:** no necesita conocer UDP_BATCH_SIZE — divide el datagrama por `\n` y procesa cada frame independientemente.
+- **Gap detection:** sin cambios — sigue operando frame a frame al desempaquetar.
+
+### Cambios implementados
+
+**`include/wifi_config.h`:**
+- Añadido `#define UDP_BATCH_SIZE 10` con comentario de límite seguro (N≤12)
+
+**`src/main.cpp`:**
+- `udp_send()` reescrita con buffer estático `g_udp_batch_buf[UDP_BATCH_SIZE * 256]` (2560 bytes)
+- `g_udp_batch_len` (uint16_t) y `g_udp_batch_count` (uint8_t) como globales estáticos
+- Lógica: `memcpy` al buffer → si `g_udp_batch_count >= UDP_BATCH_SIZE` → `beginPacket` + `write` + `endPacket` + reset
+- Safety flush si el buffer se llenaría (no debería ocurrir con N≤12)
+
+**`pulsenest_lab.py`:**
+- `_udp_reader()`: `recvfrom(1024)` → `recvfrom(4096)`
+- Loop `for line in data.split(b'\n')` — desempaqueta frames del datagrama
+- Gap detection por frame (igual que antes)
+- Cada frame se pone en `_udp_queue` como `line + b'\r\n'` (compatible con el pipeline downstream)
+
+**Build:** SUCCESS (RAM 18.5%, Flash 27.4%). Flasheado y verificado OK.
+
+---
+
+## Sesión 2026-05-15b — Refactor UI conexión: dos botones toggle
+
+### Problema
+La UI de conexión era confusa: `btn_port_connect` no desconectaba, `btn_udp_connect` no tenía estado OFF, la fila UDP era un `HBoxLayout` apretado con 3 widgets, y `lbl_data_source` duplicaba el estado de los botones.
+
+### Cambios en `pulsenest_lab.py`
+
+**Sidebar:** eliminados `btn_port_connect`, `btn_udp_connect`, fila `udp_row` con label, y `lbl_data_source`. Reemplazados por:
+- `btn_serial` — toggle full-width: `"USB-CDC  ●  OFF"` (gris) / `"USB-CDC  ●  ON  (COM15)"` (verde)
+- `btn_udp` — toggle full-width: `"UDP WiFi  ●  OFF"` (gris) / `"UDP WiFi  ●  ON  (:5005)"` (azul)
+- `spin_udp_port` — spinbox pequeño (24px alto, discreto) debajo de `btn_udp`
+
+**Nuevos métodos:**
+- `_toggle_serial()` — if connected → `_disconnect_serial()`; else → `_connect_serial(port)`
+- `_disconnect_serial()` — para el reader, cierra puerto, pone botón a OFF
+- `_toggle_udp()` — if alive → `_disconnect_udp()`; else → `_connect_udp()`
+- `_disconnect_udp()` — para el UDP thread, drena cola, pone botón a OFF
+
+**`_connect_serial`:** actualizado para escribir en `btn_serial` (antes `btn_port_connect`); eliminadas referencias a `lbl_data_source`.
+
+**`_connect_udp`:** actualizado para escribir en `btn_udp` (antes `btn_udp_connect`); eliminadas referencias a `lbl_data_source`.
+
+---
+
+## Sesión 2026-05-15c — Eliminado spin_udp_port + persistencia estado conexiones
+
+`spin_udp_port` eliminado del sidebar (innecesario — el puerto siempre es `UDP_DEFAULT_PORT = 5005`). `_connect_udp()` usa directamente `UDP_DEFAULT_PORT`.
+
+**Persistencia estado conexiones en `.ini`:**
+- `_save_settings()`: guarda `PPGMonitor/serial_connected` y `PPGMonitor/udp_connected` (bool)
+- `_restore_settings()`: al final, llama `_connect_serial()` si `serial_connected=True` (default True) y `_connect_udp()` si `udp_connected=True` (default False)
+- Eliminada llamada incondicional `self._connect_serial(...)` tras `_restore_settings()` en `__init__` — ahora la conexión la decide `_restore_settings()` según el `.ini`
+
+`spin_udp_port` eliminado del sidebar (innecesario — el puerto siempre es `UDP_DEFAULT_PORT = 5005`). `_connect_udp()` usa directamente `UDP_DEFAULT_PORT` en lugar de `self.spin_udp_port.value()`.

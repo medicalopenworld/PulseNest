@@ -45,16 +45,35 @@ static uint8_t frame_xor_chk(const char* p, int len) {
 }
 
 // ── WiFi / UDP ────────────────────────────────────────────────────────────────
-static WiFiUDP g_udp;
-static bool    g_wifi_ready = false;
+static WiFiUDP  g_udp;
+static bool     g_wifi_ready      = false;
 
-// Send one frame buffer over UDP (M1/M2 data frames only).
+// Batch buffer: accumulates UDP_BATCH_SIZE frames before one endPacket() call.
+// M1 frame ≤ ~200 chars; 10 × 256 = 2560 bytes — well within WiFi MTU (~1460 bytes
+// for a single fragment; lwIP will fragment transparently if needed).
+static char     g_udp_batch_buf[UDP_BATCH_SIZE * 256];
+static uint16_t g_udp_batch_len   = 0;
+static uint8_t  g_udp_batch_count = 0;
+
+// Append one frame to the batch; flush when UDP_BATCH_SIZE frames have accumulated.
 // No-op if WiFi is not connected. Errors are silently ignored — USB-CDC is the fallback.
 static inline void udp_send(const char* buf) {
     if (!g_wifi_ready) return;
-    g_udp.beginPacket(UDP_TARGET_IP, UDP_TARGET_PORT);
-    g_udp.write(reinterpret_cast<const uint8_t*>(buf), strlen(buf));
-    g_udp.endPacket();
+    size_t len = strlen(buf);
+    if (g_udp_batch_len + len >= sizeof(g_udp_batch_buf)) {
+        // Safety flush: should not happen with correct UDP_BATCH_SIZE / frame-size assumptions.
+        g_udp_batch_len   = 0;
+        g_udp_batch_count = 0;
+    }
+    memcpy(g_udp_batch_buf + g_udp_batch_len, buf, len);
+    g_udp_batch_len += (uint16_t)len;
+    if (++g_udp_batch_count >= UDP_BATCH_SIZE) {
+        g_udp.beginPacket(UDP_TARGET_IP, UDP_TARGET_PORT);
+        g_udp.write(reinterpret_cast<const uint8_t*>(g_udp_batch_buf), g_udp_batch_len);
+        g_udp.endPacket();
+        g_udp_batch_len   = 0;
+        g_udp_batch_count = 0;
+    }
 }
 
 // ── Incunest frame mode ────────────────────────────────────────────────────────────

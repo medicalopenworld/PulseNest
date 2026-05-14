@@ -7366,54 +7366,30 @@ class PPGMonitor(QtWidgets.QMainWindow):
         port_row.addWidget(self.btn_port_refresh)
         self.sidebar_layout.addLayout(port_row)
 
-        self.btn_port_connect = QtWidgets.QPushButton("CONNECT")
-        self.btn_port_connect.setStyleSheet(
-            "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
-            "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
-        self.btn_port_connect.clicked.connect(
-            lambda: self._connect_serial(self.combo_port.currentText()))
-        self.btn_port_connect.setToolTip(_make_tooltip(
-            "CONNECT / DISCONNECT",
-            "Open or close the serial connection to the selected COM port. "
-            "921600 baud, 8N1. Reconnect hot-swap: disconnect and reconnect without restarting."))
-        self.sidebar_layout.addWidget(self.btn_port_connect)
+        self.btn_serial = QtWidgets.QPushButton("USB-CDC  ●  OFF")
+        self.btn_serial.setStyleSheet(
+            "background-color: #1E1E1E; color: #666666; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
+        self.btn_serial.clicked.connect(self._toggle_serial)
+        self.btn_serial.setToolTip(_make_tooltip(
+            "USB-CDC",
+            "Connect or disconnect the serial port (USB-CDC). Click to toggle. "
+            "When ON: receives all frames and command responses from the ESP32. "
+            "921600 baud, 8N1. Hot-swap: click OFF then ON to reconnect to a different port."))
+        self.sidebar_layout.addWidget(self.btn_serial)
 
-        udp_row = QtWidgets.QHBoxLayout()
-        lbl_udp = QtWidgets.QLabel("UDP port:")
-        lbl_udp.setStyleSheet("color: #AAAAAA; font-size: 14px;")
-        self.spin_udp_port = QtWidgets.QSpinBox()
-        self.spin_udp_port.setRange(1024, 65535)
-        self.spin_udp_port.setValue(UDP_DEFAULT_PORT)
-        self.spin_udp_port.setStyleSheet(
-            "background-color: #2A2A2A; color: #88BBFF; font-size: 14px; padding: 2px;")
-        self.spin_udp_port.setToolTip(_make_tooltip(
-            "UDP port",
-            f"Local UDP port to listen on. Must match UDP_TARGET_PORT in wifi_config.h (default {UDP_DEFAULT_PORT})."))
-        self.btn_udp_connect = QtWidgets.QPushButton("CONNECT UDP")
-        self.btn_udp_connect.setStyleSheet(
-            "background-color: #1A1A3A; color: #88BBFF; font-size: 16px; "
-            "font-weight: bold; padding: 4px; border: 1px solid #88BBFF; border-radius: 4px;")
-        self.btn_udp_connect.clicked.connect(self._connect_udp)
-        self.btn_udp_connect.setToolTip(_make_tooltip(
-            "CONNECT UDP",
-            "Open a UDP socket and receive data frames from the ESP32 over WiFi. "
-            "The ESP32 IP is shown in the log on startup (# WiFi connected). "
-            "USB-CDC and UDP are independent — switching here does NOT close the serial port."))
-        udp_row.addWidget(lbl_udp)
-        udp_row.addWidget(self.spin_udp_port)
-        udp_row.addWidget(self.btn_udp_connect, stretch=1)
-        self.sidebar_layout.addLayout(udp_row)
+        self.btn_udp = QtWidgets.QPushButton("UDP WiFi  ●  OFF")
+        self.btn_udp.setStyleSheet(
+            "background-color: #1E1E1E; color: #666666; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
+        self.btn_udp.clicked.connect(self._toggle_udp)
+        self.btn_udp.setToolTip(_make_tooltip(
+            "UDP WiFi",
+            "Start or stop the UDP receiver. Click to toggle. "
+            "Runs in parallel with USB-CDC — serial port stays open for command responses ($CFG, $DIAG, etc.). "
+            f"Listens on the port configured below (default {UDP_DEFAULT_PORT})."))
+        self.sidebar_layout.addWidget(self.btn_udp)
 
-        self.lbl_data_source = QtWidgets.QLabel("DATA SOURCE:  none")
-        self.lbl_data_source.setAlignment(QtCore.Qt.AlignCenter)
-        self.lbl_data_source.setStyleSheet(
-            "color: #888888; font-size: 13px; font-weight: bold; "
-            "padding: 3px; border: 1px solid #444444; border-radius: 3px;")
-        self.lbl_data_source.setToolTip(_make_tooltip(
-            "Data source",
-            "Shows which transport is currently feeding data to the pipeline: "
-            "USB-CDC (serial port) or UDP WiFi."))
-        self.sidebar_layout.addWidget(self.lbl_data_source)
 
         self.btn_reset_esp = QtWidgets.QPushButton("RESET\nESP32")
         self.btn_reset_esp.setStyleSheet(
@@ -7812,7 +7788,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self._populate_ports()
         self._restore_settings()
-        self._connect_serial(self.combo_port.currentText())
             
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self._process_frames_tick)
@@ -8324,7 +8299,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/right_splitter", self.right_splitter.saveState())
         s.setValue("PPGMonitor/spin_decim",          self.spin_decim.value())
         s.setValue("PPGMonitor/spin_stats_interval", self.spin_stats_interval.value())
-        s.setValue("PPGMonitor/combo_port",     self.combo_port.currentText())
+        s.setValue("PPGMonitor/combo_port",      self.combo_port.currentText())
+        s.setValue("PPGMonitor/serial_connected", self.ser is not None and self.ser.is_open)
+        s.setValue("PPGMonitor/udp_connected",    self._udp_thread is not None and self._udp_thread.is_alive())
         s.setValue("PPGMonitor/ppgplots_open",  self.ppgplots_window  is not None)
         s.setValue("PPGMonitor/signals_open",   self.signals_window   is not None)
         s.setValue("PPGMonitor/results_open",   self.results_window   is not None)
@@ -8384,6 +8361,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         idx = self.combo_port.findText(port)
         if idx >= 0:
             self.combo_port.setCurrentIndex(idx)
+        if s.value("PPGMonitor/serial_connected", True, type=bool):
+            self._connect_serial(self.combo_port.currentText())
+        if s.value("PPGMonitor/udp_connected", False, type=bool):
+            self._connect_udp()
 
     def _populate_ports(self):
         current = self.combo_port.currentText()
@@ -8394,6 +8375,28 @@ class PPGMonitor(QtWidgets.QMainWindow):
         idx = self.combo_port.findText(current)
         self.combo_port.setCurrentIndex(idx if idx >= 0 else 0)
         self.combo_port.blockSignals(False)
+
+    def _toggle_serial(self):
+        if self.ser is not None and self.ser.is_open:
+            self._disconnect_serial()
+        else:
+            self._connect_serial(self.combo_port.currentText())
+
+    def _disconnect_serial(self):
+        self._reader_stop.set()
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=1.0)
+        if self.ser is not None and self.ser.is_open:
+            self.ser.close()
+        self.ser = None
+        while not self._serial_queue.empty():
+            try: self._serial_queue.get_nowait()
+            except: break
+        self.log("Serial disconnected")
+        self.btn_serial.setText("USB-CDC  ●  OFF")
+        self.btn_serial.setStyleSheet(
+            "background-color: #1E1E1E; color: #666666; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
 
     def _connect_serial(self, port: str):
         if not port:
@@ -8417,23 +8420,39 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
             self._reader_thread.start()
             self.log(f"System ONLINE — {port} @ {BAUD}")
-            self.btn_port_connect.setStyleSheet(
-                "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
-                "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
-            self.btn_port_connect.setText("CONNECTED")
-            self.lbl_data_source.setText(f"DATA SOURCE:  USB-CDC  ({port})")
-            self.lbl_data_source.setStyleSheet(
-                "color: #44FF44; font-size: 13px; font-weight: bold; "
-                "padding: 3px; border: 1px solid #44FF44; border-radius: 3px;")
+            self.btn_serial.setText(f"USB-CDC  ●  ON  ({port})")
+            self.btn_serial.setStyleSheet(
+                "background-color: #1A3A1A; color: #44FF44; font-size: 17px; "
+                "font-weight: bold; padding: 5px; border: 1px solid #44FF44; border-radius: 4px;")
             QtCore.QTimer.singleShot(2500,
                 lambda: self.hw_config_window._on_read_cfg() if self.hw_config_window is not None else None)
         except Exception as e:
             self.ser = None
             self.log(f"ERROR: Could not open {port} — {e}")
-            self.btn_port_connect.setStyleSheet(
-                "background-color: #3A1A1A; color: #FF4444; font-size: 18px; "
-                "font-weight: bold; padding: 4px; border: 1px solid #FF4444; border-radius: 4px;")
-            self.btn_port_connect.setText("CONNECT")
+            self.btn_serial.setText("USB-CDC  ●  OFF")
+            self.btn_serial.setStyleSheet(
+                "background-color: #3A1A1A; color: #FF4444; font-size: 17px; "
+                "font-weight: bold; padding: 5px; border: 1px solid #FF4444; border-radius: 4px;")
+
+    def _toggle_udp(self):
+        if self._udp_thread is not None and self._udp_thread.is_alive():
+            self._disconnect_udp()
+        else:
+            self._connect_udp()
+
+    def _disconnect_udp(self):
+        self._udp_stop.set()
+        if self._udp_thread is not None:
+            self._udp_thread.join(timeout=1.0)
+        self._udp_thread = None
+        while not self._udp_queue.empty():
+            try: self._udp_queue.get_nowait()
+            except: break
+        self.log("UDP disconnected")
+        self.btn_udp.setText("UDP WiFi  ●  OFF")
+        self.btn_udp.setStyleSheet(
+            "background-color: #1E1E1E; color: #666666; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
 
     def _connect_udp(self):
         """Start UDP reader thread (runs in parallel with _serial_reader).
@@ -8448,23 +8467,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
             except: break
         self._udp_stop.clear()
         self._gaps_B   = 0
-        self._udp_port = self.spin_udp_port.value()
+        self._udp_port = UDP_DEFAULT_PORT
         self.log(f"UDP listening on port {self._udp_port}...")
         self._udp_thread = threading.Thread(target=self._udp_reader, daemon=True)
         self._udp_thread.start()
-        self.btn_udp_connect.setStyleSheet(
-            "background-color: #1A2A3A; color: #44AAFF; font-size: 16px; "
-            "font-weight: bold; padding: 4px; border: 1px solid #44AAFF; border-radius: 4px;")
-        self.btn_udp_connect.setText("UDP LIVE")
-        self.lbl_data_source.setText(f"DATA SOURCE:  UDP WiFi  (:{self._udp_port})")
-        self.lbl_data_source.setStyleSheet(
-            "color: #44AAFF; font-size: 13px; font-weight: bold; "
-            "padding: 3px; border: 1px solid #44AAFF; border-radius: 3px;")
+        self.btn_udp.setText(f"UDP WiFi  ●  ON  (:{self._udp_port})")
+        self.btn_udp.setStyleSheet(
+            "background-color: #1A1E3A; color: #44AAFF; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #44AAFF; border-radius: 4px;")
 
     def _udp_reader(self):
         """Dedicated thread: receives UDP datagrams into _udp_queue.
-        Each datagram is one complete M1/M2 frame — no readline needed.
-        Gap detection (Punto B): same logic as _serial_reader."""
+        Each datagram contains UDP_BATCH_SIZE M1/M2 frames (one per line).
+        Frames are unpacked line-by-line and queued individually — the pipeline
+        downstream is identical to the serial path.
+        Gap detection (Punto B): checked per-frame when unpacking."""
         import socket as _socket
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
         sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, 1024 * 1024)  # 1 MB RX buffer
@@ -8473,11 +8490,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _last_cnt = None
         while not self._udp_stop.is_set():
             try:
-                data, _ = sock.recvfrom(1024)
-                if data:
-                    if data.startswith(b'$M1,') or data.startswith(b'$M2,'):
+                data, _ = sock.recvfrom(4096)   # UDP_BATCH_SIZE * ~200 bytes/frame
+                if not data:
+                    continue
+                for line in data.split(b'\n'):
+                    line = line.rstrip(b'\r')
+                    if not line:
+                        continue
+                    if line.startswith(b'$M1,') or line.startswith(b'$M2,'):
                         try:
-                            _cnt = int(data[1:].split(b',')[1])
+                            _cnt = int(line[1:].split(b',')[1])
                             if _last_cnt is not None:
                                 _gap = _cnt - _last_cnt - 1
                                 if 0 < _gap <= 5000:
@@ -8487,7 +8509,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             _last_cnt = _cnt
                         except (ValueError, IndexError):
                             pass
-                    self._udp_queue.put(data)
+                    self._udp_queue.put(line + b'\r\n')
             except _socket.timeout:
                 continue
             except Exception:
