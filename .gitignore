@@ -3,6 +3,9 @@
 !.vscode/extensions.json
 .cache
 
+# WiFi credentials — machine-specific, never commit
+include/wifi_config.h
+
 # Claude Code — configuración local (rutas de máquina, permisos locales)
 .claude/
 

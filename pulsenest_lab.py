@@ -194,8 +194,9 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 
 
 # --- CONFIGURACIÓN ---
-PORT = 'COM15'
-BAUD = 921600
+PORT             = 'COM15'
+BAUD             = 921600
+UDP_DEFAULT_PORT = 5005   # must match UDP_TARGET_PORT in include/wifi_config.h
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_lab.ini")
 CAPTURES_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
 os.makedirs(CAPTURES_DIR, exist_ok=True)
@@ -1464,7 +1465,7 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
 
     def update_algorithms(self, data_ir_sub, data_red_sub, data_spo2, data_spo2_r,
                           data_timestamp_us, data_sample_counter):
-        """Run per-sample algorithm (called from PPGMonitor._process_serial_queue_tick)."""
+        """Run per-sample algorithm (called from PPGMonitor._process_frames_tick)."""
         n = len(data_sample_counter)
         if n == 0:
             return
@@ -2143,7 +2144,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     def update_algorithms(self, data_ir_sub, data_red_sub, data_spo2, data_spo2_r,
                           data_spo2_sqi, data_timestamp_us, data_sample_counter):
-        """Run per-sample algorithm (called from PPGMonitor._process_serial_queue_tick)."""
+        """Run per-sample algorithm (called from PPGMonitor._process_frames_tick)."""
         if self._offline_mode:
             return
         n = len(data_sample_counter)
@@ -3445,7 +3446,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 
     def update_algorithms(self, data_ir_sub, data_hr2, data_hr2_sqi,
                           data_timestamp_us, data_sample_counter):
-        """Run per-sample algorithm (called from PPGMonitor._process_serial_queue_tick)."""
+        """Run per-sample algorithm (called from PPGMonitor._process_frames_tick)."""
         if self._offline_mode:
             return
         n = len(data_sample_counter)
@@ -4271,7 +4272,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            # _calc.update() is called per-sample in PPGMonitor._process_serial_queue_tick()
+            # _calc.update() is called per-sample in PPGMonitor._process_frames_tick()
             _c     = self._get_live_calc()
             hr_fw  = hr_f  if hr_f  > 0 else nan
             sqi_fw = sqi_f if sqi_f >= 0 else nan
@@ -4371,7 +4372,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
     """PYTHON TIMING — real-time performance diagnostics for the pulsenest_lab.py script.
 
     Displays mean and max execution time (ms) for each measured component:
-      Section A — Tick timers: _process_serial_queue_tick() drain and _refresh_plots_tick() total.
+      Section A — Tick timers: _process_frames_tick() (serial+UDP drain) and _refresh_plots_tick() total.
       Section B — Algorithms: per-window update_algorithms() time (runs in drain, 20ms budget).
       Section C — Render: per-window update_plots() time (runs in render, 200ms budget).
 
@@ -4379,19 +4380,19 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
     The status bar reflects the drain timer vs its 20ms budget.
     """
 
-    _SERIAL_TICK_BUDGET_MS  = 20.0    # ms — timer period → _process_serial_queue_tick()
+    _SERIAL_TICK_BUDGET_MS  = 20.0    # ms — timer period → _process_frames_tick()
     _PLOTS_TICK_BUDGET_MS = 200.0   # ms — timer period → _refresh_plots_tick()
     _WARN_PCT         = 75.0    # % — warning threshold
     _CRIT_PCT         = 100.0   # % — critical threshold
 
     # (key, display name, budget_ms)
     _TICK_ROWS = [
-        ("drain",           "[_py_timing['drain']]          _process_serial_queue_tick()",           _SERIAL_TICK_BUDGET_MS),
-        ("drain_interval",  "[_last_drain_t]                _process_serial_queue_tick() interval",  _SERIAL_TICK_BUDGET_MS * 2),
+        ("drain",           "[_py_timing['drain']]          _process_frames_tick()",           _SERIAL_TICK_BUDGET_MS),
+        ("drain_interval",  "[_last_drain_t]                _process_frames_tick() interval",  _SERIAL_TICK_BUDGET_MS * 2),
         ("render",          "[_py_timing['render']]         _refresh_plots_tick()",                  _PLOTS_TICK_BUDGET_MS),
         ("render_interval", "[_last_render_t]               _refresh_plots_tick() interval",         _PLOTS_TICK_BUDGET_MS * 2),
     ]
-    _SERIAL_TICK_ROWS = [  # algorithms timed inside _process_serial_queue_tick()
+    _SERIAL_TICK_ROWS = [  # algorithms timed inside _process_frames_tick()
         ("algo_spo2lab",  "[_py_timing['algo_spo2lab']]   SPO2LAB   |  SpO2LabWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
         ("algo_spo2test", "[_py_timing['algo_spo2test']]  SPO2TEST  |  SpO2TestWindow.update_algorithms()", _SERIAL_TICK_BUDGET_MS),
         ("algo_hr2test",  "[_py_timing['algo_hr2test']]   HR2TEST   |  HR2TestWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
@@ -6536,7 +6537,7 @@ class AlgoResultsWindow(QtWidgets.QWidget):
 
 
 class SerialComWindow(QtWidgets.QWidget):
-    """Floating window with the raw serial stream console."""
+    """Floating window with the raw serial stream console (USB-CDC only)."""
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
@@ -6546,6 +6547,7 @@ class SerialComWindow(QtWidgets.QWidget):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
+        self._paused = False
         self.setWindowTitle("Serial COM")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._setup_ui()
@@ -6559,6 +6561,7 @@ class SerialComWindow(QtWidgets.QWidget):
     def _setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
+        top_bar = QtWidgets.QHBoxLayout()
         self.header_label = QtWidgets.QLabel(self.SERIAL_HEADER)
         self.header_label.setFont(QtGui.QFont("Consolas", 9))
         self.header_label.setWordWrap(False)
@@ -6570,7 +6573,21 @@ class SerialComWindow(QtWidgets.QWidget):
                 padding: 5px 8px; border: 1px solid #FFAA00;
             }
         """)
-        layout.addWidget(self.header_label)
+        top_bar.addWidget(self.header_label, stretch=1)
+
+        self.btn_pause = QtWidgets.QPushButton("PAUSE")
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setFixedWidth(110)
+        self.btn_pause.setStyleSheet(
+            "QPushButton { background-color: #505050; color: #FFFFFF; font-weight: bold; "
+            "border: 1px solid #888888; border-radius: 3px; padding: 4px; }"
+            "QPushButton:checked { background-color: #CC6600; color: #FFFFFF; "
+            "border: 1px solid #FF8800; }")
+        self.btn_pause.setToolTip(_make_tooltip("PAUSE", "Freeze the console display. "
+            "The queue keeps draining and algorithms keep running; only new lines stop appearing."))
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        top_bar.addWidget(self.btn_pause)
+        layout.addLayout(top_bar)
 
         self.console = QtWidgets.QPlainTextEdit()
         self.console.setReadOnly(True)
@@ -6582,14 +6599,20 @@ class SerialComWindow(QtWidgets.QWidget):
         """)
         layout.addWidget(self.console)
 
+    def _toggle_pause(self):
+        self._paused = self.btn_pause.isChecked()
+        self.btn_pause.setText("RESUME" if self._paused else "PAUSE")
+
     def append_line(self, line):
         """Append a single line immediately (for status/error messages)."""
+        if self._paused:
+            return
         self.console.appendPlainText(line)
         self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
 
     def append_lines(self, lines):
-        """Batch append a list of lines (called from _process_serial_queue_tick loop)."""
-        if not lines:
+        """Batch append a list of lines (called from _process_frames_tick loop)."""
+        if self._paused or not lines:
             return
         self.console.appendPlainText('\n'.join(lines))
         if self.console.blockCount() > 500:
@@ -6607,6 +6630,103 @@ class SerialComWindow(QtWidgets.QWidget):
         if self.main_monitor is not None:
             self.main_monitor.btn_serialcom.setChecked(False)
             self.main_monitor.serialcom_window = None
+        super().closeEvent(event)
+
+
+class UdpComWindow(QtWidgets.QWidget):
+    """Floating window with the raw UDP WiFi stream console."""
+
+    UDP_HEADER = (
+        f"{'Timestamp_PC':<15},{'Df_us':>5},"
+        "LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI"
+    )
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self._paused = False
+        self.setWindowTitle("UDP COM")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._setup_ui()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("UdpComWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1200, 400)
+
+    def _setup_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+
+        top_bar = QtWidgets.QHBoxLayout()
+        self.header_label = QtWidgets.QLabel(self.UDP_HEADER)
+        self.header_label.setFont(QtGui.QFont("Consolas", 9))
+        self.header_label.setWordWrap(False)
+        self.header_label.setMinimumWidth(0)
+        self.header_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.header_label.setStyleSheet("""
+            QLabel {
+                background-color: #001020; color: #44AAFF;
+                padding: 5px 8px; border: 1px solid #44AAFF;
+            }
+        """)
+        top_bar.addWidget(self.header_label, stretch=1)
+
+        self.btn_pause = QtWidgets.QPushButton("PAUSE")
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setFixedWidth(110)
+        self.btn_pause.setStyleSheet(
+            "QPushButton { background-color: #505050; color: #FFFFFF; font-weight: bold; "
+            "border: 1px solid #888888; border-radius: 3px; padding: 4px; }"
+            "QPushButton:checked { background-color: #CC6600; color: #FFFFFF; "
+            "border: 1px solid #FF8800; }")
+        self.btn_pause.setToolTip(_make_tooltip("PAUSE", "Freeze the console display. "
+            "The queue keeps draining and algorithms keep running; only new lines stop appearing."))
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        top_bar.addWidget(self.btn_pause)
+        layout.addLayout(top_bar)
+
+        self.console = QtWidgets.QPlainTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.console.setFont(QtGui.QFont("Consolas", 9))
+        self.console.setStyleSheet("""
+            background-color: #000000; color: #2090D0;
+            border: 1px solid #44AAFF; padding: 5px;
+        """)
+        layout.addWidget(self.console)
+
+    def _toggle_pause(self):
+        self._paused = self.btn_pause.isChecked()
+        self.btn_pause.setText("RESUME" if self._paused else "PAUSE")
+
+    def append_line(self, line):
+        """Append a single line immediately (for status/error messages)."""
+        if self._paused:
+            return
+        self.console.appendPlainText(line)
+        self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
+
+    def append_lines(self, lines):
+        """Batch append a list of lines (called from _process_frames_tick loop)."""
+        if self._paused or not lines:
+            return
+        self.console.appendPlainText('\n'.join(lines))
+        if self.console.blockCount() > 500:
+            cursor = self.console.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.Start)
+            cursor.select(QtGui.QTextCursor.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+        self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
+        self.console.horizontalScrollBar().setValue(0)
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("UdpComWindow/geometry", self.saveGeometry())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_udpcom.setChecked(False)
+            self.main_monitor.udpcom_window = None
         super().closeEvent(event)
 
 
@@ -7108,6 +7228,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.signals_window   = None
         self.results_window   = None
         self.serialcom_window = None
+        self.udpcom_window    = None
         self.hrlab_window     = None
         self.spo2lab_window   = None
         self.hr3lab_window    = None
@@ -7155,7 +7276,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._py_timing = {k: deque(maxlen=50) for k in _pt_keys}
         self._last_drain_t  = None   # for drain_interval measurement
         self._last_render_t = None   # for render_interval measurement
-        self._gaps_B = 0  # Punto B gap detection (updated in _serial_reader thread)
+        self._gaps_B   = 0     # Punto B gap detection (updated in _serial_reader / _udp_reader thread)
+        self._udp_port = UDP_DEFAULT_PORT
         self._queue_size_buf        = deque(maxlen=50)  # Punto A: serial queue depth history
 
         # ── Stats table buffers (reset every N seconds) ───────────────────────
@@ -7255,6 +7377,43 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Open or close the serial connection to the selected COM port. "
             "921600 baud, 8N1. Reconnect hot-swap: disconnect and reconnect without restarting."))
         self.sidebar_layout.addWidget(self.btn_port_connect)
+
+        udp_row = QtWidgets.QHBoxLayout()
+        lbl_udp = QtWidgets.QLabel("UDP port:")
+        lbl_udp.setStyleSheet("color: #AAAAAA; font-size: 14px;")
+        self.spin_udp_port = QtWidgets.QSpinBox()
+        self.spin_udp_port.setRange(1024, 65535)
+        self.spin_udp_port.setValue(UDP_DEFAULT_PORT)
+        self.spin_udp_port.setStyleSheet(
+            "background-color: #2A2A2A; color: #88BBFF; font-size: 14px; padding: 2px;")
+        self.spin_udp_port.setToolTip(_make_tooltip(
+            "UDP port",
+            f"Local UDP port to listen on. Must match UDP_TARGET_PORT in wifi_config.h (default {UDP_DEFAULT_PORT})."))
+        self.btn_udp_connect = QtWidgets.QPushButton("CONNECT UDP")
+        self.btn_udp_connect.setStyleSheet(
+            "background-color: #1A1A3A; color: #88BBFF; font-size: 16px; "
+            "font-weight: bold; padding: 4px; border: 1px solid #88BBFF; border-radius: 4px;")
+        self.btn_udp_connect.clicked.connect(self._connect_udp)
+        self.btn_udp_connect.setToolTip(_make_tooltip(
+            "CONNECT UDP",
+            "Open a UDP socket and receive data frames from the ESP32 over WiFi. "
+            "The ESP32 IP is shown in the log on startup (# WiFi connected). "
+            "USB-CDC and UDP are independent — switching here does NOT close the serial port."))
+        udp_row.addWidget(lbl_udp)
+        udp_row.addWidget(self.spin_udp_port)
+        udp_row.addWidget(self.btn_udp_connect, stretch=1)
+        self.sidebar_layout.addLayout(udp_row)
+
+        self.lbl_data_source = QtWidgets.QLabel("DATA SOURCE:  none")
+        self.lbl_data_source.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_data_source.setStyleSheet(
+            "color: #888888; font-size: 13px; font-weight: bold; "
+            "padding: 3px; border: 1px solid #444444; border-radius: 3px;")
+        self.lbl_data_source.setToolTip(_make_tooltip(
+            "Data source",
+            "Shows which transport is currently feeding data to the pipeline: "
+            "USB-CDC (serial port) or UDP WiFi."))
+        self.sidebar_layout.addWidget(self.lbl_data_source)
 
         self.btn_reset_esp = QtWidgets.QPushButton("RESET\nESP32")
         self.btn_reset_esp.setStyleSheet(
@@ -7393,8 +7552,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_serialcom.setToolTip(_make_tooltip(
             "SERIALCOM",
             "Show or hide the Serial Console window. "
-            "Displays raw serial frames received from the ESP32-S3 and the CSV header."))
+            "Displays raw frames received via USB-CDC serial port."))
         self.sidebar_layout.addWidget(self.btn_serialcom)
+
+        self.btn_udpcom = QtWidgets.QPushButton("UDP COM")
+        self.btn_udpcom.setCheckable(True)
+        self.btn_udpcom.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_udpcom.clicked.connect(self.toggle_udpcom)
+        self.btn_udpcom.setToolTip(_make_tooltip(
+            "UDP COM",
+            "Show or hide the UDP Console window. "
+            "Displays raw frames received via WiFi/UDP transport."))
+        self.sidebar_layout.addWidget(self.btn_udpcom)
 
         label_analysis = QtWidgets.QLabel("ANALYSIS")
         label_analysis.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
@@ -7499,7 +7668,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_python_timing.setToolTip(_make_tooltip(
             "PYTHON TIMING — Script Performance",
             "Opens the Python timing diagnostics window. Shows mean/max execution time (ms) "
-            "for _process_serial_queue_tick() drain and _refresh_plots_tick() total, plus per-window algorithm "
+            "for _process_frames_tick() drain and _refresh_plots_tick() total, plus per-window algorithm "
             "and render times. Stats computed over a rolling window of the last 50 measurements. "
             "Drain budget = 20 ms, render budget = 200 ms."))
         self.sidebar_layout.addWidget(self.btn_python_timing)
@@ -7634,8 +7803,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.ser = None
         self._serial_queue = queue.Queue()
-        self._reader_stop = threading.Event()
+        self._udp_queue    = queue.Queue()
+        self._reader_stop  = threading.Event()   # controls _serial_reader thread
         self._reader_thread = None
+        self._udp_stop     = threading.Event()   # controls _udp_reader thread
+        self._udp_thread   = None
         self._cfg_listener = None  # callable(text) set by LabCaptureWindow
 
         self._populate_ports()
@@ -7643,7 +7815,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._connect_serial(self.combo_port.currentText())
             
         self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self._process_serial_queue_tick)
+        self.timer.timeout.connect(self._process_frames_tick)
         self.timer.start(20)
 
         self._render_timer = QtCore.QTimer()
@@ -7677,7 +7849,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _send_frame_cmd(self, mode):
         if not hasattr(self, 'ser') or not self.ser.is_open:
             return
-        self.ser.write(('1' if mode == "M1" else '2').encode())
+        self.ser.write(('1\n' if mode == "M1" else '2\n').encode())
         self.frame_mode = mode
         self._update_frame_button()
 
@@ -7844,6 +8016,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.serialcom_window.main_monitor = None
                 self.serialcom_window.close()
                 self.serialcom_window = None
+
+    def toggle_udpcom(self):
+        if self.btn_udpcom.isChecked():
+            self.udpcom_window = UdpComWindow(None)
+            self.udpcom_window.main_monitor = self
+            self.udpcom_window.show()
+        else:
+            if self.udpcom_window is not None:
+                self.udpcom_window.main_monitor = None
+                self.udpcom_window.close()
+                self.udpcom_window = None
 
     def _open_hr3lab_default(self):
         self.btn_hr3lab.setChecked(True)
@@ -8163,6 +8346,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.signals_window   is not None: s.setValue("PPGSignalsWindow/geometry",  self.signals_window.saveGeometry())
         if self.results_window   is not None: s.setValue("AlgoResultsWindow/geometry", self.results_window.saveGeometry())
         if self.serialcom_window is not None: s.setValue("SerialComWindow/geometry",   self.serialcom_window.saveGeometry())
+        if self.udpcom_window    is not None: s.setValue("UdpComWindow/geometry",     self.udpcom_window.saveGeometry())
         if self.hrlab_window     is not None: s.setValue("HRLabWindow/geometry",      self.hrlab_window.saveGeometry())
         if self.spo2lab_window   is not None: s.setValue("SpO2LabWindow/geometry",    self.spo2lab_window.saveGeometry())
         if self.hr3lab_window    is not None: s.setValue("HR3LabWindow/geometry",     self.hr3lab_window.saveGeometry())
@@ -8237,6 +8421,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 "background-color: #1A3A1A; color: #44FF44; font-size: 18px; "
                 "font-weight: bold; padding: 4px; border: 1px solid #44FF44; border-radius: 4px;")
             self.btn_port_connect.setText("CONNECTED")
+            self.lbl_data_source.setText(f"DATA SOURCE:  USB-CDC  ({port})")
+            self.lbl_data_source.setStyleSheet(
+                "color: #44FF44; font-size: 13px; font-weight: bold; "
+                "padding: 3px; border: 1px solid #44FF44; border-radius: 3px;")
             QtCore.QTimer.singleShot(2500,
                 lambda: self.hw_config_window._on_read_cfg() if self.hw_config_window is not None else None)
         except Exception as e:
@@ -8247,11 +8435,69 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 "font-weight: bold; padding: 4px; border: 1px solid #FF4444; border-radius: 4px;")
             self.btn_port_connect.setText("CONNECT")
 
+    def _connect_udp(self):
+        """Start UDP reader thread (runs in parallel with _serial_reader).
+        Serial port stays open so command responses ($CFG, $DIAG, etc.) keep working."""
+        # Stop any previous UDP reader
+        self._udp_stop.set()
+        if self._udp_thread is not None:
+            self._udp_thread.join(timeout=1.0)
+        # Drain only the UDP queue
+        while not self._udp_queue.empty():
+            try: self._udp_queue.get_nowait()
+            except: break
+        self._udp_stop.clear()
+        self._gaps_B   = 0
+        self._udp_port = self.spin_udp_port.value()
+        self.log(f"UDP listening on port {self._udp_port}...")
+        self._udp_thread = threading.Thread(target=self._udp_reader, daemon=True)
+        self._udp_thread.start()
+        self.btn_udp_connect.setStyleSheet(
+            "background-color: #1A2A3A; color: #44AAFF; font-size: 16px; "
+            "font-weight: bold; padding: 4px; border: 1px solid #44AAFF; border-radius: 4px;")
+        self.btn_udp_connect.setText("UDP LIVE")
+        self.lbl_data_source.setText(f"DATA SOURCE:  UDP WiFi  (:{self._udp_port})")
+        self.lbl_data_source.setStyleSheet(
+            "color: #44AAFF; font-size: 13px; font-weight: bold; "
+            "padding: 3px; border: 1px solid #44AAFF; border-radius: 3px;")
+
+    def _udp_reader(self):
+        """Dedicated thread: receives UDP datagrams into _udp_queue.
+        Each datagram is one complete M1/M2 frame — no readline needed.
+        Gap detection (Punto B): same logic as _serial_reader."""
+        import socket as _socket
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, 1024 * 1024)  # 1 MB RX buffer
+        sock.bind(('', self._udp_port))
+        sock.settimeout(0.5)
+        _last_cnt = None
+        while not self._udp_stop.is_set():
+            try:
+                data, _ = sock.recvfrom(1024)
+                if data:
+                    if data.startswith(b'$M1,') or data.startswith(b'$M2,'):
+                        try:
+                            _cnt = int(data[1:].split(b',')[1])
+                            if _last_cnt is not None:
+                                _gap = _cnt - _last_cnt - 1
+                                if 0 < _gap <= 5000:
+                                    self._gaps_B += _gap
+                                    self._sig_log.emit(
+                                        f"[GAP B/UDP] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
+                            _last_cnt = _cnt
+                        except (ValueError, IndexError):
+                            pass
+                    self._udp_queue.put(data)
+            except _socket.timeout:
+                continue
+            except Exception:
+                break
+        sock.close()
+
     def _serial_reader(self):
         """Dedicated thread: reads serial lines at full rate into a queue.
         Completely decoupled from the UI so no frames are lost during rendering.
         Gap detection (Punto B): checks sample counter on every raw M1/M2 frame."""
-        _last_cnt = None
         _last_cnt = None
         while not self._reader_stop.is_set() and self.ser is not None:
             try:
@@ -8264,7 +8510,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _gap = _cnt - _last_cnt - 1
                                 if 0 < _gap <= 5000:  # >5000 (10 s) → corrupted frame, discard
                                     self._gaps_B += _gap
-                                    self._sig_log.emit(f"[GAP B] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
+                                    self._sig_log.emit(f"[GAP B/SERIAL] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
                             _last_cnt = _cnt
                         except (ValueError, IndexError):
                             pass
@@ -8336,8 +8582,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     item.setBackground(bg)
             self._stats_buf[name].clear()
 
-    def _process_serial_queue_tick(self):
-        """Drain the serial queue and run per-sample algorithms.
+    def _process_frames_tick(self):
+        """Drain serial and UDP queues and run per-sample algorithms.
         Timing budget: PythonTimingWindow._SERIAL_TICK_BUDGET_MS.
         Algorithm rows: PythonTimingWindow._SERIAL_TICK_ROWS."""
         _t0_drain = time.perf_counter()
@@ -8347,11 +8593,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._queue_size_buf.append(self._serial_queue.qsize())  # Punto A
         try:
             _new_data = False
-            _console_lines = []
-            if hasattr(self, '_serial_queue'):
+            for _q, _src_com_win in (
+                    (self._serial_queue, self.serialcom_window),
+                    (self._udp_queue,    self.udpcom_window)):
+                _console_lines = []
                 while True:
                     try:
-                        line_raw = self._serial_queue.get_nowait()
+                        line_raw = _q.get_nowait()
                     except queue.Empty:
                         break
                     try:
@@ -8361,8 +8609,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     # Confirmation messages from ESP32 (e.g. "# Switched to incunest_afe4490")
                     if line.startswith('#'):
-                        if self.serialcom_window is not None:
-                            self.serialcom_window.append_line(line)
+                        if _src_com_win is not None:
+                            _src_com_win.append_line(line)
                         if 'incunest' in line.lower() and 'frame' not in line.lower():
                             self.frame_mode = "M1"
                             self._update_frame_button()
@@ -8405,8 +8653,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     computed_chk ^= ord(c)
                                 if computed_chk != expected_chk:
                                     chk_ok = 0
-                                    if self.serialcom_window is not None:
-                                        self.serialcom_window.append_line(
+                                    if _src_com_win is not None:
+                                        _src_com_win.append_line(
                                             f"# BAD CHK (got {computed_chk:02X} exp {expected_chk:02X}): {line[:70]}")
                             except ValueError:
                                 pass
@@ -8414,8 +8662,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             # *XX field present but not exactly 2 hex chars — malformed
                             if is_data_frame:
                                 chk_ok = 0
-                                if self.serialcom_window is not None:
-                                    self.serialcom_window.append_line(
+                                if _src_com_win is not None:
+                                    _src_com_win.append_line(
                                         f"# BAD CHK (malformed *field): {line[:70]}")
                         if self.save_file_chk is not None:
                             self.save_file_chk.write(f"{timestamp},{diff_us:>5},{chk_ok},{line}\n")
@@ -8425,8 +8673,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     else:
                         # No *XX field — reject data frames, pass through others ($ERR, comments)
                         if is_data_frame:
-                            if self.serialcom_window is not None:
-                                self.serialcom_window.append_line(
+                            if _src_com_win is not None:
+                                _src_com_win.append_line(
                                     f"# BAD CHK (no checksum field): {line[:70]}")
                             if self.save_file_chk is not None:
                                 self.save_file_chk.write(f"{timestamp},{diff_us:>5},0,{line}\n")
@@ -8595,33 +8843,33 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         except ValueError: pass
                         else: _new_data = True
 
-                # SerialComWindow: batch update (already one Qt op per cycle — no extra throttle needed)
-                if _console_lines and self.serialcom_window is not None:
-                    self.serialcom_window.append_lines(_console_lines)
+                # Console window: batch update (already one Qt op per cycle — no extra throttle needed)
+                if _console_lines and _src_com_win is not None:
+                    _src_com_win.append_lines(_console_lines)
 
-                if _new_data:
-                    if self.spo2lab_window is not None:
-                        _t0a = time.perf_counter()
-                        self.spo2lab_window.update_algorithms(
-                            self.data_ir_sub, self.data_red_sub,
-                            self.data_spo2, self.data_spo2_r,
-                            self.data_timestamp_us, self.data_sample_counter)
-                        self._py_timing['algo_spo2lab'].append((time.perf_counter() - _t0a) * 1000)
-                    if self.spo2test_window is not None:
-                        _t0a = time.perf_counter()
-                        self.spo2test_window.update_algorithms(
-                            self.data_ir_sub, self.data_red_sub,
-                            self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
-                            self.data_timestamp_us, self.data_sample_counter)
-                        self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
-                    if self.hr2test_window is not None:
-                        _t0a = time.perf_counter()
-                        self.hr2test_window.update_algorithms(
-                            self.data_ir_sub, self.data_hr2, self.data_hr2_sqi,
-                            self.data_timestamp_us, self.data_sample_counter)
-                        self._py_timing['algo_hr2test'].append((time.perf_counter() - _t0a) * 1000)
-                if _new_data and not self.is_paused:
-                    self._render_pending = True
+            if _new_data:
+                if self.spo2lab_window is not None:
+                    _t0a = time.perf_counter()
+                    self.spo2lab_window.update_algorithms(
+                        self.data_ir_sub, self.data_red_sub,
+                        self.data_spo2, self.data_spo2_r,
+                        self.data_timestamp_us, self.data_sample_counter)
+                    self._py_timing['algo_spo2lab'].append((time.perf_counter() - _t0a) * 1000)
+                if self.spo2test_window is not None:
+                    _t0a = time.perf_counter()
+                    self.spo2test_window.update_algorithms(
+                        self.data_ir_sub, self.data_red_sub,
+                        self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
+                        self.data_timestamp_us, self.data_sample_counter)
+                    self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
+                if self.hr2test_window is not None:
+                    _t0a = time.perf_counter()
+                    self.hr2test_window.update_algorithms(
+                        self.data_ir_sub, self.data_hr2, self.data_hr2_sqi,
+                        self.data_timestamp_us, self.data_sample_counter)
+                    self._py_timing['algo_hr2test'].append((time.perf_counter() - _t0a) * 1000)
+            if _new_data and not self.is_paused:
+                self._render_pending = True
 
         except Exception as e:
             print(f"Error en loop: {e}")
@@ -8864,6 +9112,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._reader_stop.set()
         if hasattr(self, '_reader_thread') and self._reader_thread is not None:
             self._reader_thread.join(timeout=1.0)
+        if hasattr(self, '_udp_stop'):
+            self._udp_stop.set()
+        if hasattr(self, '_udp_thread') and self._udp_thread is not None:
+            self._udp_thread.join(timeout=1.0)
         if hasattr(self, 'ser') and self.ser.is_open:
             self.ser.close()
         if self.ppgplots_window is not None:

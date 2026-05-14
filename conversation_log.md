@@ -6264,6 +6264,85 @@ ESP32 → UART → _serial_reader → _serial_queue → _process_serial_queue_ti
 
 ---
 
+## Sesión 2026-05-14i — Python: label DATA SOURCE (USB-CDC vs UDP WiFi)
+
+**Cambio:** añadido `lbl_data_source` entre los botones de conexión y RESET ESP32. Muestra la fuente activa con color:
+- Gris: `DATA SOURCE:  none` (sin conexión)
+- Verde: `DATA SOURCE:  USB-CDC  (COM15)` (al conectar serial)
+- Azul: `DATA SOURCE:  UDP WiFi  (:5005)` (al conectar UDP)
+
+Actualizado en `_connect_serial()` y `_connect_udp()`.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14h — Python: receptor UDP en pulsenest_lab.py
+
+**Cambios:**
+- `UDP_DEFAULT_PORT = 5005` constante global (debe coincidir con `wifi_config.h`)
+- UI sidebar: nueva fila UDP con `spin_udp_port` (1024-65535, default 5005) + botón `btn_udp_connect`
+- `_connect_udp()`: para el reader activo, drena la cola, inicia `_udp_reader` thread, actualiza botón
+- `_udp_reader()`: socket UDP con SO_RCVBUF=1MB, timeout=0.5s, cada datagrama = un frame completo → `_serial_queue.put(data)`. Incluye gap detection Punto B igual que `_serial_reader` (tag `[GAP B/UDP]`)
+- `self._udp_port` añadido en `__init__`
+- Fix: eliminada línea duplicada `_last_cnt = None` en `_serial_reader`
+- Pipeline existente (parsing, algoritmos, plots) sin cambios — misma `_serial_queue`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14g — Firmware: WiFi STA + UDP emisor en paralelo a USB-CDC
+
+**Cambios en main.cpp:**
+- Includes: `<WiFi.h>`, `<WiFiUDP.h>`, `"wifi_config.h"`
+- `g_udp` (WiFiUDP) + `g_wifi_ready` (bool) como globales
+- `udp_send(buf)`: helper inline — envía el mismo `buf` que `Serial.print()`, no-op si WiFi no listo
+- `setup()`: WiFi STA `WiFi.begin(WIFI_SSID, WIFI_PASSWORD)` con timeout 10s; si conecta → log IP + puerto; si falla → "USB-CDC only"
+- `Incunest_Task`: `udp_send(buf)` tras cada `Serial.print(buf)` en M1 y M2
+- Solo frames de datos (M1/M2) van por UDP; CFG/DIAG/etc. siguen siendo USB-CDC únicamente
+
+**Resultado:** firmware compila y flashea OK. USB-CDC + UDP activos simultáneamente.
+**Pendiente:** receptor UDP en Python (pulsenest_lab.py).
+
+**Ficheros modificados:**
+- `src/main.cpp`
+- `include/wifi_config.h` (credenciales, NO en git)
+- `.gitignore` (añadido wifi_config.h)
+- `sdkconfig.defaults` (nuevo, opción D buffer USB-CDC)
+
+---
+
+## Sesión 2026-05-14f — WiFi/UDP: decisiones de diseño + wifi_config.h
+
+**Contexto:** pérdida de muestras no resuelta con set_buffer_size ni sdkconfig.defaults. Se exploran alternativas de transporte. Decisión: añadir WiFi/UDP en paralelo a USB-CDC (ambos activos simultáneamente).
+
+**Decisiones tomadas:**
+- Transporte: WiFi modo STA (ESP32 conecta a red doméstica, PC mantiene internet)
+- USB-CDC y UDP conviven — no se reemplaza pyserial
+- Credenciales WiFi: hardcodeadas en `include/wifi_config.h` (separado, en .gitignore)
+- IP del ESP32: pendiente decidir (fija via router vs. DHCP + display en log)
+
+**Ficheros creados/modificados:**
+- `include/wifi_config.h` — credenciales WiFi + IP target + puerto UDP (NO commitear)
+- `.gitignore` — añadido `include/wifi_config.h`
+- `sdkconfig.defaults` — creado con `CONFIG_TINYUSB_CDC_TX_BUFSIZE=4096` (opción D, impacto no confirmado)
+
+---
+
+## Sesión 2026-05-14e — Fix: botón $M2 no cambiaba modo en firmware
+
+**Causa:** `_send_frame_cmd()` enviaba `b'1'` o `b'2'` sin `\n`. El firmware parsea comandos línea a línea → el byte quedaba en el buffer sin procesarse. Todos los demás comandos (`$CFG?\n`, `$DIAG?\n`, `$SET,...\n`) ya llevaban `\n`.
+
+**Fix:** `'1'` → `'1\n'`, `'2'` → `'2\n'`.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
 ## Sesión 2026-05-14d — _gaps_B: ignorar gaps > 5000 (tramas corruptas)
 
 **Causa de valores desorbitados:** tramas con checksum incorrecto llegan a `_serial_reader` con un campo contador corrupto que pasa `int()` pero contiene basura. El checksum se verifica en `_process_serial_queue_tick()` pero no en `_serial_reader`.
@@ -6387,3 +6466,92 @@ ESP32 → UART → _serial_reader → _serial_queue → _process_serial_queue_ti
 
 **Ficheros modificados:**
 - `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14k — UDP COM window + separación de colas serial/UDP
+
+**Tema:** Separar transporte USB-CDC y WiFi/UDP en ventanas de consola independientes, y renombrar `_process_serial_queue_tick` → `_process_frames_tick`.
+
+**Preguntas clave:**
+- ¿La ventana SERIALCOM muestra datos de ambas fuentes (serial + UDP) o solo serial?
+- ¿Crear una ventana UDP COM separada?
+- ¿`_udp_reader` debe escribir en `_serial_queue` o en una nueva `_udp_queue`?
+- ¿Cómo renombrar `_process_serial_queue_tick` dado que ahora procesa dos colas?
+
+**Decisiones tomadas:**
+1. **SERIALCOM** → solo USB-CDC; **UDP COM** → solo WiFi/UDP (separación limpia)
+2. `_udp_reader` escribe en `_udp_queue` (nueva cola separada de `_serial_queue`)
+3. `_process_serial_queue_tick` renombrado a `_process_frames_tick` (nombre elegido por el usuario)
+4. `_process_frames_tick` drena ambas colas en un `for` loop sobre `(_serial_queue, serialcom_window)` y `(_udp_queue, udpcom_window)`
+5. Variable `_src_com_win` dentro del loop para routing de mensajes inline (checksum errors, etc.)
+6. `UdpComWindow`: ventana flotante azul (#44AAFF), misma estructura que `SerialComWindow` (amarilla)
+7. Botón `btn_udpcom` en sidebar junto a `btn_serialcom`; geometría persistida en QSettings
+
+**Cambios en pulsenest_lab.py:**
+- Nueva clase `UdpComWindow` (después de `SerialComWindow`) — esquema de color azul
+- `_udp_queue = queue.Queue()` junto a `_serial_queue`
+- `udpcom_window = None` en `__init__`
+- Botón `btn_udpcom` con `toggle_udpcom()` en sidebar
+- `_connect_udp()`: drena ambas colas al reconectar
+- `_udp_reader()`: escribe en `_udp_queue` (antes escribía en `_serial_queue`)
+- `_process_frames_tick()`: loop `for _q, _src_com_win in (...)` sobre ambas colas
+- `if _new_data:` movido fuera del for loop (aplica a datos de cualquier fuente)
+- `saveGeometry` para `udpcom_window` en `closeEvent`
+- Todos los comentarios/docstrings actualizados: `_process_serial_queue_tick` → `_process_frames_tick`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14l — Fix: serial reader no se mata al conectar UDP
+
+**Problema:** Al activar recepción UDP, `_connect_udp()` detenía `_reader_thread` (que era `_serial_reader`), por lo que las respuestas a comandos ($CFG, $DIAG, $ERR, mensajes #) dejaban de procesarse.
+
+**Causa raíz:** `_connect_udp()` usaba `_reader_stop`/`_reader_thread` (los mismos del reader serie) para gestionar el UDP reader, matando efectivamente `_serial_reader`.
+
+**Decisión:** Dos pares independientes de thread/stop:
+- `_reader_stop` / `_reader_thread` → exclusivo para `_serial_reader`
+- `_udp_stop` / `_udp_thread` → exclusivo para `_udp_reader`
+
+`_connect_udp()` solo gestiona `_udp_stop`/`_udp_thread`, sin tocar el reader serie. Ambos threads corren en paralelo.
+
+**Cambios en pulsenest_lab.py:**
+- `__init__`: añadidos `_udp_stop = threading.Event()` y `_udp_thread = None`
+- `_connect_udp()`: usa `_udp_stop`/`_udp_thread`; solo drena `_udp_queue`; docstring actualizado
+- `_udp_reader()`: usa `self._udp_stop` en lugar de `self._reader_stop`
+- `closeEvent`: también detiene `_udp_stop`/`_udp_thread` al cerrar
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Sesión 2026-05-14m — Botón PAUSE en SERIALCOM y UDP COM
+
+**Tema:** Añadir botón PAUSE/RESUME en las ventanas SERIALCOM y UDP COM para congelar el display sin afectar al pipeline de datos.
+
+**Decisión:** El botón pausa solo el display (descarta nuevas líneas en `append_line`/`append_lines`). La cola sigue drenándose y los algoritmos siguen funcionando con normalidad. Los frames recibidos durante la pausa no se muestran al reanudar (ya pasaron).
+
+**Cambios en pulsenest_lab.py:**
+- `SerialComWindow`: añadido `self._paused = False`; cabecera convertida en `QHBoxLayout` (header_label + btn_pause); botón PAUSE checkable; `_toggle_pause()`; `append_line`/`append_lines` retornan inmediatamente si `_paused`
+- `UdpComWindow`: mismos cambios
+- Retoque visual (sesión 2026-05-14n): botón ampliado a 110px, gris neutro (#505050) en reposo, naranja (#CC6600) cuando pausado
+- Sesión 2026-05-14o: mensaje de gap serial renombrado `[GAP B]` → `[GAP B/SERIAL]` para distinguirlo de `[GAP B/UDP]`
+
+**Ficheros modificados:**
+- `pulsenest_lab.py`
+
+---
+
+## Estado al cierre de sesión 2026-05-14 (noche)
+
+**WiFi/UDP implementado y funcional** pero se observan pérdidas de frames por UDP que no ocurren por serial.
+
+**Diagnóstico:** causa más probable = cola TX lwIP del ESP32 se satura a 500 Hz (un datagrama cada 2 ms). `udp.endPacket()` descarta silenciosamente si la cola está llena. Serial no pierde porque USB-CDC tiene buffer OS de 64 KB y enlace dedicado.
+
+**Opciones pendientes de probar (próxima sesión):**
+- B) Enviar UDP cada 2 frames (250 Hz) para confirmar si el cuello de botella es la cola TX del ESP32
+- C) TCP en lugar de UDP
+- D) Acumular varios frames en un solo datagrama UDP

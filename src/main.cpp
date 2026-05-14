@@ -5,9 +5,12 @@
 #define SERIAL_DOWNSAMPLING_RATIO 1
 
 #include "incunest_afe4490.h"
+#include "wifi_config.h"
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <WiFi.h>
+#include <WiFiUDP.h>
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -39,6 +42,19 @@ static uint8_t frame_xor_chk(const char* p, int len) {
     uint8_t chk = 0;
     while (len-- > 0) chk ^= (uint8_t)*p++;
     return chk;
+}
+
+// ── WiFi / UDP ────────────────────────────────────────────────────────────────
+static WiFiUDP g_udp;
+static bool    g_wifi_ready = false;
+
+// Send one frame buffer over UDP (M1/M2 data frames only).
+// No-op if WiFi is not connected. Errors are silently ignored — USB-CDC is the fallback.
+static inline void udp_send(const char* buf) {
+    if (!g_wifi_ready) return;
+    g_udp.beginPacket(UDP_TARGET_IP, UDP_TARGET_PORT);
+    g_udp.write(reinterpret_cast<const uint8_t*>(buf), strlen(buf));
+    g_udp.endPacket();
 }
 
 // ── Incunest frame mode ────────────────────────────────────────────────────────────
@@ -116,6 +132,7 @@ void Incunest_Task(void *pvParameters) {
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     Serial.print(buf);
+                    udp_send(buf);
                 } else {
                     char buf[128];
                     int n = snprintf(buf, sizeof(buf) - 6,
@@ -127,6 +144,7 @@ void Incunest_Task(void *pvParameters) {
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     Serial.print(buf);
+                    udp_send(buf);
                 }
 
                 // Periodic TX health report (~every 10 s at 500 Hz)
@@ -496,6 +514,23 @@ void setup() {
             esp_get_idf_version());
         Serial.printf("# SYS: MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+
+    // WiFi + UDP init (STA mode — connects to existing network)
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("# WiFi connecting");
+    for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        Serial.print(".");
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        g_wifi_ready = true;
+        g_udp.begin(UDP_TARGET_PORT);
+        Serial.printf("\n# WiFi connected — IP %s  UDP \u2192 %s:%d\n",
+                      WiFi.localIP().toString().c_str(), UDP_TARGET_IP, UDP_TARGET_PORT);
+    } else {
+        Serial.println("\n# WiFi FAILED — USB-CDC only");
     }
 
     SPI.begin(SPI_SCK_PIN, SPI_MISO_PIN, SPI_MOSI_PIN, -1);
