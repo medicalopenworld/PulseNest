@@ -6723,3 +6723,32 @@ El AFE4490 tiene un bit ENSEPGAIN (D15 del registro TIAGAIN) que permite configu
 - `_on_set_all()`, `_on_save_to_file()`, `_on_read_from_file()`: actualizados con nuevos keys
 - `_mark_dirty/clean()`: soporte para QCheckBox
 - `_on_ensepgain_changed()`: habilita/deshabilita controles LED1
+
+---
+
+## Sesión 2026-05-19d — Default ENSEPGAIN=true en librería
+
+Cambiado el valor por defecto de `_afe_ensepgain` en el constructor de `INCUNEST_AFE4490` de `false` a `true`.
+
+**Motivo:** con la nueva arquitectura separada (v0.24), el modo por defecto debe ser ganancia independiente por canal, que es el comportamiento más flexible y seguro para el lab.
+
+**Valores por defecto recomendados y confirmados (sin cambio):**
+- RF: 500 KΩ (ambos canales)
+- CF: 5 pF (ambos canales) — más fácil de satisfacer requisito §8.3.1.1
+- Stage 2: 0 dB (ambos canales)
+
+Commit en `incunest_afe4490`: `8ec2b74`. Build y flash a COM15 correctos.
+
+---
+
+## Sesión 2026-05-19e — Fixes: botón RESET ESP32 + Timing Registers tras reset
+
+### Fix 1: botón "RESET\nESP32" → "RESET ESP32"
+Texto en dos líneas cambiado a una sola línea.
+
+### Fix 2: Timing Registers a cero tras RESET ESP32
+**Causa raíz:** el timer de 2500ms en `_reset_esp32()` disparaba `$CFG?` mientras el firmware aún estaba en `setup()` esperando WiFi (hasta 10 × 500ms = 10 s). `Cmd_Task` no había arrancado aún → `$CFG?` se perdía → `$TCFG` nunca llegaba → timing registers quedaban a cero.
+
+**Fix:** sustituido el timer fijo por un flag reactivo `_post_reset_cfg_pending`:
+- `_reset_esp32()`: pone `_post_reset_cfg_pending = True`
+- Drain loop: cuando detecta `"# incunest_afe4490 started"` (mensaje emitido por `start_incunest()`, exactamente cuando `Cmd_Task` ya está corriendo), si el flag está activo lo limpia y dispara `_on_read_cfg()` con 300ms de margen.

@@ -7497,7 +7497,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.sidebar_layout.addWidget(self.btn_udp)
 
 
-        self.btn_reset_esp = QtWidgets.QPushButton("RESET\nESP32")
+        self.btn_reset_esp = QtWidgets.QPushButton("RESET ESP32")
         self.btn_reset_esp.setStyleSheet(
             "background-color: #3A1A1A; color: #FF8844; font-size: 16px; "
             "font-weight: bold; padding: 4px; border: 1px solid #FF8844; border-radius: 4px;")
@@ -8019,8 +8019,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.ser.rts = False   # EN high → chip boots in run mode
             # DTR stays False: IO0 remains high → normal firmware, not bootloader
             self.log("ESP32 reset triggered (RTS/DTR via ESP-Prog)")
-            QtCore.QTimer.singleShot(2500,
-                lambda: self.hw_config_window._on_read_cfg() if self.hw_config_window is not None else None)
+            self._post_reset_cfg_pending = True  # $CFG? will be sent when firmware reports ready
         except Exception as e:
             self.log(f"Reset failed: {e}")
 
@@ -8759,6 +8758,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _bm = _re.search(r'Board:\s*(\S+)', line)
                                 if _bm:
                                     self.log(f"Board: {_bm.group(1)}")
+                            # "# incunest_afe4490 started" → Cmd_Task is running → send $CFG?
+                            if 'started' in line.lower() and getattr(self, '_post_reset_cfg_pending', False):
+                                self._post_reset_cfg_pending = False
+                                QtCore.QTimer.singleShot(300,
+                                    lambda: self.hw_config_window._on_read_cfg()
+                                    if self.hw_config_window is not None else None)
                         elif 'frame mode' in line.lower():
                             self.log(line.lstrip('# '))
                         elif line.startswith('# SYS:'):
