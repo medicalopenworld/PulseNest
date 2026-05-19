@@ -5180,7 +5180,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_led1.setStyleSheet("background-color:#202020; color:#E0E0E0;")
         self._spin_led1.setToolTip(_make_tooltip("LED1 current (IR)",
             "Drive current for the IR LED. Range depends on LED range setting (75 or 150 mA full-scale). "
-            "Sends $SET,led1,<value>."))
+            "Sends $SET,led1,<value>.\n"
+            "Lib: AFE4490Config.afe_led1_current_mA  ·  Script: _spin_led1"))
         form_led.addRow("LED1 (IR)", self._make_row(self._spin_led1, "led1", lambda: f"{self._spin_led1.value():.2f}"))
 
         self._spin_led2 = QtWidgets.QDoubleSpinBox()
@@ -5190,7 +5191,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_led2.setStyleSheet("background-color:#202020; color:#E0E0E0;")
         self._spin_led2.setToolTip(_make_tooltip("LED2 current (RED)",
             "Drive current for the RED LED. Range depends on LED range setting (75 or 150 mA full-scale). "
-            "Sends $SET,led2,<value>."))
+            "Sends $SET,led2,<value>.\n"
+            "Lib: AFE4490Config.afe_led2_current_mA  ·  Script: _spin_led2"))
         form_led.addRow("LED2 (RED)", self._make_row(self._spin_led2, "led2", lambda: f"{self._spin_led2.value():.2f}"))
 
         self._combo_ledrange = QtWidgets.QComboBox()
@@ -5198,7 +5200,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_ledrange.setToolTip(_make_tooltip("LED full-scale range",
             "Sets the LED current DAC full-scale: 75 mA or 150 mA. "
             "Affects the meaning of the LED1/LED2 current values. "
-            "Sends $SET,ledrange,<75|150>."))
+            "Sends $SET,ledrange,<75|150>. ($CFG key: range)\n"
+            "Lib: AFE4490Config.afe_led_range_mA  ·  Script: _combo_ledrange"))
         form_led.addRow("Range", self._make_row(self._combo_ledrange, "ledrange",
                                                 lambda: self._combo_ledrange.currentText()))
         vbox.addWidget(grp_led)
@@ -5209,33 +5212,94 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         form_tia = QtWidgets.QFormLayout(grp_tia)
         form_tia.setSpacing(6)
 
-        self._combo_tiagain = QtWidgets.QComboBox()
-        self._combo_tiagain.addItems(self.TIA_GAINS)
-        self._combo_tiagain.setToolTip(_make_tooltip("TIA feedback resistance (RF)",
-            "Transimpedance amplifier feedback resistor for LED measurement phases. "
-            "Higher RF → more gain → smaller LED current needed, but lower headroom. "
-            "Sends $SET,tiagain,<value>."))
-        form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain, "tiagain",
-                                                   lambda: self._combo_tiagain.currentText()))
+        # ENSEPGAIN
+        self._chk_ensepgain = QtWidgets.QCheckBox("Separate gain per LED (ENSEPGAIN bit D15)")
+        self._chk_ensepgain.setStyleSheet("font-size:24px; color:#E0E0E0;")
+        self._chk_ensepgain.setToolTip(_make_tooltip("ENSEPGAIN — Enable separate TIA gain per LED",
+            "OFF: TIAGAIN register applies to both channels (LED1 controls ignored by chip).\n"
+            "ON:  TIAGAIN register → LED1 (IR);  TIA_AMB_GAIN register → LED2 (RED).\n"
+            "Sends $SET,ensepgain,<0|1>. ($CFG key: ensepgain)\n"
+            "Lib: AFE4490Config.afe_ensepgain  ·  Script: _chk_ensepgain"))
+        self._chk_ensepgain.stateChanged.connect(self._on_ensepgain_changed)
+        self._chk_ensepgain.stateChanged.connect(lambda _=None: self._mark_dirty(self._chk_ensepgain))
+        row_ensep = QtWidgets.QHBoxLayout()
+        row_ensep.addWidget(self._chk_ensepgain, stretch=1)
+        row_ensep.addWidget(self._make_set_btn("ensepgain",
+            lambda: "1" if self._chk_ensepgain.isChecked() else "0", self._chk_ensepgain))
+        form_tia.addRow("ENSEPGAIN", row_ensep)
 
-        self._combo_tiacf = QtWidgets.QComboBox()
-        self._combo_tiacf.addItems(self.TIA_CFS)
-        self._combo_tiacf.setToolTip(_make_tooltip("TIA feedback capacitance (CF)",
-            "Feedback capacitor in parallel with RF. Larger CF reduces bandwidth and noise "
-            "but slows the TIA response. 5 pF is the default (widest bandwidth). "
-            "Sends $SET,tiacf,<value>."))
-        form_tia.addRow("CF", self._make_row(self._combo_tiacf, "tiacf",
-                                              lambda: self._combo_tiacf.currentText()))
+        # LED1 (IR) sub-header
+        lbl_led1_hdr = QtWidgets.QLabel("── LED1 (IR) ──────────────────────────")
+        lbl_led1_hdr.setStyleSheet("font-size:22px; color:#88AACC;")
+        form_tia.addRow(lbl_led1_hdr)
 
-        self._combo_stg2 = QtWidgets.QComboBox()
-        self._combo_stg2.addItems(self.STG2_GAINS)
-        self._combo_stg2.setToolTip(_make_tooltip("Stage 2 amplifier gain",
-            "Post-TIA amplifier gain. 0 dB disables Stage 2. Use higher values to amplify "
-            "weak signals without increasing TIA gain (avoids TIA saturation). "
-            "Sends $SET,stg2,<value>."))
-        form_tia.addRow("Stage 2", self._make_row(self._combo_stg2, "stg2",
-                                                   lambda: self._combo_stg2.currentText()))
+        self._combo_tiagain1 = QtWidgets.QComboBox()
+        self._combo_tiagain1.addItems(self.TIA_GAINS)
+        self._combo_tiagain1.setToolTip(_make_tooltip("LED1 (IR) TIA feedback resistance (RF1)",
+            "Feedback resistor for the IR LED channel (TIAGAIN register). "
+            "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
+            "Sends $SET,tiagain1,<value>. ($CFG key: tia1)\n"
+            "Lib: AFE4490Config.afe_tia_gain_led1  ·  Script: _combo_tiagain1"))
+        form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain1, "tiagain1",
+                                                   lambda: self._combo_tiagain1.currentText()))
+
+        self._combo_tiacf1 = QtWidgets.QComboBox()
+        self._combo_tiacf1.addItems(self.TIA_CFS)
+        self._combo_tiacf1.setToolTip(_make_tooltip("LED1 (IR) TIA feedback capacitance (CF1)",
+            "Feedback capacitor for the IR LED channel. "
+            "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
+            "Sends $SET,tiacf1,<value>. ($CFG key: cf1)\n"
+            "Lib: AFE4490Config.afe_tia_cf_led1  ·  Script: _combo_tiacf1"))
+        form_tia.addRow("CF", self._make_row(self._combo_tiacf1, "tiacf1",
+                                              lambda: self._combo_tiacf1.currentText()))
+
+        self._combo_stg21 = QtWidgets.QComboBox()
+        self._combo_stg21.addItems(self.STG2_GAINS)
+        self._combo_stg21.setToolTip(_make_tooltip("LED1 (IR) Stage 2 amplifier gain",
+            "Post-TIA gain for the IR LED channel. "
+            "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
+            "Sends $SET,stg21,<value>. ($CFG key: stg21)\n"
+            "Lib: AFE4490Config.afe_stage2_gain_led1  ·  Script: _combo_stg21"))
+        form_tia.addRow("Stage 2", self._make_row(self._combo_stg21, "stg21",
+                                                   lambda: self._combo_stg21.currentText()))
+
+        # LED2 (RED) sub-header
+        lbl_led2_hdr = QtWidgets.QLabel("── LED2 (RED) — always active ──────────")
+        lbl_led2_hdr.setStyleSheet("font-size:22px; color:#CC8888;")
+        form_tia.addRow(lbl_led2_hdr)
+
+        self._combo_tiagain2 = QtWidgets.QComboBox()
+        self._combo_tiagain2.addItems(self.TIA_GAINS)
+        self._combo_tiagain2.setToolTip(_make_tooltip("LED2 (RED) TIA feedback resistance (RF2)",
+            "Feedback resistor for the RED LED channel (TIA_AMB_GAIN register). "
+            "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
+            "Sends $SET,tiagain2,<value>. ($CFG key: tia2)\n"
+            "Lib: AFE4490Config.afe_tia_gain_led2  ·  Script: _combo_tiagain2"))
+        form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain2, "tiagain2",
+                                                   lambda: self._combo_tiagain2.currentText()))
+
+        self._combo_tiacf2 = QtWidgets.QComboBox()
+        self._combo_tiacf2.addItems(self.TIA_CFS)
+        self._combo_tiacf2.setToolTip(_make_tooltip("LED2 (RED) TIA feedback capacitance (CF2)",
+            "Feedback capacitor for the RED LED channel. "
+            "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
+            "Sends $SET,tiacf2,<value>. ($CFG key: cf2)\n"
+            "Lib: AFE4490Config.afe_tia_cf_led2  ·  Script: _combo_tiacf2"))
+        form_tia.addRow("CF", self._make_row(self._combo_tiacf2, "tiacf2",
+                                              lambda: self._combo_tiacf2.currentText()))
+
+        self._combo_stg22 = QtWidgets.QComboBox()
+        self._combo_stg22.addItems(self.STG2_GAINS)
+        self._combo_stg22.setToolTip(_make_tooltip("LED2 (RED) Stage 2 amplifier gain",
+            "Post-TIA gain for the RED LED channel. "
+            "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
+            "Sends $SET,stg22,<value>. ($CFG key: stg22)\n"
+            "Lib: AFE4490Config.afe_stage2_gain_led2  ·  Script: _combo_stg22"))
+        form_tia.addRow("Stage 2", self._make_row(self._combo_stg22, "stg22",
+                                                   lambda: self._combo_stg22.currentText()))
+
         vbox.addWidget(grp_tia)
+        self._on_ensepgain_changed()  # set initial enabled state of LED1 controls
 
         # ── Ambient Cancellation ───────────────────────────────────────────────
         grp_amb = QtWidgets.QGroupBox("Ambient Cancellation")
@@ -5251,7 +5315,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Injects a cancellation current before Stage 2 to reduce ambient light contribution "
             "in the ADC. AMBDAC[3:0] in TIA_AMB_GAIN register D19:D16. Range 0–10 µA (1 µA/step). "
             "Use when aled1/aled2 are large due to strong ambient light (e.g. near window). "
-            "Sends $SET,ambdac,<value>."))
+            "Sends $SET,ambdac,<value>.\n"
+            "Lib: AFE4490Config.afe_ambdac_uA  ·  Script: _spin_ambdac"))
         form_amb.addRow("AMBDAC", self._make_row(self._spin_ambdac, "ambdac",
                                                  lambda: str(self._spin_ambdac.value())))
         vbox.addWidget(grp_amb)
@@ -5269,7 +5334,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_sr.setToolTip(_make_tooltip("Sample rate",
             "ADC sample rate in Hz (63–5000). Changing this requires a chip restart "
             "(brief data gap ~200 ms). Also recalculates all algorithm time constants. "
-            "Sends $SET,sr,<value>."))
+            "Sends $SET,sr,<value>.\n"
+            "Lib: AFE4490Config.afe_sample_rate_hz  ·  Script: _spin_sr"))
         lbl_sr_warn = QtWidgets.QLabel("⚠ restarts chip")
         lbl_sr_warn.setStyleSheet("color:#FFAA44; font-size:22px;")
         self._spin_sr.valueChanged.connect(lambda _=None: self._mark_dirty(self._spin_sr))
@@ -5285,7 +5351,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_numav.setToolTip(_make_tooltip("ADC averages",
             "Number of ADC hardware averages per sample (1 = no averaging). Higher values "
             "reduce noise but lower effective sample rate. Max allowed = floor(5000 / sr). "
-            "Sends $SET,numav,<value>."))
+            "Sends $SET,numav,<value>.\n"
+            "Lib: AFE4490Config.afe_adc_averages  ·  Script: _spin_numav"))
         form_samp.addRow("Averages", self._make_row(self._spin_numav, "numav",
                                                     lambda: str(self._spin_numav.value())))
         vbox.addWidget(grp_samp)
@@ -5322,7 +5389,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             sp.setRange(0, 65535)
             sp.setStyleSheet("font-size:22px; background-color:#202020; color:#E0E0E0;")
             sp.setToolTip(_make_tooltip(f"{key} — {reg_name}",
-                tip + f"\nSends $SET,{key},<value>."))
+                tip + f"\nSends $SET,{key},<value>.\n"
+                f"Lib: AFE4490TimingConfig::{key}  ·  Script: _timing_spins['{key}']"))
             sp.valueChanged.connect(self._on_timing_changed)
             sp.valueChanged.connect(lambda _=None, w=sp: self._mark_dirty(w))
             self._timing_spins[key] = sp
@@ -5332,7 +5400,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             lbl = QtWidgets.QLabel(f"{key}  {reg_name}")
             lbl.setStyleSheet("font-size:22px; color:#E0E0E0;")
             lbl.setToolTip(_make_tooltip(f"{key} — {reg_name}",
-                tip + f"\nSends $SET,{key},<value>."))
+                tip + f"\nSends $SET,{key},<value>.\n"
+                f"Lib: AFE4490TimingConfig::{key}  ·  Script: _timing_spins['{key}']"))
             form_t.addRow(lbl, row)
 
         # Status bar
@@ -5343,7 +5412,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         # Block accidental wheel changes — only active when the widget has focus
         self._wheel_filter = _WheelBlockFilter(self)
         for w in ([self._spin_led1, self._spin_led2, self._combo_ledrange,
-                   self._combo_tiagain, self._combo_tiacf, self._combo_stg2,
+                   self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21,
+                   self._combo_tiagain2, self._combo_tiacf2, self._combo_stg22,
                    self._spin_sr, self._spin_numav]
                   + list(self._timing_spins.values())):
             w.setFocusPolicy(QtCore.Qt.StrongFocus)
@@ -5393,6 +5463,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             widget.setStyleSheet(ss)
         elif isinstance(widget, QtWidgets.QComboBox):
             widget.setStyleSheet("color:#FF4444;")
+        elif isinstance(widget, QtWidgets.QCheckBox):
+            widget.setStyleSheet("font-size:24px; color:#FF4444;")
 
     def _mark_clean(self, widget):
         """Restore normal text color after a successful send."""
@@ -5401,6 +5473,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             widget.setStyleSheet(ss)
         elif isinstance(widget, QtWidgets.QComboBox):
             widget.setStyleSheet("")
+        elif isinstance(widget, QtWidgets.QCheckBox):
+            widget.setStyleSheet("font-size:24px; color:#E0E0E0;")
 
     # ── Timing constraint validation ──────────────────────────────────────────
     def _validate_timing(self) -> list:
@@ -5445,6 +5519,17 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             self._statusbar.showMessage(msg)
         self._send_set(key, str(self._timing_spins[key].value()))
 
+    # ── ENSEPGAIN enable/disable ──────────────────────────────────────────────
+    def _on_ensepgain_changed(self):
+        """Enable/disable LED1 controls based on ENSEPGAIN checkbox state."""
+        enabled = self._chk_ensepgain.isChecked()
+        for w in (self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21):
+            w.setEnabled(enabled)
+            if not enabled:
+                w.setStyleSheet("color:#555555;")
+            else:
+                w.setStyleSheet("")
+
     # ── Serial communication ──────────────────────────────────────────────────
     def _send_set(self, key: str, value: str):
         mm = self.main_monitor
@@ -5470,15 +5555,19 @@ class HWConfigWindow(QtWidgets.QMainWindow):
     def _on_set_all(self):
         """Send $SET for every parameter in the window."""
         hw_params = [
-            ("led1",     f"{self._spin_led1.value():.2f}",         self._spin_led1),
-            ("led2",     f"{self._spin_led2.value():.2f}",         self._spin_led2),
-            ("ledrange", self._combo_ledrange.currentText(),        self._combo_ledrange),
-            ("tiagain",  self._combo_tiagain.currentText(),         self._combo_tiagain),
-            ("tiacf",    self._combo_tiacf.currentText(),           self._combo_tiacf),
-            ("stg2",     self._combo_stg2.currentText(),            self._combo_stg2),
-            ("ambdac",   str(self._spin_ambdac.value()),            self._spin_ambdac),
-            ("sr",       str(self._spin_sr.value()),                self._spin_sr),
-            ("numav",    str(self._spin_numav.value()),             self._spin_numav),
+            ("led1",      f"{self._spin_led1.value():.2f}",                    self._spin_led1),
+            ("led2",      f"{self._spin_led2.value():.2f}",                    self._spin_led2),
+            ("ledrange",  self._combo_ledrange.currentText(),                   self._combo_ledrange),
+            ("ensepgain", "1" if self._chk_ensepgain.isChecked() else "0",     self._chk_ensepgain),
+            ("tiagain1",  self._combo_tiagain1.currentText(),                   self._combo_tiagain1),
+            ("tiacf1",    self._combo_tiacf1.currentText(),                     self._combo_tiacf1),
+            ("stg21",     self._combo_stg21.currentText(),                      self._combo_stg21),
+            ("tiagain2",  self._combo_tiagain2.currentText(),                   self._combo_tiagain2),
+            ("tiacf2",    self._combo_tiacf2.currentText(),                     self._combo_tiacf2),
+            ("stg22",     self._combo_stg22.currentText(),                      self._combo_stg22),
+            ("ambdac",    str(self._spin_ambdac.value()),                       self._spin_ambdac),
+            ("sr",        str(self._spin_sr.value()),                           self._spin_sr),
+            ("numav",     str(self._spin_numav.value()),                        self._spin_numav),
         ]
         for key, value, widget in hw_params:
             self._send_set(key, value)
@@ -5524,15 +5613,19 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         lines = [
             "# PulseNest HW Config",
             f"# Saved: {QtCore.QDateTime.currentDateTime().toString('yyyy-MM-dd hh:mm:ss')}",
-            kv_line("led1",     f"{self._spin_led1.value():.2f}",        "LED1 (IR) — IR LED drive current (mA)"),
-            kv_line("led2",     f"{self._spin_led2.value():.2f}",        "LED2 (RED) — RED LED drive current (mA)"),
-            kv_line("ledrange", self._combo_ledrange.currentText(),       "LED full-scale range (75 or 150 mA)"),
-            kv_line("tiagain",  self._combo_tiagain.currentText(),        "TIA feedback resistance (RF)"),
-            kv_line("tiacf",    self._combo_tiacf.currentText(),          "TIA feedback capacitance (CF)"),
-            kv_line("stg2",     self._combo_stg2.currentText(),           "Stage 2 amplifier gain"),
-            kv_line("ambdac",   str(self._spin_ambdac.value()),           "Ambient cancellation DAC current (µA) — AMBDAC[3:0] in TIA_AMB_GAIN D19:D16"),
-            kv_line("sr",       str(self._spin_sr.value()),               "Sample rate (Hz) — restarts chip on change"),
-            kv_line("numav",    str(self._spin_numav.value()),            "ADC averages per sample"),
+            kv_line("led1",      f"{self._spin_led1.value():.2f}",                     "LED1 (IR) — IR LED drive current (mA)"),
+            kv_line("led2",      f"{self._spin_led2.value():.2f}",                     "LED2 (RED) — RED LED drive current (mA)"),
+            kv_line("ledrange",  self._combo_ledrange.currentText(),                    "LED full-scale range (75 or 150 mA)"),
+            kv_line("ensepgain", "1" if self._chk_ensepgain.isChecked() else "0",      "ENSEPGAIN — separate TIA gain per LED (0=shared, 1=separate)"),
+            kv_line("tiagain1",  self._combo_tiagain1.currentText(),                    "LED1 (IR) TIA feedback resistance RF1 (active only when ensepgain=1)"),
+            kv_line("tiacf1",    self._combo_tiacf1.currentText(),                      "LED1 (IR) TIA feedback capacitance CF1 (active only when ensepgain=1)"),
+            kv_line("stg21",     self._combo_stg21.currentText(),                       "LED1 (IR) Stage 2 amplifier gain (active only when ensepgain=1)"),
+            kv_line("tiagain2",  self._combo_tiagain2.currentText(),                    "LED2 (RED) TIA feedback resistance RF2 (always active)"),
+            kv_line("tiacf2",    self._combo_tiacf2.currentText(),                      "LED2 (RED) TIA feedback capacitance CF2 (always active)"),
+            kv_line("stg22",     self._combo_stg22.currentText(),                       "LED2 (RED) Stage 2 amplifier gain (always active)"),
+            kv_line("ambdac",    str(self._spin_ambdac.value()),                        "Ambient cancellation DAC current (µA) — AMBDAC[3:0] in TIA_AMB_GAIN D19:D16"),
+            kv_line("sr",        str(self._spin_sr.value()),                            "Sample rate (Hz) — restarts chip on change"),
+            kv_line("numav",     str(self._spin_numav.value()),                         "ADC averages per sample"),
         ]
         timing_info = {key: (reg_name, tip) for key, reg_name, tip in self._TIMING_REGS}
         for key, sp in self._timing_spins.items():
@@ -5583,9 +5676,14 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         set_spin_float(self._spin_led1,        "led1")
         set_spin_float(self._spin_led2,        "led2")
         set_combo(self._combo_ledrange,        "ledrange")
-        set_combo(self._combo_tiagain,         "tiagain")
-        set_combo(self._combo_tiacf,           "tiacf")
-        set_combo(self._combo_stg2,            "stg2")
+        if "ensepgain" in kv:
+            self._chk_ensepgain.setChecked(kv["ensepgain"] == "1")
+        set_combo(self._combo_tiagain1,        "tiagain1")
+        set_combo(self._combo_tiacf1,          "tiacf1")
+        set_combo(self._combo_stg21,           "stg21")
+        set_combo(self._combo_tiagain2,        "tiagain2")
+        set_combo(self._combo_tiacf2,          "tiacf2")
+        set_combo(self._combo_stg22,           "stg22")
         set_spin_int(self._spin_ambdac,        "ambdac")
         set_spin_int(self._spin_sr,            "sr")
         set_spin_int(self._spin_numav,         "numav")
@@ -5615,18 +5713,26 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             set_spin_float(self._spin_led1,    'led1')
             set_spin_float(self._spin_led2,    'led2')
             set_combo(self._combo_ledrange,    'range')
-            set_combo(self._combo_tiagain,     'tia')
-            set_combo(self._combo_tiacf,       'cf')
-            set_combo(self._combo_stg2,        'stg2')
+            if 'ensepgain' in kv:
+                self._chk_ensepgain.setChecked(kv['ensepgain'] == '1')
+            set_combo(self._combo_tiagain1,    'tia1')
+            set_combo(self._combo_tiacf1,      'cf1')
+            set_combo(self._combo_stg21,       'stg21')
+            set_combo(self._combo_tiagain2,    'tia2')
+            set_combo(self._combo_tiacf2,      'cf2')
+            set_combo(self._combo_stg22,       'stg22')
             set_spin_int(self._spin_ambdac,    'ambdac')
             set_spin_int(self._spin_sr,        'sr')
             set_spin_int(self._spin_numav,     'numav')
         finally:
             self._updating_from_cfg = False
         for w in (self._spin_led1, self._spin_led2, self._combo_ledrange,
-                  self._combo_tiagain, self._combo_tiacf, self._combo_stg2,
+                  self._chk_ensepgain,
+                  self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21,
+                  self._combo_tiagain2, self._combo_tiacf2, self._combo_stg22,
                   self._spin_ambdac, self._spin_sr, self._spin_numav):
             self._mark_clean(w)
+        self._on_ensepgain_changed()  # update LED1 enabled state
         self._statusbar.showMessage("Config loaded from chip")
 
     def update_from_tcfg(self, kv: dict):
@@ -6537,7 +6643,7 @@ class AlgoResultsWindow(QtWidgets.QWidget):
 
 
 class SerialComWindow(QtWidgets.QWidget):
-    """Floating window with the raw serial stream console (USB-CDC only)."""
+    """Floating window with the raw serial stream console (serial/USB-CDC)."""
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
@@ -7366,13 +7472,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         port_row.addWidget(self.btn_port_refresh)
         self.sidebar_layout.addLayout(port_row)
 
-        self.btn_serial = QtWidgets.QPushButton("USB-CDC  ●  OFF")
+        self.btn_serial = QtWidgets.QPushButton("SERIAL  ●  OFF")
         self.btn_serial.setStyleSheet(
             "background-color: #1E1E1E; color: #666666; font-size: 17px; "
             "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
         self.btn_serial.clicked.connect(self._toggle_serial)
         self.btn_serial.setToolTip(_make_tooltip(
-            "USB-CDC",
+            "SERIAL",
             "Connect or disconnect the serial port (USB-CDC). Click to toggle. "
             "When ON: receives all frames and command responses from the ESP32. "
             "921600 baud, 8N1. Hot-swap: click OFF then ON to reconnect to a different port."))
@@ -7386,7 +7492,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_udp.setToolTip(_make_tooltip(
             "UDP WiFi",
             "Start or stop the UDP receiver. Click to toggle. "
-            "Runs in parallel with USB-CDC — serial port stays open for command responses ($CFG, $DIAG, etc.). "
+            "Runs in parallel with SERIAL — serial port stays open for command responses ($CFG, $DIAG, etc.). "
             f"Listens on the port configured below (default {UDP_DEFAULT_PORT})."))
         self.sidebar_layout.addWidget(self.btn_udp)
 
@@ -7405,7 +7511,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.sidebar_layout.addSpacing(12)
 
-        self.btn_pause = QtWidgets.QPushButton("FREEZE\nDISPLAY")
+        self.btn_pause = QtWidgets.QPushButton("FREEZE DISPLAY")
         self.btn_pause.setCheckable(True)
         self.btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_pause.clicked.connect(self.toggle_pause)
@@ -7415,7 +7521,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "keeps flowing; only the UI plots and stats are frozen."))
         self.sidebar_layout.addWidget(self.btn_pause)
 
-        self.btn_save = QtWidgets.QPushButton("SAVE\nDATA")
+        self.btn_save = QtWidgets.QPushButton("SAVE DATA")
         self.btn_save.setCheckable(True)
         self.btn_save.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_save.clicked.connect(self.toggle_save)
@@ -7426,7 +7532,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Filename: ppg_data_<timestamp>.csv"))
         self.sidebar_layout.addWidget(self.btn_save)
 
-        self.btn_lab_capture = QtWidgets.QPushButton("CAPTURE\nLAB *")
+        self.btn_lab_capture = QtWidgets.QPushButton("CAPTURE LAB *")
         self.btn_lab_capture.setCheckable(True)
         self.btn_lab_capture.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_lab_capture.clicked.connect(self.toggle_lab_capture)
@@ -7528,7 +7634,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_serialcom.setToolTip(_make_tooltip(
             "SERIALCOM",
             "Show or hide the Serial Console window. "
-            "Displays raw frames received via USB-CDC serial port."))
+            "Displays raw frames received via the serial port."))
         self.sidebar_layout.addWidget(self.btn_serialcom)
 
         self.btn_udpcom = QtWidgets.QPushButton("UDP COM")
@@ -7625,7 +7731,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.4 and §8.2."))
         self.sidebar_layout.addWidget(self.btn_hr3test)
 
-        self.btn_esp32_timing = QtWidgets.QPushButton("ESP32\nTIMING")
+        self.btn_esp32_timing = QtWidgets.QPushButton("ESP32 TIMING")
         self.btn_esp32_timing.setCheckable(True)
         self.btn_esp32_timing.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_esp32_timing.clicked.connect(self.toggle_esp32_timing)
@@ -7637,7 +7743,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Cycle budget = 2000 µs (1 sample period at 500 Hz)."))
         self.sidebar_layout.addWidget(self.btn_esp32_timing)
 
-        self.btn_python_timing = QtWidgets.QPushButton("PYTHON\nTIMING")
+        self.btn_python_timing = QtWidgets.QPushButton("PYTHON TIMING")
         self.btn_python_timing.setCheckable(True)
         self.btn_python_timing.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_python_timing.clicked.connect(self.toggle_python_timing)
@@ -7785,6 +7891,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._udp_stop     = threading.Event()   # controls _udp_reader thread
         self._udp_thread   = None
         self._cfg_listener = None  # callable(text) set by LabCaptureWindow
+        self._active_transport = "serial"  # "serial" or "udp" — only this queue feeds algorithms
 
         self._populate_ports()
         self._restore_settings()
@@ -8243,10 +8350,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
         if self.is_paused:
-            self.btn_pause.setText("RESUME\nDISPLAY")
+            self.btn_pause.setText("RESUME DISPLAY")
             self.log("Display FROZEN")
         else:
-            self.btn_pause.setText("FREEZE\nDISPLAY")
+            self.btn_pause.setText("FREEZE DISPLAY")
             self.log(f"System ONLINE - Connected to {PORT} @ {BAUD}")
 
     def auto_stop_save(self):
@@ -8287,7 +8394,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.btn_save.setChecked(False)
             else:
                 self.auto_save_timer.stop()
-                self.btn_save.setText("SAVE\nDATA")
+                self.btn_save.setText("SAVE DATA")
                 if self.save_file:
                     self.save_file.close()
                     self.save_file = None
@@ -8393,7 +8500,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             try: self._serial_queue.get_nowait()
             except: break
         self.log("Serial disconnected")
-        self.btn_serial.setText("USB-CDC  ●  OFF")
+        self.btn_serial.setText("SERIAL  ●  OFF")
         self.btn_serial.setStyleSheet(
             "background-color: #1E1E1E; color: #666666; font-size: 17px; "
             "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
@@ -8420,7 +8527,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
             self._reader_thread.start()
             self.log(f"System ONLINE — {port} @ {BAUD}")
-            self.btn_serial.setText(f"USB-CDC  ●  ON  ({port})")
+            self.btn_serial.setText(f"SERIAL  ●  ON  ({port})")
             self.btn_serial.setStyleSheet(
                 "background-color: #1A3A1A; color: #44FF44; font-size: 17px; "
                 "font-weight: bold; padding: 5px; border: 1px solid #44FF44; border-radius: 4px;")
@@ -8429,7 +8536,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         except Exception as e:
             self.ser = None
             self.log(f"ERROR: Could not open {port} — {e}")
-            self.btn_serial.setText("USB-CDC  ●  OFF")
+            self.btn_serial.setText("SERIAL  ●  OFF")
             self.btn_serial.setStyleSheet(
                 "background-color: #3A1A1A; color: #FF4444; font-size: 17px; "
                 "font-weight: bold; padding: 5px; border: 1px solid #FF4444; border-radius: 4px;")
@@ -8448,7 +8555,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         while not self._udp_queue.empty():
             try: self._udp_queue.get_nowait()
             except: break
-        self.log("UDP disconnected")
+        self._active_transport = "serial"
+        self.log("UDP disconnected — data source: SERIAL")
         self.btn_udp.setText("UDP WiFi  ●  OFF")
         self.btn_udp.setStyleSheet(
             "background-color: #1E1E1E; color: #666666; font-size: 17px; "
@@ -8471,6 +8579,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.log(f"UDP listening on port {self._udp_port}...")
         self._udp_thread = threading.Thread(target=self._udp_reader, daemon=True)
         self._udp_thread.start()
+        self._active_transport = "udp"
+        self.log(f"Data source: UDP WiFi (:{self._udp_port})")
         self.btn_udp.setText(f"UDP WiFi  ●  ON  (:{self._udp_port})")
         self.btn_udp.setStyleSheet(
             "background-color: #1A1E3A; color: #44AAFF; font-size: 17px; "
@@ -8618,6 +8728,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             for _q, _src_com_win in (
                     (self._serial_queue, self.serialcom_window),
                     (self._udp_queue,    self.udpcom_window)):
+                _is_active = (
+                    (_q is self._serial_queue and self._active_transport == "serial") or
+                    (_q is self._udp_queue    and self._active_transport == "udp"))
                 _console_lines = []
                 while True:
                     try:
@@ -8707,11 +8820,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     csv_line = f"{timestamp},{diff_us:>5},{line}"
 
                     # Lab Capture: full rate (500 Hz), before decimation
-                    if self.is_lab_capturing and self._lab_capture_file:
+                    if _is_active and self.is_lab_capturing and self._lab_capture_file:
                         self._write_lab_capture_row(line)
 
                     # HR1TEST mirror: 500 Hz (before decimation) — must match firmware _update_hr1()
-                    if self.hr1test_window is not None:
+                    if _is_active and self.hr1test_window is not None:
                         _p500 = line[1:].split(',')
                         if len(_p500) >= 9 and _p500[0] == 'M1':
                             try:
@@ -8776,6 +8889,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.log(f"⚠ FIRMWARE ERROR: {line}")
                         if self.hw_config_window is not None:
                             self.hw_config_window._statusbar.showMessage(f"Error: {line}")
+                        continue
+
+                    # Only feed data pipeline from the active transport
+                    if not _is_active:
                         continue
 
                     # Decimation: skip N-1 out of every N data frames for console + plots

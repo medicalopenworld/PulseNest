@@ -283,17 +283,22 @@ static void send_cfg_frame() {
     AFE4490Config cfg = afe.getConfig();
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char buf[320];
+    char buf[400];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$CFG,sr=%u,numav=%u,led1=%.2f,led2=%.2f,range=%u"
-        ",tia=%s,cf=%s,stg2=%s,ambdac=%u"
+        ",ensepgain=%d"
+        ",tia1=%s,cf1=%s,stg21=%s"
+        ",tia2=%s,cf2=%s,stg22=%s"
+        ",ambdac=%u"
         ",ch=%s,flt=%s"
         ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
         ",spo2a=%.4f,spo2b=%.4f"
         ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X",
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
-        tia_gain_str(cfg.afe_tia_gain), tia_cf_str(cfg.afe_tia_cf), stage2_str(cfg.afe_stage2_gain),
+        cfg.afe_ensepgain ? 1 : 0,
+        tia_gain_str(cfg.afe_tia_gain_led1), tia_cf_str(cfg.afe_tia_cf_led1), stage2_str(cfg.afe_stage2_gain_led1),
+        tia_gain_str(cfg.afe_tia_gain_led2), tia_cf_str(cfg.afe_tia_cf_led2), stage2_str(cfg.afe_stage2_gain_led2),
         (unsigned)cfg.afe_ambdac_uA,
         channel_str(cfg.ppgdisp_channel), filter_str(cfg.ppgdisp_filter_type),
         cfg.ppgdisp_f_low_hz, cfg.ppgdisp_f_high_hz,
@@ -356,11 +361,21 @@ static void apply_set_cmd(const char* key, const char* val) {
             Serial_printf("$ERR,ledrange,invalid (75 or 150)\r\n");
             return;
         }
+    } else if (strcmp(key, "ensepgain") == 0) {
+        int v = atoi(val);
+        if (v == 0 || v == 1) {
+            afe.setEnSepGain(v == 1);
+            Serial_printf("# SET ensepgain=%d\n", v);
+        } else {
+            Serial_printf("$ERR,ensepgain,invalid (0 or 1)\r\n");
+            return;
+        }
+    // Joint TIA gain setters (both channels at once)
     } else if (strcmp(key, "tiagain") == 0) {
         AFE4490TIAGain g;
         if (parse_tia_gain(val, g)) {
             afe.setTIAGain(g);
-            Serial_printf("# SET tiagain=%s\n", val);
+            Serial_printf("# SET tiagain=%s (both channels)\n", val);
         } else {
             Serial_printf("$ERR,tiagain,invalid (10K/25K/50K/100K/250K/500K/1M)\r\n");
             return;
@@ -369,7 +384,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         AFE4490TIACF cf;
         if (parse_tia_cf(val, cf)) {
             afe.setTIACF(cf);
-            Serial_printf("# SET tiacf=%s\n", val);
+            Serial_printf("# SET tiacf=%s (both channels)\n", val);
         } else {
             Serial_printf("$ERR,tiacf,invalid (5p/10p/20p/30p/55p/155p)\r\n");
             return;
@@ -378,9 +393,65 @@ static void apply_set_cmd(const char* key, const char* val) {
         AFE4490Stage2Gain g;
         if (parse_stage2(val, g)) {
             afe.setStage2Gain(g);
-            Serial_printf("# SET stg2=%s\n", val);
+            Serial_printf("# SET stg2=%s (both channels)\n", val);
         } else {
             Serial_printf("$ERR,stg2,invalid (0dB/3.5dB/6dB/9.5dB/12dB)\r\n");
+            return;
+        }
+    // Per-channel setters — LED1 (IR)
+    } else if (strcmp(key, "tiagain1") == 0) {
+        AFE4490TIAGain g;
+        if (parse_tia_gain(val, g)) {
+            afe.setTIAGainLED1(g);
+            Serial_printf("# SET tiagain1=%s (LED1/IR)\n", val);
+        } else {
+            Serial_printf("$ERR,tiagain1,invalid (10K/25K/50K/100K/250K/500K/1M)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "tiacf1") == 0) {
+        AFE4490TIACF cf;
+        if (parse_tia_cf(val, cf)) {
+            afe.setTIACFLED1(cf);
+            Serial_printf("# SET tiacf1=%s (LED1/IR)\n", val);
+        } else {
+            Serial_printf("$ERR,tiacf1,invalid (5p/10p/20p/30p/55p/155p)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "stg21") == 0) {
+        AFE4490Stage2Gain g;
+        if (parse_stage2(val, g)) {
+            afe.setStage2GainLED1(g);
+            Serial_printf("# SET stg21=%s (LED1/IR)\n", val);
+        } else {
+            Serial_printf("$ERR,stg21,invalid (0dB/3.5dB/6dB/9.5dB/12dB)\r\n");
+            return;
+        }
+    // Per-channel setters — LED2 (RED)
+    } else if (strcmp(key, "tiagain2") == 0) {
+        AFE4490TIAGain g;
+        if (parse_tia_gain(val, g)) {
+            afe.setTIAGainLED2(g);
+            Serial_printf("# SET tiagain2=%s (LED2/RED)\n", val);
+        } else {
+            Serial_printf("$ERR,tiagain2,invalid (10K/25K/50K/100K/250K/500K/1M)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "tiacf2") == 0) {
+        AFE4490TIACF cf;
+        if (parse_tia_cf(val, cf)) {
+            afe.setTIACFLED2(cf);
+            Serial_printf("# SET tiacf2=%s (LED2/RED)\n", val);
+        } else {
+            Serial_printf("$ERR,tiacf2,invalid (5p/10p/20p/30p/55p/155p)\r\n");
+            return;
+        }
+    } else if (strcmp(key, "stg22") == 0) {
+        AFE4490Stage2Gain g;
+        if (parse_stage2(val, g)) {
+            afe.setStage2GainLED2(g);
+            Serial_printf("# SET stg22=%s (LED2/RED)\n", val);
+        } else {
+            Serial_printf("$ERR,stg22,invalid (0dB/3.5dB/6dB/9.5dB/12dB)\r\n");
             return;
         }
     } else if (strcmp(key, "numav") == 0) {

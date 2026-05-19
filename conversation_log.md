@@ -6625,3 +6625,101 @@ La UI de conexión era confusa: `btn_port_connect` no desconectaba, `btn_udp_con
 - Eliminada llamada incondicional `self._connect_serial(...)` tras `_restore_settings()` en `__init__` — ahora la conexión la decide `_restore_settings()` según el `.ini`
 
 `spin_udp_port` eliminado del sidebar (innecesario — el puerto siempre es `UDP_DEFAULT_PORT = 5005`). `_connect_udp()` usa directamente `UDP_DEFAULT_PORT` en lugar de `self.spin_udp_port.value()`.
+
+---
+
+## Sesión 2026-05-18 — Botones sidebar de dos líneas a una línea
+
+**Cambio cosmético en `pulsenest_lab.py`:** 5 botones del sidebar que usaban `\n` para partir el texto en dos líneas se han cambiado a una sola línea:
+
+| Antes | Después |
+|---|---|
+| `FREEZE\nDISPLAY` | `FREEZE DISPLAY` |
+| `SAVE\nDATA` | `SAVE DATA` |
+| `CAPTURE\nLAB *` | `CAPTURE LAB *` |
+| `ESP32\nTIMING` | `ESP32 TIMING` |
+| `PYTHON\nTIMING` | `PYTHON TIMING` |
+
+Los `setText()` de runtime (FREEZE DISPLAY y SAVE DATA) también fueron actualizados con `replace_all`.
+
+---
+
+## Sesión 2026-05-18b — RESUME DISPLAY a una línea
+
+`RESUME\nDISPLAY` → `RESUME DISPLAY` en el `setText()` de `toggle_pause()` (línea 8246).
+
+---
+
+## Sesión 2026-05-18c — Active transport: solo un canal alimenta los algoritmos
+
+**Bug identificado:** con USB-CDC y UDP conectados simultáneamente, ambas colas se drenaban al mismo pipeline → cada frame procesado dos veces por todos los algoritmos.
+
+**Solución implementada (opción automática por estado):**
+- `_active_transport`: nuevo atributo en `PPGMonitor.__init__`, valor inicial `"serial"`
+- `_connect_udp()` → `_active_transport = "udp"` + log `"Data source: UDP WiFi"`
+- `_disconnect_udp()` → `_active_transport = "serial"` + log `"Data source: USB-CDC"`
+- Drain loop en `update_data()`: flag `_is_active` por iteración de cola
+  - Guards añadidos en: lab capture (pre-decimación), HR1TEST (pre-decimación), y bloque `if not _is_active: continue` justo antes de decimación
+  - Frames de comando (`$CFG`, `$DIAG`, `$ERR`, `#`, `$TIMING`, `$TASK`) se procesan siempre (no guardados) — solo vienen por serial de todos modos
+- USB-CDC sigue siempre abierto para comandos; UDP es datos unidireccional
+
+---
+
+## Sesión 2026-05-19 — Renombrar USB-CDC → SERIAL en UI
+
+"USB-CDC" es un detalle de implementación irrelevante para el usuario. Cambiado a "SERIAL" en todos los textos visibles:
+- Botón sidebar: `SERIAL  ●  OFF` / `SERIAL  ●  ON  (COMx)`
+- Tooltip del botón: título `"SERIAL"`
+- Tooltip UDP: `"Runs in parallel with SERIAL — ..."`
+- Tooltip SERIALCOM: `"Displays raw frames received via the serial port."`
+- Log: `"UDP disconnected — data source: SERIAL"`
+
+---
+
+## Sesión 2026-05-19b — Tooltips HW CONFIG: nombres firmware y script
+
+Añadida línea `Lib: ...  ·  Script: ...` al final del body de cada tooltip en `HWConfigWindow`:
+
+| Control | Lib (AFE4490Config) | Script |
+|---|---|---|
+| LED1 | `afe_led1_current_mA` | `_spin_led1` |
+| LED2 | `afe_led2_current_mA` | `_spin_led2` |
+| Range | `afe_led_range_mA` | `_combo_ledrange` |
+| RF Gain | `afe_tia_gain` | `_combo_tiagain` |
+| CF | `afe_tia_cf` | `_combo_tiacf` |
+| Stage 2 | `afe_stage2_gain` | `_combo_stg2` |
+| AMBDAC | `afe_ambdac_uA` | `_spin_ambdac` |
+| Sample rate | `afe_sample_rate_hz` | `_spin_sr` |
+| Averages | `afe_adc_averages` | `_spin_numav` |
+| t1–t28 | `AFE4490TimingConfig::tN` | `_timing_spins['tN']` |
+
+Los 3 casos donde el $CFG key difiere del $SET key también se anotan: `ledrange`→`range`, `tiagain`→`tia`, `tiacf`→`cf`.
+
+---
+
+## Sesión 2026-05-19c — ENSEPGAIN: gestión separada de ganancia TIA por LED
+
+### Problema
+El AFE4490 tiene un bit ENSEPGAIN (D15 del registro TIAGAIN) que permite configurar ganancias TIA independientes para LED1 (IR) y LED2 (RED). La arquitectura anterior usaba parámetros compartidos.
+
+### Cambios en librería `incunest_afe4490` (v0.24)
+- `AFE4490Config`: sustituidos `afe_tia_gain`, `afe_tia_cf`, `afe_stage2_gain` por:
+  - `afe_ensepgain` (bool)
+  - `afe_tia_gain_led1/2`, `afe_tia_cf_led1/2`, `afe_stage2_gain_led1/2`
+- API pública: `setEnSepGain()`, `setTIAGainLED1/2()`, `setTIACFLED1/2()`, `setStage2GainLED1/2()`
+- `setTIAGain/CF/Stage2Gain()` (joint) siguen existiendo y configuran ambos canales
+- Registros: `_build_tiagain_led1()` → TIAGAIN con ENSEPGAIN bit; `_build_tia_amb_gain_led2()` → TIA_AMB_GAIN
+
+### Cambios en firmware `main.cpp`
+- `send_cfg_frame()`: nuevo formato `ensepgain=%d,tia1=%s,cf1=%s,stg21=%s,tia2=%s,cf2=%s,stg22=%s`
+- `apply_set_cmd()`: nuevos handlers `ensepgain`, `tiagain1/2`, `tiacf1/2`, `stg21/22`
+
+### Cambios en `pulsenest_lab.py` — HW CONFIG window
+- Sección TIA Gain rediseñada con 3 bloques:
+  1. ENSEPGAIN checkbox + Set button (greyed LED1 controls when OFF)
+  2. LED1 (IR) sub-sección: RF Gain (`_combo_tiagain1`), CF (`_combo_tiacf1`), Stage 2 (`_combo_stg21`)
+  3. LED2 (RED) sub-sección — always active: RF Gain (`_combo_tiagain2`), CF (`_combo_tiacf2`), Stage 2 (`_combo_stg22`)
+- `update_from_cfg()`: parsea `ensepgain`, `tia1`, `cf1`, `stg21`, `tia2`, `cf2`, `stg22`
+- `_on_set_all()`, `_on_save_to_file()`, `_on_read_from_file()`: actualizados con nuevos keys
+- `_mark_dirty/clean()`: soporte para QCheckBox
+- `_on_ensepgain_changed()`: habilita/deshabilita controles LED1
