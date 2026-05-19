@@ -6752,3 +6752,32 @@ Texto en dos líneas cambiado a una sola línea.
 **Fix:** sustituido el timer fijo por un flag reactivo `_post_reset_cfg_pending`:
 - `_reset_esp32()`: pone `_post_reset_cfg_pending = True`
 - Drain loop: cuando detecta `"# incunest_afe4490 started"` (mensaje emitido por `start_incunest()`, exactamente cuando `Cmd_Task` ya está corriendo), si el flag está activo lo limpia y dispara `_on_read_cfg()` con 300ms de margen.
+
+---
+
+## Sesión 2026-05-19f — Commits y cierre de sesión
+
+### Commits realizados
+
+**`incunest_afe4490`** → `7659d31`
+- `docs: merge §11.1 timing tables into single temporal-order table`
+- Las dos tablas de §11.1 (comparativa histórica + secuencia temporal) unificadas en una sola tabla ordenada por secuencia temporal con columnas: `# | Identifier | Default (counts) | Rationale | Constraints`
+- Comparativas históricas movidas a notas al pie
+
+**`PulseNest`** → `31196f6`
+- `fix: RESET ESP32 button label + timing registers post-reset refresh`
+- Commits de los fixes de sesión 19e
+
+### Investigación ALED2STC / RED_Amb
+Explicación del comportamiento:
+- A 50 mA: el transitorio de apagado del LED contamina la ventana de muestra ambiental cuando t5=200. Al mover t5=1200 el transitorio ya ha decaído → RED_Amb baja (lectura más limpia, correcta).
+- A 11.7 mA: el transitorio es despreciable, la posición de t5 no afecta.
+- Base física: tiempo de asentamiento del TIA = τ = RF×CF; la ventana ambiental debe empezar ≥ 5τ tras el apagado del LED.
+
+### Pendientes para próximas sesiones
+- Verificar RF×CF < RxSampleTime/10 (§8.3.1.1) para config actual
+- RSQM (PRIORIDAD MÁXIMA)
+- HGAC (depende de RSQM)
+- Probe presence detection
+- HR artefact testing
+- HR1 improvements (opción A y B)
