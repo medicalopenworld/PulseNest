@@ -6781,3 +6781,118 @@ Explicación del comportamiento:
 - Probe presence detection
 - HR artefact testing
 - HR1 improvements (opción A y B)
+
+---
+
+## Sesión 2026-05-20 — Exploración reordenación timing registers (revertida)
+
+### Explorado y revertido
+Se intentó reordenar `_TIMING_REGS` en `HWConfigWindow` siguiendo el orden cronológico de `_apply_timing_regs()` de la librería:
+- LED2 drive (t3,t4) → LED2 sample (t1,t2) → ALED2 sample (t5,t6)
+- LED1 drive (t9,t10) → LED1 sample (t7,t8) → ALED1 sample (t11,t12)
+- ADC resets t21–t28 → ADC conversions t13–t20
+
+El usuario pidió deshacer el cambio → `_TIMING_REGS` queda en orden numérico t1→t28 (estado original).
+
+---
+
+## Sesión 2026-05-20b — Reordenación timing registers según §11.1 de la spec
+
+### Cambio realizado
+**`pulsenest_lab.py`** — `_TIMING_REGS` en `HWConfigWindow` reordenado siguiendo el orden temporal exacto de la tabla de §11.1 de `incunest_afe4490_spec.md`.
+
+Orden resultante (28 entradas, por posición temporal dentro del ciclo):
+t21, t22, t13, t5, t6, t14, t23, t9, t24, t15, t7, t8, t10, t16, t25, t26, t17, t11, t12, t18, t27, t3, t28, t19, t1, t2, t4, t20
+
+### Decisiones
+- Fuente canónica: tabla de §11.1 de `incunest_afe4490_spec.md` (columna "temporal sequence").
+- Se actualizaron también las descripciones (tooltips) de cada registro para reflejar los constraints exactos de §11.1.
+
+---
+
+## Sesión 2026-05-20c — Short name en tooltips de Timing Registers + spec §11.1
+
+### Cambios realizados
+
+**`incunest_afe4490_spec.md`** — Columna Identifier de la tabla §11.1 ampliada con el nombre corto del datasheet (Fig. 83–110), formato `**tN** REGNAME — *short name*`. Ejemplo: `**t7** LED1STC — *Sample LED1 start count*`.
+
+**`pulsenest_lab.py`** — `_TIMING_REGS` cambiado de tuplas de 3 a tuplas de 4 elementos `(key, reg_name, short_name, description)`. Tooltips de cada timing register actualizados con el formato:
+```
+tN — REGNAME
+─────────────
+short name (datasheet)
+
+<constraints>
+
+Sends $SET,tN,<value>.
+Lib: AFE4490TimingConfig::tN  ·  Script: _timing_spins['tN']
+```
+
+### Decisiones
+- Short names extraídos directamente de los títulos de campo del datasheet (Figs. 83–110, pp. 60–71).
+- No columna nueva en la tabla de la spec; el nombre corto se añade dentro del Identifier con `—` como separador.
+- En el script, `timing_info` dict (usado en save-to-file) actualizado para ignorar el nuevo campo (`_sn`).
+
+---
+
+## Sesión 2026-05-20d — Fix truncación de tooltips por carácter `<`
+
+### Problema
+Qt interpreta `<` en texto de tooltip como inicio de tag HTML → el texto se truncaba a partir del primer `<` (frecuente en constraints como `< t22`, `≥ t2+1`).
+
+### Fix
+**`pulsenest_lab.py`** — `_make_tooltip()`: añadida función interna `_esc()` que escapa `&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;` y `\n` → `<br/>` antes de insertar `name` y `text` en el HTML. Fix global: afecta a todos los tooltips del script.
+
+---
+
+## Sesión 2026-05-20e — Fix línea nueva entre Lib y Script en tooltip timing registers
+
+**`pulsenest_lab.py`** — En `_tip_body` de los timing registers, separado `Lib:` y `Script:` en líneas distintas (`\n` entre ambos). Antes aparecían en la misma línea separados por `·`.
+
+---
+
+## Sesión 2026-05-20f — Fix `\n` sobrante en tooltip timing registers
+
+**`pulsenest_lab.py`** — Eliminados los `\n` iniciales en las líneas de `tip` y `Sends $SET` dentro de `_tip_body` (líneas 5397–5398). Producían líneas en blanco innecesarias en el tooltip.
+
+---
+
+## Sesión 2026-05-20g — Implementación STAGE2EN1 y STAGE2EN2 (v0.26)
+
+### Pregunta clave
+¿Por qué AMBDAC>0 fuerza STAGE2EN2 pero no STAGE2EN1?
+
+### Respuesta correcta (tras dos correcciones del usuario)
+- No existe un bit llamado "STAGE2EN" sin sufijo. Los bits son STAGE2EN1 (D14 de TIAGAIN) y STAGE2EN2 (D14 de TIA_AMB_GAIN).
+- AMBDAC es un DAC único compartido por ambos canales. El hecho de que esté en TIA_AMB_GAIN es circunstancial.
+- STAGE2EN1 no se fuerza porque el AMBDAC está físicamente conectado al Stage 2 del camino de TIA_AMB_GAIN. La corriente de cancelación nunca pasa por el Stage 2 de TIAGAIN.
+
+### Decisiones de diseño (v0.26)
+- STAGE2EN1 y STAGE2EN2 son parámetros explícitos e independientes del gain.
+- `stg2_gain_code[]` contiene solo bits D[10:8] (sin D14). STAGE2EN es bit separado.
+- `setStage2GainLED1/LED2()` solo cambia el gain, NO toca el enable.
+- `setStage2En1(bool)` y `setStage2En2(bool)` controlan los enable bits.
+- STAGE2EN2 sigue siendo forzado ON cuando AMBDAC>0.
+- Default: STAGE2EN1=false, STAGE2EN2=false.
+
+### Cambios
+- **`incunest_afe4490.h`**: `AFE4490Config` gana `afe_stage2_en1/en2`; API pública gana `setStage2En1/En2()`; privados gana `_afe_stage2_en1/_en2`.
+- **`incunest_afe4490.cpp`**: `stg2_code[]` → `stg2_gain_code[]` sin bit EN; constructor init; setters nuevos; build functions y `getConfig()` actualizados.
+- **`main.cpp`**: `$CFG` añade `stage2en1/2=%d`; `$SET` añade handlers `stage2en1/2`.
+- **`pulsenest_lab.py`**: HW CONFIG TIA section añade checkboxes STAGE2EN1/STAGE2EN2; `_on_ensepgain_changed`, dirty/clean tracking y $CFG parsing actualizados.
+- **`incunest_afe4490_spec.md`**: §2.3a, §2.3b, tabla Stage 2 y §13 actualizados. Versión v0.26.
+
+---
+
+## Sesión 2026-05-20h — STAGE2EN1/2: QCheckBox → QComboBox FALSE/TRUE
+
+**`pulsenest_lab.py`** — `_chk_stage2en1` y `_chk_stage2en2` reemplazados por `_combo_stage2en1` y `_combo_stage2en2` (QComboBox con items ["FALSE", "TRUE"]). Uso de `_make_row()` estándar. Actualizados: `_on_ensepgain_changed`, `_on_set_all`, `_on_save_to_file`, `_on_read_from_file`, `update_from_cfg`, dirty/clean tracking list.
+
+---
+
+## Sesión 2026-05-20i — STAGE2EN1/2 default ON + aviso puerto serie cerrado
+
+### Cambios
+- **`incunest_afe4490.cpp`**: `_afe_stage2_en1` y `_afe_stage2_en2` cambiados de `false` a `true` en el constructor (default ON).
+- **`incunest_afe4490_spec.md`**: default de STAGE2EN1/2 cambiado a `true` en tabla Stage 2.
+- **`pulsenest_lab.py`**: añadido `_warn_not_connected()` en `HWConfigWindow` — muestra `QMessageBox.warning()` + mensaje en status bar cuando se intenta enviar un comando con el puerto cerrado. Usado en `_send_set()`, `_on_read_cfg()` (HWConfigWindow) y `_on_run()` (DiagWindow).

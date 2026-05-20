@@ -1106,14 +1106,17 @@ def _make_tooltip(name: str, text: str) -> str:
     ``name`` is shown in bold gold as the first line; ``text`` follows in light grey.
     Used by every interactive control in the script.
     """
+    def _esc(s: str) -> str:
+        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
+
     return (
         "<table width='540' style='background-color:#5500AA; border-radius:6px;'>"
         "<tr><td style='padding:8px;'>"
         "<span style='font-size:30px; font-weight:bold; color:#FFE066;'>"
-        f"{name}"
+        f"{_esc(name)}"
         "</span><br/>"
         "<span style='font-size:24px; white-space:normal; color:#F0F0F0;'>"
-        f"{text}"
+        f"{_esc(text)}"
         "</span></td></tr></table>"
     )
 
@@ -5009,7 +5012,9 @@ class DiagnosticsWindow(QtWidgets.QMainWindow):
     def _on_run(self):
         mm = self.main_monitor
         if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
-            self._statusbar.showMessage("Not connected")
+            self._statusbar.showMessage("Not connected — serial port is closed")
+            QtWidgets.QMessageBox.warning(self, "Not connected",
+                "Serial port is not open.\n\nConnect to the board first (main window CONNECT button).")
             return
         mm.ser.write(b"$DIAG?\n")
         mm.log("→ $DIAG?")
@@ -5083,36 +5088,38 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._updating_from_cfg = False
         self._setup_ui()
 
-    # Timing register definitions: (key, reg_name, description)
+    # Timing register definitions: (key, reg_name, short_name, description)
+    # short_name: datasheet field label (Fig. 83–110).
+    # Order follows spec §11.1 temporal sequence (t0=0 → t29=PRPCOUNT).
     _TIMING_REGS = [
-        ('t1',  'LED2STC',      'LED2 sample window start. Must be ≥ t3 (LED turn-on).'),
-        ('t2',  'LED2ENDC',     'LED2 sample window end. Must be ≤ t4 (LED turn-off).'),
-        ('t3',  'LED2LEDSTC',   'LED2 LED turn-on. Must be ≤ t1 (sample start).'),
-        ('t4',  'LED2LEDENDC',  'LED2 LED turn-off. Must be ≥ t2 (sample end).'),
-        ('t5',  'ALED2STC',     'Ambient LED2 sample window start.'),
-        ('t6',  'ALED2ENDC',    'Ambient LED2 sample window end. ADC conv (t15) must start after this.'),
-        ('t7',  'LED1STC',      'LED1 sample window start. Must be ≥ t9 (LED turn-on).'),
-        ('t8',  'LED1ENDC',     'LED1 sample window end. Must be ≤ t10 (LED turn-off).'),
-        ('t9',  'LED1LEDSTC',   'LED1 LED turn-on. Must be ≤ t7 (sample start).'),
-        ('t10', 'LED1LEDENDC',  'LED1 LED turn-off. Must be ≥ t8 (sample end).'),
-        ('t11', 'ALED1STC',     'Ambient LED1 sample window start.'),
-        ('t12', 'ALED1ENDC',    'Ambient LED1 sample window end. ADC conv (t19) must start after this.'),
-        ('t13', 'LED2CONVST',   'LED2 ADC conversion start. Must be ≥ t2 and ≥ t21 (ADC reset 0).'),
-        ('t14', 'LED2CONVEND',  'LED2 ADC conversion end.'),
-        ('t15', 'ALED2CONVST',  'ALED2 ADC conversion start. Must be ≥ t6 and ≥ t23 (ADC reset 1).'),
-        ('t16', 'ALED2CONVEND', 'ALED2 ADC conversion end.'),
-        ('t17', 'LED1CONVST',   'LED1 ADC conversion start. Must be ≥ t8 and ≥ t25 (ADC reset 2).'),
-        ('t18', 'LED1CONVEND',  'LED1 ADC conversion end.'),
-        ('t19', 'ALED1CONVST',  'ALED1 ADC conversion start. Must be ≥ t12 and ≥ t27 (ADC reset 3).'),
-        ('t20', 'ALED1CONVEND', 'ALED1 ADC conversion end.'),
-        ('t21', 'ADCRSTSTCT0',  'ADC reset 0 start (LED2 channel). Must be ≤ t13 (conv start).'),
-        ('t22', 'ADCRSTENDCT0', 'ADC reset 0 end.'),
-        ('t23', 'ADCRSTSTCT1',  'ADC reset 1 start (ALED2 channel). Must be ≤ t15.'),
-        ('t24', 'ADCRSTENDCT1', 'ADC reset 1 end.'),
-        ('t25', 'ADCRSTSTCT2',  'ADC reset 2 start (LED1 channel). Must be ≤ t17.'),
-        ('t26', 'ADCRSTENDCT2', 'ADC reset 2 end.'),
-        ('t27', 'ADCRSTSTCT3',  'ADC reset 3 start (ALED1 channel). Must be ≤ t19.'),
-        ('t28', 'ADCRSTENDCT3', 'ADC reset 3 end.'),
+        ('t21', 'ADCRSTSTCT0',  'ADC reset 0 start count',           'Start of period (t=0). Must be < t22 and ≤ t13.'),
+        ('t22', 'ADCRSTENDCT0', 'ADC reset 0 end count',             '3-count pulse (0.75 µs). Must be > t21; < t13; (t22−t21) ≥ 4.'),
+        ('t13', 'LED2CONVST',   'LED2 convert start count',          '1 count after t22. Must be ≥ t22; ≥ t2+1 (circ.); < t14.'),
+        ('t5',  'ALED2STC',     'Sample ambient LED2 start count',   '≥200 counts after LED2 OFF (TIA settling). Must be > t4 (circ.); < t6.'),
+        ('t6',  'ALED2ENDC',    'Sample ambient LED2 end count',     'Must be > t5; < t9; ≤ t15.'),
+        ('t14', 'LED2CONVEND',  'LED2 convert end count',            'Must be > t13; (t14−t13) ≥ 1950.'),
+        ('t23', 'ADCRSTSTCT1',  'ADC reset 1 start count',           'Start of phase 2 (25% of period). Must be < t24; ≤ t15.'),
+        ('t9',  'LED1LEDSTC',   'LED1 start count',                  'LED1 turn-on, start of LED1 phase. Must be ≤ t7; < t10.'),
+        ('t24', 'ADCRSTENDCT1', 'ADC reset 1 end count',             't23+3 counts. Must be > t23; < t15; (t24−t23) ≥ 4.'),
+        ('t15', 'ALED2CONVST',  'LED2 ambient convert start count',  '1 count after t24. Must be ≥ t24; ≥ t6+1; < t16.'),
+        ('t7',  'LED1STC',      'Sample LED1 start count',           '≥50 counts after LED1 on. Must be ≥ t9; < t8.'),
+        ('t8',  'LED1ENDC',     'Sample LED1 end count',             'Must be > t7; ≤ t10; < t17.'),
+        ('t10', 'LED1LEDENDC',  'LED1 end count',                    'LED1 turn-off. 25% duty cycle. Must be ≥ t8; > t9.'),
+        ('t16', 'ALED2CONVEND', 'LED2 ambient convert end count',    'Must be > t15; (t16−t15) ≥ 1950.'),
+        ('t25', 'ADCRSTSTCT2',  'ADC reset 2 start count',           'Start of phase 3 (50% of period). Must be < t26; ≤ t17.'),
+        ('t26', 'ADCRSTENDCT2', 'ADC reset 2 end count',             't25+3 counts. Must be > t25; < t17; (t26−t25) ≥ 4.'),
+        ('t17', 'LED1CONVST',   'LED1 convert start count',          '1 count after t26. Must be ≥ t26; ≥ t8+1; < t18.'),
+        ('t11', 'ALED1STC',     'Sample ambient LED1 start count',   '≥200 counts after LED1 OFF (TIA settling). Must be > t10; < t12.'),
+        ('t12', 'ALED1ENDC',    'Sample ambient LED1 end count',     'Must be > t11; < t3 (circ.); ≤ t19.'),
+        ('t18', 'LED1CONVEND',  'LED1 convert end count',            'Must be > t17; (t18−t17) ≥ 1950.'),
+        ('t27', 'ADCRSTSTCT3',  'ADC reset 3 start count',           'Start of phase 4 (75% of period). Must be < t28; ≤ t19.'),
+        ('t3',  'LED2LEDSTC',   'LED2 start count',                  'LED2 turn-on, start of LED2 phase. Must be ≤ t1; < t4.'),
+        ('t28', 'ADCRSTENDCT3', 'ADC reset 3 end count',             't27+3 counts. Must be > t27; < t19; (t28−t27) ≥ 4.'),
+        ('t19', 'ALED1CONVST',  'LED1 ambient convert start count',  '1 count after t28. Must be ≥ t28; ≥ t12+1; < t20.'),
+        ('t1',  'LED2STC',      'Sample LED2 start count',           '≥50 counts after LED2 on. Must be ≥ t3; < t2.'),
+        ('t2',  'LED2ENDC',     'Sample LED2 end count',             'Must be > t1; ≤ t4; < t13+period (circ.).'),
+        ('t4',  'LED2LEDENDC',  'LED2 end count',                    'LED2 turn-off. 25% duty cycle. Must be ≥ t2; > t3.'),
+        ('t20', 'ALED1CONVEND', 'LED1 ambient convert end count',    '= PRPCOUNT. Must be > t19; (t20−t19) ≥ 1950.'),
     ]
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -5255,13 +5262,25 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
         self._combo_stg21 = QtWidgets.QComboBox()
         self._combo_stg21.addItems(self.STG2_GAINS)
-        self._combo_stg21.setToolTip(_make_tooltip("LED1 (IR) Stage 2 amplifier gain",
-            "Post-TIA gain for the IR LED channel. "
+        self._combo_stg21.setToolTip(_make_tooltip("LED1 (IR) Stage 2 gain (STG2GAIN1)",
+            "STG2GAIN1[2:0] bits D[10:8] of TIAGAIN. Gain applied when STAGE2EN1 is ON. "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
             "Sends $SET,stg21,<value>. ($CFG key: stg21)\n"
             "Lib: AFE4490Config.afe_stage2_gain_led1  ·  Script: _combo_stg21"))
-        form_tia.addRow("Stage 2", self._make_row(self._combo_stg21, "stg21",
-                                                   lambda: self._combo_stg21.currentText()))
+        form_tia.addRow("Stage 2 gain", self._make_row(self._combo_stg21, "stg21",
+                                                       lambda: self._combo_stg21.currentText()))
+
+        self._combo_stage2en1 = QtWidgets.QComboBox()
+        self._combo_stage2en1.addItems(["FALSE", "TRUE"])
+        self._combo_stage2en1.setStyleSheet("background-color:#202020; color:#E0E0E0;")
+        self._combo_stage2en1.setToolTip(_make_tooltip("LED1 (IR) Stage 2 enable (STAGE2EN1)",
+            "STAGE2EN1 bit D14 of TIAGAIN. Enables the Stage 2 amplifier for the LED1 channel. "
+            "Independent of STG2GAIN1 — can be ON at 0 dB (unity gain) or OFF despite non-zero gain. "
+            "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
+            "Sends $SET,stage2en1,<0|1>. ($CFG key: stage2en1)\n"
+            "Lib: AFE4490Config.afe_stage2_en1  ·  Script: _combo_stage2en1"))
+        form_tia.addRow("Stage 2 EN", self._make_row(self._combo_stage2en1, "stage2en1",
+            lambda: "1" if self._combo_stage2en1.currentText() == "TRUE" else "0"))
 
         # LED2 (RED) sub-header
         lbl_led2_hdr = QtWidgets.QLabel("── LED2 (RED) — always active ──────────")
@@ -5290,13 +5309,26 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
         self._combo_stg22 = QtWidgets.QComboBox()
         self._combo_stg22.addItems(self.STG2_GAINS)
-        self._combo_stg22.setToolTip(_make_tooltip("LED2 (RED) Stage 2 amplifier gain",
-            "Post-TIA gain for the RED LED channel. "
+        self._combo_stg22.setToolTip(_make_tooltip("LED2 (RED) Stage 2 gain (STG2GAIN2)",
+            "STG2GAIN2[2:0] bits D[10:8] of TIA_AMB_GAIN. Gain applied when STAGE2EN2 is ON. "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
             "Sends $SET,stg22,<value>. ($CFG key: stg22)\n"
             "Lib: AFE4490Config.afe_stage2_gain_led2  ·  Script: _combo_stg22"))
-        form_tia.addRow("Stage 2", self._make_row(self._combo_stg22, "stg22",
-                                                   lambda: self._combo_stg22.currentText()))
+        form_tia.addRow("Stage 2 gain", self._make_row(self._combo_stg22, "stg22",
+                                                       lambda: self._combo_stg22.currentText()))
+
+        self._combo_stage2en2 = QtWidgets.QComboBox()
+        self._combo_stage2en2.addItems(["FALSE", "TRUE"])
+        self._combo_stage2en2.setStyleSheet("background-color:#202020; color:#E0E0E0;")
+        self._combo_stage2en2.setToolTip(_make_tooltip("LED2 (RED) Stage 2 enable (STAGE2EN2)",
+            "STAGE2EN2 bit D14 of TIA_AMB_GAIN. Enables the Stage 2 amplifier for the LED2 channel. "
+            "Independent of STG2GAIN2 — can be ON at 0 dB (unity gain) or OFF despite non-zero gain. "
+            "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
+            "Note: the library also forces STAGE2EN2=1 when AMBDAC &gt; 0. "
+            "Sends $SET,stage2en2,<0|1>. ($CFG key: stage2en2)\n"
+            "Lib: AFE4490Config.afe_stage2_en2  ·  Script: _combo_stage2en2"))
+        form_tia.addRow("Stage 2 EN", self._make_row(self._combo_stage2en2, "stage2en2",
+            lambda: "1" if self._combo_stage2en2.currentText() == "TRUE" else "0"))
 
         vbox.addWidget(grp_tia)
         self._on_ensepgain_changed()  # set initial enabled state of LED1 controls
@@ -5384,13 +5416,16 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
         self._timing_spins = {}
 
-        for key, reg_name, tip in self._TIMING_REGS:
+        for key, reg_name, short_name, tip in self._TIMING_REGS:
             sp = QtWidgets.QSpinBox()
             sp.setRange(0, 65535)
             sp.setStyleSheet("font-size:22px; background-color:#202020; color:#E0E0E0;")
-            sp.setToolTip(_make_tooltip(f"{key} — {reg_name}",
-                tip + f"\nSends $SET,{key},<value>.\n"
-                f"Lib: AFE4490TimingConfig::{key}  ·  Script: _timing_spins['{key}']"))
+            _tip_body = (f"{short_name}\n"
+                         f"{tip}\n"
+                         f"Sends $SET,{key},<value>.\n"
+                         f"Lib: AFE4490TimingConfig::{key}\n"
+                         f"Script: _timing_spins['{key}']")
+            sp.setToolTip(_make_tooltip(f"{key} — {reg_name}", _tip_body))
             sp.valueChanged.connect(self._on_timing_changed)
             sp.valueChanged.connect(lambda _=None, w=sp: self._mark_dirty(w))
             self._timing_spins[key] = sp
@@ -5399,9 +5434,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             row.addWidget(self._make_timing_set_btn(key))
             lbl = QtWidgets.QLabel(f"{key}  {reg_name}")
             lbl.setStyleSheet("font-size:22px; color:#E0E0E0;")
-            lbl.setToolTip(_make_tooltip(f"{key} — {reg_name}",
-                tip + f"\nSends $SET,{key},<value>.\n"
-                f"Lib: AFE4490TimingConfig::{key}  ·  Script: _timing_spins['{key}']"))
+            lbl.setToolTip(_make_tooltip(f"{key} — {reg_name}", _tip_body))
             form_t.addRow(lbl, row)
 
         # Status bar
@@ -5523,7 +5556,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
     def _on_ensepgain_changed(self):
         """Enable/disable LED1 controls based on ENSEPGAIN checkbox state."""
         enabled = self._chk_ensepgain.isChecked()
-        for w in (self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21):
+        for w in (self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21, self._combo_stage2en1):
             w.setEnabled(enabled)
             if not enabled:
                 w.setStyleSheet("color:#555555;")
@@ -5531,10 +5564,16 @@ class HWConfigWindow(QtWidgets.QMainWindow):
                 w.setStyleSheet("")
 
     # ── Serial communication ──────────────────────────────────────────────────
+    def _warn_not_connected(self):
+        """Show a warning dialog when a user action requires an open serial port."""
+        self._statusbar.showMessage("Not connected — serial port is closed")
+        QtWidgets.QMessageBox.warning(self, "Not connected",
+            "Serial port is not open.\n\nConnect to the board first (main window CONNECT button).")
+
     def _send_set(self, key: str, value: str):
         mm = self.main_monitor
         if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
-            self._statusbar.showMessage("Not connected")
+            self._warn_not_connected()
             return
         payload = f"$SET,{key},{value}"
         chk = 0
@@ -5550,7 +5589,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
     def _on_read_cfg(self):
         mm = self.main_monitor
         if mm is None or not mm.request_chip_config(notify_lab_capture=False, notify_hw_config=True):
-            self._statusbar.showMessage("Not connected")
+            self._warn_not_connected()
 
     def _on_set_all(self):
         """Send $SET for every parameter in the window."""
@@ -5561,11 +5600,13 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             ("ensepgain", "1" if self._chk_ensepgain.isChecked() else "0",     self._chk_ensepgain),
             ("tiagain1",  self._combo_tiagain1.currentText(),                   self._combo_tiagain1),
             ("tiacf1",    self._combo_tiacf1.currentText(),                     self._combo_tiacf1),
-            ("stg21",     self._combo_stg21.currentText(),                      self._combo_stg21),
-            ("tiagain2",  self._combo_tiagain2.currentText(),                   self._combo_tiagain2),
-            ("tiacf2",    self._combo_tiacf2.currentText(),                     self._combo_tiacf2),
-            ("stg22",     self._combo_stg22.currentText(),                      self._combo_stg22),
-            ("ambdac",    str(self._spin_ambdac.value()),                       self._spin_ambdac),
+            ("stg21",       self._combo_stg21.currentText(),                                self._combo_stg21),
+            ("stage2en1",   "1" if self._combo_stage2en1.currentText() == "TRUE" else "0", self._combo_stage2en1),
+            ("tiagain2",    self._combo_tiagain2.currentText(),                          self._combo_tiagain2),
+            ("tiacf2",      self._combo_tiacf2.currentText(),                            self._combo_tiacf2),
+            ("stg22",       self._combo_stg22.currentText(),                             self._combo_stg22),
+            ("stage2en2",   "1" if self._combo_stage2en2.currentText() == "TRUE" else "0", self._combo_stage2en2),
+            ("ambdac",      str(self._spin_ambdac.value()),                              self._spin_ambdac),
             ("sr",        str(self._spin_sr.value()),                           self._spin_sr),
             ("numav",     str(self._spin_numav.value()),                        self._spin_numav),
         ]
@@ -5619,15 +5660,17 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             kv_line("ensepgain", "1" if self._chk_ensepgain.isChecked() else "0",      "ENSEPGAIN — separate TIA gain per LED (0=shared, 1=separate)"),
             kv_line("tiagain1",  self._combo_tiagain1.currentText(),                    "LED1 (IR) TIA feedback resistance RF1 (active only when ensepgain=1)"),
             kv_line("tiacf1",    self._combo_tiacf1.currentText(),                      "LED1 (IR) TIA feedback capacitance CF1 (active only when ensepgain=1)"),
-            kv_line("stg21",     self._combo_stg21.currentText(),                       "LED1 (IR) Stage 2 amplifier gain (active only when ensepgain=1)"),
+            kv_line("stg21",      self._combo_stg21.currentText(),                       "LED1 (IR) Stage 2 gain STG2GAIN1 (active only when ensepgain=1)"),
+            kv_line("stage2en1", "1" if self._combo_stage2en1.currentText() == "TRUE" else "0", "LED1 (IR) STAGE2EN1 — Stage 2 enable, D14 of TIAGAIN (active only when ensepgain=1)"),
             kv_line("tiagain2",  self._combo_tiagain2.currentText(),                    "LED2 (RED) TIA feedback resistance RF2 (always active)"),
             kv_line("tiacf2",    self._combo_tiacf2.currentText(),                      "LED2 (RED) TIA feedback capacitance CF2 (always active)"),
-            kv_line("stg22",     self._combo_stg22.currentText(),                       "LED2 (RED) Stage 2 amplifier gain (always active)"),
+            kv_line("stg22",     self._combo_stg22.currentText(),                       "LED2 (RED) Stage 2 gain STG2GAIN2 (always active)"),
+            kv_line("stage2en2", "1" if self._combo_stage2en2.currentText() == "TRUE" else "0", "LED2 (RED) STAGE2EN2 — Stage 2 enable, D14 of TIA_AMB_GAIN (always active)"),
             kv_line("ambdac",    str(self._spin_ambdac.value()),                        "Ambient cancellation DAC current (µA) — AMBDAC[3:0] in TIA_AMB_GAIN D19:D16"),
             kv_line("sr",        str(self._spin_sr.value()),                            "Sample rate (Hz) — restarts chip on change"),
             kv_line("numav",     str(self._spin_numav.value()),                         "ADC averages per sample"),
         ]
-        timing_info = {key: (reg_name, tip) for key, reg_name, tip in self._TIMING_REGS}
+        timing_info = {key: (reg_name, tip) for key, reg_name, _sn, tip in self._TIMING_REGS}
         for key, sp in self._timing_spins.items():
             reg_name, tip = timing_info[key]
             lines.append(kv_line(key, str(sp.value()), f"{reg_name} — {tip}"))
@@ -5681,9 +5724,13 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         set_combo(self._combo_tiagain1,        "tiagain1")
         set_combo(self._combo_tiacf1,          "tiacf1")
         set_combo(self._combo_stg21,           "stg21")
+        if "stage2en1" in kv:
+            self._combo_stage2en1.setCurrentIndex(1 if kv["stage2en1"] == "1" else 0)
         set_combo(self._combo_tiagain2,        "tiagain2")
         set_combo(self._combo_tiacf2,          "tiacf2")
         set_combo(self._combo_stg22,           "stg22")
+        if "stage2en2" in kv:
+            self._combo_stage2en2.setCurrentIndex(1 if kv["stage2en2"] == "1" else 0)
         set_spin_int(self._spin_ambdac,        "ambdac")
         set_spin_int(self._spin_sr,            "sr")
         set_spin_int(self._spin_numav,         "numav")
@@ -5718,9 +5765,13 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             set_combo(self._combo_tiagain1,    'tia1')
             set_combo(self._combo_tiacf1,      'cf1')
             set_combo(self._combo_stg21,       'stg21')
+            if 'stage2en1' in kv:
+                self._combo_stage2en1.setCurrentIndex(1 if kv['stage2en1'] == '1' else 0)
             set_combo(self._combo_tiagain2,    'tia2')
             set_combo(self._combo_tiacf2,      'cf2')
             set_combo(self._combo_stg22,       'stg22')
+            if 'stage2en2' in kv:
+                self._combo_stage2en2.setCurrentIndex(1 if kv['stage2en2'] == '1' else 0)
             set_spin_int(self._spin_ambdac,    'ambdac')
             set_spin_int(self._spin_sr,        'sr')
             set_spin_int(self._spin_numav,     'numav')
@@ -5728,8 +5779,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             self._updating_from_cfg = False
         for w in (self._spin_led1, self._spin_led2, self._combo_ledrange,
                   self._chk_ensepgain,
-                  self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21,
-                  self._combo_tiagain2, self._combo_tiacf2, self._combo_stg22,
+                  self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21, self._combo_stage2en1,
+                  self._combo_tiagain2, self._combo_tiacf2, self._combo_stg22, self._combo_stage2en2,
                   self._spin_ambdac, self._spin_sr, self._spin_numav):
             self._mark_clean(w)
         self._on_ensepgain_changed()  # update LED1 enabled state
