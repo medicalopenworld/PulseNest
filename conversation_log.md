@@ -6896,3 +6896,208 @@ Qt interpreta `<` en texto de tooltip como inicio de tag HTML → el texto se tr
 - **`incunest_afe4490.cpp`**: `_afe_stage2_en1` y `_afe_stage2_en2` cambiados de `false` a `true` en el constructor (default ON).
 - **`incunest_afe4490_spec.md`**: default de STAGE2EN1/2 cambiado a `true` en tabla Stage 2.
 - **`pulsenest_lab.py`**: añadido `_warn_not_connected()` en `HWConfigWindow` — muestra `QMessageBox.warning()` + mensaje en status bar cuando se intenta enviar un comando con el puerto cerrado. Usado en `_send_set()`, `_on_read_cfg()` (HWConfigWindow) y `_on_run()` (DiagWindow).
+
+---
+
+## Sesión 2026-05-20j — $CFG? sin respuesta: diagnóstico + fixes
+
+### Problema investigado
+"Read from chip ($CFG?)" no muestra ninguna respuesta visible. Investigación del flujo completo:
+- Firmware: `Cmd_Task` recibe `$CFG?` → llama `send_cfg_frame()` → emite `$CFG,...*XX\r\n`
+- Python: serial reader verifica checksum NMEA XOR → si OK, llama `_on_cfg_frame_received()` → llama `update_from_cfg()`
+- Checksum firmware y Python calculan XOR idéntico (bytes 1..n-1 tras `$`). No hay desbordamiento de buf[400] (~283 chars reales).
+- **Causa raíz identificada**: problemas de UX, no de checksum. El `_on_read_cfg` no mostraba ningún mensaje de estado al enviar la solicitud, y no había timeout si no llegaba respuesta.
+
+### Cambios — `pulsenest_lab.py`
+1. **`HWConfigWindow.__init__`**: añade `_cfg_timer` (QTimer single-shot, 3 s) conectado a `_on_cfg_timeout`.
+2. **`_on_cfg_timeout()`**: nuevo método — muestra `"⚠ No response from chip — check connection and firmware"` en statusbar cuando no llega respuesta en 3 s.
+3. **`_on_read_cfg`**: muestra `"$CFG? sent — waiting for response…"` en statusbar + arranca `_cfg_timer`.
+4. **`_send_set`**: también arranca `_cfg_timer` tras enviar `$SET`.
+5. **`update_from_cfg`**: llama `_cfg_timer.stop()` cuando llega la respuesta (antes de "Config loaded from chip").
+6. **`_on_cfg_frame_received`**: log y text actualizados — claves viejas (`tia`, `cf`, `stg2`) reemplazadas por `tia1/2`, `cf1/2`, `stg21/22`; añadidos `ensepgain`, `stage2en1/2`, `ambdac`.
+
+---
+
+## Sesión 2026-05-20k — Silenciar [GAP B/SERIAL] messages
+
+**`pulsenest_lab.py`**: comentada la línea `self._sig_log.emit(f"[GAP B/SERIAL] ...")` en el serial reader thread. El contador `_gaps_B` sigue acumulando; solo suprimida la visualización en el log.
+
+---
+
+## Sesión 2026-05-20l — Serial mutex: fix frame interleaving entre tareas FreeRTOS
+
+### Diagnóstico
+Los frames $M1 llegaban fragmentados/corruptos (BAD CHK en COM window). Causa raíz: `Data_Task` (500 Hz, $M1/$M2) y `Cmd_Task` ($CFG, $DIAG, $ERR) escribían en Serial concurrentemente sin exclusión mutua. Los bytes se entrelazaban a nivel de carácter. Esto explica también por qué $CFG? no recibía respuesta: el frame $CFG llegaba partido por un $M1 y la primera mitad no empezaba con `$CFG,`.
+
+El problema existía antes pero era invisible: la validación de checksum con reporte BAD CHK es infraestructura nueva — antes los frames corruptos se descartaban silenciosamente por el check `>= 20 partes`.
+
+### Cambios — `src/main.cpp`
+- `#include <freertos/semphr.h>` añadido
+- `static SemaphoreHandle_t g_serial_mutex` declarado globalmente (creado en `setup()` antes de arrancar tareas)
+- `Serial_printf()` actualizado para tomar/dar mutex (timeout 20 ms)
+- `Serial_print_locked(const char*)` nuevo helper para buffers pre-construidos
+- Todos los `Serial.print(buf)` en tareas ($M1, $M2, $CFG, $TCFG, $DIAG) → `Serial_print_locked(buf)`
+- `Serial.println("# Frame mode...")` en Cmd_Task → `Serial_printf(...)`
+- `Serial.println("# incunest_afe4490 started")` en `start_incunest()` → `Serial_printf(...)`
+- Las llamadas `Serial.printf/println` en `setup()` (antes de crear tareas) no necesitan mutex y se mantienen directas.
+
+### Estado
+Compilado OK. Upload pendiente (COM15 ocupado por script Python).
+
+---
+
+## Sesión 2026-05-20m — Upload bloqueado: estado anómalo ESP32 + reinicio PC
+
+### Estado al cerrar sesión
+
+**Firmware compilado OK** (serial mutex, sesión 2026-05-20l) pero **upload fallido** en todos los intentos.
+
+Cronología del problema:
+1. `taskkill //F //IM pythonw.exe` mató el script sin liberar COM15 correctamente → upload fallaba con "Wrong boot mode (0x2b)"
+2. Intento de limpieza con Python a 1200 baud + `dsrdtr=True` — posiblemente dejó el ESP32 en estado incorrecto
+3. PowerShell `CloseMainWindow()` cerró el script Qt (lo que disparó `_reset_esp32()` internamente, manteniendo EN bajo)
+4. Power cycle de la placa → COM15 vuelve a aparecer pero envía datos binarios (0xBF, 0xB7...) en lugar de frames ASCII — firmware en estado anómalo
+5. Usuario reinicia PC para limpiar estado
+
+**Próximos pasos al reabrir:**
+1. Tras reinicio PC, verificar que `pio run -e incunest_V16 -t upload --upload-port COM15` funciona normalmente
+2. Si funciona: el problema era estado del driver USB-CDC de Windows — resuelto con reinicio
+3. Lanzar script y verificar ausencia de BAD CHK en COM window (confirmar fix del serial mutex)
+4. Si $CFG? responde correctamente → cerrar bug
+
+### Lección aprendida sobre el flujo de upload
+El `taskkill //F //IM pythonw.exe` deja el puerto COM15 en estado inválido para el upload.
+**Flujo correcto:** `PowerShell CloseMainWindow()` → esperar 2s → `pio run -t upload`.
+Actualizar memory con este flujo corregido.
+
+---
+
+## Sesión 2026-05-21
+
+### Tema: Verificación post-reinicio + LED current quantization (v0.25)
+
+---
+
+**Upload verificado tras reinicio de PC**
+
+Primera secuencia BOOT+EN: el ESP32 conectó pero cayó mid-flash (`The chip stopped responding`).
+Segunda secuencia BOOT+EN: upload completo exitoso. RAM 18.5%, Flash 27.5%.
+Script lanzado → sin BAD CHK en COM window → fix del serial mutex confirmado.
+
+---
+
+**Conversión ADC → voltios (consulta)**
+
+Fórmula confirmada para el AFE4490 (ADC 22-bit two's complement, VRef=1.2V):
+- `V_ADC = count × 1.2 / 2²¹` (LSB ≈ 572 nV)
+- `V_TIA = V_ADC / Gstg2`
+- `I_PD = V_TIA / RF`
+
+---
+
+**SIGNAL STATS — intervalo de cálculo (consulta)**
+
+El timer `_stats_timer` dispara cada `spin_stats_interval` segundos (por defecto 1 s, rango 1–60 s). En cada tick se calculan Last/Mean/Min/Max sobre las muestras acumuladas en `_stats_buf` desde el tick anterior, y luego se hace `.clear()`. A 50 Hz y decimación ×10: ~50 muestras por segundo por señal.
+
+---
+
+**LED current quantization — librería v0.25**
+
+**Problema identificado:** `setLED1/2Current()` almacenaba el valor float solicitado. El chip programa un DAC de 8 bits → solo 256 valores posibles (step = range/256). `getConfig()` devolvía el valor solicitado, no el real programado.
+
+**Decisión:** `setLED1/2Current()` y `setLEDRange()` almacenan siempre el valor cuantizado al grid DAC. `getConfig()` devuelve automáticamente el valor real.
+
+**Implementación en `incunest_afe4490` (v0.25):**
+- Nueva función privada `_quantize_led_mA(float mA) const`:
+  ```cpp
+  uint8_t code = round(mA / range * 256);  // 0–255
+  return code / 256.0f * range;
+  ```
+- `setLED1Current()` / `setLED2Current()`: almacenan `_quantize_led_mA(constrain(mA, 0, range))`
+- `setLEDRange()`: tras actualizar `_afe_led_range_mA`, re-cuantiza ambas corrientes al nuevo grid
+- Constructor: cuantiza los valores iniciales (11.7 mA → **11.71875 mA** con range 150 mA)
+- `_apply_analog_regs()`: sin cambios (el código ya era `round(mA/range*256)`, idempotente con valor pre-cuantizado)
+
+**Spec:** `setLED1/2Current()` comentados con "stored as actual DAC-quantised value"; `setLEDRange()` con "re-quantises both LED currents"; `AFE4490Config::afe_led1/2_current_mA` con "actual DAC-quantised value". Changelog v0.25 añadido.
+
+**Script (`pulsenest_lab.py`):** sin cambios necesarios. El valor que muestra HW CONFIG viene de `$CFG` → `getConfig()` → ya cuantizado.
+
+**Build:** SUCCESS. RAM sin cambio, Flash +172 bytes.
+
+**Commit:** `29b37c9` — `feat: quantise LED current to DAC grid in setters (v0.25)`. Push y flash exitosos.
+
+---
+
+## Sesión 2026-05-21c
+
+### Tema: Saturación AFE4490 + §12 spec (datasheet↔librería) + rename setPPGDispFilter
+
+---
+
+**Pregunta:** valor constante 2,096,921 en los 4 canales ADC al exponer la sonda a luz de ventana — ¿saturación de TIA o de ADC?
+
+**Conclusión:** saturación de **TIA**, no del ADC.
+- Máximo positivo 22-bit (signed): 2^21 − 1 = 2,097,151
+- El valor observado (2,096,921 = 0x1FFD19) es 230 cuentas por debajo del máximo teórico → no es un clip digital limpio
+- Saturación del ADC produciría exactamente 0x1FFFFF; saturación de TIA produce un valor "cerca del máximo pero no exactamente" porque la salida de la TIA ralla contra AVDD sin llegar exactamente al nivel de referencia del ADC
+- Los 4 canales iguales confirman que la luz ambiente satura la TIA en las 4 fases del ciclo (LED1 on, LED2 on, ambient1, ambient2)
+- Relevante para RSQM: umbral de detección ~95% del máximo (~1,992,294) en ALED1/ALED2
+
+---
+
+**Spec §12 nueva: "Datasheet-to-library identifier mapping"** (para referencia en diseño de HGAC/RSQM)
+
+Añadida como §12 entre "AFE4490 chip register configuration" (§11) y "Bibliographic references" (→ renumerada §13). "Version history" → §14.
+
+§12.1 — Analog gain parameters:
+
+| Datasheet | Registro | AFE4490Config | Setter |
+|---|---|---|---|
+| RF_LED1 | TIAGAIN D[2:0] | afe_tia_gain_led1 | setTIAGain() |
+| RF_LED2 | TIA_AMB_GAIN D[2:0] | afe_tia_gain_led2 | setTIAGain() (shared ENSEPGAIN=0) |
+| STG2GAIN1 | TIAGAIN D[10:8] | afe_stage2_gain_led1 | setStage2GainLED1() |
+| STG2GAIN2 | TIA_AMB_GAIN D[10:8] | afe_stage2_gain_led2 | setStage2GainLED2() |
+| AMBDAC | TIA_AMB_GAIN D[19:16] | afe_ambdac_uA | setAmbDac() |
+| LED1 (IR) | LEDCNTRL D[15:8] | afe_led1_current_mA | setLED1Current() |
+| LED2 (RED) | LEDCNTRL D[7:0] | afe_led2_current_mA | setLED2Current() |
+
+§12.2 — ADC data registers: LED2VAL→led2, ALED2VAL→aled2, LED1VAL→led1, ALED1VAL→aled1, LED2−ALED2VAL→led2_aled2, LED1−ALED1VAL→led1_aled1.
+
+Nota: campos sin underscore inicial — referencian `AFE4490Config` (struct público), no los miembros privados de la clase.
+
+---
+
+**Rename: `setFilter()` → `setPPGDispFilter()`**
+
+Razón: el nombre genérico no reflejaba que aplica exclusivamente al canal de display PPG (ppgdisp). Renombrado en:
+- `incunest_afe4490.h` (declaración + comentario privado)
+- `incunest_afe4490.cpp` (definición)
+- `incunest_afe4490_spec.md` (todas las ocurrencias)
+- `PulseNest/src/main.cpp` (llamada activa)
+- `incunest_afe4490/examples/basic/main.cpp` y `PulseNest/examples/basic/main.cpp` (comentarios)
+- `conversation_log.md` y `OLD_spec` no tocados (histórico)
+
+---
+
+**Decisiones de diseño HGAC (arquitectura, sin implementar aún):**
+- HGAC vivirá **dentro de la librería** (mismo argumento que HR1/HR2/SpO2: acceso directo a datos por muestra, y los cambios de parámetro necesitan disparar resets internos)
+- Velocidad de respuesta: **ventana de ~2 s** (cubre bradicardia hasta 30 bpm con margen; 40 bpm = límite inferior definido → ciclo 1.5 s)
+- Lectura de parámetros actuales vía `getConfig()` (no acceso a miembros privados)
+- Escritura vía setters públicos
+- Sin buffer de muestras — acumuladores estadísticos ligeros (máx, mín, contador saturaciones) reseteados cada ventana
+
+---
+
+## Sesión 2026-05-21b
+
+### Tema: Fix comentario GAIN_0DB en AFE4490Stage2Gain
+
+**Problema:** `GAIN_0DB` tenía el comentario "Stage 2 disabled (default)" en `incunest_afe4490.h` y `incunest_afe4490_spec.md`. Incorrecto: `GAIN_0DB` = STG2GAIN bits = 0b000 → ganancia ×1 (0 dB), Stage 2 **activa**.
+
+**Cómo se deshabilita Stage 2 realmente:** bit `STAGE2EN` (D14 del registro TIAGAIN), controlado por `_afe_stage2_en1` / `_afe_stage2_en2` y los setters `setEnStage2GainLED1/2(false)`. Completamente independiente del valor de ganancia.
+
+**Fix:** comentario corregido en `incunest_afe4490.h` (línea 115) y `incunest_afe4490_spec.md` (línea 354) a `"0 dB (×1, unity gain) — Stage 2 active; disable via setEnStage2GainLED1/2(false)"`. Sin cambio de comportamiento, sin recompilación necesaria.
+
+**Pendiente:** incluir en el próximo commit junto con otros cambios menores, o hacer commit independiente.
+
+---

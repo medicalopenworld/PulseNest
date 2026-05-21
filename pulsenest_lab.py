@@ -5086,6 +5086,9 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         if geom: self.restoreGeometry(geom)
         else:    self.resize(560, 900)
         self._updating_from_cfg = False
+        self._cfg_timer = QtCore.QTimer(self)
+        self._cfg_timer.setSingleShot(True)
+        self._cfg_timer.timeout.connect(self._on_cfg_timeout)
         self._setup_ui()
 
     # Timing register definitions: (key, reg_name, short_name, description)
@@ -5570,6 +5573,10 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.warning(self, "Not connected",
             "Serial port is not open.\n\nConnect to the board first (main window CONNECT button).")
 
+    def _on_cfg_timeout(self):
+        """Called when no $CFG response arrives within the timeout window."""
+        self._statusbar.showMessage("⚠ No response from chip — check connection and firmware")
+
     def _send_set(self, key: str, value: str):
         mm = self.main_monitor
         if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
@@ -5585,11 +5592,15 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         mm.ser.write(cmd.encode())
         mm.log(f"→ {cmd.strip()}")
         self._statusbar.showMessage(f"Sent: {cmd.strip()}  — waiting for $CFG confirmation…")
+        self._cfg_timer.start(3000)
 
     def _on_read_cfg(self):
         mm = self.main_monitor
         if mm is None or not mm.request_chip_config(notify_lab_capture=False, notify_hw_config=True):
             self._warn_not_connected()
+        else:
+            self._statusbar.showMessage("$CFG? sent — waiting for response…")
+            self._cfg_timer.start(3000)
 
     def _on_set_all(self):
         """Send $SET for every parameter in the window."""
@@ -5777,6 +5788,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             set_spin_int(self._spin_numav,     'numav')
         finally:
             self._updating_from_cfg = False
+        self._cfg_timer.stop()
         for w in (self._spin_led1, self._spin_led2, self._combo_ledrange,
                   self._chk_ensepgain,
                   self._combo_tiagain1, self._combo_tiacf1, self._combo_stg21, self._combo_stage2en1,
@@ -8011,7 +8023,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  board={kv.get('board','?')}  mac={kv.get('mac','?')}",
             f"  sr={kv.get('sr','?')} Hz  numav={kv.get('numav','?')}",
             f"  led1={kv.get('led1','?')} mA  led2={kv.get('led2','?')} mA  range={kv.get('range','?')} mA",
-            f"  tia={kv.get('tia','?')} Ω  cf={kv.get('cf','?')}  stg2={kv.get('stg2','?')}",
+            f"  ensepgain={kv.get('ensepgain','?')}",
+            f"  LED1: tia={kv.get('tia1','?')}  cf={kv.get('cf1','?')}  stg2={kv.get('stg21','?')}  stage2en={kv.get('stage2en1','?')}",
+            f"  LED2: tia={kv.get('tia2','?')}  cf={kv.get('cf2','?')}  stg2={kv.get('stg22','?')}  stage2en={kv.get('stage2en2','?')}",
+            f"  ambdac={kv.get('ambdac','?')} µA",
             f"  ch={kv.get('ch','?')}  flt={kv.get('flt','?')} [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]",
             f"  hr2={kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz  hr3={kv.get('hr3h','?')} Hz",
             f"  spo2 a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}",
@@ -8023,7 +8038,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  Board: {kv.get('board','?')}   MAC: {kv.get('mac','?')}\n"
             f"  Sample rate: {kv.get('sr','?')} Hz   NUMAV: {kv.get('numav','?')}\n"
             f"  LED1: {kv.get('led1','?')} mA   LED2: {kv.get('led2','?')} mA   Range: {kv.get('range','?')} mA\n"
-            f"  TIA: {kv.get('tia','?')} Ω   CF: {kv.get('cf','?')}   Stage2: {kv.get('stg2','?')}\n"
+            f"  ENSEPGAIN: {kv.get('ensepgain','?')}\n"
+            f"  LED1: TIA={kv.get('tia1','?')}   CF={kv.get('cf1','?')}   STG2={kv.get('stg21','?')}   EN={kv.get('stage2en1','?')}\n"
+            f"  LED2: TIA={kv.get('tia2','?')}   CF={kv.get('cf2','?')}   STG2={kv.get('stg22','?')}   EN={kv.get('stage2en2','?')}\n"
+            f"  AMBDAC: {kv.get('ambdac','?')} µA\n"
             f"  PPG channel: {kv.get('ch','?')}   Filter: {kv.get('flt','?')} [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
             f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
             f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}"
@@ -8692,7 +8710,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _gap = _cnt - _last_cnt - 1
                                 if 0 < _gap <= 5000:  # >5000 (10 s) → corrupted frame, discard
                                     self._gaps_B += _gap
-                                    self._sig_log.emit(f"[GAP B/SERIAL] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
+                                    # self._sig_log.emit(f"[GAP B/SERIAL] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
                             _last_cnt = _cnt
                         except (ValueError, IndexError):
                             pass

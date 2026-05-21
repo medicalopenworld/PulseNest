@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>
 #include <stdarg.h>
 #include <esp_chip_info.h>
 #include <esp_mac.h>
@@ -27,13 +28,27 @@
   #error "Board pin definitions missing — select a valid environment (incunest_V15 or incunest_V16)"
 #endif
 
+// Serial output mutex — prevents interleaving of frames from concurrent tasks.
+// Created in setup() before tasks start; all Serial writes in tasks use these helpers.
+static SemaphoreHandle_t g_serial_mutex = nullptr;
+
+// Mutex-protected Serial.print — use for pre-built frame buffers.
+static inline void Serial_print_locked(const char* s) {
+    if (g_serial_mutex) xSemaphoreTake(g_serial_mutex, pdMS_TO_TICKS(20));
+    Serial.print(s);
+    if (g_serial_mutex) xSemaphoreGive(g_serial_mutex);
+}
+
+// Mutex-protected Serial_printf — use for # comments and $ERR lines from tasks.
 inline void Serial_printf(const char *fmt, ...) {
     char buffer[128];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
+    if (g_serial_mutex) xSemaphoreTake(g_serial_mutex, pdMS_TO_TICKS(20));
     Serial.print(buffer);
+    if (g_serial_mutex) xSemaphoreGive(g_serial_mutex);
 }
 
 // XOR checksum of all bytes between '$' and '*' (NMEA style).
@@ -150,7 +165,7 @@ void Incunest_Task(void *pvParameters) {
                         data.hr3_sqi);                           // HR3_SQI
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    Serial.print(buf);
+                    Serial_print_locked(buf);
                     udp_send(buf);
                 } else {
                     char buf[128];
@@ -162,7 +177,7 @@ void Incunest_Task(void *pvParameters) {
                         (long)data.led2_aled2, (long)data.led1_aled1);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    Serial.print(buf);
+                    Serial_print_locked(buf);
                     udp_send(buf);
                 }
 
@@ -186,9 +201,9 @@ void start_incunest() {
 
     incunest_sample_count = 0;
     afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN);
-    afe.setFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
+    afe.setPPGDispFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
     xTaskCreatePinnedToCore(Incunest_Task, "INCUNEST", 8192, NULL, 3, &g_incunest_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
-    Serial.println("# incunest_afe4490 started");
+    Serial_printf("# incunest_afe4490 started\n");
 }
 
 void stop_incunest() {
@@ -273,7 +288,7 @@ static void send_tcfg_frame() {
         (unsigned long)t.t25, (unsigned long)t.t26, (unsigned long)t.t27, (unsigned long)t.t28);
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-    Serial.print(buf);
+    Serial_print_locked(buf);
 }
 
 // Emit a $CFG frame with the current AFE4490 configuration.
@@ -308,7 +323,7 @@ static void send_cfg_frame() {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-    Serial.print(buf);
+    Serial_print_locked(buf);
     send_tcfg_frame();  // always emit timing config alongside $CFG
 }
 
@@ -550,10 +565,10 @@ void Cmd_Task(void *pvParameters) {
                 cmd_buf[cmd_len] = '\0';
                 if (cmd_len == 1 && cmd_buf[0] == '1') {
                     g_incunest_frame_mode = IncunestFrameMode::M1;
-                    Serial.println("# Frame mode: $M1 (full)");
+                    Serial_printf("# Frame mode: $M1 (full)\n");
                 } else if (cmd_len == 1 && cmd_buf[0] == '2') {
                     g_incunest_frame_mode = IncunestFrameMode::M2;
-                    Serial.println("# Frame mode: $M2 (raw)");
+                    Serial_printf("# Frame mode: $M2 (raw)\n");
                 } else if (strcmp(cmd_buf, "$CFG?") == 0) {
                     send_cfg_frame();
                 } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
@@ -563,7 +578,7 @@ void Cmd_Task(void *pvParameters) {
                                      (unsigned long)diag_val);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    Serial.print(buf);
+                    Serial_print_locked(buf);
                 } else if (strncmp(cmd_buf, "$SET,", 5) == 0) {
                     // Verify XOR checksum: $SET,key,val*XX
                     char* star = strrchr(cmd_buf, '*');
@@ -595,6 +610,7 @@ void Cmd_Task(void *pvParameters) {
 
 // ── setup / loop ──────────────────────────────────────────────────────────────
 void setup() {
+    g_serial_mutex = xSemaphoreCreateMutex();  // protects concurrent Serial writes from multiple tasks
     Serial.setTxBufferSize(1024);  // enlarge USB-CDC TX buffer (default ~256) to reduce corruption at 500 Hz
     Serial.begin(921600);
     vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
