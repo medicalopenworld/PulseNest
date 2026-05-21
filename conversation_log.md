@@ -7028,6 +7028,30 @@ El timer `_stats_timer` dispara cada `spin_stats_interval` segundos (por defecto
 
 ---
 
+## Sesión 2026-05-21d
+
+### Tema: Hardware probe states + nomenclatura NO_TISSUE
+
+**Estados hardware del AFE4490** documentados en spec §12.3 y absorbidos en RSQM (de project_limb_detection_task):
+
+| Estado | led1/led2/aled1/aled2 | Causa física |
+|---|---|---|
+| CABLE_DISCONNECTED | ≈ −5000 todos | Fotodiodo en circuito abierto |
+| NO_TISSUE | led1/led2 saturados | Sin atenuación de tejido |
+| PROBE_ON_PATIENT | señal PPG normal | Operación normal |
+
+**Nomenclatura decidida:** `NO_TISSUE` (no `PROBE_DETACHED`, no `PROBE_OFF`) — describe la realidad física inequívocamente: no hay tejido entre emisor y detector.
+
+**DiagCode ampliado:**
+- bit 6: `RSQM_NO_TISSUE`
+- bit 7: `RSQM_CABLE_DISCONNECTED`
+
+**HGAC:** no actúa en `NO_TISSUE` ni `CABLE_DISCONNECTED`. Solo actúa en `PROBE_ON_PATIENT`.
+
+**project_limb_detection_task** absorbida en project_rsqm_task.
+
+---
+
 ## Sesión 2026-05-21c
 
 ### Tema: Saturación AFE4490 + §12 spec (datasheet↔librería) + rename setPPGDispFilter
