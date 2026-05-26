@@ -7492,3 +7492,13 @@ Decisiones pendientes de confirmar:
 - `ambdac`: sigue enviando entero (correcto — firmware espera int 0-10)
 
 ---
+
+## Sesión 2026-05-26i
+
+### Tema: $SET intermitente desde HW CONFIG — saturación del serial por $M1 a 500 Hz
+
+**Diagnóstico:** Cuando WiFi/UDP está activo, Python ignora el serial pero el firmware seguía enviando $M1/$M2 a 500 Hz por USB-CDC. El buffer TX del ESP32 se saturaba, y cuando el firmware intentaba enviar la respuesta $CFG al $SET, el write se descartaba.
+
+**Fix en `src/main.cpp`:** `Serial_print_locked(buf)` para $M1 y $M2 condicionado a `!g_wifi_ready`. Cuando WiFi está activo, los frames de datos van solo por UDP; el serial queda libre para tráfico de control bidireccional ($SET/$CFG/$ERR/$DIAG). Los mensajes de diagnóstico periódicos (#STAT, #CHK, etc.) siguen yendo por serial siempre (volumen despreciable).
+
+---

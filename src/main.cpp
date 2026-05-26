@@ -167,7 +167,7 @@ void Incunest_Task(void *pvParameters) {
                         data.hr3_sqi);                           // HR3_SQI
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    Serial_print_locked(buf);
+                    if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
                     udp_send(buf);
                 } else {
                     char buf[128];
@@ -179,7 +179,7 @@ void Incunest_Task(void *pvParameters) {
                         (long)data.led2_aled2, (long)data.led1_aled1);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    Serial_print_locked(buf);
+                    if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active
                     udp_send(buf);
                 }
 
