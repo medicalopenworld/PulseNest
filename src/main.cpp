@@ -11,6 +11,7 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <WiFiUDP.h>
+#include <Preferences.h>
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -60,8 +61,9 @@ static uint8_t frame_xor_chk(const char* p, int len) {
 }
 
 // ── WiFi / UDP ────────────────────────────────────────────────────────────────
-static WiFiUDP  g_udp;
-static bool     g_wifi_ready      = false;
+static WiFiUDP   g_udp;
+static bool      g_wifi_ready      = false;
+static const char* g_udp_target_ip = nullptr;  // Set at connect time from WIFI_NETWORKS[]
 
 // Batch buffer: accumulates UDP_BATCH_SIZE frames before one endPacket() call.
 // M1 frame ≤ ~200 chars; 10 × 256 = 2560 bytes — well within WiFi MTU (~1460 bytes
@@ -83,7 +85,7 @@ static inline void udp_send(const char* buf) {
     memcpy(g_udp_batch_buf + g_udp_batch_len, buf, len);
     g_udp_batch_len += (uint16_t)len;
     if (++g_udp_batch_count >= UDP_BATCH_SIZE) {
-        g_udp.beginPacket(UDP_TARGET_IP, UDP_TARGET_PORT);
+        g_udp.beginPacket(g_udp_target_ip, UDP_TARGET_PORT);
         g_udp.write(reinterpret_cast<const uint8_t*>(g_udp_batch_buf), g_udp_batch_len);
         g_udp.endPacket();
         g_udp_batch_len   = 0;
@@ -640,21 +642,54 @@ void setup() {
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
 
-    // WiFi + UDP init (STA mode — connects to existing network)
+    // WiFi + UDP init (STA mode — tries each network in WIFI_NETWORKS[] order)
+    // Last successful network index is persisted in NVS so the next boot starts from it.
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.print("# WiFi connecting");
-    for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        Serial.print(".");
+    {
+        Preferences _prefs;
+        _prefs.begin("pulsenest", true);   // read-only
+        int _last = _prefs.getInt("last_net", 0);
+        _prefs.end();
+        if (_last < 0 || _last >= WIFI_NETWORK_COUNT) _last = 0;
+
+        for (int i = 0; i < WIFI_NETWORK_COUNT && !g_wifi_ready; i++) {
+            int n = (_last + i) % WIFI_NETWORK_COUNT;   // start from last known good
+            Serial.printf("# WiFi trying [%d/%d] %s", i + 1, WIFI_NETWORK_COUNT,
+                          WIFI_NETWORKS[n].ssid);
+            WiFi.begin(WIFI_NETWORKS[n].ssid, WIFI_NETWORKS[n].password);
+            for (int j = 0; j < 20 && WiFi.status() != WL_CONNECTED; j++) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                Serial.print(".");
+            }
+            if (WiFi.status() == WL_CONNECTED) {
+                g_udp_target_ip = WIFI_NETWORKS[n].udp_target_ip;
+                g_wifi_ready    = true;
+                g_udp.begin(UDP_TARGET_PORT);
+                Serial.printf("\n# WiFi connected [%s] — IP %s  UDP \u2192 %s:%d\n",
+                              WIFI_NETWORKS[n].ssid, WiFi.localIP().toString().c_str(),
+                              g_udp_target_ip, UDP_TARGET_PORT);
+                // Persist successful network index for next boot
+                Preferences _pw;
+                _pw.begin("pulsenest", false);
+                _pw.putInt("last_net", n);
+                _pw.end();
+            } else {
+                const char* reason;
+                switch (WiFi.status()) {
+                    case WL_NO_SSID_AVAIL:   reason = "SSID_NOT_FOUND"; break;
+                    case WL_CONNECT_FAILED:  reason = "WRONG_PASSWORD"; break;
+                    case WL_CONNECTION_LOST: reason = "CONNECTION_LOST"; break;
+                    case WL_DISCONNECTED:    reason = "AUTH_REJECTED";   break;
+                    default:                 reason = "UNKNOWN";         break;
+                }
+                Serial.printf("\n# WiFi FAILED %s — %s\n",
+                              WIFI_NETWORKS[n].ssid, reason);
+                WiFi.disconnect();
+            }
+        }
     }
-    if (WiFi.status() == WL_CONNECTED) {
-        g_wifi_ready = true;
-        g_udp.begin(UDP_TARGET_PORT);
-        Serial.printf("\n# WiFi connected — IP %s  UDP \u2192 %s:%d\n",
-                      WiFi.localIP().toString().c_str(), UDP_TARGET_IP, UDP_TARGET_PORT);
-    } else {
-        Serial.println("\n# WiFi FAILED — USB-CDC only");
+    if (!g_wifi_ready) {
+        Serial.println("# WiFi FAILED all networks — USB-CDC only");
     }
 
     SPI.begin(SPI_SCK_PIN, SPI_MISO_PIN, SPI_MOSI_PIN, -1);

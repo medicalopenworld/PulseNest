@@ -4914,7 +4914,7 @@ class DiagnosticsWindow(QtWidgets.QMainWindow):
 
     # (bit, flag_name, module, description)
     _DIAG_FLAGS = [
-        (12, "PD_ALM",    "PD",  "Power-down alarm — summary flag for all PD-side faults"),
+        (12, "PD_ALM",    "PD",  "Photodiode alarm — summary flag for all PD-side faults"),
         (11, "LED_ALM",   "LED", "LED alarm — summary flag for all LED-side faults"),
         (10, "LED1OPEN",  "LED", "LED1 open circuit detected"),
         ( 9, "LED2OPEN",  "LED", "LED2 open circuit detected"),
@@ -6802,6 +6802,421 @@ class SerialComWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
 
+class _ComboSpin(QtWidgets.QComboBox):
+    """QComboBox with value()/setValue() matching QSpinBox API, for drop-in use
+    in _param_spins alongside plain QSpinBox widgets."""
+    def value(self):
+        return self.currentIndex()
+
+    def setValue(self, v):
+        self.setCurrentIndex(v)
+
+
+class AFECharTestWindow(QtWidgets.QMainWindow):
+    """Parametric sweep: sweeps (LED_mA x RF x RG x AMBDAC) for LED1 then LED2,
+    recording raw ADC statistics (mean/min/max/pp/std) per combo to a CSV file.
+    Total: 3^4 * 2 channels = 162 combos."""
+
+    TIA_GAINS  = ["10K", "25K", "50K", "100K", "250K", "500K", "1M"]
+    STG2_GAINS = ["0dB", "3.5dB", "6dB", "9.5dB", "12dB"]
+
+    _SIGNALS = ["RED", "IR", "RED_Amb", "IR_Amb", "RED_Sub", "IR_Sub"]
+    _CSV_HEADER = [
+        "datetime", "channel", "led_mA", "rf_idx", "rf_str", "rg_idx", "rg_str", "ambdac_uA", "n_samples",
+        "RED_mean",     "RED_min",     "RED_max",     "RED_pp",     "RED_std",
+        "IR_mean",      "IR_min",      "IR_max",      "IR_pp",      "IR_std",
+        "RED_Amb_mean", "RED_Amb_min", "RED_Amb_max", "RED_Amb_pp", "RED_Amb_std",
+        "IR_Amb_mean",  "IR_Amb_min",  "IR_Amb_max",  "IR_Amb_pp",  "IR_Amb_std",
+        "RED_Sub_mean", "RED_Sub_min", "RED_Sub_max", "RED_Sub_pp", "RED_Sub_std",
+        "IR_Sub_mean",  "IR_Sub_min",  "IR_Sub_max",  "IR_Sub_pp",  "IR_Sub_std",
+    ]  # 39 columns
+
+    _ST_IDLE      = 0
+    _ST_SETTLING  = 1
+    _ST_MEASURING = 2
+
+    # (key, label, lo, hi, [fix_def, var_min_def, var_mid_def, var_max_def])
+    # FIX = value applied to this param while the OTHER channel is being swept.
+    # VAR min/mid/max = the three sweep values when THIS channel is being swept.
+    # AMBDAC: FIX spin is disabled (AMBDAC is always swept for both channels).
+    _PARAMS = [
+        ("led1",   "LED1 mA",   0, 150, [20,  5,  20,  50]),
+        ("led2",   "LED2 mA",   0, 150, [20,  5,  20,  50]),
+        ("rf1",    "RF1 idx",   0,   6, [ 4,  2,   4,   6]),
+        ("rf2",    "RF2 idx",   0,   6, [ 4,  2,   4,   6]),
+        ("rg1",    "RG1 idx",   0,   4, [ 2,  0,   2,   4]),
+        ("rg2",    "RG2 idx",   0,   4, [ 2,  0,   2,   4]),
+        ("ambdac", "AMBDAC uA", 0,  10, [ 3,  0,   3,   6]),
+    ]
+
+    def __init__(self, main_monitor):
+        super().__init__(parent=None)
+        self.main_monitor = main_monitor
+        self.setWindowTitle("AFE CHAR TEST")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 24px;")
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("AFECharTestWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(700, 640)
+        self._state      = self._ST_IDLE
+        self._combos     = []
+        self._combo_idx  = 0
+        self._buf        = {sig: [] for sig in self._SIGNALS}
+        self._settle_end = 0.0   # monotonic seconds
+        self._timer      = QtCore.QTimer(self)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._tick)
+        self._setup_ui()
+        self._restore_settings()
+
+    def _setup_ui(self):
+        w = QtWidgets.QWidget()
+        self.setCentralWidget(w)
+        root = QtWidgets.QVBoxLayout(w)
+        root.setSpacing(8)
+        root.setContentsMargins(10, 10, 10, 10)
+
+        # ── Parameter grid ────────────────────────────────────────────────────
+        pg = QtWidgets.QGroupBox("Sweep Parameters")
+        pg.setStyleSheet("QGroupBox { font-weight: bold; }")
+        gl = QtWidgets.QGridLayout(pg)
+        gl.setColumnStretch(0, 2)
+        for col, lbl in enumerate(["", "FIX", "VAR min", "VAR mid", "VAR max"]):
+            h = QtWidgets.QLabel(lbl)
+            h.setAlignment(QtCore.Qt.AlignCenter)
+            h.setStyleSheet("font-weight: bold;")
+            gl.addWidget(h, 0, col)
+
+        _SS_SPIN  = "background-color:#202020; color:#E0E0E0; font-size:24px;"
+        _SS_COMBO = (
+            "QComboBox { background-color:#202020; color:#E0E0E0; font-size:24px; }"
+            "QComboBox QAbstractItemView { background-color:#202020; color:#E0E0E0;"
+            " font-size:24px; selection-background-color:#404040; }"
+        )
+        _RF_ITEMS  = list(self.TIA_GAINS)
+        _RG_ITEMS  = list(self.STG2_GAINS)
+        _AMB_ITEMS = [f"{v} \u00b5A" for v in range(11)]
+
+        self._param_spins = {}  # key -> [fix_spin, var_min_spin, var_mid_spin, var_max_spin]
+                           #   AMBDAC: [var_min_spin, var_mid_spin, var_max_spin] (no FIX)
+        for row, (key, label, lo, hi, defaults) in enumerate(self._PARAMS, start=1):
+            gl.addWidget(QtWidgets.QLabel(label), row, 0)
+            spins = []
+            # AMBDAC has no FIX (swept for both channels): leave col 1 empty
+            start_col = 2 if key == "ambdac" else 1
+            spin_vals = defaults[1:] if key == "ambdac" else defaults
+            use_combo = key.startswith(("rf", "rg")) or key == "ambdac"
+            for col, val in zip(range(start_col, 5), spin_vals):
+                if use_combo:
+                    s = _ComboSpin()
+                    if key.startswith("rf"):
+                        items, w = _RF_ITEMS, 160
+                    elif key.startswith("rg"):
+                        items, w = _RG_ITEMS, 145
+                    else:
+                        items, w = _AMB_ITEMS, 130
+                    for item in items:
+                        s.addItem(item)
+                    s.setCurrentIndex(val)
+                    s.setStyleSheet(_SS_COMBO)
+                    s.setFixedWidth(w)
+                else:
+                    s = QtWidgets.QSpinBox()
+                    s.setRange(lo, hi)
+                    s.setValue(val)
+                    s.setAlignment(QtCore.Qt.AlignCenter)
+                    s.setStyleSheet(_SS_SPIN)
+                    s.setFixedWidth(85)
+                if col == 1:
+                    s.setToolTip(_make_tooltip(
+                        f"{label} FIX",
+                        f"Value applied to {label} while the OTHER channel is being swept."))
+                else:
+                    names = ["VAR min", "VAR mid", "VAR max"]
+                    s.setToolTip(_make_tooltip(
+                        f"{label} {names[col-2]}",
+                        f"One of the three sweep values for {label} when THIS channel is swept."))
+                gl.addWidget(s, row, col)
+                spins.append(s)
+            self._param_spins[key] = spins
+        root.addWidget(pg)
+
+        # ── Sweep settings ────────────────────────────────────────────────────
+        sg = QtWidgets.QGroupBox("Sweep Settings")
+        sg.setStyleSheet("QGroupBox { font-weight: bold; }")
+        fl = QtWidgets.QFormLayout(sg)
+
+        self._spin_settle = QtWidgets.QSpinBox()
+        self._spin_settle.setRange(100, 30000)
+        self._spin_settle.setValue(1000)
+        self._spin_settle.setSuffix(" ms")
+        self._spin_settle.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
+        self._spin_settle.setToolTip(_make_tooltip(
+            "Settling time",
+            "Time to wait after applying each combo before collecting samples. "
+            "Allows the TIA/amplifier chain to reach steady state (default: 1000 ms)."))
+
+        self._spin_samples = QtWidgets.QSpinBox()
+        self._spin_samples.setRange(10, 10000)
+        self._spin_samples.setValue(500)
+        self._spin_samples.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
+        self._spin_samples.setToolTip(_make_tooltip(
+            "Samples per combo",
+            "Number of M1 frames to collect per combination for statistics. "
+            "At 500 Hz, 500 samples = 1 s of data (default: 500)."))
+
+        csv_row = QtWidgets.QHBoxLayout()
+        self._edit_csv = QtWidgets.QLineEdit("afe_char_test.csv")
+        self._edit_csv.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
+        self._edit_csv.setToolTip(_make_tooltip(
+            "Output CSV",
+            "Path to the output CSV file. If the file already exists the new rows are "
+            "appended (header is written only once). Use Browse to pick a location."))
+        btn_browse = QtWidgets.QPushButton("Browse…")
+        btn_browse.setStyleSheet("background-color:#303030; color:#E0E0E0; font-size:24px;")
+        btn_browse.clicked.connect(self._browse_csv)
+        csv_row.addWidget(self._edit_csv)
+        csv_row.addWidget(btn_browse)
+
+        fl.addRow("Settling time:", self._spin_settle)
+        fl.addRow("Samples / combo:", self._spin_samples)
+        fl.addRow("Output CSV:", csv_row)
+        root.addWidget(sg)
+
+        # ── Control / progress ────────────────────────────────────────────────
+        cg = QtWidgets.QGroupBox("Control")
+        cg.setStyleSheet("QGroupBox { font-weight: bold; }")
+        cl = QtWidgets.QVBoxLayout(cg)
+
+        self._progress = QtWidgets.QProgressBar()
+        self._progress.setRange(0, 162)
+        self._progress.setValue(0)
+        self._progress.setFormat("%v / %m combos")
+        self._progress.setStyleSheet(
+            "QProgressBar { background:#202020; color:#E0E0E0; border:1px solid #555; border-radius:3px; }"
+            "QProgressBar::chunk { background:#4CAF50; }")
+
+        self._lbl_status = QtWidgets.QLabel("Idle — press START SWEEP to begin")
+        self._lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+        self._lbl_status.setStyleSheet("color:#AAAAAA;")
+
+        self._btn_start = QtWidgets.QPushButton("START SWEEP")
+        self._btn_start.setCheckable(True)
+        self._btn_start.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_start.setToolTip(_make_tooltip(
+            "START / STOP SWEEP",
+            "Starts the parametric sweep. Applies each (LED_mA, RF, RG, AMBDAC) combination "
+            "via $SET commands, waits for the settling time, then collects the configured "
+            "number of M1 samples to compute statistics. Results are appended to the CSV file. "
+            "Press again to abort."))
+        self._btn_start.clicked.connect(self._toggle_sweep)
+
+        cl.addWidget(self._progress)
+        cl.addWidget(self._lbl_status)
+        cl.addWidget(self._btn_start)
+        root.addWidget(cg)
+
+    # ── CSV path picker ───────────────────────────────────────────────────────
+    def _browse_csv(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save CSV", self._edit_csv.text(),
+            "CSV files (*.csv);;All files (*)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite)
+        if path:
+            self._edit_csv.setText(path)
+
+    # ── Sweep control ─────────────────────────────────────────────────────────
+    def _toggle_sweep(self):
+        if self._btn_start.isChecked():
+            self._start_sweep()
+        else:
+            self._stop_sweep("Stopped by user")
+
+    def _build_combos(self):
+        import itertools
+        combos = []
+        # For led/rf/rg: spins[0]=FIX, spins[1:]=VAR. For ambdac: all spins are VAR (no FIX).
+        amb_vals = sorted(set(s.value() for s in self._param_spins["ambdac"]))
+        for ch, led_key, rf_key, rg_key in [
+            ("LED1", "led1", "rf1", "rg1"),
+            ("LED2", "led2", "rf2", "rg2"),
+        ]:
+            led_vals = sorted(set(s.value() for s in self._param_spins[led_key][1:]))
+            rf_vals  = sorted(set(s.value() for s in self._param_spins[rf_key][1:]))
+            rg_vals  = sorted(set(s.value() for s in self._param_spins[rg_key][1:]))
+            for led, rf, rg, amb in itertools.product(led_vals, rf_vals, rg_vals, amb_vals):
+                combos.append((ch, led, rf, rg, amb))
+        return combos
+
+    def _start_sweep(self):
+        mm = self.main_monitor
+        serial_ok = mm is not None and hasattr(mm, 'ser') and mm.ser is not None and mm.ser.is_open
+        if not serial_ok:
+            self._lbl_status.setText("WARNING: no serial connection — $SET commands will not be sent")
+        self._combos    = self._build_combos()
+        self._combo_idx = 0
+        total = len(self._combos)
+        self._progress.setMaximum(total)
+        self._progress.setValue(0)
+        self._progress.setFormat(f"%v / {total} combos")
+        self._btn_start.setText("STOP SWEEP")
+        self._apply_combo(0)
+        import time
+        self._settle_end = time.monotonic() + self._spin_settle.value() / 1000.0
+        self._buf   = {sig: [] for sig in self._SIGNALS}
+        self._state = self._ST_SETTLING
+        self._lbl_status.setText(f"Settling combo 1/{total}…")
+        self._timer.start()
+
+    def _stop_sweep(self, reason="Done"):
+        self._timer.stop()
+        self._state = self._ST_IDLE
+        self._btn_start.setChecked(False)
+        self._btn_start.setText("START SWEEP")
+        self._lbl_status.setText(reason)
+
+    def _apply_combo(self, idx):
+        """Send $SET commands for combo at index idx.
+        Swept channel uses VAR values; other channel uses its FIX spin (index 0).
+        tiagain expects physical string (e.g. "100K"); stg2 expects "6dB"; ambdac expects int."""
+        ch, led, rf, rg, amb = self._combos[idx]
+        rf_str  = lambda i: self.TIA_GAINS[i]
+        rg_str  = lambda i: self.STG2_GAINS[i]
+        fix_rf  = lambda key: self._param_spins[key][0].value()
+        fix_rg  = lambda key: self._param_spins[key][0].value()
+        if ch == "LED1":
+            self._send_set("led1",     str(led))
+            self._send_set("tiagain1", rf_str(rf))
+            self._send_set("stg21",    rg_str(rg))
+            self._send_set("led2",     str(self._param_spins["led2"][0].value()))
+            self._send_set("tiagain2", rf_str(fix_rf("rf2")))
+            self._send_set("stg22",    rg_str(fix_rg("rg2")))
+        else:
+            self._send_set("led2",     str(led))
+            self._send_set("tiagain2", rf_str(rf))
+            self._send_set("stg22",    rg_str(rg))
+            self._send_set("led1",     str(self._param_spins["led1"][0].value()))
+            self._send_set("tiagain1", rf_str(fix_rf("rf1")))
+            self._send_set("stg21",    rg_str(fix_rg("rg1")))
+        self._send_set("ambdac", str(amb))
+
+    def _send_set(self, key: str, value: str):
+        mm = self.main_monitor
+        if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
+            return
+        payload = f"$SET,{key},{value}"
+        chk = 0
+        for c in payload[1:]:
+            chk ^= ord(c)
+        mm.ser.write(f"{payload}*{chk:02X}\r\n".encode())
+
+    # ── State machine tick ────────────────────────────────────────────────────
+    def _tick(self):
+        import time
+        now = time.monotonic()
+        total = len(self._combos)
+
+        if self._state == self._ST_SETTLING:
+            if now >= self._settle_end:
+                self._buf   = {sig: [] for sig in self._SIGNALS}
+                self._state = self._ST_MEASURING
+                ch = self._combos[self._combo_idx][0]
+                self._lbl_status.setText(
+                    f"Measuring combo {self._combo_idx + 1}/{total} ({ch}) — "
+                    f"0/{self._spin_samples.value()} smp")
+
+        elif self._state == self._ST_MEASURING:
+            n      = len(self._buf["IR"])
+            target = self._spin_samples.value()
+            ch     = self._combos[self._combo_idx][0]
+            self._lbl_status.setText(
+                f"Measuring combo {self._combo_idx + 1}/{total} ({ch}) — "
+                f"{n}/{target} smp")
+            if n >= target:
+                self._write_row()
+                self._combo_idx += 1
+                self._progress.setValue(self._combo_idx)
+                if self._combo_idx >= total:
+                    self._stop_sweep(f"Done — {total} combos written to {self._edit_csv.text()}")
+                    return
+                self._apply_combo(self._combo_idx)
+                self._settle_end = now + self._spin_settle.value() / 1000.0
+                self._buf   = {sig: [] for sig in self._SIGNALS}
+                self._state = self._ST_SETTLING
+                self._lbl_status.setText(
+                    f"Settling combo {self._combo_idx + 1}/{total}…")
+
+    # ── Sample feed (called from PPGMonitor per M1 frame) ─────────────────────
+    def feed_sample(self, red, ir, red_amb, ir_amb, red_sub, ir_sub):
+        if self._state != self._ST_MEASURING:
+            return
+        self._buf["RED"].append(red)
+        self._buf["IR"].append(ir)
+        self._buf["RED_Amb"].append(red_amb)
+        self._buf["IR_Amb"].append(ir_amb)
+        self._buf["RED_Sub"].append(red_sub)
+        self._buf["IR_Sub"].append(ir_sub)
+
+    # ── CSV row writer ────────────────────────────────────────────────────────
+    def _write_row(self):
+        import csv, datetime, math, os
+        ch, led, rf, rg, amb = self._combos[self._combo_idx]
+        rf_str = self.TIA_GAINS[rf]  if 0 <= rf < len(self.TIA_GAINS)  else str(rf)
+        rg_str = self.STG2_GAINS[rg] if 0 <= rg < len(self.STG2_GAINS) else str(rg)
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row = [now_str, ch, led, rf, rf_str, rg, rg_str, amb, len(self._buf["IR"])]
+        for sig in self._SIGNALS:
+            vals = self._buf[sig]
+            if vals:
+                n    = len(vals)
+                mn   = min(vals)
+                mx   = max(vals)
+                mean = sum(vals) / n
+                pp   = mx - mn
+                std  = math.sqrt(sum((v - mean) ** 2 for v in vals) / n)
+                row += [f"{mean:.2f}", f"{mn:.0f}", f"{mx:.0f}", f"{pp:.0f}", f"{std:.2f}"]
+            else:
+                row += ["0.00", "0", "0", "0", "0.00"]
+        path = self._edit_csv.text().strip() or "afe_char_test.csv"
+        write_header = not os.path.exists(path)
+        with open(path, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(self._CSV_HEADER)
+            w.writerow(row)
+
+    # ── Settings persistence ──────────────────────────────────────────────────
+    def _restore_settings(self):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        v = s.value("AFECharTestWindow/settle_ms", 1000, type=int)
+        self._spin_settle.setValue(v)
+        v = s.value("AFECharTestWindow/n_samples", 500, type=int)
+        self._spin_samples.setValue(v)
+        v = s.value("AFECharTestWindow/csv_path", "afe_char_test.csv", type=str)
+        self._edit_csv.setText(v)
+        for key, spins in self._param_spins.items():
+            for i, spin in enumerate(spins):
+                v = s.value(f"AFECharTestWindow/{key}_{i}", spin.value(), type=int)
+                spin.setValue(v)
+
+    def closeEvent(self, event):
+        if self._state != self._ST_IDLE:
+            self._stop_sweep("Window closed")
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("AFECharTestWindow/geometry",   self.saveGeometry())
+        s.setValue("AFECharTestWindow/settle_ms",  self._spin_settle.value())
+        s.setValue("AFECharTestWindow/n_samples",  self._spin_samples.value())
+        s.setValue("AFECharTestWindow/csv_path",   self._edit_csv.text())
+        for key, spins in self._param_spins.items():
+            for i, spin in enumerate(spins):
+                s.setValue(f"AFECharTestWindow/{key}_{i}", spin.value())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_afe_char.setChecked(False)
+            self.main_monitor.afe_char_window = None
+        super().closeEvent(event)
+
+
 class UdpComWindow(QtWidgets.QWidget):
     """Floating window with the raw UDP WiFi stream console."""
 
@@ -7411,6 +7826,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.python_timing_window   = None
         self.hw_config_window = None
         self.diag_window      = None
+        self.afe_char_window  = None
         self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
         # Render throttle rates (relative to 50ms _render_timer ticks)
         self._PPGPLOTS_REFRESH_EVERY  = 1   # 20 Hz — smooth plot animation
@@ -7839,6 +8255,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "the AFE4490 built-in diagnostic sequence (~10 ms) and reports LED, "
             "photodiode, and cable fault flags (datasheet section 8.4.3.3)."))
         self.sidebar_layout.addWidget(self.btn_diagnostics)
+
+        self.btn_afe_char = QtWidgets.QPushButton("AFE CHAR")
+        self.btn_afe_char.setCheckable(True)
+        self.btn_afe_char.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_afe_char.clicked.connect(self.toggle_afe_char)
+        self.btn_afe_char.setToolTip(_make_tooltip(
+            "AFE CHAR TEST — parametric sweep",
+            "Opens the AFE characterisation sweep window. Sweeps 3 levels each of "
+            "LED current, TIA gain (RF), stage-2 gain (RG) and ambient DAC for both "
+            "LED1 and LED2 (162 combos total). Records mean/min/max/pp/std of all "
+            "six raw ADC channels per combo to a CSV file for offline analysis."))
+        self.sidebar_layout.addWidget(self.btn_afe_char)
 
         self.sidebar_layout.addStretch()
 
@@ -8327,6 +8755,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.diag_window.close()
                 self.diag_window = None
 
+    def _open_afe_char_default(self):
+        self.btn_afe_char.setChecked(True)
+        self.toggle_afe_char()
+
+    def toggle_afe_char(self):
+        if self.btn_afe_char.isChecked():
+            self.afe_char_window = AFECharTestWindow(self)
+            self.afe_char_window.show()
+        else:
+            if self.afe_char_window is not None:
+                self.afe_char_window.main_monitor = None
+                self.afe_char_window.close()
+                self.afe_char_window = None
+
     def _open_lab_capture_default(self):
         self.btn_lab_capture.setChecked(True)
         self.toggle_lab_capture()
@@ -8492,6 +8934,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/python_timing_open",  self.python_timing_window  is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
         s.setValue("PPGMonitor/diagnostics_open", self.diag_window         is not None)
+        s.setValue("PPGMonitor/afe_char_open",    self.afe_char_window     is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
         # Persist geometry of all open subwindows (survives taskkill; also saved in their closeEvent)
         if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",    self.ppgplots_window.saveGeometry())
@@ -8510,6 +8953,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.python_timing_window is not None: s.setValue("PythonTimingWindow/geometry", self.python_timing_window.saveGeometry())
         if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
         if self.diag_window          is not None: s.setValue("DiagnosticsWindow/geometry",  self.diag_window.saveGeometry())
+        if self.afe_char_window      is not None: s.setValue("AFECharTestWindow/geometry",  self.afe_char_window.saveGeometry())
         if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
 
     def _restore_settings(self):
@@ -8837,6 +9281,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.log(line.lstrip('# '))
                         elif line.startswith('# SYS:'):
                             self.log(line[6:].strip())
+                        elif line.startswith('# WiFi') or line.startswith('#   ['):
+                            self.log(line[2:].strip())
+                            # Persist last working SSID to ini ("# WiFi connected [SSID] —...")
+                            import re as _re
+                            _m = _re.match(r'# WiFi connected \[([^\]]+)\]', line)
+                            if _m:
+                                QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
+                                    "PPGMonitor/last_wifi_ssid", _m.group(1))
                         continue
 
                     current_time_perf = time.perf_counter()
@@ -9010,6 +9462,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # IR_Sub for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
+                            if self.afe_char_window is not None:
+                                self.afe_char_window.feed_sample(
+                                    p[2], p[3], p[4], p[5], p[6], p[7])
                             # Integrity check: RED_Sub and IR_Sub must equal hardware-subtracted values
                             red_sub_exp = int(p[2]) - int(p[4])   # RED - RED_Amb
                             ir_sub_exp  = int(p[3]) - int(p[5])   # IR  - IR_Amb
@@ -9277,6 +9732,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hw_config_default)
         if s.value("PPGMonitor/diagnostics_open",  False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_diagnostics_default)
+        if s.value("PPGMonitor/afe_char_open",     False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_afe_char_default)
         if s.value("PPGMonitor/labcapture_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_lab_capture_default)
         QtCore.QTimer.singleShot(300, self._bring_all_to_front)
@@ -9294,7 +9751,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
                   self.hr3test_window, self.esp32_timing_window, self.hw_config_window,
-                  self.diag_window, self.lab_capture_window]:
+                  self.diag_window, self.afe_char_window, self.lab_capture_window]:
             if w is not None:
                 w.show()
                 w.raise_()
@@ -9370,6 +9827,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.diag_window is not None:
             self.diag_window.main_monitor = None
             self.diag_window.close()
+        if self.afe_char_window is not None:
+            self.afe_char_window.main_monitor = None
+            self.afe_char_window.close()
         if self.lab_capture_window is not None:
             self.lab_capture_window.main_monitor = None
             self.lab_capture_window.close()

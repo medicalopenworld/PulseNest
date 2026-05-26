@@ -7125,3 +7125,370 @@ Razón: el nombre genérico no reflejaba que aplica exclusivamente al canal de d
 **Pendiente:** incluir en el próximo commit junto con otros cambios menores, o hacer commit independiente.
 
 ---
+
+## Sesión 2026-05-23a
+
+### Tema: Multi-WiFi fallback en wifi_config.h y main.cpp
+
+**Contexto:** Alex trabaja en una ubicación diferente con una WiFi distinta (RAPTURE_5G) y necesita que el firmware conecte automáticamente a cualquiera de las dos redes disponibles.
+
+**Cambios realizados:**
+
+**`include/wifi_config.h`:**
+- Eliminados `#define WIFI_SSID`, `#define WIFI_PASSWORD`, `#define UDP_TARGET_IP`
+- Añadido struct `WifiNetwork { ssid, password, udp_target_ip }`
+- Array `WIFI_NETWORKS[]` con dos entradas:
+  - `{ "ACM-ASUS-RT-B50", "retuerta", "192.168.50.88" }` — Lab
+  - `{ "RAPTURE_5G",      "retuerta", "192.168.50.88" }` — Remote site
+- `WIFI_NETWORK_COUNT` calculado con sizeof
+- `UDP_TARGET_PORT` y `UDP_BATCH_SIZE` conservados como defines
+
+**`src/main.cpp`:**
+- Nueva global `static const char* g_udp_target_ip = nullptr` — se asigna al conectar
+- Bloque de conexión WiFi reemplazado por loop sobre `WIFI_NETWORKS[]`: prueba cada red 10 s (20 × 500 ms), `WiFi.disconnect()` si falla, continúa con la siguiente
+- `UDP_TARGET_IP` reemplazado por `g_udp_target_ip` en `beginPacket()` y en el `Serial.printf` de confirmación
+- Mensaje Serial por red: `"# WiFi trying [N/M] SSID..."` / `"# WiFi FAILED for SSID"` / `"# WiFi FAILED all networks"`
+
+**Para añadir redes futuras:** una línea más en el array `WIFI_NETWORKS[]`, sin tocar main.cpp.
+
+---
+
+## Sesión 2026-05-23b
+
+### Tema: Fix — mensajes WiFi no aparecían en el log principal del script
+
+**Problema:** tras el reset del ESP32 con el botón "RESET ESP32", los mensajes `# WiFi trying...`, `# WiFi connected...` y `# WiFi FAILED...` no aparecían en el log principal de `pulsenest_lab.py`. Sí llegaban al COM window (raw), pero el bloque de procesamiento de líneas `#` solo loguea explícitamente:  `# ...incunest...`, `# ...frame mode...`, `# SYS:...`
+
+**Fix (`pulsenest_lab.py` línea ~8839):** añadido `elif line.startswith('# WiFi'): self.log(line[2:].strip())` para que todos los mensajes WiFi del firmware aparezcan en el log principal.
+
+---
+
+## Sesión 2026-05-23c
+
+### Tema: Diagnóstico fallo WiFi RAPTURE_5G — scan + razón de fallo
+
+**Problema:** el ESP32 no conectaba a RAPTURE_5G. Hipótesis principal: el ESP32-S3 solo tiene radio 2.4 GHz — si RAPTURE_5G es una red de 5 GHz, el chip no puede verla.
+
+**Cambios firmware (`src/main.cpp`):**
+- Añadido escaneo de redes visibles (`WiFi.scanNetworks()`) antes del primer intento de conexión. Imprime SSID, RSSI y canal de cada red visible en el log.
+- Añadido `switch(WiFi.status())` tras fallo de conexión con razones legibles: `SSID_NOT_FOUND`, `CONNECT_FAILED`, `CONNECTION_LOST`, `DISCONNECTED`, `UNKNOWN`.
+
+**Cambios script (`pulsenest_lab.py`):**
+- Extendida la condición de log para mostrar también las líneas `#   [N]` del scan de redes.
+
+**Diagnóstico esperado:** si RAPTURE_5G no aparece en el scan → confirmado 5 GHz → solución: usar el SSID equivalente 2.4 GHz del router (buscar en config del router ASUS Rapture).
+
+---
+
+## Sesión 2026-05-23d
+
+### Tema: Corrección SSID WiFi — RAPTURE_5G → RAPTURE
+
+**Diagnóstico confirmado:** el escaneo del firmware reveló que RAPTURE_5G no aparecía en las redes 2.4 GHz visibles. El SSID correcto para 2.4 GHz es "RAPTURE".
+
+**Cambio (`include/wifi_config.h`):** `"RAPTURE_5G"` → `"RAPTURE"` (con comentario `// Remote site (2.4 GHz)`).
+
+**Flash:** build exitoso, upload fallido por COM15 ocupado (script abierto). Pendiente reflashear con puerto libre.
+
+---
+
+## Sesión 2026-05-25a
+
+### Tema: HGAC — constantes TIA operating range en incunest_afe4490.cpp
+
+**Contexto:**
+Continuación de la sesión anterior (2026-05-21d). Análisis de arquitectura AFE4490 completado en sesión anterior: AMBDAC actúa en Stage 2 (después de TIA), no antes. TIA full-scale = ±1 V, ADC full-scale = ±1.2 V.
+
+**Cambios firmware (`incunest_afe4490/incunest_afe4490.cpp`):**
+- Añadidas dos constantes en el anonymous namespace (sección HGAC):
+  - `hgac_tia_sat_adc = 1747626` — ADC count correspondiente a +1.0 V diferencial en salida TIA (saturación TIA, alarma)
+  - `hgac_tia_ideal_adc = 1048576` — ADC count correspondiente a +0.6 V diferencial en salida TIA (Ideal Operating Point, Fig. 135 datasheet)
+- Fórmula: `count = round(V / 1.2 × 2^21)`. Nota: 1048576 = 2²⁰ exacto (0.6/1.2 = 0.5).
+- Referencia: AFE4490 datasheet Fig. 135 ("AGC Loop"), §9.2.2. Válido a Stage 2 gain = 0 dB.
+
+**Decisiones:**
+- Las constantes van en el anonymous namespace del .cpp (no en el .h), son internas al HGAC.
+- AMBDAC no puede corregir saturación TIA — solo RF↓ y LEDmA↓ actúan antes de la TIA.
+- Renombradas las constantes: `_counts` → `_adc` (`hgac_tia_sat_adc`, `hgac_tia_ideal_adc`).
+- Renombradas de nuevo: `_adc` → `_volt` (`hgac_tia_sat_volt = 1.0f`, `hgac_tia_ideal_volt = 0.6f`). Las constantes `_adc` solo eran válidas con Stage2 gain=0dB y AMBDAC=0; las `_volt` son siempre válidas.
+- Añadido comentario con fórmula completa de recuperación: `tia_volt = (adc * 1.2f / 2097152.0f) / rg_gain + ambdac_val * 0.2f`. Derivada de Eq.2 del datasheet. AMBDAC LSB = 1µA (valores 0–10), coeficiente 0.2V/step = 2 × Ri × 1µA = 2 × 100kΩ × 1µA. Cuando STAGE2EN=0: tia_volt = adc * 1.2f / 2097152.0f.
+- Confirmado leyendo datasheet (Fig. 115, pág. 75): AMBDAC[3:0] = 0–10 µA en pasos de 1µA; valores 11–15 = "do not use".
+- Confirmado leyendo datasheet (pág. 59, CONTROL0 bit D2): DIAG_EN se auto-limpia al terminar el diagnóstico (slow=16ms, fast=8ms) → tarea project_diag_en_poll_task resuelta.
+- Añadida constante `hgac_tia_thr_volt = 0.9f` — threshold para reducir LEDmA/RF antes de llegar a saturación TIA (0.9V, entre _thr y _sat). Las tres constantes: sat=1.0V (hard limit), thr=0.9V (soft threshold LEDmA/RF), ideal=0.6V (operating point).
+
+**Sesión 2026-05-25b — análisis Fig. 135 y dominio de hgac_tia_ideal_volt**
+
+- Debate: ¿el "Ideal Operating Point" de +0.6V en Fig. 135 es V_TIA o V_ADC?
+- §9.2.2 dice "target dc voltage at the ADC input to approximately 50% of full scale" → apuntaba a V_ADC.
+- Decisión final: **mantener `hgac_tia_ideal_volt = 0.6f` como V_TIA**. Razones:
+  - **Seguridad**: restricciones TIA (±1V) y target en el mismo dominio — sin conversiones propensas a error.
+  - **Fidelidad**: la TIA es la primera etapa; el SNR se establece aquí. Mantener 0.6V en TIA maximiza señal en el punto crítico, independientemente de Stage 2.
+  - **Linealidad**: la especificación de linealidad es referida a la salida TIA (±1V); operar al 60% garantiza linealidad. Con target V_ADC y Stage 2 gain=2, el TIA operaría al 30% — subóptimo.
+- Fig. 135 mezcla dominios porque asume Stage 2 gain=1 (por defecto), donde V_ADC = V_TIA y la distinción desaparece. La figura es ambigua para Stage 2 activo.
+- Las tres constantes `hgac_tia_*` son todas V_TIA y se comparan contra `tia_volt` (fórmula de recuperación). No mezclar con lecturas ADC directas.
+
+---
+
+## Sesión 2026-05-23e
+
+### Tema: NVS last_net + quitar WiFi scan + last_wifi_ssid en ini
+
+**Cambios firmware (`src/main.cpp`):**
+- Añadido `#include <Preferences.h>`
+- Eliminado bloque de scan WiFi (`WiFi.scanNetworks()`)
+- Añadida lógica NVS con `Preferences` namespace "pulsenest", key "last_net" (int):
+  - Al boot: lee `last_net` (default 0), el loop empieza por ese índice con `(last + i) % WIFI_NETWORK_COUNT`
+  - Tras conexión exitosa: guarda el índice en NVS para el siguiente boot
+- Mensaje "WiFi connected" ahora incluye SSID entre corchetes: `# WiFi connected [SSID] — IP ...`
+- Flash pendiente (COM15 ocupado al intentar)
+
+**Cambios script (`pulsenest_lab.py`):**
+- En el handler de líneas `# WiFi`: detecta "WiFi connected [SSID]" con regex, guarda `PPGMonitor/last_wifi_ssid` en pulsenest_lab.ini
+
+---
+
+---
+
+## Sesión 2026-05-25c
+
+### Tema: Convención de nombres led1/led2 vs ir/red — formalización y aplicación
+
+**Regla formalizada:**
+- `_led1/_led2` = lecturas crudas del hardware (sin filtrar ni procesar). Se usan en: registros AFE4490, structs de datos hardware (`AFE4490Data`), parámetros de funciones que reciben valores directamente del ADC, HGAC (controlador hardware puro).
+- `_ir/_red` = valores procesados/interpretados dentro de algoritmos fisiológicos (SpO2, HR). El nombre sigue al dato, no a la función.
+- En la frontera hardware→algoritmo: el parámetro de la función usa el nombre hardware (`led1_aled1`); la primera línea dentro del algoritmo lo convierte a nombre funcional (`float ir = (float)led1_aled1`).
+
+**Revisión de la librería:**
+- `_spo2_dc_ir`, `_spo2_dc_red`, etc. — 100% coherentes, todos en dominio SpO2. Sin cambios.
+- SpO2 ya hacía la conversión en la frontera: `float ir = ...; float red = ...;` en `_update_spo2()`.
+- HR1/HR2/HR3: parámetros `led1_aled1` correctos (valor crudo), pero internamente no tenían conversión explícita.
+
+**Cambios en `incunest_afe4490.cpp`:**
+- `_update_hr1()`: `float s = (float)led1_aled1` → `float ir = (float)led1_aled1` (y sus usos `s` → `ir`)
+- `_update_hr2_sample()`: añadido `float ir = (float)led1_aled1;`, sustituido inline cast
+- `_update_hr3_sample()`: añadido `float ir = (float)led1_aled1;`, sustituido inline cast
+- Wrappers `_update_hr2()` / `_update_hr3()`: sin cambios (reenvían el parámetro sin usarlo directamente)
+
+**HGAC:** usa `_led1/_led2` en todo su dominio (incluyendo señales procesadas como `sig_led1_pct`, `tia_led1`) porque es un controlador de hardware puro, no un algoritmo fisiológico.
+
+**Ficheros de memoria actualizados:** `MEMORY.md`, `project_naming_convention_task.md` (status: done), `project_agc_design.md` (HGACInput struct).
+
+---
+
+## Sesión 2026-05-26a
+
+### Tema: Revisión convención nombres led1/led2 vs ir/red + diseño detallado HGAC
+
+**Convención de nombres — regla formalizada:**
+- `_led1/_led2` = lecturas crudas del hardware (sin filtrar ni procesar), incluyendo todo el dominio HGAC.
+- `_ir/_red` = valores procesados/interpretados dentro de algoritmos fisiológicos (SpO2, HR).
+- En la frontera hardware→algoritmo: parámetro de la función usa nombre hardware (`led1_aled1`);
+  primera línea dentro del algoritmo convierte a nombre funcional (`float ir = (float)led1_aled1`).
+- SpO2 ya lo hacía correctamente. HR1/HR2/HR3 corregidos en esta sesión.
+- HGAC usa `_led1/_led2` en todo su dominio (es controlador hardware puro, no algoritmo fisiológico):
+  `amb_led1_pct`, `amb_led2_pct`, `sig_led1_pct`, `sig_led2_pct`, `pi_led1`, `tia_led1`, `tia_led2`.
+
+**Cambios en `incunest_afe4490.cpp`:**
+- `_update_hr1()`: `float s = (float)led1_aled1` → `float ir = (float)led1_aled1` (y usos de `s` → `ir`)
+- `_update_hr2_sample()`: añadido `float ir = (float)led1_aled1;`, sustituido inline cast
+- `_update_hr3_sample()`: añadido `float ir = (float)led1_aled1;`, sustituido inline cast
+
+**Diseño detallado HGAC (propuesta, no implementado):**
+
+Arquitectura:
+- Inline en `_process_sample()` (Task A). No es FreeRTOS task separada.
+- Acumula ventana de 500 ms (250 muestras @ 500 Hz), evalúa al final, una acción por ventana.
+- Depende de RSQM (prerrequisito).
+
+Estructuras:
+- `HGACWindowStats`: amb_led1/led2_pct, sig_led1/led2_pct, pi_led1, diag_accum, n_samples, n_invalid.
+- Nuevos campos en `AFE4490Config`: hgac_enabled (default false) + 12 parámetros hgac_*.
+- Nuevo campo en `AFE4490Data`: hgac_diag (HGAC_CANNOT_COMPENSATE | HGAC_SIGNAL_DEAD).
+- Estimador mediana: algoritmo P² (5 marcadores, O(1)/muestra, ~160 bytes RAM total).
+
+Prioridades de actuación:
+- P1 AMB_SAT (>70%): AMBDAC++ → RF-- → HGAC_CANNOT_COMPENSATE
+- P2 SIG_SAT (>85%): LED proporcional↓ (max ÷2/paso) → RF--
+- P3 AMB_RECOVERY (<10%, persistencia 2s): AMBDAC--
+- P4 SIG_WEAK (<20%): LED proporcional↑ (max ×2/paso) → RF++ → STG2++ → HGAC_SIGNAL_DEAD
+- Guardianes: no actuar si artefacto (n_invalid > 50%), NO_TISSUE, CABLE_DISCONNECTED.
+- Settling: AMBDAC/LED = 50 ms, RF/STG2 = 150 ms; durante settling → RSQM_HW_SETTLING activo.
+
+Decisiones pendientes de confirmar:
+- hgac_diag en AFE4490Data o getter separado.
+- P² vs buffer+sort para mediana.
+- Actuar sobre canal más problemático o ambos simultáneamente en P4.
+- Helper _rf_step_up/down(channel) para operar sobre enum AFE4490TIAGain.
+
+**Nueva tarea pendiente:** investigar leakage de LED2 en ALED2:
+- ALED2 varía con ALED2STC y con LED2(mA) → hipótesis: cola de extinción del LED contamina
+  la ventana de ambient si el dead-time t4(LED2LEDENDC)→t5(ALED2STC) es insuficiente.
+- Implicación HGAC: amb_led2_pct podría estar contaminada → actuaciones P1/P3 incorrectas.
+- Investigar: fall time típico LED IR, constraints de timing datasheet Table 2, gap mínimo t4→t5.
+
+**Ficheros de memoria actualizados:**
+- MEMORY.md, project_naming_convention_task.md (status:done), project_agc_design.md (HGACInput renombrado), project_led_leakage_task.md (nueva).
+
+## Sesión 2026-05-26a
+
+### Tema: Diseño ventana AFE Characterization Test
+
+**Contexto:** Alex quiere una nueva ventana de test en pulsenest_lab.py que barre combinaciones de parámetros HW (LED_mA, RF, RG, AMBDAC) y guarda estadísticas de las señales en CSV para análisis offline en distintas condiciones (sonda desconectada, luz ambiental alta, etc.).
+
+**Diseño acordado (pendiente implementación):**
+- Sweep: 3 valores (min/mid/max) × 4 parámetros = 81 combinaciones por canal (LED1 y LED2)
+- Estadísticas por señal (LED1, LED2, ALED1, ALED2): Mean, Min, Max, PP (Max-Min), StdDev
+- CF se registra automáticamente (calculado por librería a partir de RF)
+- Settle time configurable (default 200 ms) antes de cada medida
+- N_samples: número real de muestras capturadas en el intervalo
+- Condition/description: dropdown con presets + texto libre (primera columna del CSV)
+- Progreso + ETA + botón Abort (81 × ~1.2 s ≈ ~2-3 min por canal)
+- Columnas CSV (~33): description, timestamp, channel_tested, led_mA, rf_enum, rf_ohm, rg_enum, ambdac, cf_pF, fixed_other_channel_params, settle_ms, interval_ms, n_samples, + 5 stats × 4 señales
+
+**Preguntas abiertas antes de implementar:**
+1. Valores min/mid/max concretos para cada parámetro (LED_mA, RF, RG, AMBDAC)
+2. ¿Sweep automático o manual combinación a combinación?
+3. ¿Un CSV por sesión de test o uno por condición?
+
+---
+
+## Sesión 2026-05-26a
+
+### Tema: Implementación AFECharTestWindow + multi-WiFi firmware
+
+**Cambios en pulsenest_lab.py:**
+
+- **AFECharTestWindow** (nueva clase, ~250 líneas):
+  - Sweep paramétrico: 3 niveles (min/mid/max) × 4 parámetros (LED_mA, RF, RG, AMBDAC) × 2 canales (LED1, LED2) = 162 combos
+  - 7 grupos de spins: led1, led2, rf1, rf2, rg1, rg2, ambdac (3 spins cada uno = 21 spins totales)
+  - RF/RG: índices enteros (RF: 0-6 → TIA_GAINS, RG: 0-4 → STG2_GAINS); leyenda visible en ventana
+  - Valores por defecto: LED mA=[5,20,50], RF=[2,4,6], RG=[0,2,4], AMBDAC=[0,3,6]
+  - Settling time: configurable (100–30000 ms, default 1000 ms)
+  - Samples/combo: configurable (10–10000, default 500)
+  - CSV: append mode si ya existe, header solo en fichero nuevo; 39 columnas (9 meta + 5 stats × 6 señales)
+  - Estado: IDLE → SETTLING → MEASURING → (siguiente combo o fin)
+  - `feed_sample(red, ir, red_amb, ir_amb, red_sub, ir_sub)` llamado desde PPGMonitor por cada frame M1
+  - `_send_set` solo envía si serial abierto (sin UDP — los $SET van por serial)
+  - Deduplicación de valores con `sorted(set(...))` en `_build_combos` via itertools.product
+  - Settings persistidos en INI: geometry, settle_ms, n_samples, csv_path, todos los spins
+  - Botón sidebar: **AFE CHAR** (checkable), tooltip descriptivo
+
+- **PPGMonitor** — hooks añadidos:
+  - `self.afe_char_window = None` en __init__
+  - `btn_afe_char` en sidebar (después de DIAGNOSTICS, antes de addStretch)
+  - `toggle_afe_char()` + `_open_afe_char_default()` métodos
+  - `feed_sample` call en `_process_frames_tick` (tras hr3test_calc.update)
+  - Save/restore settings: `PPGMonitor/afe_char_open`, `AFECharTestWindow/geometry`
+  - `_bring_all_to_front`: afe_char_window añadido
+  - `closeEvent`: afe_char_window cerrada y limpiada
+
+**Decisiones de diseño:**
+- Sweep completamente automático (no manual combo a combo)
+- Un solo CSV, append mode (no uno por condición)
+- Sin columna "condition/description" (simplificado respecto al diseño previo)
+- Valores fijos del otro canal durante el sweep = los que tenga el HW Config en ese momento (no se tocan)
+- RF/RG como índices enteros (no strings) con leyenda en ventana
+- 39 columnas CSV (no 33 ni 38 del diseño previo)
+
+---
+
+## Sesión 2026-05-26b
+
+### Tema: AFECharTestWindow — columna FIX + tamaños de fuente
+
+**Cambios en pulsenest_lab.py (AFECharTestWindow):**
+
+- **Columna FIX añadida**: cada fila de parámetro pasa de 3 spins (min/mid/max) a 4 spins (FIX, VAR min, VAR mid, VAR max).
+  - FIX = valor que se aplica a ese parámetro cuando se está barriendo el OTRO canal
+  - VAR min/mid/max = los tres valores que se barren cuando ESTE canal es el activo
+  - AMBDAC FIX deshabilitado (AMBDAC siempre se barre en ambos canales)
+  - Cabeceras de columna: "", "FIX", "VAR min", "VAR mid", "VAR max"
+
+- **`_PARAMS`**: defaults ampliados a 4 valores [fix_def, var_min_def, var_mid_def, var_max_def]:
+  - LED mA: [20, 5, 20, 50]; RF: [4, 2, 4, 6]; RG: [2, 0, 2, 4]; AMBDAC: [3, 0, 3, 6]
+
+- **`_build_combos`**: usa `spins[1:]` (VAR) — el FIX (índice 0) se excluye del producto cartesiano
+
+- **`_apply_combo`**: ahora envía también los $SET del canal no barrido usando sus FIX spins:
+  - LED1 sweep → envía led1/tiagain1/stg21 (VAR) + led2/tiagain2/stg22 (FIX)
+  - LED2 sweep → envía led2/tiagain2/stg22 (VAR) + led1/tiagain1/stg21 (FIX)
+
+- **Fuentes aumentadas**: ventana 14→18px, GroupBox 13→16px, leyenda índices 12→15px; spin width 68→82px; resize default 560→700px
+
+---
+
+## Sesión 2026-05-26c
+
+### Tema: AFECharTestWindow — eliminar spin FIX desactivado de AMBDAC
+
+**Pregunta:** ¿Por qué hay un control desactivado en la fila AMBDAC, columna FIX?
+
+**Diagnóstico:** Se añadió para mantener uniformidad visual de la cuadrícula, pero un control desactivado implica "podría activarse", lo cual es confuso y no aporta nada.
+
+**Solución:** Celda FIX de AMBDAC simplemente vacía (sin widget). AMBDAC pasa a tener 3 spins (VAR min/mid/max) en lugar de 4. Ajustes derivados:
+- `_build_combos`: `amb_vals` usa `spins[:]` (todos, ya que no hay FIX)
+- `_SS_SPIN_DIS` eliminada (sin uso)
+- `_restore_settings` / `closeEvent` sin cambio (iteran `enumerate(spins)`, funciona con 3 o 4)
+
+---
+
+## Sesión 2026-05-26d
+
+### Tema: AFECharTestWindow — fuente sigue siendo pequeña
+
+**Diagnóstico:** Qt no hereda `font-size` del stylesheet del padre cuando el widget hijo tiene su propio `setStyleSheet` (incluso si sólo define colores). El `font-size: 18px` en el stylesheet del QMainWindow no cascadeaba a los QSpinBox, QLabel, QGroupBox con stylesheets propios.
+
+**Solución:** `setFont()` en la ventana con `pixelSize=20` — este método sí propaga la fuente a todos los hijos independientemente de sus stylesheets. Eliminado `font-size` de todos los stylesheets individuales (GroupBoxes × 4, labels de leyenda) para que hereden del `setFont`.
+
+---
+
+## Sesión 2026-05-26e
+
+### Tema: AFECharTestWindow — fuente sigue pequeña + ventana ancha por Index Reference
+
+**Diagnóstico fuente:** `setFont()` y `setStyleSheet()` interfieren: cuando un widget hijo tiene su propio `setStyleSheet` (aunque sea solo colores), Qt no hereda el font del padre por ninguna vía. La única solución fiable es incluir `font-size` explícitamente en CADA widget que tenga `setStyleSheet` propio.
+
+**Solución fuente:** Eliminar `setFont()` de `__init__`. Usar `font-size: 24px` en el stylesheet del QMainWindow y también en cada widget con stylesheet propio (`_SS`, `_spin_settle`, `_spin_samples`, `_edit_csv`, `btn_browse`).
+
+**Solución anchura:** Eliminado el GroupBox "Index Reference". En su lugar, clase `_IndexSpin(QSpinBox)` que muestra `"idx  label"` (e.g. `"4  100K"` para RF, `"2  6dB"` para RG). `lineEdit().setReadOnly(True)` — solo flechas/scroll, sin edición manual. Anchos de spin: RF=115px, RG=110px, resto=85px.
+
+---
+
+## Sesión 2026-05-26f
+
+### Tema: AFECharTestWindow — dropdown para RF/RG/AMBDAC + formato con índice entre paréntesis
+
+**Cambios:**
+
+- `_IndexSpin` eliminado; reemplazado por `_ComboSpin(QComboBox)` con API `.value()`/`.setValue()` idéntica a QSpinBox — el resto del código no cambia.
+- RF1/RF2 → `_ComboSpin` con ítems `"10K (0)"`, `"25K (1)"`, …, `"1M (6)"` (magnitud física primero, índice de registro entre paréntesis). Ancho 160px.
+- RG1/RG2 → `_ComboSpin` con ítems `"0dB (0)"`, `"3.5dB (1)"`, …, `"12dB (4)"`. Ancho 145px.
+- AMBDAC → `_ComboSpin` con ítems `"0 µA"`, `"1 µA"`, …, `"10 µA"` (valor = índice de registro, sin redundancia). Ancho 130px.
+- LED1/LED2 → siguen siendo `QSpinBox` (rango 0-150 no tiene sentido en dropdown).
+- Stylesheet `_SS_COMBO` incluye `QComboBox QAbstractItemView` para el popup.
+
+---
+
+## Sesión 2026-05-26g
+
+### Tema: AFECharTestWindow — eliminar índice de registro del combo RF/RG
+
+**Observación:** El índice mostrado entre paréntesis (0-6 para RF, 0-4 para RG) no corresponde al valor real que escribe el AFE4490 en su registro (el firmware hace el mapeo internamente). Además es innecesario: el script envía `$SET,tiagain1,idx` con el índice 0-6 que el firmware mapea; el usuario solo necesita ver la magnitud física.
+
+**Cambio:** `_RF_ITEMS = list(self.TIA_GAINS)` → ["10K","25K","50K","100K","250K","500K","1M"]. `_RG_ITEMS = list(self.STG2_GAINS)` → ["0dB","3.5dB","6dB","9.5dB","12dB"]. El `currentIndex()` interno sigue siendo 0-6/0-4 (lo que se envía por $SET).
+
+---
+
+## Sesión 2026-05-26h
+
+### Tema: AFECharTestWindow — bug en _apply_combo: enviaba índice en lugar de string físico
+
+**Diagnóstico:** El firmware (`parse_tia_gain`, `parse_stage2` en main.cpp) espera strings físicos como `"100K"`, `"6dB"`, etc. — no índices numéricos 0-6. `HWConfigWindow` usa `currentText()` para construir el $SET. `AFECharTestWindow._apply_combo` enviaba `str(currentIndex())` (e.g. `"3"`) → el firmware respondía `$ERR,tiagain1,invalid`.
+
+**Fix en `_apply_combo`:**
+- `tiagain1/2`: ahora envía `TIA_GAINS[rf]` (e.g. `"100K"`)
+- `stg21/22`: ahora envía `STG2_GAINS[rg]` (e.g. `"6dB"`)
+- FIX values: `rf_str(fix_rf("rf2"))` → `TIA_GAINS[param_spins["rf2"][0].currentIndex()]`
+- `ambdac`: sigue enviando entero (correcto — firmware espera int 0-10)
+
+---
