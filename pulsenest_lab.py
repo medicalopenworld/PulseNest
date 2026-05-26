@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 from pathlib import Path
 import serial
 from serial.tools import list_ports
@@ -6364,18 +6365,18 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.graphics_layout = pg.GraphicsLayoutWidget()
         plots_vbox.addWidget(self.graphics_layout, stretch=1)
 
-        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
-        self.curve_red      = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
-        self.curve_red_amb  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
-        self.curve_red_sub  = self.p1.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
+        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
+        self.curve_ir      = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
+        self.curve_ir_amb  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
+        self.curve_ir_sub  = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
         self.p1.showGrid(x=True, y=True, alpha=0.3)
 
         self.graphics_layout.nextRow()
 
-        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
-        self.curve_ir      = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
-        self.curve_ir_amb  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
-        self.curve_ir_sub  = self.p2.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
+        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
+        self.curve_red      = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
+        self.curve_red_amb  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
+        self.curve_red_sub  = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
         self.p2.showGrid(x=True, y=True, alpha=0.3)
 
         # Bottom row: PPG | SpO2 | HR in a plain QHBoxLayout with pg.PlotWidget
@@ -6570,19 +6571,19 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.graphics_layout = pg.GraphicsLayoutWidget()
         root.addWidget(self.graphics_layout)
 
-        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
-        self.curve_red     = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
-        self.curve_red_amb = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
-        self.curve_red_sub = self.p1.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
+        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
+        self.curve_ir     = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
+        self.curve_ir_amb = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
+        self.curve_ir_sub = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
         self.p1.showGrid(x=True, y=True, alpha=0.3)
         self.p1.getAxis('left').setWidth(80)
 
         self.graphics_layout.nextRow()
 
-        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
-        self.curve_ir     = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
-        self.curve_ir_amb = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
-        self.curve_ir_sub = self.p2.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
+        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
+        self.curve_red     = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
+        self.curve_red_amb = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
+        self.curve_red_sub = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
         self.p2.showGrid(x=True, y=True, alpha=0.3)
         self.p2.getAxis('left').setWidth(80)
 
@@ -6811,7 +6812,7 @@ class _ComboSpin(QtWidgets.QComboBox):
         self.setCurrentIndex(v)
 
 
-class AFECharTestWindow(QtWidgets.QMainWindow):
+class AFESweepTestWindow(QtWidgets.QMainWindow):
     """Parametric sweep: sweeps (LED_mA x RF x RG x AMBDAC) for LED1 then LED2,
     recording raw ADC statistics (mean/min/max/pp/std) per combo to a CSV file.
     Total: 3^4 * 2 channels = 162 combos."""
@@ -6864,9 +6865,9 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__(parent=None)
         self.main_monitor = main_monitor
-        self.setWindowTitle("AFE CHAR TEST")
+        self.setWindowTitle("AFE SWEEP TEST")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 24px;")
-        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("AFECharTestWindow/geometry")
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("AFESweepTestWindow/geometry")
         if geom:
             self.restoreGeometry(geom)
         else:
@@ -6977,7 +6978,7 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
             "50 samples = 1 s of data — sufficient for stable DC/AC statistics (default: 50)."))
 
         csv_row = QtWidgets.QHBoxLayout()
-        self._edit_csv = QtWidgets.QLineEdit("afe_char_test.csv")
+        self._edit_csv = QtWidgets.QLineEdit("afe_sweep_test.csv")
         self._edit_csv.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
         self._edit_csv.setToolTip(_make_tooltip(
             "Output CSV",
@@ -7255,7 +7256,7 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
         for stat_idx in range(5):
             for sig in self._SIGNALS:
                 row.append(stats[sig][stat_idx])
-        path = self._edit_csv.text().strip() or "afe_char_test.csv"
+        path = self._edit_csv.text().strip() or "afe_sweep_test.csv"
         write_header = not os.path.exists(path)
         with open(path, "a", newline="") as f:
             w = csv.writer(f)
@@ -7266,34 +7267,34 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
     # ── Settings persistence ──────────────────────────────────────────────────
     def _restore_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        v = s.value("AFECharTestWindow/settle_ms", 200, type=int)
+        v = s.value("AFESweepTestWindow/settle_ms", 200, type=int)
         self._spin_settle.setValue(v)
-        v = s.value("AFECharTestWindow/n_samples", 50, type=int)
+        v = s.value("AFESweepTestWindow/n_samples", 50, type=int)
         self._spin_samples.setValue(v)
-        v = s.value("AFECharTestWindow/csv_path", "afe_char_test.csv", type=str)
+        v = s.value("AFESweepTestWindow/csv_path", "afe_sweep_test.csv", type=str)
         self._edit_csv.setText(v)
-        v = s.value("AFECharTestWindow/label", "", type=str)
+        v = s.value("AFESweepTestWindow/label", "", type=str)
         self._edit_label.setText(v)
         for key, spins in self._param_spins.items():
             for i, spin in enumerate(spins):
-                v = s.value(f"AFECharTestWindow/{key}_{i}", spin.value(), type=int)
+                v = s.value(f"AFESweepTestWindow/{key}_{i}", spin.value(), type=int)
                 spin.setValue(v)
 
     def closeEvent(self, event):
         if self._state != self._ST_IDLE:
             self._stop_sweep("Window closed")
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        s.setValue("AFECharTestWindow/geometry",   self.saveGeometry())
-        s.setValue("AFECharTestWindow/settle_ms",  self._spin_settle.value())
-        s.setValue("AFECharTestWindow/n_samples",  self._spin_samples.value())
-        s.setValue("AFECharTestWindow/csv_path",   self._edit_csv.text())
-        s.setValue("AFECharTestWindow/label",      self._edit_label.text())
+        s.setValue("AFESweepTestWindow/geometry",   self.saveGeometry())
+        s.setValue("AFESweepTestWindow/settle_ms",  self._spin_settle.value())
+        s.setValue("AFESweepTestWindow/n_samples",  self._spin_samples.value())
+        s.setValue("AFESweepTestWindow/csv_path",   self._edit_csv.text())
+        s.setValue("AFESweepTestWindow/label",      self._edit_label.text())
         for key, spins in self._param_spins.items():
             for i, spin in enumerate(spins):
-                s.setValue(f"AFECharTestWindow/{key}_{i}", spin.value())
+                s.setValue(f"AFESweepTestWindow/{key}_{i}", spin.value())
         if self.main_monitor is not None:
-            self.main_monitor.btn_afe_char.setChecked(False)
-            self.main_monitor.afe_char_window = None
+            self.main_monitor.btn_afe_sweep.setChecked(False)
+            self.main_monitor.afe_sweep_window = None
         super().closeEvent(event)
 
 
@@ -7906,7 +7907,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.python_timing_window   = None
         self.hw_config_window = None
         self.diag_window      = None
-        self.afe_char_window  = None
+        self.afe_sweep_window  = None
         self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
         # Render throttle rates (relative to 50ms _render_timer ticks)
         self._PPGPLOTS_REFRESH_EVERY  = 1   # 20 Hz — smooth plot animation
@@ -7949,12 +7950,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._STATS_SIGNALS = [
             # (display_name, data_attr, tooltip_description)
             # Order mirrors the $M1/$P1 serial frame. Row indices: HR1=11, HR2=13, HR3=15.
-            ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
-            ("RED_Amb",  "data_red_amb",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
+            ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("IR_Amb",   "data_ir_amb",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
-            ("RED_Sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
+            ("RED_Amb",  "data_red_amb",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
             ("IR_Sub",   "data_ir_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
+            ("RED_Sub",  "data_red_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
             ("PPGdisp",  "data_ppgdisp",      "Display-ready PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Ready for rendering on graphical displays. Units: ADC counts."),
             ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
             ("SpO2_SQI", "data_spo2_sqi", "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference."),
@@ -8336,17 +8337,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "photodiode, and cable fault flags (datasheet section 8.4.3.3)."))
         self.sidebar_layout.addWidget(self.btn_diagnostics)
 
-        self.btn_afe_char = QtWidgets.QPushButton("AFE CHAR")
-        self.btn_afe_char.setCheckable(True)
-        self.btn_afe_char.setStyleSheet(ACTION_BUTTON_STYLE)
-        self.btn_afe_char.clicked.connect(self.toggle_afe_char)
-        self.btn_afe_char.setToolTip(_make_tooltip(
-            "AFE CHAR TEST — parametric sweep",
+        self.btn_afe_sweep = QtWidgets.QPushButton("AFE SWEEP")
+        self.btn_afe_sweep.setCheckable(True)
+        self.btn_afe_sweep.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_afe_sweep.clicked.connect(self.toggle_afe_sweep)
+        self.btn_afe_sweep.setToolTip(_make_tooltip(
+            "AFE SWEEP TEST — parametric sweep",
             "Opens the AFE characterisation sweep window. Sweeps 3 levels each of "
             "LED current, TIA gain (RF), stage-2 gain (RG) and ambient DAC for both "
             "LED1 and LED2 (162 combos total). Records mean/min/max/pp/std of all "
             "six raw ADC channels per combo to a CSV file for offline analysis."))
-        self.sidebar_layout.addWidget(self.btn_afe_char)
+        self.sidebar_layout.addWidget(self.btn_afe_sweep)
 
         self.sidebar_layout.addStretch()
 
@@ -8391,8 +8392,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         stats_header.addWidget(self.spin_stats_interval)
         stats_vbox.addLayout(stats_header)
 
-        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 6)
-        self.stats_table.setHorizontalHeaderLabels(["Signal", "Last", "Mean", "Max-Min", "Min", "Max"])
+        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 7)
+        self.stats_table.setHorizontalHeaderLabels(["Signal", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"])
+        _small_hdr_font = QtGui.QFont()
+        _small_hdr_font.setPixelSize(20)
+        self.stats_table.horizontalHeaderItem(1).setFont(_small_hdr_font)
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.stats_table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
@@ -8414,7 +8418,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             }
         """)
         self.stats_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        for col in range(1, 6):
+        for col in range(1, 7):
             self.stats_table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
         self.stats_table.verticalHeader().setDefaultSectionSize(40)
 
@@ -8428,7 +8432,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             item.setForeground(QtGui.QColor("#AAAAAA"))
             item.setToolTip(rich_tip)
             self.stats_table.setItem(row, 0, item)
-            for col in range(1, 6):
+            for col in range(1, 7):
                 it = QtWidgets.QTableWidgetItem("---")
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 it.setToolTip(rich_tip)
@@ -8833,19 +8837,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.diag_window.close()
                 self.diag_window = None
 
-    def _open_afe_char_default(self):
-        self.btn_afe_char.setChecked(True)
-        self.toggle_afe_char()
+    def _open_afe_sweep_default(self):
+        self.btn_afe_sweep.setChecked(True)
+        self.toggle_afe_sweep()
 
-    def toggle_afe_char(self):
-        if self.btn_afe_char.isChecked():
-            self.afe_char_window = AFECharTestWindow(self)
-            self.afe_char_window.show()
+    def toggle_afe_sweep(self):
+        if self.btn_afe_sweep.isChecked():
+            self.afe_sweep_window = AFESweepTestWindow(self)
+            self.afe_sweep_window.show()
         else:
-            if self.afe_char_window is not None:
-                self.afe_char_window.main_monitor = None
-                self.afe_char_window.close()
-                self.afe_char_window = None
+            if self.afe_sweep_window is not None:
+                self.afe_sweep_window.main_monitor = None
+                self.afe_sweep_window.close()
+                self.afe_sweep_window = None
 
     def _open_lab_capture_default(self):
         self.btn_lab_capture.setChecked(True)
@@ -9012,7 +9016,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/python_timing_open",  self.python_timing_window  is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
         s.setValue("PPGMonitor/diagnostics_open", self.diag_window         is not None)
-        s.setValue("PPGMonitor/afe_char_open",    self.afe_char_window     is not None)
+        s.setValue("PPGMonitor/afe_sweep_open",    self.afe_sweep_window     is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
         # Persist geometry of all open subwindows (survives taskkill; also saved in their closeEvent)
         if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",    self.ppgplots_window.saveGeometry())
@@ -9031,7 +9035,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.python_timing_window is not None: s.setValue("PythonTimingWindow/geometry", self.python_timing_window.saveGeometry())
         if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
         if self.diag_window          is not None: s.setValue("DiagnosticsWindow/geometry",  self.diag_window.saveGeometry())
-        if self.afe_char_window      is not None: s.setValue("AFECharTestWindow/geometry",  self.afe_char_window.saveGeometry())
+        if self.afe_sweep_window      is not None: s.setValue("AFESweepTestWindow/geometry",  self.afe_sweep_window.saveGeometry())
         if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
 
     def _restore_settings(self):
@@ -9241,6 +9245,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 break
 
     _STATS_HR_ROWS       = {11, 13, 15}   # HR1, HR2, HR3
+    _STATS_SUB_ROWS      = {4, 5}         # RED_Sub, IR_Sub
     _STATS_MEAN_COL      = 2
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
@@ -9276,18 +9281,31 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for row, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
             buf = self._stats_buf[name]
             if buf:
-                last = buf[-1]
-                mean = sum(buf) / len(buf)
+                n    = len(buf)
+                mean = sum(buf) / n
                 lo   = min(buf)
                 hi   = max(buf)
+                std  = math.sqrt(sum((v - mean) ** 2 for v in buf) / n)
                 if row < 6:  # raw ADC signals: integer, thousands-separated with narrow space
                     def _fmt(v): return f"{v:,.0f}".replace(",", "\u202f")
                 else:
                     def _fmt(v): return f"{v:.2f}"
-                vals = [_fmt(last), _fmt(mean), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
+                snr_str = f"{std / mean * 100:.2f}" if (row in self._STATS_SUB_ROWS and mean != 0) else (
+                    "" if row not in self._STATS_SUB_ROWS else "---")
+                vals = [_fmt(mean), _fmt(std), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
             else:
+                snr_str = "" if row not in self._STATS_SUB_ROWS else "---"
                 vals = ["---", "---", "---", "---", "---"]
-            for col, v in enumerate(vals, start=1):
+            # col 1: Mean/StdDev (only RED_Sub and IR_Sub rows)
+            snr_item = self.stats_table.item(row, 1)
+            if snr_item is None:
+                snr_item = QtWidgets.QTableWidgetItem(snr_str)
+                snr_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                self.stats_table.setItem(row, 1, snr_item)
+            else:
+                snr_item.setText(snr_str)
+            # cols 2-6: Mean, StdDev, Max-Min, Min, Max
+            for col, v in enumerate(vals, start=2):
                 item = self.stats_table.item(row, col)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem(v)
@@ -9540,8 +9558,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # IR_Sub for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
-                            if self.afe_char_window is not None:
-                                self.afe_char_window.feed_sample(
+                            if self.afe_sweep_window is not None:
+                                self.afe_sweep_window.feed_sample(
                                     p[2], p[3], p[4], p[5], p[6], p[7])
                             # Integrity check: RED_Sub and IR_Sub must equal hardware-subtracted values
                             red_sub_exp = int(p[2]) - int(p[4])   # RED - RED_Amb
@@ -9810,8 +9828,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hw_config_default)
         if s.value("PPGMonitor/diagnostics_open",  False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_diagnostics_default)
-        if s.value("PPGMonitor/afe_char_open",     False, type=bool):
-            QtCore.QTimer.singleShot(0, self._open_afe_char_default)
+        if s.value("PPGMonitor/afe_sweep_open",     False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_afe_sweep_default)
         if s.value("PPGMonitor/labcapture_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_lab_capture_default)
         QtCore.QTimer.singleShot(300, self._bring_all_to_front)
@@ -9829,7 +9847,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
                   self.hr3test_window, self.esp32_timing_window, self.hw_config_window,
-                  self.diag_window, self.afe_char_window, self.lab_capture_window]:
+                  self.diag_window, self.afe_sweep_window, self.lab_capture_window]:
             if w is not None:
                 w.show()
                 w.raise_()
@@ -9905,9 +9923,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.diag_window is not None:
             self.diag_window.main_monitor = None
             self.diag_window.close()
-        if self.afe_char_window is not None:
-            self.afe_char_window.main_monitor = None
-            self.afe_char_window.close()
+        if self.afe_sweep_window is not None:
+            self.afe_sweep_window.main_monitor = None
+            self.afe_sweep_window.close()
         if self.lab_capture_window is not None:
             self.lab_capture_window.main_monitor = None
             self.lab_capture_window.close()

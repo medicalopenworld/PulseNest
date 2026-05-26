@@ -7493,6 +7493,45 @@ Decisiones pendientes de confirmar:
 
 ---
 
+## Sesión 2026-05-26v
+
+### Tema: SIGNAL STATS — columna RMS → StdDev
+
+- Header: `"RMS"` → `"StdDev"`.
+- `_update_stats_table`: `rms = sqrt(Σv²/n)` → `std = sqrt(Σ(v−mean)²/n)`.
+
+---
+
+## Sesión 2026-05-26u
+
+### Tema: Fix SIGNAL STATS vacía tras introducción de RMS
+
+**Causa:** `math` no estaba en los imports globales. `_update_stats_table` usaba `math.sqrt()` → excepción silenciosa en el timer → tabla vacía.
+
+**Fix:** `import math` añadido a los imports de nivel superior (junto a `sys`, `os`).
+
+---
+
+## Sesión 2026-05-26t
+
+### Tema: SIGNAL STATS — intercambio columnas Mean y RMS
+
+- Header: `Signal | RMS | Mean | …` → `Signal | Mean | RMS | …`
+- `_update_stats_table`: `vals = [_fmt(rms), _fmt(mean), …]` → `[_fmt(mean), _fmt(rms), …]`
+- `_STATS_MEAN_COL`: 2 → 1 (coloreado SQI de HR sigue apuntando a la columna Mean)
+
+---
+
+## Sesión 2026-05-26s
+
+### Tema: SIGNAL STATS — columna "Last" → "RMS"
+
+**Cambios en `pulsenest_lab.py` (`PPGMonitor`):**
+- `stats_table` header: `"Last"` → `"RMS"`.
+- `_update_stats_table`: sustituido `last = buf[-1]` por `rms = math.sqrt(sum(v*v for v in buf) / n)`. La columna RMS muestra el valor RMS del intervalo de stats (mismo período que Mean/Min/Max).
+
+---
+
 ## Sesión 2026-05-26r
 
 ### Tema: AFECharTestWindow — AMBDAC cambia más lento en el sweep
@@ -7617,6 +7656,99 @@ Decisiones pendientes de confirmar:
 - Tooltips actualizados: settle explica el 5τ; samples explica los 50 Hz de decimación
 - `_restore_settings`: defaults INI actualizados en consonancia (1000→200, 500→50)
 - INI actualizado directamente para que surta efecto sin reiniciar desde cero
+
+---
+
+## Sesión 2026-05-27g
+
+### Tema: PPGPLOTS y SIGNALS — IR antes que RED en los plots
+
+**Cambios en `pulsenest_lab.py`:**
+- `PPGPlotsWindow._setup_ui`: p1 pasa a ser IR (era RED), p2 pasa a ser RED (era IR).
+- `PPGSignalsWindow._setup_ui`: ídem.
+- Las curvas (`self.curve_red`, `self.curve_ir`, etc.) conservan sus nombres — solo cambia en qué panel están añadidas.
+- Los checkboxes del sidebar no se modificaron (el usuario solo pidió reordenar los plots).
+
+---
+
+## Sesión 2026-05-27f
+
+### Tema: SIGNAL STATS — reordenar filas para que IR preceda a RED
+
+**Cambio en `pulsenest_lab.py` (`_STATS_SIGNALS`):**
+- Intercambiadas las filas por pares: IR antes que RED, IR_Amb antes que RED_Amb, IR_Sub antes que RED_Sub.
+- Nuevo orden filas 0–5: IR, RED, IR_Amb, RED_Amb, IR_Sub, RED_Sub.
+- `_STATS_SUB_ROWS = {4, 5}` y `_STATS_HR_ROWS = {11, 13, 15}` siguen siendo correctos sin cambios.
+
+---
+
+## Sesión 2026-05-27e
+
+### Tema: Renombrar AFE CHAR → AFE SWEEP
+
+**Cambios en `pulsenest_lab.py`:**
+- Clase `AFECharTestWindow` → `AFESweepTestWindow`
+- Botón `"AFE CHAR"` → `"AFE SWEEP"`
+- Título de ventana `"AFE CHAR TEST"` → `"AFE SWEEP TEST"`
+- CSV por defecto `afe_char_test.csv` → `afe_sweep_test.csv`
+- Atributos: `afe_char_window` → `afe_sweep_window`, `btn_afe_char` → `btn_afe_sweep`
+- Métodos: `toggle_afe_char` → `toggle_afe_sweep`, `_open_afe_char_default` → `_open_afe_sweep_default`
+- Claves INI: `AFECharTestWindow/...` → `AFESweepTestWindow/...`, `PPGMonitor/afe_char_open` → `PPGMonitor/afe_sweep_open`
+
+---
+
+## Sesión 2026-05-27d
+
+### Tema: SIGNAL STATS — ajuste visual columna "% SD/Mean"
+
+**Cambios en `pulsenest_lab.py`:**
+- Header de la columna "% SD/Mean" con fuente reducida a 20px (el resto usa 33px) para que el texto entre.
+- Valores de la columna "% SD/Mean" formateados siempre con 2 decimales (`f"{v:.2f}"`), independientemente del tipo de señal (rows < 6 usaban formato entero con `_fmt`).
+
+---
+
+## Sesión 2026-05-27c
+
+### Tema: SIGNAL STATS — renombrar columnas y corregir cálculo CV
+
+**Cambios en `pulsenest_lab.py`:**
+- Columna "Mean/StdDev" renombrada a "% SD/Mean".
+- Columna "StdDev" renombrada a "SD".
+- Valor de la columna "% SD/Mean" corregido a `SD / Mean × 100` (coeficiente de variación en %). Solo se calcula para filas RED_Sub e IR_Sub.
+
+---
+
+## Sesión 2026-05-27b
+
+### Tema: SIGNAL STATS — nueva columna Mean/StdDev para RED_Sub e IR_Sub
+
+**Cambios en `pulsenest_lab.py` (`PPGMonitor`):**
+- Tabla ampliada de 6 a 7 columnas.
+- Nueva columna "Mean/StdDev" insertada en col 1 (entre "Signal" y "Mean").
+- El cociente Mean/StdDev solo se calcula y muestra para las filas RED_Sub (fila 4) e IR_Sub (fila 5); el resto de filas queda en blanco.
+- `_STATS_MEAN_COL` actualizado de 1 a 2 (la columna Mean se desplazó una posición).
+- Nueva constante de clase `_STATS_SUB_ROWS = {4, 5}`.
+- `_update_stats_table`: vals mapeados a cols 2–6; col 1 actualizada con el cociente o vacío.
+- Bucles de inicialización y resize mode extendidos de `range(1,6)` a `range(1,7)`.
+
+**Decisión de diseño:** Mean/StdDev es un indicador de SNR estático (relación señal/ruido de la componente DC del canal diferencial). Solo tiene sentido en RED_Sub e IR_Sub (señales diferenciadas del ambiente); para señales crudas o procesadas el ratio no tiene la misma interpretación fisiológica.
+
+---
+
+## Sesión 2026-05-27a
+
+### Tema: Lección aprendida — CF no se descarga antes de la ventana ALED con sonda desconectada
+
+**Observación experimental:** Con la sonda no aplicada, los LEDs cargan el condensador de realimentación de la TIA (CF) hasta niveles muy altos (sin fotodiodo que limite la corriente). CF no tiene tiempo suficiente para descargarse completamente antes de que comience la etapa de muestreo ALED (ambiente). Resultado: ALED1 y ALED2 quedan artificialmente elevados y no representan el ambiente óptico real.
+
+**Distinción respecto al leakage óptico:**
+- Leakage óptico: el LED sigue emitiendo luz durante la ventana ALED (cola de extinción del LED).
+- CF no descargado: el LED ya ha dejado de emitir, pero la carga eléctrica residual en CF persiste y contamina la medida ALED.
+Ambos mecanismos pueden coexistir; el de CF es dominante cuando la sonda no está aplicada.
+
+**Implicación:** los valores de ALED con sonda no aplicada no son representativos del ambiente óptico real y no deben usarse para calibración ni como referencia.
+
+**Documentado en:** `memory/project_led_leakage_task.md` (sección "Lección aprendida — 2026-05-27").
 
 ---
 
