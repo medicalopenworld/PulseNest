@@ -7493,6 +7493,133 @@ Decisiones pendientes de confirmar:
 
 ---
 
+## Sesión 2026-05-26r
+
+### Tema: AFECharTestWindow — AMBDAC cambia más lento en el sweep
+
+`_build_combos`: `itertools.product(led_vals, rf_vals, rg_vals, amb_vals)` → `itertools.product(amb_vals, led_vals, rf_vals, rg_vals)`. Orden de ciclos: AMBDAC (más lento) → LED → RF → RG (más rápido).
+
+---
+
+## Sesión 2026-05-26q
+
+### Tema: AFECharTestWindow — columnas CSV agrupadas por tipo de estadístico
+
+**Cambios en `pulsenest_lab.py` (`AFECharTestWindow`):**
+
+`_CSV_HEADER`: estadísticos reorganizados de "por canal" a "por tipo":
+- Antes: `LED2_mean/min/max/pp/std`, `LED1_mean/min/max/pp/std`, …
+- Después: `LED2_mean, LED1_mean, ALED2_mean, ALED1_mean, LED2_Sub_mean, LED1_Sub_mean`, luego misma secuencia para min, max, pp, std.
+
+`_write_row`: reescrito para pre-computar `stats[sig]` por señal y luego emitir `stats[sig][stat_idx]` iterando primero por tipo de estadístico (5) y luego por señal (6). El orden de `_SIGNALS` = `[RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub]` = `[LED2, LED1, ALED2, ALED1, LED2_Sub, LED1_Sub]` coincide con el header.
+
+---
+
+## Sesión 2026-05-26p
+
+### Tema: AFECharTestWindow — renombrado columnas CSV
+
+`_CSV_HEADER`: `led1_mA`→`LED1mA`, `led2_mA`→`LED2mA`, `rf1_str`→`RF1`, `rf2_str`→`RF2`, `rg1_str`→`RG1`, `rg2_str`→`RG2`.
+
+---
+
+## Sesión 2026-05-26o
+
+### Tema: AFECharTestWindow — reestructuración columnas CSV
+
+**Cambios en `pulsenest_lab.py` (`AFECharTestWindow`):**
+
+`_CSV_HEADER` (40 columnas, sin cambio de número):
+- Eliminadas: `channel`, `rf_idx`, `rg_idx`
+- `led_mA` → `led1_mA` + `led2_mA`
+- `rf_str` → `rf1_str` + `rf2_str`
+- `rg_str` → `rg1_str` + `rg2_str`
+- Señales renombradas según nomenclatura AFE4490: `RED_*`→`LED2_*`, `IR_*`→`LED1_*`, `RED_Amb_*`→`ALED2_*`, `IR_Amb_*`→`ALED1_*`, `RED_Sub_*`→`LED2_Sub_*`, `IR_Sub_*`→`LED1_Sub_*`
+
+`_write_row`:
+- Reconstruye `led1/led2/rf1/rf2/rg1/rg2` desde el combo + FIX spins del canal no barrido.
+- Fila construida con los valores separados por canal (sin `ch`, sin índices de registro).
+- Buffers internos (`_buf["RED"]`, etc.) sin cambio — son claves internas, no afectan al CSV.
+
+**Correspondencia confirmada** (del conversation_log sesión 2026-03-xx): LED1=IR, LED2=RED, ALED1=IR_Amb, ALED2=RED_Amb.
+
+---
+
+## Sesión 2026-05-26n
+
+### Tema: AFECharTestWindow — campo Test label + columna label en CSV
+
+**Cambios en `pulsenest_lab.py` (`AFECharTestWindow`):**
+- `_CSV_HEADER`: añadida `"label"` como primera columna (39 → 40 columnas).
+- UI: nuevo `QLineEdit _edit_label` en Sweep Settings (primera fila), con placeholder `"e.g. probe disconnected, finger on sensor…"` y tooltip descriptivo.
+- `_write_row`: `label = self._edit_label.text().strip()` añadido al inicio de cada fila CSV.
+- `_restore_settings` / `closeEvent`: persistencia de `AFECharTestWindow/label` en INI.
+
+---
+
+## Sesión 2026-05-26m
+
+### Tema: AFECharTestWindow — correcciones menores
+
+- `_PARAMS`: labels `"LED1 mA"` → `"LED1 mA (approx)"` y `"LED2 mA"` → `"LED2 mA (approx)"` — la corriente LED es aproximada (depende de TX_REF y LEDRANGE).
+- INI: eliminada clave huérfana `ambdac_3` (residuo de cuando AMBDAC tenía spin FIX, eliminado en sesión 2026-05-26c). Inofensiva pero confusa.
+
+---
+
+## Sesión 2026-05-26l
+
+### Tema: AFECharTestWindow — highlight ámbar del spin activo durante el sweep
+
+**Cambios en `pulsenest_lab.py` (`AFECharTestWindow`):**
+
+- Añadidas 4 constantes de clase: `_SS_SPIN`, `_SS_COMBO` (estilos normales, movidos desde `_setup_ui`), `_SS_SPIN_ACTIVE`, `_SS_COMBO_ACTIVE` (fondo `#2A2000`, texto `#FFD060`, borde `#FFB300`).
+- `_setup_ui`: sustituidas las variables locales `_SS_SPIN`/`_SS_COMBO` por referencias a `self._SS_SPIN`/`self._SS_COMBO`.
+- Nuevo método `_set_spin_style(spin, active)`: aplica estilo normal o ámbar según el tipo del widget (`_ComboSpin` o `QSpinBox`).
+- Nuevo método `_clear_highlights()`: resetea todos los spins a estilo normal.
+- Nuevo método `_highlight_active(idx)`: para el combo `idx`, llama `_clear_highlights()` y luego ilumina en ámbar:
+  - Canal barrido (LED1 o LED2): el spin VAR (min/mid/max) cuyo valor coincide con el combo
+  - Canal fijo (el otro): el spin FIX (índice 0)
+  - AMBDAC: el spin cuyo valor coincide con el `amb` del combo
+- `_apply_combo`: llama `_highlight_active(idx)` al final (tras enviar todos los $SET).
+- `_stop_sweep`: llama `_clear_highlights()` al terminar o abortar el sweep.
+
+---
+
+## Sesión 2026-05-26k
+
+### Tema: HWConfigWindow — actualización en tiempo real desde cualquier $CFG
+
+**Motivación:** durante el AFE CHAR TEST, cada combo envía varios `$SET` y el firmware responde siempre con un `$CFG` completo (línea 548 de main.cpp). HWConfigWindow solo se actualizaba cuando el `$SET` lo enviaba ella misma (flag `_cfg_notify_hw_config`).
+
+**Fix en `pulsenest_lab.py`:**
+- Eliminado el flag `_cfg_notify_hw_config` por completo.
+- `_on_cfg_frame_received`: `hw_config_window.update_from_cfg(kv)` se llama siempre que la ventana esté abierta, sin condición.
+- `request_chip_config`: eliminado parámetro `notify_hw_config`; docstring actualizado.
+- `HWConfigWindow._send_set`: eliminada línea `mm._cfg_notify_hw_config = True`.
+- `HWConfigWindow._on_read_cfg`: eliminado `notify_hw_config=True` de la llamada.
+- `_cfg_notify_lab_capture` sin cambios — LabCapture sigue protegido de $CFGs del sweep.
+
+**Resultado:** HWConfigWindow se refresca en tiempo real durante el sweep (un $CFG por combo) y también con cualquier otro origen de $CFG.
+
+---
+
+## Sesión 2026-05-26j
+
+### Tema: AFECharTestWindow — corrección defaults settling time y samples/combo
+
+**Diagnóstico:**
+- `feed_sample` se llama desde el parser M1 post-decimación (50 Hz). Con default 500 muestras → 10 segundos por combo, no 1 segundo como decía el tooltip.
+- Settling time 1000 ms: valor arbitrario sin base técnica. TIA worst-case settling (RF=1M, CF=155p): 5τ ≈ 775 µs. Con margen para procesado $SET en firmware: 200 ms es suficiente.
+
+**Cambios en `pulsenest_lab.py` (`AFECharTestWindow`):**
+- `_spin_settle` default: 1000 ms → **200 ms**
+- `_spin_samples` default: 500 → **50** (= 1 s a 50 Hz)
+- Tooltips actualizados: settle explica el 5τ; samples explica los 50 Hz de decimación
+- `_restore_settings`: defaults INI actualizados en consonancia (1000→200, 500→50)
+- INI actualizado directamente para que surta efecto sin reiniciar desde cero
+
+---
+
 ## Sesión 2026-05-26i
 
 ### Tema: $SET intermitente desde HW CONFIG — saturación del serial por $M1 a 500 Hz

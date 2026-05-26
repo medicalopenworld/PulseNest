@@ -5588,7 +5588,6 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             chk ^= ord(c)
         cmd = f"{payload}*{chk:02X}\r\n"
         mm._cfg_notify_lab_capture = False  # $CFG confirmation from $SET must not go to LabCapture notes
-        mm._cfg_notify_hw_config   = True   # but must update HWConfigWindow controls
         mm.ser.write(cmd.encode())
         mm.log(f"→ {cmd.strip()}")
         self._statusbar.showMessage(f"Sent: {cmd.strip()}  — waiting for $CFG confirmation…")
@@ -5596,7 +5595,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
     def _on_read_cfg(self):
         mm = self.main_monitor
-        if mm is None or not mm.request_chip_config(notify_lab_capture=False, notify_hw_config=True):
+        if mm is None or not mm.request_chip_config(notify_lab_capture=False):
             self._warn_not_connected()
         else:
             self._statusbar.showMessage("$CFG? sent — waiting for response…")
@@ -6820,16 +6819,29 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
     TIA_GAINS  = ["10K", "25K", "50K", "100K", "250K", "500K", "1M"]
     STG2_GAINS = ["0dB", "3.5dB", "6dB", "9.5dB", "12dB"]
 
+    _SS_SPIN  = "background-color:#202020; color:#E0E0E0; font-size:24px;"
+    _SS_COMBO = (
+        "QComboBox { background-color:#202020; color:#E0E0E0; font-size:24px; }"
+        "QComboBox QAbstractItemView { background-color:#202020; color:#E0E0E0;"
+        " font-size:24px; selection-background-color:#404040; }"
+    )
+    _SS_SPIN_ACTIVE  = "background-color:#2A2000; color:#FFD060; font-size:24px; border:1px solid #FFB300;"
+    _SS_COMBO_ACTIVE = (
+        "QComboBox { background-color:#2A2000; color:#FFD060; font-size:24px; border:1px solid #FFB300; }"
+        "QComboBox QAbstractItemView { background-color:#202020; color:#E0E0E0;"
+        " font-size:24px; selection-background-color:#404040; }"
+    )
+
     _SIGNALS = ["RED", "IR", "RED_Amb", "IR_Amb", "RED_Sub", "IR_Sub"]
     _CSV_HEADER = [
-        "datetime", "channel", "led_mA", "rf_idx", "rf_str", "rg_idx", "rg_str", "ambdac_uA", "n_samples",
-        "RED_mean",     "RED_min",     "RED_max",     "RED_pp",     "RED_std",
-        "IR_mean",      "IR_min",      "IR_max",      "IR_pp",      "IR_std",
-        "RED_Amb_mean", "RED_Amb_min", "RED_Amb_max", "RED_Amb_pp", "RED_Amb_std",
-        "IR_Amb_mean",  "IR_Amb_min",  "IR_Amb_max",  "IR_Amb_pp",  "IR_Amb_std",
-        "RED_Sub_mean", "RED_Sub_min", "RED_Sub_max", "RED_Sub_pp", "RED_Sub_std",
-        "IR_Sub_mean",  "IR_Sub_min",  "IR_Sub_max",  "IR_Sub_pp",  "IR_Sub_std",
-    ]  # 39 columns
+        "label",
+        "datetime", "LED1mA", "LED2mA", "RF1", "RF2", "RG1", "RG2", "ambdac_uA", "n_samples",
+        "LED2_mean",  "LED1_mean",  "ALED2_mean",  "ALED1_mean",  "LED2_Sub_mean",  "LED1_Sub_mean",
+        "LED2_min",   "LED1_min",   "ALED2_min",   "ALED1_min",   "LED2_Sub_min",   "LED1_Sub_min",
+        "LED2_max",   "LED1_max",   "ALED2_max",   "ALED1_max",   "LED2_Sub_max",   "LED1_Sub_max",
+        "LED2_pp",    "LED1_pp",    "ALED2_pp",    "ALED1_pp",    "LED2_Sub_pp",    "LED1_Sub_pp",
+        "LED2_std",   "LED1_std",   "ALED2_std",   "ALED1_std",   "LED2_Sub_std",   "LED1_Sub_std",
+    ]  # 40 columns (label + 9 meta + 30 stats)
 
     _ST_IDLE      = 0
     _ST_SETTLING  = 1
@@ -6840,8 +6852,8 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
     # VAR min/mid/max = the three sweep values when THIS channel is being swept.
     # AMBDAC: FIX spin is disabled (AMBDAC is always swept for both channels).
     _PARAMS = [
-        ("led1",   "LED1 mA",   0, 150, [20,  5,  20,  50]),
-        ("led2",   "LED2 mA",   0, 150, [20,  5,  20,  50]),
+        ("led1",   "LED1 mA (approx)",   0, 150, [20,  5,  20,  50]),
+        ("led2",   "LED2 mA (approx)",   0, 150, [20,  5,  20,  50]),
         ("rf1",    "RF1 idx",   0,   6, [ 4,  2,   4,   6]),
         ("rf2",    "RF2 idx",   0,   6, [ 4,  2,   4,   6]),
         ("rg1",    "RG1 idx",   0,   4, [ 2,  0,   2,   4]),
@@ -6888,12 +6900,8 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
             h.setStyleSheet("font-weight: bold;")
             gl.addWidget(h, 0, col)
 
-        _SS_SPIN  = "background-color:#202020; color:#E0E0E0; font-size:24px;"
-        _SS_COMBO = (
-            "QComboBox { background-color:#202020; color:#E0E0E0; font-size:24px; }"
-            "QComboBox QAbstractItemView { background-color:#202020; color:#E0E0E0;"
-            " font-size:24px; selection-background-color:#404040; }"
-        )
+        _SS_SPIN  = self._SS_SPIN
+        _SS_COMBO = self._SS_COMBO
         _RF_ITEMS  = list(self.TIA_GAINS)
         _RG_ITEMS  = list(self.STG2_GAINS)
         _AMB_ITEMS = [f"{v} \u00b5A" for v in range(11)]
@@ -6949,22 +6957,24 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
 
         self._spin_settle = QtWidgets.QSpinBox()
         self._spin_settle.setRange(100, 30000)
-        self._spin_settle.setValue(1000)
+        self._spin_settle.setValue(200)
         self._spin_settle.setSuffix(" ms")
         self._spin_settle.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
         self._spin_settle.setToolTip(_make_tooltip(
             "Settling time",
             "Time to wait after applying each combo before collecting samples. "
-            "Allows the TIA/amplifier chain to reach steady state (default: 1000 ms)."))
+            "TIA worst-case settling (RF=1M, CF=155p): 5τ ≈ 775 µs. "
+            "200 ms gives ample margin for firmware $SET processing (default: 200 ms)."))
 
         self._spin_samples = QtWidgets.QSpinBox()
         self._spin_samples.setRange(10, 10000)
-        self._spin_samples.setValue(500)
+        self._spin_samples.setValue(50)
         self._spin_samples.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
         self._spin_samples.setToolTip(_make_tooltip(
             "Samples per combo",
             "Number of M1 frames to collect per combination for statistics. "
-            "At 500 Hz, 500 samples = 1 s of data (default: 500)."))
+            "Frames arrive at 50 Hz (500 Hz / decimation ratio 10). "
+            "50 samples = 1 s of data — sufficient for stable DC/AC statistics (default: 50)."))
 
         csv_row = QtWidgets.QHBoxLayout()
         self._edit_csv = QtWidgets.QLineEdit("afe_char_test.csv")
@@ -6979,6 +6989,15 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
         csv_row.addWidget(self._edit_csv)
         csv_row.addWidget(btn_browse)
 
+        self._edit_label = QtWidgets.QLineEdit()
+        self._edit_label.setPlaceholderText("e.g. probe disconnected, finger on sensor…")
+        self._edit_label.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
+        self._edit_label.setToolTip(_make_tooltip(
+            "Test label",
+            "Free-text label written to the 'label' column of every CSV row produced "
+            "by this sweep. Use it to describe the test condition "
+            "(e.g. 'probe disconnected', 'finger 50% perfusion'). Can be empty."))
+        fl.addRow("Test label:", self._edit_label)
         fl.addRow("Settling time:", self._spin_settle)
         fl.addRow("Samples / combo:", self._spin_samples)
         fl.addRow("Output CSV:", csv_row)
@@ -7026,6 +7045,44 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
         if path:
             self._edit_csv.setText(path)
 
+    # ── Spin highlight helpers ─────────────────────────────────────────────────
+    def _set_spin_style(self, spin, active: bool):
+        use_combo = isinstance(spin, _ComboSpin)
+        if active:
+            spin.setStyleSheet(self._SS_COMBO_ACTIVE if use_combo else self._SS_SPIN_ACTIVE)
+        else:
+            spin.setStyleSheet(self._SS_COMBO if use_combo else self._SS_SPIN)
+
+    def _clear_highlights(self):
+        for spins in self._param_spins.values():
+            for spin in spins:
+                self._set_spin_style(spin, active=False)
+
+    def _highlight_active(self, idx):
+        """Highlight the spin that is currently applied to the hardware for combo idx."""
+        self._clear_highlights()
+        ch, led, rf, rg, amb = self._combos[idx]
+        if ch == "LED1":
+            var_keys = {"led1": led, "rf1": rf, "rg1": rg}
+            fix_keys = ["led2", "rf2", "rg2"]
+        else:
+            var_keys = {"led2": led, "rf2": rf, "rg2": rg}
+            fix_keys = ["led1", "rf1", "rg1"]
+        # VAR spins of swept channel: highlight the one matching the current value
+        for key, val in var_keys.items():
+            for spin in self._param_spins[key][1:]:   # skip FIX (index 0)
+                if spin.value() == val:
+                    self._set_spin_style(spin, active=True)
+                    break
+        # FIX spin of the non-swept channel
+        for key in fix_keys:
+            self._set_spin_style(self._param_spins[key][0], active=True)
+        # AMBDAC: no FIX — highlight the matching VAR spin
+        for spin in self._param_spins["ambdac"]:
+            if spin.value() == amb:
+                self._set_spin_style(spin, active=True)
+                break
+
     # ── Sweep control ─────────────────────────────────────────────────────────
     def _toggle_sweep(self):
         if self._btn_start.isChecked():
@@ -7045,7 +7102,7 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
             led_vals = sorted(set(s.value() for s in self._param_spins[led_key][1:]))
             rf_vals  = sorted(set(s.value() for s in self._param_spins[rf_key][1:]))
             rg_vals  = sorted(set(s.value() for s in self._param_spins[rg_key][1:]))
-            for led, rf, rg, amb in itertools.product(led_vals, rf_vals, rg_vals, amb_vals):
+            for amb, led, rf, rg in itertools.product(amb_vals, led_vals, rf_vals, rg_vals):
                 combos.append((ch, led, rf, rg, amb))
         return combos
 
@@ -7075,9 +7132,10 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
         self._btn_start.setChecked(False)
         self._btn_start.setText("START SWEEP")
         self._lbl_status.setText(reason)
+        self._clear_highlights()
 
     def _apply_combo(self, idx):
-        """Send $SET commands for combo at index idx.
+        """Send $SET commands for combo at index idx and highlight the active spins.
         Swept channel uses VAR values; other channel uses its FIX spin (index 0).
         tiagain expects physical string (e.g. "100K"); stg2 expects "6dB"; ambdac expects int."""
         ch, led, rf, rg, amb = self._combos[idx]
@@ -7100,6 +7158,7 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
             self._send_set("tiagain1", rf_str(fix_rf("rf1")))
             self._send_set("stg21",    rg_str(fix_rg("rg1")))
         self._send_set("ambdac", str(amb))
+        self._highlight_active(idx)
 
     def _send_set(self, key: str, value: str):
         mm = self.main_monitor
@@ -7162,10 +7221,25 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
     def _write_row(self):
         import csv, datetime, math, os
         ch, led, rf, rg, amb = self._combos[self._combo_idx]
-        rf_str = self.TIA_GAINS[rf]  if 0 <= rf < len(self.TIA_GAINS)  else str(rf)
-        rg_str = self.STG2_GAINS[rg] if 0 <= rg < len(self.STG2_GAINS) else str(rg)
+        if ch == "LED1":
+            led1, rf1, rg1 = led, rf, rg
+            led2 = self._param_spins["led2"][0].value()
+            rf2  = self._param_spins["rf2"][0].value()
+            rg2  = self._param_spins["rg2"][0].value()
+        else:
+            led2, rf2, rg2 = led, rf, rg
+            led1 = self._param_spins["led1"][0].value()
+            rf1  = self._param_spins["rf1"][0].value()
+            rg1  = self._param_spins["rg1"][0].value()
+        rf1_str = self.TIA_GAINS[rf1]  if 0 <= rf1 < len(self.TIA_GAINS)  else str(rf1)
+        rf2_str = self.TIA_GAINS[rf2]  if 0 <= rf2 < len(self.TIA_GAINS)  else str(rf2)
+        rg1_str = self.STG2_GAINS[rg1] if 0 <= rg1 < len(self.STG2_GAINS) else str(rg1)
+        rg2_str = self.STG2_GAINS[rg2] if 0 <= rg2 < len(self.STG2_GAINS) else str(rg2)
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        row = [now_str, ch, led, rf, rf_str, rg, rg_str, amb, len(self._buf["IR"])]
+        label = self._edit_label.text().strip()
+        row = [label, now_str, led1, led2, rf1_str, rf2_str, rg1_str, rg2_str, amb, len(self._buf["IR"])]
+        # Pre-compute stats for each signal
+        stats = {}
         for sig in self._SIGNALS:
             vals = self._buf[sig]
             if vals:
@@ -7173,11 +7247,14 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
                 mn   = min(vals)
                 mx   = max(vals)
                 mean = sum(vals) / n
-                pp   = mx - mn
-                std  = math.sqrt(sum((v - mean) ** 2 for v in vals) / n)
-                row += [f"{mean:.2f}", f"{mn:.0f}", f"{mx:.0f}", f"{pp:.0f}", f"{std:.2f}"]
+                stats[sig] = (f"{mean:.2f}", f"{mn:.0f}", f"{mx:.0f}", f"{mx-mn:.0f}",
+                              f"{math.sqrt(sum((v-mean)**2 for v in vals)/n):.2f}")
             else:
-                row += ["0.00", "0", "0", "0", "0.00"]
+                stats[sig] = ("0.00", "0", "0", "0", "0.00")
+        # Emit grouped by stat type: all means, all mins, all maxs, all pp, all stds
+        for stat_idx in range(5):
+            for sig in self._SIGNALS:
+                row.append(stats[sig][stat_idx])
         path = self._edit_csv.text().strip() or "afe_char_test.csv"
         write_header = not os.path.exists(path)
         with open(path, "a", newline="") as f:
@@ -7189,12 +7266,14 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
     # ── Settings persistence ──────────────────────────────────────────────────
     def _restore_settings(self):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        v = s.value("AFECharTestWindow/settle_ms", 1000, type=int)
+        v = s.value("AFECharTestWindow/settle_ms", 200, type=int)
         self._spin_settle.setValue(v)
-        v = s.value("AFECharTestWindow/n_samples", 500, type=int)
+        v = s.value("AFECharTestWindow/n_samples", 50, type=int)
         self._spin_samples.setValue(v)
         v = s.value("AFECharTestWindow/csv_path", "afe_char_test.csv", type=str)
         self._edit_csv.setText(v)
+        v = s.value("AFECharTestWindow/label", "", type=str)
+        self._edit_label.setText(v)
         for key, spins in self._param_spins.items():
             for i, spin in enumerate(spins):
                 v = s.value(f"AFECharTestWindow/{key}_{i}", spin.value(), type=int)
@@ -7208,6 +7287,7 @@ class AFECharTestWindow(QtWidgets.QMainWindow):
         s.setValue("AFECharTestWindow/settle_ms",  self._spin_settle.value())
         s.setValue("AFECharTestWindow/n_samples",  self._spin_samples.value())
         s.setValue("AFECharTestWindow/csv_path",   self._edit_csv.text())
+        s.setValue("AFECharTestWindow/label",      self._edit_label.text())
         for key, spins in self._param_spins.items():
             for i, spin in enumerate(spins):
                 s.setValue(f"AFECharTestWindow/{key}_{i}", spin.value())
@@ -8426,14 +8506,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.frame_mode = mode
         self._update_frame_button()
 
-    def request_chip_config(self, notify_lab_capture=True, notify_hw_config=False):
+    def request_chip_config(self, notify_lab_capture=True):
         """Send $CFG? to ESP32. Response arrives asynchronously via _on_cfg_frame_received().
         notify_lab_capture: forward response to _cfg_listener (LabCaptureWindow Pre-capture notes).
-        notify_hw_config: update HWConfigWindow controls with received values."""
+        HWConfigWindow is always updated when a $CFG frame arrives (no flag needed)."""
         if not hasattr(self, 'ser') or self.ser is None or not self.ser.is_open:
             return False
         self._cfg_notify_lab_capture = notify_lab_capture
-        self._cfg_notify_hw_config   = notify_hw_config
         self.log("CFG request sent → $CFG?")
         self.ser.write(b'$CFG?\n')
         return True
@@ -8476,10 +8555,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         )
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', True):
             self._cfg_listener(text)
-        if self.hw_config_window is not None and getattr(self, '_cfg_notify_hw_config', False):
+        if self.hw_config_window is not None:
             self.hw_config_window.update_from_cfg(kv)
-        self._cfg_notify_lab_capture = True   # reset to defaults after each frame
-        self._cfg_notify_hw_config   = False
+        self._cfg_notify_lab_capture = True   # reset to default after each frame
 
     def _on_tcfg_frame_received(self, line):
         """Parse a $TCFG frame and deliver timing values to HWConfigWindow (if open)."""
