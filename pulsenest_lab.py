@@ -8475,6 +8475,48 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     it.setBackground(_MAROON)
                 self.stats_table.setItem(row, col, it)
 
+        # Override V_TIA (col 7) and V_ADC (col 8) tooltips on raw rows (0-3)
+        # with specific descriptions including color-coding legend and voltage units.
+        _TIP_VTIA_LED = _make_tooltip("V_TIA",
+            "TIA differential output voltage estimated from the mean ADC count.\n"
+            "Formula: V_TIA = (V_ADC / (2\u00d7RG)) \u00d7 RI  (datasheet eq.2, p.30)\n"
+            "RI = 100 k\u03a9 (fixed internal), RG from current \$CFG stg21/stg22.\n"
+            "Units: V (volts).\n\n"
+            "Background color (LED phases \u2014 IR, RED):\n"
+            "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range\n"
+            "  Yellow  0.15 \u2013 0.40 V  or  0.80 \u2013 0.95 V \u2014 caution\n"
+            "  Red     < 0.15 V  or  > 0.95 V \u2014 saturation or insufficient signal")
+        _TIP_VTIA_AMB = _make_tooltip("V_TIA",
+            "TIA differential output voltage estimated from the mean ADC count.\n"
+            "Formula: V_TIA = (V_ADC / (2\u00d7RG)) \u00d7 RI  (datasheet eq.2, p.30)\n"
+            "RI = 100 k\u03a9 (fixed internal), RG from current \$CFG stg21/stg22.\n"
+            "Units: V (volts).\n\n"
+            "Background color (ALED phases \u2014 IR_Amb, RED_Amb):\n"
+            "  Green   < 0.30 V \u2014 low ambient (safe)\n"
+            "  Yellow  0.30 \u2013 0.70 V \u2014 moderate ambient, monitor\n"
+            "  Red     > 0.70 V \u2014 high ambient, risk of saturation")
+        _TIP_VADC_LED = _make_tooltip("V_ADC",
+            "ADC input voltage estimated from the mean ADC count.\n"
+            "Formula: V_ADC = (mean_counts / 2\u00b2\u00b9) \u00d7 1.2 V  (ADC FS = \u00b11.2 V, 22-bit signed).\n"
+            "Units: V (volts).\n\n"
+            "Background color (LED phases \u2014 IR, RED):\n"
+            "  Green   0.45 \u2013 0.95 V \u2014 optimal\n"
+            "  Yellow  0.20 \u2013 0.45 V  or  0.95 \u2013 1.10 V \u2014 caution\n"
+            "  Red     < 0.20 V  or  > 1.10 V \u2014 insufficient signal or near saturation")
+        _TIP_VADC_AMB = _make_tooltip("V_ADC",
+            "ADC input voltage estimated from the mean ADC count.\n"
+            "Formula: V_ADC = (mean_counts / 2\u00b2\u00b9) \u00d7 1.2 V  (ADC FS = \u00b11.2 V, 22-bit signed).\n"
+            "Units: V (volts).\n\n"
+            "Background color (ALED phases \u2014 IR_Amb, RED_Amb):\n"
+            "  Green   < 0.35 V \u2014 low ambient (safe)\n"
+            "  Yellow  0.35 \u2013 0.80 V \u2014 moderate ambient\n"
+            "  Red     > 0.80 V \u2014 high ambient, risk of saturation")
+        for _r in range(4):
+            _tip7 = _TIP_VTIA_LED if _r in {0, 1} else _TIP_VTIA_AMB
+            _tip8 = _TIP_VADC_LED if _r in {0, 1} else _TIP_VADC_AMB
+            self.stats_table.item(_r, 7).setToolTip(_tip7)
+            self.stats_table.item(_r, 8).setToolTip(_tip8)
+
         self.stats_table.setItemDelegate(
             _StatsHighlightDelegate(self._stats_highlighted, self.stats_table))
         self.stats_table.cellClicked.connect(self._on_stats_cell_clicked)

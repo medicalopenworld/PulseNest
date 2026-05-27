@@ -7980,3 +7980,15 @@ Misma lógica para V_ADC con thresholds diferentes (ver §6.3 del spec).
 **Regla añadida a memoria:** spec debe actualizarse tras cambios importantes en pulsenest_lab.py, sin esperar que el usuario lo pida.
 
 ---
+
+## Sesión 2026-05-27o
+
+### Tema: SIGNAL STATS — tooltips V_TIA/V_ADC con color coding y "Units: V (volts)"
+
+- Añadidos tooltips específicos para las celdas de las columnas V_TIA (col 7) y V_ADC (col 8) en las filas raw (rows 0-3).
+- Los tooltips anteriores heredaban la descripción genérica de la señal (que decía "Units: ADC counts").
+- Nuevos tooltips incluyen: fórmula de cálculo, "Units: V (volts)", y leyenda de colores (Green/Yellow/Red con rangos exactos).
+- Tooltips diferentes para filas LED (IR, RED) y filas ALED (IR_Amb, RED_Amb) ya que los umbrales difieren.
+- Los tooltips se sobreescriben tras el bucle de inicialización en `_setup_ui`.
+
+---
