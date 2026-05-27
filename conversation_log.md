@@ -7659,6 +7659,52 @@ Decisiones pendientes de confirmar:
 
 ---
 
+## Sesión 2026-05-27j
+
+### Tema: SIGNAL STATS — reducir font del header "% SD/Mean"
+
+- El stylesheet `font-size: 33px` en `QHeaderView::section` sobreescribía el font asignado vía `setFont()` en el item.
+- Fix: eliminado `font-size` del stylesheet; fonts asignados programáticamente tras `setHorizontalHeaderLabels`: 9px para col 1 ("% SD/Mean"), 33px para el resto.
+
+---
+
+## Sesión 2026-05-27i
+
+### Tema: SIGNAL STATS — columnas V_TIA y V_ADC
+
+**Contexto (datasheet AFE4490):**
+- ADC 22 bits, full-scale: **±1.2 V** (§7.5)
+- Equation 2 (p.30): `V_DIFF = 2 × (I_PD × RF/RI − I_CANCEL) × RG`
+  - RI = 100 kΩ (fijo interno)
+  - RG en Ω según Table 1 (p.31): 0dB→100K, 3.5dB→150K, 6dB→200K, 9.5dB→300K, 12dB→400K
+  - I_CANCEL = AMBDAC en A (leído de $CFG campo "ambdac" en µA)
+
+**Fórmulas implementadas:**
+- `V_ADC = count / 2^21 × 1.2`  (voltaje V_DIFF a la entrada del ADC)
+- `V_TIA = (V_ADC / (2 × RG) + I_CANCEL) × RI`  (voltaje real a la salida de la TIA = I_PD × RF)
+- IR/IR_Amb → stg21; RED/RED_Amb → stg22 (del último $CFG)
+- Valores en **V con 2 decimales**
+
+**Cambios en `pulsenest_lab.py`:**
+- Tabla ampliada de 7 a 9 columnas; añadidas "V_TIA" y "V_ADC".
+- Solo filas 0–3 (IR, RED, IR_Amb, RED_Amb). Resto: vacío.
+- `self._last_cfg` almacena el último $CFG recibido.
+- Constantes: `_STATS_RAW_ROWS`, `_ADC_FSR`, `_ADC_FS_COUNTS`, `_STG2_RG_OHM`, `_STG2_RI_OHM`.
+- Error anterior corregido: se usaba RF×RG_lineal en vez de la Equation 2 del datasheet.
+
+---
+
+## Sesión 2026-05-27h
+
+### Tema: PPGPLOTS y SIGNALS — sidebar IR antes que RED
+
+**Cambios en `pulsenest_lab.py`:**
+- `PPGPlotsWindow._setup_ui`: sidebar reordenado — IR (con sus 3 checkboxes) aparece primero, RED después.
+- `PPGSignalsWindow._setup_ui`: ídem.
+- Consistente con el reordenamiento de plots (sesión 2026-05-27g) y de la tabla SIGNAL STATS (sesión 2026-05-27f).
+
+---
+
 ## Sesión 2026-05-27g
 
 ### Tema: PPGPLOTS y SIGNALS — IR antes que RED en los plots

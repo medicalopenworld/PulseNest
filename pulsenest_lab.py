@@ -6307,29 +6307,8 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             """)
             return cb
 
-        lbl_red = QtWidgets.QLabel("RED")
-        lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 10px;")
-        sidebar.addWidget(lbl_red)
-        self.check_red_raw  = create_check("RED (raw)",    "#FFFFFF", False)
-        self.check_red_amb  = create_check("Ambient RED",  "#00FFFF", False)
-        self.check_red_sub  = create_check("RED (clean)",  "#FF8888", True)
-        self.check_red_raw.setToolTip(_make_tooltip(
-            "RED (raw)",
-            "Raw RED LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: RED in the M1 frame."))
-        self.check_red_amb.setToolTip(_make_tooltip(
-            "Ambient RED",
-            "Ambient light sampled during the RED LED off period (aled2). "
-            "Represents environmental light interference on the RED channel."))
-        self.check_red_sub.setToolTip(_make_tooltip(
-            "RED (clean)",
-            "RED minus ambient: RED − RED_Amb. Ambient-subtracted RED signal. "
-            "Primary input to the SpO2 algorithm. Field: RED_Sub."))
-        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub):
-            sidebar.addWidget(w)
-
         lbl_ir = QtWidgets.QLabel("IR")
-        lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 20px;")
+        lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 10px;")
         sidebar.addWidget(lbl_ir)
         self.check_ir_raw  = create_check("IR (raw)",     "#FFFFFF", False)
         self.check_ir_amb  = create_check("Ambient IR",   "#00FFFF", False)
@@ -6347,6 +6326,27 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             "IR minus ambient: IR − IR_Amb. Ambient-subtracted IR signal. "
             "Primary input to the HR algorithms (HR1, HR2, HR3). Field: IR_Sub."))
         for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub):
+            sidebar.addWidget(w)
+
+        lbl_red = QtWidgets.QLabel("RED")
+        lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 20px;")
+        sidebar.addWidget(lbl_red)
+        self.check_red_raw  = create_check("RED (raw)",    "#FFFFFF", False)
+        self.check_red_amb  = create_check("Ambient RED",  "#00FFFF", False)
+        self.check_red_sub  = create_check("RED (clean)",  "#FF8888", True)
+        self.check_red_raw.setToolTip(_make_tooltip(
+            "RED (raw)",
+            "Raw RED LED ADC reading directly from the AFE4490. "
+            "Includes ambient light contamination. Field: RED in the M1 frame."))
+        self.check_red_amb.setToolTip(_make_tooltip(
+            "Ambient RED",
+            "Ambient light sampled during the RED LED off period (aled2). "
+            "Represents environmental light interference on the RED channel."))
+        self.check_red_sub.setToolTip(_make_tooltip(
+            "RED (clean)",
+            "RED minus ambient: RED − RED_Amb. Ambient-subtracted RED signal. "
+            "Primary input to the SpO2 algorithm. Field: RED_Sub."))
+        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub):
             sidebar.addWidget(w)
 
         sidebar.addStretch()
@@ -6519,29 +6519,8 @@ class PPGSignalsWindow(QtWidgets.QWidget):
             """)
             return cb
 
-        lbl_red = QtWidgets.QLabel("RED")
-        lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 10px;")
-        sidebar.addWidget(lbl_red)
-        self.check_red_raw = create_check("RED (raw)",   "#FFFFFF", False)
-        self.check_red_amb = create_check("Ambient RED", "#00FFFF", False)
-        self.check_red_sub = create_check("RED (clean)", "#FF8888", True)
-        self.check_red_raw.setToolTip(_make_tooltip(
-            "RED (raw)",
-            "Raw RED LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: RED in the M1 frame."))
-        self.check_red_amb.setToolTip(_make_tooltip(
-            "Ambient RED",
-            "Ambient light sampled during the RED LED off period (aled2). "
-            "Represents environmental light interference on the RED channel."))
-        self.check_red_sub.setToolTip(_make_tooltip(
-            "RED (clean)",
-            "RED minus ambient: RED − RED_Amb. Ambient-subtracted RED signal. "
-            "Primary input to the SpO2 algorithm. Field: RED_Sub."))
-        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub):
-            sidebar.addWidget(w)
-
         lbl_ir = QtWidgets.QLabel("IR")
-        lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 20px;")
+        lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 10px;")
         sidebar.addWidget(lbl_ir)
         self.check_ir_raw = create_check("IR (raw)",    "#FFFFFF", False)
         self.check_ir_amb = create_check("Ambient IR",  "#00FFFF", False)
@@ -6559,6 +6538,27 @@ class PPGSignalsWindow(QtWidgets.QWidget):
             "IR minus ambient: IR − IR_Amb. Ambient-subtracted IR signal. "
             "Primary input to the HR algorithms (HR1, HR2, HR3). Field: IR_Sub."))
         for w in (self.check_ir_raw, self.check_ir_amb, self.check_ir_sub):
+            sidebar.addWidget(w)
+
+        lbl_red = QtWidgets.QLabel("RED")
+        lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 20px;")
+        sidebar.addWidget(lbl_red)
+        self.check_red_raw = create_check("RED (raw)",   "#FFFFFF", False)
+        self.check_red_amb = create_check("Ambient RED", "#00FFFF", False)
+        self.check_red_sub = create_check("RED (clean)", "#FF8888", True)
+        self.check_red_raw.setToolTip(_make_tooltip(
+            "RED (raw)",
+            "Raw RED LED ADC reading directly from the AFE4490. "
+            "Includes ambient light contamination. Field: RED in the M1 frame."))
+        self.check_red_amb.setToolTip(_make_tooltip(
+            "Ambient RED",
+            "Ambient light sampled during the RED LED off period (aled2). "
+            "Represents environmental light interference on the RED channel."))
+        self.check_red_sub.setToolTip(_make_tooltip(
+            "RED (clean)",
+            "RED minus ambient: RED − RED_Amb. Ambient-subtracted RED signal. "
+            "Primary input to the SpO2 algorithm. Field: RED_Sub."))
+        for w in (self.check_red_raw, self.check_red_amb, self.check_red_sub):
             sidebar.addWidget(w)
 
         sidebar.addStretch()
@@ -7970,6 +7970,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
+        self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA/V_ADC)
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
@@ -8392,11 +8393,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
         stats_header.addWidget(self.spin_stats_interval)
         stats_vbox.addLayout(stats_header)
 
-        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 7)
-        self.stats_table.setHorizontalHeaderLabels(["Signal", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"])
-        _small_hdr_font = QtGui.QFont()
-        _small_hdr_font.setPixelSize(20)
-        self.stats_table.horizontalHeaderItem(1).setFont(_small_hdr_font)
+        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 9)
+        self.stats_table.setHorizontalHeaderLabels(["Signal", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max", "V_TIA", "V_ADC"])
+        _hdr_font_normal = QtGui.QFont()
+        _hdr_font_normal.setPixelSize(33)
+        _hdr_font_small  = QtGui.QFont()
+        _hdr_font_small.setPixelSize(9)
+        for _c in range(9):
+            _f = _hdr_font_small if _c == 1 else _hdr_font_normal
+            self.stats_table.horizontalHeaderItem(_c).setFont(_f)
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.stats_table.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
@@ -8409,7 +8414,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             }
             QHeaderView::section {
                 background-color: #1E1E2E; color: #AAAAAA;
-                font-size: 33px; font-weight: bold;
+                font-weight: bold;
                 padding: 6px; border: 1px solid #2A2A2A;
             }
             QTableWidget::item { padding: 6px 10px; }
@@ -8418,11 +8423,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
             }
         """)
         self.stats_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        for col in range(1, 7):
+        for col in range(1, 9):
             self.stats_table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
         self.stats_table.verticalHeader().setDefaultSectionSize(40)
 
         _HR_ROWS  = {11, 13, 15}   # HR1, HR2, HR3
+        _RAW_ROWS = {0, 1, 2, 3}   # IR, RED, IR_Amb, RED_Amb
         _MEAN_COL = 2
         _MAROON   = QtGui.QColor("#5C001A")
 
@@ -8432,8 +8438,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             item.setForeground(QtGui.QColor("#AAAAAA"))
             item.setToolTip(rich_tip)
             self.stats_table.setItem(row, 0, item)
-            for col in range(1, 7):
-                it = QtWidgets.QTableWidgetItem("---")
+            for col in range(1, 9):
+                text = "" if (row not in _RAW_ROWS and col >= 7) else "---"
+                it = QtWidgets.QTableWidgetItem(text)
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 it.setToolTip(rich_tip)
                 if row in _HR_ROWS and col == _MEAN_COL:
@@ -8559,6 +8566,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         )
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', True):
             self._cfg_listener(text)
+        self._last_cfg = kv
         if self.hw_config_window is not None:
             self.hw_config_window.update_from_cfg(kv)
         self._cfg_notify_lab_capture = True   # reset to default after each frame
@@ -9245,11 +9253,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 break
 
     _STATS_HR_ROWS       = {11, 13, 15}   # HR1, HR2, HR3
-    _STATS_SUB_ROWS      = {4, 5}         # RED_Sub, IR_Sub
+    _STATS_SUB_ROWS      = {4, 5}         # IR_Sub, RED_Sub
+    _STATS_RAW_ROWS      = {0, 1, 2, 3}  # IR, RED, IR_Amb, RED_Amb — show V_TIA / V_ADC
     _STATS_MEAN_COL      = 2
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
     _STATS_SQI_THRESHOLD = 0.9
+    _ADC_FSR             = 1.2            # V — AFE4490 ADC full-scale voltage (±1.2 V)
+    _ADC_FS_COUNTS       = 2 ** 21        # 22-bit signed: positive full scale
+    _STG2_RG_OHM         = {              # Stage 2 gain string → RG resistor value Ω (Table 1, datasheet p.31)
+        "0dB":   100e3,   # ×1
+        "3.5dB": 150e3,   # ×1.5
+        "6dB":   200e3,   # ×2
+        "9.5dB": 300e3,   # ×3
+        "12dB":  400e3,   # ×4
+    }
+    _STG2_RI_OHM         = 100e3         # RI fixed internal resistor Ω (datasheet p.30)
 
     def _on_stats_cell_clicked(self, row, col):
         key = (row, col)
@@ -9304,7 +9323,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.stats_table.setItem(row, 1, snr_item)
             else:
                 snr_item.setText(snr_str)
-            # cols 2-6: Mean, StdDev, Max-Min, Min, Max
+            # cols 2-6: Mean, SD, Max-Min, Min, Max
             for col, v in enumerate(vals, start=2):
                 item = self.stats_table.item(row, col)
                 if item is None:
@@ -9320,6 +9339,29 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     sqi_mean = sum(sqi_buf) / len(sqi_buf) if sqi_buf else 0.0
                     bg = self._STATS_GREEN if sqi_mean > self._STATS_SQI_THRESHOLD else self._STATS_MAROON
                     item.setBackground(bg)
+            # cols 7-8: V_TIA, V_ADC — only for IR, RED, IR_Amb, RED_Amb (rows 0-3)
+            if row in self._STATS_RAW_ROWS and buf:
+                is_ir    = row in {0, 2}   # IR / IR_Amb → stg21, tia1; RED / RED_Amb → stg22, tia2
+                stg2_str  = self._last_cfg.get("stg21" if is_ir else "stg22", "0dB")
+                rg_ohm    = self._STG2_RG_OHM.get(stg2_str, 100e3)
+                i_cancel  = float(self._last_cfg.get("ambdac", "0")) * 1e-6  # µA → A
+                v_adc     = mean / self._ADC_FS_COUNTS * self._ADC_FSR
+                # Eq.2 datasheet p.30: V_DIFF = 2×(I_PD×RF/RI − I_CANCEL)×RG
+                # → V_TIA = I_PD×RF = (V_ADC/(2×RG) + I_CANCEL) × RI
+                v_tia     = (v_adc / (2 * rg_ohm) + i_cancel) * self._STG2_RI_OHM
+                vtia_str  = f"{v_tia:.2f} V"
+                vadc_str  = f"{v_adc:.2f} V"
+            else:
+                vtia_str = "" if row not in self._STATS_RAW_ROWS else "---"
+                vadc_str = vtia_str
+            for col, txt in ((7, vtia_str), (8, vadc_str)):
+                it = self.stats_table.item(row, col)
+                if it is None:
+                    it = QtWidgets.QTableWidgetItem(txt)
+                    it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                    self.stats_table.setItem(row, col, it)
+                else:
+                    it.setText(txt)
             self._stats_buf[name].clear()
 
     def _process_frames_tick(self):
