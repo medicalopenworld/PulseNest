@@ -33,7 +33,7 @@ HRResult = namedtuple('HRResult', [
 
 
 def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=25, hr_max=300, prominence=0.1):
+                              hr_min=40, hr_max=300, prominence=0.1):
     """Compute HR estimate via cross-correlation between two overlapping segments of the same signal.
 
     Uses np.correlate(seg, template, mode='valid') where template = seg[max_lag_n:].
@@ -114,7 +114,7 @@ def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 
 
 def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=25, hr_max=300, prominence=0.1):
+                              hr_min=40, hr_max=300, prominence=0.1):
     """Compute autocorrelation-based HR estimate using scipy.signal.correlate with FFT.
 
     Key difference from v1: computes the true autocorrelation of a single vector
@@ -291,12 +291,12 @@ class HRFFTCalc:
       + parabolic sub-bin interpolation → HR3 (bpm)
 
     Constants must match the firmware implementation when ported:
-      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.5, HR_MAX_HZ=3.5
+      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.6667, HR_MAX_HZ=3.5
     """
     LP_CUTOFF_HZ       = 10.0
     BUF_LEN            = 512
     UPDATE_INTERVAL_S  = 0.5
-    HR_MIN_HZ          = 25.0 / 60.0  # 0.4167 Hz — 25 BPM — reported valid lower bound (ISO 80601-2-61; neonatal)
+    HR_MIN_HZ          = 40.0 / 60.0  # 0.6667 Hz — 40 BPM — reported valid lower bound (ISO 80601-2-61; neonatal)
     HR_MAX_HZ          = 300.0 / 60.0 # 5.0 Hz    — 300 BPM — reported valid upper bound (neonatal tachycardia)
     # Guard band: internal search extends ±3 BPM beyond the reported valid range.
     # Ensures signals at the boundary are found before the validity gate is applied.
@@ -641,7 +641,7 @@ class HR1TestCalc:
     FW_THRESHOLD_FACTOR  = 0.6
     FW_REFRACTORY_S      = 0.2
     FW_RR_BUF_LEN        = 5
-    FW_HR_MIN_BPM        = 25.0
+    FW_HR_MIN_BPM        = 40.0
     FW_HR_MAX_BPM        = 300.0
     FW_PEAK_MARKER_N     = 10
 
@@ -878,9 +878,9 @@ class HR2TestCalc:
     FW_UPDATE_N      = 25
     FW_MIN_LAG_S     = 0.185
     FW_MIN_CORR      = 0.5
-    FW_HR_MIN_BPM    = 25.0
+    FW_HR_MIN_BPM    = 40.0
     FW_HR_MAX_BPM    = 300.0
-    FW_HR_SEARCH_MIN = 22.0
+    FW_HR_SEARCH_MIN = 37.0
     FW_HR_SEARCH_MAX = 303.0
 
     def __init__(self):
@@ -3616,9 +3616,9 @@ class HR3TestCalc:
     FW_BUF_LEN       = 512
     FW_UPDATE_N      = 25
     FW_HPS_HARMONICS = 3        # k = 2, 3  (multiply 2 additional harmonic downsamples)
-    FW_HR_MIN_BPM    = 30.0
+    FW_HR_MIN_BPM    = 40.0
     FW_HR_MAX_BPM    = 260.0
-    FW_HR_SEARCH_MIN = 27.0     # guard band −3 BPM
+    FW_HR_SEARCH_MIN = 37.0     # guard band −3 BPM
     FW_HR_SEARCH_MAX = 263.0    # guard band +3 BPM
 
     def __init__(self):

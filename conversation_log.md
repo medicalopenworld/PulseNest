@@ -7981,6 +7981,24 @@ Misma lógica para V_ADC con thresholds diferentes (ver §6.3 del spec).
 
 ---
 
+## Sesión 2026-05-27p
+
+### Tema: hr_min_bpm 30 → 40 BPM
+
+**Pregunta:** justificación de rangos de trabajo de LEDmA, RF, AMBDAC, RG. Luego: cambiar hr_min_bpm a 40 BPM.
+
+**Decisiones:**
+- `hr_min_bpm` 30 → **40 BPM** (límite inferior válido reportado, ISO 80601-2-61)
+- `hr_search_min_bpm` (guard band: hr_min − 3) 27 → **37 BPM**
+- Spec bumpeada a **v0.25**
+
+**Ficheros modificados:**
+- `incunest_afe4490.cpp`: constexpr `hr_min_bpm` 30.0f → 40.0f
+- `incunest_afe4490_spec.md`: v0.24→v0.25, tabla parámetros (×2) y tabla constants (×2), changelog v0.25
+- `pulsenest_lab.py`: `HR_MIN_HZ` (HRFFTCalc), `FW_HR_MIN_BPM` (HR1TestCalc, HR2TestCalc, HR3TestCalc), `FW_HR_SEARCH_MIN` (HR2TestCalc, HR3TestCalc), defaults `hr_min=` en `_estimate_hr_xcorr_v1` y `_estimate_hr_autocorr_v2`
+
+---
+
 ## Sesión 2026-05-27o
 
 ### Tema: SIGNAL STATS — tooltips V_TIA/V_ADC con color coding y "Units: V (volts)"
