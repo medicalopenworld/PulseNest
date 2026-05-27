@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.0
+# pulsenest_lab — Specification v1.3
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -13,12 +13,14 @@ Part of the **PulseNest** project — Medical Open World.
 script — it is a first-class project deliverable with its own spec and versioning.
 
 Responsibilities:
-- Display real-time PPG/SpO2/HR signals received over USB serial from the ESP32-S3.
+- Display real-time PPG/SpO2/HR signals received over USB serial or WiFi/UDP from the ESP32-S3.
 - Run Python replicas of the firmware SpO2 and HR algorithms for independent verification.
 - Provide tunable algorithm windows to explore parameter sensitivity.
 - Support SpO2 probe calibration (R-ratio regression).
 - Capture and export data to CSV for offline analysis.
 - Display FreeRTOS timing stats (CPU budget per algorithm).
+- Remote-control AFE4490 hardware parameters in real time ($SET/$CFG protocol).
+- Execute parametric AFE sweeps and log results to CSV (AFE SWEEP TEST window).
 
 ---
 
@@ -44,6 +46,7 @@ Defined at module level, after imports.
 |----------|-------|---------|
 | `PORT` | `'COM15'` | Default serial port (overridable via UI combo) |
 | `BAUD` | `921600` | Serial baud rate — must match firmware |
+| `UDP_DEFAULT_PORT` | `5005` | Default UDP listen port — must match `wifi_config.h` |
 | `SETTINGS_FILE` | `pulsenest_lab.ini` (same dir) | Qt QSettings persistence file |
 | `CAPTURES_DIR` | `captures/` (same dir) | Output directory for all CSV captures; created at startup |
 | `WINDOW_SIZE` | `500` | Rolling display buffer length (10 s @ 50 Hz) |
@@ -53,18 +56,36 @@ Defined at module level, after imports.
 
 ---
 
-## 4. Serial protocol
+## 4. Protocols
 
-### 4.1 Frame types
+### 4.1 Transport layer
+
+Two transports operate in parallel:
+
+| Transport | Direction | Role |
+|-----------|-----------|------|
+| USB serial (921600 baud) | bidirectional | Data frames + command I/O; always used |
+| UDP WiFi (default port 5005) | ESP32 → PC | High-speed data frames; toggled independently |
+
+Only the **active transport** feeds the algorithm/display pipeline. The active transport is
+selected by the `btn_udp` toggle: OFF = serial active, ON = UDP active. Serial stays open
+in both cases to receive `$CFG`/`$DIAG`/`$ERR` responses and to send `$SET`/`$CFG?`/`$DIAG?` commands.
+
+Each transport has its own reader thread: `_serial_reader` and `_udp_reader`.
+Both threads enqueue raw bytes into `_serial_queue` or `_udp_queue`. The processing loop
+in `_process_frames_tick()` drains the **active** queue only.
+
+### 4.2 Data frames ($M1, $M2)
 
 All frames are ASCII lines terminated with `\r\n`. Fields are comma-separated.
 Every frame ends with `*XX` where `XX` is the XOR checksum of the bytes between `$` and `*`.
+Frames with bad checksum are silently discarded.
 
 #### $M1 — Full data frame (default)
 
 ```
 $M1,<LibID>,<SmpCnt>,<Ts_us>,<RED>,<IR>,<RED_Amb>,<IR_Amb>,<RED_Sub>,<IR_Sub>,
-    <PPG>,<SpO2>,<SpO2_SQI>,<SpO2_R>,<PI>,<HR1>,<HR1_SQI>,<HR2>,<HR2_SQI>,
+    <PPGdisp>,<SpO2>,<SpO2_SQI>,<SpO2_R>,<PI>,<HR1>,<HR1_SQI>,<HR2>,<HR2_SQI>,
     <HR3>,<HR3_SQI>*XX
 ```
 
@@ -79,7 +100,7 @@ $M1,<LibID>,<SmpCnt>,<Ts_us>,<RED>,<IR>,<RED_Amb>,<IR_Amb>,<RED_Sub>,<IR_Sub>,
 | `IR_Amb` | int32 | ALED1VAL — ambient after IR LED |
 | `RED_Sub` | int32 | RED − RED_Amb — ambient-corrected RED |
 | `IR_Sub` | int32 | IR − IR_Amb — ambient-corrected IR |
-| `PPG` | int32 | Filtered PPG (bandpass, selected channel) |
+| `PPGdisp` | int32 | Display-ready PPG (IIR DC removal → MA-LP → negated, IR channel) |
 | `SpO2` | float | SpO2 in % |
 | `SpO2_SQI` | float | SpO2 Signal Quality Index [0–1] |
 | `SpO2_R` | float | R ratio used for SpO2 |
@@ -99,24 +120,114 @@ $M2,<cnt>,<RED>,<IR>,<RED_Amb>,<IR_Amb>,<RED_Sub>,<IR_Sub>*XX
 
 Used when firmware is in `IncunestFrameMode::RAW`. No algorithm outputs.
 
+### 4.3 Diagnostic and control frames
+
+All sent by the script over **serial** (regardless of active transport).
+
+#### $CFG? — Request current configuration
+
+```
+$CFG?*XX
+```
+
+Firmware responds with a `$CFG` frame (see §4.5).
+
+#### $SET — Set a hardware parameter
+
+```
+$SET,<key>,<value>*XX
+```
+
+Firmware applies the change and responds with an updated `$CFG` frame to confirm.
+On error the firmware responds with `$ERR,<reason>*XX`.
+
+Parameters accepted by `$SET`:
+
+| Key | Values | Description |
+|-----|--------|-------------|
+| `led1` | 0–255 | LED1 (IR) drive DAC code |
+| `led2` | 0–255 | LED2 (RED) drive DAC code |
+| `ledrange` | 75, 150 | LED current full-scale range (mA) |
+| `ensepgain` | 0, 1 | Enable separate gain for LED1/LED2 TIA |
+| `tiagain1` | 0–6 | LED1 TIA feedback resistor index (RF1) |
+| `tiacf1` | 0–3 | LED1 TIA feedback capacitor index (CF1) |
+| `stg21` | 0–4 | LED1 stage-2 gain index (RG1) |
+| `stage2en1` | 0, 1 | Enable stage-2 for LED1 |
+| `tiagain2` | 0–6 | LED2 TIA feedback resistor index (RF2) |
+| `tiacf2` | 0–3 | LED2 TIA feedback capacitor index (CF2) |
+| `stg22` | 0–4 | LED2 stage-2 gain index (RG2) |
+| `stage2en2` | 0, 1 | Enable stage-2 for LED2 |
+| `ambdac` | 0–10 | Ambient cancellation current (µA, 2 µA/step) |
+| `sr` | timing | Sample rate register |
+| `numav` | int | Number of averages |
+| `t1`–`t28` | int | Raw AFE4490 timing registers |
+
+#### $DIAG? — Request hardware diagnostic
+
+```
+$DIAG?*XX
+```
+
+Firmware runs the AFE4490 internal diagnostic test and responds with `$DIAG`.
+
+### 4.4 Firmware response frames
+
+All emitted by the firmware asynchronously.
+
+#### $CFG — Configuration report
+
+```
+$CFG,led1=<v>,led2=<v>,range=<v>,tia1=<v>,cf1=<v>,stg21=<v>,stage2en1=<v>,
+     tia2=<v>,cf2=<v>,stg22=<v>,stage2en2=<v>,ambdac=<v>,sr=<v>,numav=<v>,
+     ensepgain=<v>*XX
+```
+
+Emitted at startup, after `$SET`, and in response to `$CFG?`. Parsed by
+`_on_cfg_frame_received()` → populates `_last_cfg` dict and updates `HWConfigWindow`.
+
+#### $TCFG — Raw timing registers
+
+```
+$TCFG,t1=<v>,...,t28=<v>*XX
+```
+
+Emitted alongside `$CFG` for timing-register changes. Parsed by `_on_tcfg_frame_received()`.
+
+#### $DIAG — Diagnostic result
+
+```
+$DIAG,<raw_hex>*XX
+```
+
+32-bit diagnostic register. Parsed by `_on_diag_frame_received()` → updates `DiagnosticsWindow`.
+
 #### $TIMING — Algorithm timing stats
 
 ```
-$TIMING,<hr1_mean_us>,<hr1_max_us>,<hr2_mean_us>,<hr2_max_us>,
-        <hr3_mean_us>,<hr3_max_us>,<spo2_mean_us>,<spo2_max_us>,
+$TIMING,<hr1_mean_us>,<hr1_max_us>,<hr2fp_mean_us>,<hr2fp_max_us>,
+        <hr3fp_mean_us>,<hr3fp_max_us>,<spo2_mean_us>,<spo2_max_us>,
         <cycle_mean_us>,<cycle_max_us>,
-        <stack_afe_free>,<stack_hr2_free>,<stack_hr3_free>*XX
+        <hr2cmp_mean_us>,<hr2cmp_max_us>,<hr3cmp_mean_us>,<hr3cmp_max_us>,
+        <stack_free>*XX
 ```
 
-Emitted every ~5 s (every `ts_emit_interval` samples). Requires `INCUNEST_TIMING_STATS=1`.
+Emitted every ~5 s. Requires `INCUNEST_TIMING_STATS=1`.
 
-#### $TASK — FreeRTOS task info (follows $TIMING)
+#### $TASK — FreeRTOS task info
 
 ```
-$TASK,<name>,<cpu_pct>,<stack_words>*XX
+$TASK,<name>,<cpu_pct_x10>,<stack_words>*XX
 ```
 
-One frame per task. Sequence terminated by `$TASKS_END`.
+One frame per task, after `$TIMING`. Sequence terminated by `$TASKS_END`.
+
+#### $ERR — Error response
+
+```
+$ERR,<reason>*XX
+```
+
+Firmware rejected a `$SET` command. Logged to Serial Console and shown in `HWConfigWindow` status bar.
 
 #### # lines — System messages
 
@@ -125,12 +236,12 @@ Lines starting with `#` are human-readable status messages from the firmware:
 - `# incunest_afe4490 started` — library started
 - `# frame mode ...` — frame mode change
 
-### 4.2 Checksum
+### 4.5 Checksum
 
-XOR of all bytes between `$` and `*` (exclusive). Validated on every frame.
+XOR of all bytes between `$` and `*` (exclusive). Validated on every data frame.
 Frames with bad checksum are silently discarded.
 
-### 4.3 Per-frame integrity check: RED_Sub / IR_Sub
+### 4.6 Per-frame integrity check: RED_Sub / IR_Sub
 
 When parsing live M1 frames, the script verifies:
 ```
@@ -140,24 +251,35 @@ IR_Sub  == IR  − IR_Amb
 If a mismatch is found, it is logged to the Serial Console as `[CHK] SUB MISMATCH #N`.
 First 5 mismatches are always logged; thereafter one every 100. Counter: `_sub_mismatch_count`.
 
-### 4.4 Data flow
+### 4.7 Data flow
 
 ```
-ESP32 Serial (921600 baud)
-      │
-      ▼
-_reader_thread  ──────────────────────────────────────
-  readline() loop                                     │ thread boundary
-  → _serial_queue (queue.Queue, no size limit)        │
-      │                                               │
-      ▼                                          UI thread
-update_data()  (called by QTimer @ ~50 Hz)
-  drain _serial_queue
-  parse frame → update deque buffers
-  throttled: refresh plots in open subwindows
+ESP32 SERIAL (921600 baud)          ESP32 UDP WiFi (port 5005)
+      │                                        │
+      ▼                                        ▼
+_serial_reader thread                   _udp_reader thread
+  readline() loop                         recvfrom() loop
+  → _serial_queue (Queue)                 → _udp_queue (Queue)
+      │                                        │
+      └──────────────┬─────────────────────────┘
+                     ▼  active transport only
+            _process_frames_tick()  (QTimer ~20ms)
+              drain queue
+              parse frames → update deque buffers
+              update algorithms (HR1TEST, HR2TEST, etc.)
+                     │
+                     ▼
+            _render_timer tick (QTimer ~50ms)
+              render plots in open subwindows
 ```
 
-`_reader_thread` runs in a daemon thread. It only reads bytes and enqueues lines — no parsing, no UI calls. This ensures no frames are dropped during slow rendering.
+Two separate timers decouple data ingestion from rendering:
+- `_process_frames_tick()`: runs at ~20 ms, drains the queue, updates all deque buffers,
+  runs Python algorithm replicas (`HR1TestCalc`, `HR2TestCalc`, etc.).
+- `_render_timer` tick: runs at ~50 ms, refreshes plots in all open subwindows using current buffers.
+
+`_reader_thread` / `_udp_reader` run in daemon threads. They only read bytes and enqueue lines
+— no parsing, no UI calls. This ensures no frames are dropped during slow rendering.
 
 ---
 
@@ -196,7 +318,7 @@ All constants are exposed as instance attributes overridable at runtime from the
 
 Replicates `INCUNEST_AFE4490::_update_hr1()`.
 
-**Algorithm:** IIR DC removal → moving average LP filter (cutoff 5 Hz) → threshold-based peak detection (threshold = 0.6 × running max) → refractory period 0.2 s → RR intervals buffer (5 intervals) → HR = 60 / mean(RR).
+**Algorithm:** IIR DC removal → moving average LP filter (cutoff 5 Hz) → threshold-based peak detection (threshold = 0.6 × running max) → refractory period 185 ms → RR intervals buffer (5 intervals) → HR = 60 / mean(RR).
 
 SQI: `1 − CV/0.15` where CV = std(RR)/mean(RR); clamped to [0, 1]. SQI = 0 if < 2 peaks.
 
@@ -236,15 +358,21 @@ Dark theme: background #121212, text #E0E0E0
 │ LEFT SIDEBAR          │ CENTER (4 live plots)    │ RIGHT PANEL              │
 │ (fixed width ~220px)  │ (stretches)              │ (fixed width ~340px)     │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ [Port combo][CONNECT] │ Plot 1: RED (raw+sub)    │ Serial Console (log)     │
-│ [RESET]               │ Plot 2: IR  (raw+sub)    │ (color-coded, scrolling) │
-│ [PAUSE] [SAVE]        │ Plot 3: PPG              │                          │
-│ [RECORD CHK]          │ Plot 4: SpO2 / HR1/2/3  │ SIGNAL STATS table       │
-│ [Lab Capture]         │                          │                          │
-│ [Decim spin]          │                          │ [TIMING] button          │
+│ [Port combo][CONNECT] │ Plot 1: IR + IR_Amb      │ Serial Console (log)     │
+│ [RESET]               │        + IR_Sub          │ (color-coded, scrolling) │
+│ [PAUSE] [SAVE]        │ Plot 2: RED + RED_Amb    │                          │
+│ [RECORD CHK]          │        + RED_Sub         │ SIGNAL STATS table       │
+│ [Lab Capture]         │ Plot 3: PPG (display)    │                          │
+│ [Decim spin]          │ Plot 4: SpO2 / HR1/2/3   │ [TIMING] button          │
+│ ──────────────        │                          │                          │
+│ [UDP WiFi] toggle     │                          │                          │
+│ [UDP port spin]       │                          │                          │
 │ ──────────────        │                          │                          │
 │ [PPG PLOTS]           │                          │                          │
+│ [PPG SIGNALS]         │                          │                          │
+│ [ALGO RESULTS]        │                          │                          │
 │ [SERIAL COM]          │                          │                          │
+│ [UDP COM]             │                          │                          │
 │ [SPO2LAB]             │                          │                          │
 │ [SPO2TEST]            │                          │                          │
 │ [HR1TEST]             │                          │                          │
@@ -252,6 +380,10 @@ Dark theme: background #121212, text #E0E0E0
 │ [HR3TEST]             │                          │                          │
 │ [HR3LAB]              │                          │                          │
 │ [HR2LAB]              │                          │                          │
+│ [HW CONFIG]           │                          │                          │
+│ [DIAGNOSTICS]         │                          │                          │
+│ [AFE SWEEP]           │                          │                          │
+│ [PYTHON TIMING]       │                          │                          │
 └──────────────────────────────────────────────────────────────────────────────┘
 │ Status bar: mouse hint                                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -260,21 +392,51 @@ Dark theme: background #121212, text #E0E0E0
 ### 6.2 Data buffers
 
 All buffers are `collections.deque(maxlen=WINDOW_SIZE)` (500 samples = 10 s at 50 Hz).
-Named: `data_ppg`, `data_hr1`, `data_hr2`, `data_hr3`, `data_spo2`, `data_spo2_r`,
+Named: `data_ppgdisp`, `data_hr1`, `data_hr2`, `data_hr3`, `data_spo2`, `data_spo2_r`,
 `data_pi`, `data_red`, `data_ir`, `data_red_amb`, `data_ir_amb`, `data_red_sub`,
 `data_ir_sub`, `data_spo2_sqi`, `data_hr1_sqi`, `data_hr2_sqi`, `data_hr3_sqi`.
 
-### 6.3 Signal STATS table
+### 6.3 SIGNAL STATS table
 
-Located in the right panel. Rows = 17 signals. Columns: Signal | Last | Mean | Max-Min | Min | Max.
+Located in the right panel. Rows = 17 signals. Columns:
 
-Signals (in order): RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub (rows 0–5, integer + narrow-space thousands separator `\u202f`), PPG, SpO2, SpO2_SQI, SpO2_R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI (rows 6–16, 2 decimal places).
+| Col | Name | Description |
+|-----|------|-------------|
+| 0 | Signal | Row label |
+| 1 | % SD/Mean | Coefficient of variation as percentage |
+| 2 | Mean | Mean value over stats interval |
+| 3 | SD | Standard deviation |
+| 4 | Max-Min | Peak-to-peak range |
+| 5 | Min | Minimum value |
+| 6 | Max | Maximum value |
+| 7 | V_TIA | Estimated TIA differential output voltage (V) — raw rows only |
+| 8 | V_ADC | Estimated ADC input voltage (V) — raw rows only |
 
-**SQI colour coding (Mean column):** HR1, HR2, HR3 rows (indices 11, 13, 15):
+**Signal ordering (IR-first, mirrors firmware $M1 frame):**
+IR, RED, IR_Amb, RED_Amb (rows 0–3, raw ADC — integer + narrow-space thousands separator `\u202f`),
+IR_Sub, RED_Sub (rows 4–5, ambient-subtracted),
+PPGdisp, SpO2, SpO2_SQI, SpO2_R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI (rows 6–16, 2 dp).
+
+**V_TIA / V_ADC columns (cols 7–8):** populated only for rows 0–3 (IR, RED, IR_Amb, RED_Amb).
+Calculated from the current ADC mean using the AFE4490 gain chain:
+- V_ADC = (mean_counts / 2²¹) × 1.2 V  (ADC full scale ±1.2 V, 22-bit signed)
+- V_TIA = (V_ADC / (2 × RG)) × RI = V_ADC × (RI / (2×RG))  (datasheet eq.2, p.30)
+  where RI = 100 kΩ (fixed), RG from current `$CFG` stg21/stg22 field.
+
+**V_TIA / V_ADC color coding (background of cols 7–8):**
+
+| Color | Hex | Condition — LED rows (0,1) | Condition — ALED rows (2,3) |
+|-------|-----|---------------------------|------------------------------|
+| Red | `#4A0800` | V_TIA > 0.95 V or < 0.15 V; V_ADC > 1.10 V or < 0.20 V | V_TIA > 0.70 V; V_ADC > 0.80 V |
+| Yellow | `#3A2D00` | V_TIA 0.80–0.95 V or 0.15–0.40 V; V_ADC 0.95–1.10 V or 0.20–0.45 V | V_TIA 0.30–0.70 V; V_ADC 0.35–0.80 V |
+| Green | `#0F3A0F` | V_TIA 0.40–0.80 V; V_ADC 0.45–0.95 V | V_TIA < 0.30 V; V_ADC < 0.35 V |
+| Default | `#121212` | Row not in {0,1,2,3} or no data | — |
+
+**SQI colour coding (Mean column, col 2):** HR1, HR2, HR3 rows (indices 11, 13, 15):
 - Mean SQI > 0.9 → background `#1A5C1A` (dark green)
 - Mean SQI ≤ 0.9 → background `#5C001A` (dark maroon)
 
-**Manual highlighting:** clicking any cell toggles a gold border (`#FFD700`, 3 px) via `_StatsHighlightDelegate`. Highlighted cells persist in `pulsenest_lab.ini` (`PPGMonitor/stats_highlighted`, format `row,col;row,col`). The gold border is drawn on top of SQI background colours.
+**Manual highlighting:** clicking any cell toggles a gold border (`#FFD700`, 3 px) via `_StatsHighlightDelegate`. Highlighted cells persist in `pulsenest_lab.ini` (`PPGMonitor/stats_highlighted`, format `row,col;row,col`). The gold border is drawn on top of SQI/voltage background colours.
 
 Stats are accumulated over `spin_stats_interval` seconds (default 1 s, user-configurable) and cleared after each table update.
 
@@ -291,7 +453,7 @@ Stats are accumulated over `spin_stats_interval` seconds (default 1 s, user-conf
 | Control | Action |
 |---------|--------|
 | Port combo | List available COM ports; last used restored from .ini |
-| CONNECT | Open/close serial port; starts/stops `_reader_thread` |
+| CONNECT | Open/close serial port; starts/stops `_serial_reader` thread |
 | RESET | Send `'r'` byte to ESP32 (triggers firmware reset) |
 | PAUSE | Freeze display; drain queue to prevent memory buildup |
 | SAVE | Toggle live CSV streaming (or snapshot if paused) |
@@ -299,30 +461,33 @@ Stats are accumulated over `spin_stats_interval` seconds (default 1 s, user-conf
 | Lab Capture | Open `LabCaptureWindow` |
 | Decim spin | Decimation ratio (default 10): 1 in N M1 frames are processed |
 | Stats interval | Stats table update interval in seconds (default 1) |
+| UDP WiFi button | Toggle UDP receiver on/off; switches active transport |
+| UDP port spin | UDP listen port (default 5005) |
 | Subwindow buttons | Toggle-open/close each secondary window |
 
 ### 6.6 Throttle rates
 
-All rates relative to the decimated data rate (~50 Hz after default decim=10):
+All rates relative to the render timer tick (~50 ms = ~20 Hz):
 
 | Constant | Value | Applies to |
 |----------|-------|-----------|
-| `_PPGPLOTS_REFRESH_EVERY` | 2 | PPGPlotsWindow (25 Hz) |
-| `_SUBWIN_REFRESH_EVERY` | 5 | SpO2Lab, HR3Lab, HR2Lab (10 Hz) |
-| `_SPOST_REFRESH_EVERY` | 5 | SpO2TestWindow (10 Hz) |
-| `_HR1TEST_REFRESH_EVERY` | 5 | HR1TestWindow (10 Hz) |
-| `_HR2TEST_REFRESH_EVERY` | 5 | HR2TestWindow (10 Hz) |
-| `_HR3TEST_REFRESH_EVERY` | 5 | HR3TestWindow (10 Hz) |
+| `_PPGPLOTS_REFRESH_EVERY` | 1 | PPGPlotsWindow, PPGSignalsWindow, AlgoResultsWindow (20 Hz) |
+| `_SUBWIN_REFRESH_EVERY` | 2 | SpO2Lab, HR3Lab, HR2Lab (10 Hz) |
+| `_SPOST_REFRESH_EVERY` | 2 | SpO2TestWindow (10 Hz) |
+| `_HR1TEST_REFRESH_EVERY` | 2 | HR1TestWindow (10 Hz) |
+| `_HR2TEST_REFRESH_EVERY` | 2 | HR2TestWindow (10 Hz) |
+| `_HR3TEST_REFRESH_EVERY` | 2 | HR3TestWindow (10 Hz) |
 
-Serial console lines are appended every `update_data()` cycle (no throttle; batched in `_console_lines`).
+Serial console lines are appended every `_process_frames_tick()` cycle (no throttle; batched in `_console_lines`).
 
 ---
 
 ## 7. Subwindows
 
-All subwindows are `QWidget` (not `QDialog`), non-modal, independently resizable.
+All subwindows are `QWidget` or `QMainWindow` (non-modal), independently resizable.
 Each has its geometry persisted in `pulsenest_lab.ini`. Toggle buttons in the sidebar
 open/close them; closing a window unticks the sidebar button.
+All windows are created with `parent=None` so they appear as independent windows in Alt-Tab.
 
 Every interactive control must have a tooltip built with `_make_tooltip(name, text)`:
 purple background (`#5500AA`), bold gold name on first line, light grey description.
@@ -330,21 +495,39 @@ purple background (`#5500AA`), bold gold name on first line, light grey descript
 ### 7.1 PPGPlotsWindow — "PPG Plots"
 
 Detached window with 6 stacked plots, linked X axes:
-1. RED raw + RED_Amb + RED_Sub (3 curves, toggleable via checkboxes)
-2. IR raw + IR_Amb + IR_Sub (3 curves, toggleable)
-3. PPG (filtered)
+1. IR raw + IR_Amb + IR_Sub (3 curves, toggleable via checkboxes)
+2. RED raw + RED_Amb + RED_Sub (3 curves, toggleable)
+3. PPGdisp (display-ready filtered signal)
 4. SpO2 [%]
-5. HR1 [bpm] (peak detection)
-6. HR2 [bpm] (autocorrelation)
+5. HR1 [bpm] (peak detection) + HR2 [bpm] (autocorrelation) + HR3 [bpm] (FFT+HPS)
+6. (additional HR comparison row)
 
 Checkboxes for each curve's visibility persisted in .ini.
+IR-first row ordering mirrors SIGNAL STATS.
 
-### 7.2 SerialComWindow — "Serial COM"
+### 7.2 PPGSignalsWindow — "PPG SIGNALS"
+
+Focused view on the 6 raw/subtracted ADC channels (IR, RED, IR_Amb, RED_Amb, IR_Sub, RED_Sub).
+IR-first ordering. Stacked plots with linked X axes.
+
+### 7.3 AlgoResultsWindow — "ALGO RESULTS"
+
+Focused view on algorithm outputs: SpO2, SpO2_SQI, SpO2_R, PI, HR1/HR2/HR3 with SQI.
+No parameter controls — purely observational.
+
+### 7.4 SerialComWindow — "Serial COM"
 
 Monospace (`Consolas`) scrolling text area. Shows every line received from serial
 (raw, before parsing). Lines starting with `#` and data frames both shown.
+Pause button stops auto-scroll while new lines are still received.
 
-### 7.3 SpO2LabWindow — "SPO2LAB — Calibration"
+### 7.5 UdpComWindow — "UDP COM"
+
+Equivalent of SerialComWindow for the WiFi/UDP transport.
+Shows every raw frame received via UDP. Has a header label showing the UDP source address
+and port once the first packet is received.
+
+### 7.6 SpO2LabWindow — "SPO2LAB — Calibration"
 
 Purpose: calibrate SpO2 probe coefficients (A, B) by regression over reference points.
 
@@ -365,7 +548,7 @@ Layout: left 4 plots (rolling 60 s) + right control panel.
 - [EXPORT CSV] — saves calibration table + regression to `spo2_cal_*.csv`
 - [CLEAR] — resets calibration table
 
-### 7.4 SpO2TestWindow — "SPO2TEST"
+### 7.7 SpO2TestWindow — "SPO2TEST"
 
 Purpose: verify Python SpO2 replica matches firmware output in real time.
 
@@ -380,9 +563,9 @@ Layout: left 6 stacked plots + right parameter/values panel.
 6. RMS AC IR + RMS AC RED
 
 **Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup), live current-values table,
-[EXPORT CSV] button.
+[EXPORT CSV] button, [LOAD CSV] for offline reprocessing.
 
-### 7.5 HR1TestWindow — "HR1TEST"
+### 7.8 HR1TestWindow — "HR1TEST"
 
 Purpose: verify Python HR1 replica matches firmware output.
 
@@ -396,9 +579,9 @@ Layout: left 4 plots + RR distribution + right panel.
 
 **Bar chart:** RR interval distribution (last N beats).
 
-**Right panel:** parameter spinboxes, current-values table, [EXPORT CSV].
+**Right panel:** parameter spinboxes, current-values table, [EXPORT CSV], [LOAD CSV].
 
-### 7.6 HR2TestWindow — "HR2TEST"
+### 7.9 HR2TestWindow — "HR2TEST"
 
 Purpose: verify Python HR2 replica matches firmware output.
 
@@ -411,9 +594,9 @@ Layout: left 4 plots + right panel.
 4. HR2 SQI fw + py
 
 **Right panel:** BPF cutoff spinboxes, window/update interval spinboxes,
-current-values table, [EXPORT CSV].
+current-values table, [EXPORT CSV], [LOAD CSV].
 
-### 7.7 HR3TestWindow — "HR3TEST"
+### 7.10 HR3TestWindow — "HR3TEST"
 
 Purpose: verify Python HR3 (FFT+HPS) replica matches firmware output.
 
@@ -425,9 +608,9 @@ Layout: left 4 plots + right panel.
 3. HR3 fw (green) + HR3 py (yellow)
 4. HR3 SQI fw + py
 
-**Right panel:** LP cutoff, HPS harmonics count spinboxes, current-values table, [EXPORT CSV].
+**Right panel:** LP cutoff, HPS harmonics count spinboxes, current-values table, [EXPORT CSV], [LOAD CSV].
 
-### 7.8 HR3LabWindow — "HR3LAB"
+### 7.11 HR3LabWindow — "HR3LAB"
 
 Purpose: diagnostic view combining FFT spectrum and HR algorithm comparison.
 
@@ -435,14 +618,14 @@ Layout: left (FFT spectrum with HPS peak line) + right (2 stacked: LP signal + H
 
 No parameter editing — purely observational.
 
-### 7.9 HRLabWindow — "HR2LAB"
+### 7.12 HRLabWindow — "HR2LAB"
 
 Purpose: interactive filter chain visualization for HR algorithm development.
 
 3-column layout showing PPG signal chain variants side by side.
 Each column shows a different filter combination to compare quality.
 
-### 7.10 LabCaptureWindow
+### 7.13 LabCaptureWindow
 
 Purpose: controlled capture with metadata for lab sessions.
 
@@ -458,16 +641,99 @@ Purpose: controlled capture with metadata for lab sessions.
 
 **Output file:** `lab_capture_*.csv` in `CAPTURES_DIR`. All state persisted in .ini.
 
-### 7.11 TimingWindow — "TIMING — CPU Budget & Load"
+### 7.14 Esp32TimingWindow — "TIMING — CPU Budget & Load"
 
 Purpose: display FreeRTOS algorithm timing stats from `$TIMING` / `$TASK` frames.
 
 **Contents:**
-- Bar chart: mean and max µs per algorithm (SpO2, HR1, HR2, HR3, full cycle)
-- Stack free watermarks per task (afe4490, hr2, hr3)
+- Bar chart: mean and max µs per algorithm (SpO2, HR1, HR2 FP, HR3 FP, HR2 CMP, HR3 CMP, full cycle)
+- Stack free watermarks per task
 - Task table: name, CPU%, stack words (from `$TASK` frames)
 
 Updated on each received `$TIMING` + `$TASKS_END` batch.
+
+### 7.15 PythonTimingWindow — "PYTHON TIMING"
+
+Purpose: measure the execution time of the Python algorithm replicas running in the script.
+
+**Contents:**
+- Section A — Tick timers: `_process_frames_tick()` (serial+UDP drain) and `_refresh_plots_tick()` total.
+- Per-algorithm mean/max µs: HR1TestCalc, HR2TestCalc, HR3TestCalc, SpO2LocalCalc.
+- Updated every ~1 s. Useful for verifying the Python algorithms stay within the 20 ms budget.
+
+### 7.16 HWConfigWindow — "HW CONFIG"
+
+Purpose: view and change AFE4490 hardware parameters in real time via `$SET`/`$CFG` protocol.
+
+**Contents:**
+- LED1 / LED2 current DAC code + LED range selector (75/150 mA)
+- Separate-gain enable toggle
+- TIA gain (RF1/RF2) and feedback capacitor (CF1/CF2) per channel
+- Stage-2 gain (RG1/RG2) and enable per channel
+- Ambient DAC current (ambdac 0–10 µA)
+- Sample rate and number of averages
+- Raw timing registers t1–t28 with constraint checker
+- [Read from chip ($CFG?)] — requests `$CFG?` from firmware
+- [Set all] — sends `$SET` for every parameter in the window
+- [Save to file] / [Load from file] — persist/restore configuration as CSV
+- Status bar: shows last command sent and confirmation status
+
+Controls are marked **dirty** (yellow border) when their value differs from the last `$CFG` received,
+and **clean** (no border) after a matching `$CFG` confirms the change.
+
+### 7.17 DiagnosticsWindow — "DIAGNOSTICS"
+
+Purpose: run the AFE4490 hardware diagnostic test and display the result.
+
+**Contents:**
+- [Run Diagnostic] button — sends `$DIAG?` to firmware
+- Decoded diagnostic register bits: LED driver status, TIA open/short, ambient ADC, etc.
+- Raw hex value display
+
+### 7.18 AFESweepTestWindow — "AFE SWEEP TEST"
+
+Purpose: parametric sweep over AFE4490 hardware parameters to characterize the analog front-end.
+Sends `$SET` commands, waits for settling, collects statistics, then moves to the next combination.
+
+**Sweep parameters (all can be set to FIX or VAR min/mid/max, or None to skip):**
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| LED1 mA | 0–255 (DAC code) | IR LED current |
+| LED2 mA | 0–255 (DAC code) | RED LED current |
+| RF1 / RF2 | 10K–1M (7 values) | TIA feedback resistor per channel |
+| RG1 / RG2 | 0–12 dB (5 values) | Stage-2 gain per channel |
+| AMBDAC | 0–10 µA (11 values) | Ambient cancellation current |
+
+**Sweep Parameter grid columns:** `FIX` | `VAR min` | `VAR mid` | `VAR max`
+
+Setting a spin to "None" removes that parameter from the sweep (fewer combinations).
+Setting all VAR spins to "None" results in 0 combos (sweep cannot start).
+
+The combo count is recalculated live on any spin change and shown in the Control area.
+
+**Control area:**
+- N samples spin: how many M1 frames to average per combination (default 20)
+- Settling time spin: milliseconds to wait after `$SET` before collecting data (default 200 ms)
+- [START SWEEP] / [STOP SWEEP] toggle
+- Progress bar: current combo / total combos
+- Status label: state machine status
+
+**State machine:** IDLE → SETTLING (sends `$SET`, waits settling_ms) → MEASURING (collects N samples) → next combo or IDLE.
+
+**Output file:** `afe_sweep_YYYYMMDD_HHMMSS.csv` in `CAPTURES_DIR`. 40 columns:
+`label`, `datetime`, `LED1mA`, `LED2mA`, `RF1`, `RF2`, `RG1`, `RG2`, `ambdac_uA`, `n_samples`,
+then for each of 6 signals (LED2, LED1, ALED2, ALED1, LED2_Sub, LED1_Sub): `_mean`, `_min`, `_max`, `_pp`, `_std`.
+
+#### _ComboSpin widget
+
+All sweep-parameter spins use a custom `_ComboSpin` widget (QComboBox subclass) with a
+QSpinBox-compatible API:
+
+- `value()` → `currentIndex() - 1` (None item at index 0 returns -1; real items start at 0)
+- `setValue(v)` → `setCurrentIndex(v + 1)`
+
+This allows the same `_build_combos()` / `_apply_combo()` logic to treat `value() < 0` as "skip this parameter".
 
 ---
 
@@ -487,6 +753,7 @@ at startup (`os.makedirs(CAPTURES_DIR, exist_ok=True)`).
 | HR2 test export | `hr2test_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in HR2TestWindow | `t_s`, `hr_fw`, `hr_py`, `delta`, `sqi_fw`, `sqi_py` |
 | HR3 test export | `hr3test_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in HR3TestWindow | `t_s`, `hr_fw`, `hr_py`, `delta`, `sqi_fw`, `sqi_py` |
 | Lab capture | `lab_capture_YYYYMMDD_HHMMSS.csv` | START in LabCaptureWindow | Pre-notes, user-selected M1 columns, post-notes |
+| AFE sweep | `afe_sweep_YYYYMMDD_HHMMSS.csv` | START SWEEP in AFESweepTestWindow | 40-column combo results (see §7.18) |
 
 All CSV files include a `#`-prefixed header comment with timestamp and relevant parameters.
 
@@ -506,7 +773,9 @@ All CSV files include a `#`-prefixed header comment with timestamp and relevant 
 | `PPGMonitor/stats_highlighted` | str | Highlighted cells (`row,col;row,col`) |
 | `PPGMonitor/*_open` | bool | Whether each subwindow was open on exit |
 | `PPGPlotsWindow/geometry` | bytes | |
-| `PPGPlotsWindow/check_red_raw` … `check_ir_sub` | bool | Curve visibility |
+| `PPGPlotsWindow/check_ir_raw` … `check_red_sub` | bool | Curve visibility (IR-first) |
+| `PPGSignalsWindow/geometry` | bytes | |
+| `AlgoResultsWindow/geometry` | bytes | |
 | `SpO2LabWindow/geometry` | bytes | |
 | `SpO2LabWindow/splitter` | bytes | |
 | `SpO2LabWindow/spin_spo2_ref` | float | Last reference SpO2 value |
@@ -517,6 +786,12 @@ All CSV files include a `#`-prefixed header comment with timestamp and relevant 
 | `HR3LabWindow/geometry` | bytes | |
 | `HRLabWindow/geometry` | bytes | |
 | `SerialComWindow/geometry` | bytes | |
+| `UdpComWindow/geometry` | bytes | |
+| `HWConfigWindow/geometry` | bytes | |
+| `DiagnosticsWindow/geometry` | bytes | |
+| `AFESweepTestWindow/geometry` | bytes | |
+| `AFESweepTestWindow/*` | mixed | All sweep parameter spin values |
+| `PythonTimingWindow/geometry` | bytes | |
 | `LabCaptureWindow/geometry` | bytes | |
 | `LabCaptureWindow/*` | mixed | Output dir, prefix, pre/post notes, column selection |
 
@@ -535,6 +810,17 @@ Settings are saved on window close and restored on startup.
 | Red tones | RED channel signals |
 | Blue tones | IR channel signals |
 
+### V_TIA / V_ADC color coding
+
+Voltage-based cell background colors in SIGNAL STATS table cols 7–8:
+- Green `#0F3A0F` — optimal operating range
+- Yellow `#3A2D00` — caution (approaching saturation or insufficient signal)
+- Red `#4A0800` — saturation or signal too low
+- Default `#121212` — no data or non-ADC row
+
+Thresholds derived from AFE4490 datasheet: VCMREF = 0.9 V internal, ADC FS = ±1.2 V,
+V_OD(s) = 1.0 V differential. See §6.3 for per-row thresholds.
+
 ### Tooltip convention
 
 Every interactive control must use `_make_tooltip(name, text)`:
@@ -550,6 +836,11 @@ Every interactive control must use `_make_tooltip(name, text)`:
 - Checked/active: background `#FF6666`
 - Hover: background `#666666`
 
+### Dirty / clean indicator (HWConfigWindow)
+
+Controls whose value differs from the last `$CFG` received are marked dirty with a yellow border.
+Controls matching the firmware's confirmed value are clean (no border).
+
 ### Plot style
 
 Dark background (`#121212`), light grid, white/colour curves.
@@ -558,7 +849,31 @@ pyqtgraph context menus from being too narrow to read.
 
 ---
 
-## 11. Changelog
+## 11. Naming conventions
+
+- `_led1` / `_led2` — raw hardware readings (LED1VAL, LED2VAL, ALED1VAL, ALED2VAL), unfiltered.
+- `_ir` / `_red` — values after physiological interpretation (inside SpO2/HR algorithm classes).
+- Parameter names follow the domain prefix rule: `afe_`, `ppgdisp_`, `hr1_`, `hr2_`, `hr3_`, `spo2_`, `hr_`.
+
+---
+
+## 12. Changelog
+
+### v1.3 — 2026-05-27
+- Added WiFi/UDP transport (§4.1, §4.7): `_udp_reader` thread, `_udp_queue`, `btn_udp` toggle, UdpComWindow.
+- Added `$SET` / `$CFG` / `$TCFG` / `$DIAG` / `$ERR` protocol documentation (§4.3, §4.4).
+- Updated SIGNAL STATS table (§6.3): expanded to 9 columns, IR-first row ordering, V_TIA/V_ADC columns with voltage-based color coding.
+- Added PPGSignalsWindow (§7.2), AlgoResultsWindow (§7.3), UdpComWindow (§7.5).
+- Added HWConfigWindow (§7.16): real-time AFE4490 parameter control via $SET/$CFG.
+- Added DiagnosticsWindow (§7.17): hardware diagnostic via $DIAG?.
+- Added AFESweepTestWindow (§7.18): parametric sweep with _ComboSpin widget, "None" option, live combo count.
+- Added PythonTimingWindow (§7.15): Python algorithm execution timing.
+- Updated Esp32TimingWindow (§7.14): extended $TIMING format with hr2cmp/hr3cmp stats.
+- Updated data flow (§4.7): two-timer architecture (_process_frames_tick + _render_timer).
+- Updated main window sidebar layout (§6.1) with new buttons.
+- Added `afe_sweep_YYYYMMDD_HHMMSS.csv` to file outputs (§8).
+- Added naming conventions section (§11).
+- Added dirty/clean indicator to display conventions (§10).
 
 ### v1.0 — 2026-04-14
 - Initial spec. Documents the script as-shipped at the point of PulseNest repo separation

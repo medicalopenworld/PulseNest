@@ -6804,12 +6804,14 @@ class SerialComWindow(QtWidgets.QWidget):
 
 class _ComboSpin(QtWidgets.QComboBox):
     """QComboBox with value()/setValue() matching QSpinBox API, for drop-in use
-    in _param_spins alongside plain QSpinBox widgets."""
+    in _param_spins alongside plain QSpinBox widgets.
+    Assumes item 0 is always a 'None' sentinel: value() returns currentIndex()-1
+    so that None=-1 and real items start at 0, preserving external index semantics."""
     def value(self):
-        return self.currentIndex()
+        return self.currentIndex() - 1
 
     def setValue(self, v):
-        self.setCurrentIndex(v)
+        self.setCurrentIndex(v + 1)
 
 
 class AFESweepTestWindow(QtWidgets.QMainWindow):
@@ -6901,11 +6903,11 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             h.setStyleSheet("font-weight: bold;")
             gl.addWidget(h, 0, col)
 
-        _SS_SPIN  = self._SS_SPIN
-        _SS_COMBO = self._SS_COMBO
-        _RF_ITEMS  = list(self.TIA_GAINS)
-        _RG_ITEMS  = list(self.STG2_GAINS)
-        _AMB_ITEMS = [f"{v} \u00b5A" for v in range(11)]
+        _SS_COMBO  = self._SS_COMBO
+        _RF_ITEMS  = ["None"] + list(self.TIA_GAINS)
+        _RG_ITEMS  = ["None"] + list(self.STG2_GAINS)
+        _AMB_ITEMS = ["None"] + [f"{v} \u00b5A" for v in range(11)]
+        _LED_ITEMS = ["None"] + [str(i) for i in range(256)]
 
         self._param_spins = {}  # key -> [fix_spin, var_min_spin, var_mid_spin, var_max_spin]
                            #   AMBDAC: [var_min_spin, var_mid_spin, var_max_spin] (no FIX)
@@ -6915,37 +6917,33 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             # AMBDAC has no FIX (swept for both channels): leave col 1 empty
             start_col = 2 if key == "ambdac" else 1
             spin_vals = defaults[1:] if key == "ambdac" else defaults
-            use_combo = key.startswith(("rf", "rg")) or key == "ambdac"
             for col, val in zip(range(start_col, 5), spin_vals):
-                if use_combo:
-                    s = _ComboSpin()
-                    if key.startswith("rf"):
-                        items, w = _RF_ITEMS, 160
-                    elif key.startswith("rg"):
-                        items, w = _RG_ITEMS, 145
-                    else:
-                        items, w = _AMB_ITEMS, 130
-                    for item in items:
-                        s.addItem(item)
-                    s.setCurrentIndex(val)
-                    s.setStyleSheet(_SS_COMBO)
-                    s.setFixedWidth(w)
+                s = _ComboSpin()
+                if key.startswith("rf"):
+                    items, w = _RF_ITEMS, 160
+                elif key.startswith("rg"):
+                    items, w = _RG_ITEMS, 145
+                elif key.startswith("led"):
+                    items, w = _LED_ITEMS, 90
                 else:
-                    s = QtWidgets.QSpinBox()
-                    s.setRange(lo, hi)
-                    s.setValue(val)
-                    s.setAlignment(QtCore.Qt.AlignCenter)
-                    s.setStyleSheet(_SS_SPIN)
-                    s.setFixedWidth(85)
+                    items, w = _AMB_ITEMS, 130
+                for item in items:
+                    s.addItem(item)
+                s.setCurrentIndex(val)
+                s.setStyleSheet(_SS_COMBO)
+                s.setFixedWidth(w)
                 if col == 1:
                     s.setToolTip(_make_tooltip(
                         f"{label} FIX",
-                        f"Value applied to {label} while the OTHER channel is being swept."))
+                        f"Value applied to {label} while the OTHER channel is being swept. "
+                        f"Select 'None' to skip sending this parameter."))
                 else:
                     names = ["VAR min", "VAR mid", "VAR max"]
                     s.setToolTip(_make_tooltip(
                         f"{label} {names[col-2]}",
-                        f"One of the three sweep values for {label} when THIS channel is swept."))
+                        f"One of the three sweep values for {label} when THIS channel is swept. "
+                        f"Select 'None' to exclude this value from the sweep."))
+                s.currentIndexChanged.connect(self._update_combo_count)
                 gl.addWidget(s, row, col)
                 spins.append(s)
             self._param_spins[key] = spins
@@ -7010,7 +7008,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         cl = QtWidgets.QVBoxLayout(cg)
 
         self._progress = QtWidgets.QProgressBar()
-        self._progress.setRange(0, 162)
+        self._progress.setRange(0, 1)
         self._progress.setValue(0)
         self._progress.setFormat("%v / %m combos")
         self._progress.setStyleSheet(
@@ -7084,6 +7082,20 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                 self._set_spin_style(spin, active=True)
                 break
 
+    # ── Combo count display ───────────────────────────────────────────────────
+    def _update_combo_count(self):
+        if self._state != self._ST_IDLE:
+            return
+        n = len(self._build_combos())
+        self._progress.setMaximum(max(n, 1))
+        self._progress.setValue(0)
+        self._progress.setFormat(f"%v / {n} combos")
+        if n > 0:
+            self._lbl_status.setText(
+                f"Ready — {n} combo{'s' if n != 1 else ''} — press START SWEEP to begin")
+        else:
+            self._lbl_status.setText("No combos — all VAR spins set to None")
+
     # ── Sweep control ─────────────────────────────────────────────────────────
     def _toggle_sweep(self):
         if self._btn_start.isChecked():
@@ -7095,14 +7107,18 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         import itertools
         combos = []
         # For led/rf/rg: spins[0]=FIX, spins[1:]=VAR. For ambdac: all spins are VAR (no FIX).
-        amb_vals = sorted(set(s.value() for s in self._param_spins["ambdac"]))
+        amb_vals = sorted(set(s.value() for s in self._param_spins["ambdac"]
+                               if s.value() >= 0))
         for ch, led_key, rf_key, rg_key in [
             ("LED1", "led1", "rf1", "rg1"),
             ("LED2", "led2", "rf2", "rg2"),
         ]:
-            led_vals = sorted(set(s.value() for s in self._param_spins[led_key][1:]))
-            rf_vals  = sorted(set(s.value() for s in self._param_spins[rf_key][1:]))
-            rg_vals  = sorted(set(s.value() for s in self._param_spins[rg_key][1:]))
+            led_vals = sorted(set(s.value() for s in self._param_spins[led_key][1:]
+                                   if s.value() >= 0))
+            rf_vals  = sorted(set(s.value() for s in self._param_spins[rf_key][1:]
+                                   if s.value() >= 0))
+            rg_vals  = sorted(set(s.value() for s in self._param_spins[rg_key][1:]
+                                   if s.value() >= 0))
             for amb, led, rf, rg in itertools.product(amb_vals, led_vals, rf_vals, rg_vals):
                 combos.append((ch, led, rf, rg, amb))
         return combos
@@ -7148,16 +7164,22 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             self._send_set("led1",     str(led))
             self._send_set("tiagain1", rf_str(rf))
             self._send_set("stg21",    rg_str(rg))
-            self._send_set("led2",     str(self._param_spins["led2"][0].value()))
-            self._send_set("tiagain2", rf_str(fix_rf("rf2")))
-            self._send_set("stg22",    rg_str(fix_rg("rg2")))
+            if self._param_spins["led2"][0].value() >= 0:
+                self._send_set("led2", str(self._param_spins["led2"][0].value()))
+            if self._param_spins["rf2"][0].value() >= 0:
+                self._send_set("tiagain2", rf_str(fix_rf("rf2")))
+            if self._param_spins["rg2"][0].value() >= 0:
+                self._send_set("stg22",    rg_str(fix_rg("rg2")))
         else:
             self._send_set("led2",     str(led))
             self._send_set("tiagain2", rf_str(rf))
             self._send_set("stg22",    rg_str(rg))
-            self._send_set("led1",     str(self._param_spins["led1"][0].value()))
-            self._send_set("tiagain1", rf_str(fix_rf("rf1")))
-            self._send_set("stg21",    rg_str(fix_rg("rg1")))
+            if self._param_spins["led1"][0].value() >= 0:
+                self._send_set("led1", str(self._param_spins["led1"][0].value()))
+            if self._param_spins["rf1"][0].value() >= 0:
+                self._send_set("tiagain1", rf_str(fix_rf("rf1")))
+            if self._param_spins["rg1"][0].value() >= 0:
+                self._send_set("stg21",    rg_str(fix_rg("rg1")))
         self._send_set("ambdac", str(amb))
         self._highlight_active(idx)
 
@@ -7222,20 +7244,25 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
     def _write_row(self):
         import csv, datetime, math, os
         ch, led, rf, rg, amb = self._combos[self._combo_idx]
+
+        def _fix_text(spin):
+            """Return spin's display text; returns 'None' when value() < 0."""
+            return "None" if spin.value() < 0 else spin.currentText()
+
         if ch == "LED1":
             led1, rf1, rg1 = led, rf, rg
-            led2 = self._param_spins["led2"][0].value()
-            rf2  = self._param_spins["rf2"][0].value()
-            rg2  = self._param_spins["rg2"][0].value()
+            led2    = _fix_text(self._param_spins["led2"][0])
+            rf2_str = _fix_text(self._param_spins["rf2"][0])
+            rg2_str = _fix_text(self._param_spins["rg2"][0])
+            rf1_str = self.TIA_GAINS[rf1]  if 0 <= rf1 < len(self.TIA_GAINS)  else str(rf1)
+            rg1_str = self.STG2_GAINS[rg1] if 0 <= rg1 < len(self.STG2_GAINS) else str(rg1)
         else:
             led2, rf2, rg2 = led, rf, rg
-            led1 = self._param_spins["led1"][0].value()
-            rf1  = self._param_spins["rf1"][0].value()
-            rg1  = self._param_spins["rg1"][0].value()
-        rf1_str = self.TIA_GAINS[rf1]  if 0 <= rf1 < len(self.TIA_GAINS)  else str(rf1)
-        rf2_str = self.TIA_GAINS[rf2]  if 0 <= rf2 < len(self.TIA_GAINS)  else str(rf2)
-        rg1_str = self.STG2_GAINS[rg1] if 0 <= rg1 < len(self.STG2_GAINS) else str(rg1)
-        rg2_str = self.STG2_GAINS[rg2] if 0 <= rg2 < len(self.STG2_GAINS) else str(rg2)
+            led1    = _fix_text(self._param_spins["led1"][0])
+            rf1_str = _fix_text(self._param_spins["rf1"][0])
+            rg1_str = _fix_text(self._param_spins["rg1"][0])
+            rf2_str = self.TIA_GAINS[rf2]  if 0 <= rf2 < len(self.TIA_GAINS)  else str(rf2)
+            rg2_str = self.STG2_GAINS[rg2] if 0 <= rg2 < len(self.STG2_GAINS) else str(rg2)
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         label = self._edit_label.text().strip()
         row = [label, now_str, led1, led2, rf1_str, rf2_str, rg1_str, rg2_str, amb, len(self._buf["IR"])]
@@ -7279,6 +7306,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             for i, spin in enumerate(spins):
                 v = s.value(f"AFESweepTestWindow/{key}_{i}", spin.value(), type=int)
                 spin.setValue(v)
+        self._update_combo_count()
 
     def closeEvent(self, event):
         if self._state != self._ST_IDLE:
@@ -9259,6 +9287,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
     _STATS_SQI_THRESHOLD = 0.9
+    # V_TIA / V_ADC cell background colors
+    _VTG_GREEN   = QtGui.QColor("#0F3A0F")  # optimal
+    _VTG_YELLOW  = QtGui.QColor("#3A2D00")  # caution
+    _VTG_RED     = QtGui.QColor("#4A0800")  # saturation / insufficient
+    _VTG_DEFAULT = QtGui.QColor("#121212")  # no data
     _ADC_FSR             = 1.2            # V — AFE4490 ADC full-scale voltage (±1.2 V)
     _ADC_FS_COUNTS       = 2 ** 21        # 22-bit signed: positive full scale
     _STG2_RG_OHM         = {              # Stage 2 gain string → RG resistor value Ω (Table 1, datasheet p.31)
@@ -9280,6 +9313,30 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         encoded = ";".join(f"{r},{c}" for r, c in sorted(self._stats_highlighted))
         s.setValue("PPGMonitor/stats_highlighted", encoded)
+
+    def _vtg_tia_color(self, row, v_tia):
+        """Background color for V_TIA cell. Uses abs(v_tia) for comparison."""
+        v = abs(v_tia)
+        if row in {0, 1}:   # LED phase
+            if v > 0.95 or v < 0.15:           return self._VTG_RED
+            if v >= 0.80 or v < 0.40:          return self._VTG_YELLOW
+            return self._VTG_GREEN              # 0.40 – 0.80 V optimal
+        else:               # ALED phase
+            if v > 0.70:                        return self._VTG_RED
+            if v >= 0.30:                       return self._VTG_YELLOW
+            return self._VTG_GREEN              # < 0.30 V safe
+
+    def _vtg_adc_color(self, row, v_adc):
+        """Background color for V_ADC cell. Uses abs(v_adc) for comparison."""
+        v = abs(v_adc)
+        if row in {0, 1}:   # LED phase
+            if v > 1.10 or v < 0.20:           return self._VTG_RED
+            if v >= 0.95 or v < 0.45:          return self._VTG_YELLOW
+            return self._VTG_GREEN              # 0.45 – 0.95 V ideal
+        else:               # ALED phase
+            if v > 0.80:                        return self._VTG_RED
+            if v >= 0.35:                       return self._VTG_YELLOW
+            return self._VTG_GREEN              # < 0.35 V safe
 
     def _copy_stats_selection(self):
         selected = self.stats_table.selectedIndexes()
@@ -9354,7 +9411,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
             else:
                 vtia_str = "" if row not in self._STATS_RAW_ROWS else "---"
                 vadc_str = vtia_str
-            for col, txt in ((7, vtia_str), (8, vadc_str)):
+            if row in self._STATS_RAW_ROWS and buf:
+                vtia_bg = self._vtg_tia_color(row, v_tia)
+                vadc_bg = self._vtg_adc_color(row, v_adc)
+            else:
+                vtia_bg = vadc_bg = self._VTG_DEFAULT
+            for col, txt, bg in ((7, vtia_str, vtia_bg), (8, vadc_str, vadc_bg)):
                 it = self.stats_table.item(row, col)
                 if it is None:
                     it = QtWidgets.QTableWidgetItem(txt)
@@ -9362,6 +9424,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.stats_table.setItem(row, col, it)
                 else:
                     it.setText(txt)
+                it.setBackground(bg)
             self._stats_buf[name].clear()
 
     def _process_frames_tick(self):

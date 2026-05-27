@@ -7798,6 +7798,124 @@ Ambos mecanismos pueden coexistir; el de CF es dominante cuando la sonda no est�
 
 ---
 
+## Sesión 2026-05-27n
+
+### Tema: SIGNAL STATS — colores de fondo V_TIA / V_ADC por voltaje (umbrales en V)
+
+**Cambios en `pulsenest_lab.py`:**
+
+Nuevas constantes de clase: `_VTG_GREEN/YELLOW/RED/DEFAULT` — colores de fondo oscuros para celdas cols 7-8.
+
+Nuevos métodos:
+- `_vtg_tia_color(row, v_tia)`: color para columna V_TIA según `abs(v_tia)` y tipo de fila
+- `_vtg_adc_color(row, v_adc)`: color para columna V_ADC según `abs(v_adc)` y tipo de fila
+
+Umbrales (filas LED = rows 0,1 = IR/RED; filas ALED = rows 2,3 = IR_Amb/RED_Amb):
+
+| Col | Fila | Verde | Amarillo | Rojo |
+|---|---|---|---|---|
+| V_TIA | LED | 0.40–0.80 V | 0.15–0.40 o 0.80–0.95 V | <0.15 o >0.95 V |
+| V_TIA | ALED | <0.30 V | 0.30–0.70 V | >0.70 V |
+| V_ADC | LED | 0.45–0.95 V | 0.20–0.45 o 0.95–1.10 V | <0.20 o >1.10 V |
+| V_ADC | ALED | <0.35 V | 0.35–0.80 V | >0.80 V |
+
+`_update_stats_table`: calcula `vtia_bg`/`vadc_bg` por separado y aplica `setBackground` a cada celda. Sin datos → `_VTG_DEFAULT` (#121212).
+
+---
+
+## Sesión 2026-05-27m
+
+### Tema: Revert — colores V_TIA/V_ADC (sesión 2026-05-27l deshecha)
+
+Los cambios de la sesión 2026-05-27l fueron revertidos a petición del usuario. El código queda exactamente como estaba antes de esa sesión.
+
+---
+
+## Sesión 2026-05-27l
+
+### Tema: SIGNAL STATS — colores de fondo V_TIA / V_ADC según rango de operación AFE4490
+
+**Cambios en `pulsenest_lab.py`:**
+
+Nuevas constantes de clase en `PPGMonitor`:
+- `_VTG_GREEN/YELLOW/RED/DEFAULT` — colores de fondo para celdas V_TIA/V_ADC
+- `_VTG_LED_RED_HI/YEL_HI/GRN_HI/YEL_LO` — umbrales LED_VAL (filas IR/RED, rows 0-1) en counts
+- `_VTG_ALED_RED/YELLOW` — umbrales ALED_VAL (filas IR_Amb/RED_Amb, rows 2-3) en counts
+
+Nuevo método `_vtg_bg(row, abs_counts)`:
+- Filas 0,1 (LED_VAL): 5 zonas — RED (>1 922 000), YELLOW (>1 660 000), GREEN (≥840 000), YELLOW (≥315 000), RED (<315 000)
+- Filas 2,3 (ALED_VAL): 3 zonas — RED (>1 223 000), YELLOW (≥524 000), GREEN (<524 000)
+
+`_update_stats_table`: calcula `vtg_bg = _vtg_bg(row, abs(mean))` si hay datos, `_VTG_DEFAULT` si no; aplica `it.setBackground(vtg_bg)` a ambas celdas cols 7-8 (V_TIA, V_ADC).
+
+Umbrales basados en especificación proporcionada (ADC FS = ±1.2V, TIA FS = ±1.0V, ADC counts FS = 2 097 151).
+
+---
+
+## Sesión 2026-05-27k
+
+### Tema: AFE SWEEP — "None" primero en todos los spins + contador de combos en tiempo real
+
+**Cambios en `pulsenest_lab.py`:**
+
+- `_ComboSpin.value()` → devuelve `currentIndex() - 1` (None=-1, items reales empiezan en 0). `setValue(v)` → `setCurrentIndex(v+1)`. Preserva la semántica externa de índices sin tocar ningún otro código.
+- Listas de items: "None" movida al primer lugar en todos los params (`_RF_ITEMS`, `_RG_ITEMS`, `_AMB_ITEMS`, `_LED_ITEMS`).
+- `_build_combos`: filtro cambiado de `currentText() != "None"` a `s.value() >= 0`.
+- `_apply_combo`: checks FIX también usan `spin.value() >= 0`.
+- `_write_row._fix_text`: usa `spin.value() < 0` para detectar None.
+- Nuevo método `_update_combo_count()`: calcula `len(_build_combos())`, actualiza `_progress` (max y formato) y `_lbl_status` con el número de combos. Si n=0 muestra "No combos — all VAR spins set to None".
+- Cada spin conectado a `_update_combo_count` via `currentIndexChanged`.
+- `_restore_settings` llama `_update_combo_count()` al final.
+- Progress bar: `setRange(0,1)` inicial (actualizado dinámicamente).
+
+---
+
+## Sesión 2026-05-27i
+
+### Tema: AFE SWEEP — análisis afe_sweep_test.csv para detección de estado de sonda (HGAC)
+
+**Análisis del CSV (486 filas × 3 estados):**
+Se analizó la capacidad de distinguir PROBE_DISCONNECTED / PROBE_NOT_APPLIED / PROBE_APPLIED sin usar el test de diagnóstico hardware del AFE4490.
+
+**Conclusiones:**
+
+- **DISCONNECTED:** 100% distinguible. Todos los canales raw (LED2, LED1, ALED2, ALED1) son negativos + Sub_std < 500 + ratio LED/ALED ≈ 1.0 (artefacto CF simétrico, diff < 5%). Ningún otro estado produce este patrón.
+- **NOT_APPLIED:** algún canal raw > +10%FS (positivo). Cuando Sub_std > 1000 en NOT_APPLIED es siempre artefacto CF (LED saturado a +FS pero ALED no), distinguible porque el canal de alta std tiene su LED en saturación.
+- **APPLIED:** Sub_std > 1000 en canal cuyo LED NO está saturado (señal PPG real). Con ambdac=0 aplica siempre.
+- **Accuracy total del árbol de decisión propuesto: 95.3% (463/486).** Los 23 errores restantes son todos `ambdac=4µA + RF=100K` (offset = 400mV, oversubstracción patológica que HGAC nunca debe alcanzar). En el espacio operativo válido del HGAC, accuracy es 100%.
+
+**Árbol de decisión para HGAC:**
+```
+IF all(LED2<0, LED1<0, ALED2<0, ALED1<0) AND Sub_std_max<500 AND |LED2/ALED2−1|<5%:
+    → PROBE_DISCONNECTED
+ELIF Sub_std_max>1000 AND LED_source NOT saturado:
+    → PROBE_APPLIED
+ELSE:
+    → PROBE_NOT_APPLIED
+```
+
+---
+
+## Sesión 2026-05-27h
+
+### Tema: AFE SWEEP — LED1/LED2 a _ComboSpin (256 items) + opción "None" en todos los Sweep Parameters
+
+**Cambios en `pulsenest_lab.py` (`AFESweepTestWindow._setup_ui`):**
+- LED1/LED2 mA: cambiados de `QSpinBox` a `_ComboSpin` con 257 items (0–255 + "None"), width=90px. Se despliegan al seleccionarlos igual que RF/RG/AMBDAC.
+- RF1/RF2, RG1/RG2, AMBDAC: añadido "None" al final de sus listas de items.
+- Tooltips actualizados para mencionar que "None" excluye el valor del sweep (VAR) o salta el $SET (FIX).
+
+**Cambios en `_build_combos`:**
+- Todos los generadores de vals filtran `s.currentText() != "None"` → las combinaciones con "None" se excluyen del sweep.
+
+**Cambios en `_apply_combo`:**
+- Los spins FIX de LED/RF/RG comprueban `currentText() != "None"` antes de enviar `$SET`. Si es "None" se omite el comando (el hardware conserva su valor actual).
+
+**Cambios en `_write_row`:**
+- Los valores FIX se obtienen via `spin.currentText()` (`_fix_text` helper) — devuelve la cadena de display correcta ("20", "100K", "6dB") o "None" si aplica. Los valores VAR siguen usando índice + lookup en TIA_GAINS/STG2_GAINS.
+
+---
+
 ## Sesión 2026-05-26i
 
 ### Tema: $SET intermitente desde HW CONFIG — saturación del serial por $M1 a 500 Hz
@@ -7805,5 +7923,60 @@ Ambos mecanismos pueden coexistir; el de CF es dominante cuando la sonda no est�
 **Diagnóstico:** Cuando WiFi/UDP está activo, Python ignora el serial pero el firmware seguía enviando $M1/$M2 a 500 Hz por USB-CDC. El buffer TX del ESP32 se saturaba, y cuando el firmware intentaba enviar la respuesta $CFG al $SET, el write se descartaba.
 
 **Fix en `src/main.cpp`:** `Serial_print_locked(buf)` para $M1 y $M2 condicionado a `!g_wifi_ready`. Cuando WiFi está activo, los frames de datos van solo por UDP; el serial queda libre para tráfico de control bidireccional ($SET/$CFG/$ERR/$DIAG). Los mensajes de diagnóstico periódicos (#STAT, #CHK, etc.) siguen yendo por serial siempre (volumen despreciable).
+
+---
+
+## Sesión 2026-05-27k
+
+### Tema: AFE SWEEP — dropdown LED1/LED2 + opción "None" en todos los spins
+
+**Cambios en AFESweepTestWindow:**
+- LED1 y LED2 mA cambiados de QSpinBox a `_ComboSpin` con 256 items (0–255).
+- Todos los parámetros de Sweep Parameters tienen ahora la opción "None" como primer item.
+- "None" deshabilita ese parámetro de la combinación → menos combos a testear.
+- `_ComboSpin.value()` = `currentIndex() - 1` (None=-1, items reales ≥ 0).
+- `_build_combos()` filtra `value() >= 0`; `_apply_combo()` salta `send_set` si `value() < 0`.
+
+---
+
+## Sesión 2026-05-27l
+
+### Tema: SIGNAL STATS — columnas V_TIA y V_ADC con color coding
+
+**Contexto datasheet AFE4490:**
+- ADC FS = ±1.2 V, 22-bit signed. VCMREF = 0.9 V (fijo interno, no AVDD/2).
+- V_ADC = (mean_counts / 2²¹) × 1.2 V
+- V_TIA = V_ADC × (RI / (2×RG)) donde RI=100kΩ fijo, RG de $CFG stg21/stg22.
+
+**Color coding (abs value):**
+
+| Filas | Rango V_TIA | Color |
+|-------|-------------|-------|
+| LED (0,1) | 0.40–0.80 V | Verde |
+| LED (0,1) | 0.80–0.95 V o 0.15–0.40 V | Amarillo |
+| LED (0,1) | >0.95 V o <0.15 V | Rojo |
+| ALED (2,3) | <0.30 V | Verde |
+| ALED (2,3) | 0.30–0.70 V | Amarillo |
+| ALED (2,3) | >0.70 V | Rojo |
+
+Misma lógica para V_ADC con thresholds diferentes (ver §6.3 del spec).
+
+---
+
+## Sesión 2026-05-27m
+
+### Tema: actualización de pulsenest_lab_spec.md
+
+**Decisión:** el spec estaba desactualizado desde v1.0 (2026-04-14).
+**Acción:** spec reescrito a v1.3 documentando todos los cambios realizados desde entonces:
+- Transport WiFi/UDP (§4.1, §4.7)
+- Protocolo $SET/$CFG/$TCFG/$DIAG/$ERR (§4.3, §4.4)
+- SIGNAL STATS 9 columnas, IR-first, V_TIA/V_ADC con colores (§6.3)
+- Nuevas ventanas: PPGSignalsWindow, AlgoResultsWindow, UdpComWindow, HWConfigWindow, DiagnosticsWindow, AFESweepTestWindow, PythonTimingWindow (§7.2–7.18)
+- _ComboSpin widget (§7.18)
+- File outputs + settings persistence actualizados (§8, §9)
+- Naming conventions (§11)
+
+**Regla añadida a memoria:** spec debe actualizarse tras cambios importantes en pulsenest_lab.py, sin esperar que el usuario lo pida.
 
 ---
