@@ -8812,3 +8812,37 @@ Solución: segundo task interno `incunest_diag` de baja prioridad.
 ### Cambios (`incunest_afe4490_spec.md`)
 - §2.6b: callers de runAfeDiagnostics() documentados
 - §5.7: nueva sección documenta _diag_task_body
+
+---
+
+## Sesión 2026-05-28z — OT hysteresis removal + debounce 200 ms
+
+### Contexto
+Continuación de sesiones 2026-05-28q/s/t/x/y. El header ya tenía `rsqm_ot_thr=0.20` (single threshold) pero el .cpp aún usaba la lógica de histéresis antigua con dos umbrales.
+
+### Decisiones
+- **Eliminación de histéresis OT:** `rsqm_ot_hi_thr` + `rsqm_ot_lo_thr` → `rsqm_ot_thr=0.20` (único umbral). El debounce de `_set_probe_state()` reemplaza la histéresis como mecanismo anti-oscilación.
+- **Debounce aumentado a 200 ms:** `rsqm_probe_state_min_count` 50 → 100 muestras (100 ms → 200 ms @ 500 Hz). Rationale: 100 ms considerado insuficiente para transitorios de conexión/desconexión.
+
+### Cambios (`incunest_afe4490.cpp`)
+- `_update_rsqm()`: eliminadas variables `prev_not_applied` y `thr`; `_set_probe_state()` usa directamente `rsqm_ot_thr`
+- Comentario actualizado: "Debounce (N=100 samples) in _set_probe_state() replaces the former dual-threshold hysteresis."
+
+### Cambios (`incunest_afe4490.h`)
+- `rsqm_probe_state_min_count`: 50 → 100 (200 ms @ 500 Hz)
+
+### Cambios (`incunest_afe4490_spec.md`)
+- §5.6.2: "Entry/Exit threshold" → "Threshold" único (0.20), nota sobre debounce como sustituto de histéresis
+- §1285 tabla: nota de detección actualizada (instantáneo + OT single threshold + debounce)
+- Changelog v0.27: mención hysteresis hi=0.20/lo=0.15 → single threshold 0.20 + 50-sample debounce (ahora 100)
+
+---
+
+## Sesión 2026-05-28aa — OT threshold 0.20 → 0.30
+
+### Decisión
+`rsqm_ot_thr` subido de 0.20 a 0.30. Margen resultante: ×6 sobre APPLIED medido (0.05), ×9 bajo NOT_APPLIED medido (2.7). Justificación: 0.20 demasiado cerca de APPLIED para sondas con mayor opacidad.
+
+### Cambios
+- `incunest_afe4490.h`: `rsqm_ot_thr = 0.20f` → `0.30f`
+- `incunest_afe4490_spec.md`: threshold actualizado a 0.30 en §5.6.2 y changelog v0.27
