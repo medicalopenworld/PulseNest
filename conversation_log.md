@@ -8572,3 +8572,99 @@ Tablas resumen para DISCONNECTED y NOT_APPLIED:
 - `_write_row()`: calcula `OT = LED_Sub_mean / (LED_mA × RF_Ω × RG_linear)` usando dicts `_rf_ohm` y `_rg_lin` locales
 - Permite analizar el OT calculado directamente desde el CSV para calibrar umbrales RSQM
 
+
+## Sesión 2026-05-28p — Cambio de estrategia ProbeState detector
+
+### Estrategia anterior (archivada — no usar)
+
+**DISCONNECTED** (EMA-based, varios intentos de fix):
+- Criterio original: `|m1| < 5000 AND |m2| < 5000 AND st1 < 500 AND st2 < 500 AND led1 < 2M AND led2 < 2M`
+- Problema: la varianza EMA (τ≈500ms) tarda hasta 1500ms en settlear → ventana de falso APPLIED muy larga
+- Fix 1: añadir `ema_negative` guard → insuficiente (solo cubre cruce por cero, no el tramo positivo)
+- Fix 2: OT instantáneo (s1/s2 en vez de m1/m2) → peor aún: OT ≈ 0 desde el primer frame al desconectar
+- Fix 3: `instant_disconnected = led1 < 8000 AND led2 < 8000` OR slow EMA → no funciona porque NOT_APPLIED también tiene led1 negativo (< 8000) en configs de alta ganancia del sweep
+
+**Conclusión:** no existe un umbral fijo en valores raw que separe limpiamente DISCONNECTED de NOT_APPLIED en todos los rangos del sweep. La estrategia EMA es correcta en diseño pero demasiado lenta.
+
+### Nueva estrategia (2026-05-28p)
+
+**DISCONNECTED** — basada en física del circuito:
+- Cuando el cable está desconectado, la entrada del TIA flota → la corriente de offset de entrada mueve los 4 canales al mismo valor negativo
+- Criterio: `led1 < 0 AND aled1 < 0 AND led2 < 0 AND aled2 < 0 AND |s1| < umbral AND |s2| < umbral`
+- Instantáneo (1 frame = 2ms), sin EMA
+- Confirmado por CSV: DISCONNECTED LED1_Sub_mean ≈ −592, rango −3117..+65; todos los canales negativos
+
+**NOT_APPLIED vs APPLIED** — basado en OT instantáneo con condiciones de saturación (igual que antes)
+
+
+---
+
+## Sesión 2026-05-28q — Implementación nueva estrategia PROBE_DISCONNECTED
+
+**Tema:** Implementar la nueva estrategia de detección PROBE_DISCONNECTED diseñada en sesión 2026-05-28p
+
+### Cambios implementados
+
+**`incunest_afe4490.cpp` — `_update_rsqm()`:**
+- Eliminado bloque `if (!ready) { DISCONNECTED }` — ya no necesario (detección instantánea)
+- Eliminada lógica `instant_disconnected` y `stable_disconnected`
+- Nuevo criterio instantáneo:
+  ```cpp
+  const bool disconnected =
+      led1 < 0 && aled1 < 0 && led2 < 0 && aled2 < 0 &&
+      fabsf(s1) < rsqm_disconn_sub_mean &&
+      fabsf(s2) < rsqm_disconn_sub_mean;
+  ```
+- OT/NOT_APPLIED/APPLIED sin cambios
+
+**`incunest_afe4490.h`:**
+- Eliminados constantes obsoletas: `rsqm_disconn_sub_std`, `rsqm_disconn_raw_sat`, `rsqm_disconn_raw_mean`
+- Conservado `rsqm_disconn_sub_mean = 5000.0f` (reutilizado para |LED_Sub| threshold)
+
+**`incunest_afe4490_spec.md` §5.6.2:**
+- Actualizado criterio DISCONNECTED (4 canales negativos + |LED_Sub| < 5000)
+- Añadida validación con afe_sweep_test.csv
+- OT: corregida fórmula (LED_Sub instantáneo, no EMA_mean)
+
+### Decisiones tomadas
+- Sin warmup EMA para ProbeState: detección puramente instantánea desde el primer sample
+- EMA sigue calculándose (necesaria para RSQM_SIGNAL_WEAK)
+
+### Estado
+- Build: OK (incunest_V16)
+- Upload: pendiente (COM15 no disponible al hacer commit)
+- Commit: `0d12680` en repo incunest_afe4490
+
+---
+
+## Sesión 2026-05-28r — Simplificación OT: eliminar chequeo ENSEPGAIN
+
+**Tema:** Simplificación de las líneas 1008-1010 en `_update_rsqm()`
+
+### Decisión
+El chequeo `_afe_ensepgain ? _afe_tia_gain_led1 : _afe_tia_gain_led2` es innecesario porque `_afe_tia_gain_led1` etc. son siempre válidos independientemente del valor de ENSEPGAIN. Se simplifica usando directamente los miembros LED1/LED2.
+
+### Cambios
+- `incunest_afe4490.cpp`: eliminadas líneas `gain1_enum`, `rg1_enum`, `en1` con ternario ENSEPGAIN; rf1/rg1 usan `_afe_tia_gain_led1`/`_afe_stage2_gain_led1`/`_afe_stage2_en1` directamente
+- `incunest_afe4490_spec.md`: eliminada nota "RF/RG selection for OT: when ENSEPGAIN=0..."
+
+### Estado
+- Build: OK. Upload pendiente (COM15 no disponible).
+
+---
+
+## Sesión 2026-05-28s — RSQM_SIGNAL_WEAK: añadir chequeo LED2
+
+**Tema:** Extender RSQM_SIGNAL_WEAK para comprobar ambos canales
+
+### Decisión
+SpO2 necesita IR y RED simultáneamente. RSQM_SIGNAL_WEAK debe dispararse si cualquiera de los dos canales tiene amplitud insuficiente. Se añade `sqrtf(_rsqm_led2_sub.ema_var) < rsqm_signal_weak_std` en condición OR.
+
+EMA mean sigue siendo necesaria para calcular ema_var (d = s - ema_mean). No se elimina nada del bloque EMA.
+
+### Cambios
+- `incunest_afe4490.cpp`: condición RSQM_SIGNAL_WEAK ampliada con OR sobre LED2_Sub_std
+- `incunest_afe4490_spec.md`: tabla DiagCode §5.6.3 actualizada
+
+### Estado
+- Build: OK. Upload pendiente.
