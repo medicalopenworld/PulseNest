@@ -8541,3 +8541,34 @@ const float ot1 = (led1 >= rsqm_adc_positive_sat)
 
 §5.6.2: sustituida nota "Disconnect guard" por nota sobre OT instantáneo con justificación.
 
+
+## Sesión 2026-05-28o
+
+**Tema:** Análisis ProbeState + OT columns en CSV + fix DISCONNECTED instantáneo
+
+### Análisis datos afe_sweep_test.csv
+
+Tablas resumen para DISCONNECTED y NOT_APPLIED:
+
+**DISCONNECTED (N=279):**
+- LED1/LED2/ALED1/ALED2_mean: −2096919 a −3469 (todos NEGATIVOS — cerca del rail negativo ADC)
+- LED1_Sub_mean / LED2_Sub_mean: ≈0 (±3000) — los 4 canales se van juntos al rail negativo, la resta se cancela
+
+**NOT_APPLIED (N=174):**
+- LED1_mean: −2096919 a +2096921 (rango completo — sweep cubre configuraciones que saturan en ambos sentidos)
+- LED1_Sub_mean: −1.86M a +1.85M
+
+**Conclusión:** No existe umbral fijo en `led1` raw que separe limpiamente DISCONNECTED de NOT_APPLIED — NOT_APPLIED también puede tener valores negativos. El criterio correcto sigue siendo `LED1_Sub_mean ≈ 0` (que es lo que ya hace el RSQM). Los flashes verdes son probablemente bounce del conector físico durante la transición.
+
+### Fix DISCONNECTED en `incunest_afe4490` (sesión anterior, completado)
+
+- `rsqm_disconn_raw_mean = 8000`: nueva constante en header
+- `instant_disconnected = led1 < 8000 && led2 < 8000` (OR con slow path EMA)
+- Nota posterior: esta detección instantánea puede ser insuficiente porque NOT_APPLIED también tiene led1 negativo (< 8000) para ciertas configs del sweep
+
+### Cambio `pulsenest_lab.py` — OT1/OT2 en CSV del sweep
+
+- `_CSV_HEADER`: añadidas columnas `OT1` y `OT2` al final (42 columnas total)
+- `_write_row()`: calcula `OT = LED_Sub_mean / (LED_mA × RF_Ω × RG_linear)` usando dicts `_rf_ohm` y `_rg_lin` locales
+- Permite analizar el OT calculado directamente desde el CSV para calibrar umbrales RSQM
+

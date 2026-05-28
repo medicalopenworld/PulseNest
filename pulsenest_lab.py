@@ -6844,7 +6844,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         "LED2_max",   "LED1_max",   "ALED2_max",   "ALED1_max",   "LED2_Sub_max",   "LED1_Sub_max",
         "LED2_pp",    "LED1_pp",    "ALED2_pp",    "ALED1_pp",    "LED2_Sub_pp",    "LED1_Sub_pp",
         "LED2_std",   "LED1_std",   "ALED2_std",   "ALED1_std",   "LED2_Sub_std",   "LED1_Sub_std",
-    ]  # 40 columns (label + 9 meta + 30 stats)
+        "OT1", "OT2",
+    ]  # 42 columns (label + 9 meta + 30 stats + 2 OT)
 
     _ST_IDLE      = 0
     _ST_SETTLING  = 1
@@ -7283,6 +7284,27 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         for stat_idx in range(5):
             for sig in self._SIGNALS:
                 row.append(stats[sig][stat_idx])
+        # OT1 / OT2: LED_Sub_mean / (LED_mA × RF_Ω × RG_linear)
+        _rf_ohm = {"10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
+                   "250K": 250e3, "500K": 500e3, "1M": 1e6}
+        _rg_lin = {"0dB": 1.0, "3.5dB": 1.496, "6dB": 2.0, "9.5dB": 2.985, "12dB": 3.981}
+        try:
+            _led1_ma = float(led1)
+            _rf1 = _rf_ohm.get(str(rf1_str), None)
+            _rg1 = _rg_lin.get(str(rg1_str), None)
+            ot1 = f"{float(stats['IR_Sub'][0]) / (_led1_ma * _rf1 * _rg1):.4f}" \
+                  if (_rf1 and _rg1 and _led1_ma) else ""
+        except Exception:
+            ot1 = ""
+        try:
+            _led2_ma = float(led2)
+            _rf2 = _rf_ohm.get(str(rf2_str), None)
+            _rg2 = _rg_lin.get(str(rg2_str), None)
+            ot2 = f"{float(stats['RED_Sub'][0]) / (_led2_ma * _rf2 * _rg2):.4f}" \
+                  if (_rf2 and _rg2 and _led2_ma) else ""
+        except Exception:
+            ot2 = ""
+        row.extend([ot1, ot2])
         path = self._edit_csv.text().strip() or "afe_sweep_test.csv"
         write_header = not os.path.exists(path)
         with open(path, "a", newline="") as f:
@@ -9351,7 +9373,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
     _STATS_SQI_THRESHOLD = 0.9
     # ProbeState column-0 background colors
-    _PROBE_APPLIED_BG       = QtGui.QColor("#1A7A1A")  # green  — APPLIED (2)
+    _PROBE_APPLIED_BG       = QtGui.QColor("#00A000")  # green  — APPLIED (2)
     _PROBE_NOT_APPLIED_BG   = QtGui.QColor("#7A6400")  # amber  — NOT_APPLIED (1)
     _PROBE_DISCONNECTED_BG  = QtGui.QColor("#7A0000")  # red    — DISCONNECTED (0)
     # V_TIA / V_ADC cell background colors
@@ -9867,6 +9889,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             _ps_item = self.stats_table.item(len(self._STATS_SIGNALS) - 1, 0)
             if _ps_item is not None:
                 _ps_item.setBackground(_ps_bg)
+                _ps_item.setForeground(QtGui.QColor("#FFFFFF") if _ps == 2 else QtGui.QColor("#AAAAAA"))
 
             # PPGPlotsWindow: throttled to 20 Hz (every render tick)
             self._ppgplots_refresh_counter += 1
