@@ -8780,3 +8780,35 @@ OT calculado en el script Python desde los datos $M1 + parámetros del último $
 
 **`pulsenest_lab.py`:**
 - Tooltip de DiagCode actualizado con nuevo layout de bits
+
+---
+
+## Sesión 2026-05-28y — _diag_task_body(): diagnósticos AFE autónomos
+
+**Tema:** Ejecutar runAfeDiagnostics() automáticamente en cambios de estado y periódicamente
+
+### Decisión de diseño
+runAfeDiagnostics() NO puede llamarse desde el task DRDY (deadlock + 10ms block).
+Solución: segundo task interno `incunest_diag` de baja prioridad.
+
+### Comportamiento
+- Cambio de estado: _set_probe_state() envía xTaskNotify → tarea despierta inmediatamente → runAfeDiagnostics()
+- Periódico: timeout cada rsqm_diag_period_ms=5000ms → runAfeDiagnostics() solo si probe_state ≠ PROBE_APPLIED (evita blackout en medición activa)
+- runAfeDiagnostics() sigue siendo pública para llamadas externas ($DIAG?). _spi_mutex serializa ambos callers.
+
+### Cambios (`incunest_afe4490.h`)
+- Nuevas defines: INCUNEST_AFE4490_DIAG_TASK_STACK=2048, INCUNEST_AFE4490_DIAG_TASK_PRIORITY=(main-2)
+- Nueva constante: rsqm_diag_period_ms=5000
+- Nueva declaración: _diag_task_trampoline(), _diag_task_body()
+- Nuevo miembro: _diag_task_handle
+
+### Cambios (`incunest_afe4490.cpp`)
+- Constructor: _diag_task_handle(nullptr)
+- begin(): xTaskCreatePinnedToCore para incunest_diag
+- stop(): vTaskDelete(_diag_task_handle)
+- _set_probe_state(): xTaskNotify(_diag_task_handle) cuando nuevo estado != anterior
+- _diag_task_body() + _diag_task_trampoline() implementados
+
+### Cambios (`incunest_afe4490_spec.md`)
+- §2.6b: callers de runAfeDiagnostics() documentados
+- §5.7: nueva sección documenta _diag_task_body
