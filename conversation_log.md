@@ -8668,3 +8668,57 @@ EMA mean sigue siendo necesaria para calcular ema_var (d = s - ema_mean). No se 
 
 ### Estado
 - Build: OK. Upload pendiente.
+
+---
+
+## Sesión 2026-05-28t — _set_probe_state(): debounce de transiciones ProbeState
+
+**Tema:** Eliminar parpadeo verde falso en transición DISCONNECTED→NOT_APPLIED mediante debounce centralizado
+
+### Análisis del parpadeo
+Tramas reales durante el transitorio de conexión: los 4 canales ADC pasan de negativo grande (~-4600) a positivo grande (~1M) en un frame. Durante ~5 frames, LED_Sub es pequeño (los canales suben juntos) → OT < threshold → falso PROBE_APPLIED.
+
+### Decisión de diseño
+Crear `_set_probe_state(ProbeState requested)` como función centralizada para cambios de estado. Implementa debounce: exige N muestras consecutivas con el mismo estado antes de hacer efectivo el cambio. Extensible para futuros usos.
+
+N = 50 muestras = 100ms @ 500Hz. Fiabilidad > velocidad (dispositivo médico).
+
+La hiperesis OT usa `_rsqm_probe_state` (estado comprometido, no pendiente) → correcto.
+
+### Cambios
+**`incunest_afe4490.h`:**
+- Nuevo constante: `rsqm_probe_state_min_count = 50`
+- Nuevos miembros: `_rsqm_probe_state_pending`, `_rsqm_probe_state_count`
+- Declaración: `void _set_probe_state(ProbeState requested)`
+
+**`incunest_afe4490.cpp`:**
+- Implementación de `_set_probe_state()` justo antes de `_update_rsqm()`
+- Las dos asignaciones directas a `_rsqm_probe_state` en `_update_rsqm()` sustituidas por `_set_probe_state(...)`
+
+**`incunest_afe4490_spec.md`:**
+- §5.6.2: añadido párrafo sobre debounce
+
+### Estado
+- Build y upload: OK. Pendiente test en hardware.
+
+---
+
+## Sesión 2026-05-28u — Renombrar ot1/ot2 → optical_transmittance_ir/red
+
+**Tema:** Mejorar legibilidad de variables ot1/ot2 en _update_rsqm()
+
+### Cambios
+- `incunest_afe4490.cpp`: `ot1` → `optical_transmittance_ir`, `ot2` → `optical_transmittance_red`
+- Comentario expandido explicando significado físico, valores típicos (APPLIED≈0.05, NOT_APPLIED≈2.8) y razón del sentinel (NaN)
+
+---
+
+## Sesión 2026-05-28v — Nomenclatura optical_transmittance: ir/red → led1/led2
+
+**Tema:** Corrección de nomenclatura en variables optical_transmittance
+
+### Decisión
+`_update_rsqm()` es "Raw" Signal Quality Monitor — todavía en territorio hardware, no fisiológico. El optical transmittance aquí detecta una condición física (¿hay tejido bloqueando la luz?), no interpreta hemoglobina. La frontera ir/red se cruza al entrar en algoritmos fisiológicos (_compute_spo2, _compute_hr1, etc.), no en RSQM.
+
+### Cambios
+- `incunest_afe4490.cpp`: `optical_transmittance_ir` → `optical_transmittance_led1`, `optical_transmittance_red` → `optical_transmittance_led2`
