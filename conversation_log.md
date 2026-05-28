@@ -8509,3 +8509,35 @@ Añadido párrafo "Disconnect guard" en §5.6.2 documentando la condición.
 - SUCCESS (RAM 18.5%, Flash 27.7%)
 - incunest_afe4490 @ 0.27.0 confirmado por PlatformIO
 
+
+## Sesión 2026-05-28n
+
+**Tema:** Fix RSQM ProbeState — falso APPLIED en transiciones (v2)
+
+### Causa raíz real (análisis más profundo)
+
+El fix anterior (ema_negative guard) era insuficiente. El problema ocurre en AMBAS direcciones:
+
+- **DISCONNECTED → NOT_APPLIED:** EMA arranca en ~0, sube lentamente. Cuando `disconnected=false` pero EMA aún pequeña → `ot = m/normalization` muy bajo → falso APPLIED antes de llegar a > 0.20.
+- **NOT_APPLIED → DISCONNECTED:** EMA decae lentamente. Cuando EMA pasa por la zona ~10000..0 → `ot < 0.15` → falso APPLIED antes de llegar a DISCONNECTED.
+
+El patrón común: la EMA (τ≈100ms) tarda ~300ms en settlear tras una transición rápida. Durante ese tiempo, el OT derivado de la EMA pasa por la zona APPLIED (0–0.20), causando el estado falso.
+
+### Fix — `incunest_afe4490.cpp`
+
+**OT calculado con valores instantáneos (`s1`/`s2`) en lugar de EMA (`m1`/`m2`):**
+
+```cpp
+const float ot1 = (led1 >= rsqm_adc_positive_sat)
+                    ? rsqm_ot_saturated
+                    : s1 / (_afe_led1_current_mA * rf1 * rg1);  // s1 = led1_aled1 instantáneo
+```
+
+- Responde en 1 muestra (vs ~300ms con EMA)
+- Falsos positivos por ruido PPG negligibles: APPLIED OT ≈ 0.05 vs NOT_APPLIED OT ≈ 2.8 (factor ×54); modulación PPG 2% → ±0.001 OT
+- Revert del guard `ema_negative` (ya no necesario — era parche insuficiente)
+
+### Spec actualizada (`incunest_afe4490_spec.md`)
+
+§5.6.2: sustituida nota "Disconnect guard" por nota sobre OT instantáneo con justificación.
+
