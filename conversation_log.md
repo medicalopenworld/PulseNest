@@ -8463,3 +8463,49 @@ Constantes de color actualizadas (más luminosas):
 | `_PROBE_NOT_APPLIED_BG` | `#4A3A00` | `#7A6400` (ámbar) |
 | `_PROBE_DISCONNECTED_BG` | `#4A0000` | `#7A0000` (rojo) |
 
+
+## Sesión 2026-05-28l
+
+**Tema:** ProbeState cell — verde más intenso + font blanco cuando APPLIED
+
+### Cambios en `pulsenest_lab.py`
+
+- `_PROBE_APPLIED_BG`: `#1A7A1A` → `#00A000` (verde más intenso)
+- En `_refresh_plots_tick()`: añadido `setForeground` en la celda ProbeState col-0:
+  - `#FFFFFF` (blanco) cuando `_ps == 2` (APPLIED)
+  - `#AAAAAA` (gris claro) para el resto de estados
+
+
+## Sesión 2026-05-28m
+
+**Tema:** Fix RSQM — falso PROBE_APPLIED al desconectar desde NOT_APPLIED
+
+### Causa raíz
+
+Al desconectar el cable desde NOT_APPLIED:
+1. `led1_aled1` cae inmediatamente a ~0 o negativo (ruido)
+2. La EMA `m1` decae lentamente (τ≈100ms) desde valor alto positivo hacia cero
+3. Al cruzar `m1` por cero → `ot1 = m1/(mA×RF×RG) < 0` → ambos OT < `lo_thr` (0.15)
+4. La condición OR de NOT_APPLIED falla → estado cae falsamente a **PROBE_APPLIED**
+5. Tras ~100ms más, EMA < 5000 → DISCONNECTED
+
+### Fix en `incunest_afe4490.cpp` — `_update_rsqm()`
+
+Añadido "disconnect guard": cuando el estado anterior es NOT_APPLIED y cualquiera de las EMA es ≤ 0, se bloquea la transición a APPLIED. Una EMA negativa indica cruce por cero durante desconexión, no contacto genuino (el contacto real siempre produce LED_Sub positivo pequeño).
+
+```cpp
+const bool ot_not_applied  = (ot1 > thr) || (ot2 > thr);
+const bool ema_negative    = prev_not_applied && (m1 <= 0.0f || m2 <= 0.0f);
+_rsqm_probe_state = (ot_not_applied || ema_negative)
+                        ? ProbeState::PROBE_NOT_APPLIED
+                        : ProbeState::PROBE_APPLIED;
+```
+
+### Spec actualizada (`incunest_afe4490_spec.md`)
+
+Añadido párrafo "Disconnect guard" en §5.6.2 documentando la condición.
+
+### Build / upload
+- SUCCESS (RAM 18.5%, Flash 27.7%)
+- incunest_afe4490 @ 0.27.0 confirmado por PlatformIO
+
