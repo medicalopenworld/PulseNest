@@ -7925,6 +7925,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_rsqi        = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_diag_code   = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_probe_state = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_ot_led1     = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_ot_led2     = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
         self.last_time = None
@@ -8025,7 +8027,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
             ("HR3_SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
             ("RSQI",     "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary."),
-            ("DiagCode", "data_diag_code",  "DiagCode bitmask (RSQM). Bit 0 = AMB_SAT (ambient saturated), Bit 1 = SIGNAL_WEAK (low PPG amplitude), Bit 2 = HW_SETTLING (hardware settling). 0 = no active conditions."),
+            ("DiagCode", "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM — 0x2000=AMB_SAT, 0x4000=SIGNAL_WEAK, 0x8000=HW_SETTLING. 0 = no active conditions."),
+            ("OT_LED1",  "data_ot_led1",    "Optical transmittance LED1 (IR): LED1_Sub / (LED1_mA × RF1_Ω × RG1_linear). Computed by script from last $CFG. APPLIED ≈ 0.05, NOT_APPLIED ≈ 2.8, DISCONNECTED ≈ 0. Used by RSQM to discriminate NOT_APPLIED vs APPLIED."),
+            ("OT_LED2",  "data_ot_led2",    "Optical transmittance LED2 (RED): LED2_Sub / (LED2_mA × RF2_Ω × RG2_linear). Computed by script from last $CFG. APPLIED ≈ 0.05, NOT_APPLIED ≈ 2.8, DISCONNECTED ≈ 0. Used by RSQM to discriminate NOT_APPLIED vs APPLIED."),
             ("ProbeState","data_probe_state","Probe state (RSQM). 0 = DISCONNECTED (cable out), 1 = NOT_APPLIED (no finger), 2 = APPLIED (finger on sensor, normal operation)."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
@@ -9391,6 +9395,25 @@ class PPGMonitor(QtWidgets.QMainWindow):
         "12dB":  400e3,   # ×4
     }
     _STG2_RI_OHM         = 100e3         # RI fixed internal resistor Ω (datasheet p.30)
+    _STG2_RG_LINEAR      = {             # Stage 2 linear gain (RG/RI) — matches firmware stg2_rg_linear[]
+        "0dB":   1.0, "3.5dB": 1.496, "6dB": 2.0, "9.5dB": 2.985, "12dB": 3.981,
+    }
+    _TIA_RF_OHM          = {             # TIA feedback resistor string → Ω
+        "10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
+        "250K": 250e3, "500K": 500e3, "1M": 1e6,
+    }
+
+    def _compute_ot(self, led_sub, led_ma_str, tia_str, stg2_str, stage2en_str):
+        """Optical transmittance: LED_Sub / (LED_mA × RF_Ω × RG_linear).
+        Returns 0.0 if config is unavailable or denominator is zero."""
+        try:
+            led_ma = float(led_ma_str)
+            rf     = self._TIA_RF_OHM[tia_str]
+            rg     = self._STG2_RG_LINEAR.get(stg2_str, 1.0) if str(stage2en_str) == "1" else 1.0
+            denom  = led_ma * rf * rg
+            return float(led_sub) / denom if denom != 0.0 else 0.0
+        except (KeyError, ValueError, TypeError, ZeroDivisionError):
+            return 0.0
 
     def _on_stats_cell_clicked(self, row, col):
         key = (row, col)
@@ -9771,6 +9794,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self.data_rsqi.append(0)
                                 self.data_diag_code.append(0)
                                 self.data_probe_state.append(0)
+                            cfg = self._last_cfg
+                            self.data_ot_led1.append(self._compute_ot(
+                                p[7], cfg.get("led1", "0"), cfg.get("tia1", ""),
+                                cfg.get("stg21", "0dB"), cfg.get("stage2en1", "0")))
+                            self.data_ot_led2.append(self._compute_ot(
+                                p[6], cfg.get("led2", "0"), cfg.get("tia2", ""),
+                                cfg.get("stg22", "0dB"), cfg.get("stage2en2", "0")))
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # IR_Sub for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
@@ -9823,6 +9853,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_rsqi.append(0)
                             self.data_diag_code.append(0)
                             self.data_probe_state.append(0)
+                            self.data_ot_led1.append(0.0)
+                            self.data_ot_led2.append(0.0)
                         except ValueError: pass
                         else: _new_data = True
 

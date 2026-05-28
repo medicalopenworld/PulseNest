@@ -577,7 +577,7 @@ void Cmd_Task(void *pvParameters) {
                 } else if (strcmp(cmd_buf, "$CFG?") == 0) {
                     send_cfg_frame();
                 } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
-                    uint32_t diag_val = afe.runDiagnostics();
+                    uint32_t diag_val = afe.runAfeDiagnostics();
                     char buf[32];
                     int n = snprintf(buf, sizeof(buf) - 6, "$DIAG,%06lX",
                                      (unsigned long)diag_val);

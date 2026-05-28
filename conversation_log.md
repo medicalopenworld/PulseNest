@@ -8722,3 +8722,61 @@ La hiperesis OT usa `_rsqm_probe_state` (estado comprometido, no pendiente) → 
 
 ### Cambios
 - `incunest_afe4490.cpp`: `optical_transmittance_ir` → `optical_transmittance_led1`, `optical_transmittance_red` → `optical_transmittance_led2`
+
+---
+
+## Sesión 2026-05-28w — OT_LED1/OT_LED2 en SIGNAL STATS (calculado en script)
+
+**Tema:** Visualizar optical_transmittance en tiempo real para investigar la transición NOT_APPLIED/APPLIED
+
+### Decisión
+OT calculado en el script Python desde los datos $M1 + parámetros del último $CFG recibido. No se añade a la trama $M1 del firmware (innecesario).
+
+### Cambios (`pulsenest_lab.py`)
+- Nuevas constantes de clase: `_STG2_RG_LINEAR` (gains lineales = firmware), `_TIA_RF_OHM` (RF en Ω)
+- Nuevas deques: `data_ot_led1`, `data_ot_led2`
+- Nuevo método: `_compute_ot(led_sub, led_ma_str, tia_str, stg2_str, stage2en_str)` — devuelve 0.0 si faltan parámetros
+- Parser $M1: calcula y añade OT_LED1/OT_LED2 tras cada muestra usando `_last_cfg`
+- Parser $M2: añade 0.0 a ambas deques
+- `_STATS_SIGNALS`: dos nuevas filas `OT_LED1` y `OT_LED2` antes de `ProbeState`
+
+### Fórmula
+`OT = LED_Sub / (LED_mA × RF_Ω × RG_linear)`
+- APPLIED ≈ 0.05, NOT_APPLIED ≈ 2.8, DISCONNECTED ≈ 0
+
+---
+
+## Sesión 2026-05-28x — DiagCode: integración AFE DIAG register + RSQM flags
+
+**Tema:** Extender diag_code para incluir los 13 bits del registro DIAG del AFE4490
+
+### Diseño acordado
+- Bits 0–12: AFE hardware DIAG register (set por runAfeDiagnostics(), persiste hasta próxima llamada)
+- Bits 13+: RSQM flags (actualizados a 500 Hz por _update_rsqm())
+- Variable interna `_diag_code`: mantiene estado combinado completo en todo momento
+  - runAfeDiagnostics() escribe bits 0-12: `_diag_code = (_diag_code & ~AFE_DIAG_MASK) | (result & AFE_DIAG_MASK)`
+  - _update_rsqm() escribe bits 13+: `_diag_code = (_diag_code & AFE_DIAG_MASK) | rsqm_flags`
+- Renombrado runDiagnostics() → runAfeDiagnostics() en toda la base de código
+
+### Cambios
+
+**`incunest_afe4490.h`:**
+- 13 constantes `AFE_DIAG_*` (bits 0-12) + `AFE_DIAG_MASK = 0x1FFF`
+- RSQM_AMB_SAT=0x2000, RSQM_SIGNAL_WEAK=0x4000, RSQM_HW_SETTLING=0x8000 (desplazados a bits 13-15)
+- Nueva variable miembro: `uint32_t _diag_code { 0 }`
+- `runDiagnostics()` → `runAfeDiagnostics()`
+
+**`incunest_afe4490.cpp`:**
+- `runAfeDiagnostics()`: actualiza bits 0-12 de `_diag_code` tras leer REG_DIAG
+- `_update_rsqm()`: actualiza bits 13+ de `_diag_code`; `_current_data.diag_code = _diag_code`
+- RSQI chequea `_diag_code == 0` (todos los bits, incluyendo AFE)
+
+**`PulseNest/src/main.cpp`:**
+- `afe.runDiagnostics()` → `afe.runAfeDiagnostics()`
+
+**`incunest_afe4490_spec.md`:**
+- §3 struct: actualizado; §5.6.3: tabla DiagCode expandida con 13 bits AFE + 3 bits RSQM
+- Todas las referencias a runDiagnostics renombradas
+
+**`pulsenest_lab.py`:**
+- Tooltip de DiagCode actualizado con nuevo layout de bits
