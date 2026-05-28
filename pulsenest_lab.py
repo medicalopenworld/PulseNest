@@ -6710,7 +6710,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI"
+        "LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
     )
 
     def __init__(self, main_monitor):
@@ -7331,7 +7331,7 @@ class UdpComWindow(QtWidgets.QWidget):
 
     UDP_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI"
+        "LibID,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
     )
 
     def __init__(self, main_monitor):
@@ -7450,6 +7450,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     #   [3]=RED  [4]=IR  [5]=RED_Amb  [6]=IR_Amb  [7]=RED_Sub  [8]=IR_Sub
     #   [9]=PPG  [10]=SpO2  [11]=SpO2_SQI  [12]=SpO2_R  [13]=PI
     #   [14]=HR1  [15]=HR1_SQI  [16]=HR2  [17]=HR2_SQI  [18]=HR3  [19]=HR3_SQI
+    #   [20]=RSQI  [21]=DiagCode  [22]=ProbeState   (v0.27+)
     _COLS = [
         ("SmpCnt",   "FW_SmpCnt",  1,  False),
         ("Ts_us",    "FW_Ts_us",   2,  False),
@@ -7470,6 +7471,9 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         ("HR2_SQI",  "FW_HR2_SQI", 17,  False),
         ("HR3",      "FW_HR3",     18,  False),
         ("HR3_SQI",  "FW_HR3_SQI", 19,  False),
+        ("RSQI",      "FW_RSQI",      20,  False),
+        ("DiagCode",  "FW_DiagCode",  21,  False),
+        ("ProbeState","FW_ProbeState",22,  False),
     ]
 
     def __init__(self, main_monitor):
@@ -7896,6 +7900,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_hr1_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr2_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr3_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_rsqi        = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_diag_code   = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_probe_state = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
         self.last_time = None
@@ -7995,6 +8002,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("HR2_SQI",  "data_hr2_sqi",  "HR2 Signal Quality Index [0–1]. Unbiased normalised autocorrelation at the dominant RR lag: SQI = acorr[τ] / (acorr[0]·(N−τ)/N). Unbiased correction removes finite-window underestimation — clean signal yields SQI ≈ 1.0 at all HR. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range."),
             ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
             ("HR3_SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
+            ("RSQI",     "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary."),
+            ("DiagCode", "data_diag_code",  "DiagCode bitmask (RSQM). Bit 0 = AMB_SAT (ambient saturated), Bit 1 = SIGNAL_WEAK (low PPG amplitude), Bit 2 = HW_SETTLING (hardware settling). 0 = no active conditions."),
+            ("ProbeState","data_probe_state","Probe state (RSQM). 0 = DISCONNECTED (cable out), 1 = NOT_APPLIED (no finger), 2 = APPLIED (finger on sensor, normal operation)."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
@@ -8480,7 +8490,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _TIP_VTIA_LED = _make_tooltip("V_TIA",
             "TIA differential output voltage estimated from the mean ADC count.\n"
             "Formula: V_TIA = (V_ADC / (2\u00d7RG)) \u00d7 RI  (datasheet eq.2, p.30)\n"
-            "RI = 100 k\u03a9 (fixed internal), RG from current \$CFG stg21/stg22.\n"
+            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22.\n"
             "Units: V (volts).\n\n"
             "Background color (LED phases \u2014 IR, RED):\n"
             "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range\n"
@@ -8489,7 +8499,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _TIP_VTIA_AMB = _make_tooltip("V_TIA",
             "TIA differential output voltage estimated from the mean ADC count.\n"
             "Formula: V_TIA = (V_ADC / (2\u00d7RG)) \u00d7 RI  (datasheet eq.2, p.30)\n"
-            "RI = 100 k\u03a9 (fixed internal), RG from current \$CFG stg21/stg22.\n"
+            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22.\n"
             "Units: V (volts).\n\n"
             "Background color (ALED phases \u2014 IR_Amb, RED_Amb):\n"
             "  Green   < 0.30 V \u2014 low ambient (safe)\n"
@@ -8516,6 +8526,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
             _tip8 = _TIP_VADC_LED if _r in {0, 1} else _TIP_VADC_AMB
             self.stats_table.item(_r, 7).setToolTip(_tip7)
             self.stats_table.item(_r, 8).setToolTip(_tip8)
+
+        # Override SpO2_R col 1 tooltip: derived R estimate, not true % SD/Mean
+        self.stats_table.item(9, 1).setToolTip(_make_tooltip("R estimate",
+            "Derived R ratio: CV(RED_Sub) / CV(IR_Sub)\n"
+            "where CV = SD / Mean \u00d7 100  (\u2248 AC/DC per channel).\n\n"
+            "Approximates the SpO2 R value:\n"
+            "  R = (AC_red/DC_red) / (AC_ir/DC_ir)\n\n"
+            "Displayed in italics \u2014 this cell does not show % SD/Mean\n"
+            "like the IR_Sub/RED_Sub rows above; it is a derived ratio.\n"
+            "Useful for a quick sanity-check of the R value without\n"
+            "running the full SpO2 algorithm."))
 
         self.stats_table.setItemDelegate(
             _StatsHighlightDelegate(self._stats_highlighted, self.stats_table))
@@ -9329,6 +9350,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
     _STATS_SQI_THRESHOLD = 0.9
+    # ProbeState column-0 background colors
+    _PROBE_APPLIED_BG       = QtGui.QColor("#1A7A1A")  # green  — APPLIED (2)
+    _PROBE_NOT_APPLIED_BG   = QtGui.QColor("#7A6400")  # amber  — NOT_APPLIED (1)
+    _PROBE_DISCONNECTED_BG  = QtGui.QColor("#7A0000")  # red    — DISCONNECTED (0)
     # V_TIA / V_ADC cell background colors
     _VTG_GREEN   = QtGui.QColor("#0F3A0F")  # optimal
     _VTG_YELLOW  = QtGui.QColor("#3A2D00")  # caution
@@ -9396,6 +9421,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
 
     def _update_stats_table(self):
+        _ir_sub_cv  = None
+        _red_sub_cv = None
         for row, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
             buf = self._stats_buf[name]
             if buf:
@@ -9410,11 +9437,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     def _fmt(v): return f"{v:.2f}"
                 snr_str = f"{std / mean * 100:.2f}" if (row in self._STATS_SUB_ROWS and mean != 0) else (
                     "" if row not in self._STATS_SUB_ROWS else "---")
+                if row == 4 and mean != 0:    # IR_Sub: save CV for SpO2_R ratio
+                    _ir_sub_cv  = std / mean * 100
+                elif row == 5 and mean != 0:  # RED_Sub: save CV for SpO2_R ratio
+                    _red_sub_cv = std / mean * 100
                 vals = [_fmt(mean), _fmt(std), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
             else:
                 snr_str = "" if row not in self._STATS_SUB_ROWS else "---"
                 vals = ["---", "---", "---", "---", "---"]
-            # col 1: Mean/StdDev (only RED_Sub and IR_Sub rows)
+            # SpO2_R row: show RED_Sub_CV / IR_Sub_CV ≈ R  (italic — derived ratio, not true % SD/Mean)
+            if row == 9:
+                snr_str = f"{_red_sub_cv / _ir_sub_cv:.4f}" if (_ir_sub_cv and _red_sub_cv) else "---"
+            # col 1: % SD/Mean (IR_Sub / RED_Sub rows) or R estimate (SpO2_R row)
             snr_item = self.stats_table.item(row, 1)
             if snr_item is None:
                 snr_item = QtWidgets.QTableWidgetItem(snr_str)
@@ -9422,6 +9456,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.stats_table.setItem(row, 1, snr_item)
             else:
                 snr_item.setText(snr_str)
+            if row == 9:
+                _f = snr_item.font()
+                _f.setItalic(True)
+                snr_item.setFont(_f)
             # cols 2-6: Mean, SD, Max-Min, Min, Max
             for col, v in enumerate(vals, start=2):
                 item = self.stats_table.item(row, col)
@@ -9681,6 +9719,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         try:
                             # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:RED, 4:IR, 5:RED_Amb, 6:IR_Amb, 7:RED_Sub, 8:IR_Sub,
                             # 9:PPG, 10:SpO2, 11:SpO2_SQI, 12:SpO2_R, 13:PI, 14:HR1, 15:HR1_SQI, 16:HR2, 17:HR2_SQI, 18:HR3, 19:HR3_SQI
+                            # 20:RSQI, 21:DiagCode, 22:ProbeState  (v0.27+; absent in older firmware)
                             self.data_lib_id.append(parts[0])
                             p = [float(x) for x in parts[1:20]]
                             self.data_sample_counter.append(int(p[0]))
@@ -9702,6 +9741,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr2_sqi.append(p[16])
                             self.data_hr3.append(p[17])
                             self.data_hr3_sqi.append(p[18])
+                            if len(parts) >= 23:
+                                self.data_rsqi.append(int(float(parts[20])))
+                                self.data_diag_code.append(int(float(parts[21])))
+                                self.data_probe_state.append(int(float(parts[22])))
+                            else:
+                                self.data_rsqi.append(0)
+                                self.data_diag_code.append(0)
+                                self.data_probe_state.append(0)
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # IR_Sub for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
@@ -9751,6 +9798,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr1_sqi.append(0.0)
                             self.data_hr2_sqi.append(0.0)
                             self.data_hr3_sqi.append(0.0)
+                            self.data_rsqi.append(0)
+                            self.data_diag_code.append(0)
+                            self.data_probe_state.append(0)
                         except ValueError: pass
                         else: _new_data = True
 
@@ -9804,6 +9854,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._py_timing['render_interval'].append((_t0_render - self._last_render_t) * 1000)
         self._last_render_t = _t0_render
         try:
+            # ProbeState cell col-0: update background on every render tick (200 ms)
+            _ps = int(self.data_probe_state[-1]) if self.data_probe_state else -1
+            if _ps == 2:
+                _ps_bg = self._PROBE_APPLIED_BG
+            elif _ps == 1:
+                _ps_bg = self._PROBE_NOT_APPLIED_BG
+            elif _ps == 0:
+                _ps_bg = self._PROBE_DISCONNECTED_BG
+            else:
+                _ps_bg = self._VTG_DEFAULT
+            _ps_item = self.stats_table.item(len(self._STATS_SIGNALS) - 1, 0)
+            if _ps_item is not None:
+                _ps_item.setBackground(_ps_bg)
+
             # PPGPlotsWindow: throttled to 20 Hz (every render tick)
             self._ppgplots_refresh_counter += 1
             if self.ppgplots_window is not None and self._ppgplots_refresh_counter >= self._PPGPLOTS_REFRESH_EVERY:

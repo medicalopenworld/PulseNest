@@ -7981,6 +7981,18 @@ Misma lógica para V_ADC con thresholds diferentes (ver §6.3 del spec).
 
 ---
 
+## Sesión 2026-05-27q
+
+### Tema: SIGNAL STATS — SpO2_R col "% SD/Mean" muestra R estimado en cursiva
+
+- Celda `SpO2_R` / `% SD/Mean` calcula `CV(RED_Sub) / CV(IR_Sub)` ≈ R.
+- Justificación: `CV = SD/Mean ≈ AC/DC` por canal → cociente = `(AC_red/DC_red) / (AC_ir/DC_ir)` = R.
+- Mostrado en **cursiva** porque no es un `% SD/Mean` genuino sino un ratio derivado.
+- Tooltip específico añadido explicando fórmula y significado de la cursiva.
+- Implementación en `_update_stats_table()`: vars `_ir_sub_cv`/`_red_sub_cv`, override `snr_str` + `setItalic(True)` para row 9. Tooltip override en `_setup_ui`.
+
+---
+
 ## Sesión 2026-05-27p
 
 ### Tema: hr_min_bpm 30 → 40 BPM
@@ -8010,3 +8022,444 @@ Misma lógica para V_ADC con thresholds diferentes (ver §6.3 del spec).
 - Los tooltips se sobreescriben tras el bucle de inicialización en `_setup_ui`.
 
 ---
+
+## Sesión 2026-05-27o
+
+### Tema: Análisis afe_sweep_test.csv — discriminación de estados de sonda para HGAC
+
+**Objetivo:** determinar si es posible distinguir PROBE_DISCONNECTED / PROBE_NOT_APPLIED / PROBE_APPLIED mirando las medidas y la configuración del AFE, sin usar el test de diagnóstico hardware (que paraliza la campaña de medidas).
+
+**Fichero analizado:** `afe_sweep_test.csv` — 487 filas, 3 labels: PROBE_APPLIED (163), PROBE_NOT_APPLIED (162), PROBE_DISCONNECTED (162). Sweep sistemático: RF1=(10K/100K/1M), RG1=(0/6/12dB), LED1mA=(5/10/50), ambdac=(0/1/2/4/5/10 µA). RF2=100K, RG2=6dB, LED2mA=20 fijos.
+
+---
+
+**Conclusión 1 — LED_Sub es ambdac-independiente**
+LED_Sub = LED − ALED. El AMBDAC inyecta la misma corriente DC en fase LED y fase ALED → se cancela en la resta. LED_Sub es el discriminador más robusto porque no requiere corrección por ambdac.
+
+**Conclusión 2 — PROBE_DISCONNECTED: firma inequívoca**
+Sin fotodiodo, LED_Sub ≈ 0 en cualquier configuración. Peores casos observados en el CSV:
+- `LED2_Sub_mean`: máx absoluto = 3 328 counts (ambdac=5, RG=12dB, n=1 muestra)
+- `LED1_Sub_mean`: máx absoluto = 2 280 counts (ambdac=2, RG=6dB)
+- `LED2_Sub_std`: máx = 163 counts
+- `LED1_Sub_std`: máx = 213 counts
+
+Cuando LED_mean satura negativamente (SAT−), los Sub_std caen a ~0 (ADC clavado en el rail) — DISCONNECTED sigue siendo detectable.
+
+**Conclusión 3 — NOT_APPLIED vs APPLIED: métrica normalizada**
+El ratio `LED1_Sub_mean / (LED1mA × RF1 × RG1_linear)` es una constante física del sistema (respuesta óptica normalizada):
+- PROBE_APPLIED: ≈ 0.05 counts/(mA·Ω) — estable en todos los RF/RG/mA probados
+- PROBE_NOT_APPLIED: ≈ 2.7 counts/(mA·Ω) — factor ×54 respecto a APPLIED
+No requiere cambiar la configuración del AFE; se calcula con los datos del ciclo en curso.
+
+**Conclusión 4 — Brecha de ganancia**
+No existe ninguna configuración donde APPLIED y NOT_APPLIED den valores no saturados simultáneamente. Si el HGAC está en su punto de operación para APPLIED, NOT_APPLIED satura inmediatamente (×53 más señal). La detección de NOT_APPLIED se reduce a: señal saturada en el punto de operación actual, o métrica normalizada >> 0.5 en cualquier punto no saturado.
+
+**Punto ciego identificado:** NOT_APPLIED con saturación positiva completa (ambas ventanas LED y ALED en +2096921) da Sub=0, std=0 → falso positivo para DISCONNECTED. Se resuelve añadiendo verificación de que ningún canal esté en saturación positiva.
+
+---
+
+**Criterio acordado para detectar PROBE_DISCONNECTED (sin test HW):**
+
+```cpp
+bool is_disconnected =
+    abs(LED1_Sub_mean) < 5000   &&
+    abs(LED2_Sub_mean) < 5000   &&
+    LED1_Sub_std       < 500    &&
+    LED2_Sub_std       < 500    &&
+    LED1_mean          < 2000000 &&   // excluye saturación positiva canal IR
+    LED2_mean          < 2000000;     // excluye saturación positiva canal RED
+```
+
+Márgenes: THRESH_SUB=5000 da ×1.5 sobre peor caso LED2_Sub_mean (3328) y ×2.2 sobre LED1_Sub_mean (2280). THRESH_STD=500 da ×2.3 sobre peor caso (213). Umbral SAT=2000000 separa DISCONNECTED (siempre << 2M) de NOT_APPLIED saturado (+2096921).
+
+---
+
+## Sesión 2026-05-27p
+
+### Tema: Cálculo de los 6 valores del criterio PROBE_DISCONNECTED — Opción A vs B
+
+**Pregunta:** ¿calcular LED1/LED2 Sub_mean, Sub_std, mean sobre un buffer de últimas N muestras (Opción A) o progresivamente con EMA/constante de tiempo (Opción B)?
+
+**Decisión: Opción B (EMA).**
+
+**Razones:**
+- El HGAC ya calcula `LED_Sub_mean` para su lazo de control → la EMA extiende ese cálculo añadiendo solo el estimador de varianza, sin duplicar trabajo.
+- Reset trivial al cambiar RF/RG/ambdac: reinicializar 3 floats vs. vaciar y rellenar un buffer (N muestras de latencia muerta con Opción A).
+- Memoria y complejidad mínimas (6 floats por canal vs. buffer circular).
+- El criterio no necesita precisión estadística: la distancia DISCONNECTED vs APPLIED es de varios órdenes de magnitud.
+
+**Implementación acordada** (α = 1/τ, τ ≈ 50 muestras a 500 Hz → ventana efectiva ~100 ms):
+
+```cpp
+constexpr float ALPHA = 0.02f;
+
+ema_mean += ALPHA * (x - ema_mean);
+ema_var  += ALPHA * ((x - ema_mean) * (x - ema_mean) - ema_var);
+ema_std   = sqrtf(ema_var);
+
+// Reset obligatorio al cambiar RF/RG/ambdac:
+ema_mean = x;  ema_var = 0.0f;
+```
+
+**Precaución:** inhibir el criterio de detección durante ~3τ = 150 ms tras cada reset (flag `estimator_ready`) para evitar falsos positivos transitorios.
+
+---
+
+## Sesión 2026-05-28c
+
+### Tema: Máquina de estados ProbeState — decisiones completas + plan de implementación
+
+**ISO 80601-2-61:2026 consultada.** Requisitos relevantes encontrados:
+- §201.13.101: detectar probe fault (open/short wire) → technical alarm condition. Sin tiempo límite especificado.
+- §201.12.4.102: indicador de signal inadequacy obligatorio. Factores: DC signal level y %mod.
+- §201.12.4.101: data update period < 30s para monitorización neonatal continua. Nuestro settling = 1.5s → ✅
+- Table GG.3: "probe is not connected" y "probe is not detected" son alarmas técnicas esperadas por la norma.
+- Annex FF (informativo): conceptos de fidelidad y delay para SpO2 — no impone tiempos para detección de sonda.
+
+**Nomenclatura actualizada en incunest_afe4490_spec.md:**
+- `CABLE_DISCONNECTED` → `PROBE_DISCONNECTED`
+- `NO_TISSUE` → `PROBE_NOT_APPLIED`
+- `PROBE_ON_PATIENT` → `PROBE_APPLIED`
+
+**Decisiones de la máquina de estados:**
+
+1. **Prioridad:** PROBE_DISCONNECTED > PROBE_NOT_APPLIED > PROBE_APPLIED (evaluación por prioridad cada ciclo)
+
+2. **Sin confirmación adicional.** Protección implícita en tres capas:
+   - EMA τ_mean=100ms: suaviza transientes en OT
+   - Histéresis OT (0.20/0.15): impide oscilación en zona intermedia
+   - `estimator_ready` = 1500ms: bloquea detección tras reset/desconexión
+   - NOT_APPLIED→APPLIED tarda ~324ms por convergencia natural de EMA (de 2.7 a cruzar 0.15)
+
+3. **Responsabilidad: RSQM.** Razones: misma cadencia (500 Hz), acceso a datos crudos, naturaleza diagnóstica, coherencia con spec existente.
+
+4. **Output por muestra (500 Hz).** `RSQMResult` incluye `ProbeState` junto a `RSQI` y `DiagCode`. Permite que cualquier consumidor futuro (SpO2, alarmas) use el estado sin retraso de ventana.
+
+5. **Comportamiento HGAC por estado:**
+
+| Estado | HGAC |
+|---|---|
+| `PROBE_APPLIED` | Operación normal (P1-P4) |
+| `PROBE_NOT_APPLIED` | Inhibido. Mantiene configuración actual (preserva memoria del punto de operación para reacquisición rápida si el dedo vuelve) |
+| `PROBE_DISCONNECTED` | Inhibido. Reset a ganancia mínima (RF min, RG=0dB, LED min) — punto de partida limpio para re-detección |
+
+Asimetría intencional: NOT_APPLIED conserva la ganancia del último estado APPLIED; DISCONNECTED la resetea porque no hay continuidad (podría reconectarse cualquier sonda).
+
+**Plan de implementación:**
+
+| Prioridad | Tarea | Bloqueado por |
+|---|---|---|
+| 1 | Diseño RSQM completo ✅ | — |
+| 2 | Implementar RSQM | Diseño completo |
+| 3 | Terminar diseño HGAC | Decisión ProbeState ✅ |
+| 4 | Implementar HGAC | RSQM implementado |
+| 5 | Validación hardware | Todo implementado |
+
+---
+
+## Sesión 2026-05-28a
+
+### Tema: Constantes de tiempo para los EMA estimators del criterio PROBE_DISCONNECTED
+
+**Pregunta:** ¿qué α (o τ) usar para EMA mean y EMA variance a 500 Hz?
+
+**Análisis:**
+
+- **EMA mean**: en DISCONNECTED la señal es siempre ≈ 0; no hay AC que promediar. Solo necesita converger al nivel DC. α rápida es suficiente.
+- **EMA variance**: la varianza en APPLIED está dominada por el PPG AC. Para estimar correctamente debe cubrir varios ciclos cardíacos. FC mínima clínicamente relevante: ~30 bpm neonatal = 0.5 Hz = período 1000 ms = 500 muestras @ 500 Hz. Por tanto τ_var debe ser comparable o mayor a ese período.
+- **Margen disponible**: DISCONNECTED max std observado = 213; umbral = 500 → margen ×2.3. Suficiente para un estimador impreciso → τ_var no necesita ser tan largo como para una medida de SpO2.
+
+**Decisión:**
+
+| Estimator | α | τ | τ en ms @ 500 Hz |
+|---|---|---|---|
+| EMA mean (LED_Sub_mean) | 0.02 | 50 samples | 100 ms |
+| EMA variance (LED_Sub_std) | 0.004 | 250 samples | 500 ms |
+| `estimator_ready` delay | — | 3 × τ_var = 750 samples | 1500 ms |
+
+**Razón de la asimetría mean/var:**
+- Mean: detector de nivel DC → rápido (100 ms)
+- Variance: detector estadístico, necesita integrar ≥ ½ ciclo cardíaco a 30 bpm → 500 ms es el mínimo razonable
+
+**Código resultante:**
+
+```cpp
+constexpr float ALPHA_MEAN = 0.02f;   // τ = 100ms @ 500Hz
+constexpr float ALPHA_VAR  = 0.004f;  // τ = 500ms @ 500Hz
+constexpr int   ESTIMATOR_READY_SAMPLES = 750;  // 3 × τ_var = 1500ms
+
+// Update por muestra:
+ema_mean += ALPHA_MEAN * (x - ema_mean);
+float diff = x - ema_mean;
+ema_var  += ALPHA_VAR  * (diff * diff - ema_var);
+ema_std   = sqrtf(ema_var);
+
+// Reset al cambiar RF/RG/ambdac:
+ema_mean = x;  ema_var = 0.0f;  sample_count = 0;
+bool estimator_ready = (++sample_count >= ESTIMATOR_READY_SAMPLES);
+```
+
+**Alternativa simplificada aceptable:** α = 0.004 para ambos (mean y var). Mean tarda 1500 ms en establecerse — conservador pero seguro si la simplicidad es preferida.
+
+---
+
+## Sesión 2026-05-28b
+
+### Tema: Criterio NOT_APPLIED vs APPLIED — optical_transmittance y limitación de tipo de sonda
+
+**Decisión de nombre:** la métrica normalizada `LED_Sub_mean / (LED1mA × RF1_Ω × RG1_linear)` se denominará **`optical_transmittance`** en el código y la spec. Término físico estándar (transmitancia óptica), en inglés, sin abreviatura.
+
+```
+optical_transmittance = LED1_Sub_mean / (LED1mA × RF1_ohms × RG1_linear)
+```
+
+Valores observados en CSV:
+- PROBE_APPLIED:     ≈ 0.05 (tejido absorbe ~95% de la luz)
+- PROBE_NOT_APPLIED: ≈ 2.7  (camino óptico libre, factor ×54)
+
+El valor >1 no es físicamente incorrecto: la normalización es relativa a la cadena de ganancia del sistema, no a una fuente de referencia absoluta.
+
+**Decisión de detector:** Opción B — usar `optical_transmittance` como métrica unificada para NOT_APPLIED vs APPLIED, calculada siempre en el punto de operación actual. Cuando el canal está saturado, se asigna un valor de saturación ficticio alto (→ NOT_APPLIED). Sin cambio de configuración del AFE.
+
+**Limitación — tipo de sonda (anotar en spec HGAC):**
+El criterio NOT_APPLIED basado en `optical_transmittance` asume que cuando se retira el dedo, LED y fotodiodo quedan enfrentados con camino óptico libre (sondas tipo clip reutilizables). En sondas desechables adhesivas donde los elementos se separan físicamente al retirar el sensor, `optical_transmittance` en NOT_APPLIED puede ser comparable a APPLIED y la detección fallaría. El algoritmo no está validado para ese tipo de sonda.
+
+**Umbrales NOT_APPLIED (con histéresis):**
+
+```cpp
+constexpr float optical_trans_not_applied_hi_thr = 0.20f;  // entrar NOT_APPLIED
+constexpr float optical_trans_not_applied_lo_thr = 0.15f;  // salir NOT_APPLIED (volver a APPLIED)
+```
+
+Valores: APPLIED medido ≈ 0.05, NOT_APPLIED medido ≈ 2.7 (factor ×54).
+- Hi_thr = 0.20: margen ×4 sobre APPLIED — sesgo hacia NOT_APPLIED (falso APPLIED es el error más peligroso: daría datos erróneos)
+- Lo_thr = 0.15: margen ×3 sobre APPLIED — menos exigente que 0.10 (×2) para evitar que el sistema quede atascado en NOT_APPLIED con sondas o dedos con transmitancia APPLIED algo elevada (neonatal, dedo fino)
+
+**Nota de alcance:** `optical_transmittance` se usará también en RSQM, detección de sonda aflojada y limb detection — no es exclusiva de este detector. Por eso los nombres de umbral incluyen `not_applied` como scope explícito.
+
+**Valor de saturación cuando LED1_mean ≥ ADC_POSITIVE_SAT:**
+
+Decisión: asignar `OPTICAL_TRANS_SATURATED = 100.0f`.
+
+Razón de necesidad: cuando LED y ALED están ambos saturados, `LED1_Sub_mean ≈ 0` → OT ≈ 0 → falso APPLIED (el error más peligroso). El criterio DISCONNECTED no lo captura porque excluye expresamente `LED1_mean ≥ 2M`. Sin override, ese caso produce datos erróneos.
+
+Razón de elección de 100.0f sobre NaN: en IEEE 754, cualquier comparación con NaN devuelve false — `NaN > 0.20f` es false, por lo que el detector NOT_APPLIED fallaría silenciosamente. Con `100.0f` la comparación funciona directamente sin casos especiales.
+
+```cpp
+constexpr float OPTICAL_TRANS_SATURATED = 100.0f;
+
+float optical_transmittance;
+if (LED1_mean >= ADC_POSITIVE_SAT) {
+    optical_transmittance = OPTICAL_TRANS_SATURATED;
+} else {
+    optical_transmittance = LED1_Sub_mean / (LED1mA * RF1_ohms * Rg1_linear);
+}
+
+// Detector NOT_APPLIED:
+bool is_not_applied = optical_transmittance > optical_trans_not_applied_hi_thr;
+```
+
+**Canales: OR logic (LED1 y LED2)**
+
+Decisión: usar ambos canales con lógica OR.
+
+```cpp
+bool is_not_applied = (ot1 > optical_trans_not_applied_hi_thr) ||
+                      (ot2 > optical_trans_not_applied_hi_thr);
+```
+
+Razón: el error peligroso es falso APPLIED. Con AND, si un canal da OT anómalo bajo (p.ej. artefacto de descarga CF que en el CSV produce OT negativo), NOT_APPLIED no se declara → falso APPLIED con datos erróneos. Con OR, basta que un canal detecte correctamente. El riesgo inverso (falso NOT_APPLIED por un canal subiendo a >0.20 estando APPLIED) es improbable dado que APPLIED da OT ≈ 0.05, ×4 por debajo del umbral.
+
+**Cálculo de OT: valor crudo vs EMA**
+
+- **Chequeo de saturación** (`LED1_raw >= ADC_POSITIVE_SAT`): valor crudo instantáneo. La saturación es un evento binario; si la muestra ya está en el rail, la información está disponible ahora mismo. Usar EMA introduciría latencia innecesaria.
+- **Cálculo de OT** (`LED1_Sub_ema_mean / denominador`): EMA mean (α=0.02). Necesario para suprimir el PPG AC que montado sobre LED1_Sub haría que OT oscile muestra a muestra cruzando umbrales falsamente.
+
+---
+
+## Sesión 2026-05-28e
+
+**Tema:** `diag_code` uint16_t → uint32_t
+
+**Decisión:** Ampliar `diag_code` de `uint16_t` a `uint32_t` para tener 32 bits disponibles. Motivación: en el futuro podrían añadirse los 13 flags del registro DIAG del chip (`runDiagnostics()`), flags de HGAC, y otras condiciones.
+
+**Cambios:**
+- `incunest_afe4490.h`: constantes `RSQM_*` cambiadas a `constexpr uint32_t ... UL`; campo `diag_code` en `AFE4490Data` cambiado a `uint32_t`
+- `incunest_afe4490.cpp`: variable local `diag` en `_update_rsqm()` cambiada a `uint32_t`
+- `incunest_afe4490_spec.md`: mismos cambios reflejados; comentario "bits 3–31 reserved for future use" añadido
+
+---
+
+## Sesión 2026-05-28d
+
+**Tema:** Implementación RSQM (v0.27)
+
+**Trabajo realizado:**
+
+RSQM implementado en `incunest_afe4490.h` y `incunest_afe4490.cpp`. Librería actualizada a v0.27. Spec actualizada a v0.27 con nueva sección §5.6.
+
+**Cambios en incunest_afe4490.h:**
+- `ProbeState` enum (PROBE_DISCONNECTED / PROBE_NOT_APPLIED / PROBE_APPLIED) añadido antes de `AFE4490Data`
+- Constantes `RSQM_AMB_SAT = 0x0001`, `RSQM_SIGNAL_WEAK = 0x0002`, `RSQM_HW_SETTLING = 0x0004`
+- `AFE4490Data` gana `rsqi` (uint8_t), `diag_code` (uint16_t), `probe_state` (ProbeState)
+- Private struct `RsqmEmaChannel { float ema_mean; float ema_var; uint32_t count; }`
+- 10 `static constexpr` RSQM constants (α_mean, α_var, ready_count, umbrales de detección)
+- Private state: `_rsqm_led1_sub`, `_rsqm_led2_sub`, `_rsqm_probe_state`, `_rsqm_settling_countdown`
+- Declaración de `_update_rsqm()`
+
+**Cambios en incunest_afe4490.cpp:**
+- `stg2_rg_linear[5] = {1.0f, 1.496f, 2.0f, 2.985f, 3.981f}` añadido al namespace anónimo
+- `_update_rsqm()` implementado (~80 líneas): EMA update, PROBE_DISCONNECTED detection, optical_transmittance con histéresis, DiagCode (AMB_SAT + SIGNAL_WEAK + HW_SETTLING), RSQI
+- Constructor y `_reset_algorithms()` actualizados con inicialización RSQM
+- `_update_rsqm()` llamado al inicio de `_process_sample()`, antes de todos los demás algoritmos
+
+**Decisiones de implementación:**
+- `RSQM_HW_SETTLING` no se activa en v0.27 — se activará cuando HGAC esté implementado
+- `rsqm_signal_weak_std = 2000.0f` es provisional — necesita calibración en hardware
+- ENSEPGAIN=0 manejado: cuando `_afe_ensepgain=false`, se usan los settings LED2 para ambos canales en el cálculo de OT
+- OT hysteresis: entrada con `ot_hi_thr=0.20`, salida con `ot_lo_thr=0.15`; OR logic en ambos canales
+
+**Spec actualizada:**
+- Título v0.25 → v0.27
+- Section 2.1: nuevos campos en AFE4490Data
+- Section 3: ProbeState enum y DiagCode constants añadidos
+- Section 5.6 RSQM (nueva): EMA estimators, state machine, DiagCode table, RSQI rule
+- Section 12.3: eliminados umbrales simplistas, referencia a §5.6
+- Section 14: entrada v0.27 añadida
+
+```cpp
+float ot1;
+if (LED1_raw >= ADC_POSITIVE_SAT) {
+    ot1 = OPTICAL_TRANS_SATURATED;  // 100.0f
+} else {
+    ot1 = LED1_Sub_ema_mean / (LED1mA * RF1_ohms * RG1_linear);
+}
+```
+
+---
+
+## Sesión 2026-05-28f
+
+**Tema:** Propagación de campos RSQM a consumidores de la librería
+
+**Trabajo realizado:**
+
+Actualización de los dos consumidores de `AFE4490Data` para incluir los tres campos nuevos (`rsqi`, `diag_code`, `probe_state`).
+
+**`src/main.cpp` (PulseNest):**
+- Frame `$M1` ampliado de 19 a 22 campos de datos
+- Nuevos campos al final: `RSQI` (`%u`), `DiagCode` (`%lu` decimal), `ProbeState` (`%d` entero: 0=DISCONNECTED, 1=NOT_APPLIED, 2=APPLIED)
+- Comentario de cabecera actualizado
+
+**`examples/basic/main.cpp` (incunest_afe4490):**
+- Añade al output Serial por muestra: estado de sonda (texto), RSQI, y DiagCode en hex si != 0
+- Ejemplo: `Probe: APPLIED  RSQI: 1` o `Probe: NOT_APPLIED  RSQI: 0  DiagCode: 0x1`
+
+**Build:** SUCCESS, sin warnings (RAM 18.5%, Flash 27.7%)
+
+**Pendiente:** ~~actualizar parser de `pulsenest_lab.py`~~ — completado en sesión 2026-05-28g
+
+---
+
+## Sesión 2026-05-28g
+
+**Tema:** Actualización `pulsenest_lab.py` — parseo campos RSQM del frame `$M1`
+
+**Cambios en `pulsenest_lab.py`:**
+- 3 deques nuevos: `data_rsqi`, `data_diag_code`, `data_probe_state` (inicializados a 0)
+- **Parser M1** (backward compatible): cuando `len(parts) >= 23` extrae partes [20], [21], [22]; si no (firmware antiguo `len(parts) < 23`) rellena con 0
+- **Parser M2:** añade 0 por defecto para los 3 nuevos buffers
+- **`_STATS_SIGNALS`:** 3 filas nuevas — `RSQI`, `DiagCode`, `ProbeState` — visibles en la tabla de estadísticas con tooltips
+- **`_COLS` (LabCaptureWindow):** índices 20/21/22 añadidos — incluidos en captura CSV
+- **CSV headers** `SERIAL_HEADER` y `UDP_HEADER`: añadidos `RSQI,DiagCode,ProbeState` al final
+
+**Verificación:** `ast.parse()` → syntax OK. Script relanzado.
+
+---
+
+## Sesión 2026-05-28h — Nomenclatura HGAC: "sig" → ppg_dc / dc_
+
+### Contexto
+Consulta ISO 80601-2-61:2026 §201.3 (Terms and Definitions) para proponer mejor nombre para "sig" (señal diferencial LED−ALED en %FS), considerado demasiado ambiguo.
+
+### Decisiones tomadas
+
+**Renaming de "sig":**
+- ISO §201.3.245 (%mod): *"DC refers to the baseline (non-modulated) signal portion"*
+- `sig_led1_pct` = mediana(LED1−ALED1)/FS×100 = componente DC de la señal PPG
+- **Nombre conceptual (spec/docs):** `ppg_dc` — trazable a ISO §201.3.245
+- **Nombre en código (variables):** prefijo `dc_` → `dc_led1_pct`, `dc_led2_pct`
+- `ppg_dc` solo útil como nombre genérico; en código siempre lleva sufijo `_led1/_led2` y `ppg_` sería redundante
+- Zonas de diseño (no en código aún): `DC_WEAK`, `DC_SAT`, `DC_NOMINAL`, `DC_DEAD`
+- HGACConfig: `hgac_dc_target_pct`, `hgac_dc_nominal_lo/hi`, etc.
+
+**"amb" se mantiene** — la ISO no define término mejor para el componente ambiental (ALED).
+
+**Corrección:** nombres correctos de probe states son `PROBE_DISCONNECTED / PROBE_NOT_APPLIED / PROBE_APPLIED` (ya correctos en `project_probe_state_detector.md`).
+
+### Fix pulsenest_lab.py
+- `SyntaxWarning: invalid escape sequence '\$'` en líneas 8493 y 8502 (tooltips V_TIA)
+- Corregido: `\$` → `\\$`
+
+### Ficheros modificados
+- `pulsenest_lab.py`: fix `\$` → `\\$` (líneas 8493/8502)
+- `memory/project_agc_design.md`: `sig_*` → `ppg_dc_*`; nota que nombres de zona son diseño, no código
+
+---
+
+
+## Sesión 2026-05-28i
+
+**Tema:** Upload firmware v0.27 + ProbeState background color en SIGNAL STATS
+
+### Cambios realizados
+
+**`incunest_afe4490/library.json`:**
+- Versión corregida: `0.20.0` → `0.27.0` (estaba desactualizada respecto al código)
+
+**`pulsenest_lab.py`:**
+- Tabla SIGNAL STATS, fila "ProbeState", columna "Signal" (col 0): fondo cambia dinámicamente con el valor instantáneo de `data_probe_state`
+  - Verde oscuro `#004A00` → `APPLIED` (2)
+  - Ámbar oscuro `#4A3A00` → `NOT_APPLIED` (1)
+  - Rojo oscuro  `#4A0000` → `DISCONNECTED` (0)
+- 3 constantes de clase nuevas: `_PROBE_APPLIED_BG`, `_PROBE_NOT_APPLIED_BG`, `_PROBE_DISCONNECTED_BG`
+- Lógica añadida al final de `_update_stats_table()` (dentro del loop, cuando `name == "ProbeState"`)
+- Usa `self.data_probe_state[-1]` (valor instantáneo), no la media del buffer de stats
+
+### Build / upload
+- `pio run -e incunest_V16 -t upload --upload-port COM15` → SUCCESS (RAM 18.5%, Flash 27.7%)
+- Script relanzado: `start pythonw pulsenest_lab.py`
+
+
+## Sesión 2026-05-28j
+
+**Tema:** ProbeState background — actualización instantánea (200 ms) en lugar de esperar al intervalo de stats
+
+### Cambios en `pulsenest_lab.py`
+
+- Eliminado el bloque `if name == "ProbeState"` de `_update_stats_table()` (donde se actualizaba solo al final de cada intervalo de stats)
+- Añadido bloque equivalente al inicio del `try` en `_refresh_plots_tick()` (corre cada 200 ms cuando hay datos nuevos):
+  - Lee `self.data_probe_state[-1]` (valor instantáneo)
+  - Aplica `_PROBE_APPLIED_BG` / `_PROBE_NOT_APPLIED_BG` / `_PROBE_DISCONNECTED_BG` / `_VTG_DEFAULT`
+  - Actualiza `stats_table.item(len(_STATS_SIGNALS)-1, 0).setBackground(...)`
+- Las constantes de color (`_PROBE_*_BG`) añadidas en sesión 2026-05-28i se mantienen sin cambios
+
+### Decisión de diseño
+- Velocidad de refresco: 200 ms (cada render tick con datos nuevos) — suficiente para el usuario
+- No se pone en `_process_frames_tick()` (20 ms) porque 200 ms es percibido como instantáneo
+
+
+## Sesión 2026-05-28k
+
+**Tema:** ProbeState background — colores más intensos
+
+### Cambios en `pulsenest_lab.py`
+
+Constantes de color actualizadas (más luminosas):
+
+| Constante | Antes | Ahora |
+|---|---|---|
+| `_PROBE_APPLIED_BG` | `#004A00` | `#1A7A1A` (verde) |
+| `_PROBE_NOT_APPLIED_BG` | `#4A3A00` | `#7A6400` (ámbar) |
+| `_PROBE_DISCONNECTED_BG` | `#4A0000` | `#7A0000` (rojo) |
+

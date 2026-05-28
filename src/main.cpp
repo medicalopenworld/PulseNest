@@ -142,10 +142,10 @@ void Incunest_Task(void *pvParameters) {
                 if (Serial.availableForWrite() < 30) incunest_tx_dropped++;
 
                 if (g_incunest_frame_mode == IncunestFrameMode::M1) {
-                    // $M1,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI
+                    // $M1,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState
                     char buf[384];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M1,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                        "$M1,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
                         (long)data.led2,       // RED
@@ -164,7 +164,10 @@ void Incunest_Task(void *pvParameters) {
                         data.hr2_sqi > 0.0f ? data.hr2 : -1.0f,
                         data.hr2_sqi,                            // HR2_SQI
                         data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
-                        data.hr3_sqi);                           // HR3_SQI
+                        data.hr3_sqi,                            // HR3_SQI
+                        (unsigned)data.rsqi,                     // RSQI: 0=invalid, 1=valid
+                        (unsigned long)data.diag_code,           // DiagCode bitmask
+                        (int)data.probe_state);                  // ProbeState: 0=DISCONNECTED, 1=NOT_APPLIED, 2=APPLIED
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
