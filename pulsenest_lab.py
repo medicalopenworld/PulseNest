@@ -3942,9 +3942,10 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.p_sqi.setLabel('bottom', 't (s)')
         self.p_sqi.setYRange(0, 1.05)
 
-        FW_PEN   = pg.mkPen('#00CC66', width=2)
-        PY_PEN   = pg.mkPen('#FFDD44', width=2)
-        FFT_PEN  = pg.mkPen('#00CCFF', width=1.5)
+        FW_PEN    = pg.mkPen('#00CC66', width=2)
+        FW_LO_PEN = pg.mkPen('#2D6E47', width=2)   # fw low-SQI: darker green
+        PY_PEN    = pg.mkPen('#FFDD44', width=2)
+        FFT_PEN   = pg.mkPen('#00CCFF', width=1.5)
         HPS_PEN  = pg.mkPen('#FF8800', width=1.5)
         FILT_PEN = pg.mkPen('#FFDD44', width=1)
 
@@ -3970,8 +3971,9 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.curve_filt.setDownsampling(auto=True, method='peak')
         self.curve_filt.setClipToView(True)
         self.p_hr.addLegend()
-        self.curve_hr_fw = self.p_hr.plot(pen=FW_PEN,  name="HR3 fw")
-        self.curve_hr_py = self.p_hr.plot(pen=PY_PEN,  name="HR3 py")
+        self.curve_hr_fw    = self.p_hr.plot(pen=FW_PEN,    name="HR3 fw")
+        self.curve_hr_fw_lo = self.p_hr.plot(pen=FW_LO_PEN, name="HR3 fw (SQI<0.9)")
+        self.curve_hr_py    = self.p_hr.plot(pen=PY_PEN,    name="HR3 py")
         self.p_sqi.addLegend()
         self.curve_sqi_fw = self.p_sqi.plot(pen=FW_PEN,  name="SQI fw")
         self.curve_sqi_py = self.p_sqi.plot(pen=PY_PEN,  name="SQI py")
@@ -4243,7 +4245,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self._get_live_calc().reset()
         self.statusBar().showMessage(_MOUSE_HINT)
         for c in [self.curve_fft, self.curve_hps, self.curve_filt,
-                  self.curve_hr_fw, self.curve_hr_py,
+                  self.curve_hr_fw, self.curve_hr_fw_lo, self.curve_hr_py,
                   self.curve_sqi_fw, self.curve_sqi_py]:
             c.setData([], [])
 
@@ -4359,8 +4361,12 @@ class HR3TestWindow(QtWidgets.QMainWindow):
 
         self._update_status_indicator()
 
+    _SQI_ALERT = 0.9   # HR3 fw points below this threshold shown in darker green
+
     def _refresh_hr_plots(self, t, hr_fw, hr_py, delta, sqi_fw, sqi_py):
-        self.curve_hr_fw.setData(t, hr_fw)
+        hi_mask = sqi_fw >= self._SQI_ALERT
+        self.curve_hr_fw.setData(t, np.where(hi_mask, hr_fw, np.nan))
+        self.curve_hr_fw_lo.setData(t, np.where(~hi_mask, hr_fw, np.nan))
         self.curve_hr_py.setData(t, hr_py)
         self.curve_sqi_fw.setData(t, sqi_fw)
         self.curve_sqi_py.setData(t, sqi_py)

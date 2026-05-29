@@ -9173,3 +9173,29 @@ La sesión anterior usaba `b2 = b1 + (delta >= 0 ? 1 : -1)`, lo que podía dar b
 
 ### Cambios (`incunest_afe4490.cpp`)
 - Líneas 1979-1981: comentario corregido de "b1=peak_bin, b2=adjacent in delta direction" a "b1=floor(peak_bin+delta), b2=b1+1" — coherente con la implementación actual
+
+## Sesión 2026-05-30a — AGC literatura + PPG-PI + versión librería v0.31
+
+### Búsqueda AGC literatura
+- Confirmado: TI no provee AGC para AFE4490/AFE4404 — el usuario lo implementa en software.
+- App Note SBAA401 (TI): AGC para TLV320ADCx140 (audio ADC con PGA hardware). No aplica directamente pero los patrones son transferibles: attack/release asimétrico, debounce, histéresis, noise threshold.
+- IEEE ICASSP 2020: AGC con SQM multidimensional para PPG de muñeca → >50% ahorro LED. Confirma que gate por fracción de muestras inválidas es la práctica correcta (ya en nuestro diseño).
+- Conclusión: diseño HGAC acordado en 2026-05-21 está alineado con estado del arte. Brecha identificada: no distingue velocidad de respuesta asimétrica (attack rápido vs release lento).
+
+### Nueva tarea: PPG-PI espectral
+- Definición: `PPG-PI = AC_pulsatile / DC × 100%` donde `AC_pulsatile` = energía en armónicos f_HR únicamente.
+- La señal PPG pulsatil se define formalmente como un tren de pulsos periódico con energía concentrada en f_HR y armónicos — análogo a pitch detection en voz/música.
+- Concepto análogo en voz: HNR (Harmonic-to-Noise Ratio, Boersma 1993). Diferencia: PPG-PI usa DC como denominador para mantener escala física de perfusión.
+- HPS de HR3 ya localiza los picos armónicos — reutilizable para PPG-PI sin coste adicional significativo.
+- No existe definición publicada con exactamente esta forma. Archivado en `project_spectral_pi_task.md`.
+
+### Propuesta implementación PPG-PI en pulsenest_lab.py
+- Cambio mínimo en `HRFFTCalc`: añadir `last_signal_power_abs` y `last_buf_len`.
+- Nueva clase `PPGPICalc` (~60 líneas): DC IIR tracker + energía armónica de FFT → `ppg_pi` y `pi_std`.
+- Display recomendado: `SpO2TestWindow` (fila adicional + plot PPG-PI vs PI_std).
+- Pendiente de implementar.
+
+### Versión librería actualizada a v0.31
+- `incunest_afe4490.cpp` línea 2: v0.20 → v0.31
+- `incunest_afe4490.h` comentario: v0.25 → v0.31
+- `incunest_afe4490.h` define: `INCUNEST_AFE4490_VERSION "0.27"` → `"0.31"`
