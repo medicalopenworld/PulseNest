@@ -8914,3 +8914,145 @@ Rango HR actualizado en project_mow_afe4490_spec.md: 25–300 BPM → **40–260
 ### Cambios (`incunest_afe4490_spec.md`)
 - §5.4 SQI: reescrito con Global SQI + Local SQI + Combined SQI documentados
 - Changelog: v0.28 añadido
+
+---
+
+## Sesión 2026-05-29d — HR3 true-peak validation (v0.28 fix)
+
+### Problema identificado por Alex
+El algoritmo HR3 fallaba con artefactos de movimiento / sin dedo porque:
+- La energía real estaba en bajas frecuencias (por debajo del rango de búsqueda)
+- La cola de ese lóbulo entraba en el rango de búsqueda con máximo en `search_min`
+- El algoritmo lo aceptaba como "pico" → HR y SQI incorrectamente altos
+
+Error fundamental: el código buscaba el máximo dentro del rango pero no verificaba que fuera un máximo local real. Un máximo en el borde del rango es la rampa de entrada de un lóbulo externo, no un pico.
+
+### Problema secundario identificado (pendiente fix)
+La media geométrica `sqrt(sqi_global * sqi_local)` hace que el SQI persista más alto que antes al quitar el dedo: `sqi_local` se mantiene en 1.0 (el pico antiguo sigue siendo localmente afilado frente al ruido) mientras `sqi_global` baja → `sqrt(0.4 × 1.0) = 0.63 > 0.4`. Pendiente cambiar a `min(sqi_global, sqi_local)`.
+
+### Fix implementado
+Validación de pico real antes de la interpolación parabólica: se evalúan `hps_at(peak_bin-1)` y `hps_at(peak_bin+1)` **sin restricción de rango de búsqueda**. Si cualquier vecino supera al pico → SQI=0, HR sin actualizar, return inmediato.
+
+### Cambios (`incunest_afe4490.cpp`)
+- Bloque "True-peak validation" insertado tras la detección del peak_bin y antes de la interpolación parabólica (~l.1949)
+
+### Cambios (`incunest_afe4490_spec.md`)
+- §5.4: párrafo de validación de pico real añadido antes de la descripción de SQI
+- Changelog v0.28: líneas adicionales documentando el fix
+
+---
+
+## Sesión 2026-05-29e — HR3 true-peak validation fix de compilación
+
+### Contexto
+El bloque de validación de pico real de la sesión 2026-05-29d fallaba a compilar porque usaba `hps_at`, un lambda definido más adelante (dentro del bloque `if (hr3 >= _hr_min_bpm...)`).
+
+### Fix
+Lambda renombrado a `hps_neighbor` e inlineado directamente en el bloque de validación, antes de la interpolación parabólica. Funcionalmente idéntico.
+
+### Cambios (`incunest_afe4490.cpp`)
+- Bloque true-peak validation: `hps_at` → lambda local `hps_neighbor` inlineado
+
+---
+
+## Sesión 2026-05-29f — HR3 refactor: hps_at único
+
+### Contexto
+El código tenía el cálculo HPS duplicado tres veces: en el bucle de búsqueda (inlineado), en `hps_neighbor` (validación) y en `hps_at` (SQI). Alex lo señaló correctamente.
+
+### Fix
+Lambda `hps_at` definido una sola vez antes del bucle, reutilizado en:
+1. Bucle de búsqueda del pico (reemplaza las tres líneas p1/p2/p3 inlineadas)
+2. Validación true-peak (`hps_at(peak_bin-1)` y `hps_at(peak_bin+1)`)
+3. Interpolación parabólica HPS (ya usaba `hps_at`)
+
+### Cambios (`incunest_afe4490.cpp`)
+- Lambda `hps_at` movido antes del bucle HPS (antes era dentro del bloque `if hr3 >= _hr_min_bpm`)
+- Bucle de búsqueda simplificado: `float hps = hps_at(k)`
+- Bloque de validación simplificado: dos llamadas directas a `hps_at`
+- Lambda `hps_at` duplicado dentro del bloque SQI eliminado
+
+---
+
+## Sesión 2026-05-29g — HR3 SQI simplificado: solo prominencia local
+
+### Decisión
+Eliminar el SQI global (fracción sobre el rango de búsqueda completo) y dejar únicamente la prominencia local. Razones:
+- El SQI global era la métrica que ya fallaba antes de v0.28
+- La media geométrica hacía que sqi_local=1 mantuviera el SQI alto cuando sqi_global bajaba
+- La combinación añadía complejidad sin resolver el problema raíz
+
+### Cambios (`incunest_afe4490.cpp`)
+- `hps_sum` eliminado del bucle de búsqueda
+- Bloque "Global SQI" eliminado completamente
+- Bloque "Local SQI" es ahora el único SQI:
+  - Ventana ±hr3_sqi_local_w bins alrededor del pico
+  - Restricción `j < search_min` eliminada — bins fuera del rango de búsqueda cuentan en el floor (un hump de baja frecuencia justo debajo del rango sube el floor y baja el SQI correctamente)
+  - Fallback `local_floor=0` → `sqi=0` (conservador, antes era 1.0)
+- `sqrtf(sqi_global * sqi_local)` → `_hr3_sqi_result` directo desde local
+
+### Pendiente
+Actualizar spec §5.4 y HR3TestCalc en pulsenest_lab.py para reflejar el nuevo SQI.
+
+---
+
+## Sesión 2026-05-29h — HR3: eliminación guarda redundante
+
+### Decisión
+Eliminar el bloque de guarda en líneas 1951-1954 de `_compute_hr3()`:
+```cpp
+if (peak_bin < 1 || peak_bin >= nyquist - 1 || peak_hps <= 0.0f) {
+    _hr3_sqi_result = 0.0f;
+    return;
+}
+```
+Análisis de redundancia:
+- `peak_bin < 1`: imposible — `search_min >= 1` garantizado
+- `peak_bin >= nyquist - 1`: imposible — `search_max <= nyquist/3`
+- `peak_hps <= 0.0f`: ya cubierto implícitamente por la validación true-peak que le sigue
+
+### Cambios (`incunest_afe4490.cpp`)
+- Bloque if (4 líneas) eliminado; comentario de sección true-peak queda inmediatamente después del bucle HPS.
+
+### Estado
+Upload pendiente (COM15 no disponible en el momento).
+
+---
+
+## Sesión 2026-05-29i — HR3 true-peak validation ampliada a ±W bins (v0.29)
+
+### Decisión
+Ampliar la validación true-peak de ±1 bin a ±`hr3_peak_valid_w` bins (valor inicial 5, igual a `hr3_sqi_local_w` pero constante separada). Razones:
+- ±1 solo garantiza un máximo local matemático mínimo (1 muestra)
+- Una rampa ascendente puede pasar el check ±1 si el pico está en la cima de la pendiente
+- Con ±5 bins (±0.49 Hz, ±29 BPM), la pendiente de un hump de baja frecuencia será rechazada
+
+### Ventajas/inconvenientes evaluados
+- **Ventaja:** detecta pendientes y boundary maxima más robustamente
+- **Ventaja:** consistente con la ventana SQI (mismo ancho)
+- **Inconveniente:** si dos HR están muy próximas en frecuencia, podría rechazar un pico válido (aceptado como riesgo menor dada la resolución 0.098 Hz/bin)
+- **Decisión:** constante separada `hr3_peak_valid_w` para poder tunar independientemente de `hr3_sqi_local_w`
+
+### Cambios (`incunest_afe4490.cpp`)
+- Nueva constexpr `hr3_peak_valid_w = 5`
+- True-peak validation reemplazada: loop sobre `[peak_bin−W, peak_bin+W]`, skipa `peak_bin` y bins fuera de `[1, nyquist)`. Si cualquier bin ≥ `peak_hps` → `_hr3_sqi_result = 0.0f; return`
+
+### Cambios (`incunest_afe4490_spec.md`)
+- Header bumpeado a v0.29
+- §5.4 true-peak validation reescrita con semántica ±W
+- §5.4 SQI: global SQI y geometric mean eliminados (ya eliminados en código en sesión g, spec no se había actualizado); solo local prominence documenta
+- Changelog v0.29 añadido
+
+---
+
+## Sesión 2026-05-29j — HR3TestWindow: botón PY PLOTS
+
+### Decisión
+Añadir botón toggle "PY PLOTS" en el toolbar de HR3TestWindow para mostrar/ocultar las curvas calculadas por el script Python (HR3 py, SQI py — amarillas) en las gráficas 3 y 4. Permite ver solo las curvas del firmware (verdes) para comparación directa.
+
+### Cambios (`pulsenest_lab.py`)
+- Botón checkable `_btn_py_plots` añadido en toolbar entre PAUSE y addStretch
+- Activo por defecto (PY PLOTS visibles al arrancar)
+- Estilo: amarillo cuando activo, gris apagado cuando inactivo
+- Método `_toggle_py_plots()`: llama `setVisible()` en `curve_hr_py` y `curve_sqi_py`
+- Tooltip con `_make_tooltip()`

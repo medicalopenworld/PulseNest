@@ -3882,6 +3882,22 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self._btn_pause.clicked.connect(self._toggle_pause)
         toolbar.addWidget(self._btn_pause)
 
+        self._btn_py_plots = QtWidgets.QPushButton("PY PLOTS")
+        self._btn_py_plots.setCheckable(True)
+        self._btn_py_plots.setChecked(True)
+        self._btn_py_plots.setStyleSheet(
+            "QPushButton { background-color: #505050; color: #FFDD44; font-weight: bold; "
+            "border: 1px solid #888888; border-radius: 3px; padding: 4px 10px; }"
+            "QPushButton:checked { background-color: #3A3A00; color: #FFDD44; "
+            "border: 1px solid #BBAA00; }"
+            "QPushButton:!checked { background-color: #2A2A2A; color: #666600; "
+            "border: 1px solid #444400; }")
+        self._btn_py_plots.setToolTip(_make_tooltip("PY PLOTS",
+            "Show/hide the Python-calculated HR3 and SQI curves (yellow) in plots 3 and 4. "
+            "Uncheck to see only the firmware (FW) curves."))
+        self._btn_py_plots.clicked.connect(self._toggle_py_plots)
+        toolbar.addWidget(self._btn_py_plots)
+
         toolbar.addStretch()
 
         self._lbl_status = QtWidgets.QLabel("● FIRMWARE DEFAULTS")
@@ -4266,6 +4282,11 @@ class HR3TestWindow(QtWidgets.QMainWindow):
     def _toggle_pause(self):
         self._paused = self._btn_pause.isChecked()
         self._btn_pause.setText("RESUME" if self._paused else "PAUSE")
+
+    def _toggle_py_plots(self):
+        visible = self._btn_py_plots.isChecked()
+        self.curve_hr_py.setVisible(visible)
+        self.curve_sqi_py.setVisible(visible)
 
     def update_plots(self, data_ir_sub, data_hr3, data_hr3_sqi,
                      data_timestamp_us, data_sample_counter):
