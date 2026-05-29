@@ -9056,3 +9056,17 @@ Añadir botón toggle "PY PLOTS" en el toolbar de HR3TestWindow para mostrar/ocu
 - Estilo: amarillo cuando activo, gris apagado cuando inactivo
 - Método `_toggle_py_plots()`: llama `setVisible()` en `curve_hr_py` y `curve_sqi_py`
 - Tooltip con `_make_tooltip()`
+
+---
+
+## Sesión 2026-05-29k — SIGNAL STATS: par de celdas hermanas en gris
+
+### Decisión
+Marcar con el mismo color de fondo gris (#3C3C3C) dos celdas conceptualmente equivalentes en la tabla SIGNAL STATS:
+- (fila IR_Sub=4, col % SD/Mean=1)
+- (fila PI=10, col Mean=2)
+Razón: IR_Sub % SD/Mean ≈ AC/DC ratio ≈ PI. Son la misma magnitud física expresada de formas distintas.
+
+### Cambios (`pulsenest_lab.py`)
+- Dos llamadas `setBackground(_GRAY_PAIR)` añadidas tras el bucle de inicialización de `stats_table`
+- Constante local `_GRAY_PAIR = QtGui.QColor("#3C3C3C")`

@@ -8550,6 +8550,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     it.setBackground(_MAROON)
                 self.stats_table.setItem(row, col, it)
 
+        # Paired gray highlight: IR_Sub/% SD/Mean and PI/Mean share the same meaning
+        # (IR_Sub % SD/Mean ≈ AC/DC ≈ PI, so these two cells are conceptually equivalent)
+        _GRAY_PAIR = QtGui.QColor("#3C3C3C")
+        self.stats_table.item(4,  1).setBackground(_GRAY_PAIR)  # IR_Sub  / % SD/Mean
+        self.stats_table.item(10, 2).setBackground(_GRAY_PAIR)  # PI      / Mean
+
         # Override V_TIA (col 7) and V_ADC (col 8) tooltips on raw rows (0-3)
         # with specific descriptions including color-coding legend and voltage units.
         _TIP_VTIA_LED = _make_tooltip("V_TIA",
