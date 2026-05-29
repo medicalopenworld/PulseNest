@@ -9123,3 +9123,48 @@ Continuación de sesión anterior (compactada). El SQI v0.30 (P[k] local promine
 - Header bumpeado a v0.31
 - §5.4 SQI reescrito: fórmula two-bin HPS fraction, explicación de bin-independence, por qué HPS, por qué ventana local
 - Changelog v0.31 añadido
+
+## Sesión 2026-05-29n — HR3TEST: color por SQI en plot HR3 fw
+
+### Contexto
+En el tercer gráfico de HR3TestWindow, el plot "HR3 fw" tiene un único color verde (#00CC66). Se quiere distinguir visualmente los puntos de baja calidad (SQI < 0.9) con un verde más oscuro, sin perder la continuidad de la curva.
+
+### Decisión técnica
+Dos curvas superpuestas sobre el mismo plot, con enmascaramiento por NaN:
+- `curve_hr_fw` (verde normal #00CC66): puntos donde SQI ≥ 0.9
+- `curve_hr_fw_lo` (verde oscuro #2D6E47): puntos donde SQI < 0.9
+- En cada curva, los puntos que no le corresponden se sustituyen por `np.nan` → pyqtgraph no dibuja ese segmento → la línea se interrumpe y el color cambia sin artefactos visuales.
+- Umbral en constante de clase: `_SQI_ALERT = 0.9`
+
+### Cambios (`pulsenest_lab.py`)
+- `FW_LO_PEN = pg.mkPen('#2D6E47', width=2)` añadido en `HR3TestWindow.__init__`
+- `self.curve_hr_fw_lo` creado tras `curve_hr_fw`, antes de `curve_hr_py`, con nombre "HR3 fw (SQI<0.9)"
+- `_reset_plots`: `curve_hr_fw_lo` añadido a la lista de curvas a limpiar
+- `_SQI_ALERT = 0.9` definido como atributo de clase
+- `_refresh_hr_plots`: `hi_mask = sqi_fw >= _SQI_ALERT`; `curve_hr_fw` recibe `np.where(hi_mask, hr_fw, nan)`; `curve_hr_fw_lo` recibe `np.where(~hi_mask, hr_fw, nan)`
+
+## Sesión 2026-05-29o — incunest_afe4490: renombrado b1/b2 en SQI _compute_hr3()
+
+### Contexto
+El bloque SQI de v0.31 usaba `peak_bin` y `b_other` en vez de `b1`/`b2` como el usuario había propuesto. Corrección de nomenclatura.
+
+### Cambios (`incunest_afe4490.cpp`)
+- `b_other` → `b2`, `hps_b_other` → `hps_b2`
+- `b1 = peak_bin` definido explícitamente para claridad
+- Comentarios del bloque SQI actualizados para usar b1/b2 consistentemente
+- Sin cambio de comportamiento — puramente cosmético
+
+## Sesión 2026-05-29p — incunest_afe4490: fix b1/b2 con floor/ceil
+
+### Contexto
+La sesión anterior usaba `b2 = b1 + (delta >= 0 ? 1 : -1)`, lo que podía dar b2 < b1 cuando delta < 0 — nomenclatura confusa y contraria a la propuesta original del usuario.
+
+### Decisión
+- `b1 = floor(peak_bin + delta)` — bin inferior de la fracción, siempre ≤ b2
+- `b2 = b1 + 1` — bin superior, siempre b1 < b2
+- Ventana `[b1-W, b2+W]` siempre bien definida
+- `hps_b1`/`hps_b2` reutilizan `peak_hps` cuando coinciden con `peak_bin`
+
+### Cambios (`incunest_afe4490.cpp`)
+- Bloque SQI en `_compute_hr3()`: redefinición de b1/b2 con `floorf()`
+- Comentarios actualizados: "b1=floor, b2=ceil of fractional peak bin"
