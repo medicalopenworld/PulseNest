@@ -9070,3 +9070,56 @@ Razón: IR_Sub % SD/Mean ≈ AC/DC ratio ≈ PI. Son la misma magnitud física e
 ### Cambios (`pulsenest_lab.py`)
 - Dos llamadas `setBackground(_GRAY_PAIR)` añadidas tras el bucle de inicialización de `stats_table`
 - Constante local `_GRAY_PAIR = QtGui.QColor("#3C3C3C")`
+
+---
+
+## Sesión 2026-05-29l — HR3 SQI v0.30: P[k] en vez de HPS para prominencia local
+
+### Diagnóstico
+El SQI siempre daba 1 o 0 (binario). Causa: HPS = P[k]·P[2k]·P[3k] amplifica diferencias cúbicamente. Un pico que es 10× sus vecinos en P[k] es 10³× en HPS, saturando el ratio >> hr3_sqi_local_ratio=10 para cualquier señal real → SQI=1 siempre. La validación true-peak filtraba el SQI=0. Sin rango intermedio posible.
+
+### Decisión
+Usar P[k] (espectro de potencia del bin fundamental) en vez de HPS para el cálculo de prominencia local del SQI. P[k] tiene rango dinámico lineal y da valores intermedios útiles para señales débiles o ruidosas.
+
+### Cambios (`incunest_afe4490.cpp`)
+- `hr3_sqi_local_ratio`: 10.0 → 100.0
+- Bloque SQI: HPS parabolic interp (hps_p, hps_n, hps_denom, hps_interp) eliminado
+- `p_interp` = interpolación parabólica de P[k] usando yp/y0/yn/denom ya calculados → coste extra cero
+- Loop floor: `hps_at(j)` → inline `_hr3_fft[2j]²+_hr3_fft[2j+1]²`
+
+### Cambios (`incunest_afe4490_spec.md`)
+- Header bumpeado a v0.30
+- §5.4 SQI reescrito: formula P[k], p_interp, hr3_sqi_local_ratio=100
+- Justificación "por qué P[k] y no HPS" documentada
+- Changelog v0.30 añadido
+
+## Sesión 2026-05-29m — HR3 SQI v0.31: two-bin HPS fraction
+
+### Contexto
+Continuación de sesión anterior (compactada). El SQI v0.30 (P[k] local prominence) llegaba como máximo a 0.19 porque la ventana Hann distribuye la energía en 3 bins con pesos 0.5, 0.25, 0.25, dando P[k]/P[k±1] ≈ 4, no los 10³ asumidos inicialmente. La métrica seguía siendo esencialmente binaria.
+
+### Decisiones tomadas
+
+**HR3 SQI v0.31 — two-bin HPS fraction:**
+- La señal PPG fuera de bin exacto reparte energía HPS entre dos bins adyacentes (b1=peak_bin, b2=b_other en dirección de delta).
+- Solución: `hps_num = hps(peak_bin) + hps(b_other)` — ambos bins escalan igual ante variación de alineación → ratio independiente de posición fraccionaria.
+- Denominador: suma de HPS en ventana local `[min(b1,b2)-W, max(b1,b2)+W]` con W=hr3_sqi_local_w=5 bins (~±0.49 Hz). Excluye armónicos lejanos.
+- `baseline = 2/n_win` → SQI=0 si distribución uniforme, SQI=1 si toda energía en los dos bins pico.
+- `SQI = clamp((fraction-baseline)/(1-baseline), 0, 1)`
+- Eliminado `hr3_sqi_local_ratio`.
+
+**Por qué HPS y no P[k] para este ratio:**
+- HPS suprime armónicos de subarmónicos (artefactos de movimiento a 0.5×, 0.33× la frecuencia PPG).
+- La amplificación cúbica se controla con el denominador de ventana local, no se satura.
+
+**Independencia de bin:** off-bin split cancela en el ratio num/den porque ambos escalan igual.
+
+### Cambios (`incunest_afe4490.cpp`)
+- Bloque SQI reescrito: eliminada lógica P[k] (p_interp, local_floor, ratio, hr3_sqi_local_ratio)
+- Nuevo bloque: b_other, hps_b_other, hps_num, ventana [b_lo,b_hi], hps_win, n_win, fraction, baseline
+- `hr3_sqi_local_ratio` eliminado de constexpr en sesión anterior; ya no referenciado en código
+
+### Cambios (`incunest_afe4490_spec.md`)
+- Header bumpeado a v0.31
+- §5.4 SQI reescrito: fórmula two-bin HPS fraction, explicación de bin-independence, por qué HPS, por qué ventana local
+- Changelog v0.31 añadido
