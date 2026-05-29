@@ -9168,3 +9168,8 @@ La sesión anterior usaba `b2 = b1 + (delta >= 0 ? 1 : -1)`, lo que podía dar b
 ### Cambios (`incunest_afe4490.cpp`)
 - Bloque SQI en `_compute_hr3()`: redefinición de b1/b2 con `floorf()`
 - Comentarios actualizados: "b1=floor, b2=ceil of fractional peak bin"
+
+## Sesión 2026-05-29q — incunest_afe4490: fix comentario b1/b2 en SQI
+
+### Cambios (`incunest_afe4490.cpp`)
+- Líneas 1979-1981: comentario corregido de "b1=peak_bin, b2=adjacent in delta direction" a "b1=floor(peak_bin+delta), b2=b1+1" — coherente con la implementación actual
