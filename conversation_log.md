@@ -8846,3 +8846,71 @@ Continuación de sesiones 2026-05-28q/s/t/x/y. El header ya tenía `rsqm_ot_thr=
 ### Cambios
 - `incunest_afe4490.h`: `rsqm_ot_thr = 0.20f` → `0.30f`
 - `incunest_afe4490_spec.md`: threshold actualizado a 0.30 en §5.6.2 y changelog v0.27
+
+
+---
+
+## Sesión 2026-05-29a — PAUSE button en HR3TestWindow + memoria PDFs
+
+### Contexto
+Sesión de preguntas conceptuales y una modificación de pulsenest_lab.py.
+
+### Preguntas conceptuales respondidas
+- **hr2_sqi / hr3_sqi:** HR2_SQI = autocorrelación normalizada no sesgada en el lag dominante (corrección (N−τ)/N). HR3_SQI = concentración espectral HPS normalizada (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Ambos vienen del firmware en el frame $M1.
+- **Slow path (incunest_afe4490.cpp):** Comentario en cabecera de `_compute_hr2()` (l.1809) y `_compute_hr3()` (l.1913). Significa el cálculo pesado que no corre en el tick de muestra (500 Hz / Task A), sino en Task B o C cuando el buffer está lleno (~0.5 s HR2, ~2.5 s HR3). Contraste con "fast path" = Task A a 500 Hz.
+
+### Correcciones de memoria
+- Frecuencia de muestreo: confirmada a 500 Hz (no 250 Hz — error verbal de Claude, no estaba en memoria)
+- Paths de PDFs actualizados: `C:\PRJ\MOW\Misc\AFE4490\afe4490.pdf` y `C:\PRJ\MOW\PulseNest\ISO_80601-2-61-2026.pdf` → ambos a `C:\PRJ\MOW\PulseNest\docs\`
+- `afe4490_datasheet_toc.md` separado en dos ficheros: `afe4490_toc.md` e `iso_80601-2-61-2026_toc.md`
+- TOC completo de ISO 80601-2-61:2026 añadido a `iso_80601-2-61-2026_toc.md`
+
+### Cambios (`pulsenest_lab.py`)
+- **PAUSE button en HR3TestWindow:** botón checkable en toolbar (entre EXPORT CSV y el stretch). `_paused = False` en `__init__`. `_toggle_pause()` actualiza flag y texto PAUSE/RESUME. Guard `if self._offline_mode or self._paused: return` en `update_plots()`. Comportamiento idéntico al patrón de otras ventanas: datos y algoritmos siguen corriendo, solo se congela el rendering.
+
+---
+
+## Sesión 2026-05-29b — Documentación _compute_hr3() + tarea pendiente HR3 rate
+
+### Contexto
+Análisis del cálculo de SQI en `_compute_hr3()` y comparación con el mirror Python en `HR3TestCalc`.
+
+### Aclaraciones conceptuales
+- **Formato interleaved de `_hr3_fft`:** `_hr3_fft[2*k]` = parte real del bin k, `_hr3_fft[2*k+1]` = parte imaginaria. Son la parte real e imaginaria de UN solo bin espectral, no dos bins distintos. `P[k] = re[k]² + im[k]²` = potencia del bin k.
+- **Diferencia Python vs firmware en HPS:** Python usa magnitudes (`np.abs(rfft)`), firmware usa potencias (`re² + im²`). El peak dominante es el mismo, la escala es distinta (potencia = magnitud²).
+- **SQI Python vs firmware:** firmware aplica interpolación parabólica sobre HPS para `hps_interp` (numerador del SQI); Python usa directamente `hps[peak_global]` sin interpolar — divergencia conocida.
+
+### Tarea apuntada
+- Investigar cada cuánto se ejecuta `_compute_hr3()` — ver `project_hr3_execution_rate_task.md`
+
+### Cambios (`incunest_afe4490.cpp`)
+- Comentario en cabecera del bucle HPS (~l.1931): añadida explicación del formato interleaved de `_hr3_fft` y etiquetas `P[k]`, `P[2k]`, `P[3k]` en las tres líneas de cálculo de potencia.
+
+---
+
+## Sesión 2026-05-29c — HR3 SQI: combined global + local prominence (v0.28)
+
+### Problema
+HR3 SQI fallaba con ruido de baja frecuencia (movimiento de sonda). El SQI global mide fracción de energía HPS sobre todo el rango de búsqueda: un artefacto de movimiento puede crear una joroba ancha (8–15 bins) que sea globalmente dominante → SQI alto incorrecto. Un pico fisiológico real es ~2–4 bins de ancho.
+
+### Decisión de diseño
+SQI combinado = media geométrica de:
+- **SQI_global**: fracción de energía HPS en el pico interpolado vs. suma total (métrica anterior)
+- **SQI_local**: prominencia del pico sobre el floor local (ventana ±W bins alrededor del pico)
+
+`SQI = √(SQI_global × SQI_local)` — ambas métricas deben ser altas simultáneamente.
+
+### Parámetros nuevos (constexpr, no expuestos en $SET por ahora)
+- `hr3_sqi_local_w = 5` bins (±0.49 Hz a 50 Hz/512 bins)
+- `hr3_sqi_local_ratio = 10.0` (ratio pico/floor que mapea a SQI_local = 1)
+
+### Corrección de memoria
+Rango HR actualizado en project_mow_afe4490_spec.md: 25–300 BPM → **40–260 BPM** (guard band 37–263 BPM). El valor 25–300 estaba desactualizado.
+
+### Cambios (`incunest_afe4490.cpp`)
+- 2 nuevas constexpr en namespace anónimo: `hr3_sqi_local_w`, `hr3_sqi_local_ratio`
+- `_compute_hr3()`: bloque SQI reemplazado — `sqi_global` (anterior) + `sqi_local` (nuevo bucle ±W bins) → `sqrtf(sqi_global * sqi_local)`
+
+### Cambios (`incunest_afe4490_spec.md`)
+- §5.4 SQI: reescrito con Global SQI + Local SQI + Combined SQI documentados
+- Changelog: v0.28 añadido

@@ -3826,6 +3826,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self._last_sample_cnt = -1
         self._t0_us           = None
         self._offline_mode    = False
+        self._paused          = False
 
         self._buf_t        = deque(maxlen=self._HR_BUF)
         self._buf_hr_fw    = deque(maxlen=self._HR_BUF)
@@ -3867,6 +3868,19 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self._btn_export.setToolTip(_make_tooltip("EXPORT CSV",
             "Export HR3 comparison table to a CSV file."))
         toolbar.addWidget(self._btn_export)
+
+        self._btn_pause = QtWidgets.QPushButton("PAUSE")
+        self._btn_pause.setCheckable(True)
+        self._btn_pause.setStyleSheet(
+            "QPushButton { background-color: #505050; color: #FFFFFF; font-weight: bold; "
+            "border: 1px solid #888888; border-radius: 3px; padding: 4px 10px; }"
+            "QPushButton:checked { background-color: #CC6600; color: #FFFFFF; "
+            "border: 1px solid #FF8800; }")
+        self._btn_pause.setToolTip(_make_tooltip("PAUSE",
+            "Freeze the HR3TEST display. Live data and algorithms keep running; "
+            "only the plots stop updating."))
+        self._btn_pause.clicked.connect(self._toggle_pause)
+        toolbar.addWidget(self._btn_pause)
 
         toolbar.addStretch()
 
@@ -4249,9 +4263,13 @@ class HR3TestWindow(QtWidgets.QMainWindow):
 
     # ── Live update ───────────────────────────────────────────────────────────
 
+    def _toggle_pause(self):
+        self._paused = self._btn_pause.isChecked()
+        self._btn_pause.setText("RESUME" if self._paused else "PAUSE")
+
     def update_plots(self, data_ir_sub, data_hr3, data_hr3_sqi,
                      data_timestamp_us, data_sample_counter):
-        if self._offline_mode:
+        if self._offline_mode or self._paused:
             return
         n = len(data_sample_counter)
         if n == 0:
