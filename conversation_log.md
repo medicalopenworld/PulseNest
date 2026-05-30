@@ -9199,3 +9199,23 @@ La sesión anterior usaba `b2 = b1 + (delta >= 0 ? 1 : -1)`, lo que podía dar b
 - `incunest_afe4490.cpp` línea 2: v0.20 → v0.31
 - `incunest_afe4490.h` comentario: v0.25 → v0.31
 - `incunest_afe4490.h` define: `INCUNEST_AFE4490_VERSION "0.27"` → `"0.31"`
+
+## Sesión 2026-05-30b — Sincronización versión librería + preguntas Claude Code
+
+### Sincronización versión v0.31 en GitHub
+- `incunest_afe4490` repo local tenía v0.31 pero GitHub mostraba v0.20 (no se había pusheado).
+- Push realizado desde `C:\PRJ\MOW\incunest_afe4490` (repo separado de PulseNest).
+- Detectado que `incunest_afe4490_platform_stub.h` aún tenía v0.18 → actualizado a v0.31 y pusheado.
+- `examples/basic/main.cpp` dejado en v0.18 intencionadamente: indica la versión con la que se escribió el ejemplo, no la versión actual de la librería.
+
+### Ficheros con número de versión en incunest_afe4490
+| Fichero | Línea | Rol |
+|---------|-------|-----|
+| `incunest_afe4490.cpp` | 2 | comentario cabecera |
+| `incunest_afe4490.h` | 4 | comentario cabecera |
+| `incunest_afe4490.h` | 9 | `#define INCUNEST_AFE4490_VERSION` (usado en código) |
+| `incunest_afe4490_platform_stub.h` | 3 | comentario cabecera stub offline |
+
+### Preguntas sobre Claude Code (sin impacto en código)
+- Rewind: rebobina la conversación (árbol de mensajes por parentUuid en el .jsonl), no deshace cambios en ficheros/git.
+- Historial conversación: `C:\Users\alexc\.claude\projects\C--PRJ-MOW-PulseNest\<uuid>.jsonl` — formato JSON Lines, una entrada por mensaje.
