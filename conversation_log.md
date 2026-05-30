@@ -9219,3 +9219,15 @@ La sesión anterior usaba `b2 = b1 + (delta >= 0 ? 1 : -1)`, lo que podía dar b
 ### Preguntas sobre Claude Code (sin impacto en código)
 - Rewind: rebobina la conversación (árbol de mensajes por parentUuid en el .jsonl), no deshace cambios en ficheros/git.
 - Historial conversación: `C:\Users\alexc\.claude\projects\C--PRJ-MOW-PulseNest\<uuid>.jsonl` — formato JSON Lines, una entrada por mensaje.
+
+## Sesión 2026-05-30c — Política de versioning librería formalizada
+
+### Decisiones de diseño
+- `incunest_afe4490_platform_stub.h` y `examples/basic/main.cpp` son ficheros auxiliares, no API pública, pero reflejan la versión fija de la librería en su comentario de cabecera.
+- Descartado el enfoque "compatible con >= vX.XX" por difícil de mantener honestamente.
+- `examples/basic/main.cpp` actualizado de v0.18 → v0.31 y pusheado (commit `d831a20`).
+
+### Política formalizada (guardada en memory/project_library_versioning.md)
+- La versión sube solo ante cambio funcional (algoritmo, API, comportamiento, bug fix, spec significativa).
+- El bump es un commit atómico que incluye: `.cpp`, `.h`, `platform_stub.h`, `examples/basic/main.cpp`, `incunest_afe4490_spec.md` (cabecera + changelog), y ficheros de memoria relevantes.
+- El análisis de `platform_stub.h` y `examples/basic/main.cpp` se lanza en el momento del version bump, antes de cerrar el commit — automático, sin preguntar al usuario.
