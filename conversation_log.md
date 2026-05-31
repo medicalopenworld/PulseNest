@@ -9231,3 +9231,138 @@ La sesión anterior usaba `b2 = b1 + (delta >= 0 ? 1 : -1)`, lo que podía dar b
 - La versión sube solo ante cambio funcional (algoritmo, API, comportamiento, bug fix, spec significativa).
 - El bump es un commit atómico que incluye: `.cpp`, `.h`, `platform_stub.h`, `examples/basic/main.cpp`, `incunest_afe4490_spec.md` (cabecera + changelog), y ficheros de memoria relevantes.
 - El análisis de `platform_stub.h` y `examples/basic/main.cpp` se lanza en el momento del version bump, antes de cerrar el commit — automático, sin preguntar al usuario.
+
+## Sesión 2026-05-30d — Fix lint errors pulsenest_lab.py
+
+### Cambios en código
+- `pulsenest_lab.py`: eliminadas 4 variables asignadas pero nunca usadas (pyflakes):
+  - `DLT_PEN` — pen HR2 plot definido pero no usado
+  - `ir` — lectura `data_ir_sub[i]` en bucle HR3 update no consumida
+  - `_hdr_style` ×2 — string CSS preparado pero styling aplicado directamente via `setBackground`/`setForeground`
+
+### C++ cppcheck (pio check, exit 0, sin cambios en código)
+- V15: 3 warnings reales (`cstyleCast` ×2 en main.cpp:40/52, `constVariablePointer` en main.cpp:596) + 2 falsos positivos Arduino (`setup`/`loop` never used — cppcheck no conoce el framework)
+- V16: sin warnings
+- Pendiente: decidir si corregir los 3 warnings reales de main.cpp
+
+## Sesión 2026-05-30e — AFESweepTestWindow: probe_state check + RSQM en CSV
+
+### Cambios en código (`pulsenest_lab.py`)
+
+#### CSV — 51 columnas (antes 42)
+- Columnas 1–2 (nuevas, al inicio): `probe_state_expected`, `probe_state_check`
+- Columnas 3–44: sin cambios (label, datetime, LED1mA…, OT1, OT2)
+- Columnas 45–51 (nuevas, al final): `rsqi_ok_pct`, `diag_code_mean`, `diag_code_min`, `diag_code_max`, `probe_state_fw_mean`, `probe_state_fw_min`, `probe_state_fw_max`
+
+#### UI — Sweep Settings
+- Nuevo `QComboBox` "Expected probe_state": `PROBE_DISCONNECTED (0)`, `PROBE_NOT_APPLIED (1)`, `PROBE_APPLIED (2)`. Valores del enum `ProbeState` en `incunest_afe4490.h`. Persistido en QSettings con default `PROBE_APPLIED`.
+
+#### UI — Control
+- Banner visual (`QLabel` grande) encima de la barra de progreso:
+  - Idle: gris neutro
+  - Sweep OK: verde `✓ PROBE STATE OK (N combos checked)`
+  - Sweep NOT OK: rojo `⚠ PROBE MISMATCH — N combos`
+  - Al finalizar: texto definitivo con resultado global, color persistente
+
+#### Lógica check
+- Por combo: si **algún** sample tiene `probe_state_fw ≠ expected` → `"NOT OK"`, si todos coinciden → `"OK"`
+- Contador `_probe_mismatch_count` (reset en `_start_sweep`), incrementado por cada combo NOT OK
+- Banner actualizado tras cada `_write_row()`
+
+#### `feed_sample()`
+- Firma ampliada: `feed_sample(red, ir, red_amb, ir_amb, red_sub, ir_sub, rsqi, diag_code, probe_state_fw)`
+- Buffer `_buf` ampliado con claves `"RSQI"`, `"DIAG_CODE"`, `"PROBE_STATE_FW"`
+
+#### PPGMonitor
+- Llamada a `feed_sample()` pasa `data_rsqi[-1]`, `data_diag_code[-1]`, `data_probe_state[-1]` (ya disponibles tras el parseo del frame `$M1`)
+
+### Decisiones de diseño
+- El check es estricto: basta 1 muestra discrepante para marcar el combo como NOT OK
+- `probe_state_expected` default = `PROBE_APPLIED` (caso de uso más habitual)
+- Para diag_code y probe_state_fw: mean/min/max (no moda) por petición del usuario
+
+---
+
+## Sesión 2026-05-31a — SIGNAL STATS: reordenación de columnas + sub-header ADZ
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambios realizados
+
+#### 1. Reordenación de columnas en la tabla SIGNAL STATS
+Las columnas V_TIA y V_ADC se han movido de las posiciones 7-8 (últimas) a las posiciones 1-2 (justo después de Signal).
+
+Nuevo orden de columnas (0-indexed):
+- 0: Signal
+- 1: V_TIA (era 7)
+- 2: V_ADC (era 8)
+- 3: % SD/Mean (era 1)
+- 4: Mean (era 2)
+- 5: SD (era 3)
+- 6: Max-Min (era 4)
+- 7: Min (era 5)
+- 8: Max (era 6)
+
+Actualizaciones asociadas:
+- Header labels reordenados
+- Font pequeña del header: col 1 → col 3 (% SD/Mean)
+- `_STATS_MEAN_COL` (clase) y `_MEAN_COL` (local init): 2 → 4
+- `_update_stats_table`: snr col 1→3, `enumerate(start=2)`→`start=4`, V_TIA/V_ADC cols `(7,8)`→`(1,2)`
+- Gray pair backgrounds: `(4,1)→(4,3)` (IR_Sub/% SD/Mean), `(10,2)→(11,4)` (PI/Mean, con offset sub-header)
+- Tooltips V_TIA/V_ADC: cols 7,8 → 1,2
+- SpO2_R tooltip override: `(9,1)→(10,3)` (con offset sub-header)
+
+#### 2. Fila sub-header entre IR_Sub y RED_Sub
+Se inserta una fila visualmente similar al header de la tabla en la posición tbl_row=5 (entre IR_Sub y RED_Sub).
+
+Contenido:
+`Signal | ADZ | % ADZ/Mean | % SD/Mean | Mean | SD | Max-Min | Min | Max`
+
+Donde ADZ = Average Distance from Zero. Las columnas ADZ y % ADZ/Mean sustituyen V_TIA y V_ADC en esta sub-cabecera, anticipando métricas específicas para las señales inferiores.
+
+Implementación:
+- Tabla: `len(_STATS_SIGNALS)` → `len(_STATS_SIGNALS) + 1` filas (22 → 23 filas total)
+- Constante `_SUBHDR_ROW = 5`
+- Señales con sig_idx ≥ 5 usan `tbl_row = sig_idx + 1` (offset por el sub-header)
+- Señales con sig_idx < 5 usan `tbl_row = sig_idx` (sin offset)
+- Variable de loop: `row` → `sig_idx` + `tbl_row` para separar índice de señal de índice de fila tabla
+- ProbeState (sig_idx=21, tbl_row=22): `len(_STATS_SIGNALS) - 1` → `len(_STATS_SIGNALS)`
+- Estilo sub-header: fondo `#1E1E2E`, foreground `#AAAAAA`, bold, alineación izquierda en col 0
+
+### Decisiones de diseño
+- V_TIA/V_ADC al inicio porque son los parámetros de calidad HW más relevantes visualmente
+- Sub-header como separador visual y adelanto semántico de las métricas ADZ que se añadirán para las señales procesadas (RED_Sub, PPGdisp, etc.) en sesiones posteriores
+- La sub-header row (tbl_row=5) no es tocada por `_update_stats_table` — es puramente estática
+
+---
+
+## Sesión 2026-05-31b — SIGNAL STATS: fix tamaño fuente sub-header row
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Contexto
+El PC se reinició durante la sesión anterior. Al recuperar el estado, se detectó que la fila sub-header usaba `_hdr_font_normal` (pixelSize=33) y `_hdr_font_small` (pixelSize=9) — fuentes diseñadas para el header horizontal de la tabla, no para filas de contenido.
+
+### Cambio realizado
+Sub-header row: fuente cambiada de `_hdr_font_normal`/`_hdr_font_small` a `QFont()` por defecto con bold.
+
+Antes:
+```python
+_subhdr_fn_norm = QtGui.QFont(_hdr_font_normal)   # pixelSize=33
+_subhdr_fn_norm.setBold(True)
+_subhdr_fn_small = QtGui.QFont(_hdr_font_small)   # pixelSize=9
+_subhdr_fn_small.setBold(True)
+it.setFont(_subhdr_fn_small if col == 3 else _subhdr_fn_norm)
+```
+
+Después:
+```python
+_subhdr_fn = QtGui.QFont()   # tamaño por defecto del widget
+_subhdr_fn.setBold(True)
+it.setFont(_subhdr_fn)
+```
+
+### Decisión de diseño
+- La sub-header usa el mismo tamaño de fuente que las filas de señal, distinguiéndose solo por fondo `#1E1E2E`, foreground `#AAAAAA` y bold

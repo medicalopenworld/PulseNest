@@ -3093,7 +3093,6 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 
         FW_PEN  = pg.mkPen('#00CC66', width=2)
         PY_PEN  = pg.mkPen('#FFDD44', width=2)
-        DLT_PEN = pg.mkPen('#FF6666', width=1.5)
         ACORR_PEN = pg.mkPen('#44AAFF', width=1.5)
         FILT_PEN  = pg.mkPen('#FFDD44', width=1)
 
@@ -4310,7 +4309,6 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         nan = float('nan')
         for i in new_indices:
             ts    = float(data_timestamp_us[i])
-            ir    = float(data_ir_sub[i])
             hr_f  = float(data_hr3[i])
             sqi_f = float(data_hr3_sqi[i])
             if self._t0_us is None:
@@ -4515,8 +4513,6 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
             "Execution time per component measured with time.perf_counter().\n"
             "Stats computed over the last 50 measurements.\n"
             "Color: white < 75% of budget, orange 75–100%, red > 100%."))
-
-        _hdr_style = "background: #1E2E3E; color: #88BBDD; font-size: 11px; font-weight: bold;"
 
         self._row_map     = {}  # key → physical row index (timing rows)
         self._gap_row_map = {}  # key → physical row index (gap rows)
@@ -4743,9 +4739,6 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
         self._table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         for col in (1, 2, 3):
             self._table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeToContents)
-
-        # Section header style
-        _hdr_style = "background: #1E2E3E; color: #88BBDD; font-size: 11px; font-weight: bold;"
 
         # Row 0: Task A section header
         self._table.setSpan(0, 0, 1, 4)
@@ -6881,7 +6874,18 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
     )
 
     _SIGNALS = ["RED", "IR", "RED_Amb", "IR_Amb", "RED_Sub", "IR_Sub"]
+
+    # ProbeState enum values (must match incunest_afe4490.h)
+    _PROBE_STATES = [
+        (0, "PROBE_DISCONNECTED"),
+        (1, "PROBE_NOT_APPLIED"),
+        (2, "PROBE_APPLIED"),
+    ]
+
     _CSV_HEADER = [
+        # ── probe_state check (first 2 columns) ───────────────────────────────
+        "probe_state_expected", "probe_state_check",
+        # ── existing columns ──────────────────────────────────────────────────
         "label",
         "datetime", "LED1mA", "LED2mA", "RF1", "RF2", "RG1", "RG2", "ambdac_uA", "n_samples",
         "LED2_mean",  "LED1_mean",  "ALED2_mean",  "ALED1_mean",  "LED2_Sub_mean",  "LED1_Sub_mean",
@@ -6890,7 +6894,11 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         "LED2_pp",    "LED1_pp",    "ALED2_pp",    "ALED1_pp",    "LED2_Sub_pp",    "LED1_Sub_pp",
         "LED2_std",   "LED1_std",   "ALED2_std",   "ALED1_std",   "LED2_Sub_std",   "LED1_Sub_std",
         "OT1", "OT2",
-    ]  # 42 columns (label + 9 meta + 30 stats + 2 OT)
+        # ── RSQM columns ──────────────────────────────────────────────────────
+        "rsqi_ok_pct",
+        "diag_code_mean", "diag_code_min", "diag_code_max",
+        "probe_state_fw_mean", "probe_state_fw_min", "probe_state_fw_max",
+    ]  # 51 columns
 
     _ST_IDLE      = 0
     _ST_SETTLING  = 1
@@ -6920,11 +6928,15 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             self.restoreGeometry(geom)
         else:
             self.resize(700, 640)
-        self._state      = self._ST_IDLE
-        self._combos     = []
-        self._combo_idx  = 0
-        self._buf        = {sig: [] for sig in self._SIGNALS}
-        self._settle_end = 0.0   # monotonic seconds
+        self._state                = self._ST_IDLE
+        self._combos               = []
+        self._combo_idx            = 0
+        self._buf                  = {sig: [] for sig in self._SIGNALS}
+        self._buf["RSQI"]          = []
+        self._buf["DIAG_CODE"]     = []
+        self._buf["PROBE_STATE_FW"] = []
+        self._probe_mismatch_count = 0
+        self._settle_end           = 0.0   # monotonic seconds
         self._timer      = QtCore.QTimer(self)
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._tick)
@@ -7042,7 +7054,22 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             "Free-text label written to the 'label' column of every CSV row produced "
             "by this sweep. Use it to describe the test condition "
             "(e.g. 'probe disconnected', 'finger 50% perfusion'). Can be empty."))
+
+        self._combo_probe_state = QtWidgets.QComboBox()
+        for val, name in self._PROBE_STATES:
+            self._combo_probe_state.addItem(f"{name}  ({val})", userData=val)
+        self._combo_probe_state.setStyleSheet(self._SS_COMBO)
+        self._combo_probe_state.setToolTip(_make_tooltip(
+            "Expected probe_state",
+            "The probe state you expect the firmware to report during this sweep. "
+            "Written as the first CSV column (probe_state_expected). "
+            "The second CSV column (probe_state_check) is OK if every sample in the combo "
+            "matches this value, NOT OK otherwise. "
+            "Values: 0=PROBE_DISCONNECTED, 1=PROBE_NOT_APPLIED, 2=PROBE_APPLIED "
+            "(enum ProbeState in incunest_afe4490.h)."))
+
         fl.addRow("Test label:", self._edit_label)
+        fl.addRow("Expected probe_state:", self._combo_probe_state)
         fl.addRow("Settling time:", self._spin_settle)
         fl.addRow("Samples / combo:", self._spin_samples)
         fl.addRow("Output CSV:", csv_row)
@@ -7052,6 +7079,13 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         cg = QtWidgets.QGroupBox("Control")
         cg.setStyleSheet("QGroupBox { font-weight: bold; }")
         cl = QtWidgets.QVBoxLayout(cg)
+
+        self._lbl_probe_banner = QtWidgets.QLabel("")
+        self._lbl_probe_banner.setAlignment(QtCore.Qt.AlignCenter)
+        self._lbl_probe_banner.setStyleSheet(
+            "background-color:#1A1A1A; color:#666666; font-size:28px; font-weight:bold; "
+            "border:2px solid #333333; border-radius:4px; padding:4px;")
+        self._lbl_probe_banner.setMinimumHeight(44)
 
         self._progress = QtWidgets.QProgressBar()
         self._progress.setRange(0, 1)
@@ -7076,10 +7110,36 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             "Press again to abort."))
         self._btn_start.clicked.connect(self._toggle_sweep)
 
+        cl.addWidget(self._lbl_probe_banner)
         cl.addWidget(self._progress)
         cl.addWidget(self._lbl_status)
         cl.addWidget(self._btn_start)
         root.addWidget(cg)
+
+    # ── Probe banner ──────────────────────────────────────────────────────────
+    def _update_probe_banner(self, final=False):
+        n = self._probe_mismatch_count
+        if n == 0:
+            text = ("✓  SWEEP COMPLETE — PROBE STATE OK" if final
+                    else f"✓  PROBE STATE OK  ({self._combo_idx} combos checked)")
+            self._lbl_probe_banner.setText(text)
+            self._lbl_probe_banner.setStyleSheet(
+                "background-color:#0A2A0A; color:#66FF66; font-size:28px; font-weight:bold; "
+                "border:2px solid #22AA22; border-radius:4px; padding:4px;")
+        else:
+            text = ("⚠  SWEEP COMPLETE — PROBE MISMATCH: " if final
+                    else "⚠  PROBE MISMATCH — ")
+            text += f"{n} combo{'s' if n != 1 else ''}"
+            self._lbl_probe_banner.setText(text)
+            self._lbl_probe_banner.setStyleSheet(
+                "background-color:#2A0A0A; color:#FF6666; font-size:28px; font-weight:bold; "
+                "border:2px solid #AA2222; border-radius:4px; padding:4px;")
+
+    def _reset_probe_banner(self):
+        self._lbl_probe_banner.setText("")
+        self._lbl_probe_banner.setStyleSheet(
+            "background-color:#1A1A1A; color:#666666; font-size:28px; font-weight:bold; "
+            "border:2px solid #333333; border-radius:4px; padding:4px;")
 
     # ── CSV path picker ───────────────────────────────────────────────────────
     def _browse_csv(self):
@@ -7174,8 +7234,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         serial_ok = mm is not None and hasattr(mm, 'ser') and mm.ser is not None and mm.ser.is_open
         if not serial_ok:
             self._lbl_status.setText("WARNING: no serial connection — $SET commands will not be sent")
-        self._combos    = self._build_combos()
-        self._combo_idx = 0
+        self._combos               = self._build_combos()
+        self._combo_idx            = 0
+        self._probe_mismatch_count = 0
+        self._reset_probe_banner()
         total = len(self._combos)
         self._progress.setMaximum(total)
         self._progress.setValue(0)
@@ -7184,7 +7246,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         self._apply_combo(0)
         import time
         self._settle_end = time.monotonic() + self._spin_settle.value() / 1000.0
-        self._buf   = {sig: [] for sig in self._SIGNALS}
+        self._buf = {sig: [] for sig in self._SIGNALS}
+        self._buf["RSQI"]           = []
+        self._buf["DIAG_CODE"]      = []
+        self._buf["PROBE_STATE_FW"] = []
         self._state = self._ST_SETTLING
         self._lbl_status.setText(f"Settling combo 1/{total}…")
         self._timer.start()
@@ -7196,6 +7261,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         self._btn_start.setText("START SWEEP")
         self._lbl_status.setText(reason)
         self._clear_highlights()
+        if self._combo_idx > 0:
+            self._update_probe_banner(final=True)
 
     def _apply_combo(self, idx):
         """Send $SET commands for combo at index idx and highlight the active spins.
@@ -7247,7 +7314,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
 
         if self._state == self._ST_SETTLING:
             if now >= self._settle_end:
-                self._buf   = {sig: [] for sig in self._SIGNALS}
+                self._buf = {sig: [] for sig in self._SIGNALS}
+                self._buf["RSQI"]           = []
+                self._buf["DIAG_CODE"]      = []
+                self._buf["PROBE_STATE_FW"] = []
                 self._state = self._ST_MEASURING
                 ch = self._combos[self._combo_idx][0]
                 self._lbl_status.setText(
@@ -7270,13 +7340,17 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                     return
                 self._apply_combo(self._combo_idx)
                 self._settle_end = now + self._spin_settle.value() / 1000.0
-                self._buf   = {sig: [] for sig in self._SIGNALS}
+                self._buf = {sig: [] for sig in self._SIGNALS}
+                self._buf["RSQI"]           = []
+                self._buf["DIAG_CODE"]      = []
+                self._buf["PROBE_STATE_FW"] = []
                 self._state = self._ST_SETTLING
                 self._lbl_status.setText(
                     f"Settling combo {self._combo_idx + 1}/{total}…")
 
     # ── Sample feed (called from PPGMonitor per M1 frame) ─────────────────────
-    def feed_sample(self, red, ir, red_amb, ir_amb, red_sub, ir_sub):
+    def feed_sample(self, red, ir, red_amb, ir_amb, red_sub, ir_sub,
+                    rsqi, diag_code, probe_state_fw):
         if self._state != self._ST_MEASURING:
             return
         self._buf["RED"].append(red)
@@ -7285,6 +7359,9 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         self._buf["IR_Amb"].append(ir_amb)
         self._buf["RED_Sub"].append(red_sub)
         self._buf["IR_Sub"].append(ir_sub)
+        self._buf["RSQI"].append(int(rsqi))
+        self._buf["DIAG_CODE"].append(int(diag_code))
+        self._buf["PROBE_STATE_FW"].append(int(probe_state_fw))
 
     # ── CSV row writer ────────────────────────────────────────────────────────
     def _write_row(self):
@@ -7311,7 +7388,17 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             rg2_str = self.STG2_GAINS[rg2] if 0 <= rg2 < len(self.STG2_GAINS) else str(rg2)
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         label = self._edit_label.text().strip()
-        row = [label, now_str, led1, led2, rf1_str, rf2_str, rg1_str, rg2_str, amb, len(self._buf["IR"])]
+
+        # ── probe_state check (first 2 columns) ───────────────────────────────
+        expected_ps = self._combo_probe_state.currentData()
+        ps_fw_vals  = self._buf["PROBE_STATE_FW"]
+        ps_ok = all(v == expected_ps for v in ps_fw_vals) if ps_fw_vals else True
+        ps_check_str = "OK" if ps_ok else "NOT OK"
+        if not ps_ok:
+            self._probe_mismatch_count += 1
+
+        row = [expected_ps, ps_check_str,
+               label, now_str, led1, led2, rf1_str, rf2_str, rg1_str, rg2_str, amb, len(self._buf["IR"])]
         # Pre-compute stats for each signal
         stats = {}
         for sig in self._SIGNALS:
@@ -7350,6 +7437,28 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         except Exception:
             ot2 = ""
         row.extend([ot1, ot2])
+
+        # ── RSQM columns ──────────────────────────────────────────────────────
+        rsqi_vals = self._buf["RSQI"]
+        if rsqi_vals:
+            rsqi_ok_pct = f"{100.0 * sum(rsqi_vals) / len(rsqi_vals):.1f}"
+        else:
+            rsqi_ok_pct = ""
+        dc_vals = self._buf["DIAG_CODE"]
+        if dc_vals:
+            dc_mean = f"{sum(dc_vals) / len(dc_vals):.2f}"
+            dc_min  = str(min(dc_vals))
+            dc_max  = str(max(dc_vals))
+        else:
+            dc_mean = dc_min = dc_max = ""
+        if ps_fw_vals:
+            ps_mean = f"{sum(ps_fw_vals) / len(ps_fw_vals):.2f}"
+            ps_min  = str(min(ps_fw_vals))
+            ps_max  = str(max(ps_fw_vals))
+        else:
+            ps_mean = ps_min = ps_max = ""
+        row.extend([rsqi_ok_pct, dc_mean, dc_min, dc_max, ps_mean, ps_min, ps_max])
+
         path = self._edit_csv.text().strip() or "afe_sweep_test.csv"
         write_header = not os.path.exists(path)
         with open(path, "a", newline="") as f:
@@ -7357,6 +7466,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             if write_header:
                 w.writerow(self._CSV_HEADER)
             w.writerow(row)
+        self._update_probe_banner()
 
     # ── Settings persistence ──────────────────────────────────────────────────
     def _restore_settings(self):
@@ -7369,6 +7479,11 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         self._edit_csv.setText(v)
         v = s.value("AFESweepTestWindow/label", "", type=str)
         self._edit_label.setText(v)
+        v = s.value("AFESweepTestWindow/probe_state", 2, type=int)  # default: PROBE_APPLIED
+        for i in range(self._combo_probe_state.count()):
+            if self._combo_probe_state.itemData(i) == v:
+                self._combo_probe_state.setCurrentIndex(i)
+                break
         for key, spins in self._param_spins.items():
             for i, spin in enumerate(spins):
                 v = s.value(f"AFESweepTestWindow/{key}_{i}", spin.value(), type=int)
@@ -7379,11 +7494,12 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         if self._state != self._ST_IDLE:
             self._stop_sweep("Window closed")
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        s.setValue("AFESweepTestWindow/geometry",   self.saveGeometry())
-        s.setValue("AFESweepTestWindow/settle_ms",  self._spin_settle.value())
-        s.setValue("AFESweepTestWindow/n_samples",  self._spin_samples.value())
-        s.setValue("AFESweepTestWindow/csv_path",   self._edit_csv.text())
-        s.setValue("AFESweepTestWindow/label",      self._edit_label.text())
+        s.setValue("AFESweepTestWindow/geometry",     self.saveGeometry())
+        s.setValue("AFESweepTestWindow/settle_ms",   self._spin_settle.value())
+        s.setValue("AFESweepTestWindow/n_samples",   self._spin_samples.value())
+        s.setValue("AFESweepTestWindow/csv_path",    self._edit_csv.text())
+        s.setValue("AFESweepTestWindow/label",       self._edit_label.text())
+        s.setValue("AFESweepTestWindow/probe_state", self._combo_probe_state.currentData())
         for key, spins in self._param_spins.items():
             for i, spin in enumerate(spins):
                 s.setValue(f"AFESweepTestWindow/{key}_{i}", spin.value())
@@ -8502,14 +8618,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
         stats_header.addWidget(self.spin_stats_interval)
         stats_vbox.addLayout(stats_header)
 
-        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS), 9)
-        self.stats_table.setHorizontalHeaderLabels(["Signal", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max", "V_TIA", "V_ADC"])
+        self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS) + 1, 9)
+        self.stats_table.setHorizontalHeaderLabels(["Signal", "V_TIA", "V_ADC", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"])
         _hdr_font_normal = QtGui.QFont()
         _hdr_font_normal.setPixelSize(33)
         _hdr_font_small  = QtGui.QFont()
         _hdr_font_small.setPixelSize(9)
         for _c in range(9):
-            _f = _hdr_font_small if _c == 1 else _hdr_font_normal
+            _f = _hdr_font_small if _c == 3 else _hdr_font_normal
             self.stats_table.horizontalHeaderItem(_c).setFont(_f)
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -8536,31 +8652,47 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.stats_table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
         self.stats_table.verticalHeader().setDefaultSectionSize(40)
 
-        _HR_ROWS  = {11, 13, 15}   # HR1, HR2, HR3
-        _RAW_ROWS = {0, 1, 2, 3}   # IR, RED, IR_Amb, RED_Amb
-        _MEAN_COL = 2
-        _MAROON   = QtGui.QColor("#5C001A")
+        _HR_ROWS    = {11, 13, 15}   # HR1, HR2, HR3 (signal indices)
+        _RAW_ROWS   = {0, 1, 2, 3}   # IR, RED, IR_Amb, RED_Amb
+        _MEAN_COL   = 4
+        _MAROON     = QtGui.QColor("#5C001A")
+        _SUBHDR_ROW = 4              # table row index of the sub-header divider
 
-        for row, (name, _, tooltip) in enumerate(self._STATS_SIGNALS):
+        for sig_idx, (name, _, tooltip) in enumerate(self._STATS_SIGNALS):
+            tbl_row  = sig_idx if sig_idx < _SUBHDR_ROW else sig_idx + 1
             rich_tip = _make_tooltip(name, tooltip)
             item = QtWidgets.QTableWidgetItem(name)
             item.setForeground(QtGui.QColor("#AAAAAA"))
             item.setToolTip(rich_tip)
-            self.stats_table.setItem(row, 0, item)
+            self.stats_table.setItem(tbl_row, 0, item)
             for col in range(1, 9):
-                text = "" if (row not in _RAW_ROWS and col >= 7) else "---"
+                text = "" if (sig_idx not in _RAW_ROWS and col in {1, 2}) else "---"
                 it = QtWidgets.QTableWidgetItem(text)
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 it.setToolTip(rich_tip)
-                if row in _HR_ROWS and col == _MEAN_COL:
+                if sig_idx in _HR_ROWS and col == _MEAN_COL:
                     it.setBackground(_MAROON)
-                self.stats_table.setItem(row, col, it)
+                self.stats_table.setItem(tbl_row, col, it)
+
+        # Sub-header divider row between RED_Amb (row 3) and IR_Sub (row 5)
+        _subhdr_labels  = ["Signal", "ADZ", "% ADZ/Mean", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"]
+        _subhdr_bg      = QtGui.QColor("#1E1E2E")
+        _subhdr_fg      = QtGui.QColor("#AAAAAA")
+        _subhdr_fn = QtGui.QFont()
+        _subhdr_fn.setBold(True)
+        for col, lbl in enumerate(_subhdr_labels):
+            it = QtWidgets.QTableWidgetItem(lbl)
+            it.setBackground(_subhdr_bg)
+            it.setForeground(_subhdr_fg)
+            it.setFont(_subhdr_fn)
+            it.setTextAlignment(QtCore.Qt.AlignCenter)
+            self.stats_table.setItem(_SUBHDR_ROW, col, it)
 
         # Paired gray highlight: IR_Sub/% SD/Mean and PI/Mean share the same meaning
         # (IR_Sub % SD/Mean ≈ AC/DC ≈ PI, so these two cells are conceptually equivalent)
         _GRAY_PAIR = QtGui.QColor("#3C3C3C")
-        self.stats_table.item(4,  1).setBackground(_GRAY_PAIR)  # IR_Sub  / % SD/Mean
-        self.stats_table.item(10, 2).setBackground(_GRAY_PAIR)  # PI      / Mean
+        self.stats_table.item(5,  3).setBackground(_GRAY_PAIR)  # IR_Sub  / % SD/Mean
+        self.stats_table.item(11, 4).setBackground(_GRAY_PAIR)  # PI      / Mean
 
         # Override V_TIA (col 7) and V_ADC (col 8) tooltips on raw rows (0-3)
         # with specific descriptions including color-coding legend and voltage units.
@@ -8601,11 +8733,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for _r in range(4):
             _tip7 = _TIP_VTIA_LED if _r in {0, 1} else _TIP_VTIA_AMB
             _tip8 = _TIP_VADC_LED if _r in {0, 1} else _TIP_VADC_AMB
-            self.stats_table.item(_r, 7).setToolTip(_tip7)
-            self.stats_table.item(_r, 8).setToolTip(_tip8)
+            self.stats_table.item(_r, 1).setToolTip(_tip7)
+            self.stats_table.item(_r, 2).setToolTip(_tip8)
 
         # Override SpO2_R col 1 tooltip: derived R estimate, not true % SD/Mean
-        self.stats_table.item(9, 1).setToolTip(_make_tooltip("R estimate",
+        self.stats_table.item(10, 3).setToolTip(_make_tooltip("R estimate",
             "Derived R ratio: CV(RED_Sub) / CV(IR_Sub)\n"
             "where CV = SD / Mean \u00d7 100  (\u2248 AC/DC per channel).\n\n"
             "Approximates the SpO2 R value:\n"
@@ -9423,7 +9555,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _STATS_HR_ROWS       = {11, 13, 15}   # HR1, HR2, HR3
     _STATS_SUB_ROWS      = {4, 5}         # IR_Sub, RED_Sub
     _STATS_RAW_ROWS      = {0, 1, 2, 3}  # IR, RED, IR_Amb, RED_Amb — show V_TIA / V_ADC
-    _STATS_MEAN_COL      = 2
+    _STATS_MEAN_COL      = 4
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
     _STATS_SQI_THRESHOLD = 0.9
@@ -9519,7 +9651,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _update_stats_table(self):
         _ir_sub_cv  = None
         _red_sub_cv = None
-        for row, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
+        for sig_idx, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
+            tbl_row = sig_idx if sig_idx < 4 else sig_idx + 1
             buf = self._stats_buf[name]
             if buf:
                 n    = len(buf)
@@ -9527,54 +9660,54 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 lo   = min(buf)
                 hi   = max(buf)
                 std  = math.sqrt(sum((v - mean) ** 2 for v in buf) / n)
-                if row < 6:  # raw ADC signals: integer, thousands-separated with narrow space
+                if sig_idx < 6:  # raw ADC signals: integer, thousands-separated with narrow space
                     def _fmt(v): return f"{v:,.0f}".replace(",", "\u202f")
                 else:
                     def _fmt(v): return f"{v:.2f}"
-                snr_str = f"{std / mean * 100:.2f}" if (row in self._STATS_SUB_ROWS and mean != 0) else (
-                    "" if row not in self._STATS_SUB_ROWS else "---")
-                if row == 4 and mean != 0:    # IR_Sub: save CV for SpO2_R ratio
+                snr_str = f"{std / mean * 100:.2f}" if (sig_idx in self._STATS_SUB_ROWS and mean != 0) else (
+                    "" if sig_idx not in self._STATS_SUB_ROWS else "---")
+                if sig_idx == 4 and mean != 0:    # IR_Sub: save CV for SpO2_R ratio
                     _ir_sub_cv  = std / mean * 100
-                elif row == 5 and mean != 0:  # RED_Sub: save CV for SpO2_R ratio
+                elif sig_idx == 5 and mean != 0:  # RED_Sub: save CV for SpO2_R ratio
                     _red_sub_cv = std / mean * 100
                 vals = [_fmt(mean), _fmt(std), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
             else:
-                snr_str = "" if row not in self._STATS_SUB_ROWS else "---"
+                snr_str = "" if sig_idx not in self._STATS_SUB_ROWS else "---"
                 vals = ["---", "---", "---", "---", "---"]
             # SpO2_R row: show RED_Sub_CV / IR_Sub_CV ≈ R  (italic — derived ratio, not true % SD/Mean)
-            if row == 9:
+            if sig_idx == 9:
                 snr_str = f"{_red_sub_cv / _ir_sub_cv:.4f}" if (_ir_sub_cv and _red_sub_cv) else "---"
-            # col 1: % SD/Mean (IR_Sub / RED_Sub rows) or R estimate (SpO2_R row)
-            snr_item = self.stats_table.item(row, 1)
+            # col 3: % SD/Mean (IR_Sub / RED_Sub rows) or R estimate (SpO2_R row)
+            snr_item = self.stats_table.item(tbl_row, 3)
             if snr_item is None:
                 snr_item = QtWidgets.QTableWidgetItem(snr_str)
                 snr_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                self.stats_table.setItem(row, 1, snr_item)
+                self.stats_table.setItem(tbl_row, 3, snr_item)
             else:
                 snr_item.setText(snr_str)
-            if row == 9:
+            if sig_idx == 9:
                 _f = snr_item.font()
                 _f.setItalic(True)
                 snr_item.setFont(_f)
-            # cols 2-6: Mean, SD, Max-Min, Min, Max
-            for col, v in enumerate(vals, start=2):
-                item = self.stats_table.item(row, col)
+            # cols 4-8: Mean, SD, Max-Min, Min, Max
+            for col, v in enumerate(vals, start=4):
+                item = self.stats_table.item(tbl_row, col)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem(v)
                     item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                    if row in self._STATS_HR_ROWS and col == self._STATS_MEAN_COL:
+                    if sig_idx in self._STATS_HR_ROWS and col == self._STATS_MEAN_COL:
                         item.setBackground(self._STATS_MAROON)
-                    self.stats_table.setItem(row, col, item)
+                    self.stats_table.setItem(tbl_row, col, item)
                 else:
                     item.setText(v)
-                if row in self._STATS_HR_ROWS and col == self._STATS_MEAN_COL:
+                if sig_idx in self._STATS_HR_ROWS and col == self._STATS_MEAN_COL:
                     sqi_buf = self._stats_buf.get(name + "_SQI", [])
                     sqi_mean = sum(sqi_buf) / len(sqi_buf) if sqi_buf else 0.0
                     bg = self._STATS_GREEN if sqi_mean > self._STATS_SQI_THRESHOLD else self._STATS_MAROON
                     item.setBackground(bg)
-            # cols 7-8: V_TIA, V_ADC — only for IR, RED, IR_Amb, RED_Amb (rows 0-3)
-            if row in self._STATS_RAW_ROWS and buf:
-                is_ir    = row in {0, 2}   # IR / IR_Amb → stg21, tia1; RED / RED_Amb → stg22, tia2
+            # cols 1-2: V_TIA, V_ADC — only for IR, RED, IR_Amb, RED_Amb (signal rows 0-3)
+            if sig_idx in self._STATS_RAW_ROWS and buf:
+                is_ir    = sig_idx in {0, 2}   # IR / IR_Amb → stg21, tia1; RED / RED_Amb → stg22, tia2
                 stg2_str  = self._last_cfg.get("stg21" if is_ir else "stg22", "0dB")
                 rg_ohm    = self._STG2_RG_OHM.get(stg2_str, 100e3)
                 i_cancel  = float(self._last_cfg.get("ambdac", "0")) * 1e-6  # µA → A
@@ -9585,19 +9718,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 vtia_str  = f"{v_tia:.2f} V"
                 vadc_str  = f"{v_adc:.2f} V"
             else:
-                vtia_str = "" if row not in self._STATS_RAW_ROWS else "---"
+                vtia_str = "" if sig_idx not in self._STATS_RAW_ROWS else "---"
                 vadc_str = vtia_str
-            if row in self._STATS_RAW_ROWS and buf:
-                vtia_bg = self._vtg_tia_color(row, v_tia)
-                vadc_bg = self._vtg_adc_color(row, v_adc)
+            if sig_idx in self._STATS_RAW_ROWS and buf:
+                vtia_bg = self._vtg_tia_color(sig_idx, v_tia)
+                vadc_bg = self._vtg_adc_color(sig_idx, v_adc)
             else:
                 vtia_bg = vadc_bg = self._VTG_DEFAULT
-            for col, txt, bg in ((7, vtia_str, vtia_bg), (8, vadc_str, vadc_bg)):
-                it = self.stats_table.item(row, col)
+            for col, txt, bg in ((1, vtia_str, vtia_bg), (2, vadc_str, vadc_bg)):
+                it = self.stats_table.item(tbl_row, col)
                 if it is None:
                     it = QtWidgets.QTableWidgetItem(txt)
                     it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                    self.stats_table.setItem(row, col, it)
+                    self.stats_table.setItem(tbl_row, col, it)
                 else:
                     it.setText(txt)
                 it.setBackground(bg)
@@ -9857,7 +9990,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
                             if self.afe_sweep_window is not None:
                                 self.afe_sweep_window.feed_sample(
-                                    p[2], p[3], p[4], p[5], p[6], p[7])
+                                    p[2], p[3], p[4], p[5], p[6], p[7],
+                                    self.data_rsqi[-1],
+                                    self.data_diag_code[-1],
+                                    self.data_probe_state[-1])
                             # Integrity check: RED_Sub and IR_Sub must equal hardware-subtracted values
                             red_sub_exp = int(p[2]) - int(p[4])   # RED - RED_Amb
                             ir_sub_exp  = int(p[3]) - int(p[5])   # IR  - IR_Amb
@@ -9969,7 +10105,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 _ps_bg = self._PROBE_DISCONNECTED_BG
             else:
                 _ps_bg = self._VTG_DEFAULT
-            _ps_item = self.stats_table.item(len(self._STATS_SIGNALS) - 1, 0)
+            _ps_item = self.stats_table.item(len(self._STATS_SIGNALS), 0)
             if _ps_item is not None:
                 _ps_item.setBackground(_ps_bg)
                 _ps_item.setForeground(QtGui.QColor("#FFFFFF") if _ps == 2 else QtGui.QColor("#AAAAAA"))
