@@ -9337,7 +9337,7 @@ Implementación:
 
 ---
 
-## Sesión 2026-05-31b — SIGNAL STATS: fix tamaño fuente sub-header row
+## Sesión 2026-05-31b — SIGNAL STATS: fix tamaño fuente sub-header row (2 iteraciones)
 
 ### Ficheros modificados
 - `pulsenest_lab.py`
@@ -9364,5 +9364,193 @@ _subhdr_fn.setBold(True)
 it.setFont(_subhdr_fn)
 ```
 
+### Decisión de diseño (iteración 1 — incorrecta)
+`QFont()` usa la fuente por defecto de la aplicación, que puede diferir de la fuente heredada por la tabla desde su stylesheet. El resultado visual seguía siendo diferente al de las filas normales.
+
+### Iteración 2 — fix correcto
+```python
+_subhdr_fn = QtGui.QFont(self.stats_table.font())
+_subhdr_fn.setBold(True)
+```
+`self.stats_table.font()` devuelve la fuente exacta que usa la tabla (incluyendo family y size del stylesheet), garantizando que el sub-header tenga el mismo tamaño que cualquier otra fila.
+
 ### Decisión de diseño
-- La sub-header usa el mismo tamaño de fuente que las filas de señal, distinguiéndose solo por fondo `#1E1E2E`, foreground `#AAAAAA` y bold
+- Siempre usar `widget.font()` como base cuando se necesite la misma fuente que el widget, no `QFont()` bare
+
+### Iteración 3 — fix correcto definitivo
+Causa raíz identificada: `pixelSize=33` en el horizontal header se renderiza recortado por la altura de la sección del header (~24-30px). En las filas de datos (40px), ese mismo font renderiza a tamaño completo y aparece más grande.
+
+Solución: usar la fuente del `horizontalHeaderItem(col)` + igualar la altura de la fila sub-header a la del header horizontal con un `QTimer.singleShot(0, ...)`:
+
+```python
+QtCore.QTimer.singleShot(
+    0, lambda r=_SUBHDR_ROW: self.stats_table.setRowHeight(
+        r, self.stats_table.horizontalHeader().height()))
+```
+
+El `singleShot(0)` se ejecuta tras el primer ciclo del event loop, cuando la altura del header ya está calculada por el layout.
+
+### Iteración 4 — causa raíz identificada definitivamente
+A 150% DPI en Windows, `setPixelSize(33)` son 33 píxeles físicos = 22 píxeles lógicos, menor que los 28px CSS del stylesheet de datos. En el horizontal header, el font se renderiza con esa altura física. En la fila de datos (40px), el stylesheet `QTableWidget { font-size: 28px }` prevalece sobre el Qt::FontRole cuando el font físico "cabe" menos que el stylesheet.
+
+Solución aplicada:
+1. Usar `_hdr_font_normal`/`_hdr_font_small` directamente (mismas instancias, sin copias intermedias que puedan perder el pixelSize)
+2. Fijar la altura de la fila sub-header con `horizontalHeader().sizeHint().height()` (evaluado síncronamente, no en timer), de forma que el text físico tenga la misma altura disponible que en el header
+
+```python
+it.setFont(_hdr_font_small if col == 3 else _hdr_font_normal)
+...
+_hdr_h = self.stats_table.horizontalHeader().sizeHint().height()
+self.stats_table.setRowHeight(_SUBHDR_ROW, _hdr_h if _hdr_h > 0 else 36)
+```
+
+### Iteración 3 — fix correcto definitivo
+El usuario aclaró que "primera fila" significa la **fila de títulos de columna** (horizontal header), que es visualmente más pequeña que las filas de datos. La solución correcta es copiar la fuente directamente de cada `horizontalHeaderItem`:
+
+```python
+for col, lbl in enumerate(_subhdr_labels):
+    it = QtWidgets.QTableWidgetItem(lbl)
+    it.setBackground(_subhdr_bg)
+    it.setForeground(_subhdr_fg)
+    hdr_item = self.stats_table.horizontalHeaderItem(col)
+    it.setFont(hdr_item.font() if hdr_item else self.stats_table.horizontalHeader().font())
+    it.setTextAlignment(QtCore.Qt.AlignCenter)
+```
+
+Cada celda del sub-header usa exactamente la fuente del `horizontalHeaderItem` correspondiente (family + size + weight), garantizando que visualmente sea idéntica al header de columnas.
+
+---
+
+## Sesión 2026-06-01a — SIGNAL STATS: fix fuente sub-header row via delegate
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Problema
+La fila sub-header (row 4) de `stats_table` se renderizaba con `font-size: 28px` del stylesheet de `QTableWidget`, ignorando el `setFont()` aplicado a los items. El stylesheet prevalece sobre el `Qt::FontRole` para items en el body de la tabla, por lo que intentos previos con `setFont(_hdr_font_normal/_hdr_font_small)` no tenían efecto visual.
+
+### Causa raíz definitiva
+`QStyledItemDelegate::paint()` llama internamente a `initStyleOption()`, que rellena `option.font` desde el widget (stylesheet CSS `font-size: 28px`), sobreescribiendo el FontRole del item. No hay forma de bypasear esto solo con `item.setFont()`.
+
+### Solución implementada
+Sobrescribir `initStyleOption()` en `_StatsHighlightDelegate` para inyectar el font del `horizontalHeaderItem(col)` cuando `index.row() == subhdr_row`, después de que el base class lo rellene con el font del stylesheet:
+
+```python
+def initStyleOption(self, option, index):
+    super().initStyleOption(option, index)
+    if index.row() == self._subhdr_row:
+        hdr_item = self._tbl.horizontalHeaderItem(index.column())
+        if hdr_item:
+            option.font = hdr_item.font()
+            option.fontMetrics = QtGui.QFontMetrics(option.font)
+```
+
+`_StatsHighlightDelegate.__init__` extendido con `tbl` y `subhdr_row`. Instanciación actualizada en `PPGMonitor.__init__` para pasar `self.stats_table` y `_SUBHDR_ROW`.
+
+### Decisión de diseño
+- `initStyleOption` es el punto correcto de intercepción: se ejecuta dentro del ciclo de pintado, después del stylesheet y antes del rendering final
+- El font inyectado es exactamente `horizontalHeaderItem(col).font()` — mismo objeto que usa el header, garantizando identidad visual
+
+---
+
+## Sesión 2026-06-01b — SIGNAL STATS: fix fuente sub-header row (iteración 2)
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Problema con iteración anterior
+El approach de sobrescribir `initStyleOption` no funcionó: `style->drawControl(CE_ItemViewItem)` con stylesheet activo re-deriva el font del widget (`QTableWidget { font-size: 28px }`) ignorando `option.font`.
+
+### Solución implementada
+Pintar la fila sub-header manualmente en `paint()`, evitando `drawControl` para esa fila:
+- `painter.fillRect` con el color de fondo del item
+- `painter.setFont(horizontalHeaderItem(col).font())` — font exacto del header
+- `painter.setPen` con el color de foreground del item
+- `painter.drawText` con el texto y alineación del item
+
+Las demás filas siguen el camino normal (`super().paint()`). El método `initStyleOption` fue eliminado (no era efectivo).
+
+### Decisión de diseño
+- `painter.setFont()` directo es el único mecanismo garantizado para bypasear el stylesheet de Qt cuando se necesita un font específico en una celda concreta
+
+---
+
+## Sesión 2026-06-01c — SIGNAL STATS: eliminar it.setFont() muerto en sub-header
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambio
+Eliminada línea `it.setFont(_hdr_font_small if col == 3 else _hdr_font_normal)` en el bucle de creación de items del sub-header (era código muerto de iteraciones anteriores). El delegate pinta la fila 4 manualmente usando `horizontalHeaderItem(col).font()` directamente sobre el painter, por lo que el FontRole del item nunca se lee.
+
+---
+
+## Sesión 2026-06-01d — SIGNAL STATS: fix fuente sub-header row (iteración 3)
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Causa raíz real
+El font efectivo del header horizontal NO es `pixelSize(33)` de los items, sino `font-size: 28px` heredado del stylesheet `QTableWidget` (el `QHeaderView::section` no especifica `font-size`, por lo que hereda del padre). El bold viene de `font-weight: bold` en `QHeaderView::section`. Los `setPixelSize(33)` de los items son ignorados por el stylesheet.
+
+Las celdas de datos también usan `font-size: 28px`. Ambos header y celdas tienen el mismo tamaño; la única diferencia visual del header es el bold.
+
+### Por qué fallaban las iteraciones anteriores
+- `it.setFont(pixelSize=33)`: tamaño incorrecto (stylesheet prevalece con 28px)
+- `initStyleOption` override: `drawControl(CE_ItemViewItem)` re-aplica el stylesheet igualmente
+- `painter.setFont(horizontalHeaderItem(col).font())`: el font del item (pixelSize=33) es el font programático ignorado por el stylesheet, no el font efectivo visual
+
+### Solución implementada
+En `paint()` del delegate, para la fila sub-header:
+```python
+font = QtGui.QFont(self._tbl.horizontalHeader().font())
+font.setBold(True)
+painter.setFont(font)
+```
+`horizontalHeader().font()` devuelve el font efectivo del widget QHeaderView (28px, resultado de la herencia del stylesheet). Con bold añadido, coincide exactamente con el rendering visual del header horizontal.
+
+### Decisión de diseño
+- Usar siempre `widget.font()` (font efectivo post-stylesheet) como referencia, no `item.font()` (font programático pre-stylesheet)
+
+---
+
+## Sesión 2026-06-01e — SIGNAL STATS: fix fuente sub-header row (iteración 4)
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Análisis definitivo de fonts
+- **Header horizontal (secciones):** usa el font de los items (`pixelSize=33`, que QHeaderView sí respeta para pintar secciones) + `font-weight: bold` del stylesheet `QHeaderView::section`
+- **Celdas de datos:** `font-size: 28px` del stylesheet `QTableWidget` (28 logical px = 42 physical px a 150% DPI)
+- **`horizontalHeader().font()`** devuelve el font del widget QHeaderView (heredado 28px del stylesheet), NO el font de las secciones → incorrecto como referencia
+
+### Confirmación: manual painting funciona
+La iteración anterior (28px bold) fue visible para el usuario (sub-header más grande que el header), confirmando que el `paint()` manual bypasea el stylesheet correctamente.
+
+### Solución aplicada
+```python
+hdr_item = self._tbl.horizontalHeaderItem(index.column())
+font = QtGui.QFont(hdr_item.font() if hdr_item else self._tbl.horizontalHeader().font())
+font.setBold(True)
+painter.setFont(font)
+```
+`hdr_item.font()` = pixelSize=33 (mismo que usan las secciones del header horizontal) + bold añadido para coincidir con `font-weight: bold` del stylesheet del header.
+
+---
+
+## Sesión 2026-06-01f — SIGNAL STATS: sub-header font forzado a 22px bold
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Problema iteración anterior
+`hdr_item.font()` en col 3 devuelve `pixelSize=9` (_hdr_font_small), haciendo la celda (3,4) enana.
+
+### Solución
+Font hardcodeado a 22px bold para toda la fila sub-header en el delegate:
+```python
+font = QtGui.QFont()
+font.setPixelSize(22)
+font.setBold(True)
+painter.setFont(font)
+```

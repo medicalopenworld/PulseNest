@@ -8006,23 +8006,43 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
 
 class _StatsHighlightDelegate(QtWidgets.QStyledItemDelegate):
-    """Draws a gold border around cells that the user has manually highlighted."""
+    """Draws a gold border around highlighted cells; forces header font on the sub-header row."""
     _BORDER_COLOR = QtGui.QColor("#FFD700")
     _BORDER_WIDTH = 3
 
-    def __init__(self, highlighted: set, parent=None):
+    def __init__(self, highlighted: set, tbl, subhdr_row: int, parent=None):
         super().__init__(parent)
         self._highlighted = highlighted
+        self._tbl = tbl
+        self._subhdr_row = subhdr_row
 
     def paint(self, painter, option, index):
-        super().paint(painter, option, index)
-        if (index.row(), index.column()) in self._highlighted:
+        if index.row() == self._subhdr_row:
+            # Paint sub-header manually. The stylesheet (font-size: 28px) is bypassed
+            # by painting directly. Use the QHeaderView widget's effective font + bold
+            # to match the horizontal header visual size exactly.
             painter.save()
-            pen = QtGui.QPen(self._BORDER_COLOR, self._BORDER_WIDTH)
-            painter.setPen(pen)
-            r = option.rect.adjusted(2, 2, -2, -2)
-            painter.drawRect(r)
+            bg = index.data(QtCore.Qt.BackgroundRole)
+            painter.fillRect(option.rect, bg if bg else QtGui.QColor("#1E1E2E"))
+            font = QtGui.QFont()
+            font.setPixelSize(22)
+            font.setBold(True)
+            painter.setFont(font)
+            fg = index.data(QtCore.Qt.ForegroundRole)
+            painter.setPen(fg.color() if fg else QtGui.QColor("#AAAAAA"))
+            text = index.data(QtCore.Qt.DisplayRole) or ""
+            align = index.data(QtCore.Qt.TextAlignmentRole)
+            painter.drawText(option.rect, int(align) if align else QtCore.Qt.AlignCenter, text)
             painter.restore()
+        else:
+            super().paint(painter, option, index)
+            if (index.row(), index.column()) in self._highlighted:
+                painter.save()
+                pen = QtGui.QPen(self._BORDER_COLOR, self._BORDER_WIDTH)
+                painter.setPen(pen)
+                r = option.rect.adjusted(2, 2, -2, -2)
+                painter.drawRect(r)
+                painter.restore()
 
 
 class PPGMonitor(QtWidgets.QMainWindow):
@@ -8678,15 +8698,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _subhdr_labels  = ["Signal", "ADZ", "% ADZ/Mean", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"]
         _subhdr_bg      = QtGui.QColor("#1E1E2E")
         _subhdr_fg      = QtGui.QColor("#AAAAAA")
-        _subhdr_fn = QtGui.QFont()
-        _subhdr_fn.setBold(True)
         for col, lbl in enumerate(_subhdr_labels):
             it = QtWidgets.QTableWidgetItem(lbl)
             it.setBackground(_subhdr_bg)
             it.setForeground(_subhdr_fg)
-            it.setFont(_subhdr_fn)
             it.setTextAlignment(QtCore.Qt.AlignCenter)
             self.stats_table.setItem(_SUBHDR_ROW, col, it)
+        # Constrain the sub-header row to the same height as the horizontal header so that
+        # the physical-pixel fonts (pixelSize=33/9) render with the same visual size as in the header
+        _hdr_h = self.stats_table.horizontalHeader().sizeHint().height()
+        self.stats_table.setRowHeight(_SUBHDR_ROW, _hdr_h if _hdr_h > 0 else 36)
 
         # Paired gray highlight: IR_Sub/% SD/Mean and PI/Mean share the same meaning
         # (IR_Sub % SD/Mean ≈ AC/DC ≈ PI, so these two cells are conceptually equivalent)
@@ -8748,7 +8769,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "running the full SpO2 algorithm."))
 
         self.stats_table.setItemDelegate(
-            _StatsHighlightDelegate(self._stats_highlighted, self.stats_table))
+            _StatsHighlightDelegate(self._stats_highlighted, self.stats_table, _SUBHDR_ROW, self.stats_table))
         self.stats_table.cellClicked.connect(self._on_stats_cell_clicked)
         _copy_sc = QtWidgets.QShortcut(QtGui.QKeySequence.Copy, self.stats_table)
         _copy_sc.activated.connect(self._copy_stats_selection)
