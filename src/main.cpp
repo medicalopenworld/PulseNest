@@ -11,6 +11,8 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <WiFiUDP.h>
+#include <WebServer.h>
+#include <Update.h>
 #include <Preferences.h>
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
@@ -33,14 +35,22 @@
 // Created in setup() before tasks start; all Serial writes in tasks use these helpers.
 static SemaphoreHandle_t g_serial_mutex = nullptr;
 
+// Forward declaration: defined in the WiFi/UDP section below.
+// Sends a line immediately via g_resp_udp when WiFi is active (no-op otherwise).
+static void udp_send_line(const char* buf);
+
 // Mutex-protected Serial.print — use for pre-built frame buffers.
+// Also relays to UDP when WiFi is active so pulsenest_lab.py receives $CFG/$DIAG
+// responses even when running cable-free (UDP-only mode).
 static inline void Serial_print_locked(const char* s) {
     if (g_serial_mutex) xSemaphoreTake(g_serial_mutex, pdMS_TO_TICKS(20));
     Serial.print(s);
     if (g_serial_mutex) xSemaphoreGive(g_serial_mutex);
+    udp_send_line(s);
 }
 
 // Mutex-protected Serial_printf — use for # comments and $ERR lines from tasks.
+// Also relays to UDP when WiFi is active (same reasoning as Serial_print_locked).
 inline void Serial_printf(const char *fmt, ...) {
     char buffer[128];
     va_list args;
@@ -50,6 +60,7 @@ inline void Serial_printf(const char *fmt, ...) {
     if (g_serial_mutex) xSemaphoreTake(g_serial_mutex, pdMS_TO_TICKS(20));
     Serial.print(buffer);
     if (g_serial_mutex) xSemaphoreGive(g_serial_mutex);
+    udp_send_line(buffer);
 }
 
 // XOR checksum of all bytes between '$' and '*' (NMEA style).
@@ -61,9 +72,16 @@ static uint8_t frame_xor_chk(const char* p, int len) {
 }
 
 // ── WiFi / UDP ────────────────────────────────────────────────────────────────
-static WiFiUDP   g_udp;
+static WiFiUDP   g_udp;                         // data frames ESP32→PC (port UDP_TARGET_PORT, batched)
+static WiFiUDP   g_cmd_udp;                     // command frames PC→ESP32 (port UDP_CMD_PORT)
+static WiFiUDP   g_resp_udp;                    // response frames ESP32→PC (port UDP_TARGET_PORT, unbatched)
 static bool      g_wifi_ready      = false;
 static const char* g_udp_target_ip = nullptr;  // Set at connect time from WIFI_NETWORKS[]
+static SemaphoreHandle_t g_resp_udp_mutex = nullptr;  // protects g_resp_udp across tasks
+
+// OTA web server — serves a firmware-update page on port 80.
+// OTA and UDP streaming coexist: WebServer uses TCP/80, data uses UDP/5005, commands use UDP/5006.
+static WebServer g_ota_server(80);
 
 // Batch buffer: accumulates UDP_BATCH_SIZE frames before one endPacket() call.
 // M1 frame ≤ ~200 chars; 10 × 256 = 2560 bytes — well within WiFi MTU (~1460 bytes
@@ -91,6 +109,21 @@ static inline void udp_send(const char* buf) {
         g_udp_batch_len   = 0;
         g_udp_batch_count = 0;
     }
+}
+
+// Send a single response frame immediately over UDP (no batching).
+// Used for $CFG, $TCFG, $DIAG, $ERR, and # comment lines routed via Serial_printf /
+// Serial_print_locked. Protected by g_resp_udp_mutex so it is safe from any task.
+// No-op if WiFi is not connected.
+static void udp_send_line(const char* buf) {
+    if (!g_wifi_ready) return;
+    size_t len = strlen(buf);
+    if (len == 0) return;
+    if (g_resp_udp_mutex) xSemaphoreTake(g_resp_udp_mutex, pdMS_TO_TICKS(10));
+    g_resp_udp.beginPacket(g_udp_target_ip, UDP_TARGET_PORT);
+    g_resp_udp.write(reinterpret_cast<const uint8_t*>(buf), len);
+    g_resp_udp.endPacket();
+    if (g_resp_udp_mutex) xSemaphoreGive(g_resp_udp_mutex);
 }
 
 // ── Incunest frame mode ────────────────────────────────────────────────────────────
@@ -551,63 +584,148 @@ static void apply_set_cmd(const char* key, const char* val) {
     send_cfg_frame();
 }
 
+// ── OTA web server ────────────────────────────────────────────────────────────
+// Self-contained HTML page — no CDN dependency, works offline.
+static const char* g_ota_html =
+    "<html><head><title>PulseNest OTA</title>"
+    "<style>body{font-family:monospace;background:#111;color:#eee;padding:24px;}"
+    "h2{color:#4f4;}input[type=file]{color:#eee;margin-right:8px;}"
+    "input[type=submit]{background:#1a3a1a;color:#4f4;border:1px solid #4f4;"
+    "padding:6px 14px;cursor:pointer;font-size:15px;}"
+    "#p{margin-top:14px;font-size:18px;}</style></head>"
+    "<body><h2>PulseNest OTA Flash</h2>"
+    "<p>Select the <b>.bin</b> firmware file and click Flash.</p>"
+    "<form id='f'>"
+    "<input type='file' name='update' accept='.bin' required>"
+    "<input type='submit' value='Flash'>"
+    "</form><div id='p'></div>"
+    "<script>"
+    "document.getElementById('f').onsubmit=function(e){"
+    "e.preventDefault();"
+    "var p=document.getElementById('p'),x=new XMLHttpRequest();"
+    "x.open('POST','/update');"
+    "x.upload.onprogress=function(e){"
+    "if(e.lengthComputable)p.innerHTML='Flashing: '+Math.round(e.loaded/e.total*100)+'%';};"
+    "x.onload=function(){"
+    "p.innerHTML=(x.status===200&&x.responseText==='OK')"
+    "?'<b style=color:#4f4>Done — rebooting\u2026</b>'"
+    ":'<b style=color:#f44>FAILED: '+x.responseText+'</b>';};"
+    "x.send(new FormData(this));};"
+    "</script></body></html>";
+
+static void ota_server_init() {
+    g_ota_server.on("/", HTTP_GET, []() {
+        g_ota_server.sendHeader("Connection", "close");
+        g_ota_server.send(200, "text/html", g_ota_html);
+    });
+    g_ota_server.on(
+        "/update", HTTP_POST,
+        []() {  // called after upload completes — send result and reboot
+            g_ota_server.sendHeader("Connection", "close");
+            g_ota_server.send(200, "text/plain", Update.hasError() ? "FAIL" : "OK");
+            vTaskDelay(pdMS_TO_TICKS(300));
+            ESP.restart();
+        },
+        []() {  // called for each upload chunk
+            HTTPUpload& upload = g_ota_server.upload();
+            if (upload.status == UPLOAD_FILE_START) {
+                Serial_printf("# OTA start: %s\n", upload.filename.c_str());
+                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+            } else if (upload.status == UPLOAD_FILE_WRITE) {
+                if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+                    Update.printError(Serial);
+            } else if (upload.status == UPLOAD_FILE_END) {
+                if (Update.end(true)) {
+                    Serial_printf("# OTA success: %lu bytes — rebooting\n",
+                                  (unsigned long)upload.totalSize);
+                } else {
+                    Update.printError(Serial);
+                }
+            }
+        });
+    g_ota_server.begin();
+}
+
+// ── Command processing (shared by Serial and UDP paths) ───────────────────────
+// Extracted from Cmd_Task so both Serial and UDP commands use the same logic.
+// buf must be NUL-terminated and mutable (apply_set_cmd modifies it in-place).
+static void process_command(char* cmd_buf, int cmd_len) {
+    if (cmd_len == 1 && cmd_buf[0] == '1') {
+        g_incunest_frame_mode = IncunestFrameMode::M1;
+        Serial_printf("# Frame mode: $M1 (full)\n");
+    } else if (cmd_len == 1 && cmd_buf[0] == '2') {
+        g_incunest_frame_mode = IncunestFrameMode::M2;
+        Serial_printf("# Frame mode: $M2 (raw)\n");
+    } else if (strcmp(cmd_buf, "$CFG?") == 0) {
+        send_cfg_frame();
+    } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
+        uint32_t diag_val = afe.runAfeDiagnostics();
+        char buf[32];
+        int n = snprintf(buf, sizeof(buf) - 6, "$DIAG,%06lX",
+                         (unsigned long)diag_val);
+        uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+        snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+        Serial_print_locked(buf);
+    } else if (strncmp(cmd_buf, "$SET,", 5) == 0) {
+        char* star = strrchr(cmd_buf, '*');
+        if (star && (star - cmd_buf) >= 5) {
+            uint8_t expected = (uint8_t)strtoul(star + 1, nullptr, 16);
+            uint8_t actual   = frame_xor_chk(cmd_buf + 1, (int)(star - cmd_buf) - 1);
+            if (actual == expected) {
+                *star = '\0';
+                char* body  = cmd_buf + 5;  // skip "$SET,"
+                char* comma = strchr(body, ',');
+                if (comma) {
+                    *comma = '\0';
+                    apply_set_cmd(body, comma + 1);
+                }
+            } else {
+                Serial_printf("$ERR,checksum,got %02X expected %02X\r\n", actual, expected);
+            }
+        }
+    }
+}
+
 // ── Command task ──────────────────────────────────────────────────────────────
-// Accepts commands over Serial (host → ESP32):
+// Accepts commands over Serial AND UDP (port UDP_CMD_PORT) when WiFi is active:
 //   '1'           → frame mode $M1 (full)
 //   '2'           → frame mode $M2 (raw ADC only)
 //   '$CFG?\n'     → emit $CFG frame with current AFE4490 configuration
 //   '$SET,k,v*XX' → set hardware parameter k to value v (XOR checksum verified)
 //   '$DIAG?\n'    → run AFE4490 diagnostics, emit $DIAG,XXXXXX*YY frame
-// Multi-byte commands are accumulated until '\n'.
+// Serial: multi-byte commands are accumulated until '\n'.
+// UDP: each datagram contains one complete command line (no accumulation needed).
+// OTA: g_ota_server.handleClient() is polled here when WiFi is active.
 void Cmd_Task(void *pvParameters) {
     char cmd_buf[64];
     int  cmd_len = 0;
     for (;;) {
+        // ── Serial path (always active) ───────────────────────────────────────
         while (Serial.available()) {
             char c = (char)Serial.read();
             if (c == '\r') continue;  // ignore CR from CRLF line endings
             if (c == '\n' || cmd_len >= (int)sizeof(cmd_buf) - 1) {
                 cmd_buf[cmd_len] = '\0';
-                if (cmd_len == 1 && cmd_buf[0] == '1') {
-                    g_incunest_frame_mode = IncunestFrameMode::M1;
-                    Serial_printf("# Frame mode: $M1 (full)\n");
-                } else if (cmd_len == 1 && cmd_buf[0] == '2') {
-                    g_incunest_frame_mode = IncunestFrameMode::M2;
-                    Serial_printf("# Frame mode: $M2 (raw)\n");
-                } else if (strcmp(cmd_buf, "$CFG?") == 0) {
-                    send_cfg_frame();
-                } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
-                    uint32_t diag_val = afe.runAfeDiagnostics();
-                    char buf[32];
-                    int n = snprintf(buf, sizeof(buf) - 6, "$DIAG,%06lX",
-                                     (unsigned long)diag_val);
-                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    Serial_print_locked(buf);
-                } else if (strncmp(cmd_buf, "$SET,", 5) == 0) {
-                    // Verify XOR checksum: $SET,key,val*XX
-                    char* star = strrchr(cmd_buf, '*');
-                    if (star && (star - cmd_buf) >= 5) {
-                        uint8_t expected = (uint8_t)strtoul(star + 1, nullptr, 16);
-                        uint8_t actual   = frame_xor_chk(cmd_buf + 1, (int)(star - cmd_buf) - 1);
-                        if (actual == expected) {
-                            *star = '\0';  // terminate before '*'
-                            // Split "SET,key,val" into key and val
-                            char* body = cmd_buf + 5;  // skip "$SET,"
-                            char* comma = strchr(body, ',');
-                            if (comma) {
-                                *comma = '\0';
-                                apply_set_cmd(body, comma + 1);
-                            }
-                        } else {
-                            Serial_printf("$ERR,checksum,got %02X expected %02X\r\n", actual, expected);
-                        }
-                    }
-                }
+                process_command(cmd_buf, cmd_len);
                 cmd_len = 0;
             } else {
                 cmd_buf[cmd_len++] = c;
             }
+        }
+        // ── UDP command path + OTA server (WiFi only) ─────────────────────────
+        if (g_wifi_ready) {
+            int pkt = g_cmd_udp.parsePacket();
+            if (pkt > 0) {
+                char udp_cmd[64];
+                int n = g_cmd_udp.read(udp_cmd, (int)sizeof(udp_cmd) - 1);
+                // Strip trailing \r\n so process_command sees a clean string.
+                while (n > 0 && (udp_cmd[n - 1] == '\r' || udp_cmd[n - 1] == '\n')) n--;
+                if (n > 0) {
+                    udp_cmd[n] = '\0';
+                    process_command(udp_cmd, n);
+                }
+            }
+            g_ota_server.handleClient();
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -615,7 +733,8 @@ void Cmd_Task(void *pvParameters) {
 
 // ── setup / loop ──────────────────────────────────────────────────────────────
 void setup() {
-    g_serial_mutex = xSemaphoreCreateMutex();  // protects concurrent Serial writes from multiple tasks
+    g_serial_mutex    = xSemaphoreCreateMutex();  // protects concurrent Serial writes from multiple tasks
+    g_resp_udp_mutex  = xSemaphoreCreateMutex();  // protects g_resp_udp (used by Incunest_Task + Cmd_Task)
     Serial.setTxBufferSize(1024);  // enlarge USB-CDC TX buffer (default ~256) to reduce corruption at 500 Hz
     Serial.begin(921600);
     vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
@@ -667,10 +786,15 @@ void setup() {
             if (WiFi.status() == WL_CONNECTED) {
                 g_udp_target_ip = WIFI_NETWORKS[n].udp_target_ip;
                 g_wifi_ready    = true;
-                g_udp.begin(UDP_TARGET_PORT);
+                g_udp.begin(UDP_TARGET_PORT);       // data frames ESP32→PC
+                g_cmd_udp.begin(UDP_CMD_PORT);      // command frames PC→ESP32
+                g_resp_udp.begin(0);                // response frames ESP32→PC (any local port)
+                ota_server_init();
                 Serial.printf("\n# WiFi connected [%s] — IP %s  UDP \u2192 %s:%d\n",
                               WIFI_NETWORKS[n].ssid, WiFi.localIP().toString().c_str(),
                               g_udp_target_ip, UDP_TARGET_PORT);
+                Serial.printf("# OTA: http://%s/\n", WiFi.localIP().toString().c_str());
+                Serial.printf("# CMD UDP: listening on port %d\n", UDP_CMD_PORT);
                 // Persist successful network index for next boot
                 Preferences _pw;
                 _pw.begin("pulsenest", false);

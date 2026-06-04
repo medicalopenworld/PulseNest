@@ -198,6 +198,7 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 PORT             = 'COM15'
 BAUD             = 921600
 UDP_DEFAULT_PORT = 5005   # must match UDP_TARGET_PORT in include/wifi_config.h
+UDP_CMD_PORT     = 5006   # must match UDP_CMD_PORT in include/wifi_config.h
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_lab.ini")
 CAPTURES_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
 os.makedirs(CAPTURES_DIR, exist_ok=True)
@@ -5050,12 +5051,12 @@ class DiagnosticsWindow(QtWidgets.QMainWindow):
 
     def _on_run(self):
         mm = self.main_monitor
-        if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
-            self._statusbar.showMessage("Not connected — serial port is closed")
+        if mm is None or not mm._is_cmd_ready():
+            self._statusbar.showMessage("Not connected — no serial or UDP command channel")
             QtWidgets.QMessageBox.warning(self, "Not connected",
-                "Serial port is not open.\n\nConnect to the board first (main window CONNECT button).")
+                "No command channel available.\n\nConnect via serial or enable UDP WiFi first.")
             return
-        mm.ser.write(b"$DIAG?\n")
+        mm.send_cmd(b"$DIAG?\n")
         mm.log("→ $DIAG?")
         self._statusbar.showMessage("Sent $DIAG? — waiting for response (~10 ms)…")
 
@@ -5618,7 +5619,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
     def _send_set(self, key: str, value: str):
         mm = self.main_monitor
-        if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
+        if mm is None or not mm._is_cmd_ready():
             self._warn_not_connected()
             return
         payload = f"$SET,{key},{value}"
@@ -5627,7 +5628,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             chk ^= ord(c)
         cmd = f"{payload}*{chk:02X}\r\n"
         mm._cfg_notify_lab_capture = False  # $CFG confirmation from $SET must not go to LabCapture notes
-        mm.ser.write(cmd.encode())
+        mm.send_cmd(cmd.encode())
         mm.log(f"→ {cmd.strip()}")
         self._statusbar.showMessage(f"Sent: {cmd.strip()}  — waiting for $CFG confirmation…")
         self._cfg_timer.start(3000)
@@ -7231,9 +7232,9 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
 
     def _start_sweep(self):
         mm = self.main_monitor
-        serial_ok = mm is not None and hasattr(mm, 'ser') and mm.ser is not None and mm.ser.is_open
+        serial_ok = mm is not None and mm._is_cmd_ready()
         if not serial_ok:
-            self._lbl_status.setText("WARNING: no serial connection — $SET commands will not be sent")
+            self._lbl_status.setText("WARNING: no connection — $SET commands will not be sent")
         self._combos               = self._build_combos()
         self._combo_idx            = 0
         self._probe_mismatch_count = 0
@@ -7298,13 +7299,13 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
 
     def _send_set(self, key: str, value: str):
         mm = self.main_monitor
-        if mm is None or not hasattr(mm, 'ser') or mm.ser is None or not mm.ser.is_open:
+        if mm is None or not mm._is_cmd_ready():
             return
         payload = f"$SET,{key},{value}"
         chk = 0
         for c in payload[1:]:
             chk ^= ord(c)
-        mm.ser.write(f"{payload}*{chk:02X}\r\n".encode())
+        mm.send_cmd(f"{payload}*{chk:02X}\r\n".encode())
 
     # ── State machine tick ────────────────────────────────────────────────────
     def _tick(self):
@@ -8302,6 +8303,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"Listens on the port configured below (default {UDP_DEFAULT_PORT})."))
         self.sidebar_layout.addWidget(self.btn_udp)
 
+        self._lbl_wifi = QtWidgets.QLabel("WiFi: —")
+        self._lbl_wifi.setStyleSheet("color: #666666; font-size: 14px; padding: 0px 2px;")
+        self._lbl_wifi.setAlignment(QtCore.Qt.AlignCenter)
+        self._lbl_wifi.setToolTip(_make_tooltip("WiFi SSID", "Network the ESP32 is connected to. Updated when a connection message arrives on the serial stream."))
+        self.sidebar_layout.addWidget(self._lbl_wifi)
 
         self.btn_reset_esp = QtWidgets.QPushButton("RESET ESP32")
         self.btn_reset_esp.setStyleSheet(
@@ -8793,6 +8799,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._reader_thread = None
         self._udp_stop     = threading.Event()   # controls _udp_reader thread
         self._udp_thread   = None
+        self._esp32_ip     = None   # ESP32 IP learned from first incoming UDP packet
+        self._cmd_udp_sock = None   # UDP socket for sending commands to ESP32 (port UDP_CMD_PORT)
         self._cfg_listener = None  # callable(text) set by LabCaptureWindow
         self._active_transport = "serial"  # "serial" or "udp" — only this queue feeds algorithms
 
@@ -8832,9 +8840,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if is_active else self.STYLE_LIB_INACTIVE)
 
     def _send_frame_cmd(self, mode):
-        if not hasattr(self, 'ser') or not self.ser.is_open:
+        if not self._is_cmd_ready():
             return
-        self.ser.write(('1\n' if mode == "M1" else '2\n').encode())
+        self.send_cmd(('1\n' if mode == "M1" else '2\n').encode())
         self.frame_mode = mode
         self._update_frame_button()
 
@@ -8842,12 +8850,30 @@ class PPGMonitor(QtWidgets.QMainWindow):
         """Send $CFG? to ESP32. Response arrives asynchronously via _on_cfg_frame_received().
         notify_lab_capture: forward response to _cfg_listener (LabCaptureWindow Pre-capture notes).
         HWConfigWindow is always updated when a $CFG frame arrives (no flag needed)."""
-        if not hasattr(self, 'ser') or self.ser is None or not self.ser.is_open:
+        if not self._is_cmd_ready():
             return False
         self._cfg_notify_lab_capture = notify_lab_capture
         self.log("CFG request sent → $CFG?")
-        self.ser.write(b'$CFG?\n')
+        self.send_cmd(b'$CFG?\n')
         return True
+
+    def _is_cmd_ready(self):
+        """True if a command channel is available: serial open, or UDP active with known ESP32 IP."""
+        if self._active_transport == "udp" and self._esp32_ip is not None:
+            return True
+        return self.ser is not None and self.ser.is_open
+
+    def send_cmd(self, data: bytes):
+        """Route a command to the ESP32 via serial or UDP depending on active transport.
+        Serial: written directly to the open COM port.
+        UDP: sent as a single datagram to ESP32 IP:UDP_CMD_PORT (learned from incoming data)."""
+        if self._active_transport == "udp" and self._esp32_ip is not None:
+            import socket as _socket
+            if self._cmd_udp_sock is None:
+                self._cmd_udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+            self._cmd_udp_sock.sendto(data, (self._esp32_ip, UDP_CMD_PORT))
+        elif self.ser is not None and self.ser.is_open:
+            self.ser.write(data)
 
     def _on_cfg_frame_received(self, line):
         """Parse a $CFG frame, log each field, and deliver formatted text to _cfg_listener."""
@@ -9391,6 +9417,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         idx = self.combo_port.findText(port)
         if idx >= 0:
             self.combo_port.setCurrentIndex(idx)
+        _ssid = s.value("PPGMonitor/last_wifi_ssid", "", type=str)
+        if _ssid:
+            self._lbl_wifi.setText(f"WiFi: {_ssid} (last)")
+            self._lbl_wifi.setStyleSheet("color: #667788; font-size: 14px; padding: 0px 2px;")
         if s.value("PPGMonitor/serial_connected", True, type=bool):
             self._connect_serial(self.combo_port.currentText())
         if s.value("PPGMonitor/udp_connected", False, type=bool):
@@ -9478,6 +9508,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         while not self._udp_queue.empty():
             try: self._udp_queue.get_nowait()
             except: break
+        self._esp32_ip = None
+        if self._cmd_udp_sock is not None:
+            self._cmd_udp_sock.close()
+            self._cmd_udp_sock = None
         self._active_transport = "serial"
         self.log("UDP disconnected — data source: SERIAL")
         self.btn_udp.setText("UDP WiFi  ●  OFF")
@@ -9523,7 +9557,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _last_cnt = None
         while not self._udp_stop.is_set():
             try:
-                data, _ = sock.recvfrom(4096)   # UDP_BATCH_SIZE * ~200 bytes/frame
+                data, _addr = sock.recvfrom(4096)   # UDP_BATCH_SIZE * ~200 bytes/frame
+                if self._esp32_ip is None:
+                    self._esp32_ip = _addr[0]   # learn ESP32 IP from first incoming packet
                 if not data:
                     continue
                 for line in data.split(b'\n'):
@@ -9818,8 +9854,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             import re as _re
                             _m = _re.match(r'# WiFi connected \[([^\]]+)\]', line)
                             if _m:
+                                _ssid = _m.group(1)
                                 QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
-                                    "PPGMonitor/last_wifi_ssid", _m.group(1))
+                                    "PPGMonitor/last_wifi_ssid", _ssid)
+                                self._lbl_wifi.setText(f"WiFi: {_ssid}")
+                                self._lbl_wifi.setStyleSheet("color: #44AAFF; font-size: 14px; padding: 0px 2px;")
                         continue
 
                     current_time_perf = time.perf_counter()
@@ -10356,6 +10395,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._udp_stop.set()
         if hasattr(self, '_udp_thread') and self._udp_thread is not None:
             self._udp_thread.join(timeout=1.0)
+        if hasattr(self, '_cmd_udp_sock') and self._cmd_udp_sock is not None:
+            self._cmd_udp_sock.close()
         if hasattr(self, 'ser') and self.ser.is_open:
             self.ser.close()
         if self.ppgplots_window is not None:

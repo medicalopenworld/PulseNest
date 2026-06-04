@@ -9554,3 +9554,148 @@ font.setPixelSize(22)
 font.setBold(True)
 painter.setFont(font)
 ```
+
+---
+
+## Sesión 2026-06-02a — ppg_disp, corrección spec hr_max_bpm, hotspot WiFi
+
+### Ficheros modificados
+- `incunest_afe4490/incunest_afe4490_spec.md`
+- `include/wifi_config.h`
+
+### Decisiones de diseño
+
+**1. Nueva señal `ppg_disp` en AFE4490Data**
+- Propósito: señal PPG exclusivamente para visualización/display
+- Normalizada [0..1], PI-weighted: cuando PI está por debajo de un umbral crítico, el rango de normalización se reduce proporcionalmente
+- Distinción explícita: `led1_aled1`/`led2_aled2` = señales de cálculo (SpO2, HR, HGAC); `ppg_disp` = display únicamente
+- Añadida al diccionario de nomenclatura (`project_nomenclature_dictionary.md`) y a la spec
+
+**2. Corrección grave en spec: hr_max_bpm**
+- El código siempre tuvo `hr_max_bpm = 260 BPM` pero la spec decía 300 BPM
+- Causa: Claude modificó la constante en `.cpp` en una sesión anterior sin actualizar la spec
+- Correcciones aplicadas: hr_max_bpm 300→260, hr_search_max_bpm 303→263, hr1_refractory_s 0.2→0.185 s, textos narrativos y tablas en §5.2, §10, §13
+- Regla formalizada en memoria: cambio de constante en código = spec actualizada en el mismo paso (son una sola tarea)
+- Commit + push a GitHub: `987978d`
+
+**3. WiFi hotspot**
+- Añadida entrada `ALEXLAPTOP` / `192.168.137.1` en `wifi_config.h` para uso sin router
+- IP `192.168.137.1` es el default del hotspot Windows; verificar con `ipconfig` si no conecta
+
+---
+
+## Sesión 2026-06-02b — WiFi hotspot, reordenación redes, label SSID en UI
+
+### Ficheros modificados
+- `include/wifi_config.h`
+- `pulsenest_lab.py`
+
+### Cambios
+
+**wifi_config.h — reordenación de redes**
+- ALEXLAPTOP movido al primer puesto (antes era el tercero)
+- El firmware prueba las redes en orden → conectará al hotspot del portátil primero
+- Útil para medidas en campo sin router
+
+**pulsenest_lab.py — label WiFi SSID**
+- Añadido `_lbl_wifi` en el sidebar, justo debajo de `btn_udp`
+- Al arrancar: carga el último SSID conocido de QSettings como "WiFi: SSID (last)" en gris azulado
+- Cuando llega `# WiFi connected [SSID]` por serial: actualiza a "WiFi: SSID" en azul (#44AAFF)
+- El SSID se sigue guardando en QSettings para persistir entre sesiones
+
+### Pendiente
+- Upload firmware fallido (ESP32 no respondía en COM15 — problema de puerto, no de código)
+- Pendiente compilar y flashear en próxima sesión
+
+---
+
+## Sesión 2026-06-03a — Rename variables RSQM en incunest_afe4490
+
+### Ficheros modificados
+- `incunest_afe4490.cpp`
+- `incunest_afe4490.h`
+
+### Cambios
+
+**Cambio 1 — Eliminar aliases `s1`/`s2`**
+- Eliminadas las variables locales `const float s1 = (float)led1_aled1` y `const float s2 = (float)led2_aled2` en `_update_rsqm()`
+- Sustituidas en todos sus usos por `(float)led1_aled1` y `(float)led2_aled2` directamente (EMA, disconnected criterion, optical transmittance)
+
+**Cambio 2 — Renombrar miembros EMA**
+- `_rsqm_led1_sub` → `_rsqm_led1_aled1` (`.cpp` + `.h`)
+- `_rsqm_led2_sub` → `_rsqm_led2_aled2` (`.cpp` + `.h`)
+- Comentarios en `.h` y comentarios internos de `_update_rsqm()` actualizados en consecuencia
+
+### Motivación
+- `s1`/`s2` eran crípticos y ocultaban el origen del dato
+- `_sub` no transmitía que la diferencia era LED−ALED; `_aled1`/`_aled2` lo hace explícito y simétrico con los nombres de parámetro de la función
+
+---
+
+## Sesión 2026-06-04c — Corrección credenciales WiFi hotspot
+
+### Ficheros modificados
+- `include/wifi_config.h`
+
+### Cambio
+SSID del hotspot del portátil corregido: `"ALEXLAPTOP"/"retuerta"` → `"in3wifi"/"12345678"`. IP target sin cambio (`192.168.137.1`).
+
+---
+
+## Sesión 2026-06-04b — WiFi modo completo: OTA flash + canal de comandos UDP
+
+### Ficheros modificados
+- `include/wifi_config.h` — añadido `UDP_CMD_PORT 5006`
+- `src/main.cpp` — OTA web server + UDP command channel + refactor Cmd_Task
+- `pulsenest_lab.py` — `send_cmd()`, `_is_cmd_ready()`, captura de ESP32 IP, reemplazo de `ser.write()`
+
+### Motivación
+Quitar el cable USB por completo. Con solo WiFi se necesitan dos cosas:
+1. **OTA flash** — flashear sin cable
+2. **Canal de comandos por UDP** — `$SET`, `$CFG?`, `$DIAG?` actualmente iban solo por Serial
+
+El problema era que sin cable serial, `pulsenest_lab.py` no podía enviar comandos aunque los datos llegasen por UDP.
+
+### Diseño de la solución
+
+**Firmware (main.cpp):**
+- `WebServer g_ota_server(80)` — página HTML de carga de `.bin`, activa tras WiFi. Sin dependencias CDN (autocontenido).
+- `WiFiUDP g_cmd_udp` — escucha en `UDP_CMD_PORT=5006`, recibe comandos del PC.
+- `WiFiUDP g_resp_udp` — envía respuestas ($CFG, $DIAG, $ERR, # comments) al PC en `UDP_TARGET_PORT=5005` (mismo canal que los datos).
+- `g_resp_udp_mutex` — protege `g_resp_udp` ante acceso concurrente de `Incunest_Task` y `Cmd_Task`.
+- `process_command()` — función extraída de `Cmd_Task`, usada por ambos caminos (Serial y UDP).
+- `Serial_print_locked()` y `Serial_printf()` modificadas para también llamar `udp_send_line()` → las respuestas llegan a Python tanto por Serial como por UDP.
+- `Cmd_Task` ampliada: sondea `g_cmd_udp.parsePacket()` y `g_ota_server.handleClient()` cada 50 ms.
+
+**Python (pulsenest_lab.py):**
+- `send_cmd(data: bytes)` — enruta a serial o UDP según `_active_transport`.
+- `_is_cmd_ready()` — devuelve True si serial abierto **o** UDP activo con IP conocida.
+- `_esp32_ip` — aprendida del primer paquete UDP recibido (sin configuración manual).
+- `_cmd_udp_sock` — socket UDP para enviar comandos, creado lazy, cerrado en disconnect/closeEvent.
+- 5 ocurrencias de `ser.write()` reemplazadas por `send_cmd()`, guards actualizados a `_is_cmd_ready()`.
+
+### Decisiones de diseño
+- **Separación de sockets:** `g_udp` (datos, batched, solo `Incunest_Task`) vs `g_resp_udp` (respuestas, unbatched, mutex, cualquier task). Sin interferencia entre ambos.
+- **Respuestas también por UDP:** `Serial_print_locked`/`Serial_printf` añaden `udp_send_line()`. Python ya acepta todos los frames en el lector UDP, no solo `$M1`/`$M2`.
+- **IP del ESP32 se aprende sola:** Python extrae `addr[0]` del primer paquete recibido. No requiere configuración adicional en `wifi_config.h`.
+- **OTA y UDP coexisten:** WebServer usa TCP/80, streaming usa UDP/5005, comandos usan UDP/5006.
+- **Compatibilidad total con modo serial:** cuando `_active_transport == "serial"`, todo funciona exactamente igual que antes.
+
+---
+
+## Sesión 2026-06-04a — Análisis rsqm_disconn_sub_mean con datos reales
+
+### Ficheros modificados
+- `incunest_afe4490.h` (solo comentario)
+
+### Análisis
+Revisión del umbral `rsqm_disconn_sub_mean = 5000.0f` contra datos reales del CSV `afe_sweep_test_2025-05-28.csv` (279 filas PROBE_DISCONNECTED):
+
+| Canal | Peor caso muestra individual | Umbral | Margen |
+|---|---|---|---|
+| LED1_Sub | 3756 | 5000 | ×1.33 |
+| LED2_Sub | 4013 | 5000 | ×1.25 |
+
+### Decisión
+- Umbral **mantenido en 5000** — el peor caso medido es 4013, margen ×1.25. Reducirlo sería arriesgado ante variación de unidad/temperatura del offset del TIA.
+- Comentario en `.h` corregido: eliminado el engañoso `LED_Sub≈0`, reemplazado por peor caso real y margen efectivo.
