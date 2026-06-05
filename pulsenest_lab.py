@@ -6899,7 +6899,16 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         "rsqi_ok_pct",
         "diag_code_mean", "diag_code_min", "diag_code_max",
         "probe_state_fw_mean", "probe_state_fw_min", "probe_state_fw_max",
-    ]  # 52 columns
+        # ── V_TIA / V_ADC × 4 signals (LED1, LED2, ALED1, ALED2) ─────────────
+        "LED1_V_TIA_mean",  "LED1_V_TIA_std",  "LED1_V_TIA_min",  "LED1_V_TIA_max",
+        "LED1_V_ADC_mean",  "LED1_V_ADC_std",  "LED1_V_ADC_min",  "LED1_V_ADC_max",
+        "LED2_V_TIA_mean",  "LED2_V_TIA_std",  "LED2_V_TIA_min",  "LED2_V_TIA_max",
+        "LED2_V_ADC_mean",  "LED2_V_ADC_std",  "LED2_V_ADC_min",  "LED2_V_ADC_max",
+        "ALED1_V_TIA_mean", "ALED1_V_TIA_std", "ALED1_V_TIA_min", "ALED1_V_TIA_max",
+        "ALED1_V_ADC_mean", "ALED1_V_ADC_std", "ALED1_V_ADC_min", "ALED1_V_ADC_max",
+        "ALED2_V_TIA_mean", "ALED2_V_TIA_std", "ALED2_V_TIA_min", "ALED2_V_TIA_max",
+        "ALED2_V_ADC_mean", "ALED2_V_ADC_std", "ALED2_V_ADC_min", "ALED2_V_ADC_max",
+    ]  # 84 columns
 
     _ST_IDLE      = 0
     _ST_SETTLING  = 1
@@ -7015,14 +7024,16 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
 
         self._spin_settle = QtWidgets.QSpinBox()
         self._spin_settle.setRange(100, 30000)
-        self._spin_settle.setValue(200)
+        self._spin_settle.setValue(500)
         self._spin_settle.setSuffix(" ms")
         self._spin_settle.setStyleSheet("background-color:#202020; color:#E0E0E0; font-size:24px;")
         self._spin_settle.setToolTip(_make_tooltip(
             "Settling time",
             "Time to wait after applying each combo before collecting samples. "
             "TIA worst-case settling (RF=1M, CF=155p): 5τ ≈ 775 µs. "
-            "200 ms gives ample margin for firmware $SET processing (default: 200 ms)."))
+            "Over UDP, ambdac is sent 60 ms after the other params (lwIP buffer limit) "
+            "and processed by Cmd_Task within 50 ms — allow ≥300 ms for clean settling "
+            "(default: 500 ms)."))
 
         self._spin_samples = QtWidgets.QSpinBox()
         self._spin_samples.setRange(10, 10000)
@@ -7294,7 +7305,36 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                 self._send_set("tiagain1", rf_str(fix_rf("rf1")))
             if self._param_spins["rg1"][0].value() >= 0:
                 self._send_set("stg21",    rg_str(fix_rg("rg1")))
+        # Over UDP, all 6 preceding $SET datagrams arrive in <10 ms — faster than the
+        # lwIP UDP receive queue (default 6 slots) can be drained by Cmd_Task (50 ms cycle).
+        # Packet 7 (ambdac) would be silently dropped.  Wait one Cmd_Task cycle so the
+        # buffer is empty before sending ambdac.
+        mm0 = self.main_monitor
+        if mm0 is not None and mm0._active_transport == "udp":
+            import time as _time; _time.sleep(0.060)
         self._send_set("ambdac", str(amb))
+        # ── Trace to log_panel ────────────────────────────────────────────────
+        mm = self.main_monitor
+        if mm is not None:
+            total = len(self._combos)
+            if ch == "LED1":
+                parts = [f"led1={led}mA", f"rf1={rf_str(rf)}", f"rg1={rg_str(rg)}"]
+                if self._param_spins["led2"][0].value() >= 0:
+                    parts.append(f"led2={self._param_spins['led2'][0].value()}mA")
+                if self._param_spins["rf2"][0].value() >= 0:
+                    parts.append(f"rf2={rf_str(fix_rf('rf2'))}")
+                if self._param_spins["rg2"][0].value() >= 0:
+                    parts.append(f"rg2={rg_str(fix_rg('rg2'))}")
+            else:
+                parts = [f"led2={led}mA", f"rf2={rf_str(rf)}", f"rg2={rg_str(rg)}"]
+                if self._param_spins["led1"][0].value() >= 0:
+                    parts.append(f"led1={self._param_spins['led1'][0].value()}mA")
+                if self._param_spins["rf1"][0].value() >= 0:
+                    parts.append(f"rf1={rf_str(fix_rf('rf1'))}")
+                if self._param_spins["rg1"][0].value() >= 0:
+                    parts.append(f"rg1={rg_str(fix_rg('rg1'))}")
+            parts.append(f"ambdac={amb}µA")
+            mm.log(f"[SWEEP] {idx+1}/{total}  ch={ch}  " + "  ".join(parts))
         self._highlight_active(idx)
 
     def _send_set(self, key: str, value: str):
@@ -7465,6 +7505,33 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         else:
             ps_mean = ps_min = ps_max = ""
         row.extend([rsqi_ok_pct, dc_mean, dc_min, dc_max, ps_mean, ps_min, ps_max])
+
+        # ── V_TIA / V_ADC (LED1, LED2, ALED1, ALED2) ─────────────────────────
+        # Formula (datasheet eq.2, p.30): V_TIA = (V_ADC/(2×RG) + I_CANCEL) × RI
+        _STG2_RG_OHM = {"0dB": 100e3, "3.5dB": 150e3, "6dB": 200e3,
+                        "9.5dB": 300e3, "12dB": 400e3}
+        _ADC_FS  = 2**21 - 1   # positive full-scale code (datasheet Table 7)
+        _ADC_FSR = 1.2         # V
+        _RI      = 100e3       # Ω — fixed internal resistor
+        i_cancel = amb * 1e-6  # µA → A
+        rg1_ohm  = _STG2_RG_OHM.get(rg1_str, 200e3)
+        rg2_ohm  = _STG2_RG_OHM.get(rg2_str, 200e3)
+        def _vstats(vals):
+            n = len(vals)
+            m = sum(vals) / n
+            sd = math.sqrt(sum((v - m) ** 2 for v in vals) / n)
+            return f"{m:.4f}", f"{sd:.4f}", f"{min(vals):.4f}", f"{max(vals):.4f}"
+        for _buf_key, _rg_ohm in [("IR",      rg1_ohm),
+                                   ("RED",     rg2_ohm),
+                                   ("IR_Amb",  rg1_ohm),
+                                   ("RED_Amb", rg2_ohm)]:
+            _raw = self._buf[_buf_key]
+            if _raw:
+                _v_adc = [s / _ADC_FS * _ADC_FSR for s in _raw]
+                _v_tia = [(v / (2 * _rg_ohm) + i_cancel) * _RI for v in _v_adc]
+                row.extend(_vstats(_v_tia) + _vstats(_v_adc))
+            else:
+                row.extend([""] * 8)
 
         path = self._edit_csv.text().strip() or "afe_sweep_test.csv"
         write_header = not os.path.exists(path)
@@ -8723,9 +8790,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         # Paired gray highlight: IR_Sub/% SD/Mean and PI/Mean share the same meaning
         # (IR_Sub % SD/Mean ≈ AC/DC ≈ PI, so these two cells are conceptually equivalent)
-        _GRAY_PAIR = QtGui.QColor("#3C3C3C")
-        self.stats_table.item(5,  3).setBackground(_GRAY_PAIR)  # IR_Sub  / % SD/Mean
-        self.stats_table.item(11, 4).setBackground(_GRAY_PAIR)  # PI      / Mean
+        _ACCENT_PAIR = QtGui.QColor("#5A1A4A")
+        self.stats_table.item(5,  3).setBackground(_ACCENT_PAIR)  # IR_Sub  / % SD/Mean
+        self.stats_table.item(11, 4).setBackground(_ACCENT_PAIR)  # PI      / Mean
 
         # Override V_TIA (col 7) and V_ADC (col 8) tooltips on raw rows (0-3)
         # with specific descriptions including color-coding legend and voltage units.
@@ -8889,21 +8956,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 k, v = part.split('=', 1)
                 kv[k] = v
         ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log_lines = [
-            f"CFG response — {ts}",
-            f"  board={kv.get('board','?')}  mac={kv.get('mac','?')}",
-            f"  sr={kv.get('sr','?')} Hz  numav={kv.get('numav','?')}",
-            f"  led1={kv.get('led1','?')} mA  led2={kv.get('led2','?')} mA  range={kv.get('range','?')} mA",
-            f"  ensepgain={kv.get('ensepgain','?')}",
-            f"  LED1: tia={kv.get('tia1','?')}  cf={kv.get('cf1','?')}  stg2={kv.get('stg21','?')}  stage2en={kv.get('stage2en1','?')}",
-            f"  LED2: tia={kv.get('tia2','?')}  cf={kv.get('cf2','?')}  stg2={kv.get('stg22','?')}  stage2en={kv.get('stage2en2','?')}",
-            f"  ambdac={kv.get('ambdac','?')} µA",
-            f"  ch={kv.get('ch','?')}  flt={kv.get('flt','?')} [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]",
-            f"  hr2={kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz  hr3={kv.get('hr3h','?')} Hz",
-            f"  spo2 a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}",
-        ]
-        for l in log_lines:
-            self.log(l)
+        self.log(
+            f"$CFG  board={kv.get('board','?')}  sr={kv.get('sr','?')}Hz  numav={kv.get('numav','?')}"
+            f"  led1={kv.get('led1','?')}mA  tia1={kv.get('tia1','?')}  stg21={kv.get('stg21','?')}"
+            f"  led2={kv.get('led2','?')}mA  tia2={kv.get('tia2','?')}  stg22={kv.get('stg22','?')}"
+            f"  ambdac={kv.get('ambdac','?')}µA  ch={kv.get('ch','?')}"
+        )
         text = (
             f"AFE4490 config — {ts}\n"
             f"  Board: {kv.get('board','?')}   MAC: {kv.get('mac','?')}\n"
@@ -9642,7 +9700,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _VTG_RED     = QtGui.QColor("#4A0800")  # saturation / insufficient
     _VTG_DEFAULT = QtGui.QColor("#121212")  # no data
     _ADC_FSR             = 1.2            # V — AFE4490 ADC full-scale voltage (±1.2 V)
-    _ADC_FS_COUNTS       = 2 ** 21        # 22-bit signed: positive full scale
+    _ADC_FS_COUNTS       = 2 ** 21 - 1    # 22-bit signed: positive full-scale code (datasheet Table 7)
     _STG2_RG_OHM         = {              # Stage 2 gain string → RG resistor value Ω (Table 1, datasheet p.31)
         "0dB":   100e3,   # ×1
         "3.5dB": 150e3,   # ×1.5
@@ -9788,8 +9846,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 # Eq.2 datasheet p.30: V_DIFF = 2×(I_PD×RF/RI − I_CANCEL)×RG
                 # → V_TIA = I_PD×RF = (V_ADC/(2×RG) + I_CANCEL) × RI
                 v_tia     = (v_adc / (2 * rg_ohm) + i_cancel) * self._STG2_RI_OHM
-                vtia_str  = f"{v_tia:.2f} V"
-                vadc_str  = f"{v_adc:.2f} V"
+                vtia_str  = f"{v_tia:.3f} V"
+                vadc_str  = f"{v_adc:.3f} V"
             else:
                 vtia_str = "" if sig_idx not in self._STATS_RAW_ROWS else "---"
                 vadc_str = vtia_str

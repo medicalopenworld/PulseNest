@@ -719,8 +719,12 @@ void Cmd_Task(void *pvParameters) {
         }
         // ── UDP command path + OTA server (WiFi only) ─────────────────────────
         if (g_wifi_ready) {
-            int pkt = g_cmd_udp.parsePacket();
-            if (pkt > 0) {
+            // Drain ALL pending UDP command datagrams in one cycle.
+            // Single-packet polling (if) caused rapid-fire $SET bursts (e.g. sweep combos)
+            // to be processed one per 50 ms tick, so later params (ambdac) arrived after
+            // the settle timer had already elapsed or were dropped by the lwIP buffer.
+            int pkt;
+            while ((pkt = g_cmd_udp.parsePacket()) > 0) {
                 char udp_cmd[64];
                 int n = g_cmd_udp.read(udp_cmd, (int)sizeof(udp_cmd) - 1);
                 // Strip trailing \r\n so process_command sees a clean string.

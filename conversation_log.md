@@ -9823,3 +9823,167 @@ Corregir el array con los valores exactos del ratio RG/Ri según la Tabla 1 del 
 - Hard (RTS/DTR): baja línea EN físicamente, limpia RAM completamente, requiere cable
 - Soft ($RESET/ESP.restart()): reinicio software, RTC memory puede persistir, funciona sin cable
 - Para uso normal son equivalentes; hard reset es más fiable ante bloqueos profundos del scheduler
+
+### Color celdas destacadas en SIGNAL STATS
+- `_GRAY_PAIR` (`#3C3C3C`) → `_ACCENT_PAIR` (`#5A1A4A`) — violeta rosáceo oscuro
+- Celdas afectadas: IR_Sub/% SD/Mean (fila 5, col 3) y PI/Mean (fila 11, col 4)
+- Estas dos celdas son conceptualmente equivalentes (IR_Sub % SD/Mean ≈ AC/DC ≈ PI)
+
+---
+
+## Sesión 2026-06-05c — Traza sweep en log_panel
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Contexto
+- Alex investigando un fallo en el AFE Sweep Test (la librería funciona bien, el fallo está en el script)
+- Localizado el flujo: `_start_sweep()` → `_apply_combo()` → `_send_set()` → `mm.send_cmd()`
+
+### Cambio
+- Añadida traza en `_apply_combo()` (tras el último `_send_set`) que escribe una línea al `log_panel` por cada combo aplicado
+- Formato: `[SWEEP] {idx+1}/{total}  ch={ch}  led1=XmA  rf1=Y  rg1=Z  ...  ambdac=WµA`
+- Solo muestra los parámetros del canal fijo que realmente se envían (valor ≥ 0), coherente con la lógica existente
+- Usa `mm.log()` → aparece en el log_panel con timestamp y color "info" (#44AAFF)
+- Sirve para verificar qué se envía exactamente al ESP32 en cada paso del sweep
+
+---
+
+## Sesión 2026-06-05d — CFG log en una línea + traza sweep
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### _on_cfg_frame_received: log en una línea
+- Sustituidas las 11 llamadas `self.log()` del bloque `log_lines` por una sola línea compacta
+- Formato: `$CFG  board=X  sr=XHz  numav=X  led1=XmA  tia1=X  stg21=X  led2=XmA  tia2=X  stg22=X  ambdac=XµA  ch=X`
+- Campos eliminados del log_panel (siguen en la ventana CFG): mac, range, ensepgain, cf, stage2en, flt, hr2/hr3, spo2 a/b
+
+### Traza sweep en log_panel (sesión anterior, pendiente de verificar)
+- Añadida traza en `_apply_combo()` → `mm.log(f"[SWEEP] {idx+1}/{total}  ch={ch}  ...")` 
+- No aparece en el log_panel — causa no identificada aún. Pendiente investigar.
+
+---
+
+## Sesión 2026-06-05e — Fix: ts eliminado por error en _on_cfg_frame_received
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Bug introducido en sesión anterior
+- Al condensar `log_lines` en una sola línea se eliminó `ts = datetime.datetime.now().strftime(...)` 
+- `ts` seguía siendo referenciada en la variable `text` → `NameError` → `hw_config_window.update_from_cfg(kv)` nunca se ejecutaba → ventana HW CONFIG dejaba de actualizarse
+
+### Fix
+- Restaurada la línea `ts = ...` justo antes del nuevo `self.log(...)` compacto
+
+---
+
+## Sesión 2026-06-05f — Fix _ADC_FS_COUNTS
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambio
+- `_ADC_FS_COUNTS = 2**21` → `2**21 - 1` (= 2097151)
+- Motivo: la Tabla 7 del datasheet AFE4490 especifica que el código de fondo de escala positivo corresponde a +1.2 V → denominador correcto es 2²¹−1, no 2²¹
+- Afecta al cálculo de V_ADC y V_TIA en SIGNAL STATS (filas IR, RED, IR_Amb, RED_Amb)
+- Diferencia numérica mínima (~0.005%) pero es el valor correcto
+
+---
+
+## Sesión 2026-06-05g — Fix bug AMBDAC sweep test (UDP single-packet polling)
+
+### Ficheros modificados
+- `src/main.cpp`
+
+### Bug
+- `Cmd_Task` procesaba UN SOLO datagrama UDP por ciclo de 50 ms (`if (pkt > 0)`)
+- `_apply_combo` envía 7 datagramas UDP en ráfaga (<1 ms): led1, tiagain1, stg21, led2, tiagain2, stg22, ambdac
+- Con settle_ms=200ms (default), solo se procesaban 4 comandos antes de que empezara la medición
+- AMBDAC es el 7º comando → llegaba tarde (t≈300ms) o se perdía si el buffer lwIP (<7 datagramas) se llenaba
+- Por serial no había problema: `while (Serial.available())` drena todos los bytes en un ciclo
+
+### Fix
+- Cambiado `int pkt = ...; if (pkt > 0)` por `int pkt; while ((pkt = ...) > 0)` en el bloque UDP de Cmd_Task
+- Ahora todos los datagramas acumulados se procesan en un único ciclo, igual que el path serie
+- Requiere compilar y flashear firmware
+
+---
+
+## Sesión 2026-06-05h — Fix AMBDAC sweep test (lwIP UDP buffer overflow)
+
+### Ficheros modificados
+- `src/main.cpp`
+- `pulsenest_lab.py`
+
+### Análisis del bug
+- El sweep envía 7 datagramas UDP en ráfaga (<10ms): led1, tiagain1, stg21, led2, tiagain2, stg22, **ambdac**
+- El buffer lwIP del ESP32 tiene capacidad por defecto de 6 paquetes UDP
+- Los 7 datagramas llegan antes de que Cmd_Task (ciclo 50ms) pueda consumir ninguno
+- El 7º paquete (ambdac) se descarta por overflow → AMBDAC nunca cambia
+- Por serial no hay problema: `while (Serial.available())` drena todos los bytes en un ciclo
+
+### Fix 1 — firmware (main.cpp)
+- Cambiado `if (pkt > 0)` por `while ((pkt = g_cmd_udp.parsePacket()) > 0)` en Cmd_Task
+- Drena todos los datagramas acumulados en un solo ciclo (ayuda cuando los paquetes llegan espaciados)
+- Flasheado por OTA (HTTP POST) a 192.168.137.135
+
+### Fix 2 — script (pulsenest_lab.py)
+- Añadido `time.sleep(0.060)` antes de `_send_set("ambdac", ...)` en `_apply_combo`, solo en UDP
+- Da tiempo a Cmd_Task para drenar los 6 paquetes anteriores antes de que llegue AMBDAC
+- 60ms por combo: negligible frente al ciclo settle(200ms) + medición(1000ms)
+
+---
+
+## Sesión 2026-06-05i — Settle time por defecto 200ms → 500ms
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambio
+- Settle time default: 200ms → 500ms
+- Razonamiento: con el sleep de 60ms (UDP) + latencia Cmd_Task (50ms), AMBDAC se aplica ~110ms después de `_apply_combo`. Con 500ms settle, quedan ~390ms de estabilización limpia tras AMBDAC.
+- Tooltip actualizado explicando el timing UDP
+
+---
+
+## Sesión 2026-06-05j — Columnas V_TIA / V_ADC en CSV del sweep test
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambio
+- Añadidas 8 columnas al CSV del sweep test: `V_TIA_mean`, `V_TIA_std`, `V_TIA_min`, `V_TIA_max`, `V_ADC_mean`, `V_ADC_std`, `V_ADC_min`, `V_ADC_max`
+- Calculadas en `_write_row` a partir del buffer de samples crudos del canal barrido (`_buf["IR"]` para LED1, `_buf["RED"]` para LED2)
+- Fórmula: `V_ADC = sample / (2²¹−1) × 1.2V` ; `V_TIA = (V_ADC / (2×RG) + amb_µA×1e-6) × 100kΩ`
+- Parámetros: RG del combo activo (STG2_GAINS[rg] → STG2_RG_OHM), AMBDAC del combo
+- `_CSV_HEADER` actualizado: 52 → 60 columnas
+
+---
+
+## Sesión 2026-06-05k — Multiplicar columnas V_TIA/V_ADC × 4 señales
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambio
+- Las 8 columnas V_TIA/V_ADC del CSV del sweep test se han expandido a 32 (4 señales × 8 estadísticos)
+- Prefijos: `LED1_`, `LED2_`, `ALED1_`, `ALED2_`
+- Señal → buffer → RG usado:
+  - `LED1_` → `_buf["IR"]` → `rg1_ohm` (rg1_str de la UI/combo)
+  - `LED2_` → `_buf["RED"]` → `rg2_ohm` (rg2_str de la UI/combo)
+  - `ALED1_` → `_buf["IR_Amb"]` → `rg1_ohm` (mismo TIA que LED1)
+  - `ALED2_` → `_buf["RED_Amb"]` → `rg2_ohm` (mismo TIA que LED2)
+- `_write_row`: bucle sobre 4 pares (buf_key, rg_ohm); si el buffer está vacío → 8 strings vacíos
+- `_CSV_HEADER` actualizado: 60 → 84 columnas
+
+---
+
+## Sesión 2026-06-06a — SIGNAL STATS: V_TIA y V_ADC a 3 decimales
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambio
+- Columnas V_TIA y V_ADC en la tabla SIGNAL STATS: formato `:.2f` → `:.3f` (L9849-9850)
