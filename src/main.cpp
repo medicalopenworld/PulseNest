@@ -666,6 +666,10 @@ static void process_command(char* cmd_buf, int cmd_len) {
         uint8_t chk = frame_xor_chk(buf + 1, n - 1);
         snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
         Serial_print_locked(buf);
+    } else if (strcmp(cmd_buf, "$RESET") == 0) {
+        Serial_printf("# Resetting...\n");
+        vTaskDelay(pdMS_TO_TICKS(50));
+        ESP.restart();
     } else if (strncmp(cmd_buf, "$SET,", 5) == 0) {
         char* star = strrchr(cmd_buf, '*');
         if (star && (star - cmd_buf) >= 5) {
@@ -693,6 +697,7 @@ static void process_command(char* cmd_buf, int cmd_len) {
 //   '$CFG?\n'     → emit $CFG frame with current AFE4490 configuration
 //   '$SET,k,v*XX' → set hardware parameter k to value v (XOR checksum verified)
 //   '$DIAG?\n'    → run AFE4490 diagnostics, emit $DIAG,XXXXXX*YY frame
+//   '$RESET\n'    → soft-reset via ESP.restart() (works over Serial and UDP)
 // Serial: multi-byte commands are accumulated until '\n'.
 // UDP: each datagram contains one complete command line (no accumulation needed).
 // OTA: g_ota_server.handleClient() is polled here when WiFi is active.

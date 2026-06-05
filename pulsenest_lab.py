@@ -6884,8 +6884,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
     ]
 
     _CSV_HEADER = [
-        # ── probe_state check (first 2 columns) ───────────────────────────────
-        "probe_state_expected", "probe_state_check",
+        # ── probe_state check (first 3 columns) ───────────────────────────────
+        "probe_state_expected", "probe_state_calculated", "probe_state_check",
         # ── existing columns ──────────────────────────────────────────────────
         "label",
         "datetime", "LED1mA", "LED2mA", "RF1", "RF2", "RG1", "RG2", "ambdac_uA", "n_samples",
@@ -6899,7 +6899,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         "rsqi_ok_pct",
         "diag_code_mean", "diag_code_min", "diag_code_max",
         "probe_state_fw_mean", "probe_state_fw_min", "probe_state_fw_max",
-    ]  # 51 columns
+    ]  # 52 columns
 
     _ST_IDLE      = 0
     _ST_SETTLING  = 1
@@ -7390,15 +7390,21 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         label = self._edit_label.text().strip()
 
-        # ── probe_state check (first 2 columns) ───────────────────────────────
+        # ── probe_state check (first 3 columns) ───────────────────────────────
         expected_ps = self._combo_probe_state.currentData()
         ps_fw_vals  = self._buf["PROBE_STATE_FW"]
         ps_ok = all(v == expected_ps for v in ps_fw_vals) if ps_fw_vals else True
         ps_check_str = "OK" if ps_ok else "NOT OK"
         if not ps_ok:
             self._probe_mismatch_count += 1
+        _ps_names = {code: name for code, name in self._PROBE_STATES}
+        if ps_fw_vals:
+            ps_calc_mode = max(set(ps_fw_vals), key=ps_fw_vals.count)
+            ps_calc_str  = _ps_names.get(ps_calc_mode, str(ps_calc_mode))
+        else:
+            ps_calc_str = ""
 
-        row = [expected_ps, ps_check_str,
+        row = [expected_ps, ps_calc_str, ps_check_str,
                label, now_str, led1, led2, rf1_str, rf2_str, rg1_str, rg2_str, amb, len(self._buf["IR"])]
         # Pre-compute stats for each signal
         stats = {}
@@ -8942,20 +8948,30 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.diag_window.update_from_diag(raw)
 
     def _reset_esp32(self):
-        """Hardware-reset the ESP32 via RTS/DTR (ESP-Prog auto-reset circuit)."""
-        if not hasattr(self, 'ser') or self.ser is None or not self.ser.is_open:
+        """Reset the ESP32.
+        Serial mode: hardware reset via RTS/DTR (ESP-Prog auto-reset circuit).
+        UDP mode:    soft reset via $RESET command (ESP.restart() on firmware side).
+        """
+        if self._active_transport == "udp" and self._esp32_ip is not None:
+            try:
+                self.send_cmd(b"$RESET\n")
+                self.log("ESP32 soft-reset triggered ($RESET via UDP)")
+                self._post_reset_cfg_pending = True
+            except Exception as e:
+                self.log(f"Reset failed: {e}")
+        elif self.ser is not None and self.ser.is_open:
+            try:
+                self.ser.dtr = False   # IO0 high → run mode (not bootloader)
+                self.ser.rts = True    # EN low  → reset active
+                time.sleep(0.1)
+                self.ser.rts = False   # EN high → chip boots in run mode
+                # DTR stays False: IO0 remains high → normal firmware, not bootloader
+                self.log("ESP32 hard-reset triggered (RTS/DTR via ESP-Prog)")
+                self._post_reset_cfg_pending = True
+            except Exception as e:
+                self.log(f"Reset failed: {e}")
+        else:
             self.log("Not connected — cannot reset ESP32")
-            return
-        try:
-            self.ser.dtr = False   # IO0 high → run mode (not bootloader)
-            self.ser.rts = True    # EN low  → reset active
-            time.sleep(0.1)
-            self.ser.rts = False   # EN high → chip boots in run mode
-            # DTR stays False: IO0 remains high → normal firmware, not bootloader
-            self.log("ESP32 reset triggered (RTS/DTR via ESP-Prog)")
-            self._post_reset_cfg_pending = True  # $CFG? will be sent when firmware reports ready
-        except Exception as e:
-            self.log(f"Reset failed: {e}")
 
     def _open_hrlab_default(self):
         self.btn_hrlab.setChecked(True)

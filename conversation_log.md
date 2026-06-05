@@ -9699,3 +9699,127 @@ Revisión del umbral `rsqm_disconn_sub_mean = 5000.0f` contra datos reales del C
 ### Decisión
 - Umbral **mantenido en 5000** — el peor caso medido es 4013, margen ×1.25. Reducirlo sería arriesgado ante variación de unidad/temperatura del offset del TIA.
 - Comentario en `.h` corregido: eliminado el engañoso `LED_Sub≈0`, reemplazado por peor caso real y margen efectivo.
+
+---
+
+## Sesión 2026-06-04d — Arquitectura IncuNest, librería compartida, V17, defaults librería
+
+### Ficheros modificados
+- `C:\PRJ\MOW\IncuNest\Firmware\motherBoard\platformio.ini`
+- `C:\PRJ\MOW\IncuNest\Firmware\motherBoard\lib\incunest_afe4490` (symlink nuevo)
+- `C:\PRJ\MOW\PulseNest\platformio.ini`
+- `C:\PRJ\MOW\incunest_afe4490\incunest_afe4490.cpp`
+- `C:\PRJ\MOW\incunest_afe4490\incunest_afe4490_spec.md`
+
+### Trabajo realizado
+
+**Arquitectura IncuNest documentada:**
+- 2 MCUs: motherBoard (ESP32-S3, control/sensores/PID/SPO2) + Display_HMI (ESP32-S3 CrowPanel 7", LVGL/SquareLine)
+- Comunicados vía carpeta `shared/` (alarm_ids, control_types, protocol)
+- Display_HMI NO usa incunest_afe4490
+
+**Librería compartida (tarea completada):**
+- motherBoard usaba `incunest_afe4490.git#master` (GitHub). Migrado a symlink local igual que PulseNest.
+- Symlink: `motherBoard/lib/incunest_afe4490` → `C:\PRJ\MOW\incunest_afe4490`
+- Eliminada entrada GitHub de `lib_deps` en motherBoard/platformio.ini
+- Commit `4f7c641` en IncuNest (rama `photo_vs_afe_tests`)
+
+**Entorno V17 en PulseNest:**
+- Añadido `[env:incunest_V17]` en platformio.ini (DRDY_PIN=17, igual que V16)
+- Build OK: `.pio/build/incunest_V17/firmware.bin`
+- Flash OTA sobre IncuNest motherBoard en 192.168.137.84 (login in3admin/savinglives, POST /update)
+- Commit `4d0599e` en PulseNest
+
+**Canal UDP de comandos verificado:**
+- PulseNest V17 flasheado por OTA, recibe datos y acepta comandos por UDP sin cable serie
+
+**Defaults librería incunest_afe4490 (pendiente commit/versión):**
+- LED1/LED2 current: 11.7 mA → 20.0 mA (cuantiza a ~19.9 mA, código 34/256×150 mA)
+- RF1/RF2 (TIA gain): RF_500K → RF_100K
+- Spec actualizada: tabla de defaults, enum RF, tabla parámetros TX/RX, tabla de decisiones de registros
+
+### Decisiones de diseño
+- **OTA de IncuNest:** servidor HTTP en puerto 80, login puramente client-side (JS), `/update` accesible directamente con curl multipart.
+- **V17 vs V16 en PulseNest:** pin DRDY idéntico (pin 17), mismos pines SPI/CS. Solo difiere `BOARD_VERSION` string.
+- **Defaults 20 mA / RF_100K:** valor de test con sonda Medle. RF más bajo reduce ganancia pero evita saturación con LEDs más brillantes.
+
+### Versión librería bumped a v0.32
+- `incunest_afe4490.h`: v0.31 → v0.32 (`INCUNEST_AFE4490_VERSION`)
+- `library.json`: 0.27.0 → 0.32.0
+- `incunest_afe4490_spec.md`: título + entrada changelog v0.32
+- Commit `65ef0d8` en incunest_afe4490 (rama master)
+
+### Columna probe_state_calculated en AFESweepTestWindow CSV
+- Nueva columna `probe_state_calculated` insertada en 2ª posición (tras `probe_state_expected`, antes de `probe_state_check`)
+- Valor: moda de `PROBE_STATE_FW` durante la medición, convertida a string (`PROBE_DISCONNECTED`/`PROBE_NOT_APPLIED`/`PROBE_APPLIED`)
+- Conteo de columnas actualizado: 51 → 52
+
+---
+
+## Sesión 2026-06-05a
+
+### Tema: Corrección array stg2_rg_linear en incunest_afe4490
+
+### Pregunta planteada
+Relación entre RG (ohmios) y la amplificación asociada (ganancia lineal / dB) en la librería incunest_afe4490.
+
+### Análisis
+- El datasheet (Tabla 1, pág. 31) especifica los 5 ajustes de RG como resistencias físicas exactas: 100/150/200/300/400 kΩ.
+- La ganancia lineal de Stage 2 = RG / Ri, donde Ri = 100 kΩ (fijo interno).
+- Los valores exactos son: ×1, ×1.5, ×2, ×3, ×4.
+- El array `stg2_rg_linear` en `incunest_afe4490.cpp` usaba valores calculados desde las etiquetas dB (10^(dB/20)), introduciendo un error innecesario:
+  - 3.5 dB: 1.496 en lugar de 1.5
+  - 9.5 dB: 2.985 en lugar de 3.0
+  - 12 dB: 3.981 en lugar de 4.0
+
+### Decisión
+Corregir el array con los valores exactos del ratio RG/Ri según la Tabla 1 del datasheet.
+
+### Cambios
+- `incunest_afe4490.cpp:201`: `{ 1.0f, 1.496f, 2.0f, 2.985f, 3.981f }` → `{ 1.0f, 1.5f, 2.0f, 3.0f, 4.0f }`
+- Comentario actualizado para referenciar la fuente: datasheet Tabla 1, RG/Ri.
+
+---
+
+## Sesión 2026-06-05b
+
+### Tema: Derivación I_pleth desde ADC — corrección denominador ADC full-scale
+
+### Preguntas planteadas
+- Verificación de derivación de I_pleth desde la Equation 2 del datasheet (Steps 1-5).
+- Denominador correcto para convertir counts ADC a voltaje: 2²¹ o 2²¹−1.
+
+### Análisis / derivación validada
+- Step 1: LED1 = 2×((I_pleth+I_amb)×RF/Ri − I_cancel)×RG ✓
+- Step 2: ALED1 = 2×(I_amb×RF/Ri − I_cancel)×RG ✓
+- Step 3: LED1_ALED1 = 2×I_pleth×(RF/Ri)×RG ✓ (I_amb e I_cancel se cancelan)
+- Step 4: I_pleth = LED1_ALED1 × (Ri/(RF×RG×2)) ✓
+- Step 5: I_pleth (mA) = LED1_ALED1 × (Ri/(RF×RG×2)) × 1.2/(2²¹−1), con RF/RG en kΩ ✓
+
+### Decisión
+- Claude inicialmente propuso corregir 2²¹−1 → 2²¹ (convención teórica de ADC).
+- Alex corrigió: la Tabla 7 del datasheet especifica explícitamente que el código de fondo de escala positivo corresponde a +1.2 V → denominador correcto es **2²¹−1 = 2097151**.
+- El datasheet manda sobre la convención teórica.
+
+### Cambios
+- `incunest_afe4490.cpp:73,76`: comentarios `2097152.0f` (= 2²¹) → `2097151.0f` (= 2²¹−1).
+- Añadida nota en comentario: *"per datasheet Table 7, positive full-scale code maps to +1.2 V"*.
+
+---
+
+## Sesión 2026-06-05a
+
+### Ficheros modificados
+- `src/main.cpp`
+- `pulsenest_lab.py`
+
+### RESET ESP32 por UDP
+- Firmware: añadido `$RESET` en `process_command()` → llama `ESP.restart()` tras 50 ms
+- Firmware: comentario del bloque Cmd_Task actualizado con `$RESET`
+- Python: `_reset_esp32()` ampliado para enrutar por UDP (`send_cmd(b"$RESET\n")`) cuando `_active_transport == "udp"`, y por RTS/DTR (hard reset) cuando está en modo serial
+- Log diferenciado: "soft-reset" (UDP) vs "hard-reset" (serial)
+
+### Diferencias hard reset vs soft reset
+- Hard (RTS/DTR): baja línea EN físicamente, limpia RAM completamente, requiere cable
+- Soft ($RESET/ESP.restart()): reinicio software, RTC memory puede persistir, funciona sin cable
+- Para uso normal son equivalentes; hard reset es más fiable ante bloqueos profundos del scheduler
