@@ -10092,3 +10092,235 @@ Preocupación por inconsistencia de nombres para las mismas magnitudes físicas/
 
 ### Estado
 Build OK (RAM 18.7%, Flash 29.7%). Upload OK (COM15, incunest_V16). Firmware en la placa.
+
+---
+
+## Sesión 2026-06-06e — Refactor nomenclatura: eliminar "IR"/"RED" de UI y código Python
+
+### Contexto
+Continuación de la sesión 2026-06-06d. Tras renombrar las señales en firmware y librería (LED1/LED2/led1_sub/led2_sub), quedaban ocurrencias de "IR" y "RED" como etiquetas de datos en pulsenest_lab.py.
+
+### Cambios implementados
+
+**pulsenest_lab.py** — Commit `10d1a41`:
+
+#### Atributos de instancia
+- `self.data_ir` → `self.data_led1`, `self.data_red` → `self.data_led2`
+- `self.curve_ir` → `self.curve_led1`, `self.curve_red` → `self.curve_led2`
+- `self.curve_dc_ir/red` → `self.curve_dc_led1/led2`, `self.curve_rms_ir/red` → `self.curve_rms_led1/led2`
+- `self.check_ir_raw` → `self.check_led1_raw`, `self.check_red_raw` → `self.check_led2_raw`
+- QSettings keys actualizadas en consecuencia
+
+#### Claves internas de buffers
+- `_SIGNALS = ["RED","IR",...]` → `["LED2","LED1",...]`
+- `self._buf["IR"]` → `self._buf["LED1"]`, `self._buf["RED"]` → `self._buf["LED2"]`
+- Loop tuples en sweep CSV writer: `("IR",rg1_ohm)` → `("LED1",rg1_ohm)`, etc.
+
+#### _COLS (replay CSV)
+- Display label: `"RED"` → `"LED2 (RED)"`, `"IR"` → `"LED1 (IR)"`
+- CSV column name: `"RED"` → `"LED2"`, `"IR"` → `"LED1"`
+
+#### _STATS_SIGNALS (SIGNAL STATS table)
+- `("IR", "data_ir", ...)` → `("LED1 (IR)", "data_led1", ...)`
+- `("RED", "data_red", ...)` → `("LED2 (RED)", "data_led2", ...)`
+
+#### UI display strings
+- Plot titles HTML: `>IR<` → `>LED1 (IR)<`, `>RED<` → `>LED2 (RED)<`
+- `QLabel("IR")` → `QLabel("LED1 (IR)")`, `QLabel("RED")` → `QLabel("LED2 (RED)")`
+- Curve names: `name="IR (Raw)"` → `"LED1 (IR)"`, `name="RED (Raw)"` → `"LED2 (RED)"`, etc.
+- Checkbox labels: `"IR (raw)"` → `"LED1 (IR)"`, `"Ambient IR"` → `"Ambient LED1"`, etc.
+- Tooltip titles: actualizados en ambas clases PPGPlotsWindow y PPGSignalsWindow
+- Ejes de grupo: `"DC  (IR, RED)"` → `"DC  (LED1, LED2)"`, `"RMS AC  (IR, RED)"` → `"RMS AC  (LED1, LED2)"`
+- `_val_rows`: `"DC IR"` → `"DC LED1 (IR)"`, etc.
+- `is_ir` local var → `is_led1`
+
+#### Cabeceras CSV de exportación
+- `RED,IR,ALED2` → `LED2,LED1,ALED2` en todas las cabeceras de fichero de exportación
+
+#### Comentarios y docstrings
+- Todos los comentarios de layout de frame M1/M2 actualizados: `[3]=RED [4]=IR` → `[3]=LED2 [4]=LED1`
+- Docstrings de ventanas, tooltips de botones PPGPLOTS/SIGNALS, comentarios internos
+
+### Decisiones
+- Formato "LED1 (IR)" / "LED2 (RED)" aprobado por el usuario para displays (con espacio antes del paréntesis)
+- Texto descriptivo largo en tooltips que usa "IR LED" / "RED LED" como adjetivos de hardware: conservado (no es etiqueta de variable)
+- Etiquetas cortas como identificadores: todas actualizadas
+
+### Estado
+`PulseNest` master `10d1a41`. Script no relanzado aún (relanzar manualmente).
+
+---
+
+## Sesión 2026-06-06f — Refactor LUTs físicas y codecs de string en librería
+
+### Contexto
+Análisis del problema de nomenclatura y traducción de dominios para parámetros hardware AFE4490 (LED current, RF, CF, RG, AMBDAC). Se decidió abordar la librería en primera fase.
+
+### Problema identificado
+Triple duplicación de LUTs físicas:
+- `tia_rf_ohm[]`, `tia_cf_pF[]`, `stg2_rg_linear[]` en anonymous namespace del .cpp (fuente de verdad, inaccesible)
+- `tia_gain_str()`, `tia_cf_str()`, `stage2_str()` en main.cpp (copia parcial como strings)
+- Dicts `_STG2_RG_OHM` etc. en pulsenest_lab.py (tercera copia)
+
+### Cambios implementados
+
+**incunest_afe4490.h** — Commit `661ff32` (librería):
+- `AFE4490Stage2Gain`: comentarios dB → ×N → RG (kΩ) en cada enumerador
+- Tablas `constexpr` públicas (fuente de verdad única):
+  - `kAFE_RF_OHM[7]` — AFE4490TIAGain → Ω
+  - `kAFE_CF_PF[6]` — AFE4490TIACF → pF
+  - `kAFE_STG2_RG_OHM[5]` — AFE4490Stage2Gain → RG (Ω)
+  - `kAFE_STG2_LINEAR[5]` — AFE4490Stage2Gain → ganancia lineal (×)
+  - `kAFE_STG2_RI_OHM` — Ri fijo = 100 kΩ
+- Inline string codecs (afeRFToStr/afeStrToRF, afeCFToStr/afeStrToCF, afeStg2ToStr/afeStrToStg2)
+
+**incunest_afe4490.cpp**:
+- Eliminados `tia_rf_ohm[]`, `tia_cf_pF[]`, `stg2_rg_linear[]` del anonymous namespace
+- Todos los usos reemplazados con `kAFE_RF_OHM`, `kAFE_CF_PF`, `kAFE_STG2_LINEAR`
+- `rf_code[]`, `cf_code[]`, `stg2_gain_code[]` conservados (puramente internos — códigos de registro)
+
+**main.cpp** — Commit `344a27e`:
+- Eliminadas 6 funciones locales (3 to-string + 3 parse)
+- Sustituidas por las inline del header
+
+### Decisiones de diseño
+- Sufijo de dominio en nombre: `kAFE_RF_OHM` (Ω), `kAFE_CF_PF` (pF), `kAFE_STG2_LINEAR` (×)
+- `AFE4490Stage2Gain` mantiene nombre en dB (convención del datasheet) + comentario con ×N y kΩ
+- AMBDAC: valor en µA = valor de registro (1:1, sin LUT) — ningún cambio necesario
+- LED current: float en mA, conversión a DAC solo en `_apply_analog_regs()` — ningún cambio necesario
+- Fase 2 (Python): reemplazar dicts locales `_STG2_RG_OHM` etc. con valores del $CFG frame extendido o con constantes documentadas en la spec
+
+### Estado
+Build OK (RAM 18.7%, Flash 29.7%). librería `incunest_afe4490` master `661ff32`. PulseNest master `344a27e`.
+
+---
+
+## Sesión 2026-06-06 (continuación) — Fase 2: Python LUTs eliminadas
+
+### Tema
+Fase 2 del plan de nomenclatura/dominios de parámetros AFE4490: eliminar las copias locales de tablas físicas en `pulsenest_lab.py` haciendo al firmware la única fuente de verdad.
+
+### Cambios implementados
+
+**main.cpp** — Commit `15c70b2`:
+- `buf[400]` → `buf[600]` (frame más largo)
+- `$CFG` extendido con valores físicos: `rf1_ohm`, `cf1_pF`, `rg1_ohm`, `rg1_x`, `rf2_ohm`, `cf2_pF`, `rg2_ohm`, `rg2_x`, `ri_ohm`
+- Valores tomados directamente de `kAFE_RF_OHM[]`, `kAFE_CF_PF[]`, `kAFE_STG2_RG_OHM[]`, `kAFE_STG2_LINEAR[]`, `kAFE_STG2_RI_OHM` (constexpr en header)
+
+**pulsenest_lab.py** — Commit `15c70b2`:
+- Eliminados 4 class-level dicts de `PPGMonitor`: `_STG2_RG_OHM`, `_STG2_RI_OHM`, `_STG2_RG_LINEAR`, `_TIA_RF_OHM`
+- `_compute_ot()`: nueva firma `(led_sub, led_ma_str, rf_ohm, rg_x)` — floats directos desde `_last_cfg`
+- SIGNAL STATS V_TIA: usa `_last_cfg.get("rg1_ohm"/"rg2_ohm"/"ri_ohm")`
+- `AFESweepTestWindow._write_row()`: OT y V_TIA usan `self.parent()._last_cfg` — eliminados inline dicts `_rf_ohm`, `_rg_lin`, `_STG2_RG_OHM`
+
+### Decisiones de diseño
+- Opción elegida: extender $CFG frame (vs. módulo constantes Python separado) — Python lee valores físicos del firmware directamente
+- `AFESweepTestWindow` accede a `_last_cfg` via `self.parent()` (PPGMonitor), válido porque se instancia como `AFESweepTestWindow(self)` donde `self` es PPGMonitor
+- Defaults seguros: si `_last_cfg` vacío (antes del primer $CFG), se usan defaults `rf_ohm=100e3`, `ri_ohm=100e3`, `rg_ohm=100e3`, `rg_x=1.0`
+- `_STG2_RG_LINEAR` tenía precisión incorrecta en Python (1.496, 2.985) — corregido implícitamente al eliminar los dicts: ahora los valores vienen del firmware (`kAFE_STG2_LINEAR[] = {1.0, 1.5, 2.0, 3.0, 4.0}`)
+
+### Estado
+Firmware build OK (RAM 18.7%, Flash 29.7%). Python syntax OK. Commit `15c70b2` en master.
+
+---
+
+## Sesión 2026-06-06 (continuación 2) — Fix SW subtraction led1_sub/led2_sub
+
+### Tema
+Corrección del desbordamiento 22-bit en los registros HW de resta ambiental del AFE4490.
+
+### Problema
+`REG_LED1_ALED1VAL` y `REG_LED2_ALED2VAL` realizan la resta LED−ALED internamente en 22 bits. Cuando los operandos tienen signos opuestos cerca del rail (e.g. led1 ≈ +2 097 151, aled1 ≈ −2 097 152), el resultado correcto (~+4 194 303) excede el rango 22-bit (~2 097 151) y el chip entrega un valor incorrecto.
+
+### Solución adoptada
+Eliminar las dos lecturas SPI de los registros de resta HW y sustituirlas por resta SW en int32_t, en el único punto donde se decide qué valor entra al sistema (antes del call a `_process_sample()`).
+
+**incunest_afe4490.cpp** — Commit `63b34c2`:
+- `led2_diff = led2 - aled2` (int32_t) en lugar de `_sign_extend_22(_read_spi_raw(REG_LED2_ALED2VAL))`
+- `led1_diff = led1 - aled1` (int32_t) en lugar de `_sign_extend_22(_read_spi_raw(REG_LED1_ALED1VAL))`
+- Líneas originales conservadas comentadas con explicación del desbordamiento
+- 2 lecturas SPI menos por ciclo (ganancia menor)
+
+**incunest_afe4490_spec.md** — Commit `63b34c2`:
+- §12.2: tabla de registros ADC actualizada — 4 leídos, 2 retirados; rationale del overflow documentado
+- cycle_mean/max: descripción actualizada (4 channels + SW subtraction)
+
+**main.cpp** — Commit `9982ab7`:
+- Bloque `CHK_AMB_SUB` marcado como obsoleto (siempre devolvería 0 mismatches)
+
+### Análisis de consecuencias
+- `_diag_last_led1_sub`: se asigna desde `led1_diff` (ahora SW) → holdoff diagnóstico usa valor correcto sin cambios
+- `_process_sample()`, RSQM, SpO2, HR1/2/3: sin cambios de código — consumen `led1_sub` sin saber cómo se calculó
+- Desincronización temporal: NO es un problema — ambos operandos vienen del mismo ciclo PRF; la ventana temporal entre LED y ALED es idéntica con resta HW o SW
+
+### Decisiones de diseño
+- Opción elegida: corrección en el punto de lectura SPI (antes de que ningún código vea el valor HW), no en `_process_sample()` ni en `AFE4490Data`
+- Ventaja frente a otras opciones: cubre automáticamente ambos call sites de `_process_sample()` (path normal + holdoff diagnóstico), sin cambios en cascada
+
+### Estado
+Build OK. Librería `incunest_afe4490` master `63b34c2` publicado en GitHub. PulseNest master `9982ab7`.
+
+---
+
+## Sesión 2026-06-06 (continuación 3) — Renombrado AFE4490Config/miembros privados
+
+### Tema
+Refactorización de nombres de miembros privados y campos públicos de AFE4490Config para reflejar el parámetro físico en lugar del nombre del registro del datasheet.
+
+### Cambios (commits 588ae42 librería + 7bb3d1b PulseNest)
+
+| Anterior | Nuevo | Motivo |
+|---|---|---|
+| `afe_ensepgain` | `afe_sep_tia_en` | Nombre de bit registro crudo → semántica clara |
+| `afe_tia_gain_led1/2` | `afe_tia_rf_led1/2` | Es una resistencia RF, no una "ganancia" |
+| `afe_stage2_gain_led1/2` | `afe_stg2_rg_led1/2` | Es la resistencia RG de Stage2 |
+| `afe_stage2_en1/2` | `afe_stg2_en_led1/2` | Sufijo canal consistente `_led1/_led2` |
+
+### Scope
+- `incunest_afe4490.h` — struct público AFE4490Config + miembros privados + comentarios
+- `incunest_afe4490.cpp` — todos los usos internos
+- `incunest_afe4490_spec.md` — spec actualizada
+- `main.cpp` — accesos vía AFE4490Config
+- `pulsenest_lab.py` — tooltips con referencias a nombres de campo
+
+### Invariantes
+- Wire protocol keys ($SET/$CFG: `ensepgain`, `stage2en1`, `stage2en2`) sin cambio
+- Tipos de enum (`AFE4490TIAGain`, `AFE4490Stage2Gain`) sin cambio — fricción aceptada
+- Pendiente: resolver fricción entre nombre del campo (Ω) y tipo del enum (dB/labels)
+
+### Estado
+Build OK. librería master `588ae42` publicado en GitHub. PulseNest master `7bb3d1b`.
+
+---
+
+## Sesión 2026-06-06 (continuación 4) — Renombrado enums AFE4490RF/AFE4490RG
+
+### Cambios (commits ae3e07f librería + 7b5f698 PulseNest)
+
+| Anterior | Nuevo |
+|---|---|
+| `AFE4490TIAGain` | `AFE4490RF` |
+| `AFE4490Stage2Gain` | `AFE4490RG` |
+| `GAIN_0DB…GAIN_12DB` | `RG_100K…RG_400K` |
+| `afeStg2ToStr` / `afeStrToStg2` | `afeRGToStr` / `afeStrToRG` |
+
+### Resultado final — cadena de nombres consistente end-to-end
+`AFE4490RF::RF_100K` → `kAFE_RF_OHM[(int)val]` → `_afe_tia_rf_led1`
+`AFE4490RG::RG_100K` → `kAFE_STG2_RG_OHM[(int)val]` → `_afe_stg2_rg_led1`
+
+Wire protocol ($SET/$CFG) sin cambio. Build OK.
+
+---
+
+## Sesión 2026-06-06b
+
+### Tema: Fix cierre de UdpComWindow al cerrar ventana principal
+
+### Problema
+Al cerrar la ventana principal de pulsenest_lab.py, `UdpComWindow` quedaba abierta. La ventana se creó en su momento pero se omitió añadirla al `closeEvent` de `PPGMonitor`.
+
+### Causa
+`udpcom_window` no estaba en el bloque de cierre de `closeEvent` (`pulsenest_lab.py:10458`), a diferencia de todas las demás ventanas secundarias.
+
+### Cambio
+- `pulsenest_lab.py`: añadidas 3 líneas en `closeEvent` para cerrar `udpcom_window` junto a `serialcom_window`.
