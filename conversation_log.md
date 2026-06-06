@@ -10034,3 +10034,61 @@ El ESP32 se conectaba a la última WiFi conocida (WiFi de casa) en lugar del hot
 
 ### Estado
 Build OK. Flash pendiente (ESP32 no accesible por OTA ni COM15 en este momento).
+
+---
+
+## Sesión 2026-06-06d — Auditoría y refactoring de nomenclatura de magnitudes
+
+### Motivación
+Preocupación por inconsistencia de nombres para las mismas magnitudes físicas/matemáticas a través de 4 capas: datasheet AFE4490, firmware (librería), script Python y documentación. El problema central no era las unidades sino que el nombre no comunicaba qué magnitud representaba ni a qué dominio pertenecía.
+
+### Auditoría — problemas identificados
+1. **La señal ambient-corrected tenía 6 nombres distintos** según la capa: `led1_aled1` (struct), `IR_Sub` (frame), `ir_sub` (Python), `LED1_Sub` (dict), `ir_corr` (parámetro `_update_spo2`), `ir` (variable local interna)
+2. **Frame usaba `IR`/`RED` para señales hardware** — violaba la regla de dominio (IR/RED = fisiológico, no ADC crudo)
+3. **`pi` colisionaba con π** — `constexpr float pi = 3.14159...` y `float pi` (Perfusion Index) en el mismo fichero `.cpp`
+4. **`pmod_ir` en el diccionario ≠ `pi` en el código** — misma magnitud, dos nombres en el proyecto
+5. **`R` tenía 4 nombres**: `R` (Python/dict), `spo2_r` (struct), `SpO2_R` (frame), `R_fw` (calibración Python)
+6. **`ppg`/`PPGdisp`/`ppg_disp`** — 3 nombres para la señal de visualización
+7. **Spec `pulsenest_lab_spec.md` §4.2 desactualizada**: incluía `<LibID>` inexistente, faltaban `<RSQI>/<DiagCode>/<ProbeState>`
+
+### Decisión — 6 reglas de nomenclatura formalizadas
+- **Regla 1:** Fuente de autoridad por dominio (datasheet → hardware, ISO 80601-2-61 → clínico)
+- **Regla 2:** Sin mezcla de dominios — señales ADC crudas nunca se nombran con terminología fisiológica
+- **Regla 3:** Sin colisión semántica — un nombre, un único significado en el mismo ámbito
+- **Regla 4:** Sufijos de operación para señales derivadas: `_sub` (sustracción ambiental), `_disp` (solo display)
+- **Regla 5:** Un único nombre canónico por magnitud, documentado en el diccionario
+- **Regla 6:** Consistencia de case entre capas: `snake_case` en C++/Python, `UPPER_SNAKE` en frame $M1
+
+### Nombres canónicos adoptados
+
+| Magnitud | Antes | Después |
+|---|---|---|
+| Señal IR ambient-corrected | `led1_aled1` / `IR_Sub` / `ir_sub` / `ir_corr` | `led1_sub` / `LED1_SUB` / `led1_sub` |
+| Señal RED ambient-corrected | `led2_aled2` / `RED_Sub` / `red_sub` / `red_corr` | `led2_sub` / `LED2_SUB` / `led2_sub` |
+| ADC raw en frame | `IR` / `RED` / `IR_Amb` / `RED_Amb` | `LED1` / `LED2` / `ALED1` / `ALED2` |
+| PPG visualización | `ppg` (struct) / `PPGdisp` (spec) | `ppg_disp` / `PPG_DISP` |
+| Perfusion Index | `pmod_ir` (dict) / `pi` (código) | `pi` unificado (dict actualizado) |
+| Constante matemática π | `pi` (.cpp anon namespace) | `kPi` |
+| SpO2 ratio en frame | `SpO2_R` | `R` |
+
+### Preservados deliberadamente
+- `REG_LED1_ALED1VAL` / `REG_LED2_ALED2VAL` — nombres de registro del datasheet (Regla 1)
+- `spo2_r` en struct C++ — prefijo de namespace aceptable; `R` sigue siendo el nombre canónico (Regla 5)
+- Variables locales `ir`/`red` dentro de algoritmos fisiológicos — cruce de dominio intencional y correcto
+- Texto de UI visible al usuario ("Ambient IR", "IR (clean)") — legibilidad humana prioritaria
+
+### Ficheros modificados
+- `incunest_afe4490/incunest_afe4490.h` — struct `AFE4490Data`, enums, parámetros, members privados
+- `incunest_afe4490/incunest_afe4490.cpp` — implementación completa + `kPi`
+- `incunest_afe4490/examples/basic/main.cpp` — referencias al struct
+- `PulseNest/src/main.cpp` — frame comment y referencias al struct
+- `PulseNest/pulsenest_lab.py` — variables, parámetros, widgets, QSettings keys, comentarios
+- `PulseNest/pulsenest_lab_spec.md` — frame $M1 corregido y completado (RSQI/DiagCode/ProbeState añadidos, LibID eliminado)
+- `memory/project_nomenclature_dictionary.md` — reescrito con las 6 reglas y tablas canónicas
+
+### Commits
+- `incunest_afe4490` master `5431b83` — refactor nomenclatura librería
+- `PulseNest` master `5c32a45` — refactor nomenclatura firmware + script + spec
+
+### Estado
+Build OK (RAM 18.7%, Flash 29.7%). Upload OK (COM15, incunest_V16). Firmware en la placa.
