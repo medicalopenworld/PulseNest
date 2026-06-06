@@ -303,13 +303,13 @@ static void send_cfg_frame() {
     AFE4490Config cfg = afe.getConfig();
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char buf[400];
+    char buf[600];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$CFG,sr=%u,numav=%u,led1=%.2f,led2=%.2f,range=%u"
         ",ensepgain=%d"
-        ",tia1=%s,cf1=%s,stg21=%s,stage2en1=%d"
-        ",tia2=%s,cf2=%s,stg22=%s,stage2en2=%d"
-        ",ambdac=%u"
+        ",tia1=%s,rf1_ohm=%.0f,cf1=%s,cf1_pF=%.0f,stg21=%s,rg1_ohm=%.0f,rg1_x=%.4f,stage2en1=%d"
+        ",tia2=%s,rf2_ohm=%.0f,cf2=%s,cf2_pF=%.0f,stg22=%s,rg2_ohm=%.0f,rg2_x=%.4f,stage2en2=%d"
+        ",ambdac=%u,ri_ohm=%.0f"
         ",ch=%s,flt=%s"
         ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
         ",spo2a=%.4f,spo2b=%.4f"
@@ -317,9 +317,15 @@ static void send_cfg_frame() {
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_ensepgain ? 1 : 0,
-        afeRFToStr(cfg.afe_tia_gain_led1), afeCFToStr(cfg.afe_tia_cf_led1), afeStg2ToStr(cfg.afe_stage2_gain_led1), cfg.afe_stage2_en1 ? 1 : 0,
-        afeRFToStr(cfg.afe_tia_gain_led2), afeCFToStr(cfg.afe_tia_cf_led2), afeStg2ToStr(cfg.afe_stage2_gain_led2), cfg.afe_stage2_en2 ? 1 : 0,
-        (unsigned)cfg.afe_ambdac_uA,
+        afeRFToStr(cfg.afe_tia_gain_led1), kAFE_RF_OHM[(int)cfg.afe_tia_gain_led1],
+        afeCFToStr(cfg.afe_tia_cf_led1),   kAFE_CF_PF[(int)cfg.afe_tia_cf_led1],
+        afeStg2ToStr(cfg.afe_stage2_gain_led1), kAFE_STG2_RG_OHM[(int)cfg.afe_stage2_gain_led1], kAFE_STG2_LINEAR[(int)cfg.afe_stage2_gain_led1],
+        cfg.afe_stage2_en1 ? 1 : 0,
+        afeRFToStr(cfg.afe_tia_gain_led2), kAFE_RF_OHM[(int)cfg.afe_tia_gain_led2],
+        afeCFToStr(cfg.afe_tia_cf_led2),   kAFE_CF_PF[(int)cfg.afe_tia_cf_led2],
+        afeStg2ToStr(cfg.afe_stage2_gain_led2), kAFE_STG2_RG_OHM[(int)cfg.afe_stage2_gain_led2], kAFE_STG2_LINEAR[(int)cfg.afe_stage2_gain_led2],
+        cfg.afe_stage2_en2 ? 1 : 0,
+        (unsigned)cfg.afe_ambdac_uA, kAFE_STG2_RI_OHM,
         channel_str(cfg.ppgdisp_channel), filter_str(cfg.ppgdisp_filter_type),
         cfg.ppgdisp_f_low_hz, cfg.ppgdisp_f_high_hz,
         cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,

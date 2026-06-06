@@ -7466,21 +7466,21 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             for sig in self._SIGNALS:
                 row.append(stats[sig][stat_idx])
         # OT1 / OT2: LED_Sub_mean / (LED_mA × RF_Ω × RG_linear)
-        _rf_ohm = {"10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
-                   "250K": 250e3, "500K": 500e3, "1M": 1e6}
-        _rg_lin = {"0dB": 1.0, "3.5dB": 1.5, "6dB": 2.0, "9.5dB": 3.0, "12dB": 4.0}
+        # Physical values sourced from firmware $CFG frame via parent monitor's _last_cfg
+        _mon = self.parent()
+        _cfg = _mon._last_cfg if _mon is not None and hasattr(_mon, "_last_cfg") else {}
         try:
             _led1_ma = float(led1)
-            _rf1 = _rf_ohm.get(str(rf1_str), None)
-            _rg1 = _rg_lin.get(str(rg1_str), None)
+            _rf1 = float(_cfg.get("rf1_ohm", 0)) or None
+            _rg1 = (float(_cfg.get("rg1_x", 1.0)) if _cfg.get("stage2en1", "0") == "1" else 1.0) if _rf1 else None
             ot1 = f"{float(stats['LED1_SUB'][0]) / (_led1_ma * _rf1 * _rg1):.4f}" \
                   if (_rf1 and _rg1 and _led1_ma) else ""
         except Exception:
             ot1 = ""
         try:
             _led2_ma = float(led2)
-            _rf2 = _rf_ohm.get(str(rf2_str), None)
-            _rg2 = _rg_lin.get(str(rg2_str), None)
+            _rf2 = float(_cfg.get("rf2_ohm", 0)) or None
+            _rg2 = (float(_cfg.get("rg2_x", 1.0)) if _cfg.get("stage2en2", "0") == "1" else 1.0) if _rf2 else None
             ot2 = f"{float(stats['LED2_SUB'][0]) / (_led2_ma * _rf2 * _rg2):.4f}" \
                   if (_rf2 and _rg2 and _led2_ma) else ""
         except Exception:
@@ -7510,14 +7510,13 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
 
         # ── V_TIA / V_ADC (LED1, LED2, ALED1, ALED2) ─────────────────────────
         # Formula (datasheet eq.2, p.30): V_TIA = (V_ADC/(2×RG) + I_CANCEL) × RI
-        _STG2_RG_OHM = {"0dB": 100e3, "3.5dB": 150e3, "6dB": 200e3,
-                        "9.5dB": 300e3, "12dB": 400e3}
+        # Physical values sourced from firmware $CFG frame via parent monitor's _last_cfg
         _ADC_FS  = 2**21 - 1   # positive full-scale code (datasheet Table 7)
         _ADC_FSR = 1.2         # V
-        _RI      = 100e3       # Ω — fixed internal resistor
+        _RI      = float(_cfg.get("ri_ohm",  100e3))
         i_cancel = amb * 1e-6  # µA → A
-        rg1_ohm  = _STG2_RG_OHM.get(rg1_str, 200e3)
-        rg2_ohm  = _STG2_RG_OHM.get(rg2_str, 200e3)
+        rg1_ohm  = float(_cfg.get("rg1_ohm", 200e3))
+        rg2_ohm  = float(_cfg.get("rg2_ohm", 200e3))
         def _vstats_tia(vals):
             n = len(vals)
             m = sum(vals) / n
@@ -9719,32 +9718,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _VTG_DEFAULT = QtGui.QColor("#121212")  # no data
     _ADC_FSR             = 1.2            # V — AFE4490 ADC full-scale voltage (±1.2 V)
     _ADC_FS_COUNTS       = 2 ** 21 - 1    # 22-bit signed: positive full-scale code (datasheet Table 7)
-    _STG2_RG_OHM         = {              # Stage 2 gain string → RG resistor value Ω (Table 1, datasheet p.31)
-        "0dB":   100e3,   # ×1
-        "3.5dB": 150e3,   # ×1.5
-        "6dB":   200e3,   # ×2
-        "9.5dB": 300e3,   # ×3
-        "12dB":  400e3,   # ×4
-    }
-    _STG2_RI_OHM         = 100e3         # RI fixed internal resistor Ω (datasheet p.30)
-    _STG2_RG_LINEAR      = {             # Stage 2 linear gain (RG/RI) — matches firmware stg2_rg_linear[]
-        "0dB":   1.0, "3.5dB": 1.496, "6dB": 2.0, "9.5dB": 2.985, "12dB": 3.981,
-    }
-    _TIA_RF_OHM          = {             # TIA feedback resistor string → Ω
-        "10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
-        "250K": 250e3, "500K": 500e3, "1M": 1e6,
-    }
-
-    def _compute_ot(self, led_sub, led_ma_str, tia_str, stg2_str, stage2en_str):
+    def _compute_ot(self, led_sub, led_ma_str, rf_ohm, rg_x):
         """Optical transmittance: LED_Sub / (LED_mA × RF_Ω × RG_linear).
+        rf_ohm and rg_x are physical floats from _last_cfg (rf1_ohm/rf2_ohm, rg1_x/rg2_x).
         Returns 0.0 if config is unavailable or denominator is zero."""
         try:
             led_ma = float(led_ma_str)
-            rf     = self._TIA_RF_OHM[tia_str]
-            rg     = self._STG2_RG_LINEAR.get(stg2_str, 1.0) if str(stage2en_str) == "1" else 1.0
-            denom  = led_ma * rf * rg
+            denom  = led_ma * float(rf_ohm) * float(rg_x)
             return float(led_sub) / denom if denom != 0.0 else 0.0
-        except (KeyError, ValueError, TypeError, ZeroDivisionError):
+        except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
 
     def _on_stats_cell_clicked(self, row, col):
@@ -9857,13 +9839,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
             # cols 1-2: V_TIA, V_ADC — only for LED1 (IR), LED2 (RED), ALED1, ALED2 (signal rows 0-3)
             if sig_idx in self._STATS_RAW_ROWS and buf:
                 is_led1   = sig_idx in {0, 2}   # LED1 (IR) / ALED1 → stg21, tia1; LED2 (RED) / ALED2 → stg22, tia2
-                stg2_str  = self._last_cfg.get("stg21" if is_led1 else "stg22", "0dB")
-                rg_ohm    = self._STG2_RG_OHM.get(stg2_str, 100e3)
+                rg_ohm    = float(self._last_cfg.get("rg1_ohm" if is_led1 else "rg2_ohm", 100e3))
+                ri_ohm    = float(self._last_cfg.get("ri_ohm", 100e3))
                 i_cancel  = float(self._last_cfg.get("ambdac", "0")) * 1e-6  # µA → A
                 v_adc     = mean / self._ADC_FS_COUNTS * self._ADC_FSR
                 # Eq.2 datasheet p.30: V_DIFF = 2×(I_PD×RF/RI − I_CANCEL)×RG
                 # → V_TIA = I_PD×RF = (V_ADC/(2×RG) + I_CANCEL) × RI
-                v_tia     = (v_adc / (2 * rg_ohm) + i_cancel) * self._STG2_RI_OHM
+                v_tia     = (v_adc / (2 * rg_ohm) + i_cancel) * ri_ohm
                 vtia_str  = f"{v_tia:.3f} V"
                 vadc_str  = f"{v_adc:.3f} V"
             else:
@@ -10132,11 +10114,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self.data_probe_state.append(0)
                             cfg = self._last_cfg
                             self.data_ot_led1.append(self._compute_ot(
-                                p[7], cfg.get("led1", "0"), cfg.get("tia1", ""),
-                                cfg.get("stg21", "0dB"), cfg.get("stage2en1", "0")))
+                                p[7], cfg.get("led1", "0"),
+                                cfg.get("rf1_ohm", 100e3),
+                                float(cfg.get("rg1_x", 1.0)) if cfg.get("stage2en1", "0") == "1" else 1.0))
                             self.data_ot_led2.append(self._compute_ot(
-                                p[6], cfg.get("led2", "0"), cfg.get("tia2", ""),
-                                cfg.get("stg22", "0dB"), cfg.get("stage2en2", "0")))
+                                p[6], cfg.get("led2", "0"),
+                                cfg.get("rf2_ohm", 100e3),
+                                float(cfg.get("rg2_x", 1.0)) if cfg.get("stage2en2", "0") == "1" else 1.0))
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # LED1_SUB for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
