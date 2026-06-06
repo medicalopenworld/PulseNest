@@ -251,40 +251,8 @@ void stop_incunest() {
     afe.stop();
 }
 
-// ── AFE4490Config enum → string helpers ───────────────────────────────────────
-static const char* tia_gain_str(AFE4490TIAGain g) {
-    switch (g) {
-        case AFE4490TIAGain::RF_10K:  return "10K";
-        case AFE4490TIAGain::RF_25K:  return "25K";
-        case AFE4490TIAGain::RF_50K:  return "50K";
-        case AFE4490TIAGain::RF_100K: return "100K";
-        case AFE4490TIAGain::RF_250K: return "250K";
-        case AFE4490TIAGain::RF_500K: return "500K";
-        case AFE4490TIAGain::RF_1M:   return "1M";
-        default:                      return "?";
-    }
-}
-static const char* tia_cf_str(AFE4490TIACF cf) {
-    switch (cf) {
-        case AFE4490TIACF::CF_5P:   return "5p";
-        case AFE4490TIACF::CF_10P:  return "10p";
-        case AFE4490TIACF::CF_20P:  return "20p";
-        case AFE4490TIACF::CF_30P:  return "30p";
-        case AFE4490TIACF::CF_55P:  return "55p";
-        case AFE4490TIACF::CF_155P: return "155p";
-        default:                    return "?";
-    }
-}
-static const char* stage2_str(AFE4490Stage2Gain g) {
-    switch (g) {
-        case AFE4490Stage2Gain::GAIN_0DB:   return "0dB";
-        case AFE4490Stage2Gain::GAIN_3_5DB: return "3.5dB";
-        case AFE4490Stage2Gain::GAIN_6DB:   return "6dB";
-        case AFE4490Stage2Gain::GAIN_9_5DB: return "9.5dB";
-        case AFE4490Stage2Gain::GAIN_12DB:  return "12dB";
-        default:                            return "?";
-    }
-}
+// tia_gain_str / tia_cf_str / stage2_str — moved to incunest_afe4490.h as
+// afeRFToStr / afeCFToStr / afeStg2ToStr (inline). Removed local copies.
 static const char* channel_str(AFE4490Channel ch) {
     switch (ch) {
         case AFE4490Channel::LED1:       return "LED1";
@@ -349,8 +317,8 @@ static void send_cfg_frame() {
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_ensepgain ? 1 : 0,
-        tia_gain_str(cfg.afe_tia_gain_led1), tia_cf_str(cfg.afe_tia_cf_led1), stage2_str(cfg.afe_stage2_gain_led1), cfg.afe_stage2_en1 ? 1 : 0,
-        tia_gain_str(cfg.afe_tia_gain_led2), tia_cf_str(cfg.afe_tia_cf_led2), stage2_str(cfg.afe_stage2_gain_led2), cfg.afe_stage2_en2 ? 1 : 0,
+        afeRFToStr(cfg.afe_tia_gain_led1), afeCFToStr(cfg.afe_tia_cf_led1), afeStg2ToStr(cfg.afe_stage2_gain_led1), cfg.afe_stage2_en1 ? 1 : 0,
+        afeRFToStr(cfg.afe_tia_gain_led2), afeCFToStr(cfg.afe_tia_cf_led2), afeStg2ToStr(cfg.afe_stage2_gain_led2), cfg.afe_stage2_en2 ? 1 : 0,
         (unsigned)cfg.afe_ambdac_uA,
         channel_str(cfg.ppgdisp_channel), filter_str(cfg.ppgdisp_filter_type),
         cfg.ppgdisp_f_low_hz, cfg.ppgdisp_f_high_hz,
@@ -364,35 +332,8 @@ static void send_cfg_frame() {
     send_tcfg_frame();  // always emit timing config alongside $CFG
 }
 
-// ── $SET command helpers ───────────────────────────────────────────────────────
-// Parse enum strings used in $CFG frames (same vocabulary as tia_gain_str etc.)
-static bool parse_tia_gain(const char* s, AFE4490TIAGain& out) {
-    if      (strcmp(s, "10K")  == 0) { out = AFE4490TIAGain::RF_10K;  return true; }
-    else if (strcmp(s, "25K")  == 0) { out = AFE4490TIAGain::RF_25K;  return true; }
-    else if (strcmp(s, "50K")  == 0) { out = AFE4490TIAGain::RF_50K;  return true; }
-    else if (strcmp(s, "100K") == 0) { out = AFE4490TIAGain::RF_100K; return true; }
-    else if (strcmp(s, "250K") == 0) { out = AFE4490TIAGain::RF_250K; return true; }
-    else if (strcmp(s, "500K") == 0) { out = AFE4490TIAGain::RF_500K; return true; }
-    else if (strcmp(s, "1M")   == 0) { out = AFE4490TIAGain::RF_1M;   return true; }
-    return false;
-}
-static bool parse_tia_cf(const char* s, AFE4490TIACF& out) {
-    if      (strcmp(s, "5p")   == 0) { out = AFE4490TIACF::CF_5P;   return true; }
-    else if (strcmp(s, "10p")  == 0) { out = AFE4490TIACF::CF_10P;  return true; }
-    else if (strcmp(s, "20p")  == 0) { out = AFE4490TIACF::CF_20P;  return true; }
-    else if (strcmp(s, "30p")  == 0) { out = AFE4490TIACF::CF_30P;  return true; }
-    else if (strcmp(s, "55p")  == 0) { out = AFE4490TIACF::CF_55P;  return true; }
-    else if (strcmp(s, "155p") == 0) { out = AFE4490TIACF::CF_155P; return true; }
-    return false;
-}
-static bool parse_stage2(const char* s, AFE4490Stage2Gain& out) {
-    if      (strcmp(s, "0dB")   == 0) { out = AFE4490Stage2Gain::GAIN_0DB;   return true; }
-    else if (strcmp(s, "3.5dB") == 0) { out = AFE4490Stage2Gain::GAIN_3_5DB; return true; }
-    else if (strcmp(s, "6dB")   == 0) { out = AFE4490Stage2Gain::GAIN_6DB;   return true; }
-    else if (strcmp(s, "9.5dB") == 0) { out = AFE4490Stage2Gain::GAIN_9_5DB; return true; }
-    else if (strcmp(s, "12dB")  == 0) { out = AFE4490Stage2Gain::GAIN_12DB;  return true; }
-    return false;
-}
+// parse_tia_gain / parse_tia_cf / parse_stage2 — moved to incunest_afe4490.h as
+// afeStrToRF / afeStrToCF / afeStrToStg2 (inline). Removed local copies.
 
 // Process a validated $SET command (key and value already split, checksum verified).
 // Hardware params (LED, TIA, gain) are applied hot via the library setters.
@@ -425,7 +366,7 @@ static void apply_set_cmd(const char* key, const char* val) {
     // Joint TIA gain setters (both channels at once)
     } else if (strcmp(key, "tiagain") == 0) {
         AFE4490TIAGain g;
-        if (parse_tia_gain(val, g)) {
+        if (afeStrToRF(val, g)) {
             afe.setTIAGain(g);
             Serial_printf("# SET tiagain=%s (both channels)\n", val);
         } else {
@@ -434,7 +375,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     } else if (strcmp(key, "tiacf") == 0) {
         AFE4490TIACF cf;
-        if (parse_tia_cf(val, cf)) {
+        if (afeStrToCF(val, cf)) {
             afe.setTIACF(cf);
             Serial_printf("# SET tiacf=%s (both channels)\n", val);
         } else {
@@ -443,7 +384,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     } else if (strcmp(key, "stg2") == 0) {
         AFE4490Stage2Gain g;
-        if (parse_stage2(val, g)) {
+        if (afeStrToStg2(val, g)) {
             afe.setStage2Gain(g);
             Serial_printf("# SET stg2=%s (both channels)\n", val);
         } else {
@@ -453,7 +394,7 @@ static void apply_set_cmd(const char* key, const char* val) {
     // Per-channel setters — LED1 (IR)
     } else if (strcmp(key, "tiagain1") == 0) {
         AFE4490TIAGain g;
-        if (parse_tia_gain(val, g)) {
+        if (afeStrToRF(val, g)) {
             afe.setTIAGainLED1(g);
             Serial_printf("# SET tiagain1=%s (LED1/IR)\n", val);
         } else {
@@ -462,7 +403,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     } else if (strcmp(key, "tiacf1") == 0) {
         AFE4490TIACF cf;
-        if (parse_tia_cf(val, cf)) {
+        if (afeStrToCF(val, cf)) {
             afe.setTIACFLED1(cf);
             Serial_printf("# SET tiacf1=%s (LED1/IR)\n", val);
         } else {
@@ -471,7 +412,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     } else if (strcmp(key, "stg21") == 0) {
         AFE4490Stage2Gain g;
-        if (parse_stage2(val, g)) {
+        if (afeStrToStg2(val, g)) {
             afe.setStage2GainLED1(g);
             Serial_printf("# SET stg21=%s (LED1/IR)\n", val);
         } else {
@@ -481,7 +422,7 @@ static void apply_set_cmd(const char* key, const char* val) {
     // Per-channel setters — LED2 (RED)
     } else if (strcmp(key, "tiagain2") == 0) {
         AFE4490TIAGain g;
-        if (parse_tia_gain(val, g)) {
+        if (afeStrToRF(val, g)) {
             afe.setTIAGainLED2(g);
             Serial_printf("# SET tiagain2=%s (LED2/RED)\n", val);
         } else {
@@ -490,7 +431,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     } else if (strcmp(key, "tiacf2") == 0) {
         AFE4490TIACF cf;
-        if (parse_tia_cf(val, cf)) {
+        if (afeStrToCF(val, cf)) {
             afe.setTIACFLED2(cf);
             Serial_printf("# SET tiacf2=%s (LED2/RED)\n", val);
         } else {
@@ -499,7 +440,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     } else if (strcmp(key, "stg22") == 0) {
         AFE4490Stage2Gain g;
-        if (parse_stage2(val, g)) {
+        if (afeStrToStg2(val, g)) {
             afe.setStage2GainLED2(g);
             Serial_printf("# SET stg22=%s (LED2/RED)\n", val);
         } else {
