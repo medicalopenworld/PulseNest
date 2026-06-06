@@ -84,38 +84,40 @@ Frames with bad checksum are silently discarded.
 #### $M1 — Full data frame (default)
 
 ```
-$M1,<LibID>,<SmpCnt>,<Ts_us>,<RED>,<IR>,<RED_Amb>,<IR_Amb>,<RED_Sub>,<IR_Sub>,
-    <PPGdisp>,<SpO2>,<SpO2_SQI>,<SpO2_R>,<PI>,<HR1>,<HR1_SQI>,<HR2>,<HR2_SQI>,
-    <HR3>,<HR3_SQI>*XX
+$M1,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
+    <PPG_DISP>,<SpO2>,<SpO2_SQI>,<R>,<PI>,<HR1>,<HR1_SQI>,<HR2>,<HR2_SQI>,
+    <HR3>,<HR3_SQI>,<RSQI>,<DiagCode>,<ProbeState>*XX
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `LibID` | str | Active library identifier (e.g. `"INCUNEST"`) |
 | `SmpCnt` | int | Sample counter (firmware, rolls over) |
-| `Ts_us` | int | ESP32 timestamp in µs (`esp_timer_get_time()`) |
-| `RED` | int32 | LED2VAL — RED raw ADC |
-| `IR` | int32 | LED1VAL — IR raw ADC |
-| `RED_Amb` | int32 | ALED2VAL — ambient after RED LED |
-| `IR_Amb` | int32 | ALED1VAL — ambient after IR LED |
-| `RED_Sub` | int32 | RED − RED_Amb — ambient-corrected RED |
-| `IR_Sub` | int32 | IR − IR_Amb — ambient-corrected IR |
-| `PPGdisp` | int32 | Display-ready PPG (IIR DC removal → MA-LP → negated, IR channel) |
-| `SpO2` | float | SpO2 in % |
+| `Ts_us` | int | ESP32 timestamp in µs (`micros()`) |
+| `LED2` | int32 | LED2VAL — RED raw ADC [counts] |
+| `LED1` | int32 | LED1VAL — IR raw ADC [counts] |
+| `ALED2` | int32 | ALED2VAL — ambient after RED LED [counts] |
+| `ALED1` | int32 | ALED1VAL — ambient after IR LED [counts] |
+| `LED2_SUB` | int32 | LED2 − ALED2 — RED ambient-corrected [counts] |
+| `LED1_SUB` | int32 | LED1 − ALED1 — IR ambient-corrected [counts] |
+| `PPG_DISP` | int32 | Display PPG: LED1_SUB → BPF → negated (display only) [counts] |
+| `SpO2` | float | SpO2 [%] |
 | `SpO2_SQI` | float | SpO2 Signal Quality Index [0–1] |
-| `SpO2_R` | float | R ratio used for SpO2 |
-| `PI` | float | Perfusion Index in % |
-| `HR1` | float | HR via peak detection (bpm) |
+| `R` | float | Modulation ratio: (AC_red/DC_red)/(AC_ir/DC_ir) [dimensionless] |
+| `PI` | float | Perfusion Index: AC_ir/DC_ir × 100 [%] |
+| `HR1` | float | HR via peak detection [bpm] |
 | `HR1_SQI` | float | HR1 SQI [0–1] |
-| `HR2` | float | HR via autocorrelation (bpm) |
+| `HR2` | float | HR via autocorrelation [bpm] |
 | `HR2_SQI` | float | HR2 SQI [0–1] |
-| `HR3` | float | HR via FFT+HPS (bpm) |
+| `HR3` | float | HR via FFT+HPS [bpm] |
 | `HR3_SQI` | float | HR3 SQI [0–1] |
+| `RSQI` | uint8 | Raw Signal Quality Index: 0=invalid, 1=valid |
+| `DiagCode` | uint32 | Diagnostic bitmask (AFE hardware faults + RSQM flags) |
+| `ProbeState` | int | 0=DISCONNECTED, 1=NOT_APPLIED, 2=APPLIED |
 
 #### $M2 — Minimal frame (raw ADC only)
 
 ```
-$M2,<cnt>,<RED>,<IR>,<RED_Amb>,<IR_Amb>,<RED_Sub>,<IR_Sub>*XX
+$M2,<cnt>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>*XX
 ```
 
 Used when firmware is in `IncunestFrameMode::RAW`. No algorithm outputs.

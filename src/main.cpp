@@ -138,7 +138,7 @@ static volatile uint32_t incunest_sample_count  = 0;
 static volatile uint32_t incunest_tx_dropped   = 0;  // frames skipped: TX buffer too full at frame start
 
 // ── Ambient-subtraction consistency check (temporary — remove #define to disable)
-// Verifies that the hardware-subtracted values (led1_aled1, led2_aled2) equal the
+// Verifies that the hardware-subtracted values (led1_sub, led2_sub) equal the
 // software difference of the individually-read raw registers.
 // Reports a one-line summary every 500 samples (~1 s at 500 Hz).
 // #define CHK_AMB_SUB
@@ -149,8 +149,8 @@ static int32_t  chk_max_d_ir  = 0;
 static int32_t  chk_max_d_red = 0;
 
 static void chk_amb_sub(const AFE4490Data& d) {
-    int32_t d_ir  = d.led1_aled1 - (d.led1 - d.aled1);
-    int32_t d_red = d.led2_aled2 - (d.led2 - d.aled2);
+    int32_t d_ir  = d.led1_sub - (d.led1 - d.aled1);
+    int32_t d_red = d.led2_sub - (d.led2 - d.aled2);
     if (d_ir != 0 || d_red != 0) chk_mismatches++;
     if (abs(d_ir)  > chk_max_d_ir)  chk_max_d_ir  = abs(d_ir);
     if (abs(d_red) > chk_max_d_red) chk_max_d_red = abs(d_red);
@@ -174,19 +174,19 @@ void Incunest_Task(void *pvParameters) {
                 if (Serial.availableForWrite() < 30) incunest_tx_dropped++;
 
                 if (g_incunest_frame_mode == IncunestFrameMode::M1) {
-                    // $M1,SmpCnt,Ts_us,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,PPG,SpO2,SpO2_SQI,SpO2_R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState
+                    // $M1,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState
                     char buf[384];
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M1,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
-                        (long)data.led2,       // RED
-                        (long)data.led1,       // IR
-                        (long)data.aled2,      // RED_Amb
-                        (long)data.aled1,      // IR_Amb
-                        (long)data.led2_aled2, // RED_Sub
-                        (long)data.led1_aled1, // IR_Sub
-                        (long)data.ppg,        // PPG
+                        (long)data.led2,       // LED2
+                        (long)data.led1,       // LED1
+                        (long)data.aled2,      // ALED2
+                        (long)data.aled1,      // ALED1
+                        (long)data.led2_sub, // LED2_SUB
+                        (long)data.led1_sub, // LED1_SUB
+                        (long)data.ppg_disp,        // PPG_DISP
                         data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
                         data.spo2_sqi,                           // SpO2_SQI
                         data.spo2_r,
@@ -211,7 +211,7 @@ void Incunest_Task(void *pvParameters) {
                         (unsigned long)incunest_sample_count,
                         (long)data.led2, (long)data.led1,
                         (long)data.aled2, (long)data.aled1,
-                        (long)data.led2_aled2, (long)data.led1_aled1);
+                        (long)data.led2_sub, (long)data.led1_sub);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active
@@ -291,8 +291,8 @@ static const char* channel_str(AFE4490Channel ch) {
         case AFE4490Channel::LED2:       return "LED2";
         case AFE4490Channel::ALED1:      return "ALED1";
         case AFE4490Channel::ALED2:      return "ALED2";
-        case AFE4490Channel::LED1_ALED1: return "LED1_ALED1";
-        case AFE4490Channel::LED2_ALED2: return "LED2_ALED2";
+        case AFE4490Channel::LED1_SUB: return "LED1_SUB";
+        case AFE4490Channel::LED2_SUB: return "LED2_SUB";
         default:                         return "?";
     }
 }
