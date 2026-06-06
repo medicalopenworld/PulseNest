@@ -10487,6 +10487,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.serialcom_window is not None:
             self.serialcom_window.main_monitor = None
             self.serialcom_window.close()
+        if self.udpcom_window is not None:
+            self.udpcom_window.main_monitor = None
+            self.udpcom_window.close()
         if self.hrlab_window is not None:
             self.hrlab_window.main_monitor = None
             self.hrlab_window.close()
