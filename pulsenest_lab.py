@@ -1186,8 +1186,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
 
         self.p_spo2 = _make_plot(0, "SpO2 (%)",             "%")
         self.p_R    = _make_plot(1, "R ratio",               "R")
-        self.p_dc   = _make_plot(2, "DC  (IR, RED)",         "ADC counts")
-        self.p_ac   = _make_plot(3, "RMS AC  (IR, RED)",     "ADC counts")
+        self.p_dc   = _make_plot(2, "DC  (LED1, LED2)",         "ADC counts")
+        self.p_ac   = _make_plot(3, "RMS AC  (LED1, LED2)",     "ADC counts")
 
         self.curve_spo2_fw  = self.p_spo2.plot(pen=pg.mkPen('#FFDD44', width=2), name="SpO2 fw")
         self.curve_spo2_loc = self.p_spo2.plot(pen=pg.mkPen('#FF8800', width=2), name="SpO2 local")
@@ -1201,12 +1201,12 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         self.curve_R_loc = self.p_R.plot(pen=pg.mkPen('#FF8800', width=2), name="R local")
         self.p_R.addLegend()
 
-        self.curve_dc_ir  = self.p_dc.plot(pen=pg.mkPen('#4488FF', width=1.5), name="DC IR")
-        self.curve_dc_red = self.p_dc.plot(pen=pg.mkPen('#FF4444', width=1.5), name="DC RED")
+        self.curve_dc_led1  = self.p_dc.plot(pen=pg.mkPen('#4488FF', width=1.5), name="DC LED1 (IR)")
+        self.curve_dc_led2 = self.p_dc.plot(pen=pg.mkPen('#FF4444', width=1.5), name="DC LED2 (RED)")
         self.p_dc.addLegend()
 
-        self.curve_rms_ir  = self.p_ac.plot(pen=pg.mkPen('#44AAFF', width=1.5), name="RMS AC IR")
-        self.curve_rms_red = self.p_ac.plot(pen=pg.mkPen('#FF6666', width=1.5), name="RMS AC RED")
+        self.curve_rms_led1  = self.p_ac.plot(pen=pg.mkPen('#44AAFF', width=1.5), name="RMS AC LED1 (IR)")
+        self.curve_rms_led2 = self.p_ac.plot(pen=pg.mkPen('#FF6666', width=1.5), name="RMS AC LED2 (RED)")
         self.p_ac.addLegend()
 
         # ── Right: control panel ──────────────────────────────────────────────
@@ -1551,10 +1551,10 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         self.curve_spo2_loc.setData(t_arr, spo2_loc_arr)
         self.curve_R_fw.setData(t_arr,     R_fw_arr)
         self.curve_R_loc.setData(t_arr,    R_loc_arr)
-        self.curve_dc_ir.setData(t_arr,    dc_ir_arr)
-        self.curve_dc_red.setData(t_arr,   dc_red_arr)
-        self.curve_rms_ir.setData(t_arr,   rms_ir_arr)
-        self.curve_rms_red.setData(t_arr,  rms_red_arr)
+        self.curve_dc_led1.setData(t_arr,    dc_ir_arr)
+        self.curve_dc_led2.setData(t_arr,   dc_red_arr)
+        self.curve_rms_led1.setData(t_arr,   rms_ir_arr)
+        self.curve_rms_led2.setData(t_arr,  rms_red_arr)
 
         def _last(arr):
             valid = arr[~np.isnan(arr)]
@@ -1579,11 +1579,11 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
             f"<b style='color:#FFDD44'>R fw: {_fmt(v_R_fw, 5)}</b>"
             f" &nbsp; <b style='color:#FF8800'>R local: {_fmt(v_R_loc, 5)}</b>")
         self.p_dc.setTitle(
-            f"<b style='color:#4488FF'>DC IR: {_fmt(v_dc_ir, 0)}</b>"
-            f" &nbsp; <b style='color:#FF4444'>DC RED: {_fmt(v_dc_red, 0)}</b>")
+            f"<b style='color:#4488FF'>DC LED1 (IR): {_fmt(v_dc_ir, 0)}</b>"
+            f" &nbsp; <b style='color:#FF4444'>DC LED2 (RED): {_fmt(v_dc_red, 0)}</b>")
         self.p_ac.setTitle(
-            f"<b style='color:#44AAFF'>RMS AC IR: {_fmt(v_rms_ir, 1)}</b>"
-            f" &nbsp; <b style='color:#FF6666'>RMS AC RED: {_fmt(v_rms_red, 1)}</b>")
+            f"<b style='color:#44AAFF'>RMS AC LED1 (IR): {_fmt(v_rms_ir, 1)}</b>"
+            f" &nbsp; <b style='color:#FF6666'>RMS AC LED2 (RED): {_fmt(v_rms_red, 1)}</b>")
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -1724,8 +1724,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self.p_delta = _mp(1, "SpO2 delta (fw−py)", "%",          link_to=self.p_spo2)
         self.p_R     = _mp(2, "R ratio",            "R",          link_to=self.p_spo2)
         self.p_sqi   = _mp(3, "SQI [0–1]",          "SQI",        link_to=self.p_spo2)
-        self.p_dc    = _mp(4, "DC  (IR, RED)",       "ADC counts", link_to=self.p_spo2)
-        self.p_ac    = _mp(5, "RMS AC  (IR, RED)",   "ADC counts", link_to=self.p_spo2)
+        self.p_dc    = _mp(4, "DC  (LED1, LED2)",       "ADC counts", link_to=self.p_spo2)
+        self.p_ac    = _mp(5, "RMS AC  (LED1, LED2)",   "ADC counts", link_to=self.p_spo2)
 
         FW_PEN  = pg.mkPen('#00CC66', width=2)   # firmware: green
         PY_PEN  = pg.mkPen('#FFDD44', width=2)   # python:   yellow
@@ -1751,13 +1751,13 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self.curve_sqi_py = self.p_sqi.plot(pen=PY_PEN,  name="SQI py")
         self.p_sqi.setYRange(0, 1.05)
         self.p_dc.addLegend()
-        self.curve_dc_ir  = self.p_dc.plot(pen=IR_PEN,  name="DC IR")
-        self.curve_dc_red = self.p_dc.plot(pen=RED_PEN, name="DC RED")
+        self.curve_dc_led1  = self.p_dc.plot(pen=IR_PEN,  name="DC LED1 (IR)")
+        self.curve_dc_led2 = self.p_dc.plot(pen=RED_PEN, name="DC LED2 (RED)")
         self.p_ac.addLegend()
-        self.curve_rms_ir  = self.p_ac.plot(pen=IR2_PEN, name="RMS AC IR")
-        self.curve_rms_red = self.p_ac.plot(pen=R2_PEN,  name="RMS AC RED")
-        for _c in (self.curve_dc_ir, self.curve_dc_red,
-                   self.curve_rms_ir, self.curve_rms_red):
+        self.curve_rms_led1  = self.p_ac.plot(pen=IR2_PEN, name="RMS AC LED1 (IR)")
+        self.curve_rms_led2 = self.p_ac.plot(pen=R2_PEN,  name="RMS AC LED2 (RED)")
+        for _c in (self.curve_dc_led1, self.curve_dc_led2,
+                   self.curve_rms_led1, self.curve_rms_led2):
             _c.setDownsampling(auto=True, method='peak')
             _c.setClipToView(True)
 
@@ -1863,7 +1863,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             "gridline-color: #333333; font-size: 17px; border: none; } "
             "QHeaderView::section { background-color: #2A2A2A; color: #AAAAAA; "
             "font-weight: bold; font-size: 17px; padding: 3px; }")
-        _val_rows = ["SpO2 (%)", "R", "PI (%)", "SQI", "DC IR", "DC RED", "RMS AC IR", "RMS AC RED"]
+        _val_rows = ["SpO2 (%)", "R", "PI (%)", "SQI", "DC LED1 (IR)", "DC LED2 (RED)", "RMS AC LED1 (IR)", "RMS AC LED2 (RED)"]
         for r, name in enumerate(_val_rows):
             item = QtWidgets.QTableWidgetItem(name)
             item.setForeground(QtGui.QColor("#AAAAAA"))
@@ -1996,7 +1996,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         parts = raw.split(',')
                         if len(parts) < 20 or parts[0] != '$M1':
                             continue
-                        # $M1,SmpCnt,Ts_us,RED,IR,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,...
+                        # $M1,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,...
                         ts_us   = float(parts[2])
                         led1_sub  = float(parts[8])
                         led2_sub = float(parts[7])
@@ -2004,7 +2004,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         R_fw    = float(parts[12])
                         sqi_fw  = float(parts[11])
                     elif is_raw:
-                        # Format: Timestamp_PC,Diff_us_PC,LibID,SmpCnt,Ts_us,RED,IR,ALED2,ALED1,LED2_SUB,LED1_SUB,...
+                        # Format: Timestamp_PC,Diff_us_PC,LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,...
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
@@ -2110,7 +2110,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         # Clear plots
         for c in [self.curve_spo2_fw, self.curve_spo2_py, self.curve_spo2_delta,
                   self.curve_R_fw, self.curve_R_py, self.curve_sqi_fw, self.curve_sqi_py,
-                  self.curve_dc_ir, self.curve_dc_red, self.curve_rms_ir, self.curve_rms_red]:
+                  self.curve_dc_led1, self.curve_dc_led2, self.curve_rms_led1, self.curve_rms_led2]:
             c.setData([], [])
 
     # ── Export ────────────────────────────────────────────────────────────────
@@ -2297,10 +2297,10 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self.curve_R_py.setData(t, R_py)
         self.curve_sqi_fw.setData(t, sqi_fw)
         self.curve_sqi_py.setData(t, sqi_py)
-        self.curve_dc_ir.setData(t, dc_ir)
-        self.curve_dc_red.setData(t, dc_red)
-        self.curve_rms_ir.setData(t, rms_ir)
-        self.curve_rms_red.setData(t, rms_red)
+        self.curve_dc_led1.setData(t, dc_ir)
+        self.curve_dc_led2.setData(t, dc_red)
+        self.curve_rms_led1.setData(t, rms_ir)
+        self.curve_rms_led2.setData(t, rms_red)
 
         def _last_valid(arr):
             valid = arr[~np.isnan(arr)]
@@ -2711,7 +2711,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                         hr_fw  = float(parts[14])
                         sqi_fw = float(parts[15])
                     else:
-                        # LibID,SmpCnt,Ts_us,RED,IR,ALED2,ALED1,LED2_SUB,LED1_SUB,...,HR1,HR1_SQI,...
+                        # LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,...,HR1,HR1_SQI,...
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
@@ -6295,7 +6295,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
 
 
 class PPGPlotsWindow(QtWidgets.QWidget):
-    """Floating window with all PPG/SpO2/HR plots and RED/IR channel checkboxes."""
+    """Floating window with all PPG/SpO2/HR plots and LED2 (RED)/LED1 (IR) channel checkboxes."""
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -6309,10 +6309,10 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             self.restoreGeometry(geom)
         else:
             self.resize(1800, 900)
-        self.check_red_raw.setChecked(s.value("PPGPlotsWindow/check_red_raw", False, type=bool))
+        self.check_led2_raw.setChecked(s.value("PPGPlotsWindow/check_led2_raw", False, type=bool))
         self.check_aled2.setChecked(s.value("PPGPlotsWindow/check_aled2", False, type=bool))
         self.check_led2_sub.setChecked(s.value("PPGPlotsWindow/check_led2_sub", True,  type=bool))
-        self.check_ir_raw.setChecked( s.value("PPGPlotsWindow/check_ir_raw",  False, type=bool))
+        self.check_led1_raw.setChecked( s.value("PPGPlotsWindow/check_led1_raw",  False, type=bool))
         self.check_aled1.setChecked( s.value("PPGPlotsWindow/check_aled1",  False, type=bool))
         self.check_led1_sub.setChecked( s.value("PPGPlotsWindow/check_led1_sub",  True,  type=bool))
 
@@ -6346,46 +6346,46 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             """)
             return cb
 
-        lbl_ir = QtWidgets.QLabel("IR")
+        lbl_ir = QtWidgets.QLabel("LED1 (IR)")
         lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 10px;")
         sidebar.addWidget(lbl_ir)
-        self.check_ir_raw  = create_check("IR (raw)",     "#FFFFFF", False)
-        self.check_aled1  = create_check("Ambient IR",   "#00FFFF", False)
-        self.check_led1_sub  = create_check("IR (clean)",   "#88CCFF", True)
-        self.check_ir_raw.setToolTip(_make_tooltip(
-            "IR (raw)",
+        self.check_led1_raw  = create_check("LED1 (IR)",     "#FFFFFF", False)
+        self.check_aled1  = create_check("Ambient LED1",   "#00FFFF", False)
+        self.check_led1_sub  = create_check("LED1 (IR) clean",   "#88CCFF", True)
+        self.check_led1_raw.setToolTip(_make_tooltip(
+            "LED1 (IR)",
             "Raw IR LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: IR in the M1 frame."))
+            "Includes ambient light contamination. Field: LED1 in the M1 frame."))
         self.check_aled1.setToolTip(_make_tooltip(
-            "Ambient IR",
+            "Ambient LED1",
             "Ambient light sampled during the IR LED off period (aled1). "
-            "Represents environmental light interference on the IR channel."))
+            "Represents environmental light interference on the LED1 (IR) channel."))
         self.check_led1_sub.setToolTip(_make_tooltip(
-            "IR (clean)",
-            "IR minus ambient: IR − ALED1. Ambient-subtracted IR signal. "
+            "LED1 (IR) clean",
+            "LED1 minus ambient: LED1 − ALED1. Ambient-subtracted IR signal. "
             "Primary input to the HR algorithms (HR1, HR2, HR3). Field: LED1_SUB."))
-        for w in (self.check_ir_raw, self.check_aled1, self.check_led1_sub):
+        for w in (self.check_led1_raw, self.check_aled1, self.check_led1_sub):
             sidebar.addWidget(w)
 
-        lbl_red = QtWidgets.QLabel("RED")
+        lbl_red = QtWidgets.QLabel("LED2 (RED)")
         lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 20px;")
         sidebar.addWidget(lbl_red)
-        self.check_red_raw  = create_check("RED (raw)",    "#FFFFFF", False)
-        self.check_aled2  = create_check("Ambient RED",  "#00FFFF", False)
-        self.check_led2_sub  = create_check("RED (clean)",  "#FF8888", True)
-        self.check_red_raw.setToolTip(_make_tooltip(
-            "RED (raw)",
+        self.check_led2_raw  = create_check("LED2 (RED)",    "#FFFFFF", False)
+        self.check_aled2  = create_check("Ambient LED2",  "#00FFFF", False)
+        self.check_led2_sub  = create_check("LED2 (RED) clean",  "#FF8888", True)
+        self.check_led2_raw.setToolTip(_make_tooltip(
+            "LED2 (RED)",
             "Raw RED LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: RED in the M1 frame."))
+            "Includes ambient light contamination. Field: LED2 in the M1 frame."))
         self.check_aled2.setToolTip(_make_tooltip(
-            "Ambient RED",
+            "Ambient LED2",
             "Ambient light sampled during the RED LED off period (aled2). "
-            "Represents environmental light interference on the RED channel."))
+            "Represents environmental light interference on the LED2 (RED) channel."))
         self.check_led2_sub.setToolTip(_make_tooltip(
-            "RED (clean)",
-            "RED minus ambient: RED − ALED2. Ambient-subtracted RED signal. "
+            "LED2 (RED) clean",
+            "LED2 minus ambient: LED2 − ALED2. Ambient-subtracted RED signal. "
             "Primary input to the SpO2 algorithm. Field: LED2_SUB."))
-        for w in (self.check_red_raw, self.check_aled2, self.check_led2_sub):
+        for w in (self.check_led2_raw, self.check_aled2, self.check_led2_sub):
             sidebar.addWidget(w)
 
         sidebar.addStretch()
@@ -6400,22 +6400,22 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         plots_vbox.setSpacing(0)
         root.addLayout(plots_vbox)
 
-        # Top two rows: RED and IR in a GraphicsLayoutWidget
+        # Top two rows: LED2 (RED) and LED1 (IR) in a GraphicsLayoutWidget
         self.graphics_layout = pg.GraphicsLayoutWidget()
         plots_vbox.addWidget(self.graphics_layout, stretch=1)
 
-        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
-        self.curve_ir      = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
-        self.curve_aled1  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
-        self.curve_led1_sub  = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
+        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>LED1 (IR)</b>")
+        self.curve_led1      = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED1 (IR)")
+        self.curve_aled1  = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED1")
+        self.curve_led1_sub  = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="LED1 (IR) clean")
         self.p1.showGrid(x=True, y=True, alpha=0.3)
 
         self.graphics_layout.nextRow()
 
-        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
-        self.curve_red      = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
-        self.curve_aled2  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
-        self.curve_led2_sub  = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
+        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>LED2 (RED)</b>")
+        self.curve_led2      = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED2 (RED)")
+        self.curve_aled2  = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED2")
+        self.curve_led2_sub  = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="LED2 (RED) clean")
         self.p2.showGrid(x=True, y=True, alpha=0.3)
 
         # Bottom row: PPG | SpO2 | HR in a plain QHBoxLayout with pg.PlotWidget
@@ -6449,17 +6449,17 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         bottom_row.addWidget(w_hr)
 
         # ── Checkbox → curve visibility ───────────────────────────────────────
-        self.check_red_raw.stateChanged.connect(lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
+        self.check_led2_raw.stateChanged.connect(lambda: self.curve_led2.setVisible(self.check_led2_raw.isChecked()))
         self.check_aled2.stateChanged.connect(lambda: self.curve_aled2.setVisible(self.check_aled2.isChecked()))
         self.check_led2_sub.stateChanged.connect(lambda: self.curve_led2_sub.setVisible(self.check_led2_sub.isChecked()))
-        self.check_ir_raw.stateChanged.connect( lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
+        self.check_led1_raw.stateChanged.connect( lambda: self.curve_led1.setVisible(self.check_led1_raw.isChecked()))
         self.check_aled1.stateChanged.connect( lambda: self.curve_aled1.setVisible(self.check_aled1.isChecked()))
         self.check_led1_sub.stateChanged.connect( lambda: self.curve_led1_sub.setVisible(self.check_led1_sub.isChecked()))
 
-        self.curve_red.setVisible(False)
+        self.curve_led2.setVisible(False)
         self.curve_aled2.setVisible(False)
         self.curve_led2_sub.setVisible(True)
-        self.curve_ir.setVisible(False)
+        self.curve_led1.setVisible(False)
         self.curve_aled1.setVisible(False)
         self.curve_led1_sub.setVisible(True)
 
@@ -6468,7 +6468,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
     def update_plots(self, data_ppgdisp, data_hr1, data_hr2, data_hr3,
                      data_spo2, data_spo2_sqi, data_spo2_r,
                      data_hr1_sqi, data_hr2_sqi, data_hr3_sqi,
-                     data_red, data_ir,
+                     data_led2, data_led1,
                      data_aled2, data_aled1, data_led2_sub, data_led1_sub):
         self.p_spo2.setTitle(
             f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b>"
@@ -6484,8 +6484,8 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.curve_hr1.setData(list(data_hr1))
         self.curve_hr2.setData(list(data_hr2))
         self.curve_hr3.setData(list(data_hr3))
-        self.curve_red.setData(list(data_red))
-        self.curve_ir.setData(list(data_ir))
+        self.curve_led2.setData(list(data_led2))
+        self.curve_led1.setData(list(data_led1))
         self.curve_aled2.setData(list(data_aled2))
         self.curve_aled1.setData(list(data_aled1))
         self.curve_led2_sub.setData(list(data_led2_sub))
@@ -6494,10 +6494,10 @@ class PPGPlotsWindow(QtWidgets.QWidget):
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         s.setValue("PPGPlotsWindow/geometry",    self.saveGeometry())
-        s.setValue("PPGPlotsWindow/check_red_raw",  self.check_red_raw.isChecked())
+        s.setValue("PPGPlotsWindow/check_led2_raw",  self.check_led2_raw.isChecked())
         s.setValue("PPGPlotsWindow/check_aled2",  self.check_aled2.isChecked())
         s.setValue("PPGPlotsWindow/check_led2_sub",  self.check_led2_sub.isChecked())
-        s.setValue("PPGPlotsWindow/check_ir_raw",   self.check_ir_raw.isChecked())
+        s.setValue("PPGPlotsWindow/check_led1_raw",   self.check_led1_raw.isChecked())
         s.setValue("PPGPlotsWindow/check_aled1",   self.check_aled1.isChecked())
         s.setValue("PPGPlotsWindow/check_led1_sub",   self.check_led1_sub.isChecked())
         if self.main_monitor is not None:
@@ -6507,7 +6507,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
 
 
 class PPGSignalsWindow(QtWidgets.QWidget):
-    """Floating window with the 6 raw AFE4490 signals (RED/IR raw·amb·sub) and PPG_DISP."""
+    """Floating window with the 6 raw AFE4490 signals (LED2/LED1 raw·amb·sub) and PPG_DISP."""
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -6521,10 +6521,10 @@ class PPGSignalsWindow(QtWidgets.QWidget):
             self.restoreGeometry(geom)
         else:
             self.resize(1400, 900)
-        self.check_red_raw.setChecked(s.value("PPGSignalsWindow/check_red_raw", False, type=bool))
+        self.check_led2_raw.setChecked(s.value("PPGSignalsWindow/check_led2_raw", False, type=bool))
         self.check_aled2.setChecked(s.value("PPGSignalsWindow/check_aled2", False, type=bool))
         self.check_led2_sub.setChecked(s.value("PPGSignalsWindow/check_led2_sub", True,  type=bool))
-        self.check_ir_raw.setChecked( s.value("PPGSignalsWindow/check_ir_raw",  False, type=bool))
+        self.check_led1_raw.setChecked( s.value("PPGSignalsWindow/check_led1_raw",  False, type=bool))
         self.check_aled1.setChecked( s.value("PPGSignalsWindow/check_aled1",  False, type=bool))
         self.check_led1_sub.setChecked( s.value("PPGSignalsWindow/check_led1_sub",  True,  type=bool))
 
@@ -6558,46 +6558,46 @@ class PPGSignalsWindow(QtWidgets.QWidget):
             """)
             return cb
 
-        lbl_ir = QtWidgets.QLabel("IR")
+        lbl_ir = QtWidgets.QLabel("LED1 (IR)")
         lbl_ir.setStyleSheet("color: #44AAFF; font-weight: 800; font-size: 20px; margin-top: 10px;")
         sidebar.addWidget(lbl_ir)
-        self.check_ir_raw = create_check("IR (raw)",    "#FFFFFF", False)
-        self.check_aled1 = create_check("Ambient IR",  "#00FFFF", False)
-        self.check_led1_sub = create_check("IR (clean)",  "#88CCFF", True)
-        self.check_ir_raw.setToolTip(_make_tooltip(
-            "IR (raw)",
+        self.check_led1_raw = create_check("LED1 (IR)",    "#FFFFFF", False)
+        self.check_aled1 = create_check("Ambient LED1",  "#00FFFF", False)
+        self.check_led1_sub = create_check("LED1 (IR) clean",  "#88CCFF", True)
+        self.check_led1_raw.setToolTip(_make_tooltip(
+            "LED1 (IR)",
             "Raw IR LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: IR in the M1 frame."))
+            "Includes ambient light contamination. Field: LED1 in the M1 frame."))
         self.check_aled1.setToolTip(_make_tooltip(
-            "Ambient IR",
+            "Ambient LED1",
             "Ambient light sampled during the IR LED off period (aled1). "
-            "Represents environmental light interference on the IR channel."))
+            "Represents environmental light interference on the LED1 (IR) channel."))
         self.check_led1_sub.setToolTip(_make_tooltip(
-            "IR (clean)",
-            "IR minus ambient: IR − ALED1. Ambient-subtracted IR signal. "
+            "LED1 (IR) clean",
+            "LED1 minus ambient: LED1 − ALED1. Ambient-subtracted IR signal. "
             "Primary input to the HR algorithms (HR1, HR2, HR3). Field: LED1_SUB."))
-        for w in (self.check_ir_raw, self.check_aled1, self.check_led1_sub):
+        for w in (self.check_led1_raw, self.check_aled1, self.check_led1_sub):
             sidebar.addWidget(w)
 
-        lbl_red = QtWidgets.QLabel("RED")
+        lbl_red = QtWidgets.QLabel("LED2 (RED)")
         lbl_red.setStyleSheet("color: #FF4444; font-weight: 800; font-size: 20px; margin-top: 20px;")
         sidebar.addWidget(lbl_red)
-        self.check_red_raw = create_check("RED (raw)",   "#FFFFFF", False)
-        self.check_aled2 = create_check("Ambient RED", "#00FFFF", False)
-        self.check_led2_sub = create_check("RED (clean)", "#FF8888", True)
-        self.check_red_raw.setToolTip(_make_tooltip(
-            "RED (raw)",
+        self.check_led2_raw = create_check("LED2 (RED)",   "#FFFFFF", False)
+        self.check_aled2 = create_check("Ambient LED2", "#00FFFF", False)
+        self.check_led2_sub = create_check("LED2 (RED) clean", "#FF8888", True)
+        self.check_led2_raw.setToolTip(_make_tooltip(
+            "LED2 (RED)",
             "Raw RED LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: RED in the M1 frame."))
+            "Includes ambient light contamination. Field: LED2 in the M1 frame."))
         self.check_aled2.setToolTip(_make_tooltip(
-            "Ambient RED",
+            "Ambient LED2",
             "Ambient light sampled during the RED LED off period (aled2). "
-            "Represents environmental light interference on the RED channel."))
+            "Represents environmental light interference on the LED2 (RED) channel."))
         self.check_led2_sub.setToolTip(_make_tooltip(
-            "RED (clean)",
-            "RED minus ambient: RED − ALED2. Ambient-subtracted RED signal. "
+            "LED2 (RED) clean",
+            "LED2 minus ambient: LED2 − ALED2. Ambient-subtracted RED signal. "
             "Primary input to the SpO2 algorithm. Field: LED2_SUB."))
-        for w in (self.check_red_raw, self.check_aled2, self.check_led2_sub):
+        for w in (self.check_led2_raw, self.check_aled2, self.check_led2_sub):
             sidebar.addWidget(w)
 
         sidebar.addStretch()
@@ -6606,23 +6606,23 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         sb_widget.setFixedWidth(180)
         root.addWidget(sb_widget)
 
-        # ── Plots: RED / IR / PPG_DISP in a single GraphicsLayoutWidget ────────
+        # ── Plots: LED2 (RED) / LED1 (IR) / PPG_DISP in a single GraphicsLayoutWidget ────────
         self.graphics_layout = pg.GraphicsLayoutWidget()
         root.addWidget(self.graphics_layout)
 
-        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>IR</b>")
-        self.curve_ir     = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="IR (Raw)")
-        self.curve_aled1 = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient IR")
-        self.curve_led1_sub = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="IR (Clean)")
+        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>LED1 (IR)</b>")
+        self.curve_led1     = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED1 (IR)")
+        self.curve_aled1 = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED1")
+        self.curve_led1_sub = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="LED1 (IR) clean")
         self.p1.showGrid(x=True, y=True, alpha=0.3)
         self.p1.getAxis('left').setWidth(80)
 
         self.graphics_layout.nextRow()
 
-        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>RED</b>")
-        self.curve_red     = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="RED (Raw)")
-        self.curve_aled2 = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient RED")
-        self.curve_led2_sub = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="RED (Clean)")
+        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>LED2 (RED)</b>")
+        self.curve_led2     = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED2 (RED)")
+        self.curve_aled2 = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED2")
+        self.curve_led2_sub = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="LED2 (RED) clean")
         self.p2.showGrid(x=True, y=True, alpha=0.3)
         self.p2.getAxis('left').setWidth(80)
 
@@ -6634,26 +6634,26 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.p3.getAxis('left').setWidth(80)
 
         # ── Checkbox → curve visibility ───────────────────────────────────────
-        self.check_red_raw.stateChanged.connect(lambda: self.curve_red.setVisible(self.check_red_raw.isChecked()))
+        self.check_led2_raw.stateChanged.connect(lambda: self.curve_led2.setVisible(self.check_led2_raw.isChecked()))
         self.check_aled2.stateChanged.connect(lambda: self.curve_aled2.setVisible(self.check_aled2.isChecked()))
         self.check_led2_sub.stateChanged.connect(lambda: self.curve_led2_sub.setVisible(self.check_led2_sub.isChecked()))
-        self.check_ir_raw.stateChanged.connect( lambda: self.curve_ir.setVisible(self.check_ir_raw.isChecked()))
+        self.check_led1_raw.stateChanged.connect( lambda: self.curve_led1.setVisible(self.check_led1_raw.isChecked()))
         self.check_aled1.stateChanged.connect( lambda: self.curve_aled1.setVisible(self.check_aled1.isChecked()))
         self.check_led1_sub.stateChanged.connect( lambda: self.curve_led1_sub.setVisible(self.check_led1_sub.isChecked()))
 
-        self.curve_red.setVisible(False)
+        self.curve_led2.setVisible(False)
         self.curve_aled2.setVisible(False)
         self.curve_led2_sub.setVisible(True)
-        self.curve_ir.setVisible(False)
+        self.curve_led1.setVisible(False)
         self.curve_aled1.setVisible(False)
         self.curve_led1_sub.setVisible(True)
 
         outer.addWidget(hint)
 
-    def update_plots(self, data_red, data_ir, data_aled2, data_aled1,
+    def update_plots(self, data_led2, data_led1, data_aled2, data_aled1,
                      data_led2_sub, data_led1_sub, data_ppgdisp):
-        self.curve_red.setData(list(data_red))
-        self.curve_ir.setData(list(data_ir))
+        self.curve_led2.setData(list(data_led2))
+        self.curve_led1.setData(list(data_led1))
         self.curve_aled2.setData(list(data_aled2))
         self.curve_aled1.setData(list(data_aled1))
         self.curve_led2_sub.setData(list(data_led2_sub))
@@ -6663,10 +6663,10 @@ class PPGSignalsWindow(QtWidgets.QWidget):
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         s.setValue("PPGSignalsWindow/geometry",       self.saveGeometry())
-        s.setValue("PPGSignalsWindow/check_red_raw",  self.check_red_raw.isChecked())
+        s.setValue("PPGSignalsWindow/check_led2_raw",  self.check_led2_raw.isChecked())
         s.setValue("PPGSignalsWindow/check_aled2",  self.check_aled2.isChecked())
         s.setValue("PPGSignalsWindow/check_led2_sub",  self.check_led2_sub.isChecked())
-        s.setValue("PPGSignalsWindow/check_ir_raw",   self.check_ir_raw.isChecked())
+        s.setValue("PPGSignalsWindow/check_led1_raw",   self.check_led1_raw.isChecked())
         s.setValue("PPGSignalsWindow/check_aled1",   self.check_aled1.isChecked())
         s.setValue("PPGSignalsWindow/check_led1_sub",   self.check_led1_sub.isChecked())
         if self.main_monitor is not None:
@@ -6749,7 +6749,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,RED,IR,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
+        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
     )
 
     def __init__(self, main_monitor):
@@ -6874,7 +6874,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         " font-size:24px; selection-background-color:#404040; }"
     )
 
-    _SIGNALS = ["RED", "IR", "ALED2", "ALED1", "LED2_SUB", "LED1_SUB"]
+    _SIGNALS = ["LED2", "LED1", "ALED2", "ALED1", "LED2_SUB", "LED1_SUB"]
 
     # ProbeState enum values (must match incunest_afe4490.h)
     _PROBE_STATES = [
@@ -7368,7 +7368,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                     f"0/{self._spin_samples.value()} smp")
 
         elif self._state == self._ST_MEASURING:
-            n      = len(self._buf["IR"])
+            n      = len(self._buf["LED1"])
             target = self._spin_samples.value()
             ch     = self._combos[self._combo_idx][0]
             self._lbl_status.setText(
@@ -7396,8 +7396,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                     rsqi, diag_code, probe_state_fw):
         if self._state != self._ST_MEASURING:
             return
-        self._buf["RED"].append(red)
-        self._buf["IR"].append(ir)
+        self._buf["LED2"].append(red)
+        self._buf["LED1"].append(ir)
         self._buf["ALED2"].append(red_amb)
         self._buf["ALED1"].append(ir_amb)
         self._buf["LED2_SUB"].append(led2_sub)
@@ -7447,7 +7447,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             ps_calc_str = ""
 
         row = [expected_ps, ps_calc_str, ps_check_str,
-               label, now_str, led1, led2, rf1_str, rf2_str, rg1_str, rg2_str, amb, len(self._buf["IR"])]
+               label, now_str, led1, led2, rf1_str, rf2_str, rg1_str, rg2_str, amb, len(self._buf["LED1"])]
         # Pre-compute stats for each signal
         stats = {}
         for sig in self._SIGNALS:
@@ -7529,8 +7529,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             sd = math.sqrt(sum((v - m) ** 2 for v in vals) / n)
             return f"{m:.4f}", f"{sd:.4f}", f"{min(vals):.4f}", f"{max(vals):.4f}"
         _vtia_bufs = {}  # keep V_TIA series for differential computation
-        for _buf_key, _rg_ohm in [("IR",      rg1_ohm),
-                                   ("RED",     rg2_ohm),
+        for _buf_key, _rg_ohm in [("LED1",    rg1_ohm),
+                                   ("LED2",    rg2_ohm),
                                    ("ALED1",  rg1_ohm),
                                    ("ALED2", rg2_ohm)]:
             _raw = self._buf[_buf_key]
@@ -7543,7 +7543,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                 _vtia_bufs[_buf_key] = []
                 row.extend([""] * 8)
         # ── Differential V_TIA: LED1−ALED1 and LED2−ALED2 ────────────────────
-        for _led_key, _amb_key in [("IR", "ALED1"), ("RED", "ALED2")]:
+        for _led_key, _amb_key in [("LED1", "ALED1"), ("LED2", "ALED2")]:
             _a, _b = _vtia_bufs[_led_key], _vtia_bufs[_amb_key]
             if _a and _b and len(_a) == len(_b):
                 _diff = [x - y for x, y in zip(_a, _b)]
@@ -7606,7 +7606,7 @@ class UdpComWindow(QtWidgets.QWidget):
 
     UDP_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,RED,IR,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
+        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
     )
 
     def __init__(self, main_monitor):
@@ -7714,7 +7714,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
     CSV format (compatible with incunest_offline_runner):
       - Pre-capture notes as '# ...' lines before the column header.
-      - Mandatory columns: RED, IR, ALED2, ALED1, LED2_SUB, LED1_SUB.
+      - Mandatory columns: LED2, LED1, ALED2, ALED1, LED2_SUB, LED1_SUB.
       - Optional FW columns: FW_SpO2, FW_HR1, FW_HR2, FW_HR3 (offline_runner names).
       - Post-capture notes as '# ...' lines after the last data row.
     """
@@ -7722,15 +7722,15 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     # (display label, csv column name, M1-parts index after '$', mandatory)
     # M1 parts layout (after stripping '$' and checksum):
     #   [0]=LibID  [1]=SmpCnt  [2]=Ts_us
-    #   [3]=RED  [4]=IR  [5]=ALED2  [6]=ALED1  [7]=LED2_SUB  [8]=LED1_SUB
+    #   [3]=LED2  [4]=LED1  [5]=ALED2  [6]=ALED1  [7]=LED2_SUB  [8]=LED1_SUB
     #   [9]=PPG  [10]=SpO2  [11]=SpO2_SQI  [12]=R  [13]=PI
     #   [14]=HR1  [15]=HR1_SQI  [16]=HR2  [17]=HR2_SQI  [18]=HR3  [19]=HR3_SQI
     #   [20]=RSQI  [21]=DiagCode  [22]=ProbeState   (v0.27+)
     _COLS = [
         ("SmpCnt",   "FW_SmpCnt",  1,  False),
         ("Ts_us",    "FW_Ts_us",   2,  False),
-        ("RED",      "RED",        3,  True),
-        ("IR",       "IR",         4,  True),
+        ("LED2 (RED)", "LED2",      3,  True),
+        ("LED1 (IR)", "LED1",      4,  True),
         ("ALED2",  "ALED2",    5,  True),
         ("ALED1",   "ALED1",     6,  True),
         ("LED2_SUB",  "LED2_SUB",    7,  True),
@@ -8181,8 +8181,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_ppgdisp = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_hr1 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_spo2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_red = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_ir  = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_led2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_led1  = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_aled1 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_aled2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_led1_sub = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
@@ -8282,8 +8282,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._STATS_SIGNALS = [
             # (display_name, data_attr, tooltip_description)
             # Order mirrors the $M1/$P1 serial frame. Row indices: HR1=11, HR2=13, HR3=15.
-            ("IR",       "data_ir",       "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
-            ("RED",      "data_red",      "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
+            ("LED1 (IR)",  "data_led1",  "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
+            ("LED2 (RED)", "data_led2",  "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
             ("ALED1",   "data_aled1",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
             ("ALED2",  "data_aled2",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
             ("LED1_SUB",   "data_led1_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
@@ -8480,12 +8480,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
         self.btn_frame_m1.setToolTip(_make_tooltip(
             "$M1 — FULL frame",
-            "Full frame mode: 19 fields — SmpCnt, Ts_us, RED, IR, ALED2, ALED1, LED2_SUB, LED1_SUB, "
+            "Full frame mode: 19 fields — SmpCnt, Ts_us, LED2, LED1, ALED2, ALED1, LED2_SUB, LED1_SUB, "
             "PPG_DISP, SpO2, SpO2_SQI, R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI + checksum. "
             "Use for algorithm analysis and calibration."))
         self.btn_frame_m2.setToolTip(_make_tooltip(
             "$M2 — RAW frame",
-            "Raw frame mode: only raw ADC values — SmpCnt, Ts_us, RED, IR, ALED2, ALED1 + checksum. "
+            "Raw frame mode: only raw ADC values — SmpCnt, Ts_us, LED2, LED1, ALED2, ALED1 + checksum. "
             "Lower bandwidth. Use when only raw signal capture is needed."))
         self.sidebar_layout.addWidget(self.btn_frame_m1)
         self.sidebar_layout.addWidget(self.btn_frame_m2)
@@ -8504,7 +8504,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_ppgplots.setToolTip(_make_tooltip(
             "PPGPLOTS",
             "Show or hide the PPG Plots window. "
-            "Displays RED/IR raw and filtered signals, PPG_DISP, SpO2 and HR curves in real time. "
+            "Displays LED2 (RED)/LED1 (IR) raw and filtered signals, PPG_DISP, SpO2 and HR curves in real time. "
             "Throttled to 25 Hz to keep CPU load low."))
         self.sidebar_layout.addWidget(self.btn_ppgplots)
 
@@ -8515,7 +8515,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_signals.setToolTip(_make_tooltip(
             "SIGNALS",
             "Show or hide the PPG Signals window. "
-            "Displays the 6 raw AFE4490 channels (RED/IR raw, ambient, clean) "
+            "Displays the 6 raw AFE4490 channels (LED2/LED1 raw, ambient, clean) "
             "and the PPG_DISP display-ready signal. Throttled to 25 Hz."))
         self.sidebar_layout.addWidget(self.btn_signals)
 
@@ -8770,7 +8770,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.stats_table.verticalHeader().setDefaultSectionSize(40)
 
         _HR_ROWS    = {11, 13, 15}   # HR1, HR2, HR3 (signal indices)
-        _RAW_ROWS   = {0, 1, 2, 3}   # IR, RED, ALED1, ALED2
+        _RAW_ROWS   = {0, 1, 2, 3}   # LED1 (IR), LED2 (RED), ALED1, ALED2
         _MEAN_COL   = 4
         _MAROON     = QtGui.QColor("#5C001A")
         _SUBHDR_ROW = 4              # table row index of the sub-header divider
@@ -8819,7 +8819,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Formula: V_TIA = (V_ADC / (2\u00d7RG)) \u00d7 RI  (datasheet eq.2, p.30)\n"
             "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22.\n"
             "Units: V (volts).\n\n"
-            "Background color (LED phases \u2014 IR, RED):\n"
+            "Background color (LED phases \u2014 LED1 (IR), LED2 (RED)):\n"
             "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range\n"
             "  Yellow  0.15 \u2013 0.40 V  or  0.80 \u2013 0.95 V \u2014 caution\n"
             "  Red     < 0.15 V  or  > 0.95 V \u2014 saturation or insufficient signal")
@@ -8836,7 +8836,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "ADC input voltage estimated from the mean ADC count.\n"
             "Formula: V_ADC = (mean_counts / 2\u00b2\u00b9) \u00d7 1.2 V  (ADC FS = \u00b11.2 V, 22-bit signed).\n"
             "Units: V (volts).\n\n"
-            "Background color (LED phases \u2014 IR, RED):\n"
+            "Background color (LED phases \u2014 LED1 (IR), LED2 (RED)):\n"
             "  Green   0.45 \u2013 0.95 V \u2014 optimal\n"
             "  Yellow  0.20 \u2013 0.45 V  or  0.95 \u2013 1.10 V \u2014 caution\n"
             "  Red     < 0.20 V  or  > 1.10 V \u2014 insufficient signal or near saturation")
@@ -9360,7 +9360,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         parts = raw_line[1:].split('*')[0].split(',')   # strip '$' and checksum
         n = len(parts)
         is_m2 = (n >= 1 and parts[0] == "M2")
-        # M2 parts layout: [0]=M2 [1]=cnt [2]=RED [3]=IR [4]=ALED2 [5]=ALED1 [6]=LED2_SUB [7]=LED1_SUB
+        # M2 parts layout: [0]=M2 [1]=cnt [2]=LED2 [3]=LED1 [4]=ALED2 [5]=ALED1 [6]=LED2_SUB [7]=LED1_SUB
         _M2_MAP = {3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7}
 
         row_vals = []
@@ -9408,9 +9408,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             filename = os.path.join(CAPTURES_DIR, f"ppg_data_snap_{now_str}.csv")
             try:
                 with open(filename, "w") as f:
-                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
+                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
                     for i in range(len(self.data_sample_counter)):
-                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_red[i]},{self.data_ir[i]},{self.data_aled2[i]},{self.data_aled1[i]},{self.data_led2_sub[i]},{self.data_led1_sub[i]},{self.data_ppgdisp[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
+                        f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_led2[i]},{self.data_led1[i]},{self.data_aled2[i]},{self.data_aled1[i]},{self.data_led2_sub[i]},{self.data_led1_sub[i]},{self.data_ppgdisp[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
                 self.log(f"Snapshot saved to {filename}")
             except Exception as e:
                 self.log(f"Error saving snapshot: {e}")
@@ -9424,7 +9424,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if self.frame_mode == "M2":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,ALED2,ALED1,LED2_SUB,LED1_SUB\n")
                     else:
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,RED,IR,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
                     self.log(f"RECORDING LIVE: {filename}")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -9703,7 +9703,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     _STATS_HR_ROWS       = {11, 13, 15}   # HR1, HR2, HR3
     _STATS_SUB_ROWS      = {4, 5}         # LED1_SUB, LED2_SUB
-    _STATS_RAW_ROWS      = {0, 1, 2, 3}  # IR, RED, ALED1, ALED2 — show V_TIA / V_ADC
+    _STATS_RAW_ROWS      = {0, 1, 2, 3}  # LED1 (IR), LED2 (RED), ALED1, ALED2 — show V_TIA / V_ADC
     _STATS_MEAN_COL      = 4
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
@@ -9854,10 +9854,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     sqi_mean = sum(sqi_buf) / len(sqi_buf) if sqi_buf else 0.0
                     bg = self._STATS_GREEN if sqi_mean > self._STATS_SQI_THRESHOLD else self._STATS_MAROON
                     item.setBackground(bg)
-            # cols 1-2: V_TIA, V_ADC — only for IR, RED, ALED1, ALED2 (signal rows 0-3)
+            # cols 1-2: V_TIA, V_ADC — only for LED1 (IR), LED2 (RED), ALED1, ALED2 (signal rows 0-3)
             if sig_idx in self._STATS_RAW_ROWS and buf:
-                is_ir    = sig_idx in {0, 2}   # IR / ALED1 → stg21, tia1; RED / ALED2 → stg22, tia2
-                stg2_str  = self._last_cfg.get("stg21" if is_ir else "stg22", "0dB")
+                is_led1   = sig_idx in {0, 2}   # LED1 (IR) / ALED1 → stg21, tia1; LED2 (RED) / ALED2 → stg22, tia2
+                stg2_str  = self._last_cfg.get("stg21" if is_led1 else "stg22", "0dB")
                 rg_ohm    = self._STG2_RG_OHM.get(stg2_str, 100e3)
                 i_cancel  = float(self._last_cfg.get("ambdac", "0")) * 1e-6  # µA → A
                 v_adc     = mean / self._ADC_FS_COUNTS * self._ADC_FSR
@@ -10098,15 +10098,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     parts = line[1:].split('*')[0].split(',')  # strip leading '$' and trailing checksum
                     if len(parts) >= 20:
                         try:
-                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:RED, 4:IR, 5:ALED2, 6:ALED1, 7:LED2_SUB, 8:LED1_SUB,
+                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:LED2, 4:LED1, 5:ALED2, 6:ALED1, 7:LED2_SUB, 8:LED1_SUB,
                             # 9:PPG_DISP, 10:SpO2, 11:SpO2_SQI, 12:R, 13:PI, 14:HR1, 15:HR1_SQI, 16:HR2, 17:HR2_SQI, 18:HR3, 19:HR3_SQI
                             # 20:RSQI, 21:DiagCode, 22:ProbeState  (v0.27+; absent in older firmware)
                             self.data_lib_id.append(parts[0])
                             p = [float(x) for x in parts[1:20]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(p[1])
-                            self.data_red.append(p[2])
-                            self.data_ir.append(p[3])
+                            self.data_led2.append(p[2])
+                            self.data_led1.append(p[3])
                             self.data_aled2.append(p[4])
                             self.data_aled1.append(p[5])
                             self.data_led2_sub.append(p[6])
@@ -10166,7 +10166,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         except ValueError: pass
                         else: _new_data = True
                     elif parts[0] == "M2" and len(parts) >= 8:
-                        # $M2,cnt,led2(RED),led1(IR),aled2(ALED2),aled1(ALED1),led2_aled2(LED2_SUB),led1_aled1(LED1_SUB)
+                        # $M2,cnt,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB
                         try:
                             self.data_lib_id.append(parts[0])
                             p = [float(x) for x in parts[1:8]]
@@ -10175,8 +10175,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_ppgdisp.append(0.0)
                             self.data_spo2.append(-1.0)
                             self.data_hr1.append(-1.0)
-                            self.data_red.append(p[1])
-                            self.data_ir.append(p[2])
+                            self.data_led2.append(p[1])
+                            self.data_led1.append(p[2])
                             self.data_aled2.append(p[3])
                             self.data_aled1.append(p[4])
                             self.data_led2_sub.append(p[5])
@@ -10271,7 +10271,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.data_ppgdisp, self.data_hr1, self.data_hr2, self.data_hr3,
                     self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
                     self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
-                    self.data_red, self.data_ir,
+                    self.data_led2, self.data_led1,
                     self.data_aled2, self.data_aled1, self.data_led2_sub, self.data_led1_sub)
                 self._py_timing['plot_ppgplots'].append((time.perf_counter() - _t0p) * 1000)
 
@@ -10281,7 +10281,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self._signals_refresh_counter = 0
                 _t0p = time.perf_counter()
                 self.signals_window.update_plots(
-                    self.data_red, self.data_ir,
+                    self.data_led2, self.data_led1,
                     self.data_aled2, self.data_aled1, self.data_led2_sub, self.data_led1_sub,
                     self.data_ppgdisp)
                 self._py_timing['plot_signals'].append((time.perf_counter() - _t0p) * 1000)
