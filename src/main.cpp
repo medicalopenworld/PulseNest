@@ -253,7 +253,7 @@ void stop_incunest() {
 }
 
 // tia_gain_str / tia_cf_str / stage2_str — moved to incunest_afe4490.h as
-// afeRFToStr / afeCFToStr / afeStg2ToStr (inline). Removed local copies.
+// afeRFToStr / afeCFToStr / afeRGToStr (inline). Removed local copies.
 static const char* channel_str(AFE4490Channel ch) {
     switch (ch) {
         case AFE4490Channel::LED1:       return "LED1";
@@ -320,11 +320,11 @@ static void send_cfg_frame() {
         cfg.afe_sep_tia_en ? 1 : 0,
         afeRFToStr(cfg.afe_tia_rf_led1), kAFE_RF_OHM[(int)cfg.afe_tia_rf_led1],
         afeCFToStr(cfg.afe_tia_cf_led1),   kAFE_CF_PF[(int)cfg.afe_tia_cf_led1],
-        afeStg2ToStr(cfg.afe_stg2_rg_led1), kAFE_STG2_RG_OHM[(int)cfg.afe_stg2_rg_led1], kAFE_STG2_LINEAR[(int)cfg.afe_stg2_rg_led1],
+        afeRGToStr(cfg.afe_stg2_rg_led1), kAFE_STG2_RG_OHM[(int)cfg.afe_stg2_rg_led1], kAFE_STG2_LINEAR[(int)cfg.afe_stg2_rg_led1],
         cfg.afe_stg2_en_led1 ? 1 : 0,
         afeRFToStr(cfg.afe_tia_rf_led2), kAFE_RF_OHM[(int)cfg.afe_tia_rf_led2],
         afeCFToStr(cfg.afe_tia_cf_led2),   kAFE_CF_PF[(int)cfg.afe_tia_cf_led2],
-        afeStg2ToStr(cfg.afe_stg2_rg_led2), kAFE_STG2_RG_OHM[(int)cfg.afe_stg2_rg_led2], kAFE_STG2_LINEAR[(int)cfg.afe_stg2_rg_led2],
+        afeRGToStr(cfg.afe_stg2_rg_led2), kAFE_STG2_RG_OHM[(int)cfg.afe_stg2_rg_led2], kAFE_STG2_LINEAR[(int)cfg.afe_stg2_rg_led2],
         cfg.afe_stg2_en_led2 ? 1 : 0,
         (unsigned)cfg.afe_ambdac_uA, kAFE_STG2_RI_OHM,
         channel_str(cfg.ppgdisp_channel), filter_str(cfg.ppgdisp_filter_type),
@@ -340,7 +340,7 @@ static void send_cfg_frame() {
 }
 
 // parse_tia_gain / parse_tia_cf / parse_stage2 — moved to incunest_afe4490.h as
-// afeStrToRF / afeStrToCF / afeStrToStg2 (inline). Removed local copies.
+// afeStrToRF / afeStrToCF / afeStrToRG (inline). Removed local copies.
 
 // Process a validated $SET command (key and value already split, checksum verified).
 // Hardware params (LED, TIA, gain) are applied hot via the library setters.
@@ -372,7 +372,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     // Joint TIA gain setters (both channels at once)
     } else if (strcmp(key, "tiagain") == 0) {
-        AFE4490TIAGain g;
+        AFE4490RF g;
         if (afeStrToRF(val, g)) {
             afe.setTIAGain(g);
             Serial_printf("# SET tiagain=%s (both channels)\n", val);
@@ -390,8 +390,8 @@ static void apply_set_cmd(const char* key, const char* val) {
             return;
         }
     } else if (strcmp(key, "stg2") == 0) {
-        AFE4490Stage2Gain g;
-        if (afeStrToStg2(val, g)) {
+        AFE4490RG g;
+        if (afeStrToRG(val, g)) {
             afe.setStage2Gain(g);
             Serial_printf("# SET stg2=%s (both channels)\n", val);
         } else {
@@ -400,7 +400,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     // Per-channel setters — LED1 (IR)
     } else if (strcmp(key, "tiagain1") == 0) {
-        AFE4490TIAGain g;
+        AFE4490RF g;
         if (afeStrToRF(val, g)) {
             afe.setTIAGainLED1(g);
             Serial_printf("# SET tiagain1=%s (LED1/IR)\n", val);
@@ -418,8 +418,8 @@ static void apply_set_cmd(const char* key, const char* val) {
             return;
         }
     } else if (strcmp(key, "stg21") == 0) {
-        AFE4490Stage2Gain g;
-        if (afeStrToStg2(val, g)) {
+        AFE4490RG g;
+        if (afeStrToRG(val, g)) {
             afe.setStage2GainLED1(g);
             Serial_printf("# SET stg21=%s (LED1/IR)\n", val);
         } else {
@@ -428,7 +428,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
     // Per-channel setters — LED2 (RED)
     } else if (strcmp(key, "tiagain2") == 0) {
-        AFE4490TIAGain g;
+        AFE4490RF g;
         if (afeStrToRF(val, g)) {
             afe.setTIAGainLED2(g);
             Serial_printf("# SET tiagain2=%s (LED2/RED)\n", val);
@@ -446,8 +446,8 @@ static void apply_set_cmd(const char* key, const char* val) {
             return;
         }
     } else if (strcmp(key, "stg22") == 0) {
-        AFE4490Stage2Gain g;
-        if (afeStrToStg2(val, g)) {
+        AFE4490RG g;
+        if (afeStrToRG(val, g)) {
             afe.setStage2GainLED2(g);
             Serial_printf("# SET stg22=%s (LED2/RED)\n", val);
         } else {
