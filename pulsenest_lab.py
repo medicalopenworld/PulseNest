@@ -5269,7 +5269,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "OFF: TIAGAIN register applies to both channels (LED1 controls ignored by chip).\n"
             "ON:  TIAGAIN register → LED1 (IR);  TIA_AMB_GAIN register → LED2 (RED).\n"
             "Sends $SET,ensepgain,<0|1>. ($CFG key: ensepgain)\n"
-            "Lib: AFE4490Config.afe_ensepgain  ·  Script: _chk_ensepgain"))
+            "Lib: AFE4490Config.afe_sep_tia_en  ·  Script: _chk_ensepgain"))
         self._chk_ensepgain.stateChanged.connect(self._on_ensepgain_changed)
         self._chk_ensepgain.stateChanged.connect(lambda _=None: self._mark_dirty(self._chk_ensepgain))
         row_ensep = QtWidgets.QHBoxLayout()
@@ -5289,7 +5289,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Feedback resistor for the IR LED channel (TIAGAIN register). "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
             "Sends $SET,tiagain1,<value>. ($CFG key: tia1)\n"
-            "Lib: AFE4490Config.afe_tia_gain_led1  ·  Script: _combo_tiagain1"))
+            "Lib: AFE4490Config.afe_tia_rf_led1  ·  Script: _combo_tiagain1"))
         form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain1, "tiagain1",
                                                    lambda: self._combo_tiagain1.currentText()))
 
@@ -5309,7 +5309,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "STG2GAIN1[2:0] bits D[10:8] of TIAGAIN. Gain applied when STAGE2EN1 is ON. "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
             "Sends $SET,stg21,<value>. ($CFG key: stg21)\n"
-            "Lib: AFE4490Config.afe_stage2_gain_led1  ·  Script: _combo_stg21"))
+            "Lib: AFE4490Config.afe_stg2_rg_led1  ·  Script: _combo_stg21"))
         form_tia.addRow("Stage 2 gain", self._make_row(self._combo_stg21, "stg21",
                                                        lambda: self._combo_stg21.currentText()))
 
@@ -5321,7 +5321,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Independent of STG2GAIN1 — can be ON at 0 dB (unity gain) or OFF despite non-zero gain. "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
             "Sends $SET,stage2en1,<0|1>. ($CFG key: stage2en1)\n"
-            "Lib: AFE4490Config.afe_stage2_en1  ·  Script: _combo_stage2en1"))
+            "Lib: AFE4490Config.afe_stg2_en_led1  ·  Script: _combo_stage2en1"))
         form_tia.addRow("Stage 2 EN", self._make_row(self._combo_stage2en1, "stage2en1",
             lambda: "1" if self._combo_stage2en1.currentText() == "TRUE" else "0"))
 
@@ -5336,7 +5336,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Feedback resistor for the RED LED channel (TIA_AMB_GAIN register). "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
             "Sends $SET,tiagain2,<value>. ($CFG key: tia2)\n"
-            "Lib: AFE4490Config.afe_tia_gain_led2  ·  Script: _combo_tiagain2"))
+            "Lib: AFE4490Config.afe_tia_rf_led2  ·  Script: _combo_tiagain2"))
         form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain2, "tiagain2",
                                                    lambda: self._combo_tiagain2.currentText()))
 
@@ -5356,7 +5356,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "STG2GAIN2[2:0] bits D[10:8] of TIA_AMB_GAIN. Gain applied when STAGE2EN2 is ON. "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
             "Sends $SET,stg22,<value>. ($CFG key: stg22)\n"
-            "Lib: AFE4490Config.afe_stage2_gain_led2  ·  Script: _combo_stg22"))
+            "Lib: AFE4490Config.afe_stg2_rg_led2  ·  Script: _combo_stg22"))
         form_tia.addRow("Stage 2 gain", self._make_row(self._combo_stg22, "stg22",
                                                        lambda: self._combo_stg22.currentText()))
 
@@ -5369,7 +5369,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
             "Note: the library also forces STAGE2EN2=1 when AMBDAC &gt; 0. "
             "Sends $SET,stage2en2,<0|1>. ($CFG key: stage2en2)\n"
-            "Lib: AFE4490Config.afe_stage2_en2  ·  Script: _combo_stage2en2"))
+            "Lib: AFE4490Config.afe_stg2_en_led2  ·  Script: _combo_stage2en2"))
         form_tia.addRow("Stage 2 EN", self._make_row(self._combo_stage2en2, "stage2en2",
             lambda: "1" if self._combo_stage2en2.currentText() == "TRUE" else "0"))
 
