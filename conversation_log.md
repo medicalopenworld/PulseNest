@@ -9807,6 +9807,19 @@ Corregir el array con los valores exactos del ratio RG/Ri según la Tabla 1 del 
 
 ---
 
+## Sesión 2026-06-06a
+
+### Tema: Corrección _rg_lin en pulsenest_lab.py (OT1/OT2)
+
+### Análisis
+- OT1/OT2 en SIGNAL STATS: `OT = LED_Sub_mean / (LED_mA × RF_Ω × RG_linear)`
+- `pulsenest_lab.py:7471` usaba los mismos valores aproximados de `_rg_lin` que ya se habían corregido en la librería (sesión 2026-06-05a).
+
+### Cambios
+- `pulsenest_lab.py:7471`: `_rg_lin` corregido con ratios exactos RG/Ri: `{1.496→1.5, 2.985→3.0, 3.981→4.0}`
+
+---
+
 ## Sesión 2026-06-05a
 
 ### Ficheros modificados
@@ -9987,3 +10000,37 @@ Corregir el array con los valores exactos del ratio RG/Ri según la Tabla 1 del 
 
 ### Cambio
 - Columnas V_TIA y V_ADC en la tabla SIGNAL STATS: formato `:.2f` → `:.3f` (L9849-9850)
+
+---
+
+## Sesión 2026-06-06b — CSV sweep: columnas diferenciales V_TIA + 6 decimales
+
+### Ficheros modificados
+- `pulsenest_lab.py`
+
+### Cambios
+- `_CSV_HEADER`: 84 → 92 columnas. Añadidas 8 columnas diferenciales:
+  `LED1_ALED1_V_TIA_mean/std/min/max` y `LED2_ALED2_V_TIA_mean/std/min/max`
+- `_write_row`: `_vstats` dividida en `_vstats_tia` (6 decimales) y `_vstats_adc` (4 decimales)
+- Las 24 columnas V_TIA (16 individuales + 8 diferenciales) usan `:.6f`
+- Las 16 columnas V_ADC mantienen `:.4f`
+- Diferencial: `v_tia[IR][i] − v_tia[IR_Amb][i]` (LED1−ALED1) y `v_tia[RED][i] − v_tia[RED_Amb][i]` (LED2−ALED2), stats sobre la serie muestra a muestra
+
+---
+
+## Sesión 2026-06-06c — WiFi: eliminar persistencia last_net en NVS
+
+### Ficheros modificados
+- `src/main.cpp`
+
+### Cambio
+- Eliminado el mecanismo de guardar/leer `last_net` en NVS (namespace `pulsenest`)
+- El ESP32 ahora siempre prueba las redes WiFi desde el índice 0 de `WIFI_NETWORKS[]`
+- Eliminado `#include <Preferences.h>` (ya no se usa)
+- Variable de bucle renombrada de `n` a `i` (simplificación al quitar el offset)
+
+### Motivación
+El ESP32 se conectaba a la última WiFi conocida (WiFi de casa) en lugar del hotspot Windows (índice 0), porque NVS persistía el índice de la última conexión exitosa. Con este cambio siempre intenta primero la red en posición 0 de `WIFI_NETWORKS`.
+
+### Estado
+Build OK. Flash pendiente (ESP32 no accesible por OTA ni COM15 en este momento).

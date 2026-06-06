@@ -13,7 +13,6 @@
 #include <WiFiUDP.h>
 #include <WebServer.h>
 #include <Update.h>
-#include <Preferences.h>
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -773,42 +772,29 @@ void setup() {
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
 
-    // WiFi + UDP init (STA mode — tries each network in WIFI_NETWORKS[] order)
-    // Last successful network index is persisted in NVS so the next boot starts from it.
+    // WiFi + UDP init (STA mode — tries each network in WIFI_NETWORKS[] order, always from index 0)
     WiFi.mode(WIFI_STA);
     {
-        Preferences _prefs;
-        _prefs.begin("pulsenest", true);   // read-only
-        int _last = _prefs.getInt("last_net", 0);
-        _prefs.end();
-        if (_last < 0 || _last >= WIFI_NETWORK_COUNT) _last = 0;
-
         for (int i = 0; i < WIFI_NETWORK_COUNT && !g_wifi_ready; i++) {
-            int n = (_last + i) % WIFI_NETWORK_COUNT;   // start from last known good
             Serial.printf("# WiFi trying [%d/%d] %s", i + 1, WIFI_NETWORK_COUNT,
-                          WIFI_NETWORKS[n].ssid);
-            WiFi.begin(WIFI_NETWORKS[n].ssid, WIFI_NETWORKS[n].password);
+                          WIFI_NETWORKS[i].ssid);
+            WiFi.begin(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password);
             for (int j = 0; j < 20 && WiFi.status() != WL_CONNECTED; j++) {
                 vTaskDelay(pdMS_TO_TICKS(500));
                 Serial.print(".");
             }
             if (WiFi.status() == WL_CONNECTED) {
-                g_udp_target_ip = WIFI_NETWORKS[n].udp_target_ip;
+                g_udp_target_ip = WIFI_NETWORKS[i].udp_target_ip;
                 g_wifi_ready    = true;
                 g_udp.begin(UDP_TARGET_PORT);       // data frames ESP32→PC
                 g_cmd_udp.begin(UDP_CMD_PORT);      // command frames PC→ESP32
                 g_resp_udp.begin(0);                // response frames ESP32→PC (any local port)
                 ota_server_init();
                 Serial.printf("\n# WiFi connected [%s] — IP %s  UDP \u2192 %s:%d\n",
-                              WIFI_NETWORKS[n].ssid, WiFi.localIP().toString().c_str(),
+                              WIFI_NETWORKS[i].ssid, WiFi.localIP().toString().c_str(),
                               g_udp_target_ip, UDP_TARGET_PORT);
                 Serial.printf("# OTA: http://%s/\n", WiFi.localIP().toString().c_str());
                 Serial.printf("# CMD UDP: listening on port %d\n", UDP_CMD_PORT);
-                // Persist successful network index for next boot
-                Preferences _pw;
-                _pw.begin("pulsenest", false);
-                _pw.putInt("last_net", n);
-                _pw.end();
             } else {
                 const char* reason;
                 switch (WiFi.status()) {
@@ -819,7 +805,7 @@ void setup() {
                     default:                 reason = "UNKNOWN";         break;
                 }
                 Serial.printf("\n# WiFi FAILED %s — %s\n",
-                              WIFI_NETWORKS[n].ssid, reason);
+                              WIFI_NETWORKS[i].ssid, reason);
                 WiFi.disconnect();
             }
         }

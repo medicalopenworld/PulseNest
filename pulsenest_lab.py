@@ -6899,16 +6899,18 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         "rsqi_ok_pct",
         "diag_code_mean", "diag_code_min", "diag_code_max",
         "probe_state_fw_mean", "probe_state_fw_min", "probe_state_fw_max",
-        # ── V_TIA / V_ADC × 4 signals (LED1, LED2, ALED1, ALED2) ─────────────
-        "LED1_V_TIA_mean",  "LED1_V_TIA_std",  "LED1_V_TIA_min",  "LED1_V_TIA_max",
-        "LED1_V_ADC_mean",  "LED1_V_ADC_std",  "LED1_V_ADC_min",  "LED1_V_ADC_max",
-        "LED2_V_TIA_mean",  "LED2_V_TIA_std",  "LED2_V_TIA_min",  "LED2_V_TIA_max",
-        "LED2_V_ADC_mean",  "LED2_V_ADC_std",  "LED2_V_ADC_min",  "LED2_V_ADC_max",
-        "ALED1_V_TIA_mean", "ALED1_V_TIA_std", "ALED1_V_TIA_min", "ALED1_V_TIA_max",
-        "ALED1_V_ADC_mean", "ALED1_V_ADC_std", "ALED1_V_ADC_min", "ALED1_V_ADC_max",
-        "ALED2_V_TIA_mean", "ALED2_V_TIA_std", "ALED2_V_TIA_min", "ALED2_V_TIA_max",
-        "ALED2_V_ADC_mean", "ALED2_V_ADC_std", "ALED2_V_ADC_min", "ALED2_V_ADC_max",
-    ]  # 84 columns
+        # ── V_TIA (6 dec) / V_ADC (4 dec) × 4 signals + 2 differentials ──────
+        "LED1_V_TIA_mean",        "LED1_V_TIA_std",        "LED1_V_TIA_min",        "LED1_V_TIA_max",
+        "LED1_V_ADC_mean",        "LED1_V_ADC_std",        "LED1_V_ADC_min",        "LED1_V_ADC_max",
+        "LED2_V_TIA_mean",        "LED2_V_TIA_std",        "LED2_V_TIA_min",        "LED2_V_TIA_max",
+        "LED2_V_ADC_mean",        "LED2_V_ADC_std",        "LED2_V_ADC_min",        "LED2_V_ADC_max",
+        "ALED1_V_TIA_mean",       "ALED1_V_TIA_std",       "ALED1_V_TIA_min",       "ALED1_V_TIA_max",
+        "ALED1_V_ADC_mean",       "ALED1_V_ADC_std",       "ALED1_V_ADC_min",       "ALED1_V_ADC_max",
+        "ALED2_V_TIA_mean",       "ALED2_V_TIA_std",       "ALED2_V_TIA_min",       "ALED2_V_TIA_max",
+        "ALED2_V_ADC_mean",       "ALED2_V_ADC_std",       "ALED2_V_ADC_min",       "ALED2_V_ADC_max",
+        "LED1_ALED1_V_TIA_mean",  "LED1_ALED1_V_TIA_std",  "LED1_ALED1_V_TIA_min",  "LED1_ALED1_V_TIA_max",
+        "LED2_ALED2_V_TIA_mean",  "LED2_ALED2_V_TIA_std",  "LED2_ALED2_V_TIA_min",  "LED2_ALED2_V_TIA_max",
+    ]  # 92 columns
 
     _ST_IDLE      = 0
     _ST_SETTLING  = 1
@@ -7466,7 +7468,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         # OT1 / OT2: LED_Sub_mean / (LED_mA × RF_Ω × RG_linear)
         _rf_ohm = {"10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
                    "250K": 250e3, "500K": 500e3, "1M": 1e6}
-        _rg_lin = {"0dB": 1.0, "3.5dB": 1.496, "6dB": 2.0, "9.5dB": 2.985, "12dB": 3.981}
+        _rg_lin = {"0dB": 1.0, "3.5dB": 1.5, "6dB": 2.0, "9.5dB": 3.0, "12dB": 4.0}
         try:
             _led1_ma = float(led1)
             _rf1 = _rf_ohm.get(str(rf1_str), None)
@@ -7516,11 +7518,17 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         i_cancel = amb * 1e-6  # µA → A
         rg1_ohm  = _STG2_RG_OHM.get(rg1_str, 200e3)
         rg2_ohm  = _STG2_RG_OHM.get(rg2_str, 200e3)
-        def _vstats(vals):
+        def _vstats_tia(vals):
+            n = len(vals)
+            m = sum(vals) / n
+            sd = math.sqrt(sum((v - m) ** 2 for v in vals) / n)
+            return f"{m:.6f}", f"{sd:.6f}", f"{min(vals):.6f}", f"{max(vals):.6f}"
+        def _vstats_adc(vals):
             n = len(vals)
             m = sum(vals) / n
             sd = math.sqrt(sum((v - m) ** 2 for v in vals) / n)
             return f"{m:.4f}", f"{sd:.4f}", f"{min(vals):.4f}", f"{max(vals):.4f}"
+        _vtia_bufs = {}  # keep V_TIA series for differential computation
         for _buf_key, _rg_ohm in [("IR",      rg1_ohm),
                                    ("RED",     rg2_ohm),
                                    ("IR_Amb",  rg1_ohm),
@@ -7529,9 +7537,19 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             if _raw:
                 _v_adc = [s / _ADC_FS * _ADC_FSR for s in _raw]
                 _v_tia = [(v / (2 * _rg_ohm) + i_cancel) * _RI for v in _v_adc]
-                row.extend(_vstats(_v_tia) + _vstats(_v_adc))
+                _vtia_bufs[_buf_key] = _v_tia
+                row.extend(_vstats_tia(_v_tia) + _vstats_adc(_v_adc))
             else:
+                _vtia_bufs[_buf_key] = []
                 row.extend([""] * 8)
+        # ── Differential V_TIA: LED1−ALED1 and LED2−ALED2 ────────────────────
+        for _led_key, _amb_key in [("IR", "IR_Amb"), ("RED", "RED_Amb")]:
+            _a, _b = _vtia_bufs[_led_key], _vtia_bufs[_amb_key]
+            if _a and _b and len(_a) == len(_b):
+                _diff = [x - y for x, y in zip(_a, _b)]
+                row.extend(_vstats_tia(_diff))
+            else:
+                row.extend([""] * 4)
 
         path = self._edit_csv.text().strip() or "afe_sweep_test.csv"
         write_header = not os.path.exists(path)
