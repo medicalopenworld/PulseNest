@@ -137,11 +137,12 @@ TaskHandle_t             g_incunest_task        = nullptr;
 static volatile uint32_t incunest_sample_count  = 0;
 static volatile uint32_t incunest_tx_dropped   = 0;  // frames skipped: TX buffer too full at frame start
 
-// ── Ambient-subtraction consistency check (temporary — remove #define to disable)
-// Verifies that the hardware-subtracted values (led1_sub, led2_sub) equal the
-// software difference of the individually-read raw registers.
-// Reports a one-line summary every 500 samples (~1 s at 500 Hz).
-// #define CHK_AMB_SUB
+// ── Ambient-subtraction consistency check — OBSOLETE (kept for reference)
+// Originally used to detect 22-bit overflow in REG_LED1_ALED1VAL / REG_LED2_ALED2VAL.
+// The root cause was fixed in incunest_afe4490.cpp: those hardware registers are no
+// longer read; led1_sub/led2_sub are now computed in SW as int32_t (led1-aled1 /
+// led2-aled2), which cannot overflow. This check would always report zero mismatches.
+// #define CHK_AMB_SUB  // permanently disabled — see above
 #ifdef CHK_AMB_SUB
 static uint32_t chk_n         = 0;
 static uint32_t chk_mismatches = 0;
