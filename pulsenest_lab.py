@@ -8487,37 +8487,28 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.sidebar_layout.addSpacing(20)
 
-        label_frame = QtWidgets.QLabel("FRAME MODE")
-        label_frame.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
-        self.sidebar_layout.addWidget(label_frame)
-
-        self.btn_frame_m1 = QtWidgets.QPushButton("$M1  PPG")
-        self.btn_frame_m2 = QtWidgets.QPushButton("$M2  BASIC")
-        self.btn_frame_m3 = QtWidgets.QPushButton("$M3  FULL")
-        self.btn_frame_m4 = QtWidgets.QPushButton("$M4  DEBUG")
-        self.btn_frame_m1.clicked.connect(lambda: self._send_frame_cmd("M1"))
-        self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
-        self.btn_frame_m3.clicked.connect(lambda: self._send_frame_cmd("M3"))
-        self.btn_frame_m4.clicked.connect(lambda: self._send_frame_cmd("M4"))
-        self.btn_frame_m1.setToolTip(_make_tooltip(
-            "$M1 — PPG only",
-            "Minimal frame: SmpCnt, Ts_us, PPG_DISP. Lowest bandwidth — use over serial when only the PPG waveform is needed."))
-        self.btn_frame_m2.setToolTip(_make_tooltip(
-            "$M2 — Basic monitoring",
-            "Lightweight frame: SmpCnt, Ts_us, PPG_DISP, SpO2, SpO2_SQI, HR3, HR3_SQI, RSQI, DiagCode, ProbeState. "
-            "Use over serial for basic SpO2/HR monitoring without full algorithm data."))
-        self.btn_frame_m3.setToolTip(_make_tooltip(
-            "$M3 — Full production frame (default)",
-            "Full AFE4490Data frame: all 23 fields including raw ADC channels, SpO2, HR1/HR2/HR3, RSQI, DiagCode, ProbeState. "
-            "Default mode. Use over UDP for full algorithm analysis and calibration."))
-        self.btn_frame_m4.setToolTip(_make_tooltip(
-            "$M4 — Debug frame",
-            "Full AFE4490Data + AFE4490DebugData: all $M3 fields plus V_TIA and I_PD for all 4 channels (LED1/LED2/ALED1/ALED2). "
-            "Use over UDP for analog signal analysis, HGAC design and TIA calibration."))
-        self.sidebar_layout.addWidget(self.btn_frame_m1)
-        self.sidebar_layout.addWidget(self.btn_frame_m2)
-        self.sidebar_layout.addWidget(self.btn_frame_m3)
-        self.sidebar_layout.addWidget(self.btn_frame_m4)
+        self.frame_mode_combo = QtWidgets.QComboBox()
+        self.frame_mode_combo.addItems([
+            "$M1  PPG MODE",
+            "$M2  BASIC MODE",
+            "$M3  FULL MODE",
+            "$M4  DEBUG MODE",
+        ])
+        self.frame_mode_combo.setCurrentIndex(2)  # M3 default
+        self.frame_mode_combo.setStyleSheet(
+            "QComboBox { background: #002A3A; color: #44AAFF; border: 1px solid #44AAFF;"
+            " padding: 4px 8px; font-size: 14px; font-weight: 700; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background: #001A28; color: #44AAFF;"
+            " selection-background-color: #003A4A; border: 1px solid #44AAFF; }")
+        self.frame_mode_combo.setToolTip(_make_tooltip(
+            "Frame mode",
+            "$M1 PPG MODE: minimal frame (SmpCnt, Ts_us, PPG_DISP). Lowest bandwidth.\n"
+            "$M2 BASIC MODE: PPG + SpO2 + HR3 + quality flags. Use over serial.\n"
+            "$M3 FULL MODE: all AFE4490Data fields (default). Use over UDP.\n"
+            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels. Use over UDP for analog analysis."))
+        self.frame_mode_combo.currentIndexChanged.connect(self._on_frame_mode_combo_changed)
+        self.sidebar_layout.addWidget(self.frame_mode_combo)
         self._update_frame_button()
 
         self.sidebar_layout.addSpacing(20)
@@ -8952,16 +8943,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
         QPushButton:hover { background-color: #2A2A2A; }
     """
 
+    _FRAME_MODES = ["M1", "M2", "M3", "M4"]
+
     def _update_frame_button(self):
-        for btn, mode in (
-            (self.btn_frame_m1, "M1"),
-            (self.btn_frame_m2, "M2"),
-            (self.btn_frame_m3, "M3"),
-            (self.btn_frame_m4, "M4"),
-        ):
-            btn.setStyleSheet(
-                self.STYLE_LIB_ACTIVE.format(bg="#002A3A", fg="#44AAFF", bgh="#003A4A")
-                if self.frame_mode == mode else self.STYLE_LIB_INACTIVE)
+        idx = self._FRAME_MODES.index(self.frame_mode) if self.frame_mode in self._FRAME_MODES else 2
+        self.frame_mode_combo.blockSignals(True)
+        self.frame_mode_combo.setCurrentIndex(idx)
+        self.frame_mode_combo.blockSignals(False)
+
+    def _on_frame_mode_combo_changed(self, idx):
+        self._send_frame_cmd(self._FRAME_MODES[idx])
 
     def _send_frame_cmd(self, mode):
         if not self._is_cmd_ready():
