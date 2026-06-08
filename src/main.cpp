@@ -164,7 +164,8 @@ static void chk_amb_sub(const AFE4490Data& d) {
 void Incunest_Task(void *pvParameters) {
     for (;;) {
         AFE4490Data data;
-        if (afe.getData(data)) {
+        AFE4490DebugData dbg;
+        if (afe.getData(data, &dbg)) {
             incunest_sample_count++;
 #ifdef CHK_AMB_SUB
             chk_amb_sub(data);
@@ -238,7 +239,7 @@ void start_incunest() {
     vTaskDelay(pdMS_TO_TICKS(100));
 
     incunest_sample_count = 0;
-    afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN);
+    afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN, true);  // debug=true: combined queue items for atomic getData(data,dbg)
     afe.setPPGDispFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
     xTaskCreatePinnedToCore(Incunest_Task, "INCUNEST", 8192, NULL, 3, &g_incunest_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
     Serial_printf("# incunest_afe4490 started\n");
