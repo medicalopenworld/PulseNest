@@ -85,7 +85,7 @@ static WebServer g_ota_server(80);
 // Batch buffer: accumulates UDP_BATCH_SIZE frames before one endPacket() call.
 // M1 frame ≤ ~200 chars; 10 × 256 = 2560 bytes — well within WiFi MTU (~1460 bytes
 // for a single fragment; lwIP will fragment transparently if needed).
-static char     g_udp_batch_buf[UDP_BATCH_SIZE * 256];
+static char     g_udp_batch_buf[UDP_BATCH_SIZE * 512];  // 512 per slot to fit $M4 frames (~310 chars)
 static uint16_t g_udp_batch_len   = 0;
 static uint8_t  g_udp_batch_count = 0;
 
@@ -126,8 +126,12 @@ static void udp_send_line(const char* buf) {
 }
 
 // ── Incunest frame mode ────────────────────────────────────────────────────────────
-enum class IncunestFrameMode { M1, M2 };  // M1=full frame (default), M2=raw ADC only
-volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M1;
+// M1 = PPG only (minimal bandwidth)
+// M2 = PPG + SpO2 + HR3 + quality flags (lightweight monitoring)
+// M3 = full AFE4490Data — all production fields (default)
+// M4 = M3 + AFE4490DebugData analog signals (V_TIA, I_PD for all 4 channels)
+enum class IncunestFrameMode { M1, M2, M3, M4 };
+volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M3;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Library — incunest_afe4490
@@ -176,47 +180,97 @@ void Incunest_Task(void *pvParameters) {
                 if (Serial.availableForWrite() < 30) incunest_tx_dropped++;
 
                 if (g_incunest_frame_mode == IncunestFrameMode::M1) {
-                    // $M1,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState
-                    char buf[384];
+                    // $M1,SmpCnt,Ts_us,PPG_DISP*XX
+                    char buf[128];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M1,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
+                        "$M1,%lu,%lu,%ld",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
-                        (long)data.led2,       // LED2
-                        (long)data.led1,       // LED1
-                        (long)data.aled2,      // ALED2
-                        (long)data.aled1,      // ALED1
-                        (long)data.led2_sub, // LED2_SUB
-                        (long)data.led1_sub, // LED1_SUB
-                        (long)data.ppg_disp,        // PPG_DISP
+                        (long)data.ppg_disp);
+                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+                    if (!g_wifi_ready) Serial_print_locked(buf);
+                    udp_send(buf);
+                } else if (g_incunest_frame_mode == IncunestFrameMode::M2) {
+                    // $M2,SmpCnt,Ts_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState*XX
+                    char buf[192];
+                    int n = snprintf(buf, sizeof(buf) - 6,
+                        "$M2,%lu,%lu,%ld,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
+                        (unsigned long)incunest_sample_count,
+                        (unsigned long)micros(),
+                        (long)data.ppg_disp,
                         data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
-                        data.spo2_sqi,                           // SpO2_SQI
-                        data.spo2_r,
-                        data.pi,                                 // PI: Perfusion Index [%]
-                        data.hr1_sqi > 0.0f ? data.hr1 : -1.0f,
-                        data.hr1_sqi,                            // HR1_SQI
-                        data.hr2_sqi > 0.0f ? data.hr2 : -1.0f,
-                        data.hr2_sqi,                            // HR2_SQI
+                        data.spo2_sqi,
                         data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
-                        data.hr3_sqi,                            // HR3_SQI
-                        (unsigned)data.rsqi,                     // RSQI: 0=invalid, 1=valid
-                        (unsigned long)data.diag_code,           // DiagCode bitmask
-                        (int)data.probe_state);                  // ProbeState: 0=DISCONNECTED, 1=NOT_APPLIED, 2=APPLIED
+                        data.hr3_sqi,
+                        (unsigned)data.rsqi,
+                        (unsigned long)data.diag_code,
+                        (int)data.probe_state);
+                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+                    if (!g_wifi_ready) Serial_print_locked(buf);
+                    udp_send(buf);
+                } else if (g_incunest_frame_mode == IncunestFrameMode::M3) {
+                    // $M3,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,
+                    //     SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState*XX
+                    char buf[384];
+                    int n = snprintf(buf, sizeof(buf) - 6,
+                        "$M3,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
+                        (unsigned long)incunest_sample_count,
+                        (unsigned long)micros(),
+                        (long)data.led2,       (long)data.led1,
+                        (long)data.aled2,      (long)data.aled1,
+                        (long)data.led2_sub,   (long)data.led1_sub,
+                        (long)data.ppg_disp,
+                        data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
+                        data.spo2_sqi,
+                        data.spo2_r,
+                        data.pi,
+                        data.hr1_sqi > 0.0f ? data.hr1 : -1.0f,
+                        data.hr1_sqi,
+                        data.hr2_sqi > 0.0f ? data.hr2 : -1.0f,
+                        data.hr2_sqi,
+                        data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
+                        data.hr3_sqi,
+                        (unsigned)data.rsqi,
+                        (unsigned long)data.diag_code,
+                        (int)data.probe_state);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
                     udp_send(buf);
-                } else {
-                    char buf[128];
+                } else {  // M4
+                    // $M4 = M3 + V_TIA_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (all in scientific notation)
+                    char buf[512];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M2,%lu,%ld,%ld,%ld,%ld,%ld,%ld",
+                        "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
+                        ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e",
                         (unsigned long)incunest_sample_count,
-                        (long)data.led2, (long)data.led1,
-                        (long)data.aled2, (long)data.aled1,
-                        (long)data.led2_sub, (long)data.led1_sub);
+                        (unsigned long)micros(),
+                        (long)data.led2,       (long)data.led1,
+                        (long)data.aled2,      (long)data.aled1,
+                        (long)data.led2_sub,   (long)data.led1_sub,
+                        (long)data.ppg_disp,
+                        data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
+                        data.spo2_sqi,
+                        data.spo2_r,
+                        data.pi,
+                        data.hr1_sqi > 0.0f ? data.hr1 : -1.0f,
+                        data.hr1_sqi,
+                        data.hr2_sqi > 0.0f ? data.hr2 : -1.0f,
+                        data.hr2_sqi,
+                        data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
+                        data.hr3_sqi,
+                        (unsigned)data.rsqi,
+                        (unsigned long)data.diag_code,
+                        (int)data.probe_state,
+                        dbg.analog.v_tia_led1,  dbg.analog.v_tia_led2,
+                        dbg.analog.v_tia_aled1, dbg.analog.v_tia_aled2,
+                        dbg.analog.i_pd_led1,   dbg.analog.i_pd_led2,
+                        dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active
+                    if (!g_wifi_ready) Serial_print_locked(buf);
                     udp_send(buf);
                 }
 
@@ -598,12 +652,13 @@ static void ota_server_init() {
 // Extracted from Cmd_Task so both Serial and UDP commands use the same logic.
 // buf must be NUL-terminated and mutable (apply_set_cmd modifies it in-place).
 static void process_command(char* cmd_buf, int cmd_len) {
-    if (cmd_len == 1 && cmd_buf[0] == '1') {
-        g_incunest_frame_mode = IncunestFrameMode::M1;
-        Serial_printf("# Frame mode: $M1 (full)\n");
-    } else if (cmd_len == 1 && cmd_buf[0] == '2') {
-        g_incunest_frame_mode = IncunestFrameMode::M2;
-        Serial_printf("# Frame mode: $M2 (raw)\n");
+    if (strncmp(cmd_buf, "$MODE,", 6) == 0) {
+        const char* mode = cmd_buf + 6;
+        if      (strcmp(mode, "M1") == 0) { g_incunest_frame_mode = IncunestFrameMode::M1; Serial_printf("# Frame mode: $M1 (PPG only)\n"); }
+        else if (strcmp(mode, "M2") == 0) { g_incunest_frame_mode = IncunestFrameMode::M2; Serial_printf("# Frame mode: $M2 (PPG+SpO2+HR3)\n"); }
+        else if (strcmp(mode, "M3") == 0) { g_incunest_frame_mode = IncunestFrameMode::M3; Serial_printf("# Frame mode: $M3 (full)\n"); }
+        else if (strcmp(mode, "M4") == 0) { g_incunest_frame_mode = IncunestFrameMode::M4; Serial_printf("# Frame mode: $M4 (debug)\n"); }
+        else { Serial_printf("$ERR,MODE,invalid (M1/M2/M3/M4)\r\n"); }
     } else if (strcmp(cmd_buf, "$CFG?") == 0) {
         send_cfg_frame();
     } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
@@ -640,8 +695,10 @@ static void process_command(char* cmd_buf, int cmd_len) {
 
 // ── Command task ──────────────────────────────────────────────────────────────
 // Accepts commands over Serial AND UDP (port UDP_CMD_PORT) when WiFi is active:
-//   '1'           → frame mode $M1 (full)
-//   '2'           → frame mode $M2 (raw ADC only)
+//   '$MODE,M1\n'  → frame mode $M1 (PPG only — minimal bandwidth)
+//   '$MODE,M2\n'  → frame mode $M2 (PPG + SpO2 + HR3 + quality flags)
+//   '$MODE,M3\n'  → frame mode $M3 (full AFE4490Data — default)
+//   '$MODE,M4\n'  → frame mode $M4 (M3 + AFE4490DebugData analog signals)
 //   '$CFG?\n'     → emit $CFG frame with current AFE4490 configuration
 //   '$SET,k,v*XX' → set hardware parameter k to value v (XOR checksum verified)
 //   '$DIAG?\n'    → run AFE4490 diagnostics, emit $DIAG,XXXXXX*YY frame

@@ -1994,7 +1994,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         if '*' in raw:
                             raw = raw[:raw.rfind('*')]
                         parts = raw.split(',')
-                        if len(parts) < 20 or parts[0] != '$M1':
+                        if len(parts) < 20 or parts[0] not in ('$M1', '$M3'):
                             continue
                         # $M1,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,...
                         ts_us   = float(parts[2])
@@ -2008,7 +2008,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
-                        if lib_id not in ('M1', '$M1'):
+                        if lib_id not in ('M1', 'M3', '$M1', '$M3'):
                             continue
                         offset = 3  # after Timestamp_PC, Diff_us_PC, LibID
                         ts_us   = float(row[offset + 1])
@@ -2704,7 +2704,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                         if '*' in raw:
                             raw = raw[:raw.rfind('*')]
                         parts = raw.split(',')
-                        if len(parts) < 20 or parts[0] != '$M1':
+                        if len(parts) < 20 or parts[0] not in ('$M1', '$M3'):
                             continue
                         ts_us  = float(parts[2])
                         led1_sub = float(parts[8])
@@ -2715,7 +2715,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
-                        if lib_id not in ('M1', '$M1'):
+                        if lib_id not in ('M1', 'M3', '$M1', '$M3'):
                             continue
                         offset = 3
                         ts_us  = float(row[offset + 1])
@@ -3331,7 +3331,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
                         if '*' in raw:
                             raw = raw[:raw.rfind('*')]
                         parts = raw.split(',')
-                        if len(parts) < 20 or parts[0] != '$M1':
+                        if len(parts) < 20 or parts[0] not in ('$M1', '$M3'):
                             continue
                         ts_us  = float(parts[2])
                         led1_sub = float(parts[8])
@@ -3341,7 +3341,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
-                        if lib_id not in ('M1', '$M1'):
+                        if lib_id not in ('M1', 'M3', '$M1', '$M3'):
                             continue
                         offset = 3
                         ts_us  = float(row[offset + 1])
@@ -4165,7 +4165,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                         if '*' in raw:
                             raw = raw[:raw.rfind('*')]
                         parts = raw.split(',')
-                        if len(parts) < 20 or parts[0] != '$M1':
+                        if len(parts) < 20 or parts[0] not in ('$M1', '$M3'):
                             continue
                         ts_us  = float(parts[2])
                         led1_sub = float(parts[8])
@@ -4175,7 +4175,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
-                        if lib_id not in ('M1', '$M1'):
+                        if lib_id not in ('M1', 'M3', '$M1', '$M3'):
                             continue
                         offset = 3
                         ts_us  = float(row[offset + 1])
@@ -6749,7 +6749,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
+        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
     )
 
     def __init__(self, main_monitor):
@@ -7605,7 +7605,7 @@ class UdpComWindow(QtWidgets.QWidget):
 
     UDP_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState"
+        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
     )
 
     def __init__(self, main_monitor):
@@ -8199,10 +8199,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_probe_state = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ot_led1     = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_ot_led2     = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        # AFE4490DebugData analog signals — populated only when frame_mode == "M4"
+        self.data_v_tia_led1  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_v_tia_led2  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_v_tia_aled1 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_v_tia_aled2 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_i_pd_led1   = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_i_pd_led2   = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_i_pd_aled1  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_i_pd_aled2  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
         self.is_paused = False
         self.last_time = None
-        self.frame_mode = "M1"    # must match default in main.cpp (IncunestFrameMode::FULL)
+        self.frame_mode = "M3"    # must match default in main.cpp (IncunestFrameMode::M3)
         
         self.is_saving = False
         self._sub_mismatch_count = 0   # LED2_SUB / LED1_SUB integrity check counter
@@ -8300,9 +8309,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("HR3_SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
             ("RSQI",     "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary."),
             ("DiagCode", "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM — 0x2000=AMB_SAT, 0x4000=SIGNAL_WEAK, 0x8000=HW_SETTLING. 0 = no active conditions."),
-            ("OT_LED1",  "data_ot_led1",    "Optical transmittance LED1 (IR): LED1_Sub / (LED1_mA × RF1_Ω × RG1_linear). Computed by script from last $CFG. APPLIED ≈ 0.05, NOT_APPLIED ≈ 2.8, DISCONNECTED ≈ 0. Used by RSQM to discriminate NOT_APPLIED vs APPLIED."),
-            ("OT_LED2",  "data_ot_led2",    "Optical transmittance LED2 (RED): LED2_Sub / (LED2_mA × RF2_Ω × RG2_linear). Computed by script from last $CFG. APPLIED ≈ 0.05, NOT_APPLIED ≈ 2.8, DISCONNECTED ≈ 0. Used by RSQM to discriminate NOT_APPLIED vs APPLIED."),
+            ("OT_LED1",  "data_ot_led1",    "Optical transmittance LED1 (IR): (I_PD_LED1 - I_PD_ALED1) / I_LED1 [A/A, dimensionless]. Derived from datasheet Eq.2 inversion; computed by script from last $CFG. APPLIED ≈ 1.4e-5, NOT_APPLIED ≈ 8e-4 (needs empirical calibration). Used by RSQM to discriminate NOT_APPLIED vs APPLIED (threshold 8.5e-5)."),
+            ("OT_LED2",  "data_ot_led2",    "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Derived from datasheet Eq.2 inversion; computed by script from last $CFG. APPLIED ≈ 1.4e-5, NOT_APPLIED ≈ 8e-4 (needs empirical calibration). Used by RSQM to discriminate NOT_APPLIED vs APPLIED (threshold 8.5e-5)."),
             ("ProbeState","data_probe_state","Probe state (RSQM). 0 = DISCONNECTED (cable out), 1 = NOT_APPLIED (no finger), 2 = APPLIED (finger on sensor, normal operation)."),
+            # AFE4490DebugData analog signals — only populated in $M4 frame mode
+            ("V_TIA_LED1",  "data_v_tia_led1",  "TIA output voltage LED1/IR channel [V]. V_TIA = I_PD × RF. Computed per sample by firmware. Only available in $M4 frame mode."),
+            ("V_TIA_LED2",  "data_v_tia_led2",  "TIA output voltage LED2/RED channel [V]. Only available in $M4 frame mode."),
+            ("V_TIA_ALED1", "data_v_tia_aled1", "TIA output voltage ALED1/IR ambient channel [V]. Only available in $M4 frame mode."),
+            ("V_TIA_ALED2", "data_v_tia_aled2", "TIA output voltage ALED2/RED ambient channel [V]. Only available in $M4 frame mode."),
+            ("I_PD_LED1",   "data_i_pd_led1",   "Photodiode current LED1/IR channel [A]. I_PD = V_TIA / RF. Computed per sample by firmware. Only available in $M4 frame mode."),
+            ("I_PD_LED2",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [A]. Only available in $M4 frame mode."),
+            ("I_PD_ALED1",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [A]. Only available in $M4 frame mode."),
+            ("I_PD_ALED2",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [A]. Only available in $M4 frame mode."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
@@ -8473,21 +8491,33 @@ class PPGMonitor(QtWidgets.QMainWindow):
         label_frame.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
         self.sidebar_layout.addWidget(label_frame)
 
-        self.btn_frame_m1 = QtWidgets.QPushButton("$M1  FULL")
-        self.btn_frame_m2 = QtWidgets.QPushButton("$M2  RAW")
+        self.btn_frame_m1 = QtWidgets.QPushButton("$M1  PPG")
+        self.btn_frame_m2 = QtWidgets.QPushButton("$M2  BASIC")
+        self.btn_frame_m3 = QtWidgets.QPushButton("$M3  FULL")
+        self.btn_frame_m4 = QtWidgets.QPushButton("$M4  DEBUG")
         self.btn_frame_m1.clicked.connect(lambda: self._send_frame_cmd("M1"))
         self.btn_frame_m2.clicked.connect(lambda: self._send_frame_cmd("M2"))
+        self.btn_frame_m3.clicked.connect(lambda: self._send_frame_cmd("M3"))
+        self.btn_frame_m4.clicked.connect(lambda: self._send_frame_cmd("M4"))
         self.btn_frame_m1.setToolTip(_make_tooltip(
-            "$M1 — FULL frame",
-            "Full frame mode: 19 fields — SmpCnt, Ts_us, LED2, LED1, ALED2, ALED1, LED2_SUB, LED1_SUB, "
-            "PPG_DISP, SpO2, SpO2_SQI, R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI + checksum. "
-            "Use for algorithm analysis and calibration."))
+            "$M1 — PPG only",
+            "Minimal frame: SmpCnt, Ts_us, PPG_DISP. Lowest bandwidth — use over serial when only the PPG waveform is needed."))
         self.btn_frame_m2.setToolTip(_make_tooltip(
-            "$M2 — RAW frame",
-            "Raw frame mode: only raw ADC values — SmpCnt, Ts_us, LED2, LED1, ALED2, ALED1 + checksum. "
-            "Lower bandwidth. Use when only raw signal capture is needed."))
+            "$M2 — Basic monitoring",
+            "Lightweight frame: SmpCnt, Ts_us, PPG_DISP, SpO2, SpO2_SQI, HR3, HR3_SQI, RSQI, DiagCode, ProbeState. "
+            "Use over serial for basic SpO2/HR monitoring without full algorithm data."))
+        self.btn_frame_m3.setToolTip(_make_tooltip(
+            "$M3 — Full production frame (default)",
+            "Full AFE4490Data frame: all 23 fields including raw ADC channels, SpO2, HR1/HR2/HR3, RSQI, DiagCode, ProbeState. "
+            "Default mode. Use over UDP for full algorithm analysis and calibration."))
+        self.btn_frame_m4.setToolTip(_make_tooltip(
+            "$M4 — Debug frame",
+            "Full AFE4490Data + AFE4490DebugData: all $M3 fields plus V_TIA and I_PD for all 4 channels (LED1/LED2/ALED1/ALED2). "
+            "Use over UDP for analog signal analysis, HGAC design and TIA calibration."))
         self.sidebar_layout.addWidget(self.btn_frame_m1)
         self.sidebar_layout.addWidget(self.btn_frame_m2)
+        self.sidebar_layout.addWidget(self.btn_frame_m3)
+        self.sidebar_layout.addWidget(self.btn_frame_m4)
         self._update_frame_button()
 
         self.sidebar_layout.addSpacing(20)
@@ -8923,16 +8953,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
     """
 
     def _update_frame_button(self):
-        m1_active = (self.frame_mode == "M1")
-        for btn, is_active in ((self.btn_frame_m1, m1_active), (self.btn_frame_m2, not m1_active)):
+        for btn, mode in (
+            (self.btn_frame_m1, "M1"),
+            (self.btn_frame_m2, "M2"),
+            (self.btn_frame_m3, "M3"),
+            (self.btn_frame_m4, "M4"),
+        ):
             btn.setStyleSheet(
                 self.STYLE_LIB_ACTIVE.format(bg="#002A3A", fg="#44AAFF", bgh="#003A4A")
-                if is_active else self.STYLE_LIB_INACTIVE)
+                if self.frame_mode == mode else self.STYLE_LIB_INACTIVE)
 
     def _send_frame_cmd(self, mode):
         if not self._is_cmd_ready():
             return
-        self.send_cmd(('1\n' if mode == "M1" else '2\n').encode())
+        self.send_cmd(f"$MODE,{mode}\n".encode())
         self.frame_mode = mode
         self._update_frame_button()
 
@@ -9420,10 +9454,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 filename = os.path.join(CAPTURES_DIR, f"ppg_data_stream_{now_str}.csv")
                 try:
                     self.save_file = open(filename, "w")
-                    if self.frame_mode == "M2":
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,Red,Infrared,ALED2,ALED1,LED2_SUB,LED1_SUB\n")
-                    else:
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
+                    if self.frame_mode == "M1":
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP\n")
+                    elif self.frame_mode in ("M1", "M2"):
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
+                    elif self.frame_mode == "M4":
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2\n")
+                    else:  # M3 (default)
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
                     self.log(f"RECORDING LIVE: {filename}")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -9657,7 +9695,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     line = line.rstrip(b'\r')
                     if not line:
                         continue
-                    if line.startswith(b'$M1,') or line.startswith(b'$M2,'):
+                    if line.startswith(b'$M1,') or line.startswith(b'$M2,') or line.startswith(b'$M3,') or line.startswith(b'$M4,'):
                         try:
                             _cnt = int(line[1:].split(b',')[1])
                             if _last_cnt is not None:
@@ -9718,14 +9756,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _VTG_DEFAULT = QtGui.QColor("#121212")  # no data
     _ADC_FSR             = 1.2            # V — AFE4490 ADC full-scale voltage (±1.2 V)
     _ADC_FS_COUNTS       = 2 ** 21 - 1    # 22-bit signed: positive full-scale code (datasheet Table 7)
-    def _compute_ot(self, led_sub, led_ma_str, rf_ohm, rg_x):
-        """Optical transmittance: LED_Sub / (LED_mA × RF_Ω × RG_linear).
-        rf_ohm and rg_x are physical floats from _last_cfg (rf1_ohm/rf2_ohm, rg1_x/rg2_x).
+    def _compute_ot(self, led_sub, led_ma_str, rf_ohm, rg_ohm):
+        """Optical transmittance: (I_PD_LED - I_PD_ALED) / I_LED  [A/A, dimensionless].
+        Derived from datasheet Eq.2 inversion (p.30); I_CANCEL cancels in LED-ALED subtraction.
+        Formula: led_sub * ADC_FSR * Ri / (ADC_FS_COUNTS * 2 * rg_ohm * rf_ohm * I_LED_A)
+        rf_ohm, rg_ohm: physical Ω from _last_cfg (rf1_ohm/rf2_ohm, rg1_ohm/rg2_ohm).
+        When STAGE2EN=0: caller must pass rg_ohm = 100e3 (Ri, unity gain).
         Returns 0.0 if config is unavailable or denominator is zero."""
+        _RI = 100e3
         try:
             led_ma = float(led_ma_str)
-            denom  = led_ma * float(rf_ohm) * float(rg_x)
-            return float(led_sub) / denom if denom != 0.0 else 0.0
+            denom  = self._ADC_FS_COUNTS * 2.0 * float(rg_ohm) * float(rf_ohm) * led_ma * 1e-3
+            return float(led_sub) * self._ADC_FSR * _RI / denom if denom != 0.0 else 0.0
         except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
 
@@ -9793,6 +9835,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 std  = math.sqrt(sum((v - mean) ** 2 for v in buf) / n)
                 if sig_idx < 6:  # raw ADC signals: integer, thousands-separated with narrow space
                     def _fmt(v): return f"{v:,.0f}".replace(",", "\u202f")
+                elif sig_idx in {19, 20}:  # OT_LED1, OT_LED2: scientific notation (values ~1e-5…1e-3)
+                    def _fmt(v): return f"{v:.2e}"
                 else:
                     def _fmt(v): return f"{v:.2f}"
                 snr_str = f"{std / mean * 100:.2f}" if (sig_idx in self._STATS_SUB_ROWS and mean != 0) else (
@@ -9801,7 +9845,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     _led1_sub_cv  = std / mean * 100
                 elif sig_idx == 5 and mean != 0:  # LED2_SUB: save CV for R ratio
                     _led2_sub_cv = std / mean * 100
-                vals = [_fmt(mean), _fmt(std), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
+                if sig_idx == 18:  # DiagCode: integer everywhere except SD (bitmask, not continuous)
+                    vals = [f"{mean:.0f}", f"{std:.2f}", f"{hi - lo:.0f}", f"{lo:.0f}", f"{hi:.0f}"]
+                else:
+                    vals = [_fmt(mean), _fmt(std), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
             else:
                 snr_str = "" if sig_idx not in self._STATS_SUB_ROWS else "---"
                 vals = ["---", "---", "---", "---", "---"]
@@ -9900,7 +9947,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         if _src_com_win is not None:
                             _src_com_win.append_line(line)
                         if 'incunest' in line.lower() and 'frame' not in line.lower():
-                            self.frame_mode = "M1"
+                            self.frame_mode = "M3"
                             self._update_frame_button()
                             import re as _re
                             _vm = _re.search(r'incunest_afe4490\s+(v\S+)', line)
@@ -9946,7 +9993,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # Verify and strip NMEA-style XOR checksum (*XX) if present.
                     # $M1/$M2 data frames always carry *XX; reject them if missing or malformed.
                     chk_ok = 1
-                    is_data_frame = line.startswith('$M1,') or line.startswith('$M2,')
+                    is_data_frame = line.startswith('$M1,') or line.startswith('$M2,') or line.startswith('$M3,') or line.startswith('$M4,')
                     if '*' in line:
                         star_pos = line.rfind('*')
                         chk_field = line[star_pos + 1:]
@@ -10078,12 +10125,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     _console_lines.append(csv_line)
 
                     parts = line[1:].split('*')[0].split(',')  # strip leading '$' and trailing checksum
-                    if len(parts) >= 20:
+                    lib_id = parts[0] if parts else ""
+                    if lib_id in ("M3", "M4") and len(parts) >= 23:
                         try:
-                            # 0:LibID, 1:SmpCnt, 2:Ts_us, 3:LED2, 4:LED1, 5:ALED2, 6:ALED1, 7:LED2_SUB, 8:LED1_SUB,
-                            # 9:PPG_DISP, 10:SpO2, 11:SpO2_SQI, 12:R, 13:PI, 14:HR1, 15:HR1_SQI, 16:HR2, 17:HR2_SQI, 18:HR3, 19:HR3_SQI
-                            # 20:RSQI, 21:DiagCode, 22:ProbeState  (v0.27+; absent in older firmware)
-                            self.data_lib_id.append(parts[0])
+                            # $M3/$M4: 0:LibID, 1:SmpCnt, 2:Ts_us, 3:LED2, 4:LED1, 5:ALED2, 6:ALED1,
+                            # 7:LED2_SUB, 8:LED1_SUB, 9:PPG_DISP, 10:SpO2, 11:SpO2_SQI, 12:R, 13:PI,
+                            # 14:HR1, 15:HR1_SQI, 16:HR2, 17:HR2_SQI, 18:HR3, 19:HR3_SQI,
+                            # 20:RSQI, 21:DiagCode, 22:ProbeState
+                            # $M4 additionally: 23:V_TIA_LED1, 24:V_TIA_LED2, 25:V_TIA_ALED1, 26:V_TIA_ALED2,
+                            #                   27:I_PD_LED1,  28:I_PD_LED2,  29:I_PD_ALED1,  30:I_PD_ALED2
+                            self.data_lib_id.append(lib_id)
                             p = [float(x) for x in parts[1:20]]
                             self.data_sample_counter.append(int(p[0]))
                             self.data_timestamp_us.append(p[1])
@@ -10104,23 +10155,32 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_hr2_sqi.append(p[16])
                             self.data_hr3.append(p[17])
                             self.data_hr3_sqi.append(p[18])
-                            if len(parts) >= 23:
-                                self.data_rsqi.append(int(float(parts[20])))
-                                self.data_diag_code.append(int(float(parts[21])))
-                                self.data_probe_state.append(int(float(parts[22])))
-                            else:
-                                self.data_rsqi.append(0)
-                                self.data_diag_code.append(0)
-                                self.data_probe_state.append(0)
+                            self.data_rsqi.append(int(float(parts[20])))
+                            self.data_diag_code.append(int(float(parts[21])))
+                            self.data_probe_state.append(int(float(parts[22])))
                             cfg = self._last_cfg
                             self.data_ot_led1.append(self._compute_ot(
                                 p[7], cfg.get("led1", "0"),
                                 cfg.get("rf1_ohm", 100e3),
-                                float(cfg.get("rg1_x", 1.0)) if cfg.get("stage2en1", "0") == "1" else 1.0))
+                                float(cfg.get("rg1_ohm", 100e3)) if cfg.get("stage2en1", "0") == "1" else 100e3))
                             self.data_ot_led2.append(self._compute_ot(
                                 p[6], cfg.get("led2", "0"),
                                 cfg.get("rf2_ohm", 100e3),
-                                float(cfg.get("rg2_x", 1.0)) if cfg.get("stage2en2", "0") == "1" else 1.0))
+                                float(cfg.get("rg2_ohm", 100e3)) if cfg.get("stage2en2", "0") == "1" else 100e3))
+                            if lib_id == "M4" and len(parts) >= 31:
+                                self.data_v_tia_led1.append(float(parts[23]))
+                                self.data_v_tia_led2.append(float(parts[24]))
+                                self.data_v_tia_aled1.append(float(parts[25]))
+                                self.data_v_tia_aled2.append(float(parts[26]))
+                                self.data_i_pd_led1.append(float(parts[27]))
+                                self.data_i_pd_led2.append(float(parts[28]))
+                                self.data_i_pd_aled1.append(float(parts[29]))
+                                self.data_i_pd_aled2.append(float(parts[30]))
+                            else:
+                                self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
+                                self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
+                                self.data_i_pd_led1.append(0.0);   self.data_i_pd_led2.append(0.0)
+                                self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # LED1_SUB for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
@@ -10149,35 +10209,67 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
                         else: _new_data = True
-                    elif parts[0] == "M2" and len(parts) >= 8:
-                        # $M2,cnt,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB
+                    elif lib_id == "M2" and len(parts) >= 11:
+                        # $M2,SmpCnt,Ts_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState
                         try:
-                            self.data_lib_id.append(parts[0])
-                            p = [float(x) for x in parts[1:8]]
+                            self.data_lib_id.append(lib_id)
+                            p = [float(x) for x in parts[1:11]]
                             self.data_sample_counter.append(int(p[0]))
-                            self.data_timestamp_us.append(0.0)
-                            self.data_ppgdisp.append(0.0)
-                            self.data_spo2.append(-1.0)
-                            self.data_hr1.append(-1.0)
-                            self.data_led2.append(p[1])
-                            self.data_led1.append(p[2])
-                            self.data_aled2.append(p[3])
-                            self.data_aled1.append(p[4])
-                            self.data_led2_sub.append(p[5])
-                            self.data_led1_sub.append(p[6])
-                            self.data_hr2.append(-1.0)
-                            self.data_hr3.append(-1.0)
-                            self.data_spo2_r.append(-1.0)
-                            self.data_pi.append(-1.0)
-                            self.data_spo2_sqi.append(0.0)
-                            self.data_hr1_sqi.append(0.0)
-                            self.data_hr2_sqi.append(0.0)
-                            self.data_hr3_sqi.append(0.0)
-                            self.data_rsqi.append(0)
-                            self.data_diag_code.append(0)
+                            self.data_timestamp_us.append(p[1])
+                            self.data_ppgdisp.append(p[2])
+                            self.data_spo2.append(p[3])
+                            self.data_spo2_sqi.append(p[4])
+                            self.data_hr3.append(p[5])
+                            self.data_hr3_sqi.append(p[6])
+                            self.data_rsqi.append(int(p[7]))
+                            self.data_diag_code.append(int(p[8]))
+                            self.data_probe_state.append(int(p[9]))
+                            self.data_led2.append(0.0);    self.data_led1.append(0.0)
+                            self.data_aled2.append(0.0);   self.data_aled1.append(0.0)
+                            self.data_led2_sub.append(0.0); self.data_led1_sub.append(0.0)
+                            self.data_spo2_r.append(-1.0); self.data_pi.append(-1.0)
+                            self.data_hr1.append(-1.0);    self.data_hr1_sqi.append(0.0)
+                            self.data_hr2.append(-1.0);    self.data_hr2_sqi.append(0.0)
+                            self.data_ot_led1.append(0.0); self.data_ot_led2.append(0.0)
+                            self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
+                            self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
+                            self.data_i_pd_led1.append(0.0);   self.data_i_pd_led2.append(0.0)
+                            self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
+                            self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                            if self.hr3test_window is not None:
+                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                            for sname, attr, _ in self._STATS_SIGNALS:
+                                self._stats_buf[sname].append(getattr(self, attr)[-1])
+                        except ValueError: pass
+                        else: _new_data = True
+                    elif lib_id == "M1" and len(parts) >= 4:
+                        # $M1,SmpCnt,Ts_us,PPG_DISP  (minimal frame)
+                        try:
+                            self.data_lib_id.append(lib_id)
+                            p = [float(x) for x in parts[1:4]]
+                            self.data_sample_counter.append(int(p[0]))
+                            self.data_timestamp_us.append(p[1])
+                            self.data_ppgdisp.append(p[2])
+                            self.data_spo2.append(-1.0);     self.data_spo2_sqi.append(0.0)
+                            self.data_spo2_r.append(-1.0);   self.data_pi.append(-1.0)
+                            self.data_hr1.append(-1.0);      self.data_hr1_sqi.append(0.0)
+                            self.data_hr2.append(-1.0);      self.data_hr2_sqi.append(0.0)
+                            self.data_hr3.append(-1.0);      self.data_hr3_sqi.append(0.0)
+                            self.data_led2.append(0.0);      self.data_led1.append(0.0)
+                            self.data_aled2.append(0.0);     self.data_aled1.append(0.0)
+                            self.data_led2_sub.append(0.0);  self.data_led1_sub.append(0.0)
+                            self.data_rsqi.append(0);        self.data_diag_code.append(0)
                             self.data_probe_state.append(0)
-                            self.data_ot_led1.append(0.0)
-                            self.data_ot_led2.append(0.0)
+                            self.data_ot_led1.append(0.0);   self.data_ot_led2.append(0.0)
+                            self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
+                            self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
+                            self.data_i_pd_led1.append(0.0);   self.data_i_pd_led2.append(0.0)
+                            self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
+                            self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                            if self.hr3test_window is not None:
+                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                            for sname, attr, _ in self._STATS_SIGNALS:
+                                self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
                         else: _new_data = True
 
