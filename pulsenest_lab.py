@@ -8497,7 +8497,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.frame_mode_combo.setCurrentIndex(2)  # M3 default
         self.frame_mode_combo.setStyleSheet(
             "QComboBox { background: #002A3A; color: #44AAFF; border: 1px solid #44AAFF;"
-            " padding: 4px 8px; font-size: 14px; font-weight: 700; }"
+            " padding: 4px 8px; font-size: 18px; font-weight: 700; }"
             "QComboBox::drop-down { border: none; }"
             "QComboBox QAbstractItemView { background: #001A28; color: #44AAFF;"
             " selection-background-color: #003A4A; border: 1px solid #44AAFF; }")
@@ -9828,6 +9828,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     def _fmt(v): return f"{v:,.0f}".replace(",", "\u202f")
                 elif sig_idx in {19, 20}:  # OT_LED1, OT_LED2: scientific notation (values ~1e-5…1e-3)
                     def _fmt(v): return f"{v:.2e}"
+                elif sig_idx in {22, 23, 24, 25}:  # V_TIA_*: volts, 6 decimal places
+                    def _fmt(v): return f"{v:.6f}"
+                elif sig_idx in {26, 27, 28, 29}:  # I_PD_*: display in µA (×1e6), 3 decimal places
+                    def _fmt(v): return f"{v * 1e6:.3f}"
                 else:
                     def _fmt(v): return f"{v:.2f}"
                 snr_str = f"{std / mean * 100:.2f}" if (sig_idx in self._STATS_SUB_ROWS and mean != 0) else (
@@ -10324,7 +10328,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 _ps_bg = self._PROBE_DISCONNECTED_BG
             else:
                 _ps_bg = self._VTG_DEFAULT
-            _ps_item = self.stats_table.item(len(self._STATS_SIGNALS), 0)
+            _ps_sig_idx = next(i for i, (n, _, __) in enumerate(self._STATS_SIGNALS) if n == "ProbeState")
+            _ps_tbl_row = _ps_sig_idx if _ps_sig_idx < 4 else _ps_sig_idx + 1
+            _ps_item = self.stats_table.item(_ps_tbl_row, 0)
             if _ps_item is not None:
                 _ps_item.setBackground(_ps_bg)
                 _ps_item.setForeground(QtGui.QColor("#FFFFFF") if _ps == 2 else QtGui.QColor("#AAAAAA"))
