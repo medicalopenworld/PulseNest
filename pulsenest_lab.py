@@ -10648,6 +10648,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.lab_capture_window.main_monitor = None
             self.lab_capture_window.close()
         event.accept()
+        QtWidgets.QApplication.quit()
 
 if __name__ == "__main__":
     import argparse

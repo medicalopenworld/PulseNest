@@ -11005,3 +11005,16 @@ OT_LED1 y OT_LED2 (calculadas por script desde raw ADC codes + $CFG) coinciden c
 
 ### Estado
 - pulsenest_lab.py modificado, syntax OK, pendiente commit/push (acumulado)
+
+---
+
+## Sesión 2026-06-09 (cont. 10) — Fix: cerrar todas las ventanas al cerrar la principal
+
+### Bug
+Al cerrar la ventana principal, las ventanas secundarias (con parent=None) permanecían abiertas. El closeEvent ya llamaba `.close()` en todas ellas, pero Qt no salía del event loop porque las ventanas con parent=None no son destruidas automáticamente.
+
+### Fix
+Añadido `QtWidgets.QApplication.quit()` al final del closeEvent de PPGMonitor, tras `event.accept()`. Fuerza la salida del event loop independientemente del estado de las ventanas.
+
+### Estado
+- pulsenest_lab.py modificado, pendiente verificación + commit
