@@ -8211,7 +8211,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         self.is_paused = False
         self.last_time = None
-        self.frame_mode = "M3"    # must match default in main.cpp (IncunestFrameMode::M3)
+        _s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        self.frame_mode = _s.value("PPGMonitor/frame_mode", "M4")
         
         self.is_saving = False
         self._sub_mismatch_count = 0   # LED2_SUB / LED1_SUB integrity check counter
@@ -8317,10 +8318,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("V_TIA_LED2",  "data_v_tia_led2",  "TIA output voltage LED2/RED channel [V]. Only available in $M4 frame mode."),
             ("V_TIA_ALED1", "data_v_tia_aled1", "TIA output voltage ALED1/IR ambient channel [V]. Only available in $M4 frame mode."),
             ("V_TIA_ALED2", "data_v_tia_aled2", "TIA output voltage ALED2/RED ambient channel [V]. Only available in $M4 frame mode."),
-            ("I_PD_LED1",   "data_i_pd_led1",   "Photodiode current LED1/IR channel [A]. I_PD = V_TIA / RF. Computed per sample by firmware. Only available in $M4 frame mode."),
-            ("I_PD_LED2",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [A]. Only available in $M4 frame mode."),
-            ("I_PD_ALED1",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [A]. Only available in $M4 frame mode."),
-            ("I_PD_ALED2",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [A]. Only available in $M4 frame mode."),
+            ("I_PD_LED1",   "data_i_pd_led1",   "Photodiode current LED1/IR channel [µA]. I_PD = V_TIA / RF. Computed per sample by firmware. Only available in $M4 frame mode."),
+            ("I_PD_LED2",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [µA]. Only available in $M4 frame mode."),
+            ("I_PD_ALED1",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [µA]. Only available in $M4 frame mode."),
+            ("I_PD_ALED2",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [µA]. Only available in $M4 frame mode."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
@@ -8494,7 +8495,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "$M3  FULL MODE",
             "$M4  DEBUG MODE",
         ])
-        self.frame_mode_combo.setCurrentIndex(2)  # M3 default
+        _fm_idx = {"M1": 0, "M2": 1, "M3": 2, "M4": 3}.get(self.frame_mode, 3)
+        self.frame_mode_combo.setCurrentIndex(_fm_idx)
         self.frame_mode_combo.setStyleSheet(
             "QComboBox { background: #002A3A; color: #44AAFF; border: 1px solid #44AAFF;"
             " padding: 4px 8px; font-size: 18px; font-weight: 700; }"
@@ -8959,6 +8961,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             return
         self.send_cmd(f"$MODE,{mode}\n".encode())
         self.frame_mode = mode
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("PPGMonitor/frame_mode", mode)
         self._update_frame_button()
 
     def request_chip_config(self, notify_lab_capture=True):
@@ -9942,7 +9945,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         if _src_com_win is not None:
                             _src_com_win.append_line(line)
                         if 'incunest' in line.lower() and 'frame' not in line.lower():
-                            self.frame_mode = "M3"
+                            self.frame_mode = "M4"
                             self._update_frame_button()
                             import re as _re
                             _vm = _re.search(r'incunest_afe4490\s+(v\S+)', line)
