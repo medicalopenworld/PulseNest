@@ -10324,3 +10324,502 @@ Al cerrar la ventana principal de pulsenest_lab.py, `UdpComWindow` quedaba abier
 
 ### Cambio
 - `pulsenest_lab.py`: añadidas 3 líneas en `closeEvent` para cerrar `udpcom_window` junto a `serialcom_window`.
+
+---
+
+## Sesión 2026-06-06c
+
+### Tema: struct AFE4490AnalogState — reconstrucción analógica física desde ADC
+
+### Decisiones de diseño
+
+**Arquitectura Option B:** struct `AFE4490AnalogState` efímero, calculado en `_process_sample()` y pasado por referencia a `_update_rsqm()` (y futuro HGAC). No se almacena en `AFE4490Data`.
+
+**Fórmulas (datasheet Eq.2 p.30):**
+```
+V_ADC = code / kAFE_ADC_FS_COUNTS × kAFE_ADC_FSR
+V_TIA = (V_ADC / (2 × RG_ohm) + I_CANCEL_A) × Ri   [= I_PD × RF]
+I_PD  = V_TIA / RF_ohm
+OT    = (I_PD_LED − I_PD_ALED) / I_LED_A
+```
+- Cuando `STAGE2EN=0`: `RG_ohm = kAFE_RI_OHM` (ganancia unidad)
+- Sentinel OT = 100.0 cuando `led >= rsqm_adc_positive_sat`
+
+**Escala OT:** el OT anterior era heurístico (counts / (mA·Ω·rg_linear)), no físico. El nuevo es [A/A] dimensionless, escala ~3495× menor. Por tanto `rsqm_ot_thr` cambia de 0.30 a 8.5e-5.
+
+Valores esperados nuevos (estimados, pendiente calibración empírica):
+- APPLIED: ot ≈ 1.4e-5
+- NOT_APPLIED: ot ≈ 8e-4
+- Sentinel (saturado): 100.0
+
+### Cambios de código
+
+**`incunest_afe4490.h`:**
+- Añadidas constantes `kAFE_ADC_FS_COUNTS = 2097151.0f` y `kAFE_ADC_FSR = 1.2f`
+- Añadido `struct AFE4490AnalogState` con campos `v_adc_*`, `v_tia_*`, `i_pd_*`, `ot_led1/2`
+- Añadida declaración `_compute_analog_state(led1,led2,aled1,aled2) const`
+- `_update_rsqm()` recibe nuevo parámetro `const AFE4490AnalogState& as`
+- `rsqm_ot_thr` cambia de 0.30 a 8.5e-5 con comentario de calibración pendiente
+
+**`incunest_afe4490.cpp`:**
+- Implementado `_compute_analog_state()` con las fórmulas del datasheet
+- `_process_sample()` llama primero a `_compute_analog_state()`, pasa `as` a `_update_rsqm()`
+- `_update_rsqm()` usa `as.ot_led1/2` en lugar de calcular OT localmente (eliminados rf1/rg1/rf2/rg2 locales)
+
+### Pendiente
+- Calibrar `rsqm_ot_thr = 8.5e-5f` con hardware real (APPLIED vs NOT_APPLIED medidos)
+- HGAC consumirá `as.v_tia_*` e `i_pd_*` para monitorizar zonas de saturación
+
+---
+
+## Sesión 2026-06-06d
+
+### Tema: fix cosmético en _compute_analog_state()
+
+Variables locales `rf1`/`rf2` renombradas a `rf1_ohm`/`rf2_ohm` para consistencia con `rg1_ohm`/`rg2_ohm`. Comentario interno actualizado. Sin cambio funcional.
+
+---
+
+## Sesión 2026-06-06e
+
+### Tema: revert sufijo _ohm en variables locales de _compute_analog_state()
+
+Se revirtió el cambio de `rf1_ohm`/`rf2_ohm` → `rf1`/`rf2` (y `rg1_ohm`/`rg2_ohm` → `rg1`/`rg2`). El usuario prefiere sin sufijo para variables locales cortas dentro de una función. La convención `_ohm` aplica a campos públicos (structs, API), no a variables locales de contexto obvio.
+
+---
+
+## Sesión 2026-06-06f
+
+### Tema: legibilidad de _compute_analog_state()
+
+Eliminadas variables intermedias de optimización `inv2rg1`/`inv2rg2` e `inv_rf1`/`inv_rf2`. Las expresiones se escriben ahora directamente como las ecuaciones del datasheet (`/ (2.0f * rg1)`, `/ rf1`). El compilador con -O2 genera el mismo código.
+
+---
+
+## Sesión 2026-06-06g
+
+### Tema: legibilidad de _compute_analog_state() — añadido ri
+
+Añadida variable local `const float ri = kAFE_RI_OHM` para que las líneas de `v_tia` se lean igual que la ecuación del datasheet (`× ri` en lugar de `× kAFE_RI_OHM`). Sin cambio funcional.
+
+---
+
+## Sesión 2026-06-06h
+
+### Tema: documentación inline de _compute_analog_state()
+
+Añadidos comentarios con referencias al datasheet en cada bloque de la función:
+- V_ADC: datasheet p.26 (ADC 22-bit, ±1.2 V)
+- RF/RG/Ri/I_CANCEL: registros TIAGAIN, TIA_AMB_GAIN, p.27-28-30
+- V_TIA: Eq.2 p.30 (inversión), definición física V_TIA = I_PD × RF
+- I_PD: definición transimpedancia V_TIA = I_PD × RF
+- OT: definición física, LEDCNTRL p.28, sentinel ADC saturado
+
+---
+
+## Sesión 2026-06-06i
+
+### Tema: OT movido de AFE4490AnalogState a _update_rsqm()
+
+**Decisión:** `ot_led1`/`ot_led2` eliminados del struct. OT es un concepto de RSQM, no de reconstrucción analógica.
+
+**Argumento principal:** `_compute_analog_state()` referenciaba `rsqm_adc_positive_sat` y `rsqm_ot_saturated` — acoplamiento incorrecto entre capa física y módulo de calidad de señal.
+
+**Resultado:**
+- `AFE4490AnalogState` queda como tabla simétrica pura: v_adc/v_tia/i_pd × 4 canales
+- `_compute_analog_state()` sin dependencias de RSQM
+- `_update_rsqm()` calcula OT desde `as.i_pd_*` (fórmula + sentinel en el sitio correcto)
+- Spec §3c y §5.6 actualizadas con justificación arquitectónica
+
+---
+
+## Sesión 2026-06-06j
+
+### Tema: actualizar _compute_ot() en pulsenest_lab.py a fórmula física
+
+`_compute_ot()` usaba la fórmula heurística antigua: `LED_Sub / (LED_mA × RF × RG_linear)`.
+Actualizada a la fórmula física coherente con la librería (datasheet Eq.2 inversión):
+
+```
+OT = led_sub × ADC_FSR × Ri / (ADC_FS_COUNTS × 2 × RG_ohm × RF_ohm × I_LED_A)
+```
+
+I_CANCEL se cancela en la resta LED-ALED, por lo que no aparece en la fórmula.
+
+Cambios:
+- `_compute_ot(led_sub, led_ma_str, rf_ohm, rg_ohm)` — parámetro `rg_x` → `rg_ohm`
+- Call sites: `rg1_x`/`rg2_x` → `rg1_ohm`/`rg2_ohm`; fallback 100e3 cuando STAGE2EN=0
+- Tooltips OT_LED1/OT_LED2 actualizados con nueva fórmula, escala y threshold
+
+---
+
+## Sesión 2026-06-06k
+
+### Tema: notación científica para OT_LED1/OT_LED2 en SIGNAL STATS
+
+Filas OT_LED1 (sig_idx=18) y OT_LED2 (sig_idx=19) formateadas con `f"{v:.2e}"` en lugar de `f"{v:.2f}"`. Los valores físicos (~1e-5 APPLIED, ~8e-4 NOT_APPLIED) son ilegibles con formato fijo de 2 decimales.
+
+---
+
+## Sesión 2026-06-06l
+
+### Tema: fix índice científica OT en SIGNAL STATS
+
+Corrección de índice: OT_LED1=19, OT_LED2=20 (no 18/19 como se había puesto). DiagCode ocupa el índice 18. El error aplicaba notación científica a DiagCode y OT_LED1 en lugar de OT_LED1 y OT_LED2.
+
+---
+
+## Sesión 2026-06-06m
+
+### Tema: formato DiagCode en SIGNAL STATS
+
+DiagCode (sig_idx=18) es un bitmask — sin decimales en todas las columnas excepto SD (que puede ser fraccionario si el valor varía). Construido con vals explícito: `[:.0f, :.2f, :.0f, :.0f, :.0f]` para [Mean, SD, Max-Min, Min, Max].
+
+---
+
+## Sesión 2026-06-06n
+
+### Tema: corrección semántica de OT — ratio electro-óptico, no transmitancia de tejido
+
+OT = I_PD_sub / I_LED es el ratio electro-óptico del sistema completo (eficiencia LED × transmitancia tejido × responsividad fotodiodo), no la transmitancia óptica del tejido sola. El comentario "tissue absorbs ~95% of light" era incorrecto.
+
+Cambios:
+- `incunest_afe4490.cpp` (_update_rsqm): comentario corregido, añadida nota "full electro-optical system ratio"
+- `incunest_afe4490_spec.md` §3c: fórmula OT anotada como "electro-optical system ratio"
+- `incunest_afe4490_spec.md` §5.6.2: párrafo añadido explicando que OT no es transmitancia del tejido solo
+
+El nombre OT se mantiene como convención interna.
+
+---
+
+## Sesión 2026-06-07a
+
+### Tema: PROBE_DISCONNECTED — sustituir check de signo ADC por |i_pd| < umbral
+
+Criterio anterior: `led1 < 0 && aled1 < 0 && led2 < 0 && aled2 < 0`
+Criterio nuevo: `|i_pd_led1| < 50nA && |i_pd_led2| < 50nA && |i_pd_aled1| < 50nA && |i_pd_aled2| < 50nA`
+
+Razonamiento: cuando el sensor está desconectado, el fotodiodo no está conectado → i_pd refleja solo la corriente de bias del TIA (~14 nA worst case, medido como LED2_Sub=4013 @ ADC ≈ -5000 counts). Umbral 50 nA da margen ×3.5.
+
+i_pd es independiente del AMBDAC (la fórmula invierte correctamente la cadena del circuito, cancelando I_CANCEL).
+
+Nuevo constexpr: `rsqm_disconn_i_pd_thr = 50e-9f`
+Check `|led_sub| < rsqm_disconn_sub_mean` se mantiene como criterio complementario.
+
+---
+
+## Sesión 2026-06-07a
+
+### Tema: Simetría _diag_active vs _diag_holdoff en _task_body
+
+### Problema detectado
+El bloque `_diag_active` (línea 1448) empujaba `_current_data` directamente a la cola (bypass de `_process_sample()`), mientras que el bloque `_diag_holdoff` (línea 1462) llamaba a `_process_sample()` con valores congelados. Asimetría con tres problemas:
+1. Filtros IIR/BPF/LP no avanzan durante `_diag_active` → hueco en el estado de los filtros al arrancar el holdoff.
+2. Cualquier campo nuevo en `_process_sample()` no se aplica durante `_diag_active` (trampa silenciosa de mantenimiento).
+3. Patrón drop-oldest duplicado innecesariamente (en el bloque 1448 y en `_process_sample()`).
+
+### Decisión
+Hacer los dos bloques simétricos: `_diag_active` también llama a `_process_sample()` con los mismos valores congelados `_diag_last_*`. Los valores están siempre disponibles porque se guardan en cada ciclo normal antes de que `_diag_active` sea visible.
+
+### Cambio
+- `incunest_afe4490.cpp`: bloque `_diag_active` reemplazado — eliminado push directo + drop-oldest explícito; sustituido por `_process_sample(_diag_last_led1, _diag_last_led2, _diag_last_aled1, _diag_last_aled2, _diag_last_led1_sub, _diag_last_led2_sub)`.
+- Nota: el comentario `// Push to queue; if full, drop oldest...` añadido minutos antes en ese bloque queda obsoleto y se elimina con el refactor.
+
+---
+
+## Sesión 2026-06-07b
+
+### Tema: Fusión de bloques _diag_active y _diag_holdoff en _task_body
+
+### Razonamiento
+Tras la sesión 2026-06-07a, los dos bloques hacían exactamente lo mismo. No había motivo para mantenerlos separados.
+
+### Cambio
+- `incunest_afe4490.cpp`: los dos bloques `if (_diag_active)` e `if (_diag_holdoff_samples > 0)` fusionados en uno: `if (_diag_active || _diag_holdoff_samples > 0)`. El decremento de `_diag_holdoff_samples` se protege con su propia condición interna. Los dos estados son mutuamente excluyentes.
+
+---
+
+## Sesión 2026-06-08a
+
+### Tema: Corrección de diag_holdoff_ms — referencia al datasheet; constante FLTRCNRSEL
+
+### Contexto
+El valor por defecto `diag_holdoff_ms = 10` en `runAfeDiagnostics()` estaba justificado por el tiempo de settling del TIA (RF_1M + CF_155P: 5τ ≈ 775 µs → ~1 ms). Sin embargo, el dominante real es el filtro low-pass interno del AFE4490, cuyo tiempo de settling tras el modo diagnóstico está especificado en la tabla Electrical Characteristics (datasheet p.11):
+- Filter corner 500 Hz → **28 ms**
+- Filter corner 1000 Hz → **16 ms**
+
+El filter corner está controlado por el bit FLTRCNRSEL (D15) del registro TIA_AMB_GAIN (0x21), datasheet p.75. La librería no escribía ese bit explícitamente — lo dejaba al valor de reset (0 = 500 Hz).
+
+### Decisiones
+1. Añadir `kAFE_FLTRCNRSEL = false` como constexpr de librería (fuente de verdad única para el filter corner).
+2. Añadir `kAFE_DIAG_HOLDOFF_MS` derivado de `kAFE_FLTRCNRSEL` (500 Hz → 28, 1000 Hz → 16).
+3. `_build_tia_amb_gain_led2()` siempre escribe D15 explícitamente desde `kAFE_FLTRCNRSEL`.
+4. `runAfeDiagnostics()` default cambia de `= 10` a `= kAFE_DIAG_HOLDOFF_MS`.
+
+### Cambios
+- `incunest_afe4490.h`: añadidas constantes `kAFE_FLTRCNRSEL` y `kAFE_DIAG_HOLDOFF_MS` tras `kAFE_ADC_FSR`; comentario de `runAfeDiagnostics()` actualizado; default `= 10` → `= kAFE_DIAG_HOLDOFF_MS`.
+- `incunest_afe4490.cpp`: `_build_tia_amb_gain_led2()` — añadida línea `if (kAFE_FLTRCNRSEL) reg |= 0x008000UL;`; comentario del registro actualizado para incluir FLTRCNRSEL.
+
+### Pendiente
+- Actualizar spec y hacer commit/push.
+
+---
+
+## Sesión 2026-06-08b
+
+### Tema: kAFE_FLTRCNRSEL — tipo cambiado de bool a uint8_t
+
+### Decisión
+`kAFE_FLTRCNRSEL` declarado como `constexpr uint8_t` (valores 0/1) en lugar de `constexpr bool` (false/true). Razón: 0/1 refleja directamente el valor del bit del registro hardware, más coherente con el resto de constantes de la librería.
+
+### Cambio
+- `incunest_afe4490.h`: `constexpr bool kAFE_FLTRCNRSEL = false` → `constexpr uint8_t kAFE_FLTRCNRSEL = 0`. Comentario actualizado.
+
+---
+
+## Sesión 2026-06-08c
+
+### Tema: AFE4490DebugData — getter de debug para señales internas no publicadas en AFE4490Data
+
+### Contexto
+Se analizaron las alternativas para exponer `AFE4490AnalogState` externamente (getData embedding, getDebugData separado, getDataEx, recompute). Dado que el propósito es debug/test (no producción), y que en el futuro habrá más señales de este tipo, se eligió el patrón `AFE4490DebugData` + overload de `getData()`.
+
+### Decisiones
+1. `AFE4490DebugData` — nuevo struct público que agrupa señales de debug. Actualmente contiene `AFE4490AnalogState analog`. Las señales de debug futuras se añaden aquí.
+2. Overload `getData(AFE4490Data& data, AFE4490DebugData& dbg)` — una sola llamada que minimiza el skew entre data (queue) y debug snapshot. No es 100% atómico (queue vs snapshot son mecanismos distintos), pero en PulseNest la queue está típicamente vacía → skew ≈ 0. Aceptable para debug.
+3. `_debug_data` — miembro privado `AFE4490DebugData`, actualizado en `_process_sample()` bajo `_state_mutex` antes del push a la queue.
+4. IncuNest sigue usando `getData(data)` sin cambios.
+
+### Cambios
+- `incunest_afe4490.h`: añadido `struct AFE4490DebugData`; overload `getData(data, dbg)`; miembro privado `_debug_data`.
+- `incunest_afe4490.cpp`: `_process_sample()` actualiza `_debug_data.analog = as` bajo `_state_mutex` antes del queue push; implementación del overload `getData(data, dbg)`.
+
+### Pendiente
+- Compilar y verificar.
+- Consumir `dbg` en PulseNest (pulsenest_lab.py — frame $M1 o similar).
+- Actualizar spec y hacer commit/push.
+
+---
+
+## Sesión 2026-06-08d
+
+### Tema: Bug crítico — deadlock por mutex reentrante en _process_sample()
+
+### Problema
+El nuevo código añadido en la sesión 2026-06-08c hacía `xSemaphoreTake(_state_mutex)` dentro de `_process_sample()`. Sin embargo, `_task_body()` ya llama a `_process_sample()` **dentro de `_state_mutex`** (líneas ~1468 y ~1510 del .cpp). El mutex FreeRTOS no es recursivo → deadlock inmediato → el firmware arrancaba pero no generaba ningún dato ni salida serial.
+
+### Síntomas
+- Boot log completo visible por serial
+- Cero output serial después de "# incunest_afe4490 started"
+- Cero UDP recibido en PC
+- Ping al ESP32 funcionaba (red OK)
+
+### Solución
+Eliminar el `xSemaphoreTake/_Give` de `_process_sample()`. La protección ya está garantizada: `_task_body()` toma `_state_mutex` antes de llamar a `_process_sample()`, así que `_debug_data.analog = as` está correctamente protegido por el mutex del caller.
+
+### Cambio
+- `incunest_afe4490.cpp`: eliminado `xSemaphoreTake(_state_mutex)` / `xSemaphoreGive(_state_mutex)` alrededor de `_debug_data.analog = as`. Sustituido por comentario explicativo.
+
+### Pendiente
+- Confirmar recepción de datos en PulseNest con el script
+- Implementar la parte de `begin(debug=true)` / queue combinada (diseño acordado pero no implementado)
+- Spec y commit/push
+
+---
+
+## Sesión 2026-06-08e
+
+### Tema: begin(debug=true) + queue combinada para atomicidad total en getData(data,dbg)
+
+### Diseño implementado
+- `begin(pin_cs, pin_drdy, bool debug=false)` — nuevo parámetro. Cuando debug=true la queue almacena `DebugQueueItem {AFE4490Data + AFE4490DebugData}` en vez de solo `AFE4490Data`. Zero overhead cuando debug=false (IncuNest no cambia nada).
+- `DebugQueueItem` — struct interno en anonymous namespace del .cpp. No expuesto en la API pública.
+- `getData(data)` — si debug=true, recibe `DebugQueueItem` y extrae solo `data`. Si debug=false, comportamiento idéntico al anterior.
+- `getData(data, dbg)` — si debug=false, retorna false inmediatamente. Si debug=true, recibe `DebugQueueItem` atómicamente → `data` y `dbg` siempre del mismo sample.
+- `_process_sample()` — push condicional: `DebugQueueItem` si debug, `AFE4490Data` si no.
+- `_debug_enabled` — miembro privado, inicializado a false en constructor.
+
+### Cambios
+- `incunest_afe4490.h`: `begin()` con `bool debug=false`; `_debug_enabled` miembro privado.
+- `incunest_afe4490.cpp`: `DebugQueueItem` en anonymous namespace; `begin()` actualizado; constructor inicializa `_debug_enabled(false)`; `_process_sample()` push condicional; `getData()` overloads actualizados.
+- `PulseNest/src/main.cpp`: `afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN, true)`.
+
+### Estado
+Compilado OK. Pendiente: flash, verificar, spec, commit/push.
+
+---
+
+## Sesión 2026-06-08f
+
+### Tema: getData() — unificación en un solo método con puntero opcional
+
+### Decisión
+Sustituir los dos overloads `getData(data)` / `getData(data, dbg&)` por un único método `getData(data, dbg* = nullptr)`. Razones: (1) con `_debug_enabled` la condicionalidad ya está gestionada en `begin()`, (2) el overload con referencia retornaba `false` si `_debug_enabled=false`, comportamiento confuso, (3) un solo método es más simple de mantener.
+
+### Cambios
+- `incunest_afe4490.h`: un solo `getData(AFE4490Data& data, AFE4490DebugData* dbg = nullptr)`.
+- `incunest_afe4490.cpp`: implementación unificada — si `_debug_enabled`, recibe `DebugQueueItem` y rellena `*dbg` si no es null; si no, comportamiento original.
+- `PulseNest/src/main.cpp`: `afe.getData(data, &dbg)` con `AFE4490DebugData dbg` declarado en el loop.
+
+### Estado
+Compilado OK. Pendiente: flash, verificar, spec, commit/push.
+
+---
+
+## Sesión 2026-06-09a
+
+### Tema: Cierre y documentación — AFE4490DebugData completo
+
+### Resumen de lo implementado en las sesiones 2026-06-08c a 2026-06-08f
+Funcionalidad completa de debug data:
+
+1. `struct AFE4490DebugData { AFE4490AnalogState analog; }` — struct público para señales de debug
+2. `begin(pin_cs, pin_drdy, bool debug=false)` — nuevo parámetro. debug=true crea queue con `DebugQueueItem{AFE4490Data+AFE4490DebugData}` por slot → atomicidad total
+3. `getData(AFE4490Data& data, AFE4490DebugData* dbg=nullptr)` — método único. dbg rellenado atómicamente si debug=true y dbg≠null
+4. `DebugQueueItem` — struct interno en anonymous namespace del .cpp
+5. PulseNest: `begin(..., true)` + `getData(data, &dbg)` en `Incunest_Task`
+6. Bug corregido: NO tomar `_state_mutex` dentro de `_process_sample()` (deadlock reentrante — `_task_body()` ya lo tiene tomado)
+7. Spec §2.2, §2.6 y nuevo §3d documentados
+8. Commits: 80c7e67 (DebugData struct), 6a61b25 (begin+getData), b8d0c64 (PulseNest)
+
+### Pendiente
+- Consumir `dbg` en PulseNest: exponer `i_pd_*` / `v_tia_*` en frame serial/UDP y visualizar en pulsenest_lab.py
+
+---
+
+## Sesión 2026-06-09b
+
+### Tema: Tramas seleccionables M1/M2/M3/M4 + consumo de AFE4490DebugData en $M4
+
+### Decisión principal — diseño de tramas
+Sustituir el esquema anterior (M1=full, M2=raw ADC) por 4 modos seleccionables:
+
+| Trama | Campos de datos | Uso |
+|-------|----------------|-----|
+| `$M1` | SmpCnt, Ts_us, PPG_DISP | Serial — mínimo ancho de banda |
+| `$M2` | +SpO2, SpO2_SQI, HR3, HR3_SQI, RSQI, DiagCode, ProbeState | Serial — monitorización básica |
+| `$M3` | Todo AFE4490Data (23 campos) | UDP — default |
+| `$M4` | M3 + V_TIA_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (31 campos) | UDP — debug analógico |
+
+Default: `$M3` (igual contenido que la antigua `$M1` → sin rotura de compatibilidad).
+
+### Decisión — comando de cambio de trama
+Sustituir comandos de un carácter (`'1'`/`'2'`) por `$MODE,Mx` (sin checksum, estilo `$CFG?`/`$RESET`).
+
+### Razón de diseño — sincronización temporal
+El usuario requería que señales de debug (V_TIA, I_PD) y señales de producción sean del mismo sample. Colocarlas en una trama separada ($M2) haría necesaria resincronización compleja. La solución: incluirlas en $M4 aprovechando la queue atómica `DebugQueueItem`.
+
+### Cambios — main.cpp
+- `IncunestFrameMode`: enum extendido a `{M1, M2, M3, M4}`, default `M3`
+- `g_udp_batch_buf`: ampliado a `UDP_BATCH_SIZE * 512` (M4 ≈ 310 chars)
+- `Incunest_Task`: 4 casos de frame con buffers adecuados (128/192/384/512)
+- `process_command()`: `$MODE,M1/M2/M3/M4` sustituye `'1'`/`'2'`
+- Comentario Cmd_Task actualizado
+
+### Cambios — pulsenest_lab.py
+- `frame_mode` default: `"M3"`
+- 8 nuevos deques: `data_v_tia_led1/2/aled1/2`, `data_i_pd_led1/2/aled1/2`
+- 8 nuevas entradas en `_STATS_SIGNALS` (V_TIA y I_PD por canal)
+- 4 botones FRAME MODE: `$M1 PPG` / `$M2 BASIC` / `$M3 FULL` / `$M4 DEBUG`
+- `_update_frame_button()`: resalta botón activo entre los 4
+- `_send_frame_cmd()`: envía `$MODE,{mode}\n`
+- Parser principal: detecta lib_id `M3`/`M4` (≥23 partes), `M2` (≥11), `M1` (≥4)
+- Parsers M1/M2: rellenan con 0/-1 los campos no disponibles
+- Compatibilidad CSV: acepta `M1`/`M3`/`$M1`/`$M3` como LibID válido en ventanas de análisis
+- CSV headers: adaptados al modo activo al abrir el fichero de grabación
+- `is_data_frame`: detecta `$M1,`/`$M2,`/`$M3,`/`$M4,`
+- Reconexión ESP32: resetea `frame_mode` a `"M3"`
+
+### Estado
+Verificado OK. Flash OTA vía WiFi (192.168.137.63). Commit 9d91a31, push master.
+
+---
+
+## Sesión 2026-06-09c
+
+### Tema: Reemplazar botones FRAME MODE por combo box
+
+### Cambio
+Los 4 botones `$M1 PPG` / `$M2 BASIC` / `$M3 FULL` / `$M4 DEBUG` y el label "FRAME MODE" sustituidos por un único `QComboBox` con las opciones `$M1 PPG MODE` / `$M2 BASIC MODE` / `$M3 FULL MODE` / `$M4 DEBUG MODE`.
+
+### Detalles
+- `frame_mode_combo`: QComboBox con estilo azul coherente con el resto de la UI. Default index 2 (M3).
+- `_update_frame_button()`: actualiza el índice del combo (blockSignals para evitar bucle).
+- `_on_frame_mode_combo_changed(idx)`: conectado a `currentIndexChanged`, llama a `_send_frame_cmd()`.
+- `_FRAME_MODES = ["M1","M2","M3","M4"]`: constante de clase para mapear índice ↔ modo.
+- Tooltip en el combo con descripción de los 4 modos.
+
+### Estado
+Lanzado y verificado visualmente. Pendiente: commit.
+
+---
+
+## Sesión 2026-06-09d
+
+### Tema: Pulido UI y correcciones SIGNAL STATS
+
+### Cambios — pulsenest_lab.py (commit a1f7fed)
+
+1. **Frame-mode combo — font size**: `14px` → `18px` (igual que los botones que sustituye).
+
+2. **SIGNAL STATS — ProbeState color**: el código coloreaba `stats_table.item(len(self._STATS_SIGNALS), 0)`, que apuntaba correctamente a ProbeState cuando era el último elemento. Al añadir las 8 filas V_TIA/I_PD, dejó de ser el último y el color se aplicaba a otra fila. Corrección: calcular `_ps_tbl_row` dinámicamente buscando el índice de "ProbeState" en `_STATS_SIGNALS`.
+
+3. **SIGNAL STATS — I_PD_* en µA**: las 4 filas I_PD (sig_idx 26-29) se muestran en microamperios (×1e6) con 3 decimales (`:.3f`) en lugar de notación científica en amperios.
+
+4. **SIGNAL STATS — V_TIA_* formato**: mantiene 6 decimales en volts (`:.6f`).
+
+---
+
+## Sesión 2026-06-09e
+
+### Tema: Frame mode default M4 + persistencia en ini + correcciones UI
+
+### Cambios — pulsenest_lab.py (commit 86d6dd3)
+
+1. **Frame mode default M4**: `frame_mode` inicializado desde `QSettings("PPGMonitor/frame_mode", "M4")`. Si no hay valor guardado, arranca en `$M4 DEBUG MODE`.
+2. **Persistencia en ini**: `_send_frame_cmd()` guarda el modo seleccionado con `setValue("PPGMonitor/frame_mode", mode)`. Se recupera en el siguiente arranque.
+3. **Combo index dinámico**: `setCurrentIndex` calculado desde `frame_mode` cargado (`{"M1":0,"M2":1,"M3":2,"M4":3}.get(..., 3)`).
+4. **Reconnect reset**: cambiado de "M3" a "M4" para coherencia con el nuevo default.
+5. **I_PD tooltips**: `[A]` → `[µA]` en las 4 filas I_PD de SIGNAL STATS.
+6. **ProbeState color**: calculado dinámicamente por nombre en lugar de `len(_STATS_SIGNALS)`.
+
+### También en esta sesión (commits anteriores)
+- `a1f7fed`: frame-mode combo 18px font; ProbeState color fix; I_PD en µA 3dp.
+- `69bd0e8`: 4 botones → QComboBox.
+
+---
+
+## Sesión 2026-06-09f
+
+### Tema: Fix frame-mode combo — bug reconexión + trazas
+
+### Bug
+Al reconectar (ESP32 arranca), Python cargaba frame_mode="M4" desde ini y actualizaba el combo, pero **nunca enviaba `$MODE,M4`** al ESP32. El ESP32 siempre arranca en M3 (su default firmware). Resultado: Python esperaba tramas M4 pero recibía M3 — los campos V_TIA/I_PD nunca llegaban.
+
+### Fix — pulsenest_lab.py (commit c7fd14f)
+1. **Reconnect**: al recibir `# incunest_afe4490 started`, enviar `$MODE,{frame_mode}` con `QTimer.singleShot(500ms)` (tras el $CFG a 300ms).
+2. **Traza petición**: `_send_frame_cmd` loguea `[FRAME] → $MODE,Mx sent` al enviar, y `[FRAME] $MODE,Mx — not sent (no connection)` si no hay conexión.
+3. **Traza confirmación**: handler `# Frame mode:` loguea `[FRAME] ✓ Frame mode: $M4 (debug)` cuando el ESP32 confirma.
+
+---
+
+## Sesión 2026-06-09 (continuación) — Fix trazas frame mode + patch_lab.py
+
+### Contexto
+Sesión continuada tras compresión de contexto. Pendiente ejecutar patch_lab.py con 3 fixes.
+
+### Fixes aplicados — patch_lab.py → pulsenest_lab.py
+
+1. **Duplicate log `# Frame mode:`**: añadido `if _is_active:` guard al handler. El mismo mensaje llegaba por Serial Y por UDP; sin el guard se logueaba dos veces.
+2. **Traza combo**: añadido `self.log(f"[FRAME] combo → {mode}")` en `_on_frame_mode_combo_changed` antes de `_send_frame_cmd`, para ver inmediatamente que el combo fue activado (incluso si no hay conexión).
+3. **Guard reconnect**: añadido `and _is_active` en el handler `if 'incunest' in line.lower() and 'frame' not in line.lower()` para evitar que el transporte inactivo dispare el reconect handler.
+
+### Flujo de trazas esperado (post-fix)
+- Cambiar combo → `[FRAME] combo → Mx` inmediatamente
+- Si conectado → `[FRAME] → $MODE,Mx sent`
+- ESP32 confirma → `[FRAME] ✓ Frame mode: $M... (...)` **una sola vez**
+
+### Estado
+- patch_lab.py ejecutado y eliminado
+- pulsenest_lab.py relanzado
+- Pendiente: verificar en HW y hacer commit

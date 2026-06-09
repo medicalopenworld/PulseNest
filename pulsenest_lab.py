@@ -8954,7 +8954,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.frame_mode_combo.blockSignals(False)
 
     def _on_frame_mode_combo_changed(self, idx):
-        self._send_frame_cmd(self._FRAME_MODES[idx])
+        mode = self._FRAME_MODES[idx]
+        self.log(f"[FRAME] combo → {mode}")
+        self._send_frame_cmd(mode)
 
     def _send_frame_cmd(self, mode):
         if not self._is_cmd_ready():
@@ -9946,7 +9948,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if line.startswith('#'):
                         if _src_com_win is not None:
                             _src_com_win.append_line(line)
-                        if 'incunest' in line.lower() and 'frame' not in line.lower():
+                        if 'incunest' in line.lower() and 'frame' not in line.lower() and _is_active:
                             self.frame_mode = "M4"
                             self._update_frame_button()
                             import re as _re
@@ -9971,8 +9973,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 QtCore.QTimer.singleShot(500,
                                     lambda fm=_fm: self._send_frame_cmd(fm))
                         elif 'frame mode' in line.lower():
-                            _fm_txt = line.lstrip('# ').strip()
-                            self.log(f"[FRAME] ✓ {_fm_txt}")
+                            if _is_active:
+                                _fm_txt = line.lstrip('# ').strip()
+                                self.log(f"[FRAME] ✓ {_fm_txt}")
                         elif line.startswith('# SYS:'):
                             self.log(line[6:].strip())
                         elif line.startswith('# WiFi') or line.startswith('#   ['):
