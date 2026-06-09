@@ -11018,3 +11018,66 @@ Añadido `QtWidgets.QApplication.quit()` al final del closeEvent de PPGMonitor, 
 
 ### Estado
 - pulsenest_lab.py modificado, pendiente verificación + commit
+
+---
+
+## Sesión 2026-06-09 (cont. 11) — Renombrar OT_M4_LED1/2 → OT_LED1/2
+
+Renombradas las dos últimas filas de SIGNAL STATS de OT_M4_LED1/OT_M4_LED2 a OT_LED1/OT_LED2.
+Sin colisión de nombres ahora que las antiguas filas basadas en ADC codes fueron eliminadas.
+
+### Estado
+- pulsenest_lab.py modificado, pendiente commit
+
+---
+
+## Sesión 2026-06-09c
+
+### Tema
+Análisis del CSV `afe_sweep_test_2026-06-06_NORMAL_SWEEP.csv` para validar los umbrales del detector `PROBE_DISCONNECTED` en `incunest_afe4490.cpp:1116-1122`.
+
+### Pregunta clave
+¿Son correctos los umbrales `rsqm_disconn_i_pd_thr` y `rsqm_disconn_sub_mean`?
+
+### Análisis (126 filas, 3 estados esperados)
+
+**`rsqm_disconn_sub_mean = 5000` → CORRECTO**
+- Peor caso con sonda desconectada: 1526 ADC (ambdac=2 µA) → margen 3.3×
+- Sin fallos en ninguna combinación de RF/RG.
+
+**`rsqm_disconn_i_pd_thr = 50 nA → DEMASIADO AJUSTADO**
+- 2 filas de falso negativo (rows 8 y 17 del CSV): sonda físicamente desconectada pero clasificada como PROBE_APPLIED.
+- Causa: con ambdac=2 µA y RF=50 kΩ, el AMBDAC inyecta corriente en la TIA flotante, empujando i_pd hasta 52 nA (row 8: i_pd_aled1=51 nA; row 17: i_pd_led2=52 nA).
+- Peores casos medidos: ambdac=0 → 24 nA; ambdac=1 → 16 nA; ambdac=2 → 52 nA.
+
+### Decisión tomada
+Subir `rsqm_disconn_i_pd_thr` de **50 nA a 150 nA**:
+- Margen sobre peor caso desconectado: 150/52 = 2.9×
+- Margen bajo mínimo conectado (canal LED en PROBE_APPLIED): 218/150 = 1.45×
+- El criterio sub (38K ADC en PROBE_APPLIED vs 1526 en DISCONNECTED) actúa de guarda adicional.
+- El criterio es AND de 4 canales: los canales LED siempre superan 218 nA con sonda presente → sin riesgo de falsos positivos aunque los canales ALED sean pequeños.
+- Pendiente: implementar el cambio en `incunest_afe4490.h:560` y actualizar el comentario.
+
+### Estado
+- Análisis completado, cambio pendiente de implementar
+
+### Implementación (misma sesión)
+- `incunest_afe4490.h:560`: `rsqm_disconn_i_pd_thr` cambiado de `50e-9f` a `150e-9f`
+- Comentario actualizado con peor caso real (52 nA, ambdac=2 µA, RF=50K) y márgenes medidos
+- Pendiente: commit en repo incunest_afe4490
+
+## Sesión 2026-06-09 (cont. 12) — Renombrar campo "LibID" → "FrameMode" en headers
+
+### Cambio
+Renombrado el tercer campo de los headers de trama de `LibID` a `FrameMode` en `pulsenest_lab.py`.
+
+### Archivos modificados
+- `pulsenest_lab.py`: reemplazo global de `LibID` → `FrameMode` en:
+  - `UdpComWindow.UDP_HEADER` (label del widget de la ventana UDP COM)
+  - `SerialComWindow.SERIAL_HEADER`
+  - Cabeceras CSV de grabación live (M1/M2/M3/M4) y snapshot
+  - Comentarios de layout de trama (`# [0]=FrameMode`, `# $M3/$M4: 0:FrameMode`, etc.)
+  - Variable interna `lib_id` y deque `data_lib_id` NO modificados (son variables Python, no labels de usuario)
+
+### Decisión
+El campo contiene el identificador del modo de trama (`M1`/`M2`/`M3`/`M4`), por lo que `FrameMode` es más descriptivo que `LibID` (que era un residuo histórico).

@@ -1976,7 +1976,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             header = f.readline().strip()
             # Detect format by header
             is_chk = header.startswith("Timestamp_PC,Diff_us_PC,CHK_OK")
-            is_raw = "LibID" in header
+            is_raw = "FrameMode" in header
             reader = _csv.reader(f)
             for row in reader:
                 if not row:
@@ -2004,13 +2004,13 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         R_fw    = float(parts[12])
                         sqi_fw  = float(parts[11])
                     elif is_raw:
-                        # Format: Timestamp_PC,Diff_us_PC,LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,...
+                        # Format: Timestamp_PC,Diff_us_PC,FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,...
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
                         if lib_id not in ('M1', 'M3', '$M1', '$M3'):
                             continue
-                        offset = 3  # after Timestamp_PC, Diff_us_PC, LibID
+                        offset = 3  # after Timestamp_PC, Diff_us_PC, FrameMode
                         ts_us   = float(row[offset + 1])
                         led1_sub  = float(row[offset + 7])
                         led2_sub = float(row[offset + 6])
@@ -2711,7 +2711,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                         hr_fw  = float(parts[14])
                         sqi_fw = float(parts[15])
                     else:
-                        # LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,...,HR1,HR1_SQI,...
+                        # FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,...,HR1,HR1_SQI,...
                         if len(row) < 22:
                             continue
                         lib_id = row[2].strip()
@@ -6756,7 +6756,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
     )
 
     def __init__(self, main_monitor):
@@ -7635,7 +7635,7 @@ class UdpComWindow(QtWidgets.QWidget):
 
     UDP_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "LibID,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
     )
 
     def __init__(self, main_monitor):
@@ -7750,7 +7750,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
     # (display label, csv column name, M1-parts index after '$', mandatory)
     # M1 parts layout (after stripping '$' and checksum):
-    #   [0]=LibID  [1]=SmpCnt  [2]=Ts_us
+    #   [0]=FrameMode  [1]=SmpCnt  [2]=Ts_us
     #   [3]=LED2  [4]=LED1  [5]=ALED2  [6]=ALED1  [7]=LED2_SUB  [8]=LED1_SUB
     #   [9]=PPG  [10]=SpO2  [11]=SpO2_SQI  [12]=R  [13]=PI
     #   [14]=HR1  [15]=HR1_SQI  [16]=HR2  [17]=HR2_SQI  [18]=HR3  [19]=HR3_SQI
@@ -8350,8 +8350,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("I_PD_LED2",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [µA]. Only available in $M4 frame mode."),
             ("I_PD_ALED1",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [µA]. Only available in $M4 frame mode."),
             ("I_PD_ALED2",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [µA]. Only available in $M4 frame mode."),
-            ("OT_M4_LED1",  "data_ot2_led1",     "Optical transmittance LED1 (IR): (I_PD_LED1 - I_PD_ALED1) / I_LED1 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED1 from last $CFG. Only available in $M4 frame mode."),
-            ("OT_M4_LED2",  "data_ot2_led2",     "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED2 from last $CFG. Only available in $M4 frame mode."),
+            ("OT_LED1",     "data_ot2_led1",     "Optical transmittance LED1 (IR): (I_PD_LED1 - I_PD_ALED1) / I_LED1 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED1 from last $CFG. Only available in $M4 frame mode."),
+            ("OT_LED2",     "data_ot2_led2",     "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED2 from last $CFG. Only available in $M4 frame mode."),
         ]
         self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
@@ -9466,7 +9466,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             filename = os.path.join(CAPTURES_DIR, f"ppg_data_snap_{now_str}.csv")
             try:
                 with open(filename, "w") as f:
-                    f.write("LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
+                    f.write("FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
                     for i in range(len(self.data_sample_counter)):
                         f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_led2[i]},{self.data_led1[i]},{self.data_aled2[i]},{self.data_aled1[i]},{self.data_led2_sub[i]},{self.data_led1_sub[i]},{self.data_ppgdisp[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
                 self.log(f"Snapshot saved to {filename}")
@@ -9480,13 +9480,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 try:
                     self.save_file = open(filename, "w")
                     if self.frame_mode == "M1":
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP\n")
                     elif self.frame_mode in ("M1", "M2"):
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
                     elif self.frame_mode == "M4":
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2\n")
                     else:  # M3 (default)
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,LibID,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
                     self.log(f"RECORDING LIVE: {filename}")
                     self.auto_save_timer.start(1000 * 1000)
                 except Exception as e:
@@ -9849,7 +9849,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     def _fmt(v): return f"{v:.6f}"
                 elif sig_idx in {24, 25, 26, 27}:  # I_PD_*: display in µA (×1e6), 3 decimal places
                     def _fmt(v): return f"{v * 1e6:.3f}"
-                elif sig_idx in {28, 29}:  # OT_M4_LED1/OT_M4_LED2: scientific notation
+                elif sig_idx in {28, 29}:  # OT_LED1/OT_LED2: scientific notation
                     def _fmt(v): return f"{v:.2e}"
                 else:
                     def _fmt(v): return f"{v:.2f}"
@@ -10149,7 +10149,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     lib_id = parts[0] if parts else ""
                     if lib_id in ("M3", "M4") and len(parts) >= 23:
                         try:
-                            # $M3/$M4: 0:LibID, 1:SmpCnt, 2:Ts_us, 3:LED2, 4:LED1, 5:ALED2, 6:ALED1,
+                            # $M3/$M4: 0:FrameMode, 1:SmpCnt, 2:Ts_us, 3:LED2, 4:LED1, 5:ALED2, 6:ALED1,
                             # 7:LED2_SUB, 8:LED1_SUB, 9:PPG_DISP, 10:SpO2, 11:SpO2_SQI, 12:R, 13:PI,
                             # 14:HR1, 15:HR1_SQI, 16:HR2, 17:HR2_SQI, 18:HR3, 19:HR3_SQI,
                             # 20:RSQI, 21:DiagCode, 22:ProbeState
