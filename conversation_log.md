@@ -10823,3 +10823,185 @@ Sesión continuada tras compresión de contexto. Pendiente ejecutar patch_lab.py
 - patch_lab.py ejecutado y eliminado
 - pulsenest_lab.py relanzado
 - Pendiente: verificar en HW y hacer commit
+
+---
+
+## Sesión 2026-06-09 (cont. 2) — Stage 2 gain combo: mostrar resistencia y ganancia lineal
+
+### Cambio
+Los combos "Stage 2 gain" en HW CONFIG solo mostraban el valor en dB. Ahora muestran también la resistencia RG y la ganancia lineal.
+
+### Formato display
+`STG2_GAINS_DISPLAY` en HWConfigWindow:
+- "0dB  ×1  100 kΩ"
+- "3.5dB  ×1.5  150 kΩ"
+- "6dB  ×2  200 kΩ"
+- "9.5dB  ×3  300 kΩ"
+- "12dB  ×4  400 kΩ"
+
+### Diseño
+- `STG2_GAINS` (sin cambio): strings enviados al firmware ("0dB", "3.5dB", etc.)
+- `STG2_GAINS_DISPLAY`: strings mostrados en el combo
+- `addItems` usa `STG2_GAINS_DISPLAY`
+- Send lambdas usan `STG2_GAINS[currentIndex()]` (no `currentText()`)
+- `_collect_all_values` y `_save_config` también usan `STG2_GAINS[currentIndex()]`
+- `set_combo` (en `_load_config` y `update_from_cfg`): fallback `MatchStartsWith` cuando exact match falla — permite cargar configs antiguas con "0dB" y encontrar "0dB  ×1  100 kΩ"
+
+### Valores físicos (fuente: incunest_afe4490.h)
+- RG_100K → 100 kΩ, ×1, 0 dB (Ri=100 kΩ fijo)
+- RG_150K → 150 kΩ, ×1.5, 3.5 dB
+- RG_200K → 200 kΩ, ×2, 6 dB
+- RG_300K → 300 kΩ, ×3, 9.5 dB
+- RG_400K → 400 kΩ, ×4, 12 dB
+
+### Estado
+- pulsenest_lab.py modificado, pendiente verificación visual + commit
+
+---
+
+## Sesión 2026-06-09 (cont. 3) — AFE SWEEP CSV: columnas $M4 recibidas + Stage 2 gain display
+
+### 1. Stage 2 gain combo — HW CONFIG
+
+Los combos "Stage 2 gain" ahora muestran resistencia y ganancia lineal junto al dB:
+- "0dB  ×1  100 kΩ", "3.5dB  ×1.5  150 kΩ", "6dB  ×2  200 kΩ", "9.5dB  ×3  300 kΩ", "12dB  ×4  400 kΩ"
+
+Diseño:
+- `STG2_GAINS_DISPLAY` (nueva lista paralela para display)
+- `STG2_GAINS` sin cambio (strings enviados al firmware)
+- Send lambdas, _collect_all_values y _save_config usan `STG2_GAINS[currentIndex()]`
+- set_combo usa `MatchStartsWith` como fallback para cargar configs antiguas ("0dB" → "0dB  ×1  100 kΩ")
+
+### 2. AFE SWEEP CSV — columnas desde LED1_V_TIA_mean
+
+Decisión: las columnas calculadas por Python (V_TIA, V_ADC desde raw ADC codes) se eliminan y se sustituyen por estadísticos de los valores **recibidos directamente del $M4 frame**.
+
+Nuevas columnas (en lugar de las 40 columnas calculadas):
+- V_TIA_LED1/2/ALED1/ALED2 mean/std/min/max [V, 6 dec] — recibidos del $M4
+- I_PD_LED1/2/ALED1/ALED2 mean/std/min/max [µA, 3 dec] — recibidos del $M4 × 1e6
+- V_TIA_LED1-ALED1 y LED2-ALED2 diff mean/std/min/max [V, 6 dec] — calculado desde V_TIA recibidos
+
+Implementación:
+- `feed_sample()` ampliado con 8 params opcionales (v_tia_*, i_pd_*)
+- Caller en PPGMonitor: pasa `parts[23:31]` cuando `lib_id == "M4" and len(parts) >= 31`
+- _write_row: nueva función `_fstats(vals, fmt)` reemplaza el bloque calculado
+- Todos los bloques de reset de `_buf` actualizados (3 lugares)
+- Si el sweep corre en $M3: columnas V_TIA/I_PD quedan vacías en el CSV
+
+### Estado
+- pulsenest_lab.py modificado, syntax OK, pendiente verificación HW + commit/push
+
+---
+
+## Sesión 2026-06-09 (cont. 4) — AFE SWEEP CSV: corrección columnas finales
+
+### Corrección sobre sesión anterior
+Las columnas diferenciales de V_TIA (LED-ALED) fueron eliminadas porque son variables calculadas, no recibidas del $M4.
+
+En su lugar se añaden diferenciales de **I_PD** (LED-ALED), que tienen sentido fisiológico (corriente pulsada neta):
+- `I_PD_LED1_ALED1_diff_uA_mean/std/min/max` [µA]
+- `I_PD_LED2_ALED2_diff_uA_mean/std/min/max` [µA]
+
+### Estructura final de columnas últimas del CSV (92 total)
+1. V_TIA_LED1/2/ALED1/ALED2 × 4 stats [V, 6 dec] — recibidos de $M4
+2. I_PD_LED1/2/ALED1/ALED2 × 4 stats [µA, 3 dec] — recibidos de $M4
+3. I_PD_LED1-ALED1 y I_PD_LED2-ALED2 × 4 stats [µA, 3 dec] — calculado
+
+### Estado
+- pulsenest_lab.py modificado, syntax OK, pendiente verificación HW + commit/push
+
+---
+
+## Sesión 2026-06-09 (cont. 5) — Eliminar trazas verbosas de FRAME mode
+
+Eliminadas dos trazas del log panel que resultaban innecesarias:
+- `[FRAME] combo → Mx` — eliminada de `_on_frame_mode_combo_changed`
+- `[FRAME] → $MODE,Mx sent` — eliminada de `_send_frame_cmd`
+- `[FRAME] $MODE,Mx — not sent (no connection)` — también eliminada (silencioso si no hay conexión)
+
+Solo queda: `[FRAME] ✓ Frame mode: $M... (...)` cuando el ESP32 confirma el cambio.
+
+### Estado
+- pulsenest_lab.py modificado, pendiente commit/push (acumulado con cambios previos de sesión)
+
+---
+
+## Sesión 2026-06-09 (cont. 6) — SIGNAL STATS: nuevas filas OT_LED1/OT_LED2 por ratio I_PD
+
+### Cambio
+Añadidas dos nuevas filas al final de SIGNAL STATS (índices 30 y 31):
+- **OT_LED1** = `I_PD_LED1 / I_PD_ALED1` (dimensionless)
+- **OT_LED2** = `I_PD_LED2 / I_PD_ALED2` (dimensionless)
+
+Estas conviven temporalmente con las OT_LED1/OT_LED2 existentes (índices 19/20, basadas en la fórmula del datasheet con $CFG). Objetivo: comparar ambas y eliminar la que resulte redundante.
+
+### Implementación
+- `data_ot2_led1` / `data_ot2_led2`: nuevos deques
+- `_STATS_SIGNALS`: dos entradas nuevas al final con `data_ot2_led1/2`
+- Cálculo per-sample en bloque M4: `_ipd1/_iamb1` (con guard div/0 → 0.0)
+- Bloque M3/else y bloque M2/else: append 0.0 (replace_all para los dos bloques idénticos)
+- Formato display: notación científica (sig_idx in {19, 20, 30, 31})
+- Solo disponibles en modo $M4
+
+### Estado
+- pulsenest_lab.py modificado, syntax OK, pendiente verificación HW + commit/push
+
+---
+
+## Sesión 2026-06-09 (cont. 7) — Corrección fórmula OT_LED1/OT_LED2 nuevas filas
+
+### Corrección
+La fórmula de las dos nuevas filas OT al final de SIGNAL STATS se corrigió de:
+- ~~`I_PD_LED1 / I_PD_ALED1`~~ (ratio simple — incorrecto)
+
+A:
+- `(I_PD_LED1 − I_PD_ALED1) / I_LED1` (misma fórmula OT del datasheet)
+- `(I_PD_LED2 − I_PD_ALED2) / I_LED2`
+
+Donde I_PD proviene de los valores recibidos en $M4 (firmware-computed), e I_LED1/I_LED2 provienen de `_last_cfg` (en mA → A).
+
+Diferencia con OT_LED1/OT_LED2 existentes (índices 19/20): las existentes calculan I_PD desde raw ADC codes + $CFG; las nuevas usan I_PD directamente del $M4. Objetivo: verificar que coinciden, luego eliminar las antiguas.
+
+### Estado
+- pulsenest_lab.py modificado, syntax OK, pendiente verificación HW + commit/push (acumulado)
+
+---
+
+## Sesión 2026-06-09 (cont. 8) — Fix "---" en filas OT_M4: conflicto de nombre en _stats_buf
+
+### Bug encontrado
+Las nuevas filas OT_LED1/OT_LED2 (índices 30/31) mostraban "---" porque compartían nombre con las existentes (índices 19/20). El bug: en `_update_stats_table`, tras mostrar cada fila se llama `self._stats_buf[name].clear()`. Cuando sig_idx=19 procesa "OT_LED1" limpia el buffer; cuando llega sig_idx=30 con el mismo nombre "OT_LED1", el buffer ya está vacío → "---".
+
+### Fix
+Las nuevas filas renombradas a `OT_M4_LED1` y `OT_M4_LED2` en `_STATS_SIGNALS` (nombres únicos → entradas propias en `_stats_buf`). El display en la tabla muestra "OT_M4_LED1" / "OT_M4_LED2".
+
+### Regla aprendida
+En `_STATS_SIGNALS`, el primer elemento del tuple es TANTO el display name COMO la clave del dict `_stats_buf`. Nombres duplicados causan colisión de buffer y "---" en las filas posteriores.
+
+### Estado
+- pulsenest_lab.py modificado, syntax OK, pendiente verificación HW + commit/push (acumulado)
+
+---
+
+## Sesión 2026-06-09 (cont. 9) — Eliminar OT_LED1/OT_LED2 (calculadas por script)
+
+### Decisión
+OT_LED1 y OT_LED2 (calculadas por script desde raw ADC codes + $CFG) coinciden con OT_M4_LED1/OT_M4_LED2 (basadas en valores $M4). Se eliminan las antiguas.
+
+### Cambios
+- `data_ot_led1` / `data_ot_led2`: deques eliminados
+- `_STATS_SIGNALS`: entradas OT_LED1/OT_LED2 eliminadas (índices 19/20 liberados)
+- `_compute_ot()`: método eliminado
+- Parser M3/M4: llamadas `_compute_ot` eliminadas; ramas else: `append(0.0)` eliminados
+- Índices de formato en `_update_stats_table` actualizados:
+  - V_TIA: `{22,23,24,25}` → `{20,21,22,23}`
+  - I_PD: `{26,27,28,29}` → `{24,25,26,27}`
+  - OT_M4: `{19,20,30,31}` → `{28,29}`
+
+### Índices finales de _STATS_SIGNALS (30 filas)
+0-3: LED1/2/ALED1/2, 4-5: SUB, 6: PPG_DISP, 7-10: SpO2/R/PI,
+11-16: HR1-3+SQI, 17: RSQI, 18: DiagCode, 19: ProbeState,
+20-23: V_TIA×4, 24-27: I_PD×4, 28-29: OT_M4_LED1/2
+
+### Estado
+- pulsenest_lab.py modificado, syntax OK, pendiente commit/push (acumulado)
