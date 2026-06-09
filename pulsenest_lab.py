@@ -8958,7 +8958,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def _send_frame_cmd(self, mode):
         if not self._is_cmd_ready():
+            self.log(f"[FRAME] $MODE,{mode} — not sent (no connection)")
             return
+        self.log(f"[FRAME] → $MODE,{mode} sent")
         self.send_cmd(f"$MODE,{mode}\n".encode())
         self.frame_mode = mode
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("PPGMonitor/frame_mode", mode)
@@ -9957,14 +9959,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _bm = _re.search(r'Board:\s*(\S+)', line)
                                 if _bm:
                                     self.log(f"Board: {_bm.group(1)}")
-                            # "# incunest_afe4490 started" → Cmd_Task is running → send $CFG?
-                            if 'started' in line.lower() and getattr(self, '_post_reset_cfg_pending', False):
-                                self._post_reset_cfg_pending = False
-                                QtCore.QTimer.singleShot(300,
-                                    lambda: self.hw_config_window._on_read_cfg()
-                                    if self.hw_config_window is not None else None)
+                            # "# incunest_afe4490 started" → Cmd_Task is running → send $CFG? + $MODE
+                            if 'started' in line.lower():
+                                if getattr(self, '_post_reset_cfg_pending', False):
+                                    self._post_reset_cfg_pending = False
+                                    QtCore.QTimer.singleShot(300,
+                                        lambda: self.hw_config_window._on_read_cfg()
+                                        if self.hw_config_window is not None else None)
+                                # Restore saved frame mode (ESP32 always boots in M3)
+                                _fm = self.frame_mode
+                                QtCore.QTimer.singleShot(500,
+                                    lambda fm=_fm: self._send_frame_cmd(fm))
                         elif 'frame mode' in line.lower():
-                            self.log(line.lstrip('# '))
+                            _fm_txt = line.lstrip('# ').strip()
+                            self.log(f"[FRAME] ✓ {_fm_txt}")
                         elif line.startswith('# SYS:'):
                             self.log(line[6:].strip())
                         elif line.startswith('# WiFi') or line.startswith('#   ['):
