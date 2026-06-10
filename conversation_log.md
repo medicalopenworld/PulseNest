@@ -11353,6 +11353,31 @@ Cambio mínimo: `xQueueReceive(..., 0)` → `xQueueReceive(..., pdMS_TO_TICKS(12
 ### Estado
 Compilado OK (RAM 18.3%, Flash 29.8%). Flasheado a COM15. Script relanzado. **Verificado: cero GAP B/UDP, Ts_us ~20000 µs.** Problema resuelto.
 
+## Sesión 2026-06-10t — EmaChannel: configuración por τ en lugar de α
+
+### Motivación
+Configurar `EmaChannel` con α es frágil: si `fs` cambia, todos los α en `AFE4490Config` hay que recalcularlos a mano. Con τ (segundos), el código calcula α internamente usando el fs real → la respuesta temporal del filtro se mantiene correcta automáticamente.
+
+### Cambios en `incunest_afe4490.h`
+- `EmaChannel`: `alpha_mean`/`alpha_var` públicos → privados `_alpha_mean`/`_alpha_var`
+- Nuevo método `init(tau_mean_s, tau_var_s, fs)`: calcula α = 1 − exp(−1/(τ·fs)) internamente
+- Nuevo método `reset()`: pone a cero mean/var/count sin tocar α (no necesita re-init)
+- `update()` sin cambios (usa `_alpha_mean`/`_alpha_var` privados)
+- `rsqm_ema_mean_alpha = 0.001f` → `rsqm_ema_mean_tau_s = 2.0f` [s]
+- `rsqm_ema_var_alpha  = 0.0005f` → `rsqm_ema_var_tau_s  = 4.0f` [s]
+
+### Cambios en `incunest_afe4490.cpp`
+- Constructor: `_rsqm_led*_sub_ema{..., rsqm_ema_mean_alpha, rsqm_ema_var_alpha}` → `_rsqm_led*_sub_ema{}` (α se calcula en `_recalc_rate_params()`)
+- `_recalc_rate_params()`: sustituidos los 4 bloques de asignación manual de alpha por llamadas `init()`:
+  - `_spo2_ch_ir_ema.init(_spo2_dc_iir_tau_s, _spo2_ac_ema_tau_s, fs)`
+  - `_spo2_ch_red_ema.init(...)` (ídem)
+  - `_rsqm_led1_sub_ema.init(rsqm_ema_mean_tau_s, rsqm_ema_var_tau_s, fs)`
+  - `_rsqm_led2_sub_ema.init(...)` (ídem)
+- `_reset_algorithms()`: manual `mean=0/var=0/count=0` → `reset()` en los 4 canales
+
+### Estado
+Compilado OK (RAM 18.3%, Flash 29.8%). Pendiente flash y commit.
+
 ## Sesión 2026-06-10s — UDP: chequeos de seguridad MTU
 
 ### Motivación
