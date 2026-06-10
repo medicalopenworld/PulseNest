@@ -11353,6 +11353,34 @@ Cambio mínimo: `xQueueReceive(..., 0)` → `xQueueReceive(..., pdMS_TO_TICKS(12
 ### Estado
 Compilado OK (RAM 18.3%, Flash 29.8%). Flasheado a COM15. Script relanzado. **Verificado: cero GAP B/UDP, Ts_us ~20000 µs.** Problema resuelto.
 
+## Sesión 2026-06-11b — Rationale para spo2_ema_mean/var_tau_s
+
+Añadidos comentarios de justificación para los valores por defecto de SpO2 EMA en el bloque constexpr del cpp, siguiendo el estilo de los comentarios RSQM:
+- `spo2_ema_mean_tau_s = 1.6s`: f_c ≈ 0.1 Hz < 0.5 Hz (30 bpm mín) → DC no sigue la componente pulsátil; rápido para adaptarse a reposicionamiento de sonda (~5s settle)
+- `spo2_ema_var_tau_s = 1.0s`: cubre 2–2.7 ciclos cardíacos a HR neonatal 120–160 bpm; a 60 bpm ~1 ciclo; marginal a 30 bpm pero warmup de 5s lo mitiga
+
+Compilado OK. Pendiente flash y commit.
+
+## Sesión 2026-06-11a — Rename spo2_dc_iir_tau_s / spo2_ac_ema_tau_s
+
+### Motivación
+Tras el refactor de EmaChannel a τ, los nombres `spo2_dc_iir_tau_s` y `spo2_ac_ema_tau_s` seguían exponiendo detalles de implementación ("iir", "ema"). Siguiendo el patrón `{dominio}_ema_{componente}_tau_s` de las constantes RSQM:
+
+### Renombrados
+- `spo2_dc_iir_tau_s` → `spo2_ema_mean_tau_s` (config, privados, constexpr local, spec)
+- `spo2_ac_ema_tau_s` → `spo2_ema_var_tau_s` (ídem)
+- `setSpO2DcIirTauS()` → `setSpO2EmaMeanTauS()`
+- `setSpO2AcEmaTauS()` → `setSpO2EmaVarTauS()`
+- Comentarios descriptivos actualizados ("DC removal IIR" → "EMA mean (DC)", "AC² EMA" → "EMA variance (AC²)")
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+- `incunest_afe4490/incunest_afe4490.cpp`
+- `incunest_afe4490/incunest_afe4490_spec.md`
+
+### Estado
+Compilado OK. Pendiente flash y commit.
+
 ## Sesión 2026-06-10t — EmaChannel: configuración por τ en lugar de α
 
 ### Motivación
