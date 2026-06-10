@@ -96,6 +96,12 @@ static WebServer g_ota_server(80);
 #define UDP_QUEUE_FRAME_SIZE  256   // max frame size; M4 ≈ 230 bytes
 #define UDP_QUEUE_DEPTH       64    // ~128 ms headroom at 500 Hz
 #define UDP_BATCH_SIZE        5     // frames per datagram: 5×230 ≈ 1150 bytes < 1472 MTU
+#define UDP_MTU               1472  // max UDP payload without IP fragmentation (Ethernet/WiFi)
+
+// Compile-time guard: worst-case batch (all frames at max size) must fit within MTU.
+// If this fails, reduce UDP_BATCH_SIZE or UDP_QUEUE_FRAME_SIZE.
+static_assert(UDP_QUEUE_FRAME_SIZE * UDP_BATCH_SIZE <= UDP_MTU,
+    "UDP batch worst-case exceeds MTU — reduce UDP_BATCH_SIZE or UDP_QUEUE_FRAME_SIZE");
 
 static QueueHandle_t g_udp_data_queue = nullptr;
 
@@ -137,8 +143,13 @@ static void UDP_Task(void *pvParameters) {
             batch_len += flen;
         }
 
-        sendto(g_udp_sock, batch, batch_len, 0,
-               reinterpret_cast<struct sockaddr*>(&g_udp_dest), sizeof(g_udp_dest));
+        if (batch_len > UDP_MTU)
+            Serial_printf("# WARN UDP batch %u bytes > MTU %d — fragmentation risk\n",
+                          (unsigned)batch_len, UDP_MTU);
+
+        if (sendto(g_udp_sock, batch, batch_len, 0,
+                   reinterpret_cast<struct sockaddr*>(&g_udp_dest), sizeof(g_udp_dest)) < 0)
+            Serial_printf("# ERR UDP sendto failed errno=%d\n", errno);
     }
 }
 

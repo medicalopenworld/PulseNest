@@ -11351,4 +11351,21 @@ Cambio mínimo: `xQueueReceive(..., 0)` → `xQueueReceive(..., pdMS_TO_TICKS(12
 - `src/main.cpp`: comentario + `pdMS_TO_TICKS(12)` en bucle acumulación de UDP_Task
 
 ### Estado
-Compilado OK (RAM 18.3%, Flash 29.8%). Flasheado a COM15. Script relanzado. Pendiente confirmar cero GAP B/UDP y Ts_us ~20000 µs.
+Compilado OK (RAM 18.3%, Flash 29.8%). Flasheado a COM15. Script relanzado. **Verificado: cero GAP B/UDP, Ts_us ~20000 µs.** Problema resuelto.
+
+## Sesión 2026-06-10s — UDP: chequeos de seguridad MTU
+
+### Motivación
+Si en el futuro crece el tamaño de trama (nuevos campos en $M4) o se modifican las constantes de batch, el sistema podría superar el MTU sin ningún aviso.
+
+### Cambios en `src/main.cpp`
+1. **`#define UDP_MTU 1472`** — constante explícita para el payload máximo UDP sin fragmentación (Ethernet/WiFi)
+2. **`static_assert`** — falla en build si `UDP_QUEUE_FRAME_SIZE × UDP_BATCH_SIZE > UDP_MTU`; protege contra cambios en constantes
+3. **Warning runtime** — en UDP_Task, antes de `sendto()`: si `batch_len > UDP_MTU` → `# WARN UDP batch N bytes > MTU 1472`; detecta crecimiento real de tramas
+4. **Check `sendto()` return** — si devuelve < 0 → `# ERR UDP sendto failed errno=N`
+
+Compilado OK. Pendiente flash.
+
+## Sesión 2026-06-10r — Fix comentario recvfrom en pulsenest_lab.py
+
+Comentario en `_udp_reader` actualizado: "1 frame per datagram" → "up to UDP_BATCH_SIZE frames per datagram (~1150 bytes for 5×$M4)" para reflejar el batching actual. Commit `af7fcc1`.
