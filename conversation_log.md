@@ -11081,3 +11081,274 @@ Renombrado el tercer campo de los headers de trama de `LibID` a `FrameMode` en `
 
 ### Decisión
 El campo contiene el identificador del modo de trama (`M1`/`M2`/`M3`/`M4`), por lo que `FrameMode` es más descriptivo que `LibID` (que era un residuo histórico).
+
+## Sesión 2026-06-09 (cont. 13) — Fix: UDP $M4 truncation cada SmpCnt%10==7
+
+### Problema
+Con frame_mode $M4, se observaban errores `BAD CHK (no checksum field)` de forma determinista en todas las tramas donde SmpCnt%10==7 (cada 10 tramas, la octava). Las tramas defectuosas llegaban cortadas a ~70 bytes dentro del frame, sin el campo `*XX`.
+
+### Diagnóstico
+- `UDP_BATCH_SIZE=10` y cada frame $M4 ≈ 224 bytes → batch total ≈ 2240 bytes
+- `WiFiUDP.write()` del stack Arduino ESP32/lwIP trunca silenciosamente por encima de ~1640 bytes (no verifica el retorno de `write()`)
+- El frame de índice 7 (0-based) empieza en byte ~1561 del batch → la frontera de truncado cae ~70 bytes dentro de ese frame → trama sin checksum
+- Es 100% determinista porque todos los frames M4 tienen longitud casi idéntica (~223-225 bytes)
+- Para modos M1/M2/M3 (≤ ~200 bytes/frame × 10 = 2000 bytes) el problema también existe pero estaba justo en el límite
+
+### Decisión
+Reducir `UDP_BATCH_SIZE` de 10 a 5: 5 × 224 = ~1120 bytes por datagrama, bien por debajo del límite.
+
+### Archivos modificados
+- `include/wifi_config.h`: `UDP_BATCH_SIZE` 10 → 5; comentario actualizado
+- `src/main.cpp`:
+  - Buffer `g_udp_batch_buf` reducido a `UDP_BATCH_SIZE * 256` (256 bytes por slot; $M4 ≤ 230 chars)
+  - Comentario del buffer actualizado
+  - Safety flush corregido: antes **descartaba** el batch al overflow; ahora lo **envía** primero
+- `pulsenest_lab.py`: comentario `recvfrom(4096)` actualizado con tamaño real (~1120 bytes para M4)
+
+## Sesión 2026-06-10o — Fix UDP_Task: mover a core 1 para evitar starvation
+
+### Problema con core 0
+UDP_Task (prioridad 1) en core 0 competía con Incunest_Task (prioridad 3) y no obtenía suficiente CPU. La queue se llenaba → drops masivos (~1-2 muestras cada 2-3 frames). GAP B/UDP continuo.
+
+### Fix
+`UDP_Task` movida de core 0 a **core 1** (loop() vacío en core 1 → CPU libre). `WiFiUDP.endPacket()` es thread-safe entre cores en ESP-IDF → llamada desde core 1 funciona correctamente.
+
+### Archivos modificados
+- `src/main.cpp`
+
+### Estado
+Compilado OK. Flasheado a COM15. Pendiente confirmar desaparición de GAP B/UDP.
+
+## Sesión 2026-06-10n — UDP_Task: desacoplar endPacket() del hot path de adquisición
+
+### Problema diagnosticado
+Con no-batching y SERIAL_DOWNSAMPLING_RATIO=1, `endPacket()` se llamaba 500 veces/s desde `Incunest_Task`. El bloqueo de `endPacket()` (~1.3 ms/llamada con RATIO=1, ~16 ms/llamada con RATIO=10) alargaba el periodo efectivo de muestreo de 2 ms a ~3.3 ms, reduciendo la tasa real de datos al script de 500 Hz a ~303 Hz. Como `SPO2_RECEIVED_FS=50.0` asume 50 Hz (= 500/RATIO con RATIO=10), el error en HR era ~50/30 ≈ ×1.65 ("bug ×2").
+
+Causa raíz histórica: el no-batching (sesión 2026-06-10) se diseñó asumiendo SERIAL_DOWNSAMPLING_RATIO=10 (50 endPackets/s). Con RATIO=1 (500 Hz para HR1TEST y Lab Capture), la condición ya no se cumple.
+
+RATIO=10 no es viable porque HR1TEST y Lab Capture necesitan datos a 500 Hz.
+
+### Solución: UDP_Task dedicada
+- `g_udp_data_queue`: `QueueHandle_t` con `UDP_QUEUE_DEPTH=32` slots de `UDP_QUEUE_FRAME_SIZE=256` bytes
+- `udp_send()`: copia el frame al queue con `strlcpy` + `xQueueSend(..., 0)` (no bloquea nunca)
+- `UDP_Task`: prioridad 1, core 0 (co-localizado con stack WiFi). Llama `xQueueReceive` (bloquea hasta que haya frame), luego `beginPacket` + `write` + `endPacket`. El bloqueo queda aislado aquí, sin afectar Incunest_Task.
+- `setup()`: crea la queue y lanza `UDP_Task` antes de `start_incunest()`
+
+### Archivos modificados
+- `src/main.cpp`
+
+### Estado
+Compilado OK (RAM 18.0%, Flash 29.8%). Flasheado a COM15. Pendiente verificar Ts_us ≈ 2000 µs en consola UDP.
+
+## Sesión 2026-06-10m — Revert SERIAL_DOWNSAMPLING_RATIO: 10 → 1
+
+El usuario indicó que el firmware era correcto y que el bug es ×2, no ×10. Se revirtió `SERIAL_DOWNSAMPLING_RATIO` de 10 a 1. Firmware compilado y flasheado a COM15 (V16, SUCCESS). El bug ×2 en el script queda pendiente de diagnosticar.
+
+### Archivos modificados
+- `src/main.cpp`
+
+## Sesión 2026-06-10l — Fix SERIAL_DOWNSAMPLING_RATIO: 1 → 10 (pendiente confirmar)
+
+### Contexto
+Al inicio de sesión la summary indicaba que `SERIAL_DOWNSAMPLING_RATIO = 1` en `src/main.cpp` causaba que el firmware enviara 500 Hz en lugar de los 50 Hz que espera el script (`SPO2_RECEIVED_FS=50.0`). La summary identificó esto como causa del bug de "doble frecuencia" observado en todas las ventanas del script.
+
+### Cambio realizado
+- `src/main.cpp` línea 5: `#define SERIAL_DOWNSAMPLING_RATIO 1` → `#define SERIAL_DOWNSAMPLING_RATIO 10`
+- Firmware compilado y flasheado a COM15.
+
+### Controversia — pendiente resolver
+El usuario afirma que: (1) el firmware estaba bien, (2) el factor del bug era ×2, no ×10. Esto sugiere que quizás el firmware tenía ratio=5 en la versión flasheada anterior (500/5=100 Hz; script espera 50 Hz → ×2), aunque en el repo el valor era 1. Hipótesis alternativa: el bug era en el script (algún parámetro de frecuencia a ×2), no en el firmware. **Pendiente confirmar con el usuario qué valor era el correcto y si hay que revertir.**
+
+### Archivos modificados
+- `src/main.cpp`
+
+## Sesión 2026-06-10k — Fix compilación: quitar default member initializers de EmaChannel
+
+### Problema
+Los default member initializers (`{ 0.0f }`, `{ 0 }`) en `EmaChannel` impedían la inicialización agregada con llaves en C++11 (GCC ESP32 Arduino). Error: "no matching function for call to EmaChannel(<brace-enclosed initializer list>)".
+
+### Fix
+Eliminados los default member initializers de `mean`, `var`, `count`. Los campos se inicializan siempre explícitamente en constructor y reset, por lo que los defaults eran redundantes. Restaurada la inicialización agregada en constructor y `_reset_algorithms()`.
+
+### Build
+Compiló OK (RAM 18.0%, Flash 29.8%). Upload fallido — COM15 no disponible (placa desconectada).
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+
+## Sesión 2026-06-10j — Corregir rsqm_ema_mean/var_alpha y rsqm_ready_count
+
+### Problema con valores anteriores
+- `rsqm_ema_mean_alpha = 0.02` (τ=100ms, f_c=1.6Hz): demasiado rápido — seguía parcialmente el pulso PPG, sesgando d=x−mean a la baja y subestimando la varianza → posibles falsos RSQM_SIGNAL_WEAK
+- `rsqm_ema_var_alpha = 0.004` (τ=500ms): cubría solo ¼ ciclo a 30 bpm (no ½ como se afirmaba en el diseño original)
+- `rsqm_ready_count = 750` (1.5s): insuficiente para los nuevos τ
+
+### Valores nuevos
+- `rsqm_ema_mean_alpha = 0.001f` — τ=2000ms, f_c=0.08Hz. f_c << 0.5Hz → no sigue el pulso. Responde a cambios hardware (HGAC) en ~6s (3τ), aceptable por RSQM_HW_SETTLING.
+- `rsqm_ema_var_alpha = 0.0005f` — τ=4000ms, f_c=0.04Hz. Cubre 4 ciclos @ 60bpm, 2 ciclos @ 30bpm. Asimetría con mean intencionada: requisitos físicos distintos.
+- `rsqm_ready_count = 6000` — 3 × τ_var = 12s @ 500Hz.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+
+## Sesión 2026-06-10i — Mover BiquadFilter junto a BiquadState en Private types
+
+`BiquadFilter` estaba separado de `BiquadState` por ~35 líneas de constantes RSQM. Movido a la sección `Private types` inmediatamente después de `BiquadState` (que embebe). Orden final: `BiquadState` → `BiquadFilter` → `EmaChannel`.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+
+## Sesión 2026-06-10h — Comentario EmaChannel: añadir definición de EMA y fórmula τ
+
+Añadidas tres líneas encima de `struct EmaChannel` explicando qué es EMA, la fórmula equivalente y la relación entre α, τ y fs.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+
+## Sesión 2026-06-10g — Comentario R ratio: añadir referencia ISO 80601-2-61:2026
+
+Añadido al comentario del R ratio: "ISO 80601-2-61:2026 calls this the 'modulation ratio' or 'ratio of ratios'."
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-10f — Fix comentario: quitar "Beer-Lambert" del R ratio
+
+"Beer-Lambert" es impreciso — la expresión AC/DC es una aproximación de primer orden, no la ley de Beer-Lambert estricta. Comentario simplificado a "── R ratio ──".
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-10e — SpO2: R ratio con DC/AC explícitos y alternativas documentadas
+
+### Contexto
+La línea `R = (rms_ac_red / dc_red) / (rms_ac_ir / dc_ir)` es el núcleo del algoritmo SpO2 (Beer-Lambert). Se quería que DC, AC y R fueran variables explícitas y nombradas, con comentarios que dejen claro el método elegido y las alternativas futuras.
+
+### Cambios en `_update_spo2()`
+- `rms_ac_ir/red` → `ac_ir/red` (variables explícitas de AC)
+- `_spo2_ch_*_ema.mean` extraído a `dc_ir/dc_red` (variables explícitas de DC)
+- Comentarios por sección:
+  - **DC:** método actual = IIR low-pass (EmaChannel.mean, τ=1.6s). Alternativa futura: mediana sobre ventana deslizante.
+  - **AC:** método actual = sqrt(EMA de (x−DC)²) = sqrt(EmaChannel.var). Alternativa A: BPF 0.5–5 Hz + RMS. Alternativa B: peak-to-peak/2 (estilo Masimo).
+  - **R:** `R = (AC_red / DC_red) / (AC_ir / DC_ir)`. Cada término AC/DC es el PI del canal.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-10d — Refactor SpO2: _spo2_dc/ac2 → EmaChannel (_spo2_ch_ir/red_ema)
+
+### Contexto
+El PI (Perfusion Index) en `_update_spo2()` usaba 4 floats sueltos (`_spo2_dc_ir/red`, `_spo2_ac2_ir/red`) + 2 alphas separados (`_spo2_dc_iir_alpha`, `_spo2_ac_ema_beta`). Son matemáticamente idénticos a `EmaChannel`: mean=DC, var=AC².
+
+### Decisión
+Sustituir los 6 miembros por `EmaChannel _spo2_ch_ir_ema` y `EmaChannel _spo2_ch_red_ema`.
+
+### Diferencia de convención (importante)
+El IIR SpO2 anterior usaba peso de *decay* (`dc = alpha*dc + (1-alpha)*x`, alpha cercano a 1).
+`EmaChannel.update()` usa peso de *update* (`mean += alpha*(x-mean)`, alpha pequeño).
+Conversión: `alpha_mean = 1 − exp(−1/(τ_dc·fs))` — mismo cálculo que `_spo2_ac_ema_beta`.
+Los dos alphas quedan simétricamente como `1 − exp(−1/(τ·fs))`.
+
+### Documentación añadida
+- `.h`: comentario en los miembros explicando mean=DC, var=AC², PI=sqrt(var)/mean×100, count=unused, y las dos alternativas futuras (BPF para DC, BPF para AC²)
+- `.cpp` `_update_spo2()`: bloque de comentarios con pasos DC→AC→AC² y señales de alternativas futuras
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-10c — Rename: _rsqm_led*_sub → _rsqm_led*_sub_ema + rsqm_ema_*_alpha
+
+### Cambios
+- `_rsqm_led1_sub` / `_rsqm_led2_sub` → `_rsqm_led1_sub_ema` / `_rsqm_led2_sub_ema`
+- `rsqm_ema_alpha_mean` → `rsqm_ema_mean_alpha`
+- `rsqm_ema_alpha_var` → `rsqm_ema_var_alpha`
+
+### Decisión de naming
+Sufijo `_ema` en los miembros: distingue el estimador de futuros objetos relacionados con `led_sub` (buffers, acumuladores HGAC). El tipo `EmaChannel` ya lo implica pero el nombre lo hace explícito en el call site.
+Orden `mean_alpha` / `var_alpha`: dominio antes que parámetro, coherente entre constantes.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-10b — Refactor: RsqmEmaChannel → EmaChannel con alpha y update()
+
+### Contexto
+Discusión sobre el diseño del struct `RsqmEmaChannel` en `incunest_afe4490`.
+
+### Decisiones
+1. **Renombrar `RsqmEmaChannel` → `EmaChannel`**: el prefijo `Rsqm` no es correcto, EMA es un concepto genérico reutilizable (HGAC también lo usará).
+2. **`ema_mean/ema_var` → `mean/var`**: redundante dentro de `EmaChannel`; el contexto ya lo implica.
+3. **Alpha dentro del struct**: `alpha_mean` y `alpha_var` como campos de instancia. Permite instancias con τ distintos. Coste: +8 bytes por instancia (negligible).
+4. **Método `inline update(float x)`**: encapsula la lógica EMA (mean + variance). El call site pasa de 4 líneas duplicadas a una por canal.
+5. **Constantes** `rsqm_alpha_mean/var` renombradas a `rsqm_ema_alpha_mean/var` y conservadas como valores por defecto para inicializar las instancias.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`: struct rediseñado, tipos de miembros actualizados
+- `incunest_afe4490/incunest_afe4490.cpp`: constructor, reset y `_update_rsqm()` actualizados
+
+## Sesión 2026-06-10 — Fix UDP: eliminar batching (WiFiUDP.write() trunca a ~446 bytes)
+
+### Problema adicional descubierto
+Con `UDP_BATCH_SIZE=5` ($M4 ≈ 224 bytes × 5 = 1120 bytes), los frames seguían llegando en grupos de 2 en lugar de 5. Análisis de timestamps UDP COM:
+- (57740, 57750) separadas por 0.6ms → mismo paquete
+- (57750 → 57760) separadas por 32ms → paquetes distintos
+
+Conclusión: `WiFiUDP.write()` trunca silenciosamente a ~446 bytes (~2 frames), no ~1640 bytes como se había estimado en la sesión anterior.
+
+### Decisión
+Eliminar el batching completamente. La salida del AFE ya está decimada a ~50 Hz → 50 `endPacket()`/segundo es manejable por lwIP sin necesidad de agrupar frames.
+
+### Cambios
+- `src/main.cpp`: `udp_send()` reescrita — sin buffer de acumulación, cada frame se envía inmediatamente con `beginPacket` + `write` + `endPacket`. Eliminadas variables `g_udp_batch_buf/len/count`.
+- `include/wifi_config.h`: `#define UDP_BATCH_SIZE` eliminado, sustituido por comentario explicativo.
+- `pulsenest_lab.py`: comentario `recvfrom(4096)` actualizado → "1 frame per datagram (~224 bytes for $M4)".
+
+### Nota
+Firmware compilado OK (RAM 17.9%, Flash 29.8%). Upload pendiente — COM15 bloqueado por proceso externo al terminar la sesión.
+
+## Sesión 2026-06-10p — UDP_Task: raw lwIP socket + batching (5 frames/datagrama)
+
+### Problema diagnosticado
+UDP_Task con WiFiUDP (core 1) seguía generando GAP B/UDP masivos. Causa raíz: aunque `endPacket()` ya no bloqueaba `Incunest_Task`, la tasa de 500 paquetes/s sobrepasaba el buffer TX de lwIP (~6 slots). UDP_Task se bloqueaba esperando espacio en el buffer, la queue FreeRTOS se llenaba y `xQueueSend(..., 0)` descartaba frames continuamente.
+
+### Solución: raw lwIP socket + batching 5 frames/datagrama
+Reemplazar `WiFiUDP g_udp` por socket raw `lwip/sockets.h`:
+- `socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)` → sin overhead de WiFiUDP, sin `beginPacket`/`endPacket`
+- `g_udp_dest` pre-rellenado en WiFi connect → `sendto()` en cada batch sin lookups
+- UDP_Task acumula greedily hasta 5 frames con `xQueueReceive(..., 0)` y envía en un solo `sendto()`
+- Tasa de paquetes: 500 Hz / 5 = ~100 datagramas/s → dentro del límite lwIP
+- Tamaño datagrama: 5 × ~230 bytes = ~1150 bytes < MTU 1472 bytes
+- `UDP_QUEUE_DEPTH` aumentado de 32 a 64 slots (~128 ms de headroom)
+- `g_cmd_udp` y `g_resp_udp` mantienen WiFiUDP (baja frecuencia, no hot path)
+
+### Cambios en `src/main.cpp`
+- Añadidos `#include <lwip/sockets.h>` y `#include <lwip/inet.h>`
+- `static WiFiUDP g_udp` → `static int g_udp_sock = -1; static struct sockaddr_in g_udp_dest`
+- `#define UDP_BATCH_SIZE 5` añadido; `UDP_QUEUE_DEPTH` 32 → 64
+- `udp_send()`: guard adicional `g_udp_sock < 0`
+- `UDP_Task`: batch greedy + `sendto()` con batch buffer estático 1280 bytes
+- `setup()` WiFi connect: `g_udp.begin()` → `socket()+inet_aton()+htons()` para inicializar raw socket
+- Compilado OK (RAM 18.3%, Flash 29.8%). Flasheado a COM15 y script relanzado.
+
+### Pendiente
+Confirmar desaparición de GAP B/UDP y normalización de Ts_us (~20000 µs cada 10 muestras con decim=10).
+
+## Sesión 2026-06-10q — UDP_Task: batching opción B (timeout 12ms por frame)
+
+### Problema con opción A (greedy timeout=0)
+Con `xQueueReceive(..., 0)` en el bucle de acumulación, UDP_Task procesaba frames más rápido de lo que Incunest_Task los producía → batch siempre de 1 frame → 500 paquetes/s → igual que antes. La opción A (delay fijo) también descartada: batch inconsistente si el ritmo de producción varía.
+
+### Solución: opción B — timeout 12ms por frame adicional
+Cambio mínimo: `xQueueReceive(..., 0)` → `xQueueReceive(..., pdMS_TO_TICKS(12))` en el bucle interno.
+- A 500 Hz (1 frame/2ms), UDP_Task espera el frame siguiente hasta 12ms → siempre llega en ~2ms → batch de 5 frames en ~10ms
+- Tasa resultante: ~100 datagramas/s → dentro del límite lwIP
+- Si no llega frame en 12ms (pausa/dropout), envía batch parcial y continúa — robusto
+- Batch size máximo: 5 × ~230 bytes = ~1150 bytes < 1472 bytes MTU → sin fragmentación
+
+### Archivos modificados
+- `src/main.cpp`: comentario + `pdMS_TO_TICKS(12)` en bucle acumulación de UDP_Task
+
+### Estado
+Compilado OK (RAM 18.3%, Flash 29.8%). Flasheado a COM15. Script relanzado. Pendiente confirmar cero GAP B/UDP y Ts_us ~20000 µs.

@@ -9711,7 +9711,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _last_cnt = None
         while not self._udp_stop.is_set():
             try:
-                data, _addr = sock.recvfrom(4096)   # UDP_BATCH_SIZE * ~200 bytes/frame
+                data, _addr = sock.recvfrom(4096)   # up to UDP_BATCH_SIZE frames per datagram (~1150 bytes for 5×$M4)
                 if self._esp32_ip is None:
                     self._esp32_ip = _addr[0]   # learn ESP32 IP from first incoming packet
                 if not data:

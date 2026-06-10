@@ -20,6 +20,8 @@
 #include <stdarg.h>
 #include <esp_chip_info.h>
 #include <esp_mac.h>
+#include <lwip/sockets.h>
+#include <lwip/inet.h>
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
 // Defined in platformio.ini build_flags per board environment (incunest_V15 / incunest_V16).
@@ -71,42 +73,72 @@ static uint8_t frame_xor_chk(const char* p, int len) {
 }
 
 // ── WiFi / UDP ────────────────────────────────────────────────────────────────
-static WiFiUDP   g_udp;                         // data frames ESP32→PC (port UDP_TARGET_PORT, batched)
-static WiFiUDP   g_cmd_udp;                     // command frames PC→ESP32 (port UDP_CMD_PORT)
-static WiFiUDP   g_resp_udp;                    // response frames ESP32→PC (port UDP_TARGET_PORT, unbatched)
+// Data frames (hot path, 500 Hz): raw lwIP socket — avoids WiFiUDP overhead and
+// endPacket() blocking. Batching in UDP_Task reduces packet rate to ~100/sec.
+static int             g_udp_sock   = -1;           // raw socket: data frames ESP32→PC
+static struct sockaddr_in g_udp_dest;               // pre-filled destination (IP + port)
+static WiFiUDP   g_cmd_udp;                         // command frames PC→ESP32 (port UDP_CMD_PORT)
+static WiFiUDP   g_resp_udp;                        // response frames ESP32→PC (port UDP_TARGET_PORT)
 static bool      g_wifi_ready      = false;
-static const char* g_udp_target_ip = nullptr;  // Set at connect time from WIFI_NETWORKS[]
+static const char* g_udp_target_ip = nullptr;       // Set at connect time from WIFI_NETWORKS[]
 static SemaphoreHandle_t g_resp_udp_mutex = nullptr;  // protects g_resp_udp across tasks
 
 // OTA web server — serves a firmware-update page on port 80.
 // OTA and UDP streaming coexist: WebServer uses TCP/80, data uses UDP/5005, commands use UDP/5006.
 static WebServer g_ota_server(80);
 
-// Batch buffer: accumulates UDP_BATCH_SIZE frames before one endPacket() call.
-// M1 frame ≤ ~200 chars; 10 × 256 = 2560 bytes — well within WiFi MTU (~1460 bytes
-// for a single fragment; lwIP will fragment transparently if needed).
-static char     g_udp_batch_buf[UDP_BATCH_SIZE * 512];  // 512 per slot to fit $M4 frames (~310 chars)
-static uint16_t g_udp_batch_len   = 0;
-static uint8_t  g_udp_batch_count = 0;
+// ── UDP data queue (Incunest_Task → UDP_Task) ─────────────────────────────────
+// Decouples UDP transmission from the 500 Hz acquisition loop.
+// Incunest_Task deposits frames here with xQueueSend(..., 0) (non-blocking, ~µs).
+// UDP_Task batches up to UDP_BATCH_SIZE frames per datagram and calls sendto()
+// via raw lwIP socket — reduces packet rate from 500/sec to ~100/sec, staying
+// well below lwIP TX buffer limits (~6 slots) and within UDP MTU (1472 bytes).
+#define UDP_QUEUE_FRAME_SIZE  256   // max frame size; M4 ≈ 230 bytes
+#define UDP_QUEUE_DEPTH       64    // ~128 ms headroom at 500 Hz
+#define UDP_BATCH_SIZE        5     // frames per datagram: 5×230 ≈ 1150 bytes < 1472 MTU
 
-// Append one frame to the batch; flush when UDP_BATCH_SIZE frames have accumulated.
-// No-op if WiFi is not connected. Errors are silently ignored — USB-CDC is the fallback.
+static QueueHandle_t g_udp_data_queue = nullptr;
+
+// Deposit one data frame into the async UDP queue.
+// Returns immediately — sendto() happens in UDP_Task, not here.
+// Drops silently if queue full (USB-CDC is the fallback).
 static inline void udp_send(const char* buf) {
-    if (!g_wifi_ready) return;
-    size_t len = strlen(buf);
-    if (g_udp_batch_len + len >= sizeof(g_udp_batch_buf)) {
-        // Safety flush: should not happen with correct UDP_BATCH_SIZE / frame-size assumptions.
-        g_udp_batch_len   = 0;
-        g_udp_batch_count = 0;
-    }
-    memcpy(g_udp_batch_buf + g_udp_batch_len, buf, len);
-    g_udp_batch_len += (uint16_t)len;
-    if (++g_udp_batch_count >= UDP_BATCH_SIZE) {
-        g_udp.beginPacket(g_udp_target_ip, UDP_TARGET_PORT);
-        g_udp.write(reinterpret_cast<const uint8_t*>(g_udp_batch_buf), g_udp_batch_len);
-        g_udp.endPacket();
-        g_udp_batch_len   = 0;
-        g_udp_batch_count = 0;
+    if (!g_wifi_ready || g_udp_sock < 0 || g_udp_data_queue == nullptr) return;
+    char frame[UDP_QUEUE_FRAME_SIZE];
+    strlcpy(frame, buf, sizeof(frame));
+    xQueueSend(g_udp_data_queue, frame, 0);  // non-blocking: drop if full
+}
+
+// ── UDP_Task: async batching sender ──────────────────────────────────────────
+// Runs at priority 1 on core 1 (independent of Incunest_Task on core 0).
+// Batches up to UDP_BATCH_SIZE frames into one datagram and calls sendto() via
+// raw lwIP socket. Packet rate: 500 Hz / 5 = ~100 datagrams/sec — well below
+// lwIP TX buffer limits. sendto() is non-blocking when socket TX buffer has space.
+static void UDP_Task(void *pvParameters) {
+    static char batch[UDP_QUEUE_FRAME_SIZE * UDP_BATCH_SIZE];
+    char frame[UDP_QUEUE_FRAME_SIZE];
+    for (;;) {
+        // Block until at least one frame is available (or 100 ms timeout)
+        if (xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        if (!g_wifi_ready || g_udp_sock < 0) continue;
+
+        // Start batch with first frame
+        size_t batch_len = strlen(frame);
+        memcpy(batch, frame, batch_len);
+
+        // Accumulate up to UDP_BATCH_SIZE frames, waiting up to 12 ms per frame.
+        // At 500 Hz (1 frame/2 ms), this fills the batch in ~10 ms → ~100 datagrams/s.
+        // If a frame doesn't arrive within 12 ms, send the partial batch and continue.
+        for (int i = 1; i < UDP_BATCH_SIZE; i++) {
+            if (xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(12)) != pdTRUE) break;
+            size_t flen = strlen(frame);
+            if (batch_len + flen > sizeof(batch)) break;
+            memcpy(batch + batch_len, frame, flen);
+            batch_len += flen;
+        }
+
+        sendto(g_udp_sock, batch, batch_len, 0,
+               reinterpret_cast<struct sockaddr*>(&g_udp_dest), sizeof(g_udp_dest));
     }
 }
 
@@ -749,6 +781,7 @@ void Cmd_Task(void *pvParameters) {
 void setup() {
     g_serial_mutex    = xSemaphoreCreateMutex();  // protects concurrent Serial writes from multiple tasks
     g_resp_udp_mutex  = xSemaphoreCreateMutex();  // protects g_resp_udp (used by Incunest_Task + Cmd_Task)
+    g_udp_data_queue  = xQueueCreate(UDP_QUEUE_DEPTH, UDP_QUEUE_FRAME_SIZE);
     Serial.setTxBufferSize(1024);  // enlarge USB-CDC TX buffer (default ~256) to reduce corruption at 500 Hz
     Serial.begin(921600);
     vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
@@ -791,8 +824,17 @@ void setup() {
             }
             if (WiFi.status() == WL_CONNECTED) {
                 g_udp_target_ip = WIFI_NETWORKS[i].udp_target_ip;
+                // Raw socket for data frames (hot path — no endPacket() overhead)
+                g_udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+                if (g_udp_sock >= 0) {
+                    memset(&g_udp_dest, 0, sizeof(g_udp_dest));
+                    g_udp_dest.sin_family = AF_INET;
+                    g_udp_dest.sin_port   = htons(UDP_TARGET_PORT);
+                    inet_aton(g_udp_target_ip, &g_udp_dest.sin_addr);
+                } else {
+                    Serial.printf("# UDP socket FAILED errno=%d\n", errno);
+                }
                 g_wifi_ready    = true;
-                g_udp.begin(UDP_TARGET_PORT);       // data frames ESP32→PC
                 g_cmd_udp.begin(UDP_CMD_PORT);      // command frames PC→ESP32
                 g_resp_udp.begin(0);                // response frames ESP32→PC (any local port)
                 ota_server_init();
@@ -827,7 +869,8 @@ void setup() {
                                 // Calling SPI.begin() inside a library would risk reinitialising the
                                 // bus and breaking other devices sharing it.
 
-    xTaskCreatePinnedToCore(Cmd_Task, "CMD", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(Cmd_Task,  "CMD",      4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(UDP_Task,  "UDP_DATA", 4096, NULL, 1, NULL, 1);  // core 1: independent of Incunest_Task (core 0); WiFi calls are thread-safe across cores
 
     start_incunest();
 }
