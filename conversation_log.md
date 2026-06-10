@@ -11353,6 +11353,22 @@ Cambio mínimo: `xQueueReceive(..., 0)` → `xQueueReceive(..., pdMS_TO_TICKS(12
 ### Estado
 Compilado OK (RAM 18.3%, Flash 29.8%). Flasheado a COM15. Script relanzado. **Verificado: cero GAP B/UDP, Ts_us ~20000 µs.** Problema resuelto.
 
+## Sesión 2026-06-11c — Ajuste valores spo2_ema_mean/var_tau_s + warmup
+
+### Motivación
+Análisis crítico de los valores anteriores (1.6 s / 1.0 s):
+- `spo2_ema_mean_tau_s = 1.6s` vs `rsqm_ema_mean_tau_s = 2.0s`: misma señal, mismo requisito físico (f_c << HR_min) → no hay justificación para que difieran
+- `spo2_ema_var_tau_s = 1.0s`: ISO 80601-2-61:2026 Annex JJ.2 d) exige averaging time ≥ 6 s para un transfer standard (dispositivo de referencia) → 1.0 s es muy inferior al mínimo normativo
+
+### Cambios en `incunest_afe4490.cpp`
+- `spo2_ema_mean_tau_s`: 1.6 s → **2.0 s** (igual que rsqm_ema_mean_tau_s)
+- `spo2_ema_var_tau_s`: 1.0 s → **6.0 s** (mínimo ISO JJ.2 d))
+- `spo2_warmup_s`: 5.0 s → **18.0 s** (3 × τ_var = 18 s para convergencia del estimador)
+- Comentarios de rationale actualizados con referencia normativa
+
+### Estado
+Compilado OK. Pendiente flash y commit.
+
 ## Sesión 2026-06-11b — Rationale para spo2_ema_mean/var_tau_s
 
 Añadidos comentarios de justificación para los valores por defecto de SpO2 EMA en el bloque constexpr del cpp, siguiendo el estilo de los comentarios RSQM:
@@ -11422,3 +11438,24 @@ Compilado OK. Pendiente flash.
 ## Sesión 2026-06-10r — Fix comentario recvfrom en pulsenest_lab.py
 
 Comentario en `_udp_reader` actualizado: "1 frame per datagram" → "up to UDP_BATCH_SIZE frames per datagram (~1150 bytes for 5×$M4)" para reflejar el batching actual. Commit `af7fcc1`.
+
+## Sesión 2026-06-11a — SpO2 EMA tau: corrección por ISO 80601-2-61:2026 JJ.2 d)
+
+### Problema detectado
+Los valores anteriores de SpO2 EMA tau no tenían justificación sólida y estaban por debajo de los mínimos de la norma:
+- `spo2_ema_mean_tau_s = 1.6 s` — incoherente con `rsqm_ema_mean_tau_s = 2.0 s` (misma señal, mismo requisito físico)
+- `spo2_ema_var_tau_s = 1.0 s` — muy por debajo del mínimo de 6 s de la norma
+
+### ISO 80601-2-61:2026 Annex JJ.2 d)
+La norma exige que el transfer standard tenga un tiempo de averaging mínimo de **6 s** y máximo de **10 s** para la determinación de SpO2. Un valor de 1.0 s estaba muy por debajo de este mínimo.
+
+### Cambios en `incunest_afe4490.cpp`
+- `spo2_ema_mean_tau_s`: 1.6 → **2.0 s** (igual a `rsqm_ema_mean_tau_s` — misma señal, mismo requisito de tracking DC)
+- `spo2_ema_var_tau_s`: 1.0 → **6.0 s** (mínimo ISO JJ.2 d) para averaging SpO2)
+- `spo2_warmup_s`: 5.0 → **18.0 s** (3 × τ_var = 3 × 6 s, para convergencia del estimador EMA)
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+### Commit
+`c35e1dc` en repo incunest_afe4490. Push a GitHub OK.
