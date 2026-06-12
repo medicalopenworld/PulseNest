@@ -392,7 +392,8 @@ class HRFFTCalc:
 
         # Apply Hann window and compute rfft
         seg      = seg_raw * np.hanning(self.BUF_LEN)
-        spectrum = np.abs(np.fft.rfft(seg))
+        fft_cplx = np.fft.rfft(seg)
+        spectrum = np.abs(fft_cplx)
         freqs    = np.fft.rfftfreq(self.BUF_LEN, d=1.0 / fs)
 
         # Restrict search to guard-band HR range (±3 BPM beyond reported valid range)
@@ -417,17 +418,21 @@ class HRFFTCalc:
         idx_offset = int(np.where(mask)[0][0])
         hps_hr     = hps[mask]
 
-        # Dominant peak in HPS (highest peak with minimum prominence)
+        # Dominant peak in HPS — argmax (same logic as firmware)
         spec_hr = spectrum[mask]       # kept for harmonic_ratio computation below
-        peaks, _ = signal.find_peaks(hps_hr, prominence=0.05 * np.max(hps_hr))
-        peak_local = int(peaks[np.argmax(hps_hr[peaks])]) if len(peaks) > 0 else int(np.argmax(hps_hr))
+        peak_local = int(np.argmax(hps_hr))
         peak_global = idx_offset + peak_local
 
-        # Parabolic sub-bin interpolation on original spectrum (not HPS) for freq precision
-        if 0 < peak_global < len(spectrum) - 1:
-            yp, yc, yn = spectrum[peak_global - 1], spectrum[peak_global], spectrum[peak_global + 1]
-            denom = yp - 2.0 * yc + yn
-            delta = 0.5 * (yp - yn) / denom if denom < 0.0 else 0.0
+        # Gaussian interpolation: parabolic fit on log|X|² (accurate for Hann window).
+        # Jacobsen (complex) gives δ ≈ -0.5·δ_true for Hann: adjacent bins carry
+        # phase e^{±jπ}=-1, inverting the numerator sign.  Gaussian gives δ ≈ 1.07·δ_true.
+        if 0 < peak_global < len(fft_cplx) - 1:
+            pm = abs(fft_cplx[peak_global - 1])**2
+            pc = abs(fft_cplx[peak_global    ])**2
+            pp = abs(fft_cplx[peak_global + 1])**2
+            lm, lc, lp = np.log(max(pm, 1e-30)), np.log(max(pc, 1e-30)), np.log(max(pp, 1e-30))
+            denom = lm - 2.0*lc + lp
+            delta = 0.5*(lm - lp) / denom if denom != 0.0 else 0.0
         else:
             delta = 0.0
 
@@ -3597,10 +3602,14 @@ class HR3TestCalc:
       HPS: P[k]·P[2k]·P[3k] → argmax in HR range → parabolic interpolation
       → HR3 = peak_freq × 60
 
-    SQI (HPS peak prominence, spec §5.4):
-      fraction = HPS[peak_bin] / Σ HPS[k]   (k across search range)
-      baseline = 1 / N_bins_search
-      SQI      = clamp((fraction − baseline) / (1 − baseline), 0, 1)
+    SQI (two-bin HPS local SNR, spec §5.4):
+      b1       = floor(peak_bin + delta)   (delta from parabolic interpolation)
+      b2       = b1 + 1
+      hps_num  = hps[b1] + hps[b2]
+      hps_win  = Σ hps[k]  for k in [b1−W .. b2+W]  (W = FW_SNR_LOCAL_W)
+      snr      = hps_num / hps_win
+      baseline = 2 / n_win
+      SQI      = clamp((snr − baseline) / (1 − baseline), 0, 1)
 
     Diagnostic state exposed for HR3TestWindow:
       last_spectrum      — FFT magnitude normalised to HR-band max
@@ -3620,6 +3629,7 @@ class HR3TestCalc:
     FW_HR_MAX_BPM    = 260.0
     FW_HR_SEARCH_MIN = 37.0     # guard band −3 BPM
     FW_HR_SEARCH_MAX = 263.0    # guard band +3 BPM
+    FW_SNR_LOCAL_W   = 5        # SQI local window half-width W [bins] on each side of {b1, b2}
 
     def __init__(self):
         self.bp_low_hz     = self.FW_BP_LOW_HZ
@@ -3736,7 +3746,8 @@ class HR3TestCalc:
         # Mean subtraction → Hann window → rfft
         seg      = seg_raw - seg_raw.mean()
         seg      = seg * np.hanning(self.buf_len)
-        spectrum = np.abs(np.fft.rfft(seg))
+        fft_cplx = np.fft.rfft(seg)
+        spectrum = np.abs(fft_cplx)
         freqs    = np.fft.rfftfreq(self.buf_len, d=1.0 / fs)
 
         # HPS: P[k] · P[2k] · P[3k] · ... (hps_harmonics controls highest harmonic index)
@@ -3760,24 +3771,44 @@ class HR3TestCalc:
         peak_local  = int(np.argmax(hps_hr))
         peak_global = idx_offset + peak_local
 
-        # Parabolic sub-bin interpolation on original spectrum
-        if 0 < peak_global < len(spectrum) - 1:
-            yp, yc, yn = spectrum[peak_global - 1], spectrum[peak_global], spectrum[peak_global + 1]
-            denom = yp - 2.0 * yc + yn
-            delta = 0.5 * (yp - yn) / denom if denom < 0.0 else 0.0
+        # Gaussian interpolation: parabolic fit on log|X|² (accurate for Hann window).
+        # Jacobsen (complex) gives δ ≈ -0.5·δ_true for Hann: adjacent bins carry
+        # phase e^{±jπ}=-1, inverting the numerator sign.  Gaussian gives δ ≈ 1.07·δ_true.
+        if 0 < peak_global < len(fft_cplx) - 1:
+            pm = abs(fft_cplx[peak_global - 1])**2
+            pc = abs(fft_cplx[peak_global    ])**2
+            pp = abs(fft_cplx[peak_global + 1])**2
+            lm, lc, lp = np.log(max(pm, 1e-30)), np.log(max(pc, 1e-30)), np.log(max(pp, 1e-30))
+            denom = lm - 2.0*lc + lp
+            delta = 0.5*(lm - lp) / denom if denom != 0.0 else 0.0
         else:
             delta = 0.0
         freq_res  = fs / self.buf_len
         peak_freq = freqs[peak_global] + delta * freq_res
         hr_bpm    = peak_freq * 60.0
 
-        # SQI: HPS peak prominence (spec §5.4)
-        spec_hr   = spectrum[mask]
-        total_hps = float(np.sum(hps_hr))
-        if total_hps > 0.0:
-            fraction = float(hps[peak_global]) / total_hps
-            baseline = 1.0 / n_bins if n_bins > 0 else 1.0
-            sqi = max(0.0, min(1.0, (fraction - baseline) / (1.0 - baseline))) if baseline < 1.0 else 0.0
+        # SQI: two-bin HPS local SNR (mirrors firmware §5.4)
+        spec_hr  = spectrum[mask]
+        nyquist  = len(hps) - 1
+        b1       = int(np.floor(peak_global + delta))
+        b2       = b1 + 1
+        b1       = max(1, b1)
+        b2       = min(nyquist // 3, b2)
+        hps_b1   = float(hps[b1])
+        hps_b2   = float(hps[b2])
+        hps_num  = hps_b1 + hps_b2
+        W_sqi    = self.FW_SNR_LOCAL_W
+        hps_win  = 0.0
+        n_win    = 0
+        for k in range(b1 - W_sqi, b2 + W_sqi + 1):
+            if k < 1 or k > nyquist // 3:
+                continue
+            hps_win += float(hps[k])
+            n_win   += 1
+        if hps_win > 0.0 and n_win > 2:
+            snr      = hps_num / hps_win
+            baseline = 2.0 / n_win
+            sqi = max(0.0, min(1.0, (snr - baseline) / (1.0 - baseline))) if baseline < 1.0 else 0.0
         else:
             sqi = 0.0
 
@@ -3971,12 +4002,12 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.curve_filt.setDownsampling(auto=True, method='peak')
         self.curve_filt.setClipToView(True)
         self.p_hr.addLegend()
-        self.curve_hr_fw    = self.p_hr.plot(pen=FW_PEN,    name="HR3 fw")
-        self.curve_hr_fw_lo = self.p_hr.plot(pen=FW_LO_PEN, name="HR3 fw (SQI<0.9)")
         self.curve_hr_py    = self.p_hr.plot(pen=PY_PEN,    name="HR3 py")
+        self.curve_hr_fw    = self.p_hr.plot(pen=FW_PEN,    name="HR3 fw")
+        self.curve_hr_fw_lo = self.p_hr.plot(pen=FW_LO_PEN, name="SQI<0.9")
         self.p_sqi.addLegend()
-        self.curve_sqi_fw = self.p_sqi.plot(pen=FW_PEN,  name="SQI fw")
         self.curve_sqi_py = self.p_sqi.plot(pen=PY_PEN,  name="SQI py")
+        self.curve_sqi_fw = self.p_sqi.plot(pen=FW_PEN,  name="SQI fw")
 
         # ── Right: parameters + table ─────────────────────────────────────────
         right = QtWidgets.QWidget()
@@ -9047,7 +9078,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  LED1: TIA={kv.get('tia1','?')}   CF={kv.get('cf1','?')}   STG2={kv.get('stg21','?')}   EN={kv.get('stage2en1','?')}\n"
             f"  LED2: TIA={kv.get('tia2','?')}   CF={kv.get('cf2','?')}   STG2={kv.get('stg22','?')}   EN={kv.get('stage2en2','?')}\n"
             f"  AMBDAC: {kv.get('ambdac','?')} µA\n"
-            f"  PPG channel: {kv.get('ch','?')}   Filter: {kv.get('flt','?')} [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
+            f"  PPG channel: {kv.get('ch','?')}   Filter: BW [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
             f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
             f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}"
         )

@@ -11459,3 +11459,378 @@ La norma exige que el transfer standard tenga un tiempo de averaging mínimo de 
 
 ### Commit
 `c35e1dc` en repo incunest_afe4490. Push a GitHub OK.
+
+## Sesión 2026-06-11b — Flash OTA: error de placa + corrección
+
+### Error cometido
+Al hacer el flash OTA con `arp -a`, se identificaron 3 IPs en la subred 192.168.137.x.
+Se probaron las IPs .253 y .140 con curl y ambas respondieron "Not found: /status".
+Se flasheó .253 asumiendo que era la placa de PulseNest — **error**: .253 es "esp32s3-147560 IncuNest 17.A", no la placa de trabajo.
+La placa correcta (IncuNest 16.A, MAC 10:51:DB:50:48:F8) está en **192.168.137.92**.
+
+### Regla establecida
+**Antes de cualquier flash OTA, verificar la MAC de la IP objetivo** y contrastarla con la MAC conocida de la placa de trabajo (10:51:DB:50:48:F8 para IncuNest 16.A).
+Nunca flashear sin confirmación del usuario cuando hay ambigüedad de placa.
+
+### Correcciones realizadas
+1. Flash V16 firmware a la placa correcta: `curl POST http://192.168.137.92/update` → OK
+2. Flash IncuNest V17 firmware (de `C:\PRJ\MOW\IncuNest\Firmware\motherBoard\.pio\build\IncuNest_V17\firmware.bin`) a la 17.A (.253) → OK
+
+### IPs conocidas en la red (2026-06-11)
+- 192.168.137.92  → MAC 10:51:db:50:48:f8 → **IncuNest 16.A** (placa PulseNest)
+- 192.168.137.253 → MAC 10:20:ba:14:75:60 → IncuNest 17.A (otra placa, firmware IncuNest)
+
+## Sesión 2026-06-11c — Análisis logging + eliminación filtro MOVING_AVERAGE
+
+### Preguntas y aclaraciones de diseño
+- **ESP_LOG vs Serial_printf:** `ESP_LOG*` van a UART0 (pines físicos), no a USB-CDC (COM15). En ESP32-S3 son puertos distintos. El script pulsenest_lab.py nunca los recibe. `Serial_printf` sí llega al script (serial + UDP). Los `ESP_LOG` de la librería están correctamente diseñados para IncuNest (donde `logI()` también usa `ESP_LOGI`).
+- **Destinatario final de la librería:** IncuNest motherBoard (`C:\PRJ\MOW\IncuNest\Firmware\motherBoard`). PulseNest es solo plataforma de desarrollo/test.
+- **Serial fallback cuando UDP desactivado:** bug identificado — cuando el usuario desactiva UDP desde el script, el ESP32 mantiene `g_wifi_ready=true` y sigue suprimiendo `$M*` en serial. Las tramas `# STAT` y `$TIMING` sí llegan porque usan `Serial_printf` sin esa guarda. Pendiente decidir solución (opción A: `$SET,udp,0`; opción B: duplicar siempre por serial).
+
+### Eliminación filtro MOVING_AVERAGE
+- Filtro MA de 8 muestras en `ppg_disp` sin utilidad real: fc ≈ 62 Hz a 500 Hz fs — no atenúa nada fisiológico.
+- EMA descartado como sustituto: EMA es paso-bajo (rastrea DC), no paso-banda; inadecuado para display PPG. `EmaChannel` está diseñado para τ lentos (2–6 s) con media+varianza para RSQM/SpO2.
+- Decisión: eliminar `MOVING_AVERAGE` del enum `AFE4490Filter`. Solo quedan `NONE` y `BUTTERWORTH`.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h` — eliminado `MOVING_AVERAGE` del enum, bloque miembros `_ppgdisp_ma_buf/idx/sum`, comentario actualizado
+- `incunest_afe4490/incunest_afe4490.cpp` — eliminados inicialización, 4 resets y case `MOVING_AVERAGE` del switch
+- `incunest_afe4490/incunest_afe4490_spec.md` — enum actualizado
+- `PulseNest/src/main.cpp` — case `MOVING_AVERAGE` en `filter_str()` eliminado
+
+## Sesión 2026-06-11d — Eliminación AFE4490Filter + simplificación setPPGDispFilter
+
+### Decisión
+Con solo `NONE` y `BUTTERWORTH` en el enum, `AFE4490Filter` era esencialmente un booleano sin utilidad real. `NONE` no tiene sentido para display PPG (señal con deriva DC) y los valores crudos ya están disponibles en `AFE4490Data` (`led1_sub`/`led2_sub`). El filtro Butterworth es siempre el correcto para `ppg_disp`.
+
+### Cambios
+- Eliminado `enum class AFE4490Filter` completamente
+- `setPPGDispFilter(AFE4490Filter type, float f_low_hz, float f_high_hz)` → `setPPGDispFilter(float f_low_hz, float f_high_hz)` — Butterworth siempre activo
+- Eliminado `ppgdisp_filter_type` de `AFE4490Config`
+- Eliminado `_ppgdisp_filter_type` de miembros privados
+- Switch en `_process_sample()` reemplazado por llamada directa a `_biquad_process()`
+- Frame `$CFG`: eliminado campo `flt=`; pulsenest_lab.py muestra literal `BW`
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+- `incunest_afe4490/incunest_afe4490.cpp`
+- `incunest_afe4490/incunest_afe4490_spec.md`
+- `PulseNest/src/main.cpp`
+- `PulseNest/pulsenest_lab.py`
+- `incunest_afe4490/examples/basic/main.cpp`
+- `PulseNest/examples/basic/main.cpp`
+
+## Sesión 2026-06-11e — BiquadFilter autocontenida (estilo EmaChannel)
+
+### Motivación
+HGAC necesitará filtros para suavizar señales de control. Con la API antigua (`_recalc_biquad`, `_biquad_process` como métodos privados de la clase) el código de HGAC quedaría acoplado a INCUNEST_AFE4490. Se refactoriza `BiquadFilter` para que sea autocontenida como `EmaChannel`.
+
+### Cambios de diseño
+- `BiquadState` eliminado — `_v1`, `_v2` absorbidos en `BiquadFilter`
+- `BiquadFilter` pasa a tener métodos propios: `init_bp(f_low, f_high, fs)`, `init_lp(f_high, fs)`, `process(x)`, `reset()`
+- Coeficientes y estado son miembros privados de la struct
+- Eliminados `_recalc_biquad()`, `_recalc_biquad_lp()`, `_biquad_process()` de INCUNEST_AFE4490
+- Call sites actualizados: `_ppgdisp_bpf.process(x)`, `_hr2_bpf.reset()`, etc.
+- Test helpers `test_recalc_biquad` / `test_biquad_process` eliminados (métodos ya son públicos en la struct)
+- Constructor: defaults f_low/f_high fijados explícitamente antes de `_recalc_rate_params()`
+
+### Uso en HGAC (ejemplo futuro)
+```cpp
+BiquadFilter _led_smooth_lp;
+_led_smooth_lp.init_lp(0.5f, fs);
+float smoothed = _led_smooth_lp.process(raw_value);
+```
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-11f — Fix build: aggregate init BiquadFilter + flash OTA
+
+### Bug
+`_hr2_bpf` y `_hr3_bpf` aún tenían aggregate init antigua en el initializer list del constructor. Al hacer privados los miembros de `BiquadFilter` (sesión anterior), el aggregate init dejó de compilar. Corregido a `_hr2_bpf()` / `_hr3_bpf()` con defaults explícitos en el constructor body. Build y flash OTA OK.
+
+### IP placa IncuNest 16.A actualizada
+Era 192.168.137.92, ahora **192.168.137.209** (MAC 10:51:db:50:48:f8).
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-11g — Agrupación métodos BiquadFilter en .cpp
+
+`init_lp` había quedado separado de `init_bp`/`process` por los métodos `_compute_settle_margin`/`_recalc_afe_tia_cf_led1/2`. Movido para que los tres métodos queden en un único bloque `// ── BiquadFilter methods ──` en orden: `init_bp`, `init_lp`, `process`.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-11h — BiquadFilter::process() inline
+
+Comparación `BiquadFilter` vs `EmaChannel`: `EmaChannel::update()` es `inline`; `BiquadFilter::process()` no lo era. `process()` es hotpath a 500 Hz (llamado en `_process_sample`, `_update_hr2`, `_update_hr3`). Movido al `.h` como `inline`, eliminado del `.cpp`.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490.h`
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-11i — Spec SpO2 τ + fix comentarios desactualizados
+
+### Spec actualizada (§5.1 y §10.3)
+La spec tenía valores desactualizados (τ_mean=1.6 s, τ_var=1.0 s, warmup=5 s) y no documentaba la justificación de los dos τ distintos ni la referencia ISO.
+- §5.1: añadida sección completa sobre EmaChannel — justificación de τ_mean=2.0 s y τ_var=6.0 s, referencia ISO 80601-2-61:2026 JJ.2 d), fórmula PI, warmup=18 s
+- §10.3: tabla actualizada con valores correctos y columna de justificación
+- §10.2: nombre de constante y valor corregidos
+
+### Comentarios desactualizados en .cpp
+Líneas 1700/1704 tenían `τ = 1.6 s` y `τ = 1.0 s`. Corregidos a 2.0 s y 6.0 s con referencia ISO en τ_var.
+
+### Archivos modificados
+- `incunest_afe4490/incunest_afe4490_spec.md`
+- `incunest_afe4490/incunest_afe4490.cpp`
+
+## Sesión 2026-06-12a — HR3 local SNR gate
+
+### Contexto
+Investigación del algoritmo HR3 en firmware y script: ¿se busca un pico real o simplemente el máximo del rango?
+
+### Hallazgos
+- **Firmware:** argmax en [search_min, search_max] + true-peak validation ±5 bins. La validación extiende fuera del rango (protege ante artefactos en el borde), pero no protege ante artefactos anchos **dentro** del rango de búsqueda.
+- **HR3TestCalc (py):** `np.argmax(hps_hr)` puro — sin ninguna validación. Peor que firmware.
+- **HRFFTCalc (py):** `signal.find_peaks` con prominence 5% → muy permisivo. Fallback a argmax.
+- **Diagnóstico:** un hump de movimiento que pique dentro del rango de búsqueda → gana el argmax → validación ±5 bins lo confirma como máximo local → resultado incorrecto.
+
+### Decisión de diseño: local SNR gate
+Extensión del bloque "true-peak validation" existente:
+- Acumular suma de vecinos en el **mismo bucle** ±`hr3_peak_valid_w=5` bins → coste cero adicional.
+- Gate: `peak_hps < hr3_local_snr_k × mean_neighbours` → `sqi=0, return`.
+- Independiente del rango de búsqueda (ventana fija ±0.49 Hz).
+- Un pico cardíaco HPS es estrecho (Hann + refuerzo armónico) → peak/mean_nb alto (>5×).
+- Un artefacto hump ancho → todos sus vecinos también son altos → peak/mean_nb ≈ 1.2–2× → rechazado.
+
+### Cambios implementados
+**`incunest_afe4490.cpp`:**
+- Nueva constante `hr3_local_snr_k = 3.0f` (documentada con justificación física)
+- Inicialización `_hr3_local_snr_k` en constructor
+- `getConfig()`: `cfg.hr3_local_snr_k = _hr3_local_snr_k`
+- `_compute_hr3()`: true-peak validation extendida — acumula `sum_neighbors/n_neighbors` en bucle existente, gate al final
+- Nuevo setter `setHR3LocalSnrK(float k)`
+
+**`incunest_afe4490.h`:**
+- `AFE4490Config`: nuevo campo `hr3_local_snr_k`
+- Declaración `setHR3LocalSnrK(float k)`
+- Miembro privado `_hr3_local_snr_k`
+
+**`PulseNest/src/main.cpp`:**
+- `$SET,hr3_snrk,X` → `afe.setHR3LocalSnrK(X)`, rango 1.0–20.0
+- `$CFG`: nuevo campo `,hr3_snrk=%.2f`
+
+**`pulsenest_lab.py`:**
+- `HR3TestCalc`: nuevas constantes `FW_PEAK_VALID_W=5`, `FW_LOCAL_SNR_K=3.0`; instancia `snr_k`; true-peak validation + local SNR gate (mirror exacto del firmware)
+- `HRFFTCalc`: prominence 5%→20%; local SNR gate ±5 bins post-argmax
+- `$CFG` display: muestra `HR3 SNR-k`
+
+### Build
+Compila OK. RAM 18.3%, Flash 29.9% (sin cambio).
+Pendiente: flash OTA + validar con señal real.
+
+---
+
+## Sesión 2026-06-12b — HR3 SQI refactoring: eliminar SNR gate, SQI = local SNR normalizado
+
+### Contexto
+Después de implementar el local SNR gate en la sesión anterior, discusión profunda sobre la diferencia conceptual entre "validez" (gate binario) y "bondad" (métrica continua). Conclusión: SQI y SNR gate miden lo mismo — la prominencia espectral del pico HPS. El gate es redundante.
+
+### Análisis de diseño
+- **True-peak validation** (local max ±W): rechaza artefactos en bordes del rango donde existe un máximo real fuera del rango. Con un pico cardíaco limpio dentro del rango siempre pasará.
+- **Local SNR gate** (`peak_hps ≥ k × mean_nb`): rechaza humps anchos. Pero si el hump pasa el gate, SQI también sería alto → gate y SQI dan información redundante.
+- **Conclusión**: eliminar ambos (true-peak + SNR gate). SQI solo captura la calidad: hump ancho → hps_win grande → snr≈baseline → SQI=0; pico cardíaco → hps_num domina → SQI→1.
+
+### Algoritmo HR3 definitivo (5 pasos)
+1. `argmax(HPS)` en [search_min, search_max] → `peak_bin`, `peak_hps`
+2. Interpolación parabólica sobre FFT² (no HPS) alrededor de `peak_bin` → `delta` → `peak_freq`
+3. `b1 = floor(peak_bin + delta)`, `b2 = b1 + 1`; `hps_num = hps[b1] + hps[b2]`; `hps_win = Σhps[k]` para k∈[b1-W, b2+W]
+4. `snr = hps_num / hps_win`; `baseline = 2 / n_win`
+5. `SQI = clamp((snr - baseline) / (1 - baseline), 0, 1)`
+
+**Nota clave sobre b1:** delta∈[-0.5, 0.5] → b1 = peak_bin o peak_bin-1 → peak_bin siempre está en {b1, b2} → hps_num ≥ peak_hps siempre.
+
+### Cambios implementados
+
+**`incunest_afe4490.cpp`:**
+- Eliminado bloque true-peak validation + SNR gate de `_compute_hr3()`
+- Constructor: eliminada inicialización `_hr3_local_snr_k`
+- `getConfig()`: eliminado `cfg.hr3_local_snr_k`
+- Eliminado `setHR3LocalSnrK()`
+- SQI: renombrado constante `hr3_sqi_local_w` → `hr3_snr_local_w`; variable `fraction` → `snr`; comentario actualizado para reflejar diseño definitivo
+
+**`incunest_afe4490.h`:**
+- Eliminado campo `hr3_local_snr_k` de `AFE4490Config`
+- Eliminada declaración `setHR3LocalSnrK(float k)`
+- Eliminado miembro privado `_hr3_local_snr_k`
+
+**`PulseNest/src/main.cpp`:**
+- Eliminado handler `$SET,hr3_snrk`
+- Eliminado `,hr3_snrk=%.2f` de frame `$CFG`
+
+**`pulsenest_lab.py`:**
+- `HR3TestCalc`: eliminados `FW_PEAK_VALID_W`, `FW_LOCAL_SNR_K`, `self.snr_k`; añadido `FW_SNR_LOCAL_W=5`; eliminado bloque true-peak + SNR gate; SQI actualizado a fórmula de dos bins en ventana local (espejo exacto del firmware); docstring actualizado
+- `HRFFTCalc`: eliminado `find_peaks` con prominencia y SNR gate → argmax puro como firmware
+- `$CFG` display: eliminada referencia `HR3 SNR-k`
+
+### Pendiente
+Flash OTA + validar con señal real.
+
+---
+
+## Sesión 2026-06-12c — Rename _hr{2,3}_sqi_result → _hr{2,3}_result_sqi
+
+### Motivación
+Coherencia de nomenclatura: `_hr3_result` es el HR (bpm), `_hr3_result_sqi` es la calidad de ese resultado. El orden `result_sqi` agrupa los dos campos de output de HR3 juntos conceptualmente y alfabéticamente. El nombre anterior `_hr3_sqi_result` invertía la jerarquía. Se renombran ambos (hr2 y hr3) para mantener consistencia.
+
+### Cambios
+**`incunest_afe4490.h`:** `_hr2_sqi_result` → `_hr2_result_sqi`, `_hr3_sqi_result` → `_hr3_result_sqi`; comentarios `_compute_hr2()`/`_compute_hr3()` actualizados.
+
+**`incunest_afe4490.cpp`:** todos los usos renombrados con replace_all.
+
+### Build
+OK. RAM/Flash sin cambio.
+
+---
+
+## Sesión 2026-06-12c — HR3TEST: fw encima de py en plots 3 y 4
+
+### Cambio
+En `HR3TestWindow`, el trazo verde (firmware) ahora se superpone por encima del trazo amarillo (script Python) en las gráficas 3 (HR3 fw/py) y 4 (SQI fw/py).
+
+### Causa
+En pyqtgraph el z-order de las curvas sigue el orden de creación: la última añadida queda encima. Anteriormente `curve_hr_py` y `curve_sqi_py` se añadían después de las fw, quedando el amarillo encima.
+
+### Solución
+Reordenación del orden de `.plot()` en `_setup_plots()` de `HR3TestWindow`:
+- Plot 3: `curve_hr_py` primero → `curve_hr_fw` → `curve_hr_fw_lo` encima
+- Plot 4: `curve_sqi_py` primero → `curve_sqi_fw` encima
+
+**Fichero modificado:** `pulsenest_lab.py` (líneas 3992–3998).
+
+---
+
+## Sesión 2026-06-12e — Diagnóstico Ts_us: instrumentación timing snprintf M3 vs M4
+
+### Problema investigado
+`Ts_us` (delta entre muestras consecutivas) da ~2100 µs en modo $M4 y ~2000 µs en $M3.
+
+### Análisis
+- `getData()` usa `xQueueReceive(..., 0)` — **no bloqueante**. `Incunest_Task` es un bucle de polling.
+- Con polling: si la iteración completa tarda > 2000 µs, el siguiente `getData()` encuentra el dato ya en la queue → retorna inmediatamente → `micros()` se lee tarde → delta > 2000 µs.
+- Causa probable: `snprintf` de $M4 (8 floats extra en `%.4e`) supera el budget de 2000 µs.
+- Fix real: necesita confirmación empírica del coste de snprintf antes de decidir solución (separar formateo a tarea separada vs. otro enfoque).
+
+### Instrumentación implementada (`main.cpp`)
+- Flag `#define SNPRINTF_TIMING` al inicio del fichero — **comentar para eliminar toda la instrumentación**.
+- `struct SnprintfStats` con métodos `record(dt)` y `report(label)` — stats min/avg/max sobre ventana de 500 muestras (1 segundo a 500 Hz).
+- Instancias estáticas `_snp_m3` y `_snp_m4` antes de `Incunest_Task`.
+- En rama M3: `micros()` antes/después del `snprintf` principal → `_snp_m3.record()` → report cada 500 muestras por serial.
+- En rama M4: ídem con `_snp_m4`.
+- Todo el código de timing envuelto en `#ifdef SNPRINTF_TIMING`.
+
+### Build
+OK. RAM/Flash sin cambio significativo.
+
+## Sesión 2026-06-12f — Fix Ts_us: vTaskDelay al else de getData()
+
+### Problema
+`Ts_us` reportaba ~2100 µs en modo $M4 en lugar de 2000 µs. Con $M3 daba ~2000 µs.
+
+### Diagnóstico (con SNPRINTF_TIMING)
+- snprintf M4: avg ~1073 µs, max hasta 4049 µs
+- snprintf M3: avg ~735 µs, max hasta 3381 µs
+
+El `vTaskDelay(pdMS_TO_TICKS(1))` corría **incondicionalmente** después de cada frame procesado. Resultado: ~1073 µs (snprintf M4) + ~1000 µs (delay) ≈ 2073 µs por iteración → Ts_us promedio ~2100 µs. Con M3: ~735 + ~1000 = ~1735 µs < 2000 µs → el bucle esperaba al siguiente DRDY → Ts_us ~2000 µs.
+
+### Fix (`main.cpp`)
+`vTaskDelay(pdMS_TO_TICKS(1))` movido al `else` de `getData()`: solo se ejecuta cuando no hay dato disponible (para no quemar CPU en polling). Cuando hay dato, se procesa y se vuelve al bucle inmediatamente sin delay artificial.
+
+### Build
+OK. Pendiente: flash OTA + verificar Ts_us ~2000 µs en M4.
+
+## Sesión 2026-06-12d — HR3TEST: leyenda truncada "HR3 fw (SQI<0.9)" → "SQI<0.9"
+
+### Cambio
+`curve_hr_fw_lo` renombrada de `"HR3 fw (SQI<0.9)"` a `"SQI<0.9"` — el texto anterior se truncaba en el carácter `<` en la leyenda del plot 3.
+
+**Fichero modificado:** `pulsenest_lab.py` (línea 3994).
+
+---
+
+## Sesión 2026-06-12g — Eliminar SNPRINTF_TIMING
+
+Instrumentación temporal eliminada de `main.cpp` tras confirmar el fix de Ts_us:
+- `#define SNPRINTF_TIMING` y bloque de comentario
+- `struct SnprintfStats` + instancias `_snp_m3`/`_snp_m4`
+- Bloques `#ifdef SNPRINTF_TIMING` en ramas M3 y M4
+
+Build OK.
+
+---
+
+## Sesión 2026-06-12h — HR3: estimador de Jacobsen para sub-bin interpolación
+
+### Problema observado
+Con simulador a 60/65/70/75 BPM, HR3 daba 59.38/64.72/70.15/75.51 — error sistemático de hasta ±0.62 BPM. HR1 y HR2 < 0.1 BPM.
+
+### Análisis
+La interpolación parabólica sobre `|FFT[k]|²` (potencia, escala lineal) subestima el desplazamiento fraccional del bin en ~50% para una ventana Hann. La ventana Hann no tiene un lóbulo principal parabólico en escala lineal — es más ancho en la base, lo que reduce el "curvature" aparente y encoge la delta estimada. Datos confirman ratio estimada/real ≈ 0.52–0.57 consistentemente.
+
+### Fix: estimador de Jacobsen
+Exacto para un tono puro con ventana Hann. Usa los valores complejos del FFT:
+`delta = Re{ (X[k+1] - X[k-1]) / (2·X[k] - X[k+1] - X[k-1]) }`
+Los valores complejos ya están disponibles en `_hr3_fft` (formato interleaved re/im de `_fft_r2`).
+
+### Cambios
+**`incunest_afe4490.cpp`:** interpolación parabólica reemplazada por estimador de Jacobsen.
+
+**`pulsenest_lab.py`:** `HR3TestCalc` y `HRFFTCalc` actualizados — `fft_cplx` guardado de `np.fft.rfft`; interpolación parabólica reemplazada por Jacobsen.
+
+### Pendiente
+Verificar con simulador a 60/65/70/75 BPM que el error baja a < 0.1 BPM.
+
+
+---
+
+## Sesión 2026-06-12i — HR3: estimador Gaussiano en sustitución de Jacobsen
+
+### Problema
+Los resultados con el estimador de Jacobsen implementado en la sesión anterior eran **peores** que la interpolación parabólica original:
+- Simulador 60/65/70/75 BPM → HR3: 57.90/64.18/70.47/76.76 (errores hasta ±2.1 BPM)
+- Con parabólico anterior: 59.38/64.72/70.15/75.51 (errores hasta ±0.62 BPM)
+
+### Diagnóstico
+Análisis analítico de la DFT de una señal Hann-windowed real:
+
+Para un tono a bin N₀+ε (ε=0.24 para 60 BPM):
+- `X[N₀]   ∝ +e^(jπε) × 0.482`
+- `X[N₀+1] ∝ -e^(jπε) × 0.341`  ← signo NEGATIVO (factor e^(-jπ) = -1)
+- `X[N₀-1] ∝ -e^(jπε) × 0.163`  ← signo NEGATIVO (factor e^(+jπ) = -1)
+
+El numerador de Jacobsen: `X[k+1] - X[k-1] = e^(jπε)×(-0.341) - e^(jπε)×(-0.163) = e^(jπε)×(-0.178)`
+
+El signo del numerador se **invierte** porque los bins adyacentes al pico llevan el factor de fase `e^{±jπ} = -1` en la DFT de una señal Hann-windowed real. Esto hace que el estimador de Jacobsen dé `δ ≈ −0.5×δ_true` en lugar de `+δ_true`.
+
+Verificación numérica:
+- Jacobsen: δ = Re{-0.178/1.468} = -0.121 (vs δ_true=+0.24 → ratio -0.5) ✓
+- Parabólico en |X|²: δ ≈ 0.139 (vs δ_true=0.24 → ratio 0.58) ✓
+
+### Fix: interpolación Gaussiana
+La interpolación Gaussiana (parábola en log|X|²) esquiva completamente el problema de fase: trabaja sólo en amplitudes. Para ventana Hann da `δ ≈ 1.07×δ_true`:
+
+```
+δ = 0.5 × (log|X[k-1]|² - log|X[k+1]|²) / (log|X[k-1]|² - 2·log|X[k]|² + log|X[k+1]|²)
+```
+
+Verificación para ε=0.24: δ_Gauss = 0.258 (vs δ_true=0.24, error +7.5%) → error HR < 0.11 BPM. Mejora 6× respecto al parabólico, >20× respecto a Jacobsen.
+
+### Cambios
+**`incunest_afe4490.cpp`:** bloque Jacobsen (re/im) reemplazado por cómputo de `p_m/p_c/p_p` (potencias), `logf()` y fórmula Gaussiana. `delta = 0.5f*(lm-lp)/denom`.
+
+**`pulsenest_lab.py`:** Jacobsen reemplazado en `HR3TestCalc.update()` y `HRFFTCalc.update()` por la misma fórmula con `np.log`.
+
+### Build
+OK (incunest_V16). OTA pendiente (ESP32 no visible en red al final de sesión).

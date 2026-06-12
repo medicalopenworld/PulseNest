@@ -322,8 +322,9 @@ void Incunest_Task(void *pvParameters) {
                     Serial_printf("# STAT n=%lu tx_dropped=%lu\n",
                                   (unsigned long)incunest_sample_count, (unsigned long)incunest_tx_dropped);
             }
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(1));  // no data yet: yield 1 ms to avoid busy-waiting. Only runs when getData() returns false.
         }
-        vTaskDelay(pdMS_TO_TICKS(1));  // 1 ms: yields CPU without missing samples. 2 ms (= sample period at 500 Hz) risks losing DRDY due to scheduler phase jitter.
     }
 }
 
@@ -337,7 +338,7 @@ void start_incunest() {
 
     incunest_sample_count = 0;
     afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN, true);  // debug=true: combined queue items for atomic getData(data,dbg)
-    afe.setPPGDispFilter(AFE4490Filter::BUTTERWORTH, 0.5f, 20.0f);
+    afe.setPPGDispFilter(0.5f, 20.0f);
     xTaskCreatePinnedToCore(Incunest_Task, "INCUNEST", 8192, NULL, 3, &g_incunest_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
     Serial_printf("# incunest_afe4490 started\n");
 }
@@ -363,15 +364,6 @@ static const char* channel_str(AFE4490Channel ch) {
         default:                         return "?";
     }
 }
-static const char* filter_str(AFE4490Filter f) {
-    switch (f) {
-        case AFE4490Filter::NONE:           return "NONE";
-        case AFE4490Filter::MOVING_AVERAGE: return "MA";
-        case AFE4490Filter::BUTTERWORTH:    return "BW";
-        default:                            return "?";
-    }
-}
-
 // Emit a $TCFG frame with all 28 raw timing register values read from the chip.
 // Format: $TCFG,t1=<v>,...,t28=<v>*XX
 static void send_tcfg_frame() {
@@ -409,7 +401,7 @@ static void send_cfg_frame() {
         ",tia1=%s,rf1_ohm=%.0f,cf1=%s,cf1_pF=%.0f,stg21=%s,rg1_ohm=%.0f,rg1_x=%.4f,stage2en1=%d"
         ",tia2=%s,rf2_ohm=%.0f,cf2=%s,cf2_pF=%.0f,stg22=%s,rg2_ohm=%.0f,rg2_x=%.4f,stage2en2=%d"
         ",ambdac=%u,ri_ohm=%.0f"
-        ",ch=%s,flt=%s"
+        ",ch=%s"
         ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
         ",spo2a=%.4f,spo2b=%.4f"
         ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X",
@@ -425,7 +417,7 @@ static void send_cfg_frame() {
         afeRGToStr(cfg.afe_stg2_rg_led2), kAFE_RG_OHM[(int)cfg.afe_stg2_rg_led2], kAFE_RG_GAIN[(int)cfg.afe_stg2_rg_led2],
         cfg.afe_stg2_en_led2 ? 1 : 0,
         (unsigned)cfg.afe_ambdac_uA, kAFE_RI_OHM,
-        channel_str(cfg.ppgdisp_channel), filter_str(cfg.ppgdisp_filter_type),
+        channel_str(cfg.ppgdisp_channel),
         cfg.ppgdisp_f_low_hz, cfg.ppgdisp_f_high_hz,
         cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,
         cfg.spo2_a, cfg.spo2_b,
