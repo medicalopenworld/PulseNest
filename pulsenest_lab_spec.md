@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.3
+# pulsenest_lab — Specification v1.4
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -375,13 +375,16 @@ Dark theme: background #121212, text #E0E0E0
 │ [ALGO RESULTS]        │                          │                          │
 │ [SERIAL COM]          │                          │                          │
 │ [UDP COM]             │                          │                          │
+│ LAB group:            │                          │                          │
+│ [HR2LAB]              │                          │                          │
+│ [HR3LAB]              │                          │                          │
 │ [SPO2LAB]             │                          │                          │
+│ [PILAB]               │                          │                          │
+│ TEST group:           │                          │                          │
 │ [SPO2TEST]            │                          │                          │
 │ [HR1TEST]             │                          │                          │
 │ [HR2TEST]             │                          │                          │
 │ [HR3TEST]             │                          │                          │
-│ [HR3LAB]              │                          │                          │
-│ [HR2LAB]              │                          │                          │
 │ [HW CONFIG]           │                          │                          │
 │ [DIAGNOSTICS]         │                          │                          │
 │ [AFE SWEEP]           │                          │                          │
@@ -479,6 +482,7 @@ All rates relative to the render timer tick (~50 ms = ~20 Hz):
 | `_HR1TEST_REFRESH_EVERY` | 2 | HR1TestWindow (10 Hz) |
 | `_HR2TEST_REFRESH_EVERY` | 2 | HR2TestWindow (10 Hz) |
 | `_HR3TEST_REFRESH_EVERY` | 2 | HR3TestWindow (10 Hz) |
+| `_PILAB_REFRESH_EVERY` | 2 | PILabWindow (10 Hz) |
 
 Serial console lines are appended every `_process_frames_tick()` cycle (no throttle; batched in `_console_lines`).
 
@@ -612,7 +616,83 @@ Layout: left 4 plots + right panel.
 
 **Right panel:** LP cutoff, HPS harmonics count spinboxes, current-values table, [EXPORT CSV], [LOAD CSV].
 
-### 7.11 HR3LabWindow — "HR3LAB"
+### 5.6 PICalc
+
+Configurable 3-step Perfusion Index pipeline. Not a firmware replica — it is an investigation
+tool to evaluate different estimator strategies.
+
+See full description in §7.11 (PILabWindow).
+
+---
+
+### 7.11 PILabWindow — "PILAB"
+
+Purpose: investigate the Perfusion Index (PI) computation pipeline by comparing two
+independently configured PI estimators side by side on live or recorded data.
+
+#### PICalc — configurable 3-step PI pipeline (class)
+
+`PICalc` implements a configurable pipeline for computing PI from raw `led1_sub` / `led2_sub` samples.
+
+**Pipeline steps:**
+
+| Step | Role | Methods |
+|------|------|---------|
+| STEP1 — DC subtraction | Removes baseline to isolate AC component | S1_EMA (EMA τ_sub), S1_BPF (Butterworth BPF), S1_NONE (pass-through) |
+| STEP2 — AC estimator | Estimates pulse amplitude | S2_EMA_RMS (EMA of x², τ_ac), S2_WIN_RMS (windowed RMS), S2_PEAKPK ((max−min)/2), S2_SPECTRAL (FFT energy at f_HR±Δ), S2_HARMONICS (FFT energy sum at n·f_HR) |
+| STEP3 — DC denominator | Estimates DC for the PI denominator (independent of STEP1) | S3_EMA (EMA τ_norm), S3_LPF (Butterworth LPF), S3_WIN_MEAN (windowed mean) |
+
+**Output:** `PI_ir = AC_ir / DC_ir × 100 %`, `PI_red = AC_red / DC_red × 100 %`, `R = PI_red / PI_ir`.
+
+**Firmware M1 defaults (Instance A):** STEP1 = S1_EMA τ_sub=2 s; STEP2 = S2_EMA_RMS τ_ac=6 s (ISO 80601-2-61:2026 JJ.2 d); STEP3 = S3_EMA τ_norm=2 s.
+
+`reconfigure(fs)` recalculates EMA alphas and filter coefficients from current parameters and resets state.
+`update(ir, red, fs)` processes one sample; calls `reconfigure` lazily if `fs` changed.
+`reset()` clears all accumulators without touching configuration.
+
+#### PILabWindow layout
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ LEFT (4 stacked plots, X linked)  │ RIGHT panel         │
+│                                   │ [LOAD CSV][LIVE]    │
+│ Plot 1: led1_sub + DC_sub A/B     │ [PAUSE]         [?] │
+│                                   │ ┌─────────┬───────┐ │
+│ Plot 2: AC_r [ADC] A/B            │ │Instance │Inst.  │ │
+│                                   │ │A(orange)│B(blue)│ │
+│ Plot 3: PI_ir [%] A/B             │ │ STEP1   │ STEP1 │ │
+│                                   │ │ STEP2   │ STEP2 │ │
+│ Plot 4: R = PI_red/PI_ir A/B      │ │ STEP3   │ STEP3 │ │
+│                                   │ └─────────┴───────┘ │
+│                                   │ Value table 4×2     │
+│                                   │ PI_ir/PI_red/R/AC_r  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Plots:**
+1. Raw `led1_sub` (grey) + DC_sub from STEP1 for A (orange) and B (blue) — shows DC tracking quality.
+2. AC amplitude (STEP2 output) for A and B — compares estimator magnitude.
+3. PI_ir [%] for A and B — final PI result (AC/DC × 100).
+4. R ratio for A and B — modulation ratio entering SpO2 formula.
+
+**Config columns A / B:** always visible side by side (not tabs). Each column has an independent
+`_make_config_tab()` panel with STEP1/2/3 method combo + associated parameter spinboxes + [APPLY] button.
+Font sizes: combos/spins 17 px, form labels 17 px.
+
+**Value table:** 4 rows × 2 cols (A / B). Font 24 px data, 20 px headers. Rows: PI_ir [%], PI_red [%], R, AC_r_ir.
+
+**Help button `?`:** opens a `QDialog` with HTML explaining the four plots and the pipeline.
+
+**Feed architecture:**
+- `feed_sample(ir, red, fs, ts_us)` — called per sample in `_process_frames_tick()`.
+- `update_plots()` — called from render tick every `_PILAB_REFRESH_EVERY` ticks (10 Hz).
+
+**Offline mode:** [LOAD CSV] reads a captured CSV file and replays samples through both pipelines.
+[LIVE] switches back to live mode. [PAUSE] freezes plots without stopping collection.
+
+**Integration:** PILAB button is in the **LAB group** of the sidebar (alongside HR2LAB, HR3LAB, SPO2LAB).
+
+### 7.12 HR3LabWindow — "HR3LAB"
 
 Purpose: diagnostic view combining FFT spectrum and HR algorithm comparison.
 
@@ -796,6 +876,7 @@ All CSV files include a `#`-prefixed header comment with timestamp and relevant 
 | `PythonTimingWindow/geometry` | bytes | |
 | `LabCaptureWindow/geometry` | bytes | |
 | `LabCaptureWindow/*` | mixed | Output dir, prefix, pre/post notes, column selection |
+| `PILabWindow/geometry` | bytes | |
 
 Settings are saved on window close and restored on startup.
 
@@ -825,10 +906,11 @@ V_OD(s) = 1.0 V differential. See §6.3 for per-row thresholds.
 
 ### Tooltip convention
 
-Every interactive control must use `_make_tooltip(name, text)`:
+Every interactive control must use `_make_tooltip(name, text, src="")`:
 - Background: `#5500AA` (vivid purple)
 - `name` in bold gold as first line
 - `text` in light grey
+- Optional `src` shown in smaller italic grey as source code reference
 - Fixed width 540 px, 8 px padding
 
 ### Action button style
@@ -860,6 +942,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.4 — 2026-06-14
+- Added `PICalc` class (§5.6): configurable 3-step PI pipeline (STEP1/STEP2/STEP3), firmware M1 defaults.
+- Added PILabWindow (§7.11): 4 stacked plots, two always-visible config columns A/B, value table, help dialog.
+- Updated sidebar (§6.1): LAB group (HR2LAB, HR3LAB, SPO2LAB, PILAB) and TEST group labelled explicitly.
+- Updated throttle rates (§6.6): added `_PILAB_REFRESH_EVERY = 2` (10 Hz).
+- Updated settings (§9): added `PILabWindow/geometry` and `PPGMonitor/pilab_open`.
+- Updated tooltip convention (§10): `_make_tooltip` now accepts optional `src` parameter.
 
 ### v1.3 — 2026-05-27
 - Added WiFi/UDP transport (§4.1, §4.7): `_udp_reader` thread, `_udp_queue`, `btn_udp` toggle, UdpComWindow.
