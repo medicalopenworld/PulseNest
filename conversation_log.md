@@ -11760,6 +11760,38 @@ OK. Pendiente: flash OTA + verificar Ts_us ~2000 µs en M4.
 
 ---
 
+## Sesión 2026-06-12e — HR3TEST: escape HTML en leyenda SQI<0.9
+
+### Problema
+pyqtgraph renderiza las leyendas con HTML. El carácter `<` en `"SQI<0.9"` era interpretado como inicio de etiqueta HTML, truncando el texto visible.
+
+### Solución
+Sustituido `<` por la entidad HTML `&lt;` → `name="SQI&lt;0.9"`. pyqtgraph lo muestra como `SQI<0.9`.
+
+**Fichero modificado:** `pulsenest_lab.py` (línea 4007).
+
+---
+
+## Sesión 2026-06-13b — UDP worker: log IP origen primera trama + detección cambio IP
+
+En `_udp_worker()`, añadida variable local `_known_ip`:
+- **Primera trama recibida:** log `[UDP] First datagram from <ip>` + asigna `self._esp32_ip`
+- **Tramas siguientes:** si la IP de origen cambia, log `[UDP] Source IP changed: <old> → <new>` + actualiza `_known_ip` y `self._esp32_ip`
+
+Sustituye la comprobación anterior `if self._esp32_ip is None` (que solo cubría la primera trama).
+
+**Fichero modificado:** `pulsenest_lab.py` (~línea 9742).
+
+---
+
+## Sesión 2026-06-13a — Fix docstring HR3TestCalc.update()
+
+Corregido docstring de `HR3TestCalc.update()` (línea 3710): `"Process one 50 Hz sample"` → `"Process one sample at the given fs"`. El método acepta `fs` como parámetro dinámico y no está atado a ninguna frecuencia concreta.
+
+**Fichero modificado:** `pulsenest_lab.py` (línea 3710).
+
+---
+
 ## Sesión 2026-06-12g — Eliminar SNPRINTF_TIMING
 
 Instrumentación temporal eliminada de `main.cpp` tras confirmar el fix de Ts_us:
@@ -11834,3 +11866,358 @@ Verificación para ε=0.24: δ_Gauss = 0.258 (vs δ_true=0.24, error +7.5%) → 
 
 ### Build
 OK (incunest_V16). OTA pendiente (ESP32 no visible en red al final de sesión).
+
+---
+
+## Sesión 2026-06-12j — Incidente OTA + comentario baseline SQI + estrategias SQI HR3
+
+### Incidente OTA (placa incorrecta)
+
+Se flasheó firmware PulseNest a `192.168.137.246` (MAC `10:20:BA:14:75:60` = IncuNest 17.A) en lugar de IncuNest 16.A. Consecuencia: lecturas LED saturadas en esa placa (pin mapping incorrecto para V17).
+
+**Causa:** no se cruzó la MAC antes de flashear. El procedimiento correcto:
+1. `arp -a | grep 192.168.137` → anotar IP candidata
+2. Verificar que la MAC sea `10:51:DB:50:48:F8` (IncuNest 16.A = target de PulseNest)
+3. Solo entonces flashear
+
+Dispositivos conocidos memorizados en `hardware_mac_addresses.md`.
+
+Flash correcto hecho a continuación a `192.168.137.212` (IncuNest 16.A).
+
+### Resultados Gaussiana con simulador
+
+- 60 BPM → 60.07 (+0.07)
+- 65 BPM → 65.03 (+0.03)
+- 70 BPM → 69.97 (−0.03)
+- 75 BPM → 74.90 (−0.10)
+
+Error máximo 0.10 BPM. Commits pusheados a ambos repos.
+
+### Comentario baseline SQI (incunest_afe4490.cpp)
+
+Añadido comentario en línea 2069 explicando por qué `baseline = 2.0f / n_win`:
+el numerador `hps_num = hps[b1] + hps[b2]` abarca exactamente 2 bins, por lo que en un espectro HPS plano (ruido puro) la fracción esperada es `2/n_win`. Con ese ancla: SQI=0 si el pico no destaca sobre el ruido, SQI=1 si toda la energía está en b1+b2.
+
+### Discusión estrategias SQI HR3 (pendiente de implementar)
+
+Problema: `hr3_result_sqi > 0.9` con sonda no aplicada (picos espurios en FFT/HPS).
+
+Estrategias discutidas:
+- **A. Gate por amplitud absoluta (RMS del buffer en tiempo):** más directo para sonda no aplicada. Umbral a calibrar.
+- **B. Gate por ProbeState:** forzar SQI=0 si `probe_state != APPLIED`. Simple pero introduce acoplamiento HR3↔RSQM y tiene latencia EMA.
+- **C. Verificación de armónicos independiente:** exigir que P[k], P[2k] y P[3k] superen individualmente el nivel de ruido (no solo su producto HPS). Más robusto.
+- **D. Denominador global:** usar suma total del HPS en todo el rango de búsqueda como denominador (en vez de ventana local ±W).
+- **E. Consistencia temporal:** detectar saltos bruscos entre estimaciones consecutivas.
+
+Recomendación acordada: implementar A + C en ese orden. Pendiente.
+
+---
+
+## Sesión 2026-06-14a — Retrofit tooltips: parámetro src
+
+### Cambio aplicado en `pulsenest_lab.py`
+
+**Nueva regla:** todo tooltip debe incluir el nombre del elemento de código fuente del que depende.
+
+**Implementación:**
+- `_make_tooltip(name, text, src="")` — nuevo parámetro opcional `src`. Se renderiza al pie del tooltip en monospace azul claro con icono 📎.
+- Retrofitados ~60 tooltips con `src`. Controles actualizados:
+  - SpO2Lab calibration, SpO2Test params (spo2_a/b, spo2_ema_mean/var_tau_s, spo2_warmup_s, spo2_min_dc)
+  - HR1Test params (hr1_dc_iir_tau_s … hr1_refractory_s)
+  - HR2Test params (hr2_bpf_low/high_hz, hr2_buf_len, hr2_max_lag, hr2_update_n, hr2_min_lag_s, hr2_min_corr)
+  - HR3Test params (hr3_bp_low/high_hz, hr3_buf_len, hr3_update_n, hr3_hps_harmonics)
+  - PILab (PICalc.step1/2/3, tau_sub/ac/norm_s, bpf_lo/hi_hz, win_s, hr_bpm, n_harm, lpf_fc_hz, win_norm_s)
+  - PPG checkboxes ×2 (AFE4490Data::led1_raw/aled1/led1_sub/led2_raw/aled2/led2_sub)
+  - HW Config: migrado `\nLib: ... · Script: ...` embebido → `src="AFE4490Config::..."` / `src="AFE4490TimingConfig::..."`
+  - Sidebar: combo_port, spin_decim, frame_mode_combo ($MODE,M{1-4}), spin_stats_interval
+  - Sweep/Capture: _spin_settle, _spin_samples
+
+---
+
+## Sesión 2026-06-13b — Renombrado convención EmaChannel
+
+### Cambio aplicado en `incunest_afe4490.h`
+
+Decisión de nomenclatura: adoptar patrón `<calificador>_<concepto>` de forma consistente en `EmaChannel`.
+
+| Antes | Después |
+|---|---|
+| `_alpha_mean` | `_mean_alpha` |
+| `_alpha_var` | `_var_alpha` |
+| `tau_mean_s` (param `init()`) | `mean_tau_s` |
+| `tau_var_s` (param `init()`) | `var_tau_s` |
+
+Los callers de `.init()` usan args posicionales → no requieren cambios.
+
+---
+
+## Sesión 2026-06-13a — Análisis comparativo SQI firmware vs HR3TestCalc
+
+### Hallazgo: HR3TestCalc tiene un bug de fs
+
+`SPO2_RECEIVED_FS = 50.0` (línea 208) tiene el comentario "SERIAL_DOWNSAMPLING_RATIO=10", pero actualmente los frames M3/M4 llegan a **500 Hz** (SERIAL_DOWNSAMPLING_RATIO=1). HR3TestCalc recibe datos a 500 Hz pero usa `fs=50.0`, con estas consecuencias:
+
+| Aspecto | Firmware HR3 | HR3TestCalc (Python, buggeado) |
+|---|---|---|
+| Filtro | LP biquad 10 Hz @ 500 Hz | BP Butterworth 0.4–15 Hz diseñado @ 50 Hz, aplicado @ 500 Hz → cutoffs reales **4–150 Hz** |
+| Ventana | 512 @ 50 Hz = 10.24 s | 512 @ 500 Hz = **1.024 s** |
+| Rango búsqueda | 0.617–4.383 Hz reales ✓ | Etiquetado 0.617–4.383 Hz pero frecuencias reales **5.86–43.9 Hz** (= 350–2630 BPM) |
+| Actualización | cada 0.5 s | cada **50 ms** |
+| Fórmula SQI | — | idéntica |
+
+### Por qué HR3TestCalc da menos falsos positivos
+
+HR3TestCalc busca casualmente en el rango 5.86–43.9 Hz (fuera de cualquier HR fisiológico), donde el ruido es más plano → SQI naturalmente bajo. No es un diseño superior sino un efecto colateral del bug.
+
+### Conclusión para el diseño del SQI
+
+El firmware SQI es vulnerable a **ruido de baja frecuencia estructurado** (EMI, deriva, movimiento de cables) en 0.6–4.4 Hz que aparece dominante localmente → SQI > 0.9 con sonda no aplicada.
+
+Las estrategias correctas siguen siendo **A (gate por amplitud RMS)** + **C (verificación de armónicos independiente)** según lo decidido en sesión 2026-06-12j.
+
+### Pendiente
+
+1. **Corregir el bug de SPO2_RECEIVED_FS en HR3TestCalc** — pasar el `fs` correcto (500 Hz) para que el mirror sea fiel al firmware.
+2. **Implementar Estrategia A** en firmware: gate por RMS del buffer `_hr3_buf`. Si RMS < umbral → `_hr3_result_sqi = 0`.
+3. **Implementar Estrategia C** en firmware: verificar que P[k], P[2k], P[3k] superan individualmente el nivel de ruido (mediana del espectro × factor).
+
+## Sesión 2026-06-14e — PILAB: fix cuelgue por bucle layout Qt (columnas demasiado estrechas)
+
+### Causa raíz
+
+Con `stretch=1` el panel derecho recibía ~350px divididos entre dos columnas = **~175px cada una**. Cada columna contiene un `QScrollArea` con `setWidgetResizable(True)` y un `QFormLayout` con ~15 filas. El ancho mínimo del contenido (~200px) superaba el ancho disponible (175px), por lo que Qt añadía scrollbar horizontal → viewport más estrecho → resize del contenido → scrollbar → bucle infinito → UI completamente bloqueada.
+
+### Fix aplicado
+
+- `root.addWidget(gv, stretch=3→2)` y `root.addLayout(right, stretch=1→2)`: el panel derecho ahora recibe ~50% del ancho (~400px por columna)
+- `setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)` en cada `QScrollArea` de columna: elimina el bucle de redimensionado incluso si el contenido sobrepasa el ancho
+- `self.resize(1400→1800, 900)` como tamaño por defecto
+- Borrada la geometría guardada en `pulsenest_lab.ini` `[PILabWindow]` para que no restaure la ventana antigua de 1400px
+
+## Sesión 2026-06-14d — PILAB: fix cuelgue por stylesheet con border-radius
+
+`border: 1px solid {color}; border-radius: 4px` aplicado a `tab_widget` (QWidget padre de QScrollArea) causaba repintado indefinido en PyQt5 — el estilo se propagaba a todos los widgets hijo. Fix: eliminar el `setStyleSheet` del QWidget contenedor y también quitar el `border-bottom` del header label. Solo se conserva el color y font del header para identificar la columna.
+
+## Sesión 2026-06-14c — PILAB: layout columnas A/B + números más grandes
+
+### Cambios en PILabWindow (_build_ui + _make_config_tab)
+
+- Eliminado `QTabWidget`: Instance A e Instance B ahora son **dos columnas siempre visibles** en un `QHBoxLayout`
+- Cada columna tiene un encabezado de color (`border: 1px solid color`, label "Instance A/B" en 16px bold) para identificarlas sin pestañas
+- Tabla de valores: `font-size` subido de 14px → **20px** (valores PI_ir, PI_red, R, AC_r_ir); encabezados de 13px → 16px; `setMinimumHeight(200)` + `setMaximumHeight(240)`
+
+## Sesión 2026-06-14b — PILAB: mover botón al grupo LAB
+
+Botón PILAB movido en el sidebar de PPGMonitor: estaba junto a HR3TEST (grupo TEST); ahora está justo debajo de SPO2LAB (grupo LAB). Razón: PILAB no compara contra el firmware, es un laboratorio de investigación puro → pertenece al grupo LAB junto a HR2LAB, HR3LAB, SPO2LAB.
+
+## Sesión 2026-06-14a — Implementación PILAB (PICalc + PILabWindow)
+
+### Objetivo
+
+Ventana de investigación para comparar distintas definiciones de Perfusion Index (PI).
+Diseñada como pipeline de 3 pasos independientes, con dos instancias en paralelo (A vs B).
+
+### Clases nuevas en pulsenest_lab.py
+
+**`PICalc`** — pipeline configurable:
+- STEP1 (DC subtraction): S1_EMA (τ_sub), S1_BPF (Butterworth BP), S1_NONE
+- STEP2 (AC estimator): S2_EMA_RMS (τ_ac), S2_WIN_RMS, S2_PEAKPK, S2_SPECTRAL (FFT), S2_HARMONICS (FFT armónicos)
+- STEP3 (DC denominator): S3_EMA (τ_norm), S3_LPF (Butterworth LP), S3_WIN_MEAN
+- Outputs: `pi_ir`, `pi_red`, `R`, `ac_r_ir`, `ac_r_red`, `dc_r_ir`, `dc_r_red`, `dc_sub_ir`, `dc_sub_red`
+- Instancia A arranca con defaults del firmware M1: S1=EMA τ=2s, S2=EMA-RMS τ=6s, S3=EMA τ=2s
+
+**`PILabWindow`** — ventana de investigación:
+- 4 gráficas apiladas: señal IR + DC_sub, AC_r, PI_ir, R ratio
+- Panel derecho con tabs A (naranja) y B (azul): configuración de los 3 pasos + botón APPLY
+- Tabla de valores actuales: PI_ir, PI_red, R, AC_r_ir
+- Modos: live (feed_sample() por muestra desde drain loop) + offline (LOAD CSV)
+- Botones: LOAD CSV, LIVE, PAUSE
+
+### Integración en PPGMonitor
+
+- `pilab_window = None` en `__init__`, `_pilab_refresh_counter`, `_PILAB_REFRESH_EVERY=2`
+- Timing key `plot_pilab` añadida al dict `_py_timing`
+- Drain loop: `pilab_window.feed_sample(led1_sub, led2_sub, SPO2_RECEIVED_FS, ts_us)`
+- Render tick: `pilab_window.update_plots()` cada 2 ticks (~10 Hz)
+- Sidebar: botón **PILAB** debajo de HR3TEST
+- `toggle_pilab()` + `_open_pilab_default()`
+- `_save_settings`/`showEvent`/`closeEvent`/`_bring_all_to_front` actualizados
+
+### Decisiones de diseño
+
+- La frontera hardware→fisiológico ocurre dentro de los algoritmos (p[7]=led1_sub → ir, p[6]=led2_sub → red)
+- M5 (optical transmittance) descartado: los factores de normalización se cancelan en el ratio PI_red/PI_ir = R, no aporta nada nuevo
+- `_apply_config()` limpia buffers de plot para que la comparación empiece desde cero tras cada APPLY
+- STEP1=NONE solo tiene sentido con métodos espectrales (2.4/2.5) — el usuario es responsable de combinar correctamente
+- `reconfigure()` se llama automáticamente en `update()` cuando `fs` cambia (lazy reconfigure)
+
+## Sesión 2026-06-14b — Tooltip src: botones de ventana + filas SIGNAL STATS
+
+### Cambios en `pulsenest_lab.py`
+
+**Botones de ventana (sidebar):** se añadió `src="ClassName"` a los 17 botones que abren ventanas secundarias (más `btn_ppgplots` añadido en sesión anterior), de forma que el tooltip de cada botón muestra el nombre de la clase Python correspondiente:
+
+| Botón | src |
+|---|---|
+| PPGPLOTS | `PPGPlotsWindow` |
+| SIGNALS | `PPGSignalsWindow` |
+| RESULTS | `AlgoResultsWindow` |
+| SERIALCOM | `SerialComWindow` |
+| UDP COM | `UdpComWindow` |
+| HR2LAB | `HRLabWindow` |
+| HR3LAB | `HR3LabWindow` |
+| SPO2LAB | `SpO2LabWindow` |
+| SPO2TEST | `SpO2TestWindow` |
+| HR1TEST | `HR1TestWindow` |
+| HR2TEST | `HR2TestWindow` |
+| HR3TEST | `HR3TestWindow` |
+| PILAB | `PILabWindow` |
+| ESP32 TIMING | `Esp32TimingWindow` |
+| PYTHON TIMING | `PythonTimingWindow` |
+| HW CONFIG | `HWConfigWindow` |
+| DIAGNOSTICS | `DiagnosticsWindow` |
+| AFE SWEEP | `AFESweepTestWindow` |
+
+**SIGNAL STATS — `_STATS_SIGNALS`:** refactorizado de 3-tuplas a 4-tuplas `(display_name, data_attr, tooltip_description, src)`. Cada fila de la tabla muestra ahora en su tooltip el campo de firmware del que procede el dato:
+
+- Señales PPG crudas → `AFE4490Data::led1_raw`, `::led2_raw`, `::aled1`, `::aled2`, `::led1_sub`, `::led2_sub`, `::ppg_disp`
+- SpO2/HR → `AFE4490Data::spo2`, `::spo2_sqi`, `::spo2_r`, `::pi`, `::hr1..hr3`, `::hr1_sqi..hr3_sqi`, `::rsqi`, `::diag_code`, `::probe_state`
+- Debug analog ($M4) → `AFE4490DebugData::v_tia_led1/led2/aled1/aled2`, `::i_pd_led1/led2/aled1/aled2`
+- OT calculado en script → `PPGMonitor.data_ot2_led1`, `PPGMonitor.data_ot2_led2`
+
+Todos los sitios de desempaquetado de `_STATS_SIGNALS` actualizados para 4-tuplas (líneas 9163, 9671, 10702, 11105, 11138, 11169, 11234).
+
+### Decisión
+
+Regla establecida (ya en memoria): todo tooltip incluye el `src` del elemento de código fuente del que depende. Los botones de acción pura (sin ventana asociada) no llevan `src`.
+
+## Sesión 2026-06-14f — Fix OT_LED1/2 a cero hasta abrir HW CONFIG
+
+### Bug
+
+OT_LED1 y OT_LED2 en SIGNAL STATS permanecían a cero hasta abrir la ventana HW CONFIG. La causa: el cálculo de OT usa `cfg.get("led1","0")` de `_last_cfg`, pero `_last_cfg` solo se poblaba al recibir un `$CFG` frame, que solo se solicitaba si HW CONFIG estaba abierta.
+
+### Dos rutas afectadas en `pulsenest_lab.py`
+
+**1. Al conectar serial** (`_connect_serial`):
+- Antes: `QTimer.singleShot(2500, lambda: hw_config_window._on_read_cfg() if hw_config_window is not None else None)` → no-op si HW CONFIG cerrada.
+- Después: `QTimer.singleShot(2500, lambda: self.request_chip_config(notify_lab_capture=False))` → siempre envía `$CFG?`.
+
+**2. Al detectar `# incunest_afe4490 started`** (firmware boot):
+- Antes: `$CFG?` solo si `_post_reset_cfg_pending` (reset manual) y `hw_config_window` abierta.
+- Después: siempre `request_chip_config(notify_lab_capture=False)`. `_post_reset_cfg_pending` se limpia incondicionalmente. HW CONFIG sigue actualizándose automáticamente vía `_on_cfg_frame_received → update_from_cfg(kv)`.
+
+### Resultado
+
+`_last_cfg` se popula 2.5 s después de conectar, sin necesidad de abrir HW CONFIG. OT_LED1/2 muestran valores reales desde el inicio.
+
+## Sesión 2026-06-14e — Negrita en tooltip ProbeState + soporte <b> en _make_tooltip
+
+### Cambios en `pulsenest_lab.py`
+
+**`_make_tooltip` — soporte de negrita inline:** `_esc()` ahora restaura `<b>`/`</b>` tras escapar el resto del HTML. Permite usar `<b>texto</b>` en cualquier parámetro `text` de `_make_tooltip` sin modificar la firma. Ningún tooltip existente se ve afectado.
+
+**ProbeState tooltip:** la línea "Not DISCONNECTED AND OT ≤ 8.5×10⁻⁵ on both channels" ahora aparece en negrita, resaltando el criterio de APPLIED respecto a los otros estados.
+
+## Sesión 2026-06-14d — ProbeState tooltip algoritmo completo + unidades I_PD en tabla
+
+### Cambios en `pulsenest_lab.py`
+
+**Display names I_PD en `_STATS_SIGNALS`:** renombrados para mostrar la unidad en la columna Signal:
+- `"I_PD_LED1"` → `"I_PD_LED1 [µA]"`
+- `"I_PD_LED2"` → `"I_PD_LED2 [µA]"`
+- `"I_PD_ALED1"` → `"I_PD_ALED1 [µA]"`
+- `"I_PD_ALED2"` → `"I_PD_ALED2 [µA]"`
+
+Motivación: el tooltip de ProbeState referencia estas filas con umbral en µA (0.15 µA), así el lector puede correlacionar directamente valor de tabla con umbral.
+
+**Tooltip ProbeState:** ampliado de una línea legend a descripción completa del algoritmo RSQM:
+- **DISCONNECTED** (AND de 6): |I_PD_*| < 0.15 µA (4 canales) AND |LED1/2_SUB| < 5000 ADC. Nota redundancia intencional led_sub vs i_pd (guarda AMBDAC).
+- **NOT_APPLIED** (OR): OT_LED1 > 8.5×10⁻⁵ OR OT_LED2 > 8.5×10⁻⁵; saturación ADC (≥2 096 921) fuerza OT=100.
+- **APPLIED**: no disconnected AND OT ≤ 8.5×10⁻⁵ en ambos canales.
+- Debounce: 100 muestras consecutivas (200 ms a 500 Hz) en todas las transiciones.
+
+## Sesión 2026-06-14c — Renombrar rsqm_disconn_sub_mean → rsqm_disconn_led_sub_thr
+
+### Cambio
+
+`incunest_afe4490.h` y `incunest_afe4490.cpp`: renombrado `rsqm_disconn_sub_mean` → `rsqm_disconn_led_sub_thr`.
+
+### Motivación
+
+- `_mean` era incorrecto semánticamente: es un **umbral** (threshold), no una media.
+- `rsqm_disconn_led_sub_thr` es más explícito sobre la señal (`led_sub`) y simétrico con el parámetro vecino `rsqm_disconn_i_pd_thr`.
+- El comentario también se corrigió: `|led_aled|` → `|led_sub|`.
+
+## Sesión 2026-06-13c — Sincronización τ SpO2 Python mirror con firmware
+
+### Diagnóstico
+
+`SpO2TestCalc` en `pulsenest_lab.py` tenía τ desactualizados respecto al firmware tras el refactoring de `EmaChannel` (sesión 2026-06-11c).
+
+| Constante | Python (antes) | Firmware |
+|---|---|---|
+| `FW_DC_IIR_TAU_S` | 1.6 | **2.0** (`spo2_ema_mean_tau_s`) |
+| `FW_AC_EMA_TAU_S` | 1.0 | **6.0** (`spo2_ema_var_tau_s`, ISO 80601-2-61:2026 JJ.2 d) |
+| `FW_WARMUP_S` | 5.0 | **18.0** (3 × τ_var) |
+| `FW_SPO2_MIN_DC` | 1000.0 | 1000.0 ✓ |
+
+### Decisión
+
+Actualizar las tres constantes en `SpO2TestCalc` para que el mirror Python calcule PI y SQI con los mismos parámetros que el firmware. Las fórmulas ya eran equivalentes (ambas usan `1 - exp(-1/(τ×fs))` como peso sobre la muestra nueva).
+
+### Cambio aplicado
+
+`pulsenest_lab.py` — constantes clase `SpO2TestCalc`:
+```python
+FW_DC_IIR_TAU_S = 2.0   # spo2_ema_mean_tau_s (EmaChannel τ_mean)
+FW_AC_EMA_TAU_S = 6.0   # spo2_ema_var_tau_s  (EmaChannel τ_var, ISO 80601-2-61:2026 JJ.2 d ≥ 6 s)
+FW_WARMUP_S     = 18.0  # spo2_warmup_s = 3 × τ_var
+```
+
+## Sesión 2026-06-14f — Diagnóstico de hang al arrancar pulsenest_lab.py
+
+### Problema
+
+El script `pulsenest_lab.py` se bloqueaba al arrancar tras los cambios de la sesión 14e (layout PILAB en columnas + fix INI).
+
+### Investigación
+
+Se creó `diag_hang.py` para aislar el problema. Hallazgos:
+
+1. **Sintaxis OK** — `ast.parse()` con UTF-8 sin errores.
+2. **El código no bloquea** — `diag_hang.py` replicó exactamente el bloque `if __name__ == '__main__':` (QApplication, setStyle, setStyleSheet, PPGMonitor, show, event loop) y funcionó 30s sin problema.
+3. **Drain/render/bring_all_to_front** — todos completan sin bloqueo.
+4. **INI correcta** — todas las claves `key=value` (sin espacios), `pilab_open=false`.
+
+### Estado al final de sesión
+
+El diagnóstico muestra que el código es correcto. El script se relanzó al final de la sesión para verificar con el usuario si el problema persiste. Resultado pendiente de confirmar.
+
+### Fichero diagnóstico creado
+
+`diag_hang.py` — script temporal de diagnóstico (no producción).
+
+## Sesión 2026-06-14g — PILAB: fuentes más grandes en config panel y tabla
+
+### Cambio
+
+`pulsenest_lab.py` — `PILabWindow._make_config_tab` + tabla de valores:
+
+| Elemento | Antes | Después |
+|---|---|---|
+| SpinBox / ComboBox (`_ss_spin`, `_ss_cb`) | 14px | 17px |
+| Labels STEP1/2/3 (`_lbl_sty`) | 14px | 17px |
+| Labels de fila del form ("Method:", "τ_sub:", etc.) | sin estilo | 17px (via `inner.setStyleSheet QLabel`) |
+| Tabla datos (`QTableWidget`) | 20px | 24px |
+| Tabla cabeceras (`QHeaderView::section`) | 16px | 20px |
+| Tabla `setMinimumHeight` / `setMaximumHeight` | 200/240 | 240/300 |
+
+## Sesión 2026-06-14h — PILAB: botón de ayuda con explicación de las cuatro gráficas
+
+### Cambio
+
+`pulsenest_lab.py` — `PILabWindow`:
+
+- Añadido botón `?` en la toolbar (derecha, separado por stretch).
+- Nuevo método `_show_help()`: abre `QDialog` no-modal con texto HTML que explica las 4 gráficas y el pipeline de 3 pasos (DC tracking, AC estimator, PI_ir, ratio R para SpO2).

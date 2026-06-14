@@ -487,10 +487,10 @@ class SpO2TestCalc:
     """
 
     # Firmware defaults — must match incunest_afe4490_spec.md §5.1 and incunest_afe4490.cpp constants
-    FW_DC_IIR_TAU_S = 1.6
-    FW_AC_EMA_TAU_S = 1.0
+    FW_DC_IIR_TAU_S = 2.0   # spo2_ema_mean_tau_s (EmaChannel τ_mean)
+    FW_AC_EMA_TAU_S = 6.0   # spo2_ema_var_tau_s  (EmaChannel τ_var, ISO 80601-2-61:2026 JJ.2 d ≥ 6 s)
     FW_SPO2_MIN_DC  = 1000.0
-    FW_WARMUP_S     = 5.0
+    FW_WARMUP_S     = 18.0  # spo2_warmup_s = 3 × τ_var
     FW_SPO2_A       = 114.9208
     FW_SPO2_B       =  30.5547
     FW_SPO2_MIN     = 70.0
@@ -1107,14 +1107,22 @@ def _patch_viewbox_menu():
 _patch_viewbox_menu()
 
 
-def _make_tooltip(name: str, text: str) -> str:
+def _make_tooltip(name: str, text: str, src: str = "") -> str:
     """Build a rich-text HTML tooltip with a vivid purple background.
 
     ``name`` is shown in bold gold as the first line; ``text`` follows in light grey.
+    ``src`` (optional) is the source code element name this control depends on — shown
+    in a dim monospace line at the bottom so the user can locate it in the codebase.
     Used by every interactive control in the script.
     """
     def _esc(s: str) -> str:
-        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
+        return (s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
+                  .replace('&lt;b&gt;', '<b>').replace('&lt;/b&gt;', '</b>'))
+
+    src_html = (
+        f"<br/><span style='font-size:20px; color:#999999;'>&#x1F4CE;&nbsp;"
+        f"<code style='color:#88CCFF; font-family:monospace;'>{_esc(src)}</code></span>"
+    ) if src else ""
 
     return (
         "<table width='540' style='background-color:#5500AA; border-radius:6px;'>"
@@ -1124,7 +1132,9 @@ def _make_tooltip(name: str, text: str) -> str:
         "</span><br/>"
         "<span style='font-size:24px; white-space:normal; color:#F0F0F0;'>"
         f"{_esc(text)}"
-        "</span></td></tr></table>"
+        "</span>"
+        f"{src_html}"
+        "</td></tr></table>"
     )
 
 
@@ -1264,7 +1274,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         self._spin_spo2_ref.setToolTip(_make_tooltip(
             "SpO2 ref (%)",
             "Reference SpO2 value provided by the calibrator/simulator (ground truth). "
-            "Used as the target when adding a calibration point."))
+            "Used as the target when adding a calibration point.",
+            src="SpO2LabWindow._spin_spo2_ref"))
         self._spin_avg_win = QtWidgets.QSpinBox()
         self._spin_avg_win.setRange(1, 30)
         self._spin_avg_win.setValue(5)
@@ -1273,7 +1284,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         self._spin_avg_win.setToolTip(_make_tooltip(
             "Avg window",
             "Duration (seconds) of the rolling average used to compute R_fw and R_local "
-            "when capturing a calibration point. Longer = more stable, slower to react."))
+            "when capturing a calibration point. Longer = more stable, slower to react.",
+            src="SpO2LabWindow._spin_avg_win"))
         form_r.addRow("SpO2 ref (%):", self._spin_spo2_ref)
         form_r.addRow("Avg window:",   self._spin_avg_win)
         panel.addWidget(grp_ref)
@@ -1808,27 +1820,33 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._spin_a.setToolTip(_make_tooltip(
             "SpO2 coefficient a",
             "SpO2 = a − b·R. Firmware default: 114.9208. "
-            "Empirical calibration coefficient. Changing this shifts the SpO2 curve vertically."))
+            "Empirical calibration coefficient. Changing this shifts the SpO2 curve vertically.",
+            src="spo2_a"))
         self._spin_b.setToolTip(_make_tooltip(
             "SpO2 coefficient b",
             "SpO2 = a − b·R. Firmware default: 30.5547. "
-            "Empirical calibration coefficient. Changing this changes the slope of the SpO2 vs R curve."))
+            "Empirical calibration coefficient. Changing this changes the slope of the SpO2 vs R curve.",
+            src="spo2_b"))
         self._spin_dc_tau.setToolTip(_make_tooltip(
             "DC IIR time constant",
             "IIR low-pass filter time constant for DC level tracking [s]. "
-            "Firmware default: 1.6 s. α = exp(−1/(τ·fs))."))
+            "Firmware default: 1.6 s. α = exp(−1/(τ·fs)).",
+            src="spo2_ema_mean_tau_s"))
         self._spin_ac_tau.setToolTip(_make_tooltip(
             "AC EMA time constant",
             "EMA time constant for AC² tracking [s]. "
-            "Firmware default: 1.0 s. β = 1 − exp(−1/(τ·fs))."))
+            "Firmware default: 1.0 s. β = 1 − exp(−1/(τ·fs)).",
+            src="spo2_ema_var_tau_s"))
         self._spin_warmup.setToolTip(_make_tooltip(
             "Warmup period",
             "Number of seconds before the algorithm starts outputting valid SpO2 [s]. "
-            "Firmware default: 5.0 s."))
+            "Firmware default: 5.0 s.",
+            src="spo2_warmup_s"))
         self._spin_min_dc.setToolTip(_make_tooltip(
             "Min DC level",
             "Minimum DC level on both IR and RED channels to produce a valid SpO2 [ADC counts]. "
-            "Firmware default: 1000. Below this → no finger detected."))
+            "Firmware default: 1000. Below this → no finger detected.",
+            src="spo2_min_dc"))
 
         _lbl = lambda t: (lambda: (w := QtWidgets.QLabel(t), w.setStyleSheet(_lbl_style), w)[-1])()
         form.addRow(_lbl("SpO2  a"),    self._spin_a)
@@ -2527,19 +2545,25 @@ class HR1TestWindow(QtWidgets.QMainWindow):
 
         self._spin_dc_tau.setToolTip(_make_tooltip("DC IIR τ",
             "Time constant for IIR DC removal [s]. Firmware default: 1.6 s. "
-            "α = exp(−1/(τ·fs)). Larger τ → slower DC tracking."))
+            "α = exp(−1/(τ·fs)). Larger τ → slower DC tracking.",
+            src="hr1_dc_iir_tau_s"))
         self._spin_ma_cut.setToolTip(_make_tooltip("MA cutoff",
             "Moving average low-pass cutoff frequency [Hz]. Firmware default: 5 Hz. "
-            "MA length = fs / (2 × cutoff), capped at MA max len."))
+            "MA length = fs / (2 × cutoff), capped at MA max len.",
+            src="hr1_ma_cutoff_hz"))
         self._spin_ma_max.setToolTip(_make_tooltip("MA max len",
-            "Maximum moving average window length [samples]. Firmware default: 64."))
+            "Maximum moving average window length [samples]. Firmware default: 64.",
+            src="hr1_ma_max_len"))
         self._spin_decay.setToolTip(_make_tooltip("Running max decay",
             "Per-sample exponential decay factor for the running maximum. "
-            "Firmware default: 0.9999. Values < 1 make the tracker forget old peaks."))
+            "Firmware default: 0.9999. Values < 1 make the tracker forget old peaks.",
+            src="hr1_running_max_decay"))
         self._spin_thr.setToolTip(_make_tooltip("Threshold factor",
-            "Rising-edge threshold = factor × running_max. Firmware default: 0.6."))
+            "Rising-edge threshold = factor × running_max. Firmware default: 0.6.",
+            src="hr1_threshold_factor"))
         self._spin_refr.setToolTip(_make_tooltip("Refractory period",
-            "Minimum time between two detected peaks [s]. Firmware default: 0.2 s (~300 BPM max)."))
+            "Minimum time between two detected peaks [s]. Firmware default: 0.2 s (~300 BPM max).",
+            src="hr1_refractory_s"))
 
         def _lbl(t):
             w = QtWidgets.QLabel(t); w.setStyleSheet(_lbl_s); return w
@@ -3176,21 +3200,28 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         self._spin_min_cor = _dspin(0.0,  1.0,  HR2TestCalc.FW_MIN_CORR,    2, 0.05)
 
         self._spin_bpf_lo.setToolTip(_make_tooltip("BPF low cutoff",
-            "Bandpass filter lower cutoff [Hz]. Firmware default: 0.5 Hz."))
+            "Bandpass filter lower cutoff [Hz]. Firmware default: 0.5 Hz.",
+            src="hr2_bpf_low_hz"))
         self._spin_bpf_hi.setToolTip(_make_tooltip("BPF high cutoff",
-            "Bandpass filter upper cutoff [Hz]. Firmware default: 5.0 Hz."))
+            "Bandpass filter upper cutoff [Hz]. Firmware default: 5.0 Hz.",
+            src="hr2_bpf_high_hz"))
         self._spin_buf_len.setToolTip(_make_tooltip("Buffer length",
-            "Circular buffer length [samples]. Firmware default: 400 (8 s at 50 Hz)."))
+            "Circular buffer length [samples]. Firmware default: 400 (8 s at 50 Hz).",
+            src="hr2_buf_len"))
         self._spin_max_lag.setToolTip(_make_tooltip("Max lag",
             "Maximum autocorrelation lag to compute [samples]. "
-            "Firmware default: 137 (≈22 BPM guard band at 50 Hz: 50×60/22=136.4)."))
+            "Firmware default: 137 (≈22 BPM guard band at 50 Hz: 50×60/22=136.4).",
+            src="hr2_max_lag"))
         self._spin_upd_n.setToolTip(_make_tooltip("Update interval",
-            "Recompute autocorrelation every N samples. Firmware default: 25 (0.5 s at 50 Hz)."))
+            "Recompute autocorrelation every N samples. Firmware default: 25 (0.5 s at 50 Hz).",
+            src="hr2_update_n"))
         self._spin_min_lag.setToolTip(_make_tooltip("Min lag",
-            "Minimum lag to search [s]. Firmware default: 0.185 s (~303 BPM guard band)."))
+            "Minimum lag to search [s]. Firmware default: 0.185 s (~303 BPM guard band).",
+            src="hr2_min_lag_s"))
         self._spin_min_cor.setToolTip(_make_tooltip("Min correlation",
             "Minimum normalised autocorrelation at peak to be considered valid. "
-            "Firmware default: 0.5. Also shown as a red dashed line on the autocorrelation plot."))
+            "Firmware default: 0.5. Also shown as a red dashed line on the autocorrelation plot.",
+            src="hr2_min_corr"))
 
         def _lbl(t):
             w = QtWidgets.QLabel(t); w.setStyleSheet(_lbl_s); return w
@@ -3707,7 +3738,7 @@ class HR3TestCalc:
         self.hr_sqi = 0.0
 
     def update(self, led1_sub, fs, sample_counter=None):
-        """Process one 50 Hz sample. Returns (hr_bpm, hr_sqi)."""
+        """Process one sample at the given fs. Returns (hr_bpm, hr_sqi)."""
         if fs != self._fs or self._b is None:
             self._recalc_filter(fs)
         if sample_counter is not None:
@@ -3827,6 +3858,244 @@ class HR3TestCalc:
             self.hr_sqi = 0.0
 
         return self.hr_bpm, self.hr_sqi
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  PICalc — configurable 3-step Perfusion Index pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PICalc:
+    """Configurable 3-step Perfusion Index pipeline.
+
+    Pipeline: STEP1 (DC subtraction) → STEP2 (AC estimator) → STEP3 (DC for denominator)
+
+    STEP1 — DC subtraction:
+      S1_EMA  (1.1): EMA-based subtraction (τ_sub seconds)
+      S1_BPF  (1.2): 2nd-order Butterworth bandpass (bpf_lo–bpf_hi Hz)
+      S1_NONE (1.3): pass-through (only valid with spectral STEP2 2.4/2.5)
+
+    STEP2 — AC estimator:
+      S2_EMA_RMS   (2.1): running RMS via EMA of x² — firmware M1 method
+      S2_WIN_RMS   (2.2): windowed RMS (win_s seconds)
+      S2_PEAKPK    (2.3): peak-to-peak / 2 over win_s seconds
+      S2_SPECTRAL  (2.4): FFT energy in band [f_HR ± delta_hz]
+      S2_HARMONICS (2.5): FFT energy sum at n·f_HR harmonics
+
+    STEP3 — DC for PI denominator:
+      S3_EMA      (3.1): EMA of raw signal — firmware M1 method (τ_norm seconds)
+      S3_LPF      (3.2): 2nd-order Butterworth LPF (lpf_fc Hz)
+      S3_WIN_MEAN (3.3): windowed mean (win_norm_s seconds)
+    """
+
+    S1_EMA = "1.1"; S1_BPF = "1.2"; S1_NONE = "1.3"
+    S2_EMA_RMS = "2.1"; S2_WIN_RMS = "2.2"; S2_PEAKPK = "2.3"
+    S2_SPECTRAL = "2.4"; S2_HARMONICS = "2.5"
+    S3_EMA = "3.1"; S3_LPF = "3.2"; S3_WIN_MEAN = "3.3"
+
+    def __init__(self):
+        # STEP1
+        self.step1      = self.S1_EMA
+        self.tau_sub    = 2.0   # S1_EMA τ (s)
+        self.bpf_lo     = 0.5   # S1_BPF lo cutoff (Hz)
+        self.bpf_hi     = 4.0   # S1_BPF hi cutoff (Hz)
+        # STEP2
+        self.step2       = self.S2_EMA_RMS
+        self.tau_ac      = 6.0   # S2_EMA_RMS τ (s)
+        self.win_s       = 4.0   # S2_WIN_RMS / S2_PEAKPK / spectral window (s)
+        self.fft_len     = 512   # S2_SPECTRAL / S2_HARMONICS FFT length (samples)
+        self.hr_bpm      = 70.0  # nominal HR for spectral methods (bpm)
+        self.n_harmonics = 3     # number of harmonics for S2_HARMONICS
+        self.delta_hz    = 0.3   # spectral bin half-width around each harmonic (Hz)
+        # STEP3
+        self.step3      = self.S3_EMA
+        self.tau_norm   = 2.0   # S3_EMA τ (s)
+        self.lpf_fc     = 0.4   # S3_LPF cutoff (Hz)
+        self.win_norm_s = 4.0   # S3_WIN_MEAN window (s)
+
+        # internal state
+        self._fs = 0.0
+        self._alpha_sub = 0.0; self._alpha_ac = 0.0; self._alpha_norm = 0.0
+        self._ema_dc_ir    = 0.0; self._ema_dc_red    = 0.0
+        self._ema_ac2_ir   = 0.0; self._ema_ac2_red   = 0.0
+        self._ema_dc_r_ir  = 0.0; self._ema_dc_r_red  = 0.0
+        self._win_buf_ir   = deque(); self._win_buf_red  = deque()
+        self._raw_ir_buf   = deque(); self._raw_red_buf  = deque()
+        self._norm_buf_ir  = deque(); self._norm_buf_red = deque()
+        self._bpf_sos = None; self._bpf_zi_ir = None; self._bpf_zi_red = None
+        self._lpf_sos = None; self._lpf_zi_ir = None; self._lpf_zi_red = None
+        self._win_max_n = 200; self._norm_max_n = 200
+
+        # outputs
+        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0
+        self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
+        self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
+        self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
+
+    def reset(self):
+        """Reset all accumulators (keeps configuration)."""
+        self._ema_dc_ir   = 0.0; self._ema_dc_red   = 0.0
+        self._ema_ac2_ir  = 0.0; self._ema_ac2_red  = 0.0
+        self._ema_dc_r_ir = 0.0; self._ema_dc_r_red = 0.0
+        self._win_buf_ir.clear(); self._win_buf_red.clear()
+        self._raw_ir_buf.clear(); self._raw_red_buf.clear()
+        self._norm_buf_ir.clear(); self._norm_buf_red.clear()
+        self._bpf_zi_ir = None; self._bpf_zi_red = None
+        self._lpf_zi_ir = None; self._lpf_zi_red = None
+        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0
+        self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
+        self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
+        self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
+
+    def reconfigure(self, fs):
+        """Recalculate derived params from current settings and reset state."""
+        self._fs = fs
+        if fs <= 0:
+            return
+        a_sub  = 1.0 - math.exp(-1.0 / (max(self.tau_sub,  1.0 / fs) * fs))
+        a_ac   = 1.0 - math.exp(-1.0 / (max(self.tau_ac,   1.0 / fs) * fs))
+        a_norm = 1.0 - math.exp(-1.0 / (max(self.tau_norm, 1.0 / fs) * fs))
+        self._alpha_sub  = a_sub
+        self._alpha_ac   = a_ac
+        self._alpha_norm = a_norm
+        nyq = fs / 2.0
+        # BPF (S1_BPF)
+        if self.step1 == self.S1_BPF:
+            lo = max(0.01, min(self.bpf_lo, nyq * 0.9))
+            hi = max(lo + 0.01, min(self.bpf_hi, nyq * 0.99))
+            try:
+                self._bpf_sos = signal.butter(2, [lo / nyq, hi / nyq], btype='bandpass', output='sos')
+            except Exception:
+                self._bpf_sos = None
+        else:
+            self._bpf_sos = None
+        # LPF (S3_LPF)
+        if self.step3 == self.S3_LPF:
+            fc = max(0.01, min(self.lpf_fc, nyq * 0.99))
+            try:
+                self._lpf_sos = signal.butter(2, fc / nyq, btype='low', output='sos')
+            except Exception:
+                self._lpf_sos = None
+        else:
+            self._lpf_sos = None
+        self._win_max_n  = max(2, int(round(self.win_s      * fs)))
+        self._norm_max_n = max(2, int(round(self.win_norm_s * fs)))
+        self.reset()
+
+    def update(self, ir, red, fs):
+        """Process one sample (ir/red = ADC counts). Returns (pi_ir, pi_red, R)."""
+        if fs != self._fs:
+            self.reconfigure(fs)
+        ir = float(ir); red = float(red)
+
+        # ── STEP 1: DC subtraction ────────────────────────────────────────────
+        if self.step1 == self.S1_EMA:
+            self._ema_dc_ir  += self._alpha_sub * (ir  - self._ema_dc_ir)
+            self._ema_dc_red += self._alpha_sub * (red - self._ema_dc_red)
+            self.dc_sub_ir  = self._ema_dc_ir
+            self.dc_sub_red = self._ema_dc_red
+            ac_ir  = ir  - self._ema_dc_ir
+            ac_red = red - self._ema_dc_red
+        elif self.step1 == self.S1_BPF:
+            self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
+            if self._bpf_sos is not None:
+                if self._bpf_zi_ir is None:
+                    zi = signal.sosfilt_zi(self._bpf_sos)
+                    self._bpf_zi_ir  = zi * ir
+                    self._bpf_zi_red = zi * red
+                _out_ir,  self._bpf_zi_ir  = signal.sosfilt(self._bpf_sos, [ir],  zi=self._bpf_zi_ir)
+                _out_red, self._bpf_zi_red = signal.sosfilt(self._bpf_sos, [red], zi=self._bpf_zi_red)
+                ac_ir  = float(_out_ir[0]); ac_red = float(_out_red[0])
+            else:
+                ac_ir = ir; ac_red = red
+        else:  # S1_NONE
+            self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
+            ac_ir = ir; ac_red = red
+
+        # ── STEP 2: AC estimator ─────────────────────────────────────────────
+        if self.step2 == self.S2_EMA_RMS:
+            self._ema_ac2_ir  += self._alpha_ac * (ac_ir  * ac_ir  - self._ema_ac2_ir)
+            self._ema_ac2_red += self._alpha_ac * (ac_red * ac_red - self._ema_ac2_red)
+            ac_r_ir  = math.sqrt(max(0.0, self._ema_ac2_ir))
+            ac_r_red = math.sqrt(max(0.0, self._ema_ac2_red))
+        elif self.step2 == self.S2_WIN_RMS:
+            self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
+            while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
+            while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
+            arr_ir  = np.fromiter(self._win_buf_ir,  dtype=float, count=len(self._win_buf_ir))
+            arr_red = np.fromiter(self._win_buf_red, dtype=float, count=len(self._win_buf_red))
+            ac_r_ir  = float(np.sqrt(np.mean(arr_ir  * arr_ir)))
+            ac_r_red = float(np.sqrt(np.mean(arr_red * arr_red)))
+        elif self.step2 == self.S2_PEAKPK:
+            self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
+            while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
+            while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
+            ac_r_ir  = (max(self._win_buf_ir)  - min(self._win_buf_ir))  / 2.0
+            ac_r_red = (max(self._win_buf_red) - min(self._win_buf_red)) / 2.0
+        elif self.step2 in (self.S2_SPECTRAL, self.S2_HARMONICS):
+            self._raw_ir_buf.append(ir);   self._raw_red_buf.append(red)
+            while len(self._raw_ir_buf)  > self._win_max_n: self._raw_ir_buf.popleft()
+            while len(self._raw_red_buf) > self._win_max_n: self._raw_red_buf.popleft()
+            n_fft = min(self.fft_len, len(self._raw_ir_buf))
+            if n_fft >= 8:
+                arr_ir  = np.array(list(self._raw_ir_buf)[-n_fft:],  dtype=float)
+                arr_red = np.array(list(self._raw_red_buf)[-n_fft:], dtype=float)
+                arr_ir  -= arr_ir.mean(); arr_red -= arr_red.mean()
+                win     = np.hanning(n_fft)
+                fft_ir  = np.abs(np.fft.rfft(arr_ir  * win))
+                fft_red = np.abs(np.fft.rfft(arr_red * win))
+                freqs   = np.fft.rfftfreq(n_fft, d=1.0 / self._fs)
+                f0 = self.hr_bpm / 60.0
+                if self.step2 == self.S2_SPECTRAL:
+                    mask = np.abs(freqs - f0) <= self.delta_hz
+                    e_ir  = float(np.sum(fft_ir[mask]  ** 2)) if mask.any() else 0.0
+                    e_red = float(np.sum(fft_red[mask] ** 2)) if mask.any() else 0.0
+                else:  # S2_HARMONICS
+                    e_ir = 0.0; e_red = 0.0
+                    for hn in range(1, self.n_harmonics + 1):
+                        mask = np.abs(freqs - hn * f0) <= self.delta_hz
+                        if mask.any():
+                            e_ir  += float(np.sum(fft_ir[mask]  ** 2))
+                            e_red += float(np.sum(fft_red[mask] ** 2))
+                ac_r_ir  = math.sqrt(e_ir  / n_fft) if e_ir  > 0 else 0.0
+                ac_r_red = math.sqrt(e_red / n_fft) if e_red > 0 else 0.0
+            else:
+                ac_r_ir = 0.0; ac_r_red = 0.0
+        else:
+            ac_r_ir = 0.0; ac_r_red = 0.0
+        self.ac_r_ir = ac_r_ir; self.ac_r_red = ac_r_red
+
+        # ── STEP 3: DC for denominator ────────────────────────────────────────
+        if self.step3 == self.S3_EMA:
+            self._ema_dc_r_ir  += self._alpha_norm * (ir  - self._ema_dc_r_ir)
+            self._ema_dc_r_red += self._alpha_norm * (red - self._ema_dc_r_red)
+            dc_r_ir  = self._ema_dc_r_ir; dc_r_red = self._ema_dc_r_red
+        elif self.step3 == self.S3_LPF:
+            if self._lpf_sos is not None:
+                if self._lpf_zi_ir is None:
+                    zi = signal.sosfilt_zi(self._lpf_sos)
+                    self._lpf_zi_ir  = zi * ir; self._lpf_zi_red = zi * red
+                _out_ir,  self._lpf_zi_ir  = signal.sosfilt(self._lpf_sos, [ir],  zi=self._lpf_zi_ir)
+                _out_red, self._lpf_zi_red = signal.sosfilt(self._lpf_sos, [red], zi=self._lpf_zi_red)
+                dc_r_ir  = float(_out_ir[0]); dc_r_red = float(_out_red[0])
+            else:
+                dc_r_ir = ir; dc_r_red = red
+        elif self.step3 == self.S3_WIN_MEAN:
+            self._norm_buf_ir.append(ir);   self._norm_buf_red.append(red)
+            while len(self._norm_buf_ir)  > self._norm_max_n: self._norm_buf_ir.popleft()
+            while len(self._norm_buf_red) > self._norm_max_n: self._norm_buf_red.popleft()
+            dc_r_ir  = float(np.mean(list(self._norm_buf_ir)))
+            dc_r_red = float(np.mean(list(self._norm_buf_red)))
+        else:
+            dc_r_ir = ir; dc_r_red = red
+
+        self.dc_r_ir  = max(1.0, dc_r_ir)
+        self.dc_r_red = max(1.0, dc_r_red)
+
+        # ── PI & R ────────────────────────────────────────────────────────────
+        self.pi_ir  = self.ac_r_ir  / self.dc_r_ir  * 100.0
+        self.pi_red = self.ac_r_red / self.dc_r_red * 100.0
+        self.R      = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
+        return self.pi_ir, self.pi_red, self.R
 
 
 class HR3TestWindow(QtWidgets.QMainWindow):
@@ -4004,7 +4273,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.p_hr.addLegend()
         self.curve_hr_py    = self.p_hr.plot(pen=PY_PEN,    name="HR3 py")
         self.curve_hr_fw    = self.p_hr.plot(pen=FW_PEN,    name="HR3 fw")
-        self.curve_hr_fw_lo = self.p_hr.plot(pen=FW_LO_PEN, name="SQI<0.9")
+        self.curve_hr_fw_lo = self.p_hr.plot(pen=FW_LO_PEN, name="SQI&lt;0.9")
         self.p_sqi.addLegend()
         self.curve_sqi_py = self.p_sqi.plot(pen=PY_PEN,  name="SQI py")
         self.curve_sqi_fw = self.p_sqi.plot(pen=FW_PEN,  name="SQI fw")
@@ -4049,19 +4318,24 @@ class HR3TestWindow(QtWidgets.QMainWindow):
 
         self._spin_bp_low.setToolTip(_make_tooltip("BP low cutoff",
             "Butterworth bandpass lower cutoff [Hz]. "
-            "Firmware default: 0.4 Hz. Removes DC and baseline drift."))
+            "Firmware default: 0.4 Hz. Removes DC and baseline drift.",
+            src="hr3_bp_low_hz"))
         self._spin_bp_high.setToolTip(_make_tooltip("BP high cutoff",
             "Butterworth bandpass upper cutoff [Hz]. "
-            "Firmware default: 15 Hz. Preserves 3rd harmonic of 260 BPM (13 Hz)."))
+            "Firmware default: 15 Hz. Preserves 3rd harmonic of 260 BPM (13 Hz).",
+            src="hr3_bp_high_hz"))
         self._spin_buf_len.setToolTip(_make_tooltip("Buffer length",
             "Circular buffer length [samples]. "
-            "Firmware default: 512 (10.24 s at 50 Hz). Determines FFT frequency resolution."))
+            "Firmware default: 512 (10.24 s at 50 Hz). Determines FFT frequency resolution.",
+            src="hr3_buf_len"))
         self._spin_upd_n.setToolTip(_make_tooltip("Update every N",
             "Run FFT/HPS every N samples. "
-            "Firmware default: 25 (every 0.5 s at 50 Hz)."))
+            "Firmware default: 25 (every 0.5 s at 50 Hz).",
+            src="hr3_update_n"))
         self._spin_harmonics.setToolTip(_make_tooltip("HPS harmonics",
             "Number of harmonic downsamples in HPS: multiply spectrum by P[2k], ..., P[Kk]. "
-            "Firmware default: 3 (k=2 and k=3)."))
+            "Firmware default: 3 (k=2 and k=3).",
+            src="hr3_hps_harmonics"))
 
         def _row(label_text, widget):
             lbl = QtWidgets.QLabel(label_text)
@@ -4444,6 +4718,576 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         if self.main_monitor is not None:
             self.main_monitor.btn_hr3test.setChecked(False)
             self.main_monitor.hr3test_window = None
+        super().closeEvent(event)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  PILabWindow — Perfusion Index pipeline investigation window
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PILabWindow(QtWidgets.QMainWindow):
+    """PILAB — Perfusion Index pipeline investigation window.
+
+    Two independent PICalc instances (A = firmware reference, B = experimental)
+    run in parallel on live or recorded data. Each uses a 3-step configurable
+    pipeline: STEP1 (DC subtraction) → STEP2 (AC estimator) → STEP3 (DC denominator).
+
+    Layout:
+      Left  : 4 stacked plots — signal+DC_sub, AC_r over time, PI_ir, R ratio.
+      Right : Tabbed config panels for instance A (orange) and B (blue) + value table.
+    """
+
+    _BUF_LEN    = 3000    # 3000 samples @ 50 Hz → 60 s
+    _PLOT_WIN_S = 30.0    # visible x-axis window (s)
+    _CLR_SIG    = "#888888"
+    _CLR_A      = "#FF8800"   # instance A — orange
+    _CLR_B      = "#44AAFF"   # instance B — blue
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("PILAB")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
+        self.statusBar().showMessage(_MOUSE_HINT)
+
+        self._paused       = False
+        self._offline_mode = False
+        self._t0_us        = None
+
+        self.calc_a = PICalc()   # A = firmware M1 defaults
+        self.calc_b = PICalc()   # B = user-configurable
+
+        # rolling plot buffers
+        self._t_buf     = deque(maxlen=self._BUF_LEN)
+        self._ir_buf    = deque(maxlen=self._BUF_LEN)
+        self._dc_sub_a  = deque(maxlen=self._BUF_LEN)
+        self._dc_sub_b  = deque(maxlen=self._BUF_LEN)
+        self._ac_t_a    = deque(maxlen=self._BUF_LEN)
+        self._ac_t_b    = deque(maxlen=self._BUF_LEN)
+        self._pi_ir_a   = deque(maxlen=self._BUF_LEN)
+        self._pi_ir_b   = deque(maxlen=self._BUF_LEN)
+        self._r_a       = deque(maxlen=self._BUF_LEN)
+        self._r_b       = deque(maxlen=self._BUF_LEN)
+
+        self._build_ui()
+        # apply firmware M1 defaults to both instances on startup
+        self._apply_config(self._cfg_a, self.calc_a)
+        self._apply_config(self._cfg_b, self.calc_b)
+
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("PILabWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1800, 900)
+
+    # ── UI construction ───────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        cw = QtWidgets.QWidget()
+        self.setCentralWidget(cw)
+        root = QtWidgets.QHBoxLayout(cw)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(6)
+
+        # ── left: 4 stacked plots ─────────────────────────────────────────────
+        gv = pg.GraphicsLayoutWidget()
+        gv.setBackground("#121212")
+        root.addWidget(gv, stretch=2)
+
+        def _pen(c): return pg.mkPen(c, width=1)
+
+        self.p_sig = gv.addPlot(row=0, col=0)
+        self.p_sig.setLabel('left', "IR signal [ADC]")
+        self.p_sig.showGrid(x=True, y=True, alpha=0.3)
+        self.p_sig.addLegend(offset=(5, 5))
+        self.curve_sig  = self.p_sig.plot(pen=_pen(self._CLR_SIG), name="led1_sub")
+        self.curve_dc_a = self.p_sig.plot(pen=_pen(self._CLR_A),   name="DC_sub A")
+        self.curve_dc_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="DC_sub B")
+
+        self.p_ac = gv.addPlot(row=1, col=0)
+        self.p_ac.setLabel('left', "AC_r [ADC]")
+        self.p_ac.showGrid(x=True, y=True, alpha=0.3)
+        self.p_ac.addLegend(offset=(5, 5))
+        self.curve_ac_a = self.p_ac.plot(pen=_pen(self._CLR_A), name="AC_r A")
+        self.curve_ac_b = self.p_ac.plot(pen=_pen(self._CLR_B), name="AC_r B")
+
+        self.p_pi = gv.addPlot(row=2, col=0)
+        self.p_pi.setLabel('left', "PI_ir [%]")
+        self.p_pi.showGrid(x=True, y=True, alpha=0.3)
+        self.p_pi.addLegend(offset=(5, 5))
+        self.curve_pi_a = self.p_pi.plot(pen=_pen(self._CLR_A), name="PI_ir A")
+        self.curve_pi_b = self.p_pi.plot(pen=_pen(self._CLR_B), name="PI_ir B")
+
+        self.p_r = gv.addPlot(row=3, col=0)
+        self.p_r.setLabel('left', "R = PI_red / PI_ir")
+        self.p_r.setLabel('bottom', "Time [s]")
+        self.p_r.showGrid(x=True, y=True, alpha=0.3)
+        self.p_r.addLegend(offset=(5, 5))
+        self.curve_r_a = self.p_r.plot(pen=_pen(self._CLR_A), name="R A")
+        self.curve_r_b = self.p_r.plot(pen=_pen(self._CLR_B), name="R B")
+
+        self.p_ac.setXLink(self.p_sig)
+        self.p_pi.setXLink(self.p_sig)
+        self.p_r.setXLink(self.p_sig)
+
+        # ── right panel ───────────────────────────────────────────────────────
+        right = QtWidgets.QVBoxLayout()
+        root.addLayout(right, stretch=2)
+
+        # toolbar
+        tbar = QtWidgets.QHBoxLayout()
+        right.addLayout(tbar)
+
+        self.btn_load = QtWidgets.QPushButton("LOAD CSV")
+        self.btn_load.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_load.setToolTip(_make_tooltip("Load CSV",
+            "Load a recorded CSV file and replay it through both PI pipelines."))
+        self.btn_load.clicked.connect(self._on_load_csv)
+        tbar.addWidget(self.btn_load)
+
+        self.btn_live = QtWidgets.QPushButton("LIVE")
+        self.btn_live.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_live.setEnabled(False)
+        self.btn_live.setToolTip(_make_tooltip("Back to live",
+            "Switch back to real-time live mode."))
+        self.btn_live.clicked.connect(self._on_go_live)
+        tbar.addWidget(self.btn_live)
+
+        self.btn_pause = QtWidgets.QPushButton("PAUSE")
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_pause.setToolTip(_make_tooltip("Pause",
+            "Freeze plots without stopping data collection."))
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        tbar.addWidget(self.btn_pause)
+
+        tbar.addStretch()
+        btn_help = QtWidgets.QPushButton("?")
+        btn_help.setFixedWidth(36)
+        btn_help.setStyleSheet(ACTION_BUTTON_STYLE)
+        btn_help.setToolTip(_make_tooltip("Help", "Explain the four plots and the 3-step PI pipeline."))
+        btn_help.clicked.connect(self._show_help)
+        tbar.addWidget(btn_help)
+
+        # config columns A / B — always visible side by side
+        self._cfg_a = self._make_config_tab("A", self._CLR_A)
+        self._cfg_b = self._make_config_tab("B", self._CLR_B)
+        cols = QtWidgets.QHBoxLayout()
+        cols.setSpacing(4)
+        cols.addWidget(self._cfg_a['widget'])
+        cols.addWidget(self._cfg_b['widget'])
+        right.addLayout(cols, stretch=1)
+
+        # value table
+        self._val_table = QtWidgets.QTableWidget(4, 2)
+        self._val_table.setHorizontalHeaderLabels(["A (orange)", "B (blue)"])
+        self._val_table.setVerticalHeaderLabels(["PI_ir [%]", "PI_red [%]", "R", "AC_r_ir"])
+        self._val_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self._val_table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self._val_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._val_table.setStyleSheet(
+            "QTableWidget { background: #1A1A1A; color: #E0E0E0; font-size: 24px; }"
+            "QHeaderView::section { background: #252525; color: #AAAAAA; font-size: 20px; }"
+        )
+        self._val_table.setMinimumHeight(240)
+        self._val_table.setMaximumHeight(300)
+        self._val_table.setToolTip(_make_tooltip("PI values",
+            "Current PI_ir, PI_red, R, and AC_r_ir for each pipeline instance."))
+        right.addWidget(self._val_table)
+        right.addStretch()
+
+    def _make_config_tab(self, name, color):
+        """Build STEP1/2/3 config panel for one PICalc instance. Returns a dict."""
+        _ss_spin = "background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 17px;"
+        _ss_cb   = "background-color: #2A2A2A; color: #FFFFFF; font-size: 17px;"
+        _lbl_sty = f"color: {color}; font-size: 17px; font-weight: bold;"
+
+        def _dspin(lo, hi, val, step, suffix=""):
+            w = QtWidgets.QDoubleSpinBox()
+            w.setRange(lo, hi); w.setDecimals(2); w.setSingleStep(step); w.setValue(val)
+            w.setStyleSheet(_ss_spin)
+            if suffix: w.setSuffix(suffix)
+            return w
+
+        inner = QtWidgets.QWidget()
+        inner.setStyleSheet("background: #1A1A1A; QLabel { font-size: 17px; color: #C0C0C0; }")
+        form = QtWidgets.QFormLayout(inner)
+        form.setSpacing(5); form.setContentsMargins(8, 8, 8, 8)
+
+        # STEP 1
+        lbl1 = QtWidgets.QLabel("── STEP1: DC subtraction ──")
+        lbl1.setStyleSheet(_lbl_sty); form.addRow(lbl1)
+        s1 = QtWidgets.QComboBox(); s1.setStyleSheet(_ss_cb)
+        s1.addItems(["1.1 EMA subtract", "1.2 BPF", "1.3 None"])
+        s1.setToolTip(_make_tooltip("STEP1 method",
+            "1.1 EMA: subtract running EMA (τ_sub) from signal — firmware M1\n"
+            "1.2 BPF: 2nd-order Butterworth bandpass filter\n"
+            "1.3 None: pass-through (only valid with spectral STEP2)",
+            src="PICalc.step1"))
+        form.addRow("Method:", s1)
+        tau_sub = _dspin(0.1, 30.0, 2.0, 0.5, " s")
+        tau_sub.setToolTip(_make_tooltip("τ_sub",
+            "EMA time constant for DC subtraction (s). Firmware M1 default: 2.0 s.",
+            src="PICalc.tau_sub_s"))
+        form.addRow("  τ_sub:", tau_sub)
+        bpf_lo = _dspin(0.01, 10.0, 0.5, 0.1, " Hz")
+        bpf_lo.setToolTip(_make_tooltip("BPF lo cutoff",
+            "Lower cutoff frequency for Butterworth bandpass filter (Hz).",
+            src="PICalc.bpf_lo_hz"))
+        form.addRow("  BPF lo:", bpf_lo)
+        bpf_hi = _dspin(0.1, 20.0, 4.0, 0.5, " Hz")
+        bpf_hi.setToolTip(_make_tooltip("BPF hi cutoff",
+            "Upper cutoff frequency for Butterworth bandpass filter (Hz).",
+            src="PICalc.bpf_hi_hz"))
+        form.addRow("  BPF hi:", bpf_hi)
+
+        # STEP 2
+        lbl2 = QtWidgets.QLabel("── STEP2: AC estimator ──")
+        lbl2.setStyleSheet(_lbl_sty); form.addRow(lbl2)
+        s2 = QtWidgets.QComboBox(); s2.setStyleSheet(_ss_cb)
+        s2.addItems(["2.1 EMA-RMS", "2.2 Win-RMS", "2.3 Peak-to-peak",
+                     "2.4 Spectral band", "2.5 Harmonics"])
+        s2.setToolTip(_make_tooltip("STEP2 method",
+            "2.1 EMA-RMS: running RMS via EMA of x² (τ_ac) — firmware M1\n"
+            "2.2 Win-RMS: windowed RMS over win_s seconds\n"
+            "2.3 Peak-to-peak: (max−min)/2 over win_s seconds\n"
+            "2.4 Spectral: FFT energy in band [f_HR ± delta_hz]\n"
+            "2.5 Harmonics: FFT energy sum at n·f_HR (HPS-based)",
+            src="PICalc.step2"))
+        form.addRow("Method:", s2)
+        tau_ac = _dspin(0.1, 30.0, 6.0, 0.5, " s")
+        tau_ac.setToolTip(_make_tooltip("τ_ac",
+            "EMA-RMS time constant (s). ISO 80601-2-61:2026 JJ.2 d) requires ≥6 s "
+            "for SpO2 transfer standard. Firmware M1 default: 6.0 s.",
+            src="PICalc.tau_ac_s"))
+        form.addRow("  τ_ac:", tau_ac)
+        win_s = _dspin(0.5, 30.0, 4.0, 0.5, " s")
+        win_s.setToolTip(_make_tooltip("win_s",
+            "Window length for Win-RMS, Peak-to-peak, and spectral methods (s).",
+            src="PICalc.win_s"))
+        form.addRow("  win_s:", win_s)
+        hr_bpm = _dspin(30.0, 250.0, 70.0, 5.0, " bpm")
+        hr_bpm.setToolTip(_make_tooltip("HR estimate",
+            "Nominal HR for spectral methods 2.4 and 2.5 (bpm). "
+            "In future this could be linked to the HR3 output.",
+            src="PICalc.hr_bpm"))
+        form.addRow("  HR:", hr_bpm)
+        n_harm = QtWidgets.QSpinBox()
+        n_harm.setRange(1, 8); n_harm.setValue(3); n_harm.setStyleSheet(_ss_spin)
+        n_harm.setToolTip(_make_tooltip("N harmonics",
+            "Number of harmonics to include in S2_HARMONICS (2.5).",
+            src="PICalc.n_harm"))
+        form.addRow("  N harm:", n_harm)
+
+        # STEP 3
+        lbl3 = QtWidgets.QLabel("── STEP3: DC denominator ──")
+        lbl3.setStyleSheet(_lbl_sty); form.addRow(lbl3)
+        s3 = QtWidgets.QComboBox(); s3.setStyleSheet(_ss_cb)
+        s3.addItems(["3.1 EMA", "3.2 LPF", "3.3 Win-mean"])
+        s3.setToolTip(_make_tooltip("STEP3 method",
+            "3.1 EMA: EMA of raw signal (τ_norm) used as DC denominator — firmware M1\n"
+            "3.2 LPF: 2nd-order Butterworth low-pass filter (lpf_fc)\n"
+            "3.3 Win-mean: windowed mean of raw signal (win_norm_s)",
+            src="PICalc.step3"))
+        form.addRow("Method:", s3)
+        tau_norm = _dspin(0.1, 30.0, 2.0, 0.5, " s")
+        tau_norm.setToolTip(_make_tooltip("τ_norm",
+            "EMA time constant for DC denominator (s). Firmware M1 default: 2.0 s.",
+            src="PICalc.tau_norm_s"))
+        form.addRow("  τ_norm:", tau_norm)
+        lpf_fc = _dspin(0.01, 5.0, 0.4, 0.1, " Hz")
+        lpf_fc.setToolTip(_make_tooltip("LPF fc",
+            "Butterworth LPF cutoff for DC denominator (Hz).",
+            src="PICalc.lpf_fc_hz"))
+        form.addRow("  LPF fc:", lpf_fc)
+        win_norm = _dspin(0.5, 30.0, 4.0, 0.5, " s")
+        win_norm.setToolTip(_make_tooltip("win_norm_s",
+            "Window length for windowed mean DC denominator (s).",
+            src="PICalc.win_norm_s"))
+        form.addRow("  win_norm:", win_norm)
+
+        apply_btn = QtWidgets.QPushButton(f"APPLY {name}")
+        apply_btn.setStyleSheet(ACTION_BUTTON_STYLE)
+        apply_btn.setToolTip(_make_tooltip(f"Apply {name}",
+            "Apply configuration changes and reset pipeline state. "
+            "Plot buffers are cleared so the comparison starts clean."))
+        form.addRow("", apply_btn)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(inner)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        tab_widget = QtWidgets.QWidget()
+        tab_lay = QtWidgets.QVBoxLayout(tab_widget)
+        tab_lay.setContentsMargins(0, 0, 0, 0)
+        tab_lay.setSpacing(0)
+        header = QtWidgets.QLabel(f"  Instance {name}")
+        header.setStyleSheet(
+            f"color: {color}; font-size: 16px; font-weight: bold; padding: 4px;"
+            f" background: #1E1E1E;")
+        tab_lay.addWidget(header)
+        tab_lay.addWidget(scroll)
+
+        cfg = {
+            'widget': tab_widget, 's1': s1, 's2': s2, 's3': s3,
+            'tau_sub': tau_sub, 'bpf_lo': bpf_lo, 'bpf_hi': bpf_hi,
+            'tau_ac':  tau_ac,  'win_s':  win_s,  'hr_bpm': hr_bpm, 'n_harm': n_harm,
+            'tau_norm': tau_norm, 'lpf_fc': lpf_fc, 'win_norm': win_norm,
+        }
+        calc_ref = self.calc_a if name == "A" else self.calc_b
+        apply_btn.clicked.connect(lambda: self._apply_config(cfg, calc_ref))
+        return cfg
+
+    # ── config application ────────────────────────────────────────────────────
+
+    def _apply_config(self, cfg, calc):
+        _s1 = [PICalc.S1_EMA,     PICalc.S1_BPF,     PICalc.S1_NONE]
+        _s2 = [PICalc.S2_EMA_RMS, PICalc.S2_WIN_RMS, PICalc.S2_PEAKPK,
+               PICalc.S2_SPECTRAL, PICalc.S2_HARMONICS]
+        _s3 = [PICalc.S3_EMA,     PICalc.S3_LPF,     PICalc.S3_WIN_MEAN]
+        calc.step1       = _s1[cfg['s1'].currentIndex()]
+        calc.tau_sub     = cfg['tau_sub'].value()
+        calc.bpf_lo      = cfg['bpf_lo'].value()
+        calc.bpf_hi      = cfg['bpf_hi'].value()
+        calc.step2       = _s2[cfg['s2'].currentIndex()]
+        calc.tau_ac      = cfg['tau_ac'].value()
+        calc.win_s       = cfg['win_s'].value()
+        calc.hr_bpm      = cfg['hr_bpm'].value()
+        calc.n_harmonics = cfg['n_harm'].value()
+        calc.step3       = _s3[cfg['s3'].currentIndex()]
+        calc.tau_norm    = cfg['tau_norm'].value()
+        calc.lpf_fc      = cfg['lpf_fc'].value()
+        calc.win_norm_s  = cfg['win_norm'].value()
+        calc._fs = 0.0  # force reconfigure on next sample
+        # clear all plot buffers so comparison starts fresh
+        self._t_buf.clear(); self._ir_buf.clear()
+        self._dc_sub_a.clear(); self._dc_sub_b.clear()
+        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._pi_ir_a.clear();  self._pi_ir_b.clear()
+        self._r_a.clear();      self._r_b.clear()
+        self._t0_us = None
+
+    # ── data feed (called per-sample from PPGMonitor drain loop) ──────────────
+
+    def feed_sample(self, ir, red, fs, ts_us):
+        """Feed one sample. ir/red = ADC counts, ts_us = timestamp in µs."""
+        if self._paused or self._offline_mode:
+            return
+        if self._t0_us is None:
+            self._t0_us = ts_us
+        t = (ts_us - self._t0_us) * 1e-6
+
+        self.calc_a.update(ir, red, fs)
+        self.calc_b.update(ir, red, fs)
+
+        self._t_buf.append(t)
+        self._ir_buf.append(float(ir))
+        self._dc_sub_a.append(self.calc_a.dc_sub_ir)
+        self._dc_sub_b.append(self.calc_b.dc_sub_ir)
+        self._ac_t_a.append(self.calc_a.ac_r_ir)
+        self._ac_t_b.append(self.calc_b.ac_r_ir)
+        self._pi_ir_a.append(self.calc_a.pi_ir)
+        self._pi_ir_b.append(self.calc_b.pi_ir)
+        self._r_a.append(self.calc_a.R)
+        self._r_b.append(self.calc_b.R)
+
+    # ── render (called from PPGMonitor render tick) ───────────────────────────
+
+    def update_plots(self):
+        if self._paused or not self._t_buf:
+            return
+        t = np.array(self._t_buf)
+        t_end = t[-1]
+
+        self.curve_sig.setData(t,  np.array(self._ir_buf))
+        self.curve_dc_a.setData(t, np.array(self._dc_sub_a))
+        self.curve_dc_b.setData(t, np.array(self._dc_sub_b))
+        self.curve_ac_a.setData(t, np.array(self._ac_t_a))
+        self.curve_ac_b.setData(t, np.array(self._ac_t_b))
+        self.curve_pi_a.setData(t, np.array(self._pi_ir_a))
+        self.curve_pi_b.setData(t, np.array(self._pi_ir_b))
+        self.curve_r_a.setData(t,  np.array(self._r_a))
+        self.curve_r_b.setData(t,  np.array(self._r_b))
+        self.p_sig.setXRange(max(0.0, t_end - self._PLOT_WIN_S), t_end, padding=0)
+        self._update_val_table()
+
+    def _update_val_table(self):
+        def _cell(v):
+            item = QtWidgets.QTableWidgetItem(f"{v:.3f}")
+            item.setTextAlignment(QtCore.Qt.AlignCenter)
+            return item
+        a, b = self.calc_a, self.calc_b
+        for row, (va, vb) in enumerate([
+            (a.pi_ir,   b.pi_ir),
+            (a.pi_red,  b.pi_red),
+            (a.R,       b.R),
+            (a.ac_r_ir, b.ac_r_ir),
+        ]):
+            self._val_table.setItem(row, 0, _cell(va))
+            self._val_table.setItem(row, 1, _cell(vb))
+
+    # ── help ──────────────────────────────────────────────────────────────────
+
+    def _show_help(self):
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("PILAB — Help")
+        dlg.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        dlg.resize(640, 560)
+        lay = QtWidgets.QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(10)
+
+        title = QtWidgets.QLabel("PILAB — Four plots explained")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #FFD070;")
+        lay.addWidget(title)
+
+        _HTML = """
+<style>
+  body  { font-size: 15px; color: #D0D0D0; }
+  h3    { font-size: 16px; color: #FFD070; margin-bottom: 2px; margin-top: 12px; }
+  p     { margin: 2px 0 6px 0; }
+  code  { color: #FFDD44; }
+  .formula { color: #88DDFF; font-style: italic; }
+</style>
+<body>
+<p>Each plot shows the output of one stage of the 3-step PI pipeline,
+for instances <b style="color:#FF8800;">A</b> and <b style="color:#44AAFF;">B</b> side by side.</p>
+
+<h3>Plot 1 — IR signal + DC_sub</h3>
+<p>The raw <code>led1_sub</code> (IR, grey) overlaid with the DC estimate from STEP1.
+STEP1 tracks the slow baseline so it can be subtracted to isolate the AC pulse.
+Use this plot to judge whether the DC tracker follows the baseline correctly
+(too fast → distorts the pulse; too slow → leaves residual drift).</p>
+
+<h3>Plot 2 — AC_r [ADC counts]</h3>
+<p>The AC amplitude estimated by STEP2, in raw ADC counts.
+This is the "pulse height" after DC subtraction:
+EMA-RMS computes <span class="formula">√EMA(x²)</span>,
+Peak-to-peak computes <span class="formula">(max−min)/2</span>,
+spectral methods extract energy at the heart-rate fundamental.
+Use this to compare estimators — they should agree on a clean signal
+and diverge differently on noise.</p>
+
+<h3>Plot 3 — PI_ir [%]</h3>
+<p>The Perfusion Index for the IR channel:
+<span class="formula">PI_ir = (AC_ir / DC_ir) × 100 %</span>.
+The DC denominator comes from STEP3 (independent of STEP1).
+A high PI means a strong, well-perfused signal;
+a low PI (&lt; 0.3 %) indicates poor contact or weak perfusion.
+This is the main clinical quality indicator.</p>
+
+<h3>Plot 4 — R = PI_red / PI_ir</h3>
+<p>The modulation ratio used for SpO2:
+<span class="formula">R = (AC_red/DC_red) / (AC_ir/DC_ir)</span>.
+Different pipeline configurations that produce the same PI_ir
+may still produce different R values — and therefore different SpO2 readings.
+Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
+</body>"""
+
+        txt = QtWidgets.QTextEdit()
+        txt.setReadOnly(True)
+        txt.setHtml(_HTML)
+        txt.setStyleSheet(
+            "QTextEdit { background: #1A1A1A; color: #D0D0D0; "
+            "border: 1px solid #333; font-size: 15px; }")
+        lay.addWidget(txt, stretch=1)
+
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.setStyleSheet(ACTION_BUTTON_STYLE)
+        btn_close.clicked.connect(dlg.accept)
+        lay.addWidget(btn_close, alignment=QtCore.Qt.AlignRight)
+
+        dlg.exec_()
+
+    # ── offline mode ──────────────────────────────────────────────────────────
+
+    def _on_load_csv(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load CSV", "", "CSV Files (*.csv);;All Files (*)")
+        if not path:
+            return
+        try:
+            data = np.genfromtxt(path, delimiter=',', names=True)
+        except Exception as exc:
+            self.statusBar().showMessage(f"CSV load error: {exc}")
+            return
+        if data is None or data.ndim == 0 or len(data) == 0:
+            self.statusBar().showMessage("Empty or unreadable CSV file.")
+            return
+        cols = data.dtype.names
+        ir_col  = next((c for c in cols if c.upper() in ('LED1_SUB', 'IR')),  None)
+        red_col = next((c for c in cols if c.upper() in ('LED2_SUB', 'RED')), None)
+        ts_col  = next((c for c in cols if any(k in c.upper()
+                        for k in ('TIME', 'TS_US', 'TIMESTAMP'))), None)
+        if ir_col is None or red_col is None:
+            self.statusBar().showMessage(
+                f"CSV missing LED1_SUB/LED2_SUB columns. Found: {cols}")
+            return
+
+        self._offline_mode = True
+        self.btn_live.setEnabled(True)
+        self.btn_load.setEnabled(False)
+        self.calc_a.reset(); self.calc_b.reset()
+        self._t_buf.clear(); self._ir_buf.clear()
+        self._dc_sub_a.clear(); self._dc_sub_b.clear()
+        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._pi_ir_a.clear();  self._pi_ir_b.clear()
+        self._r_a.clear();      self._r_b.clear()
+        self._t0_us = None
+
+        n   = len(data)
+        fs  = SPO2_RECEIVED_FS
+        t0  = float(data[ts_col][0]) if ts_col else 0.0
+        for i in range(n):
+            ir  = float(data[ir_col][i])
+            red = float(data[red_col][i])
+            ts  = float(data[ts_col][i]) if ts_col else i / fs * 1e6
+            if self._t0_us is None:
+                self._t0_us = ts
+            t = (ts - self._t0_us) * 1e-6
+            self.calc_a.update(ir, red, fs)
+            self.calc_b.update(ir, red, fs)
+            self._t_buf.append(t); self._ir_buf.append(ir)
+            self._dc_sub_a.append(self.calc_a.dc_sub_ir)
+            self._dc_sub_b.append(self.calc_b.dc_sub_ir)
+            self._ac_t_a.append(self.calc_a.ac_r_ir)
+            self._ac_t_b.append(self.calc_b.ac_r_ir)
+            self._pi_ir_a.append(self.calc_a.pi_ir)
+            self._pi_ir_b.append(self.calc_b.pi_ir)
+            self._r_a.append(self.calc_a.R)
+            self._r_b.append(self.calc_b.R)
+
+        self.update_plots()
+        if self._t_buf:
+            t_arr = np.array(self._t_buf)
+            self.p_sig.setXRange(t_arr[0], t_arr[-1], padding=0.02)
+        self.statusBar().showMessage(f"Offline: {path}  ({n} samples @ {fs:.0f} Hz)")
+
+    def _on_go_live(self):
+        self._offline_mode = False
+        self._t0_us = None
+        self.calc_a.reset(); self.calc_b.reset()
+        self.btn_live.setEnabled(False)
+        self.btn_load.setEnabled(True)
+        self._t_buf.clear(); self._ir_buf.clear()
+        self._dc_sub_a.clear(); self._dc_sub_b.clear()
+        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._pi_ir_a.clear();  self._pi_ir_b.clear()
+        self._r_a.clear();      self._r_b.clear()
+        self.statusBar().showMessage(_MOUSE_HINT)
+
+    def _toggle_pause(self):
+        self._paused = self.btn_pause.isChecked()
+
+    def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
+            "PILabWindow/geometry", self.saveGeometry())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_pilab.setChecked(False)
+            self.main_monitor.pilab_window = None
         super().closeEvent(event)
 
 
@@ -5264,8 +6108,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_led1.setStyleSheet("background-color:#202020; color:#E0E0E0;")
         self._spin_led1.setToolTip(_make_tooltip("LED1 current (IR)",
             "Drive current for the IR LED. Range depends on LED range setting (75 or 150 mA full-scale). "
-            "Sends $SET,led1,<value>.\n"
-            "Lib: AFE4490Config.afe_led1_current_mA  ·  Script: _spin_led1"))
+            "Sends $SET,led1,<value>.",
+            src="AFE4490Config::afe_led1_current_mA"))
         form_led.addRow("LED1 (IR)", self._make_row(self._spin_led1, "led1", lambda: f"{self._spin_led1.value():.2f}"))
 
         self._spin_led2 = QtWidgets.QDoubleSpinBox()
@@ -5275,8 +6119,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_led2.setStyleSheet("background-color:#202020; color:#E0E0E0;")
         self._spin_led2.setToolTip(_make_tooltip("LED2 current (RED)",
             "Drive current for the RED LED. Range depends on LED range setting (75 or 150 mA full-scale). "
-            "Sends $SET,led2,<value>.\n"
-            "Lib: AFE4490Config.afe_led2_current_mA  ·  Script: _spin_led2"))
+            "Sends $SET,led2,<value>.",
+            src="AFE4490Config::afe_led2_current_mA"))
         form_led.addRow("LED2 (RED)", self._make_row(self._spin_led2, "led2", lambda: f"{self._spin_led2.value():.2f}"))
 
         self._combo_ledrange = QtWidgets.QComboBox()
@@ -5284,8 +6128,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_ledrange.setToolTip(_make_tooltip("LED full-scale range",
             "Sets the LED current DAC full-scale: 75 mA or 150 mA. "
             "Affects the meaning of the LED1/LED2 current values. "
-            "Sends $SET,ledrange,<75|150>. ($CFG key: range)\n"
-            "Lib: AFE4490Config.afe_led_range_mA  ·  Script: _combo_ledrange"))
+            "Sends $SET,ledrange,<75|150>. ($CFG key: range)",
+            src="AFE4490Config::afe_led_range_mA"))
         form_led.addRow("Range", self._make_row(self._combo_ledrange, "ledrange",
                                                 lambda: self._combo_ledrange.currentText()))
         vbox.addWidget(grp_led)
@@ -5302,8 +6146,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._chk_ensepgain.setToolTip(_make_tooltip("ENSEPGAIN — Enable separate TIA gain per LED",
             "OFF: TIAGAIN register applies to both channels (LED1 controls ignored by chip).\n"
             "ON:  TIAGAIN register → LED1 (IR);  TIA_AMB_GAIN register → LED2 (RED).\n"
-            "Sends $SET,ensepgain,<0|1>. ($CFG key: ensepgain)\n"
-            "Lib: AFE4490Config.afe_sep_tia_en  ·  Script: _chk_ensepgain"))
+            "Sends $SET,ensepgain,<0|1>. ($CFG key: ensepgain)",
+            src="AFE4490Config::afe_sep_tia_en"))
         self._chk_ensepgain.stateChanged.connect(self._on_ensepgain_changed)
         self._chk_ensepgain.stateChanged.connect(lambda _=None: self._mark_dirty(self._chk_ensepgain))
         row_ensep = QtWidgets.QHBoxLayout()
@@ -5322,8 +6166,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_tiagain1.setToolTip(_make_tooltip("LED1 (IR) TIA feedback resistance (RF1)",
             "Feedback resistor for the IR LED channel (TIAGAIN register). "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
-            "Sends $SET,tiagain1,<value>. ($CFG key: tia1)\n"
-            "Lib: AFE4490Config.afe_tia_rf_led1  ·  Script: _combo_tiagain1"))
+            "Sends $SET,tiagain1,<value>. ($CFG key: tia1)",
+            src="AFE4490Config::afe_tia_rf_led1"))
         form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain1, "tiagain1",
                                                    lambda: self._combo_tiagain1.currentText()))
 
@@ -5332,8 +6176,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_tiacf1.setToolTip(_make_tooltip("LED1 (IR) TIA feedback capacitance (CF1)",
             "Feedback capacitor for the IR LED channel. "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
-            "Sends $SET,tiacf1,<value>. ($CFG key: cf1)\n"
-            "Lib: AFE4490Config.afe_tia_cf_led1  ·  Script: _combo_tiacf1"))
+            "Sends $SET,tiacf1,<value>. ($CFG key: cf1)",
+            src="AFE4490Config::afe_tia_cf_led1"))
         form_tia.addRow("CF", self._make_row(self._combo_tiacf1, "tiacf1",
                                               lambda: self._combo_tiacf1.currentText()))
 
@@ -5342,8 +6186,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_stg21.setToolTip(_make_tooltip("LED1 (IR) Stage 2 gain (STG2GAIN1)",
             "STG2GAIN1[2:0] bits D[10:8] of TIAGAIN. Gain applied when STAGE2EN1 is ON. "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
-            "Sends $SET,stg21,<value>. ($CFG key: stg21)\n"
-            "Lib: AFE4490Config.afe_stg2_rg_led1  ·  Script: _combo_stg21"))
+            "Sends $SET,stg21,<value>. ($CFG key: stg21)",
+            src="AFE4490Config::afe_stg2_rg_led1"))
         form_tia.addRow("Stage 2 gain", self._make_row(self._combo_stg21, "stg21",
                                                        lambda: self.STG2_GAINS[self._combo_stg21.currentIndex()]))
 
@@ -5354,8 +6198,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "STAGE2EN1 bit D14 of TIAGAIN. Enables the Stage 2 amplifier for the LED1 channel. "
             "Independent of STG2GAIN1 — can be ON at 0 dB (unity gain) or OFF despite non-zero gain. "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
-            "Sends $SET,stage2en1,<0|1>. ($CFG key: stage2en1)\n"
-            "Lib: AFE4490Config.afe_stg2_en_led1  ·  Script: _combo_stage2en1"))
+            "Sends $SET,stage2en1,<0|1>. ($CFG key: stage2en1)",
+            src="AFE4490Config::afe_stg2_en_led1"))
         form_tia.addRow("Stage 2 EN", self._make_row(self._combo_stage2en1, "stage2en1",
             lambda: "1" if self._combo_stage2en1.currentText() == "TRUE" else "0"))
 
@@ -5369,8 +6213,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_tiagain2.setToolTip(_make_tooltip("LED2 (RED) TIA feedback resistance (RF2)",
             "Feedback resistor for the RED LED channel (TIA_AMB_GAIN register). "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
-            "Sends $SET,tiagain2,<value>. ($CFG key: tia2)\n"
-            "Lib: AFE4490Config.afe_tia_rf_led2  ·  Script: _combo_tiagain2"))
+            "Sends $SET,tiagain2,<value>. ($CFG key: tia2)",
+            src="AFE4490Config::afe_tia_rf_led2"))
         form_tia.addRow("RF Gain", self._make_row(self._combo_tiagain2, "tiagain2",
                                                    lambda: self._combo_tiagain2.currentText()))
 
@@ -5379,8 +6223,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_tiacf2.setToolTip(_make_tooltip("LED2 (RED) TIA feedback capacitance (CF2)",
             "Feedback capacitor for the RED LED channel. "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
-            "Sends $SET,tiacf2,<value>. ($CFG key: cf2)\n"
-            "Lib: AFE4490Config.afe_tia_cf_led2  ·  Script: _combo_tiacf2"))
+            "Sends $SET,tiacf2,<value>. ($CFG key: cf2)",
+            src="AFE4490Config::afe_tia_cf_led2"))
         form_tia.addRow("CF", self._make_row(self._combo_tiacf2, "tiacf2",
                                               lambda: self._combo_tiacf2.currentText()))
 
@@ -5389,8 +6233,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_stg22.setToolTip(_make_tooltip("LED2 (RED) Stage 2 gain (STG2GAIN2)",
             "STG2GAIN2[2:0] bits D[10:8] of TIA_AMB_GAIN. Gain applied when STAGE2EN2 is ON. "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
-            "Sends $SET,stg22,<value>. ($CFG key: stg22)\n"
-            "Lib: AFE4490Config.afe_stg2_rg_led2  ·  Script: _combo_stg22"))
+            "Sends $SET,stg22,<value>. ($CFG key: stg22)",
+            src="AFE4490Config::afe_stg2_rg_led2"))
         form_tia.addRow("Stage 2 gain", self._make_row(self._combo_stg22, "stg22",
                                                        lambda: self.STG2_GAINS[self._combo_stg22.currentIndex()]))
 
@@ -5402,8 +6246,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Independent of STG2GAIN2 — can be ON at 0 dB (unity gain) or OFF despite non-zero gain. "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
             "Note: the library also forces STAGE2EN2=1 when AMBDAC &gt; 0. "
-            "Sends $SET,stage2en2,<0|1>. ($CFG key: stage2en2)\n"
-            "Lib: AFE4490Config.afe_stg2_en_led2  ·  Script: _combo_stage2en2"))
+            "Sends $SET,stage2en2,<0|1>. ($CFG key: stage2en2)",
+            src="AFE4490Config::afe_stg2_en_led2"))
         form_tia.addRow("Stage 2 EN", self._make_row(self._combo_stage2en2, "stage2en2",
             lambda: "1" if self._combo_stage2en2.currentText() == "TRUE" else "0"))
 
@@ -5424,8 +6268,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             "Injects a cancellation current before Stage 2 to reduce ambient light contribution "
             "in the ADC. AMBDAC[3:0] in TIA_AMB_GAIN register D19:D16. Range 0–10 µA (1 µA/step). "
             "Use when aled1/aled2 are large due to strong ambient light (e.g. near window). "
-            "Sends $SET,ambdac,<value>.\n"
-            "Lib: AFE4490Config.afe_ambdac_uA  ·  Script: _spin_ambdac"))
+            "Sends $SET,ambdac,<value>.",
+            src="AFE4490Config::afe_ambdac_uA"))
         form_amb.addRow("AMBDAC", self._make_row(self._spin_ambdac, "ambdac",
                                                  lambda: str(self._spin_ambdac.value())))
         vbox.addWidget(grp_amb)
@@ -5443,8 +6287,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_sr.setToolTip(_make_tooltip("Sample rate",
             "ADC sample rate in Hz (63–5000). Changing this requires a chip restart "
             "(brief data gap ~200 ms). Also recalculates all algorithm time constants. "
-            "Sends $SET,sr,<value>.\n"
-            "Lib: AFE4490Config.afe_sample_rate_hz  ·  Script: _spin_sr"))
+            "Sends $SET,sr,<value>.",
+            src="AFE4490Config::afe_sample_rate_hz"))
         lbl_sr_warn = QtWidgets.QLabel("⚠ restarts chip")
         lbl_sr_warn.setStyleSheet("color:#FFAA44; font-size:22px;")
         self._spin_sr.valueChanged.connect(lambda _=None: self._mark_dirty(self._spin_sr))
@@ -5460,8 +6304,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._spin_numav.setToolTip(_make_tooltip("ADC averages",
             "Number of ADC hardware averages per sample (1 = no averaging). Higher values "
             "reduce noise but lower effective sample rate. Max allowed = floor(5000 / sr). "
-            "Sends $SET,numav,<value>.\n"
-            "Lib: AFE4490Config.afe_adc_averages  ·  Script: _spin_numav"))
+            "Sends $SET,numav,<value>.",
+            src="AFE4490Config::afe_adc_averages"))
         form_samp.addRow("Averages", self._make_row(self._spin_numav, "numav",
                                                     lambda: str(self._spin_numav.value())))
         vbox.addWidget(grp_samp)
@@ -5499,10 +6343,10 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             sp.setStyleSheet("font-size:22px; background-color:#202020; color:#E0E0E0;")
             _tip_body = (f"{short_name}\n"
                          f"{tip}\n"
-                         f"Sends $SET,{key},<value>.\n"
-                         f"Lib: AFE4490TimingConfig::{key}\n"
-                         f"Script: _timing_spins['{key}']")
-            sp.setToolTip(_make_tooltip(f"{key} — {reg_name}", _tip_body))
+                         f"Sends $SET,{key},<value>.")
+            _tip = _make_tooltip(f"{key} — {reg_name}", _tip_body,
+                                 src=f"AFE4490TimingConfig::{key}")
+            sp.setToolTip(_tip)
             sp.valueChanged.connect(self._on_timing_changed)
             sp.valueChanged.connect(lambda _=None, w=sp: self._mark_dirty(w))
             self._timing_spins[key] = sp
@@ -5511,7 +6355,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
             row.addWidget(self._make_timing_set_btn(key))
             lbl = QtWidgets.QLabel(f"{key}  {reg_name}")
             lbl.setStyleSheet("font-size:22px; color:#E0E0E0;")
-            lbl.setToolTip(_make_tooltip(f"{key} — {reg_name}", _tip_body))
+            lbl.setToolTip(_tip)
             form_t.addRow(lbl, row)
 
         # Status bar
@@ -6393,15 +7237,18 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.check_led1_raw.setToolTip(_make_tooltip(
             "LED1 (IR)",
             "Raw IR LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: LED1 in the M1 frame."))
+            "Includes ambient light contamination. Field: LED1 in the M1 frame.",
+            src="AFE4490Data::led1_raw"))
         self.check_aled1.setToolTip(_make_tooltip(
             "Ambient LED1",
             "Ambient light sampled during the IR LED off period (aled1). "
-            "Represents environmental light interference on the LED1 (IR) channel."))
+            "Represents environmental light interference on the LED1 (IR) channel.",
+            src="AFE4490Data::aled1"))
         self.check_led1_sub.setToolTip(_make_tooltip(
             "LED1 (IR) clean",
             "LED1 minus ambient: LED1 − ALED1. Ambient-subtracted IR signal. "
-            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: LED1_SUB."))
+            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: LED1_SUB.",
+            src="AFE4490Data::led1_sub"))
         for w in (self.check_led1_raw, self.check_aled1, self.check_led1_sub):
             sidebar.addWidget(w)
 
@@ -6414,15 +7261,18 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.check_led2_raw.setToolTip(_make_tooltip(
             "LED2 (RED)",
             "Raw RED LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: LED2 in the M1 frame."))
+            "Includes ambient light contamination. Field: LED2 in the M1 frame.",
+            src="AFE4490Data::led2_raw"))
         self.check_aled2.setToolTip(_make_tooltip(
             "Ambient LED2",
             "Ambient light sampled during the RED LED off period (aled2). "
-            "Represents environmental light interference on the LED2 (RED) channel."))
+            "Represents environmental light interference on the LED2 (RED) channel.",
+            src="AFE4490Data::aled2"))
         self.check_led2_sub.setToolTip(_make_tooltip(
             "LED2 (RED) clean",
             "LED2 minus ambient: LED2 − ALED2. Ambient-subtracted RED signal. "
-            "Primary input to the SpO2 algorithm. Field: LED2_SUB."))
+            "Primary input to the SpO2 algorithm. Field: LED2_SUB.",
+            src="AFE4490Data::led2_sub"))
         for w in (self.check_led2_raw, self.check_aled2, self.check_led2_sub):
             sidebar.addWidget(w)
 
@@ -6605,15 +7455,18 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.check_led1_raw.setToolTip(_make_tooltip(
             "LED1 (IR)",
             "Raw IR LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: LED1 in the M1 frame."))
+            "Includes ambient light contamination. Field: LED1 in the M1 frame.",
+            src="AFE4490Data::led1_raw"))
         self.check_aled1.setToolTip(_make_tooltip(
             "Ambient LED1",
             "Ambient light sampled during the IR LED off period (aled1). "
-            "Represents environmental light interference on the LED1 (IR) channel."))
+            "Represents environmental light interference on the LED1 (IR) channel.",
+            src="AFE4490Data::aled1"))
         self.check_led1_sub.setToolTip(_make_tooltip(
             "LED1 (IR) clean",
             "LED1 minus ambient: LED1 − ALED1. Ambient-subtracted IR signal. "
-            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: LED1_SUB."))
+            "Primary input to the HR algorithms (HR1, HR2, HR3). Field: LED1_SUB.",
+            src="AFE4490Data::led1_sub"))
         for w in (self.check_led1_raw, self.check_aled1, self.check_led1_sub):
             sidebar.addWidget(w)
 
@@ -6626,15 +7479,18 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.check_led2_raw.setToolTip(_make_tooltip(
             "LED2 (RED)",
             "Raw RED LED ADC reading directly from the AFE4490. "
-            "Includes ambient light contamination. Field: LED2 in the M1 frame."))
+            "Includes ambient light contamination. Field: LED2 in the M1 frame.",
+            src="AFE4490Data::led2_raw"))
         self.check_aled2.setToolTip(_make_tooltip(
             "Ambient LED2",
             "Ambient light sampled during the RED LED off period (aled2). "
-            "Represents environmental light interference on the LED2 (RED) channel."))
+            "Represents environmental light interference on the LED2 (RED) channel.",
+            src="AFE4490Data::aled2"))
         self.check_led2_sub.setToolTip(_make_tooltip(
             "LED2 (RED) clean",
             "LED2 minus ambient: LED2 − ALED2. Ambient-subtracted RED signal. "
-            "Primary input to the SpO2 algorithm. Field: LED2_SUB."))
+            "Primary input to the SpO2 algorithm. Field: LED2_SUB.",
+            src="AFE4490Data::led2_sub"))
         for w in (self.check_led2_raw, self.check_aled2, self.check_led2_sub):
             sidebar.addWidget(w)
 
@@ -7083,7 +7939,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             "TIA worst-case settling (RF=1M, CF=155p): 5τ ≈ 775 µs. "
             "Over UDP, ambdac is sent 60 ms after the other params (lwIP buffer limit) "
             "and processed by Cmd_Task within 50 ms — allow ≥300 ms for clean settling "
-            "(default: 500 ms)."))
+            "(default: 500 ms).",
+            src="AfeSweepWindow._spin_settle"))
 
         self._spin_samples = QtWidgets.QSpinBox()
         self._spin_samples.setRange(10, 10000)
@@ -7093,7 +7950,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             "Samples per combo",
             "Number of M1 frames to collect per combination for statistics. "
             "Frames arrive at 50 Hz (500 Hz / decimation ratio 10). "
-            "50 samples = 1 s of data — sufficient for stable DC/AC statistics (default: 50)."))
+            "50 samples = 1 s of data — sufficient for stable DC/AC statistics (default: 50).",
+            src="AfeSweepWindow._spin_samples"))
 
         csv_row = QtWidgets.QHBoxLayout()
         self._edit_csv = QtWidgets.QLineEdit("afe_sweep_test.csv")
@@ -7889,7 +8747,8 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._spin_samples.setToolTip(_make_tooltip(
             "Sample count",
             "Number of 500 Hz samples to record in a timed capture. "
-            "5000 samples = 10 seconds at 500 Hz."))
+            "5000 samples = 10 seconds at 500 Hz.",
+            src="LabCaptureWindow._spin_samples"))
         row_timed.addWidget(self._spin_samples)
         lbl_smp = QtWidgets.QLabel("samples")
         lbl_smp.setStyleSheet("QLabel { font-size:28px; color:#AAAAAA; }")
@@ -8305,6 +9164,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr2test_window   = None
         self.hr3test_window   = None
         self.hr3test_calc     = HR3TestCalc()
+        self.pilab_window     = None
         self.esp32_timing_window    = None
         self.python_timing_window   = None
         self.hw_config_window = None
@@ -8318,6 +9178,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._HR1TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._HR2TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._HR3TEST_REFRESH_EVERY   = 2   # 10 Hz
+        self._PILAB_REFRESH_EVERY     = 2   # 10 Hz
         self._render_pending          = False
         self._ppgplots_refresh_counter = 0
         self._signals_refresh_counter  = 0
@@ -8329,6 +9190,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._hr1test_refresh_counter  = 0
         self._hr2test_refresh_counter  = 0
         self._hr3test_refresh_counter  = 0
+        self._pilab_refresh_counter    = 0
         self._pytiming_refresh_counter = 0
         self._decim_counter = 0
         self.hr3_calc = HRFFTCalc()
@@ -8339,7 +9201,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             'algo_spo2lab', 'algo_spo2test', 'algo_hr2test',
             'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hrlab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
-            'plot_hr1test', 'plot_hr2test', 'plot_hr3test',
+            'plot_hr1test', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
         ]
         self._py_timing = {k: deque(maxlen=50) for k in _pt_keys}
         self._last_drain_t  = None   # for drain_interval measurement
@@ -8350,41 +9212,54 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         # ── Stats table buffers (reset every N seconds) ───────────────────────
         self._STATS_SIGNALS = [
-            # (display_name, data_attr, tooltip_description)
+            # (display_name, data_attr, tooltip_description, src)
             # Order mirrors the $M1/$P1 serial frame. Row indices: HR1=11, HR2=13, HR3=15.
-            ("LED1 (IR)",  "data_led1",  "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
-            ("LED2 (RED)", "data_led2",  "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts."),
-            ("ALED1",   "data_aled1",   "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts."),
-            ("ALED2",  "data_aled2",  "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts."),
-            ("LED1_SUB",   "data_led1_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts."),
-            ("LED2_SUB",  "data_led2_sub",  "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts."),
-            ("PPG_DISP",  "data_ppgdisp",      "Display-ready PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Ready for rendering on graphical displays. Units: ADC counts."),
-            ("SpO2",     "data_spo2",     "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %."),
-            ("SpO2_SQI", "data_spo2_sqi", "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference."),
-            ("R",   "data_spo2_r",   "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve)."),
-            ("PI",       "data_pi",       "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion."),
-            ("HR1",      "data_hr1",      "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR1_SQI",  "data_hr1_sqi",  "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range."),
-            ("HR2",      "data_hr2",      "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR2_SQI",  "data_hr2_sqi",  "HR2 Signal Quality Index [0–1]. Unbiased normalised autocorrelation at the dominant RR lag: SQI = acorr[τ] / (acorr[0]·(N−τ)/N). Unbiased correction removes finite-window underestimation — clean signal yields SQI ≈ 1.0 at all HR. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range."),
-            ("HR3",      "data_hr3",      "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM."),
-            ("HR3_SQI",  "data_hr3_sqi",  "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range."),
-            ("RSQI",     "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary."),
-            ("DiagCode", "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM — 0x2000=AMB_SAT, 0x4000=SIGNAL_WEAK, 0x8000=HW_SETTLING. 0 = no active conditions."),
-            ("ProbeState","data_probe_state","Probe state (RSQM). 0 = DISCONNECTED (cable out), 1 = NOT_APPLIED (no finger), 2 = APPLIED (finger on sensor, normal operation)."),
+            ("LED1 (IR)",  "data_led1",  "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts.",  "AFE4490Data::led1_raw"),
+            ("LED2 (RED)", "data_led2",  "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts.",        "AFE4490Data::led2_raw"),
+            ("ALED1",      "data_aled1", "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts.",                  "AFE4490Data::aled1"),
+            ("ALED2",      "data_aled2", "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts.",         "AFE4490Data::aled2"),
+            ("LED1_SUB",   "data_led1_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Main input for HR1, HR2, HR3 and SpO2 algorithms. Units: ADC counts.",    "AFE4490Data::led1_sub"),
+            ("LED2_SUB",   "data_led2_sub",   "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Used as input for SpO2 AC/DC decomposition. Units: ADC counts.",         "AFE4490Data::led2_sub"),
+            ("PPG_DISP",   "data_ppgdisp",    "Display-ready PPG signal (IR channel). IIR DC removal τ=1.6 s → moving-average low-pass 5 Hz → negated. Ready for rendering on graphical displays. Units: ADC counts.", "AFE4490Data::ppg_disp"),
+            ("SpO2",       "data_spo2",       "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 3 % above; invalid if >103 %.",    "AFE4490Data::spo2"),
+            ("SpO2_SQI",   "data_spo2_sqi",   "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference.", "AFE4490Data::spo2_sqi"),
+            ("R",          "data_spo2_r",     "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve).",                   "AFE4490Data::spo2_r"),
+            ("PI",         "data_pi",         "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion.", "AFE4490Data::pi"),
+            ("HR1",        "data_hr1",        "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM.",                    "AFE4490Data::hr1"),
+            ("HR1_SQI",    "data_hr1_sqi",    "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range.", "AFE4490Data::hr1_sqi"),
+            ("HR2",        "data_hr2",        "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM.",  "AFE4490Data::hr2"),
+            ("HR2_SQI",    "data_hr2_sqi",    "HR2 Signal Quality Index [0–1]. Unbiased normalised autocorrelation at the dominant RR lag: SQI = acorr[τ] / (acorr[0]·(N−τ)/N). Unbiased correction removes finite-window underestimation — clean signal yields SQI ≈ 1.0 at all HR. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range.", "AFE4490Data::hr2_sqi"),
+            ("HR3",        "data_hr3",        "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM.", "AFE4490Data::hr3"),
+            ("HR3_SQI",    "data_hr3_sqi",    "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range.", "AFE4490Data::hr3_sqi"),
+            ("RSQI",       "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary.",                                                   "AFE4490Data::rsqi"),
+            ("DiagCode",   "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM — 0x2000=AMB_SAT, 0x4000=SIGNAL_WEAK, 0x8000=HW_SETTLING. 0 = no active conditions.", "AFE4490Data::diag_code"),
+            ("ProbeState", "data_probe_state",
+             "Probe state computed by RSQM at 500 Hz. All transitions debounced: 100 consecutive samples required (200 ms).\n\n"
+             "0 — DISCONNECTED (cable out)\n"
+             "ALL 6 conditions simultaneously (AND):\n"
+             "  · |I_PD_LED1 [µA]|, |I_PD_LED2 [µA]|, |I_PD_ALED1 [µA]|, |I_PD_ALED2 [µA]| < 0.15 µA\n"
+             "  · |LED1_SUB|, |LED2_SUB| < 5000 ADC\n"
+             "  Note: both criteria are redundant by design — the led_sub guard prevents false positives when AMBDAC raises i_pd even without probe connected.\n\n"
+             "1 — NOT_APPLIED (no finger)\n"
+             "Not DISCONNECTED AND at least one channel OT > 8.5×10⁻⁵ (OR logic)  →  rows OT_LED1, OT_LED2\n"
+             "  OT = (I_PD_LEDx − I_PD_ALEDx) / I_LEDx  [A/A, dimensionless]\n"
+             "  Special case: LED_raw ≥ saturation (2 096 921 ADC) → OT forced to 100 → always NOT_APPLIED.\n\n"
+             "2 — APPLIED (finger on sensor)\n"
+             "Not DISCONNECTED AND <b>OT ≤ 8.5×10⁻⁵ on both channels</b>.",
+             "AFE4490Data::probe_state"),
             # AFE4490DebugData analog signals — only populated in $M4 frame mode
-            ("V_TIA_LED1",  "data_v_tia_led1",  "TIA output voltage LED1/IR channel [V]. V_TIA = I_PD × RF. Computed per sample by firmware. Only available in $M4 frame mode."),
-            ("V_TIA_LED2",  "data_v_tia_led2",  "TIA output voltage LED2/RED channel [V]. Only available in $M4 frame mode."),
-            ("V_TIA_ALED1", "data_v_tia_aled1", "TIA output voltage ALED1/IR ambient channel [V]. Only available in $M4 frame mode."),
-            ("V_TIA_ALED2", "data_v_tia_aled2", "TIA output voltage ALED2/RED ambient channel [V]. Only available in $M4 frame mode."),
-            ("I_PD_LED1",   "data_i_pd_led1",   "Photodiode current LED1/IR channel [µA]. I_PD = V_TIA / RF. Computed per sample by firmware. Only available in $M4 frame mode."),
-            ("I_PD_LED2",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [µA]. Only available in $M4 frame mode."),
-            ("I_PD_ALED1",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [µA]. Only available in $M4 frame mode."),
-            ("I_PD_ALED2",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [µA]. Only available in $M4 frame mode."),
-            ("OT_LED1",     "data_ot2_led1",     "Optical transmittance LED1 (IR): (I_PD_LED1 - I_PD_ALED1) / I_LED1 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED1 from last $CFG. Only available in $M4 frame mode."),
-            ("OT_LED2",     "data_ot2_led2",     "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED2 from last $CFG. Only available in $M4 frame mode."),
+            ("V_TIA_LED1",  "data_v_tia_led1",  "TIA output voltage LED1/IR channel [V]. V_TIA = I_PD × RF. Computed per sample by firmware. Only available in $M4 frame mode.",                  "AFE4490DebugData::v_tia_led1"),
+            ("V_TIA_LED2",  "data_v_tia_led2",  "TIA output voltage LED2/RED channel [V]. Only available in $M4 frame mode.",                                                                      "AFE4490DebugData::v_tia_led2"),
+            ("V_TIA_ALED1", "data_v_tia_aled1", "TIA output voltage ALED1/IR ambient channel [V]. Only available in $M4 frame mode.",                                                             "AFE4490DebugData::v_tia_aled1"),
+            ("V_TIA_ALED2", "data_v_tia_aled2", "TIA output voltage ALED2/RED ambient channel [V]. Only available in $M4 frame mode.",                                                            "AFE4490DebugData::v_tia_aled2"),
+            ("I_PD_LED1 [µA]",   "data_i_pd_led1",   "Photodiode current LED1/IR channel [µA]. I_PD = V_TIA / RF. Computed per sample by firmware. Only available in $M4 frame mode.",                "AFE4490DebugData::i_pd_led1"),
+            ("I_PD_LED2 [µA]",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [µA]. Only available in $M4 frame mode.",                                                                    "AFE4490DebugData::i_pd_led2"),
+            ("I_PD_ALED1 [µA]",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [µA]. Only available in $M4 frame mode.",                                                           "AFE4490DebugData::i_pd_aled1"),
+            ("I_PD_ALED2 [µA]",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [µA]. Only available in $M4 frame mode.",                                                          "AFE4490DebugData::i_pd_aled2"),
+            ("OT_LED1",     "data_ot2_led1",     "Optical transmittance LED1 (IR): (I_PD_LED1 - I_PD_ALED1) / I_LED1 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED1 from last $CFG. Only available in $M4 frame mode.", "PPGMonitor.data_ot2_led1"),
+            ("OT_LED2",     "data_ot2_led2",     "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Uses I_PD values received from $M4 frame (firmware-computed) and I_LED2 from last $CFG. Only available in $M4 frame mode.", "PPGMonitor.data_ot2_led2"),
         ]
-        self._stats_buf = {name: [] for name, _, __ in self._STATS_SIGNALS}
+        self._stats_buf = {name: [] for name, _, __, _src in self._STATS_SIGNALS}
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
         self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA/V_ADC)
         
@@ -8436,7 +9311,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.combo_port.setToolTip(_make_tooltip(
             "PORT",
             "Serial port selector. Shows all available COM ports. "
-            "Select the ESP32-S3 (in3ator V15) port — usually COM15."))
+            "Select the ESP32-S3 (in3ator V15) port — usually COM15.",
+            src="PPGMonitor/serial_port"))
         self.btn_port_refresh = QtWidgets.QPushButton("↺")
         self.btn_port_refresh.setFixedWidth(36)
         self.btn_port_refresh.setStyleSheet(
@@ -8544,7 +9420,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "DECIMATION",
             "Show 1 out of every N frames in the UI and in SAVE DATA. "
             "At 500 Hz: N=10 → 50 Hz display, N=1 → 500 Hz. "
-            "Lab Capture always records at full 500 Hz regardless of this setting."))
+            "Lab Capture always records at full 500 Hz regardless of this setting.",
+            src="PPGMonitor/decimation"))
         self.sidebar_layout.addWidget(self.spin_decim)
 
         self.sidebar_layout.addSpacing(20)
@@ -8569,7 +9446,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "$M1 PPG MODE: minimal frame (SmpCnt, Ts_us, PPG_DISP). Lowest bandwidth.\n"
             "$M2 BASIC MODE: PPG + SpO2 + HR3 + quality flags. Use over serial.\n"
             "$M3 FULL MODE: all AFE4490Data fields (default). Use over UDP.\n"
-            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels. Use over UDP for analog analysis."))
+            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels. Use over UDP for analog analysis.",
+            src="$MODE,M{1-4}"))
         self.frame_mode_combo.currentIndexChanged.connect(self._on_frame_mode_combo_changed)
         self.sidebar_layout.addWidget(self.frame_mode_combo)
         self._update_frame_button()
@@ -8588,7 +9466,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "PPGPLOTS",
             "Show or hide the PPG Plots window. "
             "Displays LED2 (RED)/LED1 (IR) raw and filtered signals, PPG_DISP, SpO2 and HR curves in real time. "
-            "Throttled to 25 Hz to keep CPU load low."))
+            "Throttled to 25 Hz to keep CPU load low.",
+            src="PPGPlotsWindow"))
         self.sidebar_layout.addWidget(self.btn_ppgplots)
 
         self.btn_signals = QtWidgets.QPushButton("SIGNALS")
@@ -8599,7 +9478,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "SIGNALS",
             "Show or hide the PPG Signals window. "
             "Displays the 6 raw AFE4490 channels (LED2/LED1 raw, ambient, clean) "
-            "and the PPG_DISP display-ready signal. Throttled to 25 Hz."))
+            "and the PPG_DISP display-ready signal. Throttled to 25 Hz.",
+            src="PPGSignalsWindow"))
         self.sidebar_layout.addWidget(self.btn_signals)
 
         self.btn_results = QtWidgets.QPushButton("RESULTS")
@@ -8610,7 +9490,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "RESULTS",
             "Show or hide the Algorithm Results window. "
             "Displays SpO2 (top) and HR1/HR2/HR3 (bottom) algorithm outputs with SQI. "
-            "Throttled to 10 Hz."))
+            "Throttled to 10 Hz.",
+            src="AlgoResultsWindow"))
         self.sidebar_layout.addWidget(self.btn_results)
 
         self.btn_serialcom = QtWidgets.QPushButton("SERIALCOM")
@@ -8620,7 +9501,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_serialcom.setToolTip(_make_tooltip(
             "SERIALCOM",
             "Show or hide the Serial Console window. "
-            "Displays raw frames received via the serial port."))
+            "Displays raw frames received via the serial port.",
+            src="SerialComWindow"))
         self.sidebar_layout.addWidget(self.btn_serialcom)
 
         self.btn_udpcom = QtWidgets.QPushButton("UDP COM")
@@ -8630,7 +9512,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_udpcom.setToolTip(_make_tooltip(
             "UDP COM",
             "Show or hide the UDP Console window. "
-            "Displays raw frames received via WiFi/UDP transport."))
+            "Displays raw frames received via WiFi/UDP transport.",
+            src="UdpComWindow"))
         self.sidebar_layout.addWidget(self.btn_udpcom)
 
         label_analysis = QtWidgets.QLabel("ANALYSIS")
@@ -8644,7 +9527,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hrlab.setToolTip(_make_tooltip(
             "HR2LAB",
             "Show or hide the HR2 diagnostic window. "
-            "Displays the normalised autocorrelation (HR2) used to detect the dominant pulse period."))
+            "Displays the normalised autocorrelation (HR2) used to detect the dominant pulse period.",
+            src="HRLabWindow"))
         self.sidebar_layout.addWidget(self.btn_hrlab)
 
         self.btn_hr3lab = QtWidgets.QPushButton("HR3LAB")
@@ -8655,7 +9539,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "HR3LAB",
             "Show or hide the HR3 FFT/HPS analysis window. "
             "Displays FFT spectrum, Harmonic Product Spectrum and HR1/HR2/HR3 comparison in real time. "
-            "HR3 uses a 512-sample Hann window + rfft + HPS on the LED1_SUB-signal at 50 Hz."))
+            "HR3 uses a 512-sample Hann window + rfft + HPS on the LED1_SUB-signal at 50 Hz.",
+            src="HR3LabWindow"))
         self.sidebar_layout.addWidget(self.btn_hr3lab)
 
         self.btn_spo2lab = QtWidgets.QPushButton("SPO2LAB")
@@ -8666,8 +9551,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "SPO2LAB",
             "Show or hide the SpO2 Calibration Lab window. "
             "Compare firmware vs local SpO2/R-ratio, capture calibration points and "
-            "run linear regression to obtain a·b coefficients for the SpO2 = a − b·R formula."))
+            "run linear regression to obtain a·b coefficients for the SpO2 = a − b·R formula.",
+            src="SpO2LabWindow"))
         self.sidebar_layout.addWidget(self.btn_spo2lab)
+
+        self.btn_pilab = QtWidgets.QPushButton("PILAB")
+        self.btn_pilab.setCheckable(True)
+        self.btn_pilab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_pilab.clicked.connect(self.toggle_pilab)
+        self.btn_pilab.setToolTip(_make_tooltip(
+            "PILAB — Perfusion Index Lab",
+            "Opens the PI investigation window. Compares two configurable PI pipelines (A vs B) "
+            "on live or recorded data. Each pipeline has 3 independent steps: "
+            "STEP1 (DC subtraction), STEP2 (AC estimator), STEP3 (DC denominator). "
+            "Instance A defaults to firmware M1 settings; B is freely configurable.",
+            src="PILabWindow"))
+        self.sidebar_layout.addWidget(self.btn_pilab)
 
         label_test = QtWidgets.QLabel("TEST")
         label_test.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
@@ -8682,7 +9581,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Post-implementation verification window for the SpO2 algorithm. "
             "Runs an independent Python mirror of the firmware SpO2 algorithm and compares "
             "its output against the firmware values. Supports live and offline (CSV) modes. "
-            "See incunest_afe4490_spec.md §5.1 and §8.2."))
+            "See incunest_afe4490_spec.md §5.1 and §8.2.",
+            src="SpO2TestWindow"))
         self.sidebar_layout.addWidget(self.btn_spo2test)
 
         self.btn_hr1test = QtWidgets.QPushButton("HR1TEST *")
@@ -8694,7 +9594,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Post-implementation verification window for the HR1 algorithm (threshold peak detection). "
             "Python mirror runs at 500 Hz (full serial rate) in live mode. "
             "See incunest_afe4490_spec.md §5.2 and §8.2.<br/>"
-            "* = runs at full 500 Hz rate, unaffected by the Decimation setting."))
+            "* = runs at full 500 Hz rate, unaffected by the Decimation setting.",
+            src="HR1TestWindow"))
         self.sidebar_layout.addWidget(self.btn_hr1test)
 
         self.btn_hr2test = QtWidgets.QPushButton("HR2TEST")
@@ -8704,7 +9605,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hr2test.setToolTip(_make_tooltip(
             "HR2TEST",
             "Post-implementation verification window for the HR2 algorithm (autocorrelation). "
-            "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.3 and §8.2."))
+            "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.3 and §8.2.",
+            src="HR2TestWindow"))
         self.sidebar_layout.addWidget(self.btn_hr2test)
 
         self.btn_hr3test = QtWidgets.QPushButton("HR3TEST")
@@ -8714,7 +9616,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hr3test.setToolTip(_make_tooltip(
             "HR3TEST",
             "Post-implementation verification window for the HR3 algorithm (FFT + HPS). "
-            "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.4 and §8.2."))
+            "Mirror runs at the decimated rate. See incunest_afe4490_spec.md §5.4 and §8.2.",
+            src="HR3TestWindow"))
         self.sidebar_layout.addWidget(self.btn_hr3test)
 
         self.btn_esp32_timing = QtWidgets.QPushButton("ESP32 TIMING")
@@ -8726,7 +9629,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Opens the ESP32 timing diagnostics window. Shows per-algorithm mean/max execution time "
             "(µs) and remaining FreeRTOS stack, parsed from $TIMING frames emitted by the firmware "
             "every ~5 s. Requires INCUNEST_TIMING_STATS=1 in firmware. "
-            "Cycle budget = 2000 µs (1 sample period at 500 Hz)."))
+            "Cycle budget = 2000 µs (1 sample period at 500 Hz).",
+            src="Esp32TimingWindow"))
         self.sidebar_layout.addWidget(self.btn_esp32_timing)
 
         self.btn_python_timing = QtWidgets.QPushButton("PYTHON TIMING")
@@ -8738,7 +9642,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Opens the Python timing diagnostics window. Shows mean/max execution time (ms) "
             "for _process_frames_tick() drain and _refresh_plots_tick() total, plus per-window algorithm "
             "and render times. Stats computed over a rolling window of the last 50 measurements. "
-            "Drain budget = 20 ms, render budget = 200 ms."))
+            "Drain budget = 20 ms, render budget = 200 ms.",
+            src="PythonTimingWindow"))
         self.sidebar_layout.addWidget(self.btn_python_timing)
 
         self.btn_hw_config = QtWidgets.QPushButton("HW CONFIG")
@@ -8749,7 +9654,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "HW CONFIG — AFE4490 Parameters",
             "Opens the hardware configuration window. Allows changing AFE4490 parameters "
             "(LED current, TIA gain, sample rate, etc.) at runtime via $SET commands, "
-            "without reflashing. Confirmation arrives as an updated $CFG frame."))
+            "without reflashing. Confirmation arrives as an updated $CFG frame.",
+            src="HWConfigWindow"))
         self.sidebar_layout.addWidget(self.btn_hw_config)
 
         self.btn_diagnostics = QtWidgets.QPushButton("DIAGNOSTICS")
@@ -8760,7 +9666,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "DIAGNOSTICS — AFE4490 fault detection",
             "Opens the diagnostics window. Sends $DIAG? to the ESP32, which runs "
             "the AFE4490 built-in diagnostic sequence (~10 ms) and reports LED, "
-            "photodiode, and cable fault flags (datasheet section 8.4.3.3)."))
+            "photodiode, and cable fault flags (datasheet section 8.4.3.3).",
+            src="DiagnosticsWindow"))
         self.sidebar_layout.addWidget(self.btn_diagnostics)
 
         self.btn_afe_sweep = QtWidgets.QPushButton("AFE SWEEP")
@@ -8772,7 +9679,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Opens the AFE characterisation sweep window. Sweeps 3 levels each of "
             "LED current, TIA gain (RF), stage-2 gain (RG) and ambient DAC for both "
             "LED1 and LED2 (162 combos total). Records mean/min/max/pp/std of all "
-            "six raw ADC channels per combo to a CSV file for offline analysis."))
+            "six raw ADC channels per combo to a CSV file for offline analysis.",
+            src="AFESweepTestWindow"))
         self.sidebar_layout.addWidget(self.btn_afe_sweep)
 
         self.sidebar_layout.addStretch()
@@ -8813,7 +9721,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.spin_stats_interval.setToolTip(_make_tooltip(
             "Stats update interval",
             "How often the Signal Stats table recalculates and resets its running statistics "
-            "(Last / Mean / Max-Min / Min / Max). Range: 1–60 s."))
+            "(Last / Mean / Max-Min / Min / Max). Range: 1–60 s.",
+            src="PPGMonitor/stats_interval"))
         stats_header.addWidget(stats_interval_lbl)
         stats_header.addWidget(self.spin_stats_interval)
         stats_vbox.addLayout(stats_header)
@@ -8858,9 +9767,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _MAROON     = QtGui.QColor("#5C001A")
         _SUBHDR_ROW = 4              # table row index of the sub-header divider
 
-        for sig_idx, (name, _, tooltip) in enumerate(self._STATS_SIGNALS):
+        for sig_idx, (name, _, tooltip, src) in enumerate(self._STATS_SIGNALS):
             tbl_row  = sig_idx if sig_idx < _SUBHDR_ROW else sig_idx + 1
-            rich_tip = _make_tooltip(name, tooltip)
+            rich_tip = _make_tooltip(name, tooltip, src=src)
             item = QtWidgets.QTableWidgetItem(name)
             item.setForeground(QtGui.QColor("#AAAAAA"))
             item.setToolTip(rich_tip)
@@ -9314,6 +10223,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hr3test_window.close()
                 self.hr3test_window = None
 
+    def _open_pilab_default(self):
+        self.btn_pilab.setChecked(True)
+        self.toggle_pilab()
+
+    def toggle_pilab(self):
+        if self.btn_pilab.isChecked():
+            self.pilab_window = PILabWindow(None)
+            self.pilab_window.main_monitor = self
+            self.pilab_window.show()
+        else:
+            if self.pilab_window is not None:
+                self.pilab_window.main_monitor = None
+                self.pilab_window.close()
+                self.pilab_window = None
+
     def _open_timing_default(self):
         self.btn_esp32_timing.setChecked(True)
         self.toggle_esp32_timing()
@@ -9552,6 +10476,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr1test_open",  self.hr1test_window  is not None)
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
+        s.setValue("PPGMonitor/pilab_open",    self.pilab_window    is not None)
         s.setValue("PPGMonitor/esp32_timing_open",   self.esp32_timing_window   is not None)
         s.setValue("PPGMonitor/python_timing_open",  self.python_timing_window  is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
@@ -9669,8 +10594,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.btn_serial.setStyleSheet(
                 "background-color: #1A3A1A; color: #44FF44; font-size: 17px; "
                 "font-weight: bold; padding: 5px; border: 1px solid #44FF44; border-radius: 4px;")
-            QtCore.QTimer.singleShot(2500,
-                lambda: self.hw_config_window._on_read_cfg() if self.hw_config_window is not None else None)
+            QtCore.QTimer.singleShot(2500, lambda: self.request_chip_config(notify_lab_capture=False))
         except Exception as e:
             self.ser = None
             self.log(f"ERROR: Could not open {port} — {e}")
@@ -9740,11 +10664,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
         sock.bind(('', self._udp_port))
         sock.settimeout(0.5)
         _last_cnt = None
+        _known_ip = None
         while not self._udp_stop.is_set():
             try:
                 data, _addr = sock.recvfrom(4096)   # up to UDP_BATCH_SIZE frames per datagram (~1150 bytes for 5×$M4)
-                if self._esp32_ip is None:
-                    self._esp32_ip = _addr[0]   # learn ESP32 IP from first incoming packet
+                _src_ip = _addr[0]
+                if _known_ip is None:
+                    _known_ip = _src_ip
+                    self._esp32_ip = _src_ip
+                    self._sig_log.emit(f"[UDP] First datagram from {_src_ip}")
+                elif _src_ip != _known_ip:
+                    self._sig_log.emit(f"[UDP] Source IP changed: {_known_ip} → {_src_ip}")
+                    _known_ip = _src_ip
+                    self._esp32_ip = _src_ip
                 if not data:
                     continue
                 for line in data.split(b'\n'):
@@ -9865,7 +10797,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _update_stats_table(self):
         _led1_sub_cv  = None
         _led2_sub_cv = None
-        for sig_idx, (name, _, _tooltip) in enumerate(self._STATS_SIGNALS):
+        for sig_idx, (name, _, _tooltip, _src) in enumerate(self._STATS_SIGNALS):
             tbl_row = sig_idx if sig_idx < 4 else sig_idx + 1
             buf = self._stats_buf[name]
             if buf:
@@ -10006,11 +10938,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     self.log(f"Board: {_bm.group(1)}")
                             # "# incunest_afe4490 started" → Cmd_Task is running → send $CFG? + $MODE
                             if 'started' in line.lower():
-                                if getattr(self, '_post_reset_cfg_pending', False):
-                                    self._post_reset_cfg_pending = False
-                                    QtCore.QTimer.singleShot(300,
-                                        lambda: self.hw_config_window._on_read_cfg()
-                                        if self.hw_config_window is not None else None)
+                                self._post_reset_cfg_pending = False
+                                QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
                                 # Restore saved frame mode (ESP32 always boots in M3)
                                 _fm = self.frame_mode
                                 QtCore.QTimer.singleShot(500,
@@ -10235,6 +11164,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # LED1_SUB for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))
+                            if self.pilab_window is not None:
+                                self.pilab_window.feed_sample(
+                                    p[7], p[6], SPO2_RECEIVED_FS, p[1])
                             if self.afe_sweep_window is not None:
                                 _m4 = lib_id == "M4" and len(parts) >= 31
                                 self.afe_sweep_window.feed_sample(
@@ -10265,7 +11197,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                         f" LED1_SUB={led1_sub_fw} exp={led1_sub_exp} Δ={led1_sub_fw - led1_sub_exp}"
                                     )
                             # Stats buffers
-                            for sname, attr, _ in self._STATS_SIGNALS:
+                            for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
                         else: _new_data = True
@@ -10298,7 +11230,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
-                            for sname, attr, _ in self._STATS_SIGNALS:
+                            for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
                         else: _new_data = True
@@ -10329,7 +11261,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
-                            for sname, attr, _ in self._STATS_SIGNALS:
+                            for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
                         else: _new_data = True
@@ -10394,7 +11326,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 _ps_bg = self._PROBE_DISCONNECTED_BG
             else:
                 _ps_bg = self._VTG_DEFAULT
-            _ps_sig_idx = next(i for i, (n, _, __) in enumerate(self._STATS_SIGNALS) if n == "ProbeState")
+            _ps_sig_idx = next(i for i, (n, _, __, ___) in enumerate(self._STATS_SIGNALS) if n == "ProbeState")
             _ps_tbl_row = _ps_sig_idx if _ps_sig_idx < 4 else _ps_sig_idx + 1
             _ps_item = self.stats_table.item(_ps_tbl_row, 0)
             if _ps_item is not None:
@@ -10490,6 +11422,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.data_timestamp_us, self.data_sample_counter)
                 self._py_timing['plot_hr3test'].append((time.perf_counter() - _t0p) * 1000)
 
+            self._pilab_refresh_counter += 1
+            if self.pilab_window is not None and self._pilab_refresh_counter >= self._PILAB_REFRESH_EVERY:
+                self._pilab_refresh_counter = 0
+                _t0p = time.perf_counter()
+                self.pilab_window.update_plots()
+                self._py_timing['plot_pilab'].append((time.perf_counter() - _t0p) * 1000)
+
             # PythonTimingWindow: refresh every ~1 s (5 render ticks at 200 ms)
             self._pytiming_refresh_counter += 1
             if self.python_timing_window is not None and self._pytiming_refresh_counter >= 5:
@@ -10511,6 +11450,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self._py_timing['plot_hr2test'].clear()
                     self._py_timing['algo_hr2test'].clear()
                 if self.hr3test_window   is None: self._py_timing['plot_hr3test'].clear()
+                if self.pilab_window     is None: self._py_timing['plot_pilab'].clear()
                 _pt_stats = {}
                 for k, q in self._py_timing.items():
                     if q:
@@ -10564,6 +11504,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr2test_default)
         if s.value("PPGMonitor/hr3test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr3test_default)
+        if s.value("PPGMonitor/pilab_open",     False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_pilab_default)
         if s.value("PPGMonitor/esp32_timing_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_esp32_timing_default)
         if s.value("PPGMonitor/python_timing_open",  False, type=bool):
@@ -10590,7 +11532,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for w in [self, self.ppgplots_window, self.signals_window, self.results_window, self.serialcom_window,
                   self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
                   self.spo2test_window, self.hr1test_window, self.hr2test_window,
-                  self.hr3test_window, self.esp32_timing_window, self.hw_config_window,
+                  self.hr3test_window, self.pilab_window,
+                  self.esp32_timing_window, self.hw_config_window,
                   self.diag_window, self.afe_sweep_window, self.lab_capture_window]:
             if w is not None:
                 w.show()
@@ -10662,6 +11605,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.hr2test_window.close()
         if self.hr3test_window is not None:
             self.hr3test_window.close()
+        if self.pilab_window is not None:
+            self.pilab_window.main_monitor = None
+            self.pilab_window.close()
         if self.esp32_timing_window is not None:
             self.esp32_timing_window.close()
         if self.python_timing_window is not None:
