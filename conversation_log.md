@@ -12221,3 +12221,20 @@ El diagnóstico muestra que el código es correcto. El script se relanzó al fin
 
 - Añadido botón `?` en la toolbar (derecha, separado por stretch).
 - Nuevo método `_show_help()`: abre `QDialog` no-modal con texto HTML que explica las 4 gráficas y el pipeline de 3 pasos (DC tracking, AC estimator, PI_ir, ratio R para SpO2).
+
+## Sesión 2026-06-14i — pulsenest_lab_spec.md actualizada a v1.4
+
+### Cambios en la spec
+
+- Versión: 1.3 → 1.4
+- §5.6 PICalc: nueva entrada (remite a §7.11 para detalle completo)
+- §6.1 Sidebar: grupos LAB y TEST ahora etiquetados explícitamente; PILAB añadido al LAB group
+- §6.6 Throttle rates: añadido `_PILAB_REFRESH_EVERY = 2` (10 Hz)
+- §7.11 PILabWindow (nueva): descripción completa — PICalc pipeline 3-step, layout, 4 plots, config columns A/B, value table, help dialog, feed architecture, offline mode
+- §9 Settings: añadido `PILabWindow/geometry` y `PPGMonitor/pilab_open`
+- §10 Tooltip convention: `_make_tooltip(name, text, src="")` — documenta parámetro `src` opcional
+- §12 Changelog: entrada v1.4 añadida
+
+### Aclaración al usuario
+
+La spec **no se actualiza automáticamente** — hay que actualizarla manualmente en la misma sesión en que se modifica el código.
