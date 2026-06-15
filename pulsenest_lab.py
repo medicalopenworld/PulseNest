@@ -4787,6 +4787,8 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._pi_ir_b   = deque(maxlen=self._BUF_LEN)
         self._r_a       = deque(maxlen=self._BUF_LEN)
         self._r_b       = deque(maxlen=self._BUF_LEN)
+        self._spo2_a    = deque(maxlen=self._BUF_LEN)
+        self._spo2_b    = deque(maxlen=self._BUF_LEN)
 
         self._build_ui()
 
@@ -4861,15 +4863,23 @@ class PILabWindow(QtWidgets.QMainWindow):
 
         self.p_r = gv.addPlot(row=3, col=0)
         self.p_r.setLabel('left', "R = PI_red / PI_ir")
-        self.p_r.setLabel('bottom', "Time [s]")
         self.p_r.showGrid(x=True, y=True, alpha=0.3)
         self.p_r.addLegend(offset=(5, 5))
         self.curve_r_a = self.p_r.plot(pen=_pen(self._CLR_A), name="R A")
         self.curve_r_b = self.p_r.plot(pen=_pen(self._CLR_B), name="R B")
 
+        self.p_spo2 = gv.addPlot(row=4, col=0)
+        self.p_spo2.setLabel('left', "SpO2 [%]")
+        self.p_spo2.setLabel('bottom', "Time [s]")
+        self.p_spo2.showGrid(x=True, y=True, alpha=0.3)
+        self.p_spo2.addLegend(offset=(5, 5))
+        self.curve_spo2_a = self.p_spo2.plot(pen=_pen(self._CLR_A), name="SpO2 A")
+        self.curve_spo2_b = self.p_spo2.plot(pen=_pen(self._CLR_B), name="SpO2 B")
+
         self.p_ac.setXLink(self.p_sig)
         self.p_pi.setXLink(self.p_sig)
         self.p_r.setXLink(self.p_sig)
+        self.p_spo2.setXLink(self.p_sig)
 
         # ── right panel ───────────────────────────────────────────────────────
         right = QtWidgets.QVBoxLayout()
@@ -5183,6 +5193,8 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._pi_ir_b.append(self.calc_b.pi_ir)
         self._r_a.append(self.calc_a.R)
         self._r_b.append(self.calc_b.R)
+        self._spo2_a.append(self.calc_a.spo2)
+        self._spo2_b.append(self.calc_b.spo2)
 
     # ── render (called from PPGMonitor render tick) ───────────────────────────
 
@@ -5199,8 +5211,10 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.curve_ac_b.setData(t, np.array(self._ac_t_b))
         self.curve_pi_a.setData(t, np.array(self._pi_ir_a))
         self.curve_pi_b.setData(t, np.array(self._pi_ir_b))
-        self.curve_r_a.setData(t,  np.array(self._r_a))
-        self.curve_r_b.setData(t,  np.array(self._r_b))
+        self.curve_r_a.setData(t,    np.array(self._r_a))
+        self.curve_r_b.setData(t,    np.array(self._r_b))
+        self.curve_spo2_a.setData(t, np.array(self._spo2_a))
+        self.curve_spo2_b.setData(t, np.array(self._spo2_b))
         self.p_sig.setXRange(max(0.0, t_end - self._PLOT_WIN_S), t_end, padding=0)
         self._update_val_table()
 

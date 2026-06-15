@@ -12835,3 +12835,14 @@ Tabla ampliada de 4 → 8 filas para mostrar el desglose completo del pipeline P
 ### Tema: PILabWindow — aumentar altura de tabla
 
 `setMinimumHeight(320→480)` y `setMaximumHeight(480→700)` para que las 8 filas sean visibles sin scroll.
+
+---
+
+## Sesión 2026-06-15aa
+
+### Tema: PILabWindow — añadir gráfica SpO2
+
+Añadido 5º plot `p_spo2` (row=4) en PILabWindow con curvas `curve_spo2_a/b`.
+- Buffers `_spo2_a/b` alimentados con `calc.spo2` en feed loop
+- `setXLink(p_sig)` para sincronización temporal con el resto de plots
+- Label: `"SpO2 [%]"`, eje X: `"Time [s]"`
