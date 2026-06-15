@@ -12803,3 +12803,27 @@ Nuevo método `_refresh_param_state(cfg)` en `PILabWindow`. Al cambiar cualquier
 - `cfg` dict incluye `'form': form` para acceder a `labelForField`
 - Combos conectados a `_refresh_param_state` vía `currentIndexChanged`
 - Llamado también en `__init__` tras `_apply_config` para estado inicial correcto
+
+---
+
+## Sesión 2026-06-15y
+
+### Tema: PILabWindow — tabla expandida a 8 filas con desglose completo del pipeline
+
+Tabla ampliada de 4 → 8 filas para mostrar el desglose completo del pipeline PI por instancia A y B.
+
+**Nuevas filas (en orden):**
+- `AC_r_red` — STEP2 output: amplitud pulsátil rojo [ADC counts] (fmt: .1f)
+- `DC_r_red` — STEP3 output: denominador DC rojo [ADC counts] (fmt: .1f)
+- `AC_r_ir`  — STEP2 output: amplitud pulsátil IR [ADC counts] (fmt: .1f)
+- `DC_r_ir`  — STEP3 output: denominador DC IR [ADC counts] (fmt: .1f)
+- `PI_red [%]` — AC_r_red / DC_r_red × 100 (fmt: .3f)
+- `PI_ir [%]`  — AC_r_ir / DC_r_ir × 100 (fmt: .3f)
+- `R`         — PI_red / PI_ir (fmt: .4f)
+- `SpO2 [%]`  — 110 − 25×R, provisional, no calibrada (fmt: .1f)
+
+**PICalc:** añadido `self.spo2` como output. Calculado al final de `update()`: `max(0, min(100, 110 − 25×R))` si R > 0, else 0.
+
+**Tooltips:** cada cabecera de fila tiene tooltip explicando fórmula y unidades. Tooltip general de tabla actualizado.
+
+**Nota:** SpO2 usa la fórmula lineal estándar provisional (misma que firmware). No está calibrada.

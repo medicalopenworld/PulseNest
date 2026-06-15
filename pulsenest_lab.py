@@ -3934,7 +3934,7 @@ class PICalc:
         self._win_max_n = 200; self._norm_max_n = 200
 
         # outputs
-        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0
+        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
         self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
         self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
         self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
@@ -3950,7 +3950,7 @@ class PICalc:
         self._norm_buf_ir.clear(); self._norm_buf_red.clear()
         self._bpf_zi_ir = None; self._bpf_zi_red = None
         self._lpf_zi_ir = None; self._lpf_zi_red = None
-        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0
+        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
         self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
         self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
         self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
@@ -4111,7 +4111,8 @@ class PICalc:
         # ── PI & R ────────────────────────────────────────────────────────────
         self.pi_ir  = self.ac_r_ir  / self.dc_r_ir  * 100.0
         self.pi_red = self.ac_r_red / self.dc_r_red * 100.0
-        self.R      = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
+        self.R    = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
+        self.spo2 = max(0.0, min(100.0, 110.0 - 25.0 * self.R)) if self.R > 0.0 else 0.0
         return self.pi_ir, self.pi_red, self.R
 
 
@@ -4919,22 +4920,38 @@ class PILabWindow(QtWidgets.QMainWindow):
         right.addLayout(cols, stretch=1)
 
         # value table
-        self._val_table = QtWidgets.QTableWidget(4, 2)
+        self._val_table = QtWidgets.QTableWidget(8, 2)
         self._val_table.setHorizontalHeaderLabels(["A (orange)", "B (blue)"])
         self._val_table.horizontalHeaderItem(0).setForeground(QtGui.QColor(self._CLR_A))
         self._val_table.horizontalHeaderItem(1).setForeground(QtGui.QColor(self._CLR_B))
-        self._val_table.setVerticalHeaderLabels(["PI_ir [%]", "PI_red [%]", "R", "AC_r_ir"])
+        self._val_table.setVerticalHeaderLabels([
+            "AC_r_red", "DC_r_red", "AC_r_ir", "DC_r_ir",
+            "PI_red [%]", "PI_ir [%]", "R", "SpO2 [%]",
+        ])
         self._val_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self._val_table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self._val_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._val_table.setStyleSheet(
-            "QTableWidget { background: #1A1A1A; color: #E0E0E0; font-size: 28px; }"
-            "QHeaderView::section { background: #252525; font-size: 24px; font-weight: bold; }"
+            "QTableWidget { background: #1A1A1A; color: #E0E0E0; font-size: 24px; }"
+            "QHeaderView::section { background: #252525; font-size: 20px; font-weight: bold; }"
         )
-        self._val_table.setMinimumHeight(240)
-        self._val_table.setMaximumHeight(300)
-        self._val_table.setToolTip(_make_tooltip("PI values",
-            "Current PI_ir, PI_red, R, and AC_r_ir for each pipeline instance."))
+        _row_tips = [
+            "AC_r_red — STEP2 output: pulsatile amplitude estimate for red channel [ADC counts]",
+            "DC_r_red — STEP3 output: DC denominator for red channel [ADC counts]",
+            "AC_r_ir  — STEP2 output: pulsatile amplitude estimate for IR channel [ADC counts]",
+            "DC_r_ir  — STEP3 output: DC denominator for IR channel [ADC counts]",
+            "PI_red   — Perfusion Index red = AC_r_red / DC_r_red × 100 [%]",
+            "PI_ir    — Perfusion Index IR  = AC_r_ir  / DC_r_ir  × 100 [%]",
+            "R        — SpO2 ratio = PI_red / PI_ir (dimensionless; ~0.4–1.0 physiological range)",
+            "SpO2     — Provisional estimate: 110 − 25×R [%]  (linear approximation, not calibrated)",
+        ]
+        for i, tip in enumerate(_row_tips):
+            self._val_table.verticalHeaderItem(i).setToolTip(tip)
+        self._val_table.setMinimumHeight(320)
+        self._val_table.setMaximumHeight(480)
+        self._val_table.setToolTip(_make_tooltip("PI pipeline values",
+            "Full decomposition of the 3-step PI pipeline for instances A and B.\n"
+            "Hover over row headers for per-row details."))
         right.addWidget(self._val_table)
         right.addStretch()
 
@@ -5188,19 +5205,23 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._update_val_table()
 
     def _update_val_table(self):
-        def _cell(v):
-            item = QtWidgets.QTableWidgetItem(f"{v:.3f}")
-            item.setTextAlignment(QtCore.Qt.AlignCenter)
-            return item
         a, b = self.calc_a, self.calc_b
-        for row, (va, vb) in enumerate([
-            (a.pi_ir,   b.pi_ir),
-            (a.pi_red,  b.pi_red),
-            (a.R,       b.R),
-            (a.ac_r_ir, b.ac_r_ir),
-        ]):
-            self._val_table.setItem(row, 0, _cell(va))
-            self._val_table.setItem(row, 1, _cell(vb))
+        rows = [
+            # (val_a, val_b, fmt)
+            (a.ac_r_red, b.ac_r_red, ".1f"),
+            (a.dc_r_red, b.dc_r_red, ".1f"),
+            (a.ac_r_ir,  b.ac_r_ir,  ".1f"),
+            (a.dc_r_ir,  b.dc_r_ir,  ".1f"),
+            (a.pi_red,   b.pi_red,   ".3f"),
+            (a.pi_ir,    b.pi_ir,    ".3f"),
+            (a.R,        b.R,        ".4f"),
+            (a.spo2,     b.spo2,     ".1f"),
+        ]
+        for row, (va, vb, fmt) in enumerate(rows):
+            for col, v in ((0, va), (1, vb)):
+                item = QtWidgets.QTableWidgetItem(format(v, fmt))
+                item.setTextAlignment(QtCore.Qt.AlignCenter)
+                self._val_table.setItem(row, col, item)
 
     # ── help ──────────────────────────────────────────────────────────────────
 
