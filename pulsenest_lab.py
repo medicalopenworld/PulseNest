@@ -7406,6 +7406,12 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
 
+class _ThousandsAxisItem(pg.AxisItem):
+    """Y-axis that formats tick labels with a space as the thousands separator."""
+    def tickStrings(self, values, scale, spacing):
+        return [f"{int(v):,}".replace(",", "\u2009") for v in values]
+
+
 class PPGSignalsWindow(QtWidgets.QWidget):
     """Floating window with the 6 raw AFE4490 signals (LED2/LED1 raw·amb·sub) and PPG_DISP."""
 
@@ -7516,7 +7522,9 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.graphics_layout = pg.GraphicsLayoutWidget()
         root.addWidget(self.graphics_layout)
 
-        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>LED1 (IR)</b>")
+        self.p1 = self.graphics_layout.addPlot(
+            title="<b style='color:#44AAFF'>LED1 (IR)</b>",
+            axisItems={'left': _ThousandsAxisItem(orientation='left')})
         self.curve_led1     = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED1 (IR)")
         self.curve_aled1 = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED1")
         self.curve_led1_sub = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="LED1 (IR) clean")
@@ -7525,7 +7533,9 @@ class PPGSignalsWindow(QtWidgets.QWidget):
 
         self.graphics_layout.nextRow()
 
-        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>LED2 (RED)</b>")
+        self.p2 = self.graphics_layout.addPlot(
+            title="<b style='color:#FF4444'>LED2 (RED)</b>",
+            axisItems={'left': _ThousandsAxisItem(orientation='left')})
         self.curve_led2     = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED2 (RED)")
         self.curve_aled2 = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED2")
         self.curve_led2_sub = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="LED2 (RED) clean")
@@ -7534,7 +7544,9 @@ class PPGSignalsWindow(QtWidgets.QWidget):
 
         self.graphics_layout.nextRow()
 
-        self.p3 = self.graphics_layout.addPlot(title="<b style='color:#AAFFAA'>PPG_DISP</b>")
+        self.p3 = self.graphics_layout.addPlot(
+            title="<b style='color:#AAFFAA'>PPG_DISP</b>",
+            axisItems={'left': _ThousandsAxisItem(orientation='left')})
         self.curve_ppgdisp = self.p3.plot(pen=pg.mkPen('#AAFFAA', width=2), name="PPG_DISP")
         self.p3.showGrid(x=True, y=True, alpha=0.3)
         self.p3.getAxis('left').setWidth(80)
