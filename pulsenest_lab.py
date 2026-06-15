@@ -5138,19 +5138,19 @@ class PILabWindow(QtWidgets.QMainWindow):
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("PILAB — Help")
         dlg.setStyleSheet("background-color: #121212; color: #E0E0E0;")
-        dlg.resize(640, 560)
+        dlg.resize(900, 800)
         lay = QtWidgets.QVBoxLayout(dlg)
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(10)
 
         title = QtWidgets.QLabel("PILAB — Four plots explained")
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #FFD070;")
+        title.setStyleSheet("font-size: 40px; font-weight: bold; color: #FFD070;")
         lay.addWidget(title)
 
         _HTML = """
 <style>
-  body  { font-size: 15px; color: #D0D0D0; }
-  h3    { font-size: 16px; color: #FFD070; margin-bottom: 2px; margin-top: 12px; }
+  body  { font-size: 30px; color: #D0D0D0; }
+  h3    { font-size: 32px; color: #FFD070; margin-bottom: 2px; margin-top: 12px; }
   p     { margin: 2px 0 6px 0; }
   code  { color: #FFDD44; }
   .formula { color: #88DDFF; font-style: italic; }
