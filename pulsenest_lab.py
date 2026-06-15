@@ -4888,8 +4888,8 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._val_table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self._val_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._val_table.setStyleSheet(
-            "QTableWidget { background: #1A1A1A; color: #E0E0E0; font-size: 24px; }"
-            "QHeaderView::section { background: #252525; color: #AAAAAA; font-size: 20px; }"
+            "QTableWidget { background: #1A1A1A; color: #E0E0E0; font-size: 28px; }"
+            "QHeaderView::section { background: #252525; color: #AAAAAA; font-size: 24px; }"
         )
         self._val_table.setMinimumHeight(240)
         self._val_table.setMaximumHeight(300)
@@ -4900,9 +4900,9 @@ class PILabWindow(QtWidgets.QMainWindow):
 
     def _make_config_tab(self, name, color):
         """Build STEP1/2/3 config panel for one PICalc instance. Returns a dict."""
-        _ss_spin = "background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 17px;"
-        _ss_cb   = "background-color: #2A2A2A; color: #FFFFFF; font-size: 17px;"
-        _lbl_sty = f"color: {color}; font-size: 17px; font-weight: bold;"
+        _ss_spin = "background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 20px;"
+        _ss_cb   = "background-color: #2A2A2A; color: #FFFFFF; font-size: 20px;"
+        _lbl_sty = f"color: {color}; font-size: 20px; font-weight: bold;"
 
         def _dspin(lo, hi, val, step, suffix=""):
             w = QtWidgets.QDoubleSpinBox()
@@ -4912,7 +4912,7 @@ class PILabWindow(QtWidgets.QMainWindow):
             return w
 
         inner = QtWidgets.QWidget()
-        inner.setStyleSheet("background: #1A1A1A; QLabel { font-size: 17px; color: #C0C0C0; }")
+        inner.setStyleSheet("background: #1A1A1A; QLabel { font-size: 20px; color: #C0C0C0; }")
         form = QtWidgets.QFormLayout(inner)
         form.setSpacing(5); form.setContentsMargins(8, 8, 8, 8)
 
@@ -5026,7 +5026,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         tab_lay.setSpacing(0)
         header = QtWidgets.QLabel(f"  Instance {name}")
         header.setStyleSheet(
-            f"color: {color}; font-size: 16px; font-weight: bold; padding: 4px;"
+            f"color: {color}; font-size: 20px; font-weight: bold; padding: 4px;"
             f" background: #1E1E1E;")
         tab_lay.addWidget(header)
         tab_lay.addWidget(scroll)
@@ -6515,6 +6515,15 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         mm = self.main_monitor
         if mm is None or not mm.request_chip_config(notify_lab_capture=False):
             self._warn_not_connected()
+        else:
+            self._statusbar.showMessage("$CFG? sent — waiting for response…")
+            self._cfg_timer.start(3000)
+
+    def _auto_read_cfg(self):
+        """Silent auto-read on window open: no modal dialog if serial not ready."""
+        mm = self.main_monitor
+        if mm is None or not mm.request_chip_config(notify_lab_capture=False):
+            self._statusbar.showMessage("Not connected — connect serial to read chip config")
         else:
             self._statusbar.showMessage("$CFG? sent — waiting for response…")
             self._cfg_timer.start(3000)
@@ -9057,7 +9066,9 @@ class _StatsHighlightDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class PPGMonitor(QtWidgets.QMainWindow):
-    _sig_log = QtCore.pyqtSignal(str)  # thread-safe log: emit from any thread, delivered to main thread
+    _sig_log           = QtCore.pyqtSignal(str)           # thread-safe log
+    _sig_serial_result = QtCore.pyqtSignal(bool, str, str, object)  # (success, port, error_msg, ser_obj)
+    _sig_udp_active    = QtCore.pyqtSignal()              # emitted by _udp_reader on first datagram
 
     def log(self, text):
         """Appends a timestamped line to the log panel, colour inferred from text content."""
@@ -9087,6 +9098,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def __init__(self, save_chk=False, save_chk_duration=15):
         super().__init__()
         self._sig_log.connect(self.log, QtCore.Qt.QueuedConnection)  # thread-safe: always queued to main thread even from non-QThread
+        self._sig_serial_result.connect(self._on_serial_result, QtCore.Qt.QueuedConnection)
+        self._sig_udp_active.connect(self._on_udp_active, QtCore.Qt.QueuedConnection)
+        self._serial_connecting = False   # guard: prevent concurrent open attempts
 
         # Configuración Ventana Principal
         self.setWindowTitle("AFE4490 Advanced Monitor (by Medical Open World)")
@@ -9897,7 +9911,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._render_timer = QtCore.QTimer()
         self._render_timer.timeout.connect(self._refresh_plots_tick)
         self._render_timer.start(200)
-        
+        self._hb = QtCore.QTimer()
+        self._hb.timeout.connect(
+            lambda: open("debug_hb.log", "w").write(
+                f"{__import__('time').perf_counter():.3f}\n"))
+        self._hb.start(500)
+
     STYLE_LIB_ACTIVE = """
         QPushButton {{
             background-color: {bg}; color: {fg};
@@ -10279,7 +10298,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.hw_config_window = HWConfigWindow(None)
             self.hw_config_window.main_monitor = self
             self.hw_config_window.show()
-            QtCore.QTimer.singleShot(200, self.hw_config_window._on_read_cfg)
+            # Use silent auto-read (no modal) — serial may not be ready yet at startup.
+            QtCore.QTimer.singleShot(200, self.hw_config_window._auto_read_cfg)
         else:
             if self.hw_config_window is not None:
                 self.hw_config_window.main_monitor = None
@@ -10531,10 +10551,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if _ssid:
             self._lbl_wifi.setText(f"WiFi: {_ssid} (last)")
             self._lbl_wifi.setStyleSheet("color: #667788; font-size: 14px; padding: 0px 2px;")
-        if s.value("PPGMonitor/serial_connected", True, type=bool):
-            self._connect_serial(self.combo_port.currentText())
-        if s.value("PPGMonitor/udp_connected", False, type=bool):
-            self._connect_udp()
+        # Defer connections to after the event loop starts so the window
+        # appears immediately — serial.Serial() can block on some ports.
+        self._restore_serial_on_start = s.value("PPGMonitor/serial_connected", True, type=bool)
+        self._restore_udp_on_start    = s.value("PPGMonitor/udp_connected",    False, type=bool)
 
     def _populate_ports(self):
         current = self.combo_port.currentText()
@@ -10543,7 +10563,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         ports = sorted(p.device for p in list_ports.comports())
         self.combo_port.addItems(ports)
         idx = self.combo_port.findText(current)
-        self.combo_port.setCurrentIndex(idx if idx >= 0 else 0)
+        # If saved port is not in the current list, leave combo unselected (-1)
+        # so the startup auto-connect does not silently use the wrong port.
+        self.combo_port.setCurrentIndex(idx)
         self.combo_port.blockSignals(False)
 
     def _toggle_serial(self):
@@ -10572,21 +10594,43 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if not port:
             self.log("No port selected")
             return
+        if self._serial_connecting:
+            self.log("Serial: connection already in progress")
+            return
         # Stop existing reader thread
         self._reader_stop.set()
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=1.0)
         if self.ser is not None and self.ser.is_open:
             self.ser.close()
+        self.ser = None
         # Drain queue
         while not self._serial_queue.empty():
             try: self._serial_queue.get_nowait()
             except: break
         self._reader_stop.clear()
+        self._serial_connecting = True
         self.log(f"Connecting to {port}...")
-        try:
-            self.ser = serial.Serial(port, BAUD, timeout=0.1)
-            self.ser.set_buffer_size(rx_size=65536)  # reduce frame loss during GIL contention
+        self.btn_serial.setText(f"SERIAL  ●  ...  ({port})")
+        self.btn_serial.setStyleSheet(
+            "background-color: #1A1A1A; color: #AAAAAA; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #888888; border-radius: 4px;")
+
+        def _open_port():
+            try:
+                ser = serial.Serial(port, BAUD, timeout=0.1)
+                ser.set_buffer_size(rx_size=65536)
+                self._sig_serial_result.emit(True, port, "", ser)
+            except Exception as e:
+                self._sig_serial_result.emit(False, port, str(e), None)
+
+        threading.Thread(target=_open_port, daemon=True).start()
+
+    def _on_serial_result(self, success: bool, port: str, error: str, ser):
+        """Slot called from _sig_serial_result — runs on the main thread."""
+        self._serial_connecting = False
+        if success:
+            self.ser = ser
             self._reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
             self._reader_thread.start()
             self.log(f"System ONLINE — {port} @ {BAUD}")
@@ -10595,13 +10639,23 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 "background-color: #1A3A1A; color: #44FF44; font-size: 17px; "
                 "font-weight: bold; padding: 5px; border: 1px solid #44FF44; border-radius: 4px;")
             QtCore.QTimer.singleShot(2500, lambda: self.request_chip_config(notify_lab_capture=False))
-        except Exception as e:
+        else:
             self.ser = None
-            self.log(f"ERROR: Could not open {port} — {e}")
+            self.log(f"ERROR: Could not open {port} — {error}")
             self.btn_serial.setText("SERIAL  ●  OFF")
             self.btn_serial.setStyleSheet(
                 "background-color: #3A1A1A; color: #FF4444; font-size: 17px; "
                 "font-weight: bold; padding: 5px; border: 1px solid #FF4444; border-radius: 4px;")
+
+    def _on_udp_active(self):
+        """Slot called on main thread when first UDP datagram arrives.
+        Switches active transport to UDP so serial frames stop feeding the pipeline."""
+        self._active_transport = "udp"
+        self.log(f"Data source: UDP WiFi (:{self._udp_port})")
+        self.btn_udp.setText(f"UDP WiFi  ●  ON  (:{self._udp_port})")
+        self.btn_udp.setStyleSheet(
+            "background-color: #1A1E3A; color: #44AAFF; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #44AAFF; border-radius: 4px;")
 
     def _toggle_udp(self):
         if self._udp_thread is not None and self._udp_thread.is_alive():
@@ -10642,15 +10696,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._udp_stop.clear()
         self._gaps_B   = 0
         self._udp_port = UDP_DEFAULT_PORT
-        self.log(f"UDP listening on port {self._udp_port}...")
         self._udp_thread = threading.Thread(target=self._udp_reader, daemon=True)
         self._udp_thread.start()
-        self._active_transport = "udp"
-        self.log(f"Data source: UDP WiFi (:{self._udp_port})")
-        self.btn_udp.setText(f"UDP WiFi  ●  ON  (:{self._udp_port})")
+        # Transport switches to "udp" only after first datagram arrives (_on_udp_active).
+        # Serial stays active until then so data is never lost while WiFi connects.
+        self.log(f"UDP listening on port {self._udp_port} — data source stays SERIAL until first datagram")
+        self.btn_udp.setText(f"UDP WiFi  ●  LISTEN  (:{self._udp_port})")
         self.btn_udp.setStyleSheet(
-            "background-color: #1A1E3A; color: #44AAFF; font-size: 17px; "
-            "font-weight: bold; padding: 5px; border: 1px solid #44AAFF; border-radius: 4px;")
+            "background-color: #1A1E3A; color: #AAAAFF; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #8888CC; border-radius: 4px;")
 
     def _udp_reader(self):
         """Dedicated thread: receives UDP datagrams into _udp_queue.
@@ -10673,6 +10727,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     _known_ip = _src_ip
                     self._esp32_ip = _src_ip
                     self._sig_log.emit(f"[UDP] First datagram from {_src_ip}")
+                    self._sig_udp_active.emit()   # switch transport on main thread
                 elif _src_ip != _known_ip:
                     self._sig_log.emit(f"[UDP] Source IP changed: {_known_ip} → {_src_ip}")
                     _known_ip = _src_ip
@@ -11307,6 +11362,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         delays never affect serial data ingestion.
         Timing budget: PythonTimingWindow._PLOTS_TICK_BUDGET_MS.
         Render rows: PythonTimingWindow._PLOTS_TICK_ROWS."""
+        _t_render = time.perf_counter()
         if not self._render_pending:
             return
         self._render_pending = False
@@ -11518,33 +11574,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_afe_sweep_default)
         if s.value("PPGMonitor/labcapture_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_lab_capture_default)
+        if getattr(self, '_restore_serial_on_start', False):
+            QtCore.QTimer.singleShot(50,  lambda: self._connect_serial(self.combo_port.currentText()))
+        if getattr(self, '_restore_udp_on_start', False):
+            QtCore.QTimer.singleShot(150, self._connect_udp)
         QtCore.QTimer.singleShot(300, self._bring_all_to_front)
 
     def _bring_all_to_front(self):
-        import ctypes
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        fg_hwnd = user32.GetForegroundWindow()
-        fg_tid  = user32.GetWindowThreadProcessId(fg_hwnd, None)
-        my_tid  = kernel32.GetCurrentThreadId()
-        if fg_tid != my_tid:
-            user32.AttachThreadInput(my_tid, fg_tid, True)
-        for w in [self, self.ppgplots_window, self.signals_window, self.results_window, self.serialcom_window,
-                  self.hrlab_window, self.spo2lab_window, self.hr3lab_window,
-                  self.spo2test_window, self.hr1test_window, self.hr2test_window,
-                  self.hr3test_window, self.pilab_window,
-                  self.esp32_timing_window, self.hw_config_window,
-                  self.diag_window, self.afe_sweep_window, self.lab_capture_window]:
-            if w is not None:
-                w.show()
-                w.raise_()
-                w.activateWindow()
-                try:
-                    user32.SetForegroundWindow(int(w.winId()))
-                except Exception:
-                    pass
-        if fg_tid != my_tid:
-            user32.AttachThreadInput(my_tid, fg_tid, False)
+        pass
 
     def _auto_close_chk(self):
         if self.save_file_chk is not None:

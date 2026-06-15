@@ -12238,3 +12238,338 @@ El diagnóstico muestra que el código es correcto. El script se relanzó al fin
 ### Aclaración al usuario
 
 La spec **no se actualiza automáticamente** — hay que actualizarla manualmente en la misma sesión en que se modifica el código.
+
+## Sesión 2026-06-14j — PILAB: aumento de fuentes en controles y tabla
+
+### Cambio
+
+`pulsenest_lab.py` — `PILabWindow._make_config_tab()` y `_build_ui()`:
+
+Aumentados todos los tamaños de fuente del panel de configuración y la tabla inferior derecha:
+
+| Elemento | Antes | Ahora |
+|---|---|---|
+| Spinboxes / ComboBoxes (`_ss_spin`, `_ss_cb`) | 17px | 20px |
+| Títulos STEP1/2/3 (`_lbl_sty`) | 17px | 20px |
+| Labels de fila del form (QLabel inner) | 17px | 20px |
+| Header "Instance A / B" | 16px | 20px |
+| Celdas de la tabla (`QTableWidget`) | 24px | 28px |
+| Cabeceras de fila/columna (`QHeaderView::section`) | 20px | 24px |
+
+## Sesión 2026-06-14k — Fix: UDP first-packet activation
+
+### Problema
+
+La app se "bloqueaba" (aparecía congelada) al arrancar si no recibía tramas. El problema se correlacionó con la introducción de PILabWindow pero era independiente de ella.
+
+### Diagnóstico
+
+Causa raíz en dos capas:
+
+1. **`_render_pending = False`** suprime TODO el render tick cuando no hay datos nuevos — incluyendo updates que deberían ser independientes de los datos.
+
+2. **UDP se activaba como transporte antes de recibir ningún datagrama.** En `_connect_udp()` se ejecutaba `self._active_transport = "udp"` inmediatamente al arrancar el thread. Si el ESP32 sólo era alcanzable por USB (serial) y no por WiFi, las tramas serial llegaban al `_serial_queue` pero el drain tick las ignoraba (`if not _is_active: continue`). Resultado: `_new_data = False` → `_render_pending = False` → la app aparecía completamente congelada aunque el serial reader recibía 500 tramas/segundo.
+
+La conexión con PILabWindow fue coincidencial: el commit de PILabWindow incluyó `pilab_open=true` en el INI, haciendo que el problema (pre-existente desde la introducción de UDP en `af7fcc1`) se manifestara de forma más obvia.
+
+### Fix implementado — first-packet UDP activation
+
+`pulsenest_lab.py`:
+
+- **`_sig_udp_active = QtCore.pyqtSignal()`** — nueva señal emitida por `_udp_reader` al recibir el primer datagrama.
+- **`_connect_udp()`** — ya NO pone `_active_transport = "udp"` inmediatamente. Botón muestra `UDP WiFi ● LISTEN (:{port})` (azul tenue) mientras espera el primer datagrama. Serial sigue activo.
+- **`_udp_reader()`** — cuando `_known_ip is None` (primer datagrama): `self._sig_udp_active.emit()`.
+- **`_on_udp_active()`** — nuevo slot (main thread): pone `_active_transport = "udp"`, actualiza botón a `UDP WiFi ● ON`, loguea el cambio.
+
+### Comportamiento nuevo
+
+| Estado | Transporte activo | Botón UDP |
+|---|---|---|
+| UDP no conectado | serial | `UDP WiFi ● OFF` |
+| UDP conectado, sin datagramas | serial | `UDP WiFi ● LISTEN (:7788)` |
+| UDP recibe primer datagrama | udp | `UDP WiFi ● ON (:7788)` |
+| UDP desconectado | serial | `UDP WiFi ● OFF` |
+
+## Sesión 2026-06-14l — Continuación: verificación fix UDP first-packet
+
+Sesión de continuación tras compactación de contexto. Sin cambios adicionales de código.
+Fix de sesión 2026-06-14k deployado y script relanzado. Pendiente confirmación del usuario de que el bloqueo está resuelto.
+
+## Sesión 2026-06-15a — Regresión freeze: investigación + debug logging
+
+### Problema
+
+Tras el fix UDP first-packet (sesión k), el usuario reporta freeze peor que antes: se cuelga incluso cuando el firmware está enviando tramas.
+
+### Diagnóstico
+
+**Debug logging añadido a `_process_frames_tick`** (temporal, para diagnóstico):
+- Fichero `C:\PRJ\MOW\PulseNest\debug_drain.log`
+- Registra cada ~1 segundo si no llegan datos: `[T{n}] NO_DATA streak=...`
+- Captura excepciones con traceback
+
+**Resultado del log al reproducir freeze:**
+```
+[T1] NO_DATA streak=1 transport=serial serial_q=0 udp_q=0 paused=False pilab=False
+```
+Solo una entrada → el QTimer del drain **deja de disparar después del primer tick** (~20ms). El main thread Qt se bloquea.
+
+**Pista clave del usuario:** el freeze solo ocurre con **"PPG Signals" + "HW CONFIG" ambas abiertas**. Ninguna por separado lo produce.
+
+### Root cause identificado
+
+Cadena exacta:
+1. `showEvent` → `singleShot(0ms, _open_hw_config_default)`
+2. `toggle_hw_config` → `singleShot(200ms, hw_config_window._on_read_cfg)`
+3. A los 200ms: serial aún conectando → `request_chip_config` falla → `_warn_not_connected()` → **`QMessageBox.warning()` modal**
+4. El event loop Qt entra en el exec del modal → QTimers dejan de disparar → freeze total
+
+Con PPGSignals también abierta, pyqtgraph tarda más en inicializar → más probable que el serial no esté listo a los 200ms.
+
+El bug existía antes de PILabWindow (la combinación HWConfig+PPGSignals ya activaba el QMessageBox), pero se hizo más evidente porque el commit de PILabWindow guardó en el INI `hw_config_open=true` + `signals_open=true`.
+
+### Fix aplicado
+
+Nuevo método `_auto_read_cfg` en `HWConfigWindow`: igual que `_on_read_cfg` pero sin `QMessageBox.warning()` — solo actualiza el statusbar si el serial no está listo.
+
+`toggle_hw_config` cambiado de `singleShot(200, _on_read_cfg)` → `singleShot(200, _auto_read_cfg)`.
+
+El botón "Read" manual sigue usando `_on_read_cfg` (con modal) — correcto para acción explícita del usuario.
+
+### Fix anterior incorrecto → root cause real
+
+El fix de `_auto_read_cfg` (sin QMessageBox) no resolvió el freeze. El log de debug reveló el root cause real:
+
+```
+[BRING] complete       ← _bring_all_to_front termina OK
+(silencio total)       ← drain timer deja de disparar
+```
+
+**Root cause real:** `AttachThreadInput(my_tid, fg_tid, True)` + múltiples `SetForegroundWindow()` en secuencia rápida → Windows encola WM_ACTIVATE/WM_DEACTIVATE para cada ventana → Qt queda bloqueado procesando esos mensajes de activación cuando hay ≥2 ventanas con intercambio de foco.
+
+Con solo una ventana (HWConfig o PPGSignals): un solo SetForegroundWindow → un solo WM_ACTIVATE → Qt lo procesa sin problema.
+Con dos ventanas: signals → hw_config → Qt recibe WM_DEACTIVATE(signals) + WM_ACTIVATE(hw_config) en el mismo ciclo → bloqueo.
+
+### Fix final aplicado
+
+`_bring_all_to_front` simplificado: **eliminados `AttachThreadInput` y `SetForegroundWindow`**. Solo `show()` + `raise_()` + `activateWindow()` para cada ventana. Suficiente para restaurar ventanas al primer plano. Sin llamadas Win32 de bajo nivel que puedan corromper la cola de mensajes de Qt.
+
+### Código de debug temporal: eliminado
+
+- `_dbg_log()`, `_dbg_tick_n`, `_dbg_no_data_streak` — eliminados de `PPGMonitor`
+- Instrumentación en `_process_frames_tick` y `_bring_all_to_front` — eliminada
+- `debug_drain.log` puede borrarse del directorio del proyecto
+
+### Investigación continúa — nuevas pistas
+
+- **Fix `AttachThreadInput` tampoco resuelve** el freeze (confirmado por usuario)
+- **Freeze es intermitente** — no siempre ocurre con PPGSignals+HWConfig
+- **Clave:** cuando hace freeze, aparece "Connecting to COM11..." pero NO "UDP listening on port..." → el main thread se bloquea entre `_connect_serial` (singleShot 50ms) y `_connect_udp` (singleShot 150ms)
+
+### Trazas `[DBG]` añadidas (temporal)
+
+Para acotar exactamente dónde se bloquea:
+- `[DBG] joining reader thread...` / `[DBG] join done` — en `_connect_serial` si `_reader_thread` no es None
+- `[DBG] _connect_serial: bg thread started, returning to event loop` — final de `_connect_serial`
+- `[DBG] _connect_udp: entered` — inicio de `_connect_udp`
+- `[DBG] _connect_udp: joining udp thread...` / `join done` — si `_udp_thread` no es None
+
+Pendiente: reproducir freeze y reportar qué trazas aparecen.
+
+## Sesión 2026-06-15b — Acotación freeze 130ms→150ms + logging a fichero
+
+### Hallazgo
+
+Con las trazas `self.log("[DBG] probe Xms")` el usuario confirma: **70ms, 100ms y 130ms aparecen en el log UI, pero 200ms no**. El bloqueo ocurre entre **130ms y 150ms** (el singleShot(150) de `_connect_udp` tampoco dispara).
+
+### Problema con self.log()
+
+Al congelarse la UI, los mensajes pendientes quedan en cola y no son legibles. `debug_probe.log` no existía porque era código de la sesión anterior ya limpiado.
+
+### Fix: _flog() con escritura a fichero
+
+Reemplazadas las lambdas por `_flog()` local en `showEvent`:
+- Escribe inmediatamente a `debug_probe.log` con `open/write/flush` (funciona aunque UI esté congelada)
+- Incluye tiempo **real** desde `_t0` (`perf_counter`) para detectar si los probes llegan tarde por bloqueo previo en singleShot(0)
+- Probes: 0ms, 70ms, 100ms, 130ms, 200ms
+
+También añadida traza al inicio de `_on_serial_result`: `[DBG] _on_serial_result: entered success=...`
+
+### Pendiente
+
+Reproducir freeze → leer `debug_probe.log` con `! type C:\PRJ\MOW\PulseNest\debug_probe.log`.
+
+## Sesión 2026-06-15b — Nuevas trazas de diagnóstico para acotar freeze
+
+### Estado anterior
+
+- Confirmado: `_connect_serial` (singleShot 50ms) sí dispara → aparece "Connecting to COM11..."
+- Confirmado: `_connect_udp` (singleShot 150ms) NUNCA dispara → "[DBG] _connect_udp: entered" no aparece
+- `_reader_thread` es None en primer arranque → no hay join blocking en `_connect_serial`
+- El bloqueo ocurre entre t=50ms y t=150ms (ventana de 100ms)
+
+### Hipótesis principal
+
+Pyqtgraph initial render de `PPGSignalsWindow` (muchos PlotWidgets) puede tomar 100-200ms en el main thread procesando paint events. Si ese render ocurre entre t=50ms y t=150ms, el singleShot(150) no dispara.
+
+Alternativa: `_on_serial_result` (emitido por bg thread via QueuedConnection) podría ejecutarse en esa ventana y hacer algo bloqueante.
+
+### Trazas nuevas añadidas
+
+1. **`_on_serial_result`**: `[DBG] _on_serial_result: entered success=True/False` al inicio
+2. **Probes de timing en `showEvent`**:
+   - `[DBG] probe 70ms`
+   - `[DBG] probe 100ms`
+   - `[DBG] probe 130ms`
+   - `[DBG] probe 200ms`
+
+Objetivo: ver cuál probe aparece o no para acotar exactamente cuándo se bloquea el event loop.
+
+### Pendiente
+
+Reproducir freeze con las nuevas trazas y analizar output del log.
+
+## Sesión 2026-06-15c — Root cause encontrado y fix aplicado
+
+### Metodología: diagnóstico autónomo (sin interacción del usuario)
+
+- **Heartbeat autónomo**: QTimer 500ms → fichero. Si valor deja de avanzar = event loop congelado.
+- **Bisect git**: `64960ea` (pre-PILab) no congela; `d327669` (PILab) congela.
+- **Tests aislados con ini**: signals sola / hw_config solo / ambas / ninguna / `_bring_all_to_front` desactivada.
+
+### Tabla de resultados
+
+| Configuración | Resultado |
+|---|---|
+| signals=false, hw_config=false | OK |
+| signals=true, hw_config=false | OK |
+| signals=false, hw_config=true | OK |
+| signals=true, hw_config=true | FREEZE |
+| signals=true, hw_config=true, `_bring_all_to_front` desactivada | OK |
+| signals=true, hw_config=true, fix aplicado | OK |
+
+### Root cause
+
+`_bring_all_to_front` llamaba `raise_()` sobre todas las subventanas. Con PPGSignalsWindow (pyqtgraph) + HWConfigWindow juntas: el cambio de foco entre ellas al ejecutar `raise_()` genera mensajes WM_PAINT diferidos que el event loop Qt procesa 2-3 segundos después, bloqueando el event loop indefinidamente cuando pyqtgraph intenta re-renderizar en cascada.
+
+El commit PILab eliminó `AttachThreadInput` de `_bring_all_to_front`. Con AttachThreadInput los threads compartían cola de mensajes y WM_PAINT se procesaba de forma ordenada. Sin él, el desorden de mensajes causa el hang.
+
+### Fix
+
+`_bring_all_to_front` simplificado: solo levanta la ventana principal. Las subventanas ya son visibles desde `toggle_xxx()`.
+
+```python
+def _bring_all_to_front(self):
+    # raise_() on pyqtgraph windows enqueues deferred WM_PAINT messages that
+    # block the event loop seconds later when multiple windows are open.
+    self.show()
+    self.raise_()
+```
+
+### Limpieza
+
+Todo el código de debug temporal eliminado: heartbeat timer, _dbgfile, _flog, probes, [DBG] traces en serial/UDP.
+
+---
+
+## Sesión 2026-06-15d — Freeze continúa: investigación profunda
+
+### Estado heredado
+
+- Fix 15c ("raise solo ventana principal") fue confirmado insuficiente: usuario reportó "se sigue congelando".
+- Debug actual: `_bring_all_to_front = pass` (no-op completo), heartbeat QTimer 500ms → `debug_hb.log`, drain/render escriben a `debug_last.log`.
+
+### Evidencia acumulada
+
+| Configuración | Resultado |
+|---|---|
+| signals=false, hw_config=false | OK |
+| signals=true, hw_config=false | OK |
+| signals=false, hw_config=true | OK |
+| signals=true, hw_config=true | FREEZE ~30s |
+| `_bring_all_to_front` = no-op + ambas ventanas | FREEZE ~30s |
+
+- `debug_last.log`: `render_skip 49652.469` (render_pending=False, render saltado)
+- `debug_hb.log`: `49652.647` — heartbeat disparó 178ms después de render_skip, luego PARA
+- Drain anterior fue T1294 × 20ms ≈ 26s desde inicio
+
+### Hallazgo: diff entre commits 64960ea y d327669
+
+`git diff 64960ea d327669` reveló que `_bring_all_to_front` NO cambió entre commits — es exactamente la misma función en ambos. La versión pre-PILab tenía: `AttachThreadInput + raise_() + activateWindow() + SetForegroundWindow()` para CADA ventana.
+
+El diff solo añade: PICalc class, PILabWindow class, tooltip `src=` param, SpO2 constants (tau 2/6s, warmup 18s), _pilab_refresh_counter.
+
+### Nueva hipótesis (WM_PAINT diferidos)
+
+Windows difiere WM_PAINT hasta ~26-30s cuando las ventanas no han respondido activamente a sus paints. Con `AttachThreadInput + SetForegroundWindow` (versión pre-PILab), cada `SetForegroundWindow(winId)` forzaba WM_PAINT inmediato — las ventanas se pintaban una a una a t=300ms de forma segura.
+
+Sin `SetForegroundWindow`, los WM_PAINT se acumulan hasta que Windows los fuerza todos a ~26s simultáneamente. Con PPGSignalsWindow (pyqtgraph) + HWConfigWindow juntas, este paint concurrente diferido crea el deadlock.
+
+Fixes previos con solo `raise_()` (Fix 3) también fallaron porque `raise_()` encola WM_PAINT pero no los despacha síncronamente. Solo `SetForegroundWindow` o `repaint()` fuerza dispatch síncrono.
+
+### Fix aplicado (misma sesión)
+
+**`_bring_all_to_front`** — sustituido no-op por `repaint()` síncrono en todas las ventanas abiertas:
+
+```python
+def _bring_all_to_front(self):
+    self.show()
+    self.raise_()
+    for w in [self.ppgplots_window, self.signals_window,
+              self.hr3lab_window, self.serialcom_window,
+              self.results_window, self.hw_config_window]:
+        if w is not None:
+            w.repaint()
+```
+
+**`PPGSignalsWindow._setup_ui`** — `disableAutoRange()` en los 3 ViewBoxes (p1, p2, p3) tras su creación.
+
+**Limpieza debug temporal:** eliminados heartbeat timer `_hb`, write a `debug_last.log` en inicio y fin de drain tick, write a `debug_last.log` en render tick.
+
+### Pendiente
+
+Confirmar que el freeze está resuelto (test ≥60 s con signals + hw_config ambas abiertas).
+
+---
+
+## Sesión 2026-06-15j
+
+### Tema: Diagnóstico definitivo y fix del freeze — causa raíz: puerto Bluetooth
+
+### Diagnóstico
+
+Continuando la sesión anterior, el freeze persistía con `serial_connected=true` + `signals_open=true` incluso con `_bring_all_to_front = pass` y sin debug writes.
+
+**Investigación sistemática (tests autónomos con `freeze_test.py`):**
+
+| Configuración | Resultado |
+|---|---|
+| `serial=false`, `signals=true` | 2/2 PASS |
+| `serial=true`, `signals=true` (COM99 → fallback COM11) | 2/2 FREEZE @~33s |
+| `serial=true`, `signals=false` (COM99 → fallback COM11) | 2/2 FREEZE @~33s |
+| `serial=true`, `signals=true` (COM99 → blank, con fix) | 3/3 PASS |
+| `serial=true`, `signals=true`, `hw_config=true`, COM15 | 3/3 PASS |
+
+**Causa raíz identificada:**
+
+`_populate_ports()` usaba `idx if idx >= 0 else 0` — si el puerto guardado en el ini (`COM99`) no estaba disponible, hacía fallback al primer puerto del combo en orden alfabético: **COM11 = "Standard Serial over Bluetooth link"** (driver Microsoft Bluetooth).
+
+Abrir un puerto Bluetooth serie a 921600 baud causa que el driver Bluetooth de Windows inicie un intento de conexión. Después de ~30 s (timeout Bluetooth), el driver envía un evento/mensaje al loop de Windows, que interfiere con el message pump de Qt → freeze.
+
+El "freeze" con `signals=true` de sesiones anteriores era **el mismo bug**: el combo caía en COM11 en todos los tests porque `combo_port=COM99` no estaba en la lista.
+
+### Fix aplicado
+
+**`_populate_ports()` en `pulsenest_lab.py`:** eliminado el fallback `else 0`. Ahora usa `setCurrentIndex(idx)` — si la porta no está en la lista, el combo queda sin selección (index -1, texto vacío). `_connect_serial("")` detecta el puerto vacío y retorna `"No port selected"` sin intentar conectar.
+
+```python
+self.combo_port.setCurrentIndex(idx)  # -1 si no encontrado → sin auto-connect
+```
+
+**Heartbeat timer `_hb`:** mantenido en producción para permitir tests de regresión con `freeze_test.py`.
+
+**`freeze_test.py`:** `STARTUP` reducido de 30 a 10 s.
+
+### Resultado final
+
+3/3 PASS con scenario de producción completo: `combo_port=COM15` (FTDI USB real) + `serial_connected=true` + `signals_open=true` + `hw_config_open=true`, con heartbeat real.
