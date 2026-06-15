@@ -12573,3 +12573,22 @@ self.combo_port.setCurrentIndex(idx)  # -1 si no encontrado → sin auto-connect
 ### Resultado final
 
 3/3 PASS con scenario de producción completo: `combo_port=COM15` (FTDI USB real) + `serial_connected=true` + `signals_open=true` + `hw_config_open=true`, con heartbeat real.
+
+---
+
+## Sesión 2026-06-15k
+
+### Tema: Fix PICalc — dc_sub cero para S1_BPF y S1_NONE
+
+### Bug
+
+Al cambiar el "Method:" de PILAB a "1.2 BPF" o "1.3 None", la primera gráfica (dc_sub A/B) se ponía a cero.
+
+### Causa
+
+En `PICalc.update()`, los casos `S1_BPF` y `S1_NONE` asignaban `dc_sub_ir = dc_sub_red = 0.0` explícitamente.
+
+### Fix
+
+- **S1_BPF:** `dc_sub = ir − ac_bpf` → muestra el componente de baja frecuencia que el BPF elimina
+- **S1_NONE:** `dc_sub = ir` → señal raw como referencia (nada se resta, paso directo)
