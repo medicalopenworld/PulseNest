@@ -1,7 +1,15 @@
 import sys
 import os
 import math
+import traceback as _tb
 from pathlib import Path
+
+def _crash_handler(exc_type, exc_val, exc_tb):
+    with open(os.path.join(os.path.dirname(__file__), "crash.log"), "a") as _f:
+        import datetime as _dt
+        _f.write(f"\n=== {_dt.datetime.now()} ===\n")
+        _tb.print_exception(exc_type, exc_val, exc_tb, file=_f)
+sys.excepthook = _crash_handler
 import serial
 from serial.tools import list_ports
 import threading
@@ -3930,6 +3938,7 @@ class PICalc:
         self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
         self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
         self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
+        self.ac_t_ir   = 0.0; self.ac_t_red   = 0.0  # STEP1 pulsatile waveform output
 
     def reset(self):
         """Reset all accumulators (keeps configuration)."""
@@ -3945,6 +3954,7 @@ class PICalc:
         self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
         self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
         self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
+        self.ac_t_ir   = 0.0; self.ac_t_red   = 0.0
 
     def reconfigure(self, fs):
         """Recalculate derived params from current settings and reset state."""
@@ -4013,6 +4023,10 @@ class PICalc:
             ac_ir = ir; ac_red = red
             self.dc_sub_ir  = ir
             self.dc_sub_red = red
+
+        # STEP1 pulsatile waveform output (fed to STEP2 amplitude estimator)
+        self.ac_t_ir  = ac_ir
+        self.ac_t_red = ac_red
 
         # ── STEP 2: AC estimator ─────────────────────────────────────────────
         if self.step2 == self.S2_EMA_RMS:
@@ -4821,12 +4835,12 @@ class PILabWindow(QtWidgets.QMainWindow):
         def _pen(c): return pg.mkPen(c, width=1)
 
         self.p_sig = gv.addPlot(row=0, col=0)
-        self.p_sig.setLabel('left', "IR signal [ADC]")
+        self.p_sig.setLabel('left', "AC_t [ADC] — STEP1 output")
         self.p_sig.showGrid(x=True, y=True, alpha=0.3)
         self.p_sig.addLegend(offset=(5, 5))
-        self.curve_sig  = self.p_sig.plot(pen=_pen(self._CLR_SIG), name="led1_sub")
-        self.curve_dc_a = self.p_sig.plot(pen=_pen(self._CLR_A),   name="DC_sub A")
-        self.curve_dc_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="DC_sub B")
+        self.curve_sig   = self.p_sig.plot(pen=_pen(self._CLR_SIG), name="led1_sub")
+        self.curve_act_a = self.p_sig.plot(pen=_pen(self._CLR_A),   name="AC_t A")
+        self.curve_act_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="AC_t B")
 
         self.p_ac = gv.addPlot(row=1, col=0)
         self.p_ac.setLabel('left', "AC_r [ADC]")
@@ -5109,8 +5123,8 @@ class PILabWindow(QtWidgets.QMainWindow):
 
         self._t_buf.append(t)
         self._ir_buf.append(float(ir))
-        self._dc_sub_a.append(self.calc_a.dc_sub_ir)
-        self._dc_sub_b.append(self.calc_b.dc_sub_ir)
+        self._dc_sub_a.append(self.calc_a.ac_t_ir)
+        self._dc_sub_b.append(self.calc_b.ac_t_ir)
         self._ac_t_a.append(self.calc_a.ac_r_ir)
         self._ac_t_b.append(self.calc_b.ac_r_ir)
         self._pi_ir_a.append(self.calc_a.pi_ir)
@@ -5126,9 +5140,9 @@ class PILabWindow(QtWidgets.QMainWindow):
         t = np.array(self._t_buf)
         t_end = t[-1]
 
-        self.curve_sig.setData(t,  np.array(self._ir_buf))
-        self.curve_dc_a.setData(t, np.array(self._dc_sub_a))
-        self.curve_dc_b.setData(t, np.array(self._dc_sub_b))
+        self.curve_sig.setData(t,    np.array(self._ir_buf))
+        self.curve_act_a.setData(t, np.array(self._dc_sub_a))
+        self.curve_act_b.setData(t, np.array(self._dc_sub_b))
         self.curve_ac_a.setData(t, np.array(self._ac_t_a))
         self.curve_ac_b.setData(t, np.array(self._ac_t_b))
         self.curve_pi_a.setData(t, np.array(self._pi_ir_a))

@@ -12735,3 +12735,40 @@ Fix: eliminado `color` del stylesheet de `QHeaderView::section` (añadido `font-
 `closeEvent` guarda todos los parámetros A/B en `PILabWindow/A/*` y `PILabWindow/B/*` (13 valores por instancia: s1/s2/s3 indices, tau_sub, bpf_lo/hi, tau_ac, win_s, hr_bpm, n_harm, tau_norm, lpf_fc, win_norm).
 
 `__init__` reordenado: `_build_ui()` → restaurar geometría → restaurar config desde ini → `_apply_config()`.
+
+---
+
+## Sesión 2026-06-15u
+
+### Tema: PILabWindow Plot 1 — DC_sub → AC_t (onda pulsátil STEP1)
+
+### Motivación
+
+`dc_sub` mostraba el componente de baja frecuencia eliminado por STEP1 — poca utilidad diagnóstica. `ac_t` es la onda pulsátil real que sale de STEP1 y que STEP2 intenta medir en amplitud. Ver A vs B en `ac_t` permite comparar directamente cómo cada método filtra la señal cardíaca.
+
+### Cambios
+
+**PICalc:**
+- Añadido `self.ac_t_ir = 0.0; self.ac_t_red = 0.0` como outputs en `__init__` y `reset()`
+- Al final del bloque STEP1 (tras if/elif/else): `self.ac_t_ir = ac_ir; self.ac_t_red = ac_red`
+
+**PILabWindow:**
+- Plot 1: label `"IR signal [ADC]"` → `"AC_t [ADC] — STEP1 output"`
+- `curve_dc_a/b` → `curve_act_a/b`, names `"DC_sub A/B"` → `"AC_t A/B"`
+- `feed_sample` y offline path: `_dc_sub_a/b` ahora almacena `calc.ac_t_ir` (no `dc_sub_ir`)
+- `update_plots`: usa `curve_act_a/b`
+
+---
+
+## Sesión 2026-06-15v
+
+### Tema: Crash logger global (sys.excepthook → crash.log)
+
+El script se cerraba inesperadamente sin dejar traza alguna (pythonw suprime stderr).
+
+Añadido al inicio de `pulsenest_lab.py` (tras imports):
+```python
+sys.excepthook = _crash_handler  # escribe traceback en crash.log
+```
+
+Cualquier excepción no capturada en el hilo principal queda registrada en `crash.log` con timestamp. Permite diagnosticar cierres inesperados futuros.
