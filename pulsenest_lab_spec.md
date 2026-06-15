@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.4
+# pulsenest_lab — Specification v1.6
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -67,9 +67,19 @@ Two transports operate in parallel:
 | USB serial (921600 baud) | bidirectional | Data frames + command I/O; always used |
 | UDP WiFi (default port 5005) | ESP32 → PC | High-speed data frames; toggled independently |
 
-Only the **active transport** feeds the algorithm/display pipeline. The active transport is
-selected by the `btn_udp` toggle: OFF = serial active, ON = UDP active. Serial stays open
+Only the **active transport** feeds the algorithm/display pipeline. Serial stays open
 in both cases to receive `$CFG`/`$DIAG`/`$ERR` responses and to send `$SET`/`$CFG?`/`$DIAG?` commands.
+
+**UDP first-packet activation:** `_active_transport` is NOT switched to `"udp"` when `_connect_udp()` is
+called. It switches only when the first UDP datagram arrives (`_on_udp_active()` slot, main thread).
+Until then the button shows `UDP WiFi ● LISTEN` and serial remains the active transport.
+This prevents the app from appearing frozen when WiFi is not reachable but USB is connected.
+
+| `btn_udp` state | `_active_transport` |
+|---|---|
+| OFF | `"serial"` |
+| LISTEN (UDP thread running, no datagrams yet) | `"serial"` |
+| ON (first datagram received) | `"udp"` |
 
 Each transport has its own reader thread: `_serial_reader` and `_udp_reader`.
 Both threads enqueue raw bytes into `_serial_queue` or `_udp_queue`. The processing loop
@@ -880,6 +890,11 @@ All CSV files include a `#`-prefixed header comment with timestamp and relevant 
 
 Settings are saved on window close and restored on startup.
 
+**Port restoration rule:** if the saved `combo_port` is not in the current system port list,
+the combo is left unselected (no auto-connect). The user must select a port manually and click
+SERIAL ON. This prevents the script from connecting to the wrong port (e.g. a Bluetooth COM
+port that happens to be first alphabetically).
+
 ---
 
 ## 10. Display conventions
@@ -942,6 +957,19 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.6 — 2026-06-15
+- Fixed startup port fallback bug (`_populate_ports`): when the saved `combo_port` is not in
+  the available port list, the combo is now left unselected (index -1) instead of falling back
+  to index 0. Prevents silent connection to the wrong port (e.g. Bluetooth COM ports), which
+  caused the Windows Bluetooth driver to freeze Qt's message pump after ~30 s.
+- Added heartbeat timer `_hb` (500 ms, writes `debug_hb.log`) for autonomous freeze regression
+  testing via `freeze_test.py`.
+
+### v1.5 — 2026-06-14
+- Fixed UDP first-packet activation (§4.1): `_active_transport` stays `"serial"` until first UDP datagram arrives.
+  `_connect_udp()` now shows `LISTEN` state; `_on_udp_active()` slot switches to `"udp"` on main thread.
+  Fixes apparent app freeze when WiFi unreachable but USB connected.
 
 ### v1.4 — 2026-06-14
 - Added `PICalc` class (§5.6): configurable 3-step PI pipeline (STEP1/STEP2/STEP3), firmware M1 defaults.
