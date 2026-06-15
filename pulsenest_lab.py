@@ -4840,7 +4840,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         def _pen(c): return pg.mkPen(c, width=1)
 
         self.p_sig = gv.addPlot(row=0, col=0)
-        self.p_sig.setLabel('left', "AC_t [ADC] — STEP1 output")
+        self.p_sig.setLabel('left', "AC_t_ir [ADC]")
         self.p_sig.showGrid(x=True, y=True, alpha=0.3)
         self.p_sig.addLegend(offset=(5, 5))
         self.curve_sig   = self.p_sig.plot(pen=_pen(self._CLR_SIG), name="led1_sub")
@@ -4848,7 +4848,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.curve_act_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="AC_t B")
 
         self.p_ac = gv.addPlot(row=1, col=0)
-        self.p_ac.setLabel('left', "AC_r [ADC]")
+        self.p_ac.setLabel('left', "AC_r_ir [ADC]")
         self.p_ac.showGrid(x=True, y=True, alpha=0.3)
         self.p_ac.addLegend(offset=(5, 5))
         self.curve_ac_a = self.p_ac.plot(pen=_pen(self._CLR_A), name="AC_r A")

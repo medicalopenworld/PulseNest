@@ -12846,3 +12846,14 @@ Añadido 5º plot `p_spo2` (row=4) en PILabWindow con curvas `curve_spo2_a/b`.
 - Buffers `_spo2_a/b` alimentados con `calc.spo2` en feed loop
 - `setXLink(p_sig)` para sincronización temporal con el resto de plots
 - Label: `"SpO2 [%]"`, eje X: `"Time [s]"`
+
+---
+
+## Sesión 2026-06-15ab
+
+### Tema: PILabWindow — renombrar ejes Plot1 y Plot2
+
+- Plot1: `"AC_t [ADC] — STEP1 output"` → `"AC_t_ir [ADC]"`
+- Plot2: `"AC_r [ADC]"` → `"AC_r_ir [ADC]"`
+
+Más conciso y consistente con la convención `_ir` del proyecto.
