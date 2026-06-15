@@ -12827,3 +12827,11 @@ Tabla ampliada de 4 → 8 filas para mostrar el desglose completo del pipeline P
 **Tooltips:** cada cabecera de fila tiene tooltip explicando fórmula y unidades. Tooltip general de tabla actualizado.
 
 **Nota:** SpO2 usa la fórmula lineal estándar provisional (misma que firmware). No está calibrada.
+
+---
+
+## Sesión 2026-06-15z
+
+### Tema: PILabWindow — aumentar altura de tabla
+
+`setMinimumHeight(320→480)` y `setMaximumHeight(480→700)` para que las 8 filas sean visibles sin scroll.

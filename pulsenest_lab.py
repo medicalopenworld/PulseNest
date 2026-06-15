@@ -4947,8 +4947,8 @@ class PILabWindow(QtWidgets.QMainWindow):
         ]
         for i, tip in enumerate(_row_tips):
             self._val_table.verticalHeaderItem(i).setToolTip(tip)
-        self._val_table.setMinimumHeight(320)
-        self._val_table.setMaximumHeight(480)
+        self._val_table.setMinimumHeight(480)
+        self._val_table.setMaximumHeight(700)
         self._val_table.setToolTip(_make_tooltip("PI pipeline values",
             "Full decomposition of the 3-step PI pipeline for instances A and B.\n"
             "Hover over row headers for per-row details."))
