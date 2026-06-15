@@ -7407,9 +7407,20 @@ class PPGPlotsWindow(QtWidgets.QWidget):
 
 
 class _ThousandsAxisItem(pg.AxisItem):
-    """Y-axis that formats tick labels with a space as the thousands separator."""
+    """Y-axis that formats tick labels with a thin space as the thousands separator."""
     def tickStrings(self, values, scale, spacing):
-        return [f"{int(v):,}".replace(",", "\u2009") for v in values]
+        strings = []
+        for v in values:
+            try:
+                vs = v * scale
+                if spacing * scale >= 1.0:
+                    strings.append(f"{round(vs):,}".replace(",", "\u2009"))
+                else:
+                    places = max(0, int(-math.log10(spacing * scale)) + 1)
+                    strings.append(f"{vs:,.{places}f}".replace(",", "\u2009"))
+            except Exception:
+                strings.append("")
+        return strings
 
 
 class PPGSignalsWindow(QtWidgets.QWidget):

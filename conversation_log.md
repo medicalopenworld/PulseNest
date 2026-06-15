@@ -12611,3 +12611,13 @@ En `PICalc.update()`, los casos `S1_BPF` y `S1_NONE` asignaban `dc_sub_ir = dc_s
 ### Tema: PPG Signals — separador de miles en eje Y
 
 Añadida clase `_ThousandsAxisItem(pg.AxisItem)` que sobreescribe `tickStrings()` para formatear los valores del eje Y con espacio fino (U+2009) como separador de miles. Aplicada a los 3 plots de PPGSignalsWindow (p1, p2, p3) via `axisItems={'left': ...}`.
+
+---
+
+## Sesión 2026-06-15n
+
+### Tema: PPGSignalsWindow Y-axis — fix etiquetas desaparecidas
+
+La primera implementación de `_ThousandsAxisItem` no multiplicaba por `scale` (parámetro de pyqtgraph para prefijos SI) y no manejaba excepciones. Esto causaba que algunos ticks devolvieran strings vacíos.
+
+Fix: `tickStrings()` ahora multiplica por `scale`, usa `round()` en lugar de `int()`, aplica formato decimal cuando `spacing * scale < 1.0`, y captura cualquier excepción devolviendo `""` en lugar de crashar.
