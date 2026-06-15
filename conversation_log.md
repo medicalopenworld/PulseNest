@@ -12867,3 +12867,21 @@ Más conciso y consistente con la convención `_ir` del proyecto.
 "DC subtraction" era method-specific (solo correcto para EMA). "AC extraction" describe el resultado independientemente del método (EMA/BPF/None producen todos la componente AC pulsátil).
 
 Cambios en todas las ocurrencias: docstring PICalc, comentario `update()`, label UI, help text, tooltip botón PILAB.
+
+---
+
+## Sesión 2026-06-16a
+
+### Tema: PICalc — SpO2 sincronizado desde $CFG del firmware
+
+**Problema:** PICalc usaba fórmula hardcoded `110 − 25×R`, diferente a la librería (`114.9208 − 30.5547×R`).
+
+**Solución:** PICalc ahora usa `spo2_a`/`spo2_b` como parámetros de instancia, sincronizados desde el firmware en tiempo real.
+
+**Cambios:**
+- `PICalc`: añadido `DEFAULT_SPO2_A=114.9208`, `DEFAULT_SPO2_B=30.5547` como class constants. Nuevos atributos `self.spo2_a`/`self.spo2_b` (inicializados a los defaults). `update()` usa `spo2_a - spo2_b * R`.
+- `PILabWindow._sync_spo2_coeffs(kv)`: lee `spo2a`/`spo2b` del dict `$CFG` y los aplica a `calc_a` y `calc_b`. Fallback a defaults si ausentes.
+- `toggle_pilab`: llama `_sync_spo2_coeffs(self._last_cfg)` justo después de crear la ventana.
+- `_on_cfg_frame_received`: llama `pilab_window._sync_spo2_coeffs(kv)` si la ventana está abierta → actualización en vivo.
+
+Las claves en `$CFG` son `spo2a` y `spo2b` (confirmado en main.cpp).

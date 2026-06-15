@@ -3900,6 +3900,10 @@ class PICalc:
     S2_SPECTRAL = "2.4"; S2_HARMONICS = "2.5"
     S3_EMA = "3.1"; S3_LPF = "3.2"; S3_WIN_MEAN = "3.3"
 
+    # SpO2 calibration defaults (mirror firmware incunest_afe4490 defaults)
+    DEFAULT_SPO2_A = 114.9208
+    DEFAULT_SPO2_B =  30.5547
+
     def __init__(self):
         # STEP1
         self.step1      = self.S1_EMA
@@ -3932,6 +3936,10 @@ class PICalc:
         self._bpf_sos = None; self._bpf_zi_ir = None; self._bpf_zi_red = None
         self._lpf_sos = None; self._lpf_zi_ir = None; self._lpf_zi_red = None
         self._win_max_n = 200; self._norm_max_n = 200
+
+        # SpO2 calibration (synced from firmware $CFG at runtime)
+        self.spo2_a = self.DEFAULT_SPO2_A
+        self.spo2_b = self.DEFAULT_SPO2_B
 
         # outputs
         self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
@@ -4112,7 +4120,7 @@ class PICalc:
         self.pi_ir  = self.ac_r_ir  / self.dc_r_ir  * 100.0
         self.pi_red = self.ac_r_red / self.dc_r_red * 100.0
         self.R    = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
-        self.spo2 = max(0.0, min(100.0, 110.0 - 25.0 * self.R)) if self.R > 0.0 else 0.0
+        self.spo2 = max(0.0, min(100.0, self.spo2_a - self.spo2_b * self.R)) if self.R > 0.0 else 0.0
         return self.pi_ir, self.pi_red, self.R
 
 
@@ -5143,6 +5151,16 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._t0_us = None
+
+    def _sync_spo2_coeffs(self, kv):
+        """Read spo2_a/spo2_b from a parsed $CFG kv dict and apply to both PICalc instances."""
+        try:
+            a = float(kv.get("spo2a", PICalc.DEFAULT_SPO2_A))
+            b = float(kv.get("spo2b", PICalc.DEFAULT_SPO2_B))
+        except (ValueError, TypeError):
+            return
+        self.calc_a.spo2_a = a;  self.calc_a.spo2_b = b
+        self.calc_b.spo2_a = a;  self.calc_b.spo2_b = b
 
     def _refresh_param_state(self, cfg):
         """Enable/disable parameter widgets based on current STEP combo selections."""
@@ -10138,6 +10156,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._last_cfg = kv
         if self.hw_config_window is not None:
             self.hw_config_window.update_from_cfg(kv)
+        if self.pilab_window is not None:
+            self.pilab_window._sync_spo2_coeffs(kv)
         self._cfg_notify_lab_capture = True   # reset to default after each frame
 
     def _on_tcfg_frame_received(self, line):
@@ -10373,6 +10393,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.btn_pilab.isChecked():
             self.pilab_window = PILabWindow(None)
             self.pilab_window.main_monitor = self
+            self.pilab_window._sync_spo2_coeffs(self._last_cfg)
             self.pilab_window.show()
         else:
             if self.pilab_window is not None:
