@@ -4774,9 +4774,6 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._r_b       = deque(maxlen=self._BUF_LEN)
 
         self._build_ui()
-        # apply firmware M1 defaults to both instances on startup
-        self._apply_config(self._cfg_a, self.calc_a)
-        self._apply_config(self._cfg_b, self.calc_b)
 
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         geom = s.value("PILabWindow/geometry")
@@ -4784,6 +4781,28 @@ class PILabWindow(QtWidgets.QMainWindow):
             self.restoreGeometry(geom)
         else:
             self.resize(1800, 900)
+
+        # restore config from ini (falls back to widget defaults if not saved yet)
+        for inst, cfg in (("A", self._cfg_a), ("B", self._cfg_b)):
+            pfx = f"PILabWindow/{inst}"
+            if s.contains(f"{pfx}/s1"):
+                cfg['s1'].setCurrentIndex(s.value(f"{pfx}/s1",      0,    type=int))
+                cfg['s2'].setCurrentIndex(s.value(f"{pfx}/s2",      0,    type=int))
+                cfg['s3'].setCurrentIndex(s.value(f"{pfx}/s3",      0,    type=int))
+                cfg['tau_sub'].setValue(  s.value(f"{pfx}/tau_sub", 2.0,  type=float))
+                cfg['bpf_lo'].setValue(   s.value(f"{pfx}/bpf_lo",  0.5,  type=float))
+                cfg['bpf_hi'].setValue(   s.value(f"{pfx}/bpf_hi",  4.0,  type=float))
+                cfg['tau_ac'].setValue(   s.value(f"{pfx}/tau_ac",  6.0,  type=float))
+                cfg['win_s'].setValue(    s.value(f"{pfx}/win_s",   4.0,  type=float))
+                cfg['hr_bpm'].setValue(   s.value(f"{pfx}/hr_bpm",  70.0, type=float))
+                cfg['n_harm'].setValue(   s.value(f"{pfx}/n_harm",  3,    type=int))
+                cfg['tau_norm'].setValue( s.value(f"{pfx}/tau_norm",2.0,  type=float))
+                cfg['lpf_fc'].setValue(   s.value(f"{pfx}/lpf_fc",  0.4,  type=float))
+                cfg['win_norm'].setValue( s.value(f"{pfx}/win_norm",4.0,  type=float))
+
+        # apply config (uses current widget values, restored or default)
+        self._apply_config(self._cfg_a, self.calc_a)
+        self._apply_config(self._cfg_b, self.calc_b)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -4886,13 +4905,15 @@ class PILabWindow(QtWidgets.QMainWindow):
         # value table
         self._val_table = QtWidgets.QTableWidget(4, 2)
         self._val_table.setHorizontalHeaderLabels(["A (orange)", "B (blue)"])
+        self._val_table.horizontalHeaderItem(0).setForeground(QtGui.QColor(self._CLR_A))
+        self._val_table.horizontalHeaderItem(1).setForeground(QtGui.QColor(self._CLR_B))
         self._val_table.setVerticalHeaderLabels(["PI_ir [%]", "PI_red [%]", "R", "AC_r_ir"])
         self._val_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self._val_table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self._val_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._val_table.setStyleSheet(
             "QTableWidget { background: #1A1A1A; color: #E0E0E0; font-size: 28px; }"
-            "QHeaderView::section { background: #252525; color: #AAAAAA; font-size: 24px; }"
+            "QHeaderView::section { background: #252525; font-size: 24px; font-weight: bold; }"
         )
         self._val_table.setMinimumHeight(240)
         self._val_table.setMaximumHeight(300)
@@ -5286,8 +5307,23 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
         self._paused = self.btn_pause.isChecked()
 
     def closeEvent(self, event):
-        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
-            "PILabWindow/geometry", self.saveGeometry())
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("PILabWindow/geometry", self.saveGeometry())
+        for inst, cfg in (("A", self._cfg_a), ("B", self._cfg_b)):
+            pfx = f"PILabWindow/{inst}"
+            s.setValue(f"{pfx}/s1",      cfg['s1'].currentIndex())
+            s.setValue(f"{pfx}/s2",      cfg['s2'].currentIndex())
+            s.setValue(f"{pfx}/s3",      cfg['s3'].currentIndex())
+            s.setValue(f"{pfx}/tau_sub", cfg['tau_sub'].value())
+            s.setValue(f"{pfx}/bpf_lo",  cfg['bpf_lo'].value())
+            s.setValue(f"{pfx}/bpf_hi",  cfg['bpf_hi'].value())
+            s.setValue(f"{pfx}/tau_ac",  cfg['tau_ac'].value())
+            s.setValue(f"{pfx}/win_s",   cfg['win_s'].value())
+            s.setValue(f"{pfx}/hr_bpm",  cfg['hr_bpm'].value())
+            s.setValue(f"{pfx}/n_harm",  cfg['n_harm'].value())
+            s.setValue(f"{pfx}/tau_norm",cfg['tau_norm'].value())
+            s.setValue(f"{pfx}/lpf_fc",  cfg['lpf_fc'].value())
+            s.setValue(f"{pfx}/win_norm",cfg['win_norm'].value())
         if self.main_monitor is not None:
             self.main_monitor.btn_pilab.setChecked(False)
             self.main_monitor.pilab_window = None

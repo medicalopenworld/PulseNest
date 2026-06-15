@@ -12717,3 +12717,21 @@ Eliminada la línea con `data_ot_led1`/`data_ot_led2`. El `data_ot2_led1`/`data_
 ### Tema: SIGNAL STATS — OT_LED1/OT_LED2 formato 6 decimales
 
 Cambiado el formato de las columnas Mean/Min/Max para las filas OT_LED1 y OT_LED2 de notación científica (`:.2e`) a 6 decimales (`:.6f`). Línea ~10873 de `pulsenest_lab.py`.
+
+---
+
+## Sesión 2026-06-15t
+
+### Tema: PILabWindow — colores en cabeceras de tabla + persistencia de configuración en ini
+
+### Colores cabeceras tabla
+
+Problema: ambas cabeceras ("A (orange)" y "B (blue)") se mostraban en gris porque el stylesheet `QHeaderView::section { color: #AAAAAA }` sobreescribe el `ForegroundRole` de cada item.
+
+Fix: eliminado `color` del stylesheet de `QHeaderView::section` (añadido `font-weight: bold`). Tras `setHorizontalHeaderLabels()`, se llama `horizontalHeaderItem(0).setForeground(QColor(CLR_A))` y `horizontalHeaderItem(1).setForeground(QColor(CLR_B))`.
+
+### Persistencia de configuración en ini
+
+`closeEvent` guarda todos los parámetros A/B en `PILabWindow/A/*` y `PILabWindow/B/*` (13 valores por instancia: s1/s2/s3 indices, tau_sub, bpf_lo/hi, tau_ac, win_s, hr_bpm, n_harm, tau_norm, lpf_fc, win_norm).
+
+`__init__` reordenado: `_build_ui()` → restaurar geometría → restaurar config desde ini → `_apply_config()`.
