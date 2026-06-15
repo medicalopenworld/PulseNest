@@ -3996,7 +3996,6 @@ class PICalc:
             ac_ir  = ir  - self._ema_dc_ir
             ac_red = red - self._ema_dc_red
         elif self.step1 == self.S1_BPF:
-            self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
             if self._bpf_sos is not None:
                 if self._bpf_zi_ir is None:
                     zi = signal.sosfilt_zi(self._bpf_sos)
@@ -4007,9 +4006,13 @@ class PICalc:
                 ac_ir  = float(_out_ir[0]); ac_red = float(_out_red[0])
             else:
                 ac_ir = ir; ac_red = red
-        else:  # S1_NONE
-            self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
+            # dc_sub = signal minus BPF output (what the BPF removes)
+            self.dc_sub_ir  = ir  - ac_ir
+            self.dc_sub_red = red - ac_red
+        else:  # S1_NONE — pass-through, nothing removed; show raw signal as DC reference
             ac_ir = ir; ac_red = red
+            self.dc_sub_ir  = ir
+            self.dc_sub_red = red
 
         # ── STEP 2: AC estimator ─────────────────────────────────────────────
         if self.step2 == self.S2_EMA_RMS:
