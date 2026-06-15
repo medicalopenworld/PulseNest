@@ -12772,3 +12772,14 @@ sys.excepthook = _crash_handler  # escribe traceback en crash.log
 ```
 
 Cualquier excepción no capturada en el hilo principal queda registrada en `crash.log` con timestamp. Permite diagnosticar cierres inesperados futuros.
+
+---
+
+## Sesión 2026-06-15w
+
+### Tema: Commit final — crash logger + PICalc AC_t + PILabWindow Plot1
+
+Commit `9ab9b27`: agrupa los cambios pendientes de las sesiones 15u y 15v:
+- `sys.excepthook → crash.log` (crash logger global)
+- `PICalc.ac_t_ir/ac_t_red` como outputs del STEP1
+- PILabWindow Plot 1 muestra `AC_t` (onda pulsátil STEP1) en lugar de `DC_sub`
