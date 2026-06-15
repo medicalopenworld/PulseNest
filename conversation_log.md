@@ -12592,3 +12592,14 @@ En `PICalc.update()`, los casos `S1_BPF` y `S1_NONE` asignaban `dc_sub_ir = dc_s
 
 - **S1_BPF:** `dc_sub = ir − ac_bpf` → muestra el componente de baja frecuencia que el BPF elimina
 - **S1_NONE:** `dc_sub = ir` → señal raw como referencia (nada se resta, paso directo)
+
+---
+
+## Sesión 2026-06-15l
+
+### Tema: PILab Help — font al doble
+
+- Título: 20px → 40px
+- Body: 15px → 30px
+- h3: 16px → 32px
+- Ventana: 640×560 → 900×800
