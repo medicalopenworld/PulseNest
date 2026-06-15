@@ -7406,23 +7406,6 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
 
-class _ThousandsAxisItem(pg.AxisItem):
-    """Y-axis that formats tick labels with a thin space as the thousands separator."""
-    def tickStrings(self, values, scale, spacing):
-        strings = []
-        for v in values:
-            try:
-                vs = v * scale
-                if spacing * scale >= 1.0:
-                    strings.append(f"{round(vs):,}".replace(",", "\u2009"))
-                else:
-                    places = max(0, int(-math.log10(spacing * scale)) + 1)
-                    strings.append(f"{vs:,.{places}f}".replace(",", "\u2009"))
-            except Exception:
-                strings.append("")
-        return strings
-
-
 class PPGSignalsWindow(QtWidgets.QWidget):
     """Floating window with the 6 raw AFE4490 signals (LED2/LED1 raw·amb·sub) and PPG_DISP."""
 
@@ -7533,9 +7516,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.graphics_layout = pg.GraphicsLayoutWidget()
         root.addWidget(self.graphics_layout)
 
-        self.p1 = self.graphics_layout.addPlot(
-            title="<b style='color:#44AAFF'>LED1 (IR)</b>",
-            axisItems={'left': _ThousandsAxisItem(orientation='left')})
+        self.p1 = self.graphics_layout.addPlot(title="<b style='color:#44AAFF'>LED1 (IR)</b>")
         self.curve_led1     = self.p1.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED1 (IR)")
         self.curve_aled1 = self.p1.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED1")
         self.curve_led1_sub = self.p1.plot(pen=pg.mkPen('#88CCFF', width=1.5), name="LED1 (IR) clean")
@@ -7544,9 +7525,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
 
         self.graphics_layout.nextRow()
 
-        self.p2 = self.graphics_layout.addPlot(
-            title="<b style='color:#FF4444'>LED2 (RED)</b>",
-            axisItems={'left': _ThousandsAxisItem(orientation='left')})
+        self.p2 = self.graphics_layout.addPlot(title="<b style='color:#FF4444'>LED2 (RED)</b>")
         self.curve_led2     = self.p2.plot(pen=pg.mkPen('#FFFFFF', width=1.5), name="LED2 (RED)")
         self.curve_aled2 = self.p2.plot(pen=pg.mkPen('#00FFFF', width=1.5, style=QtCore.Qt.DashLine), name="Ambient LED2")
         self.curve_led2_sub = self.p2.plot(pen=pg.mkPen('#FF8888', width=1.5), name="LED2 (RED) clean")
@@ -7555,9 +7534,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
 
         self.graphics_layout.nextRow()
 
-        self.p3 = self.graphics_layout.addPlot(
-            title="<b style='color:#AAFFAA'>PPG_DISP</b>",
-            axisItems={'left': _ThousandsAxisItem(orientation='left')})
+        self.p3 = self.graphics_layout.addPlot(title="<b style='color:#AAFFAA'>PPG_DISP</b>")
         self.curve_ppgdisp = self.p3.plot(pen=pg.mkPen('#AAFFAA', width=2), name="PPG_DISP")
         self.p3.showGrid(x=True, y=True, alpha=0.3)
         self.p3.getAxis('left').setWidth(80)
@@ -10893,8 +10870,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     def _fmt(v): return f"{v:.6f}"
                 elif sig_idx in {24, 25, 26, 27}:  # I_PD_*: display in µA (×1e6), 3 decimal places
                     def _fmt(v): return f"{v * 1e6:.3f}"
-                elif sig_idx in {28, 29}:  # OT_LED1/OT_LED2: scientific notation
-                    def _fmt(v): return f"{v:.2e}"
+                elif sig_idx in {28, 29}:  # OT_LED1/OT_LED2: 6 decimal places
+                    def _fmt(v): return f"{v:.6f}"
                 else:
                     def _fmt(v): return f"{v:.2f}"
                 snr_str = f"{std / mean * 100:.2f}" if (sig_idx in self._STATS_SUB_ROWS and mean != 0) else (
@@ -11333,7 +11310,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_led2_sub.append(0.0);  self.data_led1_sub.append(0.0)
                             self.data_rsqi.append(0);        self.data_diag_code.append(0)
                             self.data_probe_state.append(0)
-                            self.data_ot_led1.append(0.0);   self.data_ot_led2.append(0.0)
                             self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
                             self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
                             self.data_i_pd_led1.append(0.0);   self.data_i_pd_led2.append(0.0)

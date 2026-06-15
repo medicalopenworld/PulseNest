@@ -12621,3 +12621,99 @@ Añadida clase `_ThousandsAxisItem(pg.AxisItem)` que sobreescribe `tickStrings()
 La primera implementación de `_ThousandsAxisItem` no multiplicaba por `scale` (parámetro de pyqtgraph para prefijos SI) y no manejaba excepciones. Esto causaba que algunos ticks devolvieran strings vacíos.
 
 Fix: `tickStrings()` ahora multiplica por `scale`, usa `round()` en lugar de `int()`, aplica formato decimal cuando `spacing * scale < 1.0`, y captura cualquier excepción devolviendo `""` en lugar de crashar.
+
+---
+
+## Sesión 2026-06-15o
+
+### Tema: PPGSignalsWindow Y-axis — tercera iteración + estrategia de versioning
+
+### Fix `_ThousandsAxisItem` (3ª iteración)
+
+Causa raíz: pyqtgraph aplica auto-prefijos SI (µ, m, k, M) que cambian `scale` a valores distintos de 1, provocando formateo incorrecto.
+
+Solución definitiva:
+- `enableAutoSIPrefix(False)` en `__init__` — desactiva el mecanismo SI, `scale` siempre vale 1
+- `tickStrings()` usa los valores `v` directamente (sin multiplicar por `scale`)
+- Separador: espacio fino U+2009 vía `.replace(",", "\u2009")`
+- Decimales: `abs(spacing) >= 1.0` → entero; caso contrario → `int(-log10(abs(spacing)))+1` decimales
+- Pendiente confirmar por el usuario.
+
+### Estrategia de versioning propuesta
+
+Para revertir a estados conocidos-buenos, se propone usar **git tags** semánticos:
+- Convención: `v{APP_VERSION}-{slug}` (e.g., `v1.6.3-yaxis-thousands`)
+- Tag preventivo antes de cambio arriesgado: `v1.6.3-pre-yaxis`
+- Revertir un fichero: `git checkout <tag> -- pulsenest_lab.py`
+- Pendiente: acordar con el usuario y crear primer tag.
+
+---
+
+## Sesión 2026-06-15p
+
+### Tema: PPGSignalsWindow Y-axis — diagnóstico del bug + fix con U+202F
+
+### Diagnóstico
+
+Investigación del código fuente de pyqtgraph (`AxisItem.py`) para encontrar la causa de las etiquetas desaparecidas. Hallazgos:
+- `tickStrings()` recibe `spacing` en coordenadas raw de datos
+- `textFillRatio` para eje izquierdo usa suma de **alturas** (no anchuras) → ancho del string no afecta al crowding
+- `p.boundingRect(QRectF(0,0,100,100), AlignCenter, s)` — sin flag `TextWordWrap`
+
+Hipótesis confirmada: `\u2009` (THIN SPACE, U+2009) tiene `Line_Break = Breaking_Space (BA)` en Unicode — es un punto de corte de línea válido. El motor de texto DirectWrite/Qt en Windows puede word-wrappear strings como "200 000" dentro del rect 100×100 aunque no se pida explícitamente, doblando la altura medida del bounding rect. Esto dispara `textFillLimits` prematuramente y suprime etiquetas de niveles secundarios.
+
+### Fix (4ª iteración)
+
+Sustitución de `\u2009` por `\u202f` (NARROW NO-BREAK SPACE, U+202F):
+- Visualmente idéntico al thin space
+- `Line_Break = Glue (GL)` — **no es un punto de corte de línea**, no causa word-wrap
+- `enableAutoSIPrefix(False)` mantenido
+- `axisItems={'left': _ThousandsAxisItem(...)}` en p1, p2, p3 de PPGSignalsWindow
+- **NO funcionó** — mismo efecto colateral (etiquetas desaparecidas).
+
+---
+
+## Sesión 2026-06-15q
+
+### Tema: PPGSignalsWindow Y-axis — 5ª iteración con coma como separador
+
+Descartado `\u202f` (también falla). Prueba con coma `","` estándar (sin reemplazar nada), manteniendo `enableAutoSIPrefix(False)`.
+**NO funcionó** — mismo efecto colateral.
+
+### Conclusión
+
+Todas las variantes del separador fallan (`\u2009`, `\u202f`, `,`). El problema no está en el carácter separador sino en la subclase `_ThousandsAxisItem` o en `enableAutoSIPrefix(False)`. Funcionalidad descartada — revertido a `da9ab98` (sin separador de miles).
+
+---
+
+## Sesión 2026-06-15r
+
+### Tema: SIGNAL STATS — OT_LED1/OT_LED2 formato 6 decimales
+
+Cambiado el formato de las columnas Mean/Min/Max para las filas OT_LED1 y OT_LED2 de notación científica (`:.2e`) a 6 decimales (`:.6f`). Línea ~10873 de `pulsenest_lab.py`.
+
+---
+
+## Sesión 2026-06-15s
+
+### Tema: Bug — `data_ot_led1`/`data_ot_led2` no inicializados en M1 path
+
+### Bug
+
+En el path M1 (`lib_id == "M1"`), línea ~11313, se referenciaban `self.data_ot_led1` y `self.data_ot_led2` (sin "2") que nunca fueron inicializados como atributos de instancia. El atributo correcto es `data_ot2_led1`/`data_ot2_led2` (con "2"), que sí se inicializa como deque en `__init__` y se appende correctamente dos líneas más abajo.
+
+### Causa del cierre automático (hipótesis)
+
+El M1 path se usa cuando el frame mode es `$M1`. Si el ESP32 enviaba algún frame M1, el `AttributeError` propagaba fuera del `except ValueError: pass`, llegaba al slot del timer Qt y podía abortar el event loop — explicando el cierre inesperado tras tiempo de funcionamiento.
+
+### Fix
+
+Eliminada la línea con `data_ot_led1`/`data_ot_led2`. El `data_ot2_led1`/`data_ot2_led2` ya se appende correctamente en la línea siguiente.
+
+---
+
+## Sesión 2026-06-15r
+
+### Tema: SIGNAL STATS — OT_LED1/OT_LED2 formato 6 decimales
+
+Cambiado el formato de las columnas Mean/Min/Max para las filas OT_LED1 y OT_LED2 de notación científica (`:.2e`) a 6 decimales (`:.6f`). Línea ~10873 de `pulsenest_lab.py`.
