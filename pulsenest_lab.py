@@ -4817,6 +4817,8 @@ class PILabWindow(QtWidgets.QMainWindow):
         # apply config (uses current widget values, restored or default)
         self._apply_config(self._cfg_a, self.calc_a)
         self._apply_config(self._cfg_b, self.calc_b)
+        self._refresh_param_state(self._cfg_a)
+        self._refresh_param_state(self._cfg_b)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -4938,7 +4940,10 @@ class PILabWindow(QtWidgets.QMainWindow):
 
     def _make_config_tab(self, name, color):
         """Build STEP1/2/3 config panel for one PICalc instance. Returns a dict."""
-        _ss_spin = "background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 20px;"
+        _ss_spin = ("QDoubleSpinBox { background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 20px; }"
+                    " QDoubleSpinBox:disabled { color: #505050; background-color: #1A1A1A; }"
+                    " QSpinBox { background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 20px; }"
+                    " QSpinBox:disabled { color: #505050; background-color: #1A1A1A; }")
         _ss_cb   = "background-color: #2A2A2A; color: #FFFFFF; font-size: 20px;"
         _lbl_sty = f"color: {color}; font-size: 20px; font-weight: bold;"
 
@@ -4950,7 +4955,8 @@ class PILabWindow(QtWidgets.QMainWindow):
             return w
 
         inner = QtWidgets.QWidget()
-        inner.setStyleSheet("background: #1A1A1A; QLabel { font-size: 20px; color: #C0C0C0; }")
+        inner.setStyleSheet("background: #1A1A1A; QLabel { font-size: 20px; color: #C0C0C0; }"
+                            " QLabel:disabled { color: #454545; }")
         form = QtWidgets.QFormLayout(inner)
         form.setSpacing(5); form.setContentsMargins(8, 8, 8, 8)
 
@@ -5070,13 +5076,16 @@ class PILabWindow(QtWidgets.QMainWindow):
         tab_lay.addWidget(scroll)
 
         cfg = {
-            'widget': tab_widget, 's1': s1, 's2': s2, 's3': s3,
+            'widget': tab_widget, 'form': form, 's1': s1, 's2': s2, 's3': s3,
             'tau_sub': tau_sub, 'bpf_lo': bpf_lo, 'bpf_hi': bpf_hi,
             'tau_ac':  tau_ac,  'win_s':  win_s,  'hr_bpm': hr_bpm, 'n_harm': n_harm,
             'tau_norm': tau_norm, 'lpf_fc': lpf_fc, 'win_norm': win_norm,
         }
         calc_ref = self.calc_a if name == "A" else self.calc_b
         apply_btn.clicked.connect(lambda: self._apply_config(cfg, calc_ref))
+        s1.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
+        s2.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
+        s3.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
         return cfg
 
     # ── config application ────────────────────────────────────────────────────
@@ -5107,6 +5116,32 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._t0_us = None
+
+    def _refresh_param_state(self, cfg):
+        """Enable/disable parameter widgets based on current STEP combo selections."""
+        form   = cfg['form']
+        s1_idx = cfg['s1'].currentIndex()  # 0=EMA, 1=BPF, 2=None
+        s2_idx = cfg['s2'].currentIndex()  # 0=EMA_RMS,1=WIN_RMS,2=PEAKPK,3=SPECTRAL,4=HARMONICS
+        s3_idx = cfg['s3'].currentIndex()  # 0=EMA, 1=LPF, 2=WIN_MEAN
+
+        def _set(widget, enabled):
+            widget.setEnabled(enabled)
+            lbl = form.labelForField(widget)
+            if lbl: lbl.setEnabled(enabled)
+
+        # STEP1
+        _set(cfg['tau_sub'], s1_idx == 0)
+        _set(cfg['bpf_lo'],  s1_idx == 1)
+        _set(cfg['bpf_hi'],  s1_idx == 1)
+        # STEP2
+        _set(cfg['tau_ac'], s2_idx == 0)
+        _set(cfg['win_s'],  s2_idx in (1, 2))
+        _set(cfg['hr_bpm'], s2_idx in (3, 4))
+        _set(cfg['n_harm'], s2_idx == 4)
+        # STEP3
+        _set(cfg['tau_norm'], s3_idx == 0)
+        _set(cfg['lpf_fc'],   s3_idx == 1)
+        _set(cfg['win_norm'], s3_idx == 2)
 
     # ── data feed (called per-sample from PPGMonitor drain loop) ──────────────
 

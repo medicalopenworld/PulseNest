@@ -12783,3 +12783,23 @@ Commit `9ab9b27`: agrupa los cambios pendientes de las sesiones 15u y 15v:
 - `sys.excepthook → crash.log` (crash logger global)
 - `PICalc.ac_t_ir/ac_t_red` como outputs del STEP1
 - PILabWindow Plot 1 muestra `AC_t` (onda pulsátil STEP1) en lugar de `DC_sub`
+
+---
+
+## Sesión 2026-06-15x
+
+### Tema: PILabWindow — desactivar parámetros irrelevantes según combo STEP
+
+Nuevo método `_refresh_param_state(cfg)` en `PILabWindow`. Al cambiar cualquier combo STEP1/2/3, los spinboxes que no aplican al método seleccionado se desactivan (`setEnabled(False)`) junto con su label (`form.labelForField(widget).setEnabled(False)`).
+
+**Mapeo activo:**
+- STEP1: EMA→tau_sub; BPF→bpf_lo+bpf_hi; None→ninguno
+- STEP2: EMA_RMS→tau_ac; WIN_RMS/PEAKPK→win_s; SPECTRAL/HARMONICS→hr_bpm; HARMONICS→n_harm
+- STEP3: EMA→tau_norm; LPF→lpf_fc; WIN_MEAN→win_norm
+
+**Implementación:**
+- `_ss_spin` extendido con `QDoubleSpinBox:disabled` / `QSpinBox:disabled` → color #505050, bg #1A1A1A
+- `inner.setStyleSheet` extendido con `QLabel:disabled { color: #454545 }`
+- `cfg` dict incluye `'form': form` para acceder a `labelForField`
+- Combos conectados a `_refresh_param_state` vía `currentIndexChanged`
+- Llamado también en `__init__` tras `_apply_config` para estado inicial correcto
