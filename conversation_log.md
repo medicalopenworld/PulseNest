@@ -12885,3 +12885,19 @@ Cambios en todas las ocurrencias: docstring PICalc, comentario `update()`, label
 - `_on_cfg_frame_received`: llama `pilab_window._sync_spo2_coeffs(kv)` si la ventana está abierta → actualización en vivo.
 
 Las claves en `$CFG` son `spo2a` y `spo2b` (confirmado en main.cpp).
+
+---
+
+## Sesión 2026-06-16b
+
+### Tema: PILabWindow — botón "FIRMWARE PRESET"
+
+Añadido botón "FIRMWARE PRESET" debajo de "APPLY A/B" en cada instancia.
+
+Al pulsarlo carga los parámetros del algoritmo SpO2 del firmware:
+- STEP1: EMA, τ_sub = 2.0 s
+- STEP2: EMA-RMS, τ_ac = 6.0 s
+- STEP3: EMA, τ_norm = 2.0 s
+- spo2_a/b leídos de `main_monitor._last_cfg` (valores activos del firmware)
+
+Implementación: `_apply_firmware_preset(cfg, calc)` — actualiza widgets, llama `_refresh_param_state`, `_apply_config` y `_sync_spo2_coeffs`.

@@ -5094,6 +5094,16 @@ class PILabWindow(QtWidgets.QMainWindow):
             "Plot buffers are cleared so the comparison starts clean."))
         form.addRow("", apply_btn)
 
+        preset_btn = QtWidgets.QPushButton("FIRMWARE PRESET")
+        preset_btn.setStyleSheet(ACTION_BUTTON_STYLE)
+        preset_btn.setToolTip(_make_tooltip("Firmware preset",
+            "Load the firmware SpO2 algorithm parameters into this instance:\n"
+            "  STEP1: EMA subtract  τ_sub = 2.0 s\n"
+            "  STEP2: EMA-RMS       τ_ac  = 6.0 s\n"
+            "  STEP3: EMA           τ_norm = 2.0 s\n"
+            "spo2_a/b are read from the last received $CFG frame."))
+        form.addRow("", preset_btn)
+
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -5118,6 +5128,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         }
         calc_ref = self.calc_a if name == "A" else self.calc_b
         apply_btn.clicked.connect(lambda: self._apply_config(cfg, calc_ref))
+        preset_btn.clicked.connect(lambda: self._apply_firmware_preset(cfg, calc_ref))
         s1.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
         s2.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
         s3.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
@@ -5151,6 +5162,21 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._t0_us = None
+
+    def _apply_firmware_preset(self, cfg, calc):
+        """Load firmware SpO2 algorithm parameters into cfg widgets and apply."""
+        cfg['s1'].setCurrentIndex(0)       # S1_EMA
+        cfg['s2'].setCurrentIndex(0)       # S2_EMA_RMS
+        cfg['s3'].setCurrentIndex(0)       # S3_EMA
+        cfg['tau_sub'].setValue(2.0)
+        cfg['tau_ac'].setValue(6.0)
+        cfg['tau_norm'].setValue(2.0)
+        self._refresh_param_state(cfg)
+        self._apply_config(cfg, calc)
+        # sync spo2 coeffs from last $CFG
+        mon = getattr(self, 'main_monitor', None)
+        kv  = getattr(mon, '_last_cfg', {}) if mon is not None else {}
+        self._sync_spo2_coeffs(kv)
 
     def _sync_spo2_coeffs(self, kv):
         """Read spo2_a/spo2_b from a parsed $CFG kv dict and apply to both PICalc instances."""
