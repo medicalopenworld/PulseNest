@@ -3875,9 +3875,9 @@ class HR3TestCalc:
 class PICalc:
     """Configurable 3-step Perfusion Index pipeline.
 
-    Pipeline: STEP1 (DC subtraction) → STEP2 (AC estimator) → STEP3 (DC for denominator)
+    Pipeline: STEP1 (AC extraction) → STEP2 (AC estimator) → STEP3 (DC for denominator)
 
-    STEP1 — DC subtraction:
+    STEP1 — AC extraction:
       S1_EMA  (1.1): EMA-based subtraction (τ_sub seconds)
       S1_BPF  (1.2): 2nd-order Butterworth bandpass (bpf_lo–bpf_hi Hz)
       S1_NONE (1.3): pass-through (only valid with spectral STEP2 2.4/2.5)
@@ -3997,7 +3997,7 @@ class PICalc:
             self.reconfigure(fs)
         ir = float(ir); red = float(red)
 
-        # ── STEP 1: DC subtraction ────────────────────────────────────────────
+        # ── STEP 1: AC extraction ─────────────────────────────────────────────
         if self.step1 == self.S1_EMA:
             self._ema_dc_ir  += self._alpha_sub * (ir  - self._ema_dc_ir)
             self._ema_dc_red += self._alpha_sub * (red - self._ema_dc_red)
@@ -4748,7 +4748,7 @@ class PILabWindow(QtWidgets.QMainWindow):
 
     Two independent PICalc instances (A = firmware reference, B = experimental)
     run in parallel on live or recorded data. Each uses a 3-step configurable
-    pipeline: STEP1 (DC subtraction) → STEP2 (AC estimator) → STEP3 (DC denominator).
+    pipeline: STEP1 (AC extraction) → STEP2 (AC estimator) → STEP3 (DC denominator).
 
     Layout:
       Left  : 4 stacked plots — signal+DC_sub, AC_r over time, PI_ir, R ratio.
@@ -4988,7 +4988,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         form.setSpacing(5); form.setContentsMargins(8, 8, 8, 8)
 
         # STEP 1
-        lbl1 = QtWidgets.QLabel("── STEP1: DC subtraction ──")
+        lbl1 = QtWidgets.QLabel("── STEP1: AC extraction ──")
         lbl1.setStyleSheet(_lbl_sty); form.addRow(lbl1)
         s1 = QtWidgets.QComboBox(); s1.setStyleSheet(_ss_cb)
         s1.addItems(["1.1 EMA subtract", "1.2 BPF", "1.3 None"])
@@ -5272,7 +5272,7 @@ Use this plot to judge whether the DC tracker follows the baseline correctly
 
 <h3>Plot 2 — AC_r [ADC counts]</h3>
 <p>The AC amplitude estimated by STEP2, in raw ADC counts.
-This is the "pulse height" after DC subtraction:
+This is the "pulse height" after AC extraction (STEP1):
 EMA-RMS computes <span class="formula">√EMA(x²)</span>,
 Peak-to-peak computes <span class="formula">(max−min)/2</span>,
 spectral methods extract energy at the heart-rate fundamental.
@@ -9700,7 +9700,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "PILAB — Perfusion Index Lab",
             "Opens the PI investigation window. Compares two configurable PI pipelines (A vs B) "
             "on live or recorded data. Each pipeline has 3 independent steps: "
-            "STEP1 (DC subtraction), STEP2 (AC estimator), STEP3 (DC denominator). "
+            "STEP1 (AC extraction), STEP2 (AC estimator), STEP3 (DC denominator). "
             "Instance A defaults to firmware M1 settings; B is freely configurable.",
             src="PILabWindow"))
         self.sidebar_layout.addWidget(self.btn_pilab)

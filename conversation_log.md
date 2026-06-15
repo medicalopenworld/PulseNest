@@ -12857,3 +12857,13 @@ Añadido 5º plot `p_spo2` (row=4) en PILabWindow con curvas `curve_spo2_a/b`.
 - Plot2: `"AC_r [ADC]"` → `"AC_r_ir [ADC]"`
 
 Más conciso y consistente con la convención `_ir` del proyecto.
+
+---
+
+## Sesión 2026-06-15ac
+
+### Tema: PILabWindow — renombrar STEP1 "DC subtraction" → "AC extraction"
+
+"DC subtraction" era method-specific (solo correcto para EMA). "AC extraction" describe el resultado independientemente del método (EMA/BPF/None producen todos la componente AC pulsátil).
+
+Cambios en todas las ocurrencias: docstring PICalc, comentario `update()`, label UI, help text, tooltip botón PILAB.
