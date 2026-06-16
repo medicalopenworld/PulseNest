@@ -5078,7 +5078,9 @@ class PILabWindow(QtWidgets.QMainWindow):
         form.addRow("  τ_norm:", tau_norm)
         lpf_fc = _dspin(0.01, 5.0, 0.4, 0.1, " Hz")
         lpf_fc.setToolTip(_make_tooltip("LPF fc",
-            "Butterworth LPF cutoff for DC denominator (Hz).",
+            "2nd-order Butterworth LPF cutoff for DC denominator (Hz).\n"
+            "Equivalent EMA τ ≈ 1/(2π·fc) ≈ 0.16/fc.\n"
+            "Example: fc=0.08 Hz ≈ τ=2 s;  fc=0.4 Hz ≈ τ=0.4 s.",
             src="PICalc.lpf_fc_hz"))
         form.addRow("  LPF fc:", lpf_fc)
         win_norm = _dspin(0.5, 30.0, 4.0, 0.5, " s")

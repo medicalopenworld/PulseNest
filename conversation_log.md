@@ -12911,3 +12911,13 @@ Implementación: `_apply_firmware_preset(cfg, calc)` — actualiza widgets, llam
 **Causa raíz:** `_spo2_a` y `_spo2_b` no estaban en la lista de clear de `_apply_config`. Al pulsar APPLY o FIRMWARE PRESET, `_t_buf` se vaciaba y empezaba con N muestras nuevas, pero `_spo2_a/b` conservaban 3000 puntos viejos. Cuando `setXRange` disparaba `viewRangeChanged`, pyqtgraph intentaba re-renderizar `curve_spo2_a` con x=(N,) e y=(3000,) → crash.
 
 **Fix:** añadido `self._spo2_a.clear(); self._spo2_b.clear()` en `_apply_config` junto al resto de buffers.
+
+---
+
+## Sesión 2026-06-16d
+
+### Tema: PILabWindow — tooltip lpf_fc con equivalencia τ/fc
+
+Tooltip de `lpf_fc` extendido con indicación orientativa de equivalencia entre fc y τ EMA:
+- τ_equiv ≈ 1/(2π·fc) ≈ 0.16/fc
+- Ejemplo: fc=0.08 Hz ≈ τ=2 s; fc=0.4 Hz ≈ τ=0.4 s
