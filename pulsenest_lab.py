@@ -5161,6 +5161,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._ac_t_a.clear();   self._ac_t_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
+        self._spo2_a.clear();   self._spo2_b.clear()
         self._t0_us = None
 
     def _apply_firmware_preset(self, cfg, calc):

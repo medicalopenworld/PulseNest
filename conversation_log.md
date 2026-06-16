@@ -12901,3 +12901,13 @@ Al pulsarlo carga los parámetros del algoritmo SpO2 del firmware:
 - spo2_a/b leídos de `main_monitor._last_cfg` (valores activos del firmware)
 
 Implementación: `_apply_firmware_preset(cfg, calc)` — actualiza widgets, llama `_refresh_param_state`, `_apply_config` y `_sync_spo2_coeffs`.
+
+---
+
+## Sesión 2026-06-16c
+
+### Tema: PILabWindow — fix crash por mismatch de arrays en pyqtgraph
+
+**Causa raíz:** `_spo2_a` y `_spo2_b` no estaban en la lista de clear de `_apply_config`. Al pulsar APPLY o FIRMWARE PRESET, `_t_buf` se vaciaba y empezaba con N muestras nuevas, pero `_spo2_a/b` conservaban 3000 puntos viejos. Cuando `setXRange` disparaba `viewRangeChanged`, pyqtgraph intentaba re-renderizar `curve_spo2_a` con x=(N,) e y=(3000,) → crash.
+
+**Fix:** añadido `self._spo2_a.clear(); self._spo2_b.clear()` en `_apply_config` junto al resto de buffers.
