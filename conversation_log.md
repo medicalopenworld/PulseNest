@@ -12934,3 +12934,13 @@ Tooltip del combo STEP2 extendido con descripción detallada del método 2.4:
 - Warning: HR debe coincidir con el HR real del paciente
 - Nota: STEP1 no tiene efecto en este método
 - 2.5 Harmonics: igual pero sumando N armónicos de f_HR
+
+---
+
+## Sesión 2026-06-17b
+
+### Tema: PILabWindow — tooltips bpf_lo y STEP2 method actualizados
+
+**bpf_lo tooltip:** análisis completo de roll-off (-12 dB/oct, -3 dB en cutoff), rechazo real de respiración adulto para 0.3/0.4/0.5 Hz, y nota crítica sobre neonatos (respiración 0.5–1.0 Hz cae dentro del band → BPF no ayuda → usar métodos espectrales).
+
+**STEP2 tooltip:** descripción detallada de 2.4 Spectral band y 2.5 Harmonics con warnings sobre HR param y que STEP1 no tiene efecto en estos métodos.

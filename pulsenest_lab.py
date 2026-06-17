@@ -5013,7 +5013,19 @@ class PILabWindow(QtWidgets.QMainWindow):
         form.addRow("  τ_sub:", tau_sub)
         bpf_lo = _dspin(0.01, 10.0, 0.5, 0.1, " Hz")
         bpf_lo.setToolTip(_make_tooltip("BPF lo cutoff",
-            "Lower cutoff frequency for Butterworth bandpass filter (Hz).",
+            "Lower cutoff frequency for 2nd-order Butterworth BPF (Hz).\n"
+            "Rejects slow components below this frequency (baseline wander, respiration).\n"
+            "Roll-off: -12 dB/octave — at bpf_lo the attenuation is only -3 dB.\n"
+            "\n"
+            "Adult respiration: 0.20–0.33 Hz (12–20 rpm)\n"
+            "  0.3 Hz: 0.33 Hz passes at -3 dB — poor rejection\n"
+            "  0.4 Hz: 0.33 Hz at -3.5 dB — marginal\n"
+            "  0.5 Hz: 0.33 Hz at -8 dB, 0.2 Hz at -24 dB — good\n"
+            "\n"
+            "Neonatal respiration: 0.5–1.0 Hz — falls inside the passband regardless\n"
+            "of bpf_lo. BPF cannot reject it; use spectral methods (2.4/2.5) instead.\n"
+            "\n"
+            "Recommended: 0.5 Hz for adults. For neonates, bpf_lo choice is secondary.",
             src="PICalc.bpf_lo_hz"))
         form.addRow("  BPF lo:", bpf_lo)
         bpf_hi = _dspin(0.1, 20.0, 4.0, 0.5, " Hz")
