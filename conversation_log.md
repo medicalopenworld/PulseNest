@@ -12921,3 +12921,16 @@ Implementación: `_apply_firmware_preset(cfg, calc)` — actualiza widgets, llam
 Tooltip de `lpf_fc` extendido con indicación orientativa de equivalencia entre fc y τ EMA:
 - τ_equiv ≈ 1/(2π·fc) ≈ 0.16/fc
 - Ejemplo: fc=0.08 Hz ≈ τ=2 s; fc=0.4 Hz ≈ τ=0.4 s
+
+---
+
+## Sesión 2026-06-17a
+
+### Tema: PILabWindow — tooltip STEP2 method extendido con descripción de 2.4 Spectral band
+
+Tooltip del combo STEP2 extendido con descripción detallada del método 2.4:
+- FFT sobre win_s segundos de señal cruda (resta de media, no STEP1)
+- Extrae energía en banda [HR ± 0.3 Hz]; ac_r = √(energy/N)
+- Warning: HR debe coincidir con el HR real del paciente
+- Nota: STEP1 no tiene efecto en este método
+- 2.5 Harmonics: igual pero sumando N armónicos de f_HR

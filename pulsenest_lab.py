@@ -5029,11 +5029,14 @@ class PILabWindow(QtWidgets.QMainWindow):
         s2.addItems(["2.1 EMA-RMS", "2.2 Win-RMS", "2.3 Peak-to-peak",
                      "2.4 Spectral band", "2.5 Harmonics"])
         s2.setToolTip(_make_tooltip("STEP2 method",
-            "2.1 EMA-RMS: running RMS via EMA of x² (τ_ac) — firmware M1\n"
+            "2.1 EMA-RMS: running RMS via EMA of x² (τ_ac) — firmware method\n"
             "2.2 Win-RMS: windowed RMS over win_s seconds\n"
             "2.3 Peak-to-peak: (max−min)/2 over win_s seconds\n"
-            "2.4 Spectral: FFT energy in band [f_HR ± delta_hz]\n"
-            "2.5 Harmonics: FFT energy sum at n·f_HR (HPS-based)",
+            "2.4 Spectral band: FFT over win_s seconds of raw signal (DC-mean removed);\n"
+            "    extracts energy in band [HR ± 0.3 Hz]; ac_r = √(energy/N).\n"
+            "    WARNING: HR param must match actual heart rate — if wrong, result = 0.\n"
+            "    Note: STEP1 has no effect on this method (uses raw signal internally).\n"
+            "2.5 Harmonics: same as 2.4 but sums energy at N harmonics of HR (n·f_HR)",
             src="PICalc.step2"))
         form.addRow("Method:", s2)
         tau_ac = _dspin(0.1, 30.0, 6.0, 0.5, " s")
