@@ -3883,14 +3883,14 @@ class PICalc:
       S1_NONE (1.3): pass-through (only valid with spectral STEP2 2.4/2.5)
 
     STEP2 — AC estimator:
-      S2_EMA_RMS   (2.1): running RMS via EMA of x² — firmware M1 method
+      S2_EMA_RMS   (2.1): running RMS via EMA of x² — firmware method method
       S2_WIN_RMS   (2.2): windowed RMS (win_s seconds)
       S2_PEAKPK    (2.3): peak-to-peak / 2 over win_s seconds
       S2_SPECTRAL  (2.4): FFT energy in band [f_HR ± delta_hz]
       S2_HARMONICS (2.5): FFT energy sum at n·f_HR harmonics
 
     STEP3 — DC for PI denominator:
-      S3_EMA      (3.1): EMA of raw signal — firmware M1 method (τ_norm seconds)
+      S3_EMA      (3.1): EMA of raw signal — firmware method method (τ_norm seconds)
       S3_LPF      (3.2): 2nd-order Butterworth LPF (lpf_fc Hz)
       S3_WIN_MEAN (3.3): windowed mean (win_norm_s seconds)
     """
@@ -4781,7 +4781,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._offline_mode = False
         self._t0_us        = None
 
-        self.calc_a = PICalc()   # A = firmware M1 defaults
+        self.calc_a = PICalc()   # A = firmware method defaults
         self.calc_b = PICalc()   # B = user-configurable
 
         # rolling plot buffers
@@ -5001,14 +5001,14 @@ class PILabWindow(QtWidgets.QMainWindow):
         s1 = QtWidgets.QComboBox(); s1.setStyleSheet(_ss_cb)
         s1.addItems(["1.1 EMA subtract", "1.2 BPF", "1.3 None"])
         s1.setToolTip(_make_tooltip("STEP1 method",
-            "1.1 EMA: subtract running EMA (τ_sub) from signal — firmware M1\n"
+            "1.1 EMA: subtract running EMA (τ_sub) from signal — firmware method\n"
             "1.2 BPF: 2nd-order Butterworth bandpass filter\n"
             "1.3 None: pass-through (only valid with spectral STEP2)",
             src="PICalc.step1"))
         form.addRow("Method:", s1)
         tau_sub = _dspin(0.1, 30.0, 2.0, 0.5, " s")
         tau_sub.setToolTip(_make_tooltip("τ_sub",
-            "EMA time constant for DC subtraction (s). Firmware M1 default: 2.0 s.",
+            "EMA time constant for DC subtraction (s). Firmware default: 2.0 s.",
             src="PICalc.tau_sub_s"))
         form.addRow("  τ_sub:", tau_sub)
         bpf_lo = _dspin(0.01, 10.0, 0.5, 0.1, " Hz")
@@ -5062,7 +5062,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         tau_ac = _dspin(0.1, 30.0, 6.0, 0.5, " s")
         tau_ac.setToolTip(_make_tooltip("τ_ac",
             "EMA-RMS time constant (s). ISO 80601-2-61:2026 JJ.2 d) requires ≥6 s "
-            "for SpO2 transfer standard. Firmware M1 default: 6.0 s.",
+            "for SpO2 transfer standard. Firmware default: 6.0 s.",
             src="PICalc.tau_ac_s"))
         form.addRow("  τ_ac:", tau_ac)
         win_s = _dspin(0.5, 30.0, 4.0, 0.5, " s")
@@ -5089,14 +5089,14 @@ class PILabWindow(QtWidgets.QMainWindow):
         s3 = QtWidgets.QComboBox(); s3.setStyleSheet(_ss_cb)
         s3.addItems(["3.1 EMA", "3.2 LPF", "3.3 Win-mean"])
         s3.setToolTip(_make_tooltip("STEP3 method",
-            "3.1 EMA: EMA of raw signal (τ_norm) used as DC denominator — firmware M1\n"
+            "3.1 EMA: EMA of raw signal (τ_norm) used as DC denominator — firmware method\n"
             "3.2 LPF: 2nd-order Butterworth low-pass filter (lpf_fc)\n"
             "3.3 Win-mean: windowed mean of raw signal (win_norm_s)",
             src="PICalc.step3"))
         form.addRow("Method:", s3)
         tau_norm = _dspin(0.1, 30.0, 2.0, 0.5, " s")
         tau_norm.setToolTip(_make_tooltip("τ_norm",
-            "EMA time constant for DC denominator (s). Firmware M1 default: 2.0 s.",
+            "EMA time constant for DC denominator (s). Firmware default: 2.0 s.",
             src="PICalc.tau_norm_s"))
         form.addRow("  τ_norm:", tau_norm)
         lpf_fc = _dspin(0.01, 5.0, 0.4, 0.1, " Hz")
@@ -9771,7 +9771,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Opens the PI investigation window. Compares two configurable PI pipelines (A vs B) "
             "on live or recorded data. Each pipeline has 3 independent steps: "
             "STEP1 (AC extraction), STEP2 (AC estimator), STEP3 (DC denominator). "
-            "Instance A defaults to firmware M1 settings; B is freely configurable.",
+            "Instance A defaults to firmware method settings; B is freely configurable.",
             src="PILabWindow"))
         self.sidebar_layout.addWidget(self.btn_pilab)
 

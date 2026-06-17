@@ -12956,3 +12956,11 @@ Tooltip del combo STEP2 extendido con descripción completa de 2.5 Harmonics:
 - Justificación: la onda PPG no es sinusoide pura — pico sistólico y onda dicrota tienen energía en 2º y 3er armónico
 - n_harm=3 conservador; valores altos capturan ruido a bajo SNR
 - Mismos warnings que 2.4: HR debe ser exacta, STEP1 sin efecto
+
+---
+
+## Sesión 2026-06-17d
+
+### Tema: PILabWindow — eliminar referencias incorrectas a "M1" en tooltips
+
+"firmware M1" era incorrecto — M1 es un modo de trama ($M1=PPG), no un nombre de algoritmo. Sustituido por "firmware method" / "firmware default" en todos los tooltips de PILAB (STEP1/2/3 combos y spinboxes τ_sub, τ_ac, τ_norm). Las menciones de M1 en CSV parsing y campos de frame se mantienen (correctas).
