@@ -12944,3 +12944,15 @@ Tooltip del combo STEP2 extendido con descripción detallada del método 2.4:
 **bpf_lo tooltip:** análisis completo de roll-off (-12 dB/oct, -3 dB en cutoff), rechazo real de respiración adulto para 0.3/0.4/0.5 Hz, y nota crítica sobre neonatos (respiración 0.5–1.0 Hz cae dentro del band → BPF no ayuda → usar métodos espectrales).
 
 **STEP2 tooltip:** descripción detallada de 2.4 Spectral band y 2.5 Harmonics con warnings sobre HR param y que STEP1 no tiene efecto en estos métodos.
+
+---
+
+## Sesión 2026-06-17c
+
+### Tema: PILabWindow — tooltip STEP2 actualizado con explicación de 2.5 Harmonics
+
+Tooltip del combo STEP2 extendido con descripción completa de 2.5 Harmonics:
+- Misma FFT que 2.4 pero suma energía en N bandas centradas en armónicos f0, 2·f0, ... N·f0
+- Justificación: la onda PPG no es sinusoide pura — pico sistólico y onda dicrota tienen energía en 2º y 3er armónico
+- n_harm=3 conservador; valores altos capturan ruido a bajo SNR
+- Mismos warnings que 2.4: HR debe ser exacta, STEP1 sin efecto

@@ -5044,11 +5044,19 @@ class PILabWindow(QtWidgets.QMainWindow):
             "2.1 EMA-RMS: running RMS via EMA of x² (τ_ac) — firmware method\n"
             "2.2 Win-RMS: windowed RMS over win_s seconds\n"
             "2.3 Peak-to-peak: (max−min)/2 over win_s seconds\n"
-            "2.4 Spectral band: FFT over win_s seconds of raw signal (DC-mean removed);\n"
+            "\n"
+            "2.4 Spectral band: FFT over win_s s of raw signal (DC-mean removed);\n"
             "    extracts energy in band [HR ± 0.3 Hz]; ac_r = √(energy/N).\n"
             "    WARNING: HR param must match actual heart rate — if wrong, result = 0.\n"
-            "    Note: STEP1 has no effect on this method (uses raw signal internally).\n"
-            "2.5 Harmonics: same as 2.4 but sums energy at N harmonics of HR (n·f_HR)",
+            "    Note: STEP1 has no effect (uses raw signal with own mean removal).\n"
+            "\n"
+            "2.5 Harmonics: same FFT as 2.4 but sums energy at N bands centered on\n"
+            "    harmonics f0, 2·f0, 3·f0, ... N·f0 (where f0 = HR/60).\n"
+            "    Rationale: PPG waveform is not a pure sine — systolic peak and dicrotic\n"
+            "    notch carry significant energy at 2nd and 3rd harmonic. Summing harmonics\n"
+            "    gives a more complete amplitude estimate than the fundamental alone.\n"
+            "    n_harm=3 is conservative; higher N risks capturing noise at low SNR.\n"
+            "    WARNING: same HR accuracy requirement as 2.4. STEP1 has no effect.",
             src="PICalc.step2"))
         form.addRow("Method:", s2)
         tau_ac = _dspin(0.1, 30.0, 6.0, 0.5, " s")
