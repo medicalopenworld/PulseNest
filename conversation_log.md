@@ -12964,3 +12964,21 @@ Tooltip del combo STEP2 extendido con descripción completa de 2.5 Harmonics:
 ### Tema: PILabWindow — eliminar referencias incorrectas a "M1" en tooltips
 
 "firmware M1" era incorrecto — M1 es un modo de trama ($M1=PPG), no un nombre de algoritmo. Sustituido por "firmware method" / "firmware default" en todos los tooltips de PILAB (STEP1/2/3 combos y spinboxes τ_sub, τ_ac, τ_norm). Las menciones de M1 en CSV parsing y campos de frame se mantienen (correctas).
+
+## Sesión 2026-06-23a
+
+### Tema: LIB CONFIG — ventana de parámetros RSQM configurables en runtime
+
+**Contexto:** `rsqm_ot_thr` (umbral OT para PROBE_NOT_APPLIED vs PROBE_APPLIED) era `static constexpr` en la librería — no modificable sin reflashear.
+
+**Decisiones:**
+- Convertir de `static constexpr` a miembros de instancia en `INCUNEST_AFE4490` (privados): `rsqm_ema_mean_tau_s`, `rsqm_ema_var_tau_s`, `rsqm_ot_thr`, `rsqm_disconn_led_sub_thr`, `rsqm_disconn_i_pd_thr`, `rsqm_signal_weak_std`. Mantener como constexpr: `rsqm_ready_count`, `rsqm_ot_saturated`, `rsqm_adc_positive_sat`, `rsqm_diag_period_ms`.
+- Renombrar `rsqm_probe_state_min_count` (uint8_t, samples) → `rsqm_probe_state_min_s` (float, segundos), para independencia de la frecuencia de muestreo. Convertido a `_rsqm_probe_state_min_samples` (uint32_t) en `_recalc_rate_params()`. `_rsqm_probe_state_count` subido a uint32_t.
+- Añadir 7 campos RSQM a `AFE4490Config` (struct pública) y copiarlos en `getConfig()`.
+- Añadir 6 setters públicos: `setRsqmOtThr`, `setRsqmSignalWeakStd`, `setRsqmDisconnLedSubThr`, `setRsqmDisconnIPdThr`, `setRsqmProbeStateMinS`, `setRsqmEmaTau`.
+- Nuevo frame `$LCFG` (análogo a `$CFG` pero para parámetros software) + comando `$LCFG?` en main.cpp.
+- Casos RSQM añadidos a `apply_set_cmd()` en main.cpp (emiten `$LCFG` como confirmación).
+- Nueva clase `LIBConfigWindow` en `pulsenest_lab.py`: botón "LIB CONFIG" en sidebar, 7 spinboxes con escala (I_PD en nA), Set individual + Set all, parse `$LCFG`, dirty/clean state.
+- `rsqm_disconn_i_pd_thr` se muestra en nA (×1e9) en la UI; se envía en A al firmware.
+
+**Specs actualizadas:** `incunest_afe4490_spec.md` → v0.33, `pulsenest_lab_spec.md` → v1.7.

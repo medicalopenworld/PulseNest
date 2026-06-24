@@ -429,6 +429,24 @@ static void send_cfg_frame() {
     send_tcfg_frame();  // always emit timing config alongside $CFG
 }
 
+// Emit a $LCFG frame with the current RSQM / algorithm library parameters.
+static void send_lcfg_frame() {
+    AFE4490Config cfg = afe.getConfig();
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf) - 6,
+        "$LCFG,rsqm_ot_thr=%.4e,rsqm_signal_weak_std=%.1f"
+        ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
+        ",rsqm_probe_state_min_s=%.3f"
+        ",rsqm_ema_mean_tau_s=%.3f,rsqm_ema_var_tau_s=%.3f",
+        cfg.rsqm_ot_thr, cfg.rsqm_signal_weak_std,
+        cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
+        cfg.rsqm_probe_state_min_s,
+        cfg.rsqm_ema_mean_tau_s, cfg.rsqm_ema_var_tau_s);
+    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+    Serial_print_locked(buf);
+}
+
 // parse_tia_gain / parse_tia_cf / parse_stage2 — moved to incunest_afe4490.h as
 // afeStrToRF / afeStrToCF / afeStrToRG (inline). Removed local copies.
 
@@ -591,6 +609,59 @@ static void apply_set_cmd(const char* key, const char* val) {
             Serial_printf("$ERR,sr,invalid (63-5000)\r\n");
             return;
         }
+    // ── RSQM / algorithm library parameters ──────────────────────────────────
+    } else if (strcmp(key, "rsqm_ot_thr") == 0) {
+        afe.setRsqmOtThr(atof(val));
+        Serial_printf("# SET rsqm_ot_thr=%.4e\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "rsqm_signal_weak_std") == 0) {
+        afe.setRsqmSignalWeakStd(atof(val));
+        Serial_printf("# SET rsqm_signal_weak_std=%.1f\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "rsqm_disconn_led_sub_thr") == 0) {
+        afe.setRsqmDisconnLedSubThr(atof(val));
+        Serial_printf("# SET rsqm_disconn_led_sub_thr=%.1f\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "rsqm_disconn_i_pd_thr") == 0) {
+        afe.setRsqmDisconnIPdThr(atof(val));
+        Serial_printf("# SET rsqm_disconn_i_pd_thr=%.4e\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "rsqm_probe_state_min_s") == 0) {
+        float s = atof(val);
+        if (s > 0.0f && s <= 10.0f) {
+            afe.setRsqmProbeStateMinS(s);
+            Serial_printf("# SET rsqm_probe_state_min_s=%.3f\n", s);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,rsqm_probe_state_min_s,invalid (0.0–10.0)\r\n");
+        }
+        return;
+    } else if (strcmp(key, "rsqm_ema_mean_tau_s") == 0) {
+        float mean_tau = atof(val);
+        AFE4490Config cfg = afe.getConfig();
+        if (mean_tau > 0.0f) {
+            afe.setRsqmEmaTau(mean_tau, cfg.rsqm_ema_var_tau_s);
+            Serial_printf("# SET rsqm_ema_mean_tau_s=%.3f\n", mean_tau);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,rsqm_ema_mean_tau_s,invalid (must be > 0)\r\n");
+        }
+        return;
+    } else if (strcmp(key, "rsqm_ema_var_tau_s") == 0) {
+        float var_tau = atof(val);
+        AFE4490Config cfg = afe.getConfig();
+        if (var_tau > 0.0f) {
+            afe.setRsqmEmaTau(cfg.rsqm_ema_mean_tau_s, var_tau);
+            Serial_printf("# SET rsqm_ema_var_tau_s=%.3f\n", var_tau);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,rsqm_ema_var_tau_s,invalid (must be > 0)\r\n");
+        }
+        return;
     } else {
         // Timing registers t1–t28 (register addresses 0x01–0x1C)
         static const struct { const char* key; uint8_t addr; } timing_regs[] = {
@@ -696,6 +767,8 @@ static void process_command(char* cmd_buf, int cmd_len) {
         else { Serial_printf("$ERR,MODE,invalid (M1/M2/M3/M4)\r\n"); }
     } else if (strcmp(cmd_buf, "$CFG?") == 0) {
         send_cfg_frame();
+    } else if (strcmp(cmd_buf, "$LCFG?") == 0) {
+        send_lcfg_frame();
     } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
         uint32_t diag_val = afe.runAfeDiagnostics();
         char buf[32];
@@ -734,8 +807,9 @@ static void process_command(char* cmd_buf, int cmd_len) {
 //   '$MODE,M2\n'  → frame mode $M2 (PPG + SpO2 + HR3 + quality flags)
 //   '$MODE,M3\n'  → frame mode $M3 (full AFE4490Data — default)
 //   '$MODE,M4\n'  → frame mode $M4 (M3 + AFE4490DebugData analog signals)
-//   '$CFG?\n'     → emit $CFG frame with current AFE4490 configuration
-//   '$SET,k,v*XX' → set hardware parameter k to value v (XOR checksum verified)
+//   '$CFG?\n'     → emit $CFG frame with current AFE4490 hardware configuration
+//   '$LCFG?\n'    → emit $LCFG frame with current RSQM / algorithm library parameters
+//   '$SET,k,v*XX' → set hardware or library parameter k to value v (XOR checksum verified)
 //   '$DIAG?\n'    → run AFE4490 diagnostics, emit $DIAG,XXXXXX*YY frame
 //   '$RESET\n'    → soft-reset via ESP.restart() (works over Serial and UDP)
 // Serial: multi-byte commands are accumulated until '\n'.

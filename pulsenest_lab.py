@@ -6947,6 +6947,229 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
+class LIBConfigWindow(QtWidgets.QMainWindow):
+    """Library (algorithm) parameter control window.
+
+    Sends $SET,key,value*XX commands to the ESP32 to change RSQM / algorithm
+    parameters at runtime. Populates from incoming $LCFG frames.
+    Each parameter has its own Set button so changes can be applied individually.
+    """
+
+    _SPIN_SS_CLEAN  = "background-color:#202020; color:#E0E0E0;"
+    _SPIN_SS_DIRTY  = "background-color:#202020; color:#FF4444;"
+
+    # (key, label, tooltip, decimals, min, max, suffix, scale_for_display)
+    # scale_for_display: multiply stored value by this to display (e.g. 1e9 for nA→nA label)
+    _PARAMS = [
+        # key                         label                        tooltip                                                       dec  min     max        suffix     scale
+        ("rsqm_ot_thr",               "OT threshold",              "Optical Transmittance threshold separating PROBE_NOT_APPLIED\n"
+                                                                    "(OT > thr) from PROBE_APPLIED (OT ≤ thr).\n"
+                                                                    "Physical scale [A/A]: APPLIED ≈ 1.4e-5, NOT_APPLIED ≈ 8e-4.\n"
+                                                                    "Needs empirical calibration.",                               6,   0.0,    0.01,      " A/A",    1.0),
+        ("rsqm_signal_weak_std",      "Signal weak STD",           "LED1_Sub standard deviation threshold for RSQM_SIGNAL_WEAK.\n"
+                                                                    "If std(LED1_Sub) < this → signal is too weak to measure.\n"
+                                                                    "Needs hardware calibration with known probe.",                0,   0.0,    50000.0,   " counts", 1.0),
+        ("rsqm_disconn_led_sub_thr",  "Disconn. LED_sub thr",      "|led_sub| threshold for PROBE_DISCONNECTED detection.\n"
+                                                                    "If |led1_sub| AND |led2_sub| < this → no probe connected.\n"
+                                                                    "Measured worst case: LED2_Sub=4013 (×1.25 margin → 5000).",   0,   0.0,    100000.0,  " counts", 1.0),
+        ("rsqm_disconn_i_pd_thr",     "Disconn. I_PD thr",         "|i_pd| threshold for PROBE_DISCONNECTED detection [nA].\n"
+                                                                    "If all 4 i_pd channels < this → no probe connected.\n"
+                                                                    "Worst case: 52 nA (ambdac=2µA, RF=50K) → ×2.9 margin → 150 nA.", 1, 0.0, 2000.0,  " nA",     1e9),
+        ("rsqm_probe_state_min_s",    "Probe debounce",            "Consecutive time [s] required to confirm a probe state change.\n"
+                                                                    "Prevents rapid toggling due to transients.\n"
+                                                                    "Default 0.200 s = 100 samples @ 500 Hz.\n"
+                                                                    "Converted to samples internally based on current sample rate.",  3, 0.01,   10.0,      " s",      1.0),
+        ("rsqm_ema_mean_tau_s",       "EMA mean τ",                "RSQM EMA mean time constant [s].\n"
+                                                                    "Controls DC baseline tracking speed.\n"
+                                                                    "Must be slow enough (f_c << 0.5 Hz) to not follow pulsatile\n"
+                                                                    "component — otherwise variance is underestimated.",            3,   0.1,    30.0,      " s",      1.0),
+        ("rsqm_ema_var_tau_s",        "EMA var τ",                 "RSQM EMA variance time constant [s].\n"
+                                                                    "Must be > EMA mean τ to cover multiple cardiac cycles.\n"
+                                                                    "@ 60 bpm: τ=4s covers 4 cycles. @ 30 bpm: 2 cycles (min).",   3,   0.1,    60.0,      " s",      1.0),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_monitor = parent
+        self.setWindowTitle("LIB CONFIG — RSQM Parameters")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("LIBConfigWindow/geometry")
+        if geom: self.restoreGeometry(geom)
+        else:    self.resize(560, 520)
+        self._spins = {}           # key → QDoubleSpinBox
+        self._scales = {}          # key → scale factor (display = stored × scale)
+        self._updating_from_lcfg = False
+        self._lcfg_timer = QtCore.QTimer(self)
+        self._lcfg_timer.setSingleShot(True)
+        self._lcfg_timer.timeout.connect(self._on_lcfg_timeout)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        vbox = QtWidgets.QVBoxLayout(central)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(12, 10, 12, 10)
+
+        # Top button row
+        btn_row = QtWidgets.QHBoxLayout()
+
+        btn_read = QtWidgets.QPushButton("Read from chip  ($LCFG?)")
+        btn_read.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#2A3D5A; color:#AACCFF;")
+        btn_read.clicked.connect(self._on_read_lcfg)
+        btn_read.setToolTip(_make_tooltip(
+            "Read from chip ($LCFG?)",
+            "Sends $LCFG? to the ESP32 and updates all controls with the current "
+            "RSQM / algorithm library parameter values.",
+            src="LIBConfigWindow"))
+        btn_row.addWidget(btn_read, stretch=1)
+
+        btn_set_all = QtWidgets.QPushButton("Set all")
+        btn_set_all.setStyleSheet("font-size:26px; padding:4px 14px; background-color:#1E3A1E; color:#88FF88;")
+        btn_set_all.clicked.connect(self._on_set_all)
+        btn_set_all.setToolTip(_make_tooltip(
+            "Set all parameters",
+            "Sends $SET for every RSQM parameter in this window in sequence.",
+            src="LIBConfigWindow"))
+        btn_row.addWidget(btn_set_all)
+        vbox.addLayout(btn_row)
+
+        # RSQM group
+        grp = QtWidgets.QGroupBox("RSQM Parameters")
+        grp.setStyleSheet(
+            "QGroupBox { font-size:26px; font-weight:bold; color:#AACCFF; "
+            "border:1px solid #334466; border-radius:6px; margin-top:8px; padding-top:6px; }"
+            "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }")
+        form = QtWidgets.QFormLayout(grp)
+        form.setSpacing(6)
+
+        for key, label, tooltip, decimals, vmin, vmax, suffix, scale in self._PARAMS:
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setDecimals(decimals)
+            spin.setRange(vmin, vmax * scale if scale != 1.0 else vmax)
+            spin.setSuffix(suffix)
+            spin.setStyleSheet(self._SPIN_SS_CLEAN)
+            spin.setFixedHeight(44)
+            spin.valueChanged.connect(lambda _, s=spin: self._mark_dirty(s) if not self._updating_from_lcfg else None)
+            spin.setToolTip(_make_tooltip(label, tooltip, src="LIBConfigWindow"))
+
+            btn_set = QtWidgets.QPushButton("Set")
+            btn_set.setStyleSheet("font-size:22px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
+            btn_set.setFixedHeight(44)
+            btn_set.clicked.connect(lambda _, k=key, s=spin, sc=scale: self._on_set_one(k, s, sc))
+            btn_set.setToolTip(_make_tooltip(f"Set {label}", f"Sends $SET,{key},<value>*XX to the ESP32.", src="LIBConfigWindow"))
+
+            row_w = QtWidgets.QWidget()
+            row_l = QtWidgets.QHBoxLayout(row_w)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(6)
+            row_l.addWidget(spin, stretch=1)
+            row_l.addWidget(btn_set)
+
+            lbl = QtWidgets.QLabel(label)
+            lbl.setStyleSheet("font-size:22px;")
+            form.addRow(lbl, row_w)
+
+            self._spins[key]  = spin
+            self._scales[key] = scale
+
+        vbox.addWidget(grp)
+        vbox.addStretch()
+
+        self._statusbar = QtWidgets.QStatusBar()
+        self._statusbar.setStyleSheet("font-size:20px; color:#AAAAAA;")
+        self.setStatusBar(self._statusbar)
+        self._statusbar.showMessage("Not connected — click 'Read from chip' after connecting")
+
+    def _mark_dirty(self, spin):
+        spin.setStyleSheet(self._SPIN_SS_DIRTY)
+
+    def _mark_clean(self, spin):
+        spin.setStyleSheet(self._SPIN_SS_CLEAN)
+
+    def _on_set_one(self, key, spin, scale):
+        stored_val = spin.value() / scale if scale != 1.0 else spin.value()
+        # Format: scientific for very small values, plain float otherwise
+        if abs(stored_val) < 1e-3 and stored_val != 0.0:
+            val_str = f"{stored_val:.6e}"
+        else:
+            val_str = f"{stored_val:.6g}"
+        self._send_set(key, val_str)
+        self._mark_clean(spin)
+
+    def _on_set_all(self):
+        for key, _label, _tt, _dec, _vmin, _vmax, _sfx, scale in self._PARAMS:
+            spin = self._spins[key]
+            stored_val = spin.value() / scale if scale != 1.0 else spin.value()
+            if abs(stored_val) < 1e-3 and stored_val != 0.0:
+                val_str = f"{stored_val:.6e}"
+            else:
+                val_str = f"{stored_val:.6g}"
+            self._send_set(key, val_str)
+            self._mark_clean(spin)
+
+    def _send_set(self, key: str, value: str):
+        mm = self.main_monitor
+        if mm is None or not mm._is_cmd_ready():
+            self._statusbar.showMessage("Not connected — cannot send command")
+            return
+        payload = f"$SET,{key},{value}"
+        chk = 0
+        for c in payload[1:]:
+            chk ^= ord(c)
+        cmd = f"{payload}*{chk:02X}\r\n"
+        mm.send_cmd(cmd.encode())
+        mm.log(f"→ {cmd.strip()}")
+        self._statusbar.showMessage(f"Sent: {cmd.strip()}  — waiting for $LCFG confirmation…")
+        self._lcfg_timer.start(3000)
+
+    def _on_read_lcfg(self):
+        mm = self.main_monitor
+        if mm is None or not mm._is_cmd_ready():
+            self._statusbar.showMessage("Not connected — cannot send $LCFG?")
+            return
+        mm.send_cmd(b"$LCFG?\n")
+        mm.log("→ $LCFG?")
+        self._statusbar.showMessage("$LCFG? sent — waiting for response…")
+        self._lcfg_timer.start(3000)
+
+    def _on_lcfg_timeout(self):
+        self._statusbar.showMessage("No response — check connection")
+
+    def _auto_read_lcfg(self):
+        mm = self.main_monitor
+        if mm is None or not mm._is_cmd_ready():
+            self._statusbar.showMessage("Not connected — connect serial to read lib config")
+            return
+        mm.send_cmd(b"$LCFG?\n")
+        self._lcfg_timer.start(3000)
+
+    def update_from_lcfg(self, kv: dict):
+        """Populate controls from a parsed $LCFG key-value dict."""
+        self._updating_from_lcfg = True
+        for key, spin in self._spins.items():
+            if key in kv:
+                try:
+                    stored_val = float(kv[key])
+                    display_val = stored_val * self._scales[key]
+                    spin.setValue(display_val)
+                    self._mark_clean(spin)
+                except ValueError:
+                    pass
+        self._updating_from_lcfg = False
+        self._statusbar.showMessage("Lib config loaded from chip")
+        self._lcfg_timer.stop()
+
+    def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("LIBConfigWindow/geometry", self.saveGeometry())
+        mm = self.main_monitor
+        self.main_monitor = None
+        if mm is not None and hasattr(mm, 'btn_lib_config'):
+            mm.btn_lib_config.setChecked(False)
+            mm.lib_config_window = None
+        super().closeEvent(event)
+
+
 class HR3LabWindow(QtWidgets.QMainWindow):
     """Diagnostic window for the HR3 (FFT-based) algorithm.
 
@@ -9374,8 +9597,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.pilab_window     = None
         self.esp32_timing_window    = None
         self.python_timing_window   = None
-        self.hw_config_window = None
-        self.diag_window      = None
+        self.hw_config_window  = None
+        self.lib_config_window = None
+        self.diag_window       = None
         self.afe_sweep_window  = None
         self._pending_tasks   = []   # accumulates $TASK frames until $TASKS_END
         # Render throttle rates (relative to 50ms _render_timer ticks)
@@ -9865,6 +10089,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
             src="HWConfigWindow"))
         self.sidebar_layout.addWidget(self.btn_hw_config)
 
+        self.btn_lib_config = QtWidgets.QPushButton("LIB CONFIG")
+        self.btn_lib_config.setCheckable(True)
+        self.btn_lib_config.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_lib_config.clicked.connect(self.toggle_lib_config)
+        self.btn_lib_config.setToolTip(_make_tooltip(
+            "LIB CONFIG — RSQM / Algorithm Parameters",
+            "Opens the library configuration window. Allows changing RSQM and algorithm "
+            "parameters (OT threshold, signal weak STD, probe debounce, EMA time constants, etc.) "
+            "at runtime via $SET commands, without reflashing. "
+            "Confirmation arrives as an updated $LCFG frame.",
+            src="LIBConfigWindow"))
+        self.sidebar_layout.addWidget(self.btn_lib_config)
+
         self.btn_diagnostics = QtWidgets.QPushButton("DIAGNOSTICS")
         self.btn_diagnostics.setCheckable(True)
         self.btn_diagnostics.setStyleSheet(ACTION_BUTTON_STYLE)
@@ -10212,6 +10449,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.pilab_window._sync_spo2_coeffs(kv)
         self._cfg_notify_lab_capture = True   # reset to default after each frame
 
+    def _on_lcfg_frame_received(self, line):
+        """Parse a $LCFG frame and deliver values to LIBConfigWindow (if open)."""
+        kv = {}
+        for part in line[len('$LCFG,'):].split(','):
+            if '=' in part:
+                k, v = part.split('=', 1)
+                kv[k] = v
+        self.log(f"[LCFG] rsqm_ot_thr={kv.get('rsqm_ot_thr','?')}  signal_weak_std={kv.get('rsqm_signal_weak_std','?')}"
+                 f"  probe_min_s={kv.get('rsqm_probe_state_min_s','?')}")
+        if self.lib_config_window is not None:
+            self.lib_config_window.update_from_lcfg(kv)
+
     def _on_tcfg_frame_received(self, line):
         """Parse a $TCFG frame and deliver timing values to HWConfigWindow (if open)."""
         kv = {}
@@ -10501,6 +10750,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hw_config_window.main_monitor = None
                 self.hw_config_window.close()
                 self.hw_config_window = None
+
+    def toggle_lib_config(self):
+        if self.btn_lib_config.isChecked():
+            self.lib_config_window = LIBConfigWindow(None)
+            self.lib_config_window.main_monitor = self
+            self.lib_config_window.show()
+            QtCore.QTimer.singleShot(200, self.lib_config_window._auto_read_lcfg)
+        else:
+            if self.lib_config_window is not None:
+                self.lib_config_window.main_monitor = None
+                self.lib_config_window.close()
+                self.lib_config_window = None
 
     def toggle_diagnostics(self):
         if self.btn_diagnostics.isChecked():
@@ -11323,6 +11584,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self._on_cfg_frame_received(line)
                         continue
 
+                    # $LCFG: library/algorithm parameter response (reply to $LCFG? or RSQM $SET)
+                    if line.startswith('$LCFG,'):
+                        self._on_lcfg_frame_received(line)
+                        continue
+
                     # $TCFG: raw timing register values (reply to $CFG? or $SET t1..t28)
                     if line.startswith('$TCFG,'):
                         self._on_tcfg_frame_received(line)
@@ -11338,6 +11604,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.log(f"⚠ FIRMWARE ERROR: {line}")
                         if self.hw_config_window is not None:
                             self.hw_config_window._statusbar.showMessage(f"Error: {line}")
+                        if self.lib_config_window is not None:
+                            self.lib_config_window._statusbar.showMessage(f"Error: {line}")
                         continue
 
                     # Only feed data pipeline from the active transport

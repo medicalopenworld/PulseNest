@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.6
+# pulsenest_lab — Specification v1.7
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -196,6 +196,17 @@ $CFG,led1=<v>,led2=<v>,range=<v>,tia1=<v>,cf1=<v>,stg21=<v>,stage2en1=<v>,
 
 Emitted at startup, after `$SET`, and in response to `$CFG?`. Parsed by
 `_on_cfg_frame_received()` → populates `_last_cfg` dict and updates `HWConfigWindow`.
+
+#### $LCFG — Library/algorithm parameter report
+
+```
+$LCFG,rsqm_ot_thr=<v>,rsqm_signal_weak_std=<v>,rsqm_disconn_led_sub_thr=<v>,
+      rsqm_disconn_i_pd_thr=<v>,rsqm_probe_state_min_s=<v>,
+      rsqm_ema_mean_tau_s=<v>,rsqm_ema_var_tau_s=<v>*XX
+```
+
+Emitted after a RSQM `$SET` command and in response to `$LCFG?`. Parsed by
+`_on_lcfg_frame_received()` → updates `LIBConfigWindow`.
 
 #### $TCFG — Raw timing registers
 
@@ -773,7 +784,25 @@ Purpose: view and change AFE4490 hardware parameters in real time via `$SET`/`$C
 Controls are marked **dirty** (yellow border) when their value differs from the last `$CFG` received,
 and **clean** (no border) after a matching `$CFG` confirms the change.
 
-### 7.17 DiagnosticsWindow — "DIAGNOSTICS"
+### 7.17 LIBConfigWindow — "LIB CONFIG"
+
+Purpose: view and change RSQM / algorithm library parameters in real time via `$SET`/`$LCFG` protocol.
+
+**Contents (RSQM group):**
+- OT threshold (`rsqm_ot_thr`) — NOT_APPLIED vs APPLIED boundary [A/A]
+- Signal weak STD (`rsqm_signal_weak_std`) — SIGNAL_WEAK threshold [ADC counts]
+- DISCONNECTED LED_sub threshold (`rsqm_disconn_led_sub_thr`) [ADC counts]
+- DISCONNECTED I_PD threshold (`rsqm_disconn_i_pd_thr`) [nA displayed, A stored]
+- Probe debounce (`rsqm_probe_state_min_s`) [s] — converted to samples from `fs` internally
+- EMA mean τ (`rsqm_ema_mean_tau_s`) [s]
+- EMA var τ (`rsqm_ema_var_tau_s`) [s]
+- [Read from chip ($LCFG?)] — requests `$LCFG?` from firmware
+- [Set all] — sends `$SET` for every parameter in the window
+- Status bar: shows last command sent and confirmation status
+
+Controls are marked **dirty** (red text) when edited but not yet confirmed by firmware, and **clean** after a matching `$LCFG` arrives.
+
+### 7.18 DiagnosticsWindow — "DIAGNOSTICS"
 
 Purpose: run the AFE4490 hardware diagnostic test and display the result.
 
