@@ -12982,3 +12982,27 @@ Tooltip del combo STEP2 extendido con descripción completa de 2.5 Harmonics:
 - `rsqm_disconn_i_pd_thr` se muestra en nA (×1e9) en la UI; se envía en A al firmware.
 
 **Specs actualizadas:** `incunest_afe4490_spec.md` → v0.33, `pulsenest_lab_spec.md` → v1.7.
+
+## Sesión 2026-06-24a
+
+### Tema 1: Verificación timing real librería vs datasheet (análisis fototerapia)
+
+**Contexto:** el análisis previo de interferencia de fototerapia usaba T_s=487 µs del datasheet Table 2 (ejemplo). El usuario preguntó si el timing real de la librería coincide.
+
+**Resultado de la verificación (`_apply_timing_regs()`):**
+- `phase = 4 000 000 / 500 = 8000` counts (2000 µs PRP) — igual al datasheet
+- `q = 2000` counts = 500 µs — igual al datasheet
+- `tia_margin = floor(2000 × 0.10) = 200` counts = 50 µs → T_s real = **449.5 µs** (datasheet usaba ~487 µs)
+- `ambient_margin = 200` counts = 50 µs
+- Ventanas reales: LED1 STC=550 µs ENDC=999.5 µs; ALED1 STC=1050 µs ENDC=1499.5 µs
+
+**Conclusión:** Δt (separación centros LED↔ALED) = 500 µs en ambos canales — igual al datasheet. La diferencia solo afecta T_s (longitud de ventana), no la condición de cancelación de fototerapia. Conclusiones siguen válidas: 5 kHz problemático (anti-fase, dobla interferencia); 10/20/50 kHz cancelación perfecta por sustracción digital.
+
+### Tema 2: PPGSignalsWindow — PAUSE/CONTINUE + Window duration
+
+**Cambios en `pulsenest_lab.py`:**
+- `_setup_ui()`: añadido spinbox "Window (s)" (rango 1–10 s, persistido en `.ini`) y botón "PAUSE" (checkable, naranja cuando activo).
+- `_on_pause_clicked()`: nuevo método — toglea `_paused` y cambia texto del botón.
+- `update_plots()`: retorna inmediatamente si `_paused`; aplica `[-n:]` con `n = window_s × SPO2_RECEIVED_FS` a todas las curvas.
+- `closeEvent()`: persiste `PPGSignalsWindow/window_s`.
+- `__init__()`: inicializa `_paused = False`; restaura `window_s` desde `.ini`.

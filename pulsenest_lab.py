@@ -7827,6 +7827,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.main_monitor = main_monitor
         self.setWindowTitle("PPG Signals")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._paused = False
         self._setup_ui()
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         geom = s.value("PPGSignalsWindow/geometry")
@@ -7840,6 +7841,8 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.check_led1_raw.setChecked( s.value("PPGSignalsWindow/check_led1_raw",  False, type=bool))
         self.check_aled1.setChecked( s.value("PPGSignalsWindow/check_aled1",  False, type=bool))
         self.check_led1_sub.setChecked( s.value("PPGSignalsWindow/check_led1_sub",  True,  type=bool))
+        _max_s = int(WINDOW_SIZE / SPO2_RECEIVED_FS)
+        self.spin_window_s.setValue(s.value("PPGSignalsWindow/window_s", _max_s, type=int))
 
     def _setup_ui(self):
         outer = QtWidgets.QVBoxLayout(self)
@@ -7919,6 +7922,46 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         for w in (self.check_led2_raw, self.check_aled2, self.check_led2_sub):
             sidebar.addWidget(w)
 
+        # ── Window duration ───────────────────────────────────────────────────
+        lbl_win = QtWidgets.QLabel("Window (s)")
+        lbl_win.setStyleSheet("color: #AAAAAA; font-size: 14px; margin-top: 16px;")
+        sidebar.addWidget(lbl_win)
+        _max_s = int(WINDOW_SIZE / SPO2_RECEIVED_FS)
+        self.spin_window_s = QtWidgets.QSpinBox()
+        self.spin_window_s.setRange(1, _max_s)
+        self.spin_window_s.setValue(_max_s)
+        self.spin_window_s.setSuffix(" s")
+        self.spin_window_s.setStyleSheet(
+            "QSpinBox { background-color: #2A2A2A; color: #E0E0E0; font-size: 16px; "
+            "border: 1px solid #555555; border-radius: 3px; padding: 2px 4px; }")
+        self.spin_window_s.setToolTip(_make_tooltip(
+            "Window duration",
+            f"Duration of the visible time window in the signal plots. "
+            f"Range: 1\u2013{_max_s} s ({WINDOW_SIZE} samples at {SPO2_RECEIVED_FS:.0f} Hz).",
+            src="PPGSignalsWindow"))
+        sidebar.addWidget(self.spin_window_s)
+
+        # ── Pause / Continue ─────────────────────────────────────────────────
+        self.btn_pause = QtWidgets.QPushButton("PAUSE")
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setStyleSheet("""
+            QPushButton {
+                background-color: #2A2A2A; color: #CCCCCC; font-size: 15px;
+                font-weight: bold; padding: 6px 4px; border-radius: 4px;
+                border: 1px solid #555555; margin-top: 10px;
+            }
+            QPushButton:checked {
+                background-color: #774400; color: #FFDD44; border: 1px solid #FFAA00;
+            }
+        """)
+        self.btn_pause.setToolTip(_make_tooltip(
+            "Pause / Continue",
+            "Freeze the signal plots at the current snapshot. "
+            "Data keeps accumulating in the buffer; press again to resume.",
+            src="PPGSignalsWindow"))
+        self.btn_pause.clicked.connect(self._on_pause_clicked)
+        sidebar.addWidget(self.btn_pause)
+
         sidebar.addStretch()
         sb_widget = QtWidgets.QWidget()
         sb_widget.setLayout(sidebar)
@@ -7969,15 +8012,23 @@ class PPGSignalsWindow(QtWidgets.QWidget):
 
         outer.addWidget(hint)
 
+    def _on_pause_clicked(self, checked):
+        self._paused = checked
+        self.btn_pause.setText("CONTINUE" if checked else "PAUSE")
+
     def update_plots(self, data_led2, data_led1, data_aled2, data_aled1,
                      data_led2_sub, data_led1_sub, data_ppgdisp):
-        self.curve_led2.setData(list(data_led2))
-        self.curve_led1.setData(list(data_led1))
-        self.curve_aled2.setData(list(data_aled2))
-        self.curve_aled1.setData(list(data_aled1))
-        self.curve_led2_sub.setData(list(data_led2_sub))
-        self.curve_led1_sub.setData(list(data_led1_sub))
-        self.curve_ppgdisp.setData(list(data_ppgdisp)[-PPG_WINDOW_SIZE:])
+        if self._paused:
+            return
+        n = int(self.spin_window_s.value() * SPO2_RECEIVED_FS)
+        def tail(d): return list(d)[-n:]
+        self.curve_led2.setData(tail(data_led2))
+        self.curve_led1.setData(tail(data_led1))
+        self.curve_aled2.setData(tail(data_aled2))
+        self.curve_aled1.setData(tail(data_aled1))
+        self.curve_led2_sub.setData(tail(data_led2_sub))
+        self.curve_led1_sub.setData(tail(data_led1_sub))
+        self.curve_ppgdisp.setData(tail(data_ppgdisp))
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -7988,6 +8039,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         s.setValue("PPGSignalsWindow/check_led1_raw",   self.check_led1_raw.isChecked())
         s.setValue("PPGSignalsWindow/check_aled1",   self.check_aled1.isChecked())
         s.setValue("PPGSignalsWindow/check_led1_sub",   self.check_led1_sub.isChecked())
+        s.setValue("PPGSignalsWindow/window_s",        self.spin_window_s.value())
         if self.main_monitor is not None:
             self.main_monitor.btn_signals.setChecked(False)
             self.main_monitor.signals_window = None
