@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <esp_chip_info.h>
 #include <esp_mac.h>
+#include <esp_system.h>   // esp_reset_reason()
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
 
@@ -172,7 +173,7 @@ static void udp_send_line(const char* buf) {
 // M1 = PPG only (minimal bandwidth)
 // M2 = PPG + SpO2 + HR3 + quality flags (lightweight monitoring)
 // M3 = full AFE4490Data — all production fields (default)
-// M4 = M3 + AFE4490DebugData analog signals (V_TIA, I_PD for all 4 channels)
+// M4 = M3 + AFE4490DebugData analog signals (V_TIA_DIFF, I_PD for all 4 channels)
 enum class IncunestFrameMode { M1, M2, M3, M4 };
 volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M3;
 
@@ -283,7 +284,7 @@ void Incunest_Task(void *pvParameters) {
                     if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
                     udp_send(buf);
                 } else {  // M4
-                    // $M4 = M3 + V_TIA_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (all in scientific notation)
+                    // $M4 = M3 + V_TIA_DIFF_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (all in scientific notation)
                     char buf[512];
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
@@ -307,8 +308,8 @@ void Incunest_Task(void *pvParameters) {
                         (unsigned)data.rsqi,
                         (unsigned long)data.diag_code,
                         (int)data.probe_state,
-                        dbg.analog.v_tia_led1,  dbg.analog.v_tia_led2,
-                        dbg.analog.v_tia_aled1, dbg.analog.v_tia_aled2,
+                        dbg.analog.v_tia_diff_led1,  dbg.analog.v_tia_diff_led2,
+                        dbg.analog.v_tia_diff_aled1, dbg.analog.v_tia_diff_aled2,
                         dbg.analog.i_pd_led1,   dbg.analog.i_pd_led2,
                         dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
@@ -855,6 +856,25 @@ void Cmd_Task(void *pvParameters) {
 }
 
 // ── setup / loop ──────────────────────────────────────────────────────────────
+// Human-readable reset reason — key diagnostic for sporadic resets on $SET commands.
+// PANIC = code crash (race/null ptr), TASK_WDT/INT_WDT = deadlock or long block,
+// BROWNOUT = supply dip (LED/AMBDAC changes alter current draw).
+static const char* reset_reason_str(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "POWERON";
+        case ESP_RST_EXT:       return "EXT_PIN";
+        case ESP_RST_SW:        return "SW_RESET";
+        case ESP_RST_PANIC:     return "PANIC (exception/abort)";
+        case ESP_RST_INT_WDT:   return "INT_WDT (interrupt watchdog)";
+        case ESP_RST_TASK_WDT:  return "TASK_WDT (task watchdog)";
+        case ESP_RST_WDT:       return "WDT (other watchdog)";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT (supply dip)";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "UNKNOWN";
+    }
+}
+
 void setup() {
     g_serial_mutex    = xSemaphoreCreateMutex();  // protects concurrent Serial writes from multiple tasks
     g_resp_udp_mutex  = xSemaphoreCreateMutex();  // protects g_resp_udp (used by Incunest_Task + Cmd_Task)
@@ -886,6 +906,8 @@ void setup() {
             esp_get_idf_version());
         Serial.printf("# SYS: MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        Serial.printf("# SYS: Reset reason: %s\n",
+            reset_reason_str(esp_reset_reason()));
     }
 
     // WiFi + UDP init (STA mode — tries each network in WIFI_NETWORKS[] order, always from index 0)
@@ -920,6 +942,13 @@ void setup() {
                               g_udp_target_ip, UDP_TARGET_PORT);
                 Serial.printf("# OTA: http://%s/\n", WiFi.localIP().toString().c_str());
                 Serial.printf("# CMD UDP: listening on port %d\n", UDP_CMD_PORT);
+                // Relay reset reason over UDP so it reaches the host cable-free.
+                {
+                    char rr_buf[64];
+                    snprintf(rr_buf, sizeof(rr_buf), "# RESET_REASON: %s\n",
+                             reset_reason_str(esp_reset_reason()));
+                    udp_send_line(rr_buf);
+                }
             } else {
                 const char* reason;
                 switch (WiFi.status()) {
@@ -946,7 +975,10 @@ void setup() {
                                 // Calling SPI.begin() inside a library would risk reinitialising the
                                 // bus and breaking other devices sharing it.
 
-    xTaskCreatePinnedToCore(Cmd_Task,  "CMD",      4096, NULL, 2, NULL, 0);
+    // CMD stack 8192: $SET → apply_set_cmd → send_cfg_frame (buf[600]) + send_tcfg_frame
+    // (buf[512]) + vsnprintf float formatting + lwIP/WiFiUDP + OTA handleClient all run on
+    // this stack. 4096 overflowed sporadically (stack canary PANIC, ~1 in 3-4 $SET commands).
+    xTaskCreatePinnedToCore(Cmd_Task,  "CMD",      8192, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(UDP_Task,  "UDP_DATA", 4096, NULL, 1, NULL, 1);  // core 1: independent of Incunest_Task (core 0); WiFi calls are thread-safe across cores
 
     start_incunest();

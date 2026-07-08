@@ -214,6 +214,7 @@ WINDOW_SIZE        = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10
 PPG_WINDOW_SIZE    = 500   # 10 s — same as WINDOW_SIZE
 SPO2_CAL_BUFSIZE   = 3000  # 60 s @ 50 Hz — rolling buffer for SpO2LabWindow
 SPO2_RECEIVED_FS   = 50.0  # AFE4490 @ 500 Hz, SERIAL_DOWNSAMPLING_RATIO=10
+SIG_MAX_S          = 60    # PPGSignalsWindow internal accumulator: 60 s @ SPO2_RECEIVED_FS
 
 
 class SpO2LocalCalc:
@@ -1468,7 +1469,7 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         now_str  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = os.path.join(CAPTURES_DIR, f"spo2_cal_{now_str}.csv")
         try:
-            with open(filename, "w") as f:
+            with open(filename, "w", encoding="cp1252", errors="replace") as f:
                 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"# SpO2 Calibration — {ts}\n")
                 f.write(f"# Model,{self._edit_model.text()}\n")
@@ -2158,7 +2159,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         R_fw    = self._arr_R_fw    if self._offline_mode else np.array(self._buf_R_fw)
         R_py    = self._arr_R_py    if self._offline_mode else np.array(self._buf_R_py)
         try:
-            with open(filename, 'w') as f:
+            with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# SPO2TEST export — {datetime.datetime.now()}\n")
                 f.write(f"# a={self._calc.spo2_a:.4f}, b={self._calc.spo2_b:.4f}, "
                         f"dc_tau={self._calc.dc_iir_tau_s:.1f}s, ac_tau={self._calc.ac_ema_tau_s:.1f}s\n")
@@ -2857,7 +2858,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         filename = os.path.join(CAPTURES_DIR, f"hr1test_{now_str}.csv")
         try:
             calc = self._get_live_calc() if not self._offline_mode else self._offline_calc
-            with open(filename, 'w') as f:
+            with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# HR1TEST export — {datetime.datetime.now()}\n")
                 f.write(f"# dc_tau={calc.dc_iir_tau_s:.1f}s, ma_cut={calc.ma_cutoff_hz:.1f}Hz, "
                         f"decay={calc.running_max_decay:.4f}, thr={calc.threshold_factor:.2f}, "
@@ -3473,7 +3474,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         hr_fw = np.array(self._buf_hr_fw); hr_py = np.array(self._buf_hr_py)
         sqi_fw = np.array(self._buf_sqi_fw); sqi_py = np.array(self._buf_sqi_py)
         try:
-            with open(filename, 'w') as f:
+            with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# HR2TEST export — {datetime.datetime.now()}\n")
                 f.write(f"# bpf=[{self._calc.bpf_low_hz:.2f},{self._calc.bpf_high_hz:.1f}]Hz, "
                         f"buf={self._calc.buf_len}, max_lag={self._calc.max_lag}, "
@@ -4592,7 +4593,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         hr_fw  = np.array(self._buf_hr_fw);  hr_py  = np.array(self._buf_hr_py)
         sqi_fw = np.array(self._buf_sqi_fw); sqi_py = np.array(self._buf_sqi_py)
         try:
-            with open(filename, 'w') as f:
+            with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# HR3TEST export — {datetime.datetime.now()}\n")
                 _c = self._active_calc()
                 f.write(f"# bp={_c.bp_low_hz:.1f}-{_c.bp_high_hz:.1f} Hz, "
@@ -6377,6 +6378,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_stg21 = QtWidgets.QComboBox()
         self._combo_stg21.addItems(self.STG2_GAINS_DISPLAY)
         self._combo_stg21.setToolTip(_make_tooltip("LED1 (IR) Stage 2 gain (STG2GAIN1)",
+            "Stage 2 inverting amplifier gain for the IR channel. Implemented via feedback resistance RG — "
+            "the kΩ values shown in the dropdown are the RG values (100 kΩ = ×1, 150 kΩ = ×1.5, etc.). "
             "STG2GAIN1[2:0] bits D[10:8] of TIAGAIN. Gain applied when STAGE2EN1 is ON. "
             "Only active when ENSEPGAIN=ON; ignored by chip when ENSEPGAIN=OFF. "
             "Sends $SET,stg21,<value>. ($CFG key: stg21)",
@@ -6424,6 +6427,8 @@ class HWConfigWindow(QtWidgets.QMainWindow):
         self._combo_stg22 = QtWidgets.QComboBox()
         self._combo_stg22.addItems(self.STG2_GAINS_DISPLAY)
         self._combo_stg22.setToolTip(_make_tooltip("LED2 (RED) Stage 2 gain (STG2GAIN2)",
+            "Stage 2 inverting amplifier gain for the RED channel. Implemented via feedback resistance RG — "
+            "the kΩ values shown in the dropdown are the RG values (100 kΩ = ×1, 150 kΩ = ×1.5, etc.). "
             "STG2GAIN2[2:0] bits D[10:8] of TIA_AMB_GAIN. Gain applied when STAGE2EN2 is ON. "
             "Always active. When ENSEPGAIN=OFF, also applies to LED1 (IR). "
             "Sends $SET,stg22,<value>. ($CFG key: stg22)",
@@ -7828,6 +7833,15 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.setWindowTitle("PPG Signals")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._paused = False
+        _sig_buf = int(SIG_MAX_S * SPO2_RECEIVED_FS)
+        self._sig_led2     = deque(maxlen=_sig_buf)
+        self._sig_led1     = deque(maxlen=_sig_buf)
+        self._sig_aled2    = deque(maxlen=_sig_buf)
+        self._sig_aled1    = deque(maxlen=_sig_buf)
+        self._sig_led2_sub = deque(maxlen=_sig_buf)
+        self._sig_led1_sub = deque(maxlen=_sig_buf)
+        self._sig_ppgdisp  = deque(maxlen=_sig_buf)
+        self._sig_last_sc  = None   # last sample_counter value seen
         self._setup_ui()
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         geom = s.value("PPGSignalsWindow/geometry")
@@ -7841,8 +7855,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.check_led1_raw.setChecked( s.value("PPGSignalsWindow/check_led1_raw",  False, type=bool))
         self.check_aled1.setChecked( s.value("PPGSignalsWindow/check_aled1",  False, type=bool))
         self.check_led1_sub.setChecked( s.value("PPGSignalsWindow/check_led1_sub",  True,  type=bool))
-        _max_s = int(WINDOW_SIZE / SPO2_RECEIVED_FS)
-        self.spin_window_s.setValue(s.value("PPGSignalsWindow/window_s", _max_s, type=int))
+        self.spin_window_s.setValue(s.value("PPGSignalsWindow/window_s", int(WINDOW_SIZE / SPO2_RECEIVED_FS), type=int))
 
     def _setup_ui(self):
         outer = QtWidgets.QVBoxLayout(self)
@@ -7926,10 +7939,9 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         lbl_win = QtWidgets.QLabel("Window (s)")
         lbl_win.setStyleSheet("color: #AAAAAA; font-size: 14px; margin-top: 16px;")
         sidebar.addWidget(lbl_win)
-        _max_s = int(WINDOW_SIZE / SPO2_RECEIVED_FS)
         self.spin_window_s = QtWidgets.QSpinBox()
-        self.spin_window_s.setRange(1, _max_s)
-        self.spin_window_s.setValue(_max_s)
+        self.spin_window_s.setRange(1, SIG_MAX_S)
+        self.spin_window_s.setValue(int(WINDOW_SIZE / SPO2_RECEIVED_FS))
         self.spin_window_s.setSuffix(" s")
         self.spin_window_s.setStyleSheet(
             "QSpinBox { background-color: #2A2A2A; color: #E0E0E0; font-size: 16px; "
@@ -7937,7 +7949,9 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.spin_window_s.setToolTip(_make_tooltip(
             "Window duration",
             f"Duration of the visible time window in the signal plots. "
-            f"Range: 1\u2013{_max_s} s ({WINDOW_SIZE} samples at {SPO2_RECEIVED_FS:.0f} Hz).",
+            f"Range: 1\u2013{SIG_MAX_S} s. Uses an internal rolling buffer of "
+            f"{int(SIG_MAX_S * SPO2_RECEIVED_FS)} samples "
+            f"independent of the main {WINDOW_SIZE}-sample display buffer.",
             src="PPGSignalsWindow"))
         sidebar.addWidget(self.spin_window_s)
 
@@ -8017,18 +8031,43 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.btn_pause.setText("CONTINUE" if checked else "PAUSE")
 
     def update_plots(self, data_led2, data_led1, data_aled2, data_aled1,
-                     data_led2_sub, data_led1_sub, data_ppgdisp):
+                     data_led2_sub, data_led1_sub, data_ppgdisp, data_sample_counter):
+        # ── 1. Accumulate new samples into internal rolling buffers ──────────
+        sc_list = list(data_sample_counter)
+        if sc_list:
+            last_sc = sc_list[-1]
+            # Detect firmware restart (counter reset)
+            if self._sig_last_sc is not None and last_sc < self._sig_last_sc:
+                self._sig_last_sc = None
+                for buf in (self._sig_led2, self._sig_led1, self._sig_aled2, self._sig_aled1,
+                            self._sig_led2_sub, self._sig_led1_sub, self._sig_ppgdisp):
+                    buf.clear()
+            # Count entries strictly newer than last seen
+            if self._sig_last_sc is None:
+                n_new = len(sc_list)
+            else:
+                n_new = sum(1 for sc in reversed(sc_list) if sc > self._sig_last_sc)
+            if n_new > 0:
+                srcs = (data_led2, data_led1, data_aled2, data_aled1,
+                        data_led2_sub, data_led1_sub, data_ppgdisp)
+                dsts = (self._sig_led2, self._sig_led1, self._sig_aled2, self._sig_aled1,
+                        self._sig_led2_sub, self._sig_led1_sub, self._sig_ppgdisp)
+                for src, dst in zip(srcs, dsts):
+                    dst.extend(list(src)[-n_new:])
+            self._sig_last_sc = last_sc
+
+        # ── 2. Render (skip if paused) ───────────────────────────────────────
         if self._paused:
             return
         n = int(self.spin_window_s.value() * SPO2_RECEIVED_FS)
         def tail(d): return list(d)[-n:]
-        self.curve_led2.setData(tail(data_led2))
-        self.curve_led1.setData(tail(data_led1))
-        self.curve_aled2.setData(tail(data_aled2))
-        self.curve_aled1.setData(tail(data_aled1))
-        self.curve_led2_sub.setData(tail(data_led2_sub))
-        self.curve_led1_sub.setData(tail(data_led1_sub))
-        self.curve_ppgdisp.setData(tail(data_ppgdisp))
+        self.curve_led2.setData(tail(self._sig_led2))
+        self.curve_led1.setData(tail(self._sig_led1))
+        self.curve_aled2.setData(tail(self._sig_aled2))
+        self.curve_aled1.setData(tail(self._sig_aled1))
+        self.curve_led2_sub.setData(tail(self._sig_led2_sub))
+        self.curve_led1_sub.setData(tail(self._sig_led1_sub))
+        self.curve_ppgdisp.setData(tail(self._sig_ppgdisp))
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -8120,7 +8159,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_DIFF_LED1,V_TIA_DIFF_LED2,V_TIA_DIFF_ALED1,V_TIA_DIFF_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
     )
 
     def __init__(self, main_monitor):
@@ -8270,11 +8309,11 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         "rsqi_ok_pct",
         "diag_code_mean", "diag_code_min", "diag_code_max",
         "probe_state_fw_mean", "probe_state_fw_min", "probe_state_fw_max",
-        # ── V_TIA [V] × 4 signals — received from $M4 frame ─────────────────
-        "V_TIA_LED1_mean",        "V_TIA_LED1_std",        "V_TIA_LED1_min",        "V_TIA_LED1_max",
-        "V_TIA_LED2_mean",        "V_TIA_LED2_std",        "V_TIA_LED2_min",        "V_TIA_LED2_max",
-        "V_TIA_ALED1_mean",       "V_TIA_ALED1_std",       "V_TIA_ALED1_min",       "V_TIA_ALED1_max",
-        "V_TIA_ALED2_mean",       "V_TIA_ALED2_std",       "V_TIA_ALED2_min",       "V_TIA_ALED2_max",
+        # ── V_TIA_DIFF [V] × 4 signals — received from $M4 frame ────────────
+        "V_TIA_DIFF_LED1_mean",        "V_TIA_DIFF_LED1_std",        "V_TIA_DIFF_LED1_min",        "V_TIA_DIFF_LED1_max",
+        "V_TIA_DIFF_LED2_mean",        "V_TIA_DIFF_LED2_std",        "V_TIA_DIFF_LED2_min",        "V_TIA_DIFF_LED2_max",
+        "V_TIA_DIFF_ALED1_mean",       "V_TIA_DIFF_ALED1_std",       "V_TIA_DIFF_ALED1_min",       "V_TIA_DIFF_ALED1_max",
+        "V_TIA_DIFF_ALED2_mean",       "V_TIA_DIFF_ALED2_std",       "V_TIA_DIFF_ALED2_min",       "V_TIA_DIFF_ALED2_max",
         # ── I_PD [µA] × 4 signals — received from $M4 frame ─────────────────
         "I_PD_LED1_uA_mean",      "I_PD_LED1_uA_std",      "I_PD_LED1_uA_min",      "I_PD_LED1_uA_max",
         "I_PD_LED2_uA_mean",      "I_PD_LED2_uA_std",      "I_PD_LED2_uA_min",      "I_PD_LED2_uA_max",
@@ -8320,10 +8359,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         self._buf["RSQI"]          = []
         self._buf["DIAG_CODE"]     = []
         self._buf["PROBE_STATE_FW"] = []
-        self._buf["V_TIA_LED1"]   = []
-        self._buf["V_TIA_LED2"]   = []
-        self._buf["V_TIA_ALED1"]  = []
-        self._buf["V_TIA_ALED2"]  = []
+        self._buf["V_TIA_DIFF_LED1"]   = []
+        self._buf["V_TIA_DIFF_LED2"]   = []
+        self._buf["V_TIA_DIFF_ALED1"]  = []
+        self._buf["V_TIA_DIFF_ALED2"]  = []
         self._buf["I_PD_LED1"]    = []
         self._buf["I_PD_LED2"]    = []
         self._buf["I_PD_ALED1"]   = []
@@ -8647,10 +8686,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         self._buf["RSQI"]           = []
         self._buf["DIAG_CODE"]      = []
         self._buf["PROBE_STATE_FW"] = []
-        self._buf["V_TIA_LED1"]     = []
-        self._buf["V_TIA_LED2"]     = []
-        self._buf["V_TIA_ALED1"]    = []
-        self._buf["V_TIA_ALED2"]    = []
+        self._buf["V_TIA_DIFF_LED1"]     = []
+        self._buf["V_TIA_DIFF_LED2"]     = []
+        self._buf["V_TIA_DIFF_ALED1"]    = []
+        self._buf["V_TIA_DIFF_ALED2"]    = []
         self._buf["I_PD_LED1"]      = []
         self._buf["I_PD_LED2"]      = []
         self._buf["I_PD_ALED1"]     = []
@@ -8752,10 +8791,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                 self._buf["RSQI"]           = []
                 self._buf["DIAG_CODE"]      = []
                 self._buf["PROBE_STATE_FW"] = []
-                self._buf["V_TIA_LED1"]     = []
-                self._buf["V_TIA_LED2"]     = []
-                self._buf["V_TIA_ALED1"]    = []
-                self._buf["V_TIA_ALED2"]    = []
+                self._buf["V_TIA_DIFF_LED1"]     = []
+                self._buf["V_TIA_DIFF_LED2"]     = []
+                self._buf["V_TIA_DIFF_ALED1"]    = []
+                self._buf["V_TIA_DIFF_ALED2"]    = []
                 self._buf["I_PD_LED1"]      = []
                 self._buf["I_PD_LED2"]      = []
                 self._buf["I_PD_ALED1"]     = []
@@ -8786,10 +8825,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                 self._buf["RSQI"]           = []
                 self._buf["DIAG_CODE"]      = []
                 self._buf["PROBE_STATE_FW"] = []
-                self._buf["V_TIA_LED1"]     = []
-                self._buf["V_TIA_LED2"]     = []
-                self._buf["V_TIA_ALED1"]    = []
-                self._buf["V_TIA_ALED2"]    = []
+                self._buf["V_TIA_DIFF_LED1"]     = []
+                self._buf["V_TIA_DIFF_LED2"]     = []
+                self._buf["V_TIA_DIFF_ALED1"]    = []
+                self._buf["V_TIA_DIFF_ALED2"]    = []
                 self._buf["I_PD_LED1"]      = []
                 self._buf["I_PD_LED2"]      = []
                 self._buf["I_PD_ALED1"]     = []
@@ -8801,7 +8840,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
     # ── Sample feed (called from PPGMonitor per M3/M4 frame) ──────────────────
     def feed_sample(self, red, ir, red_amb, ir_amb, led2_sub, led1_sub,
                     rsqi, diag_code, probe_state_fw,
-                    v_tia_led1=None, v_tia_led2=None, v_tia_aled1=None, v_tia_aled2=None,
+                    v_tia_diff_led1=None, v_tia_diff_led2=None, v_tia_diff_aled1=None, v_tia_diff_aled2=None,
                     i_pd_led1=None, i_pd_led2=None, i_pd_aled1=None, i_pd_aled2=None):
         if self._state != self._ST_MEASURING:
             return
@@ -8814,11 +8853,11 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         self._buf["RSQI"].append(int(rsqi))
         self._buf["DIAG_CODE"].append(int(diag_code))
         self._buf["PROBE_STATE_FW"].append(int(probe_state_fw))
-        if v_tia_led1 is not None:
-            self._buf["V_TIA_LED1"].append(float(v_tia_led1))
-            self._buf["V_TIA_LED2"].append(float(v_tia_led2))
-            self._buf["V_TIA_ALED1"].append(float(v_tia_aled1))
-            self._buf["V_TIA_ALED2"].append(float(v_tia_aled2))
+        if v_tia_diff_led1 is not None:
+            self._buf["V_TIA_DIFF_LED1"].append(float(v_tia_diff_led1))
+            self._buf["V_TIA_DIFF_LED2"].append(float(v_tia_diff_led2))
+            self._buf["V_TIA_DIFF_ALED1"].append(float(v_tia_diff_aled1))
+            self._buf["V_TIA_DIFF_ALED2"].append(float(v_tia_diff_aled2))
             self._buf["I_PD_LED1"].append(float(i_pd_led1))
             self._buf["I_PD_LED2"].append(float(i_pd_led2))
             self._buf["I_PD_ALED1"].append(float(i_pd_aled1))
@@ -8926,7 +8965,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             ps_mean = ps_min = ps_max = ""
         row.extend([rsqi_ok_pct, dc_mean, dc_min, dc_max, ps_mean, ps_min, ps_max])
 
-        # ── V_TIA [V] and I_PD [µA] — received from $M4 frame ────────────────
+        # ── V_TIA_DIFF [V] and I_PD [µA] — received from $M4 frame ───────────
         def _fstats(vals, fmt):
             if not vals:
                 return ("",) * 4
@@ -8934,7 +8973,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             m = sum(vals) / n
             sd = math.sqrt(sum((v - m) ** 2 for v in vals) / n)
             return fmt.format(m), fmt.format(sd), fmt.format(min(vals)), fmt.format(max(vals))
-        for _key in ("V_TIA_LED1", "V_TIA_LED2", "V_TIA_ALED1", "V_TIA_ALED2"):
+        for _key in ("V_TIA_DIFF_LED1", "V_TIA_DIFF_LED2", "V_TIA_DIFF_ALED1", "V_TIA_DIFF_ALED2"):
             row.extend(_fstats(self._buf[_key], "{:.6f}"))
         for _key in ("I_PD_LED1", "I_PD_LED2", "I_PD_ALED1", "I_PD_ALED2"):
             row.extend(_fstats([v * 1e6 for v in self._buf[_key]], "{:.3f}"))
@@ -9001,7 +9040,7 @@ class UdpComWindow(QtWidgets.QWidget):
 
     UDP_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_DIFF_LED1,V_TIA_DIFF_LED2,V_TIA_DIFF_ALED1,V_TIA_DIFF_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2"
     )
 
     def __init__(self, main_monitor):
@@ -9600,10 +9639,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.data_diag_code   = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_probe_state = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         # AFE4490DebugData analog signals — populated only when frame_mode == "M4"
-        self.data_v_tia_led1  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_v_tia_led2  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_v_tia_aled1 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_v_tia_aled2 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_v_tia_diff_led1  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_v_tia_diff_led2  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_v_tia_diff_aled1 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        self.data_v_tia_diff_aled2 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_i_pd_led1   = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_i_pd_led2   = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
         self.data_i_pd_aled1  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
@@ -9625,7 +9664,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             self._chk_filename = os.path.join(CAPTURES_DIR, f"ppg_chk_{now_str}.csv")
             try:
-                self.save_file_chk = open(self._chk_filename, "w", buffering=1)
+                self.save_file_chk = open(self._chk_filename, "w", buffering=1, encoding="cp1252", errors="replace")
                 self.save_file_chk.write("Timestamp_PC,Diff_us_PC,CHK_OK,RawFrame\n")
                 print(f"[save-chk] Saving to {self._chk_filename}")
                 if save_chk_duration > 0:
@@ -9731,11 +9770,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
              "Not DISCONNECTED AND <b>OT ≤ 8.5×10⁻⁵ on both channels</b>.",
              "AFE4490Data::probe_state"),
             # AFE4490DebugData analog signals — only populated in $M4 frame mode
-            ("V_TIA_LED1",  "data_v_tia_led1",  "TIA output voltage LED1/IR channel [V]. V_TIA = I_PD × RF. Computed per sample by firmware. Only available in $M4 frame mode.",                  "AFE4490DebugData::v_tia_led1"),
-            ("V_TIA_LED2",  "data_v_tia_led2",  "TIA output voltage LED2/RED channel [V]. Only available in $M4 frame mode.",                                                                      "AFE4490DebugData::v_tia_led2"),
-            ("V_TIA_ALED1", "data_v_tia_aled1", "TIA output voltage ALED1/IR ambient channel [V]. Only available in $M4 frame mode.",                                                             "AFE4490DebugData::v_tia_aled1"),
-            ("V_TIA_ALED2", "data_v_tia_aled2", "TIA output voltage ALED2/RED ambient channel [V]. Only available in $M4 frame mode.",                                                            "AFE4490DebugData::v_tia_aled2"),
-            ("I_PD_LED1 [µA]",   "data_i_pd_led1",   "Photodiode current LED1/IR channel [µA]. I_PD = V_TIA / RF. Computed per sample by firmware. Only available in $M4 frame mode.",                "AFE4490DebugData::i_pd_led1"),
+            ("V_TIA_DIFF_LED1",  "data_v_tia_diff_led1",  "TIA DIFFERENTIAL output voltage, LED1/IR channel [V]. V_TIA_DIFF = 2 × I_PD × RF (per-branch = /2). Computed per sample by firmware. Only available in $M4 frame mode.",                  "AFE4490DebugData::v_tia_diff_led1"),
+            ("V_TIA_DIFF_LED2",  "data_v_tia_diff_led2",  "TIA DIFFERENTIAL output voltage, LED2/RED channel [V]. Only available in $M4 frame mode.",                                                                      "AFE4490DebugData::v_tia_diff_led2"),
+            ("V_TIA_DIFF_ALED1", "data_v_tia_diff_aled1", "TIA DIFFERENTIAL output voltage, ALED1/IR ambient channel [V]. Only available in $M4 frame mode.",                                                             "AFE4490DebugData::v_tia_diff_aled1"),
+            ("V_TIA_DIFF_ALED2", "data_v_tia_diff_aled2", "TIA DIFFERENTIAL output voltage, ALED2/RED ambient channel [V]. Only available in $M4 frame mode.",                                                            "AFE4490DebugData::v_tia_diff_aled2"),
+            ("I_PD_LED1 [µA]",   "data_i_pd_led1",   "Photodiode current LED1/IR channel [µA]. I_PD = V_TIA_DIFF / (2 × RF). Computed per sample by firmware. Only available in $M4 frame mode.",                "AFE4490DebugData::i_pd_led1"),
             ("I_PD_LED2 [µA]",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [µA]. Only available in $M4 frame mode.",                                                                    "AFE4490DebugData::i_pd_led2"),
             ("I_PD_ALED1 [µA]",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [µA]. Only available in $M4 frame mode.",                                                           "AFE4490DebugData::i_pd_aled1"),
             ("I_PD_ALED2 [µA]",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [µA]. Only available in $M4 frame mode.",                                                          "AFE4490DebugData::i_pd_aled2"),
@@ -9744,7 +9783,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         ]
         self._stats_buf = {name: [] for name, _, __, _src in self._STATS_SIGNALS}
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
-        self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA/V_ADC)
+        self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA_DIFF/V_ADC)
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
@@ -9929,7 +9968,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "$M1 PPG MODE: minimal frame (SmpCnt, Ts_us, PPG_DISP). Lowest bandwidth.\n"
             "$M2 BASIC MODE: PPG + SpO2 + HR3 + quality flags. Use over serial.\n"
             "$M3 FULL MODE: all AFE4490Data fields (default). Use over UDP.\n"
-            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels. Use over UDP for analog analysis.",
+            "$M4 DEBUG MODE: M3 + V_TIA_DIFF and I_PD for all 4 channels. Use over UDP for analog analysis.",
             src="$MODE,M{1-4}"))
         self.frame_mode_combo.currentIndexChanged.connect(self._on_frame_mode_combo_changed)
         self.sidebar_layout.addWidget(self.frame_mode_combo)
@@ -10224,7 +10263,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         stats_vbox.addLayout(stats_header)
 
         self.stats_table = QtWidgets.QTableWidget(len(self._STATS_SIGNALS) + 1, 9)
-        self.stats_table.setHorizontalHeaderLabels(["Signal", "V_TIA", "V_ADC", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"])
+        self.stats_table.setHorizontalHeaderLabels(["Signal", "V_TIA_DIFF", "V_ADC", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"])
         _hdr_font_normal = QtGui.QFont()
         _hdr_font_normal.setPixelSize(33)
         _hdr_font_small  = QtGui.QFont()
@@ -10300,21 +10339,25 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.stats_table.item(5,  3).setBackground(_ACCENT_PAIR)  # LED1_SUB  / % SD/Mean
         self.stats_table.item(11, 4).setBackground(_ACCENT_PAIR)  # PI      / Mean
 
-        # Override V_TIA (col 7) and V_ADC (col 8) tooltips on raw rows (0-3)
+        # Override V_TIA_DIFF (col 7) and V_ADC (col 8) tooltips on raw rows (0-3)
         # with specific descriptions including color-coding legend and voltage units.
-        _TIP_VTIA_LED = _make_tooltip("V_TIA",
-            "TIA differential output voltage estimated from the mean ADC count.\n"
-            "Formula: V_TIA = (V_ADC / (2\u00d7RG)) \u00d7 RI  (datasheet eq.2, p.30)\n"
-            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22.\n"
-            "Units: V (volts).\n\n"
+        _TIP_VTIA_LED = _make_tooltip("V_TIA_DIFF",
+            "TIA DIFFERENTIAL output voltage estimated from the mean ADC count (naming rule 4b).\n"
+            "Formula: V_TIA_DIFF = 2 \u00d7 (V_ADC / (2\u00d7RG) + I_CANCEL) \u00d7 RI  (datasheet eq.2, p.30)\n"
+            "= 2 \u00d7 I_PD \u00d7 RF. Per-branch value = V_TIA_DIFF / 2.\n"
+            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22, I_CANCEL from ambdac.\n"
+            "Units: V (volts).\n"
+            "Datasheet: ideal operating point 0.6 V, spec full scale V_OD(fs) = 1.0 V (\u00a79.2.2).\n"
+            "Empirical (IncuNest 16.A sweep 2026-07-08): linear to ~1.8 V, hard clip ~1.94 V.\n\n"
             "Background color (LED phases \u2014 LED1 (IR), LED2 (RED)):\n"
-            "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range\n"
+            "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range (around 0.6 V ideal point)\n"
             "  Yellow  0.15 \u2013 0.40 V  or  0.80 \u2013 0.95 V \u2014 caution\n"
-            "  Red     < 0.15 V  or  > 0.95 V \u2014 saturation or insufficient signal")
-        _TIP_VTIA_AMB = _make_tooltip("V_TIA",
-            "TIA differential output voltage estimated from the mean ADC count.\n"
-            "Formula: V_TIA = (V_ADC / (2\u00d7RG)) \u00d7 RI  (datasheet eq.2, p.30)\n"
-            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22.\n"
+            "  Red     < 0.15 V  or  > 0.95 V \u2014 near spec saturation or insufficient signal")
+        _TIP_VTIA_AMB = _make_tooltip("V_TIA_DIFF",
+            "TIA DIFFERENTIAL output voltage estimated from the mean ADC count (naming rule 4b).\n"
+            "Formula: V_TIA_DIFF = 2 \u00d7 (V_ADC / (2\u00d7RG) + I_CANCEL) \u00d7 RI  (datasheet eq.2, p.30)\n"
+            "= 2 \u00d7 I_PD \u00d7 RF. Per-branch value = V_TIA_DIFF / 2.\n"
+            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22, I_CANCEL from ambdac.\n"
             "Units: V (volts).\n\n"
             "Background color (ALED phases \u2014 ALED1, ALED2):\n"
             "  Green   < 0.30 V \u2014 low ambient (safe)\n"
@@ -10861,7 +10904,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.log("Cannot capture LAB while paused")
             return
         try:
-            f = open(filepath, "w", buffering=1, encoding="utf-8-sig")
+            f = open(filepath, "w", buffering=1, encoding="cp1252", errors="replace")
             if pre_notes.strip():
                 for txt in pre_notes.splitlines():
                     f.write(f"# {txt}\n")
@@ -10949,7 +10992,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.btn_save.setChecked(False)
             filename = os.path.join(CAPTURES_DIR, f"ppg_data_snap_{now_str}.csv")
             try:
-                with open(filename, "w") as f:
+                with open(filename, "w", encoding="cp1252", errors="replace") as f:
                     f.write("FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI\n")
                     for i in range(len(self.data_sample_counter)):
                         f.write(f"{self.data_lib_id[i]},{self.data_sample_counter[i]},{self.data_timestamp_us[i]},{self.data_led2[i]},{self.data_led1[i]},{self.data_aled2[i]},{self.data_aled1[i]},{self.data_led2_sub[i]},{self.data_led1_sub[i]},{self.data_ppgdisp[i]},{self.data_spo2[i]},{self.data_spo2_sqi[i]},{self.data_spo2_r[i]},{self.data_pi[i]},{self.data_hr1[i]},{self.data_hr1_sqi[i]},{self.data_hr2[i]},{self.data_hr2_sqi[i]},{self.data_hr3[i]},{self.data_hr3_sqi[i]}\n")
@@ -10962,13 +11005,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.btn_save.setText("STOP\nRECORDING")
                 filename = os.path.join(CAPTURES_DIR, f"ppg_data_stream_{now_str}.csv")
                 try:
-                    self.save_file = open(filename, "w")
+                    self.save_file = open(filename, "w", encoding="cp1252", errors="replace")
                     if self.frame_mode == "M1":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP\n")
                     elif self.frame_mode in ("M1", "M2"):
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
                     elif self.frame_mode == "M4":
-                        self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2\n")
+                        self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_DIFF_LED1,V_TIA_DIFF_LED2,V_TIA_DIFF_ALED1,V_TIA_DIFF_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2\n")
                     else:  # M3 (default)
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
                     self.log(f"RECORDING LIVE: {filename}")
@@ -11292,7 +11335,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     _STATS_HR_ROWS       = {11, 13, 15}   # HR1, HR2, HR3
     _STATS_SUB_ROWS      = {4, 5}         # LED1_SUB, LED2_SUB
-    _STATS_RAW_ROWS      = {0, 1, 2, 3}  # LED1 (IR), LED2 (RED), ALED1, ALED2 — show V_TIA / V_ADC
+    _STATS_RAW_ROWS      = {0, 1, 2, 3}  # LED1 (IR), LED2 (RED), ALED1, ALED2 — show V_TIA_DIFF / V_ADC
     _STATS_MEAN_COL      = 4
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
@@ -11301,7 +11344,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _PROBE_APPLIED_BG       = QtGui.QColor("#00A000")  # green  — APPLIED (2)
     _PROBE_NOT_APPLIED_BG   = QtGui.QColor("#7A6400")  # amber  — NOT_APPLIED (1)
     _PROBE_DISCONNECTED_BG  = QtGui.QColor("#7A0000")  # red    — DISCONNECTED (0)
-    # V_TIA / V_ADC cell background colors
+    # V_TIA_DIFF / V_ADC cell background colors
     _VTG_GREEN   = QtGui.QColor("#0F3A0F")  # optimal
     _VTG_YELLOW  = QtGui.QColor("#3A2D00")  # caution
     _VTG_RED     = QtGui.QColor("#4A0800")  # saturation / insufficient
@@ -11319,9 +11362,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         encoded = ";".join(f"{r},{c}" for r, c in sorted(self._stats_highlighted))
         s.setValue("PPGMonitor/stats_highlighted", encoded)
 
-    def _vtg_tia_color(self, row, v_tia):
-        """Background color for V_TIA cell. Uses abs(v_tia) for comparison."""
-        v = abs(v_tia)
+    def _vtg_tia_color(self, row, v_tia_diff):
+        """Background color for V_TIA_DIFF cell. Uses abs(v_tia_diff); thresholds in the differential domain."""
+        v = abs(v_tia_diff)
         if row in {0, 1}:   # LED phase
             if v > 0.95 or v < 0.15:           return self._VTG_RED
             if v >= 0.80 or v < 0.40:          return self._VTG_YELLOW
@@ -11372,7 +11415,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 std  = math.sqrt(sum((v - mean) ** 2 for v in buf) / n)
                 if sig_idx < 6:  # raw ADC signals: integer, thousands-separated with narrow space
                     def _fmt(v): return f"{v:,.0f}".replace(",", "\u202f")
-                elif sig_idx in {20, 21, 22, 23}:  # V_TIA_*: volts, 6 decimal places
+                elif sig_idx in {20, 21, 22, 23}:  # V_TIA_DIFF_*: volts, 6 decimal places
                     def _fmt(v): return f"{v:.6f}"
                 elif sig_idx in {24, 25, 26, 27}:  # I_PD_*: display in µA (×1e6), 3 decimal places
                     def _fmt(v): return f"{v * 1e6:.3f}"
@@ -11424,7 +11467,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     sqi_mean = sum(sqi_buf) / len(sqi_buf) if sqi_buf else 0.0
                     bg = self._STATS_GREEN if sqi_mean > self._STATS_SQI_THRESHOLD else self._STATS_MAROON
                     item.setBackground(bg)
-            # cols 1-2: V_TIA, V_ADC — only for LED1 (IR), LED2 (RED), ALED1, ALED2 (signal rows 0-3)
+            # cols 1-2: V_TIA_DIFF, V_ADC — only for LED1 (IR), LED2 (RED), ALED1, ALED2 (signal rows 0-3)
             if sig_idx in self._STATS_RAW_ROWS and buf:
                 is_led1   = sig_idx in {0, 2}   # LED1 (IR) / ALED1 → stg21, tia1; LED2 (RED) / ALED2 → stg22, tia2
                 rg_ohm    = float(self._last_cfg.get("rg1_ohm" if is_led1 else "rg2_ohm", 100e3))
@@ -11432,15 +11475,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 i_cancel  = float(self._last_cfg.get("ambdac", "0")) * 1e-6  # µA → A
                 v_adc     = mean / self._ADC_FS_COUNTS * self._ADC_FSR
                 # Eq.2 datasheet p.30: V_DIFF = 2×(I_PD×RF/RI − I_CANCEL)×RG
-                # → V_TIA = I_PD×RF = (V_ADC/(2×RG) + I_CANCEL) × RI
-                v_tia     = (v_adc / (2 * rg_ohm) + i_cancel) * ri_ohm
-                vtia_str  = f"{v_tia:.3f} V"
+                # → V_TIA_DIFF = 2×I_PD×RF = 2 × (V_ADC/(2×RG) + I_CANCEL) × RI  (rule 4b: differential)
+                v_tia_diff = 2 * (v_adc / (2 * rg_ohm) + i_cancel) * ri_ohm
+                vtia_str  = f"{v_tia_diff:.3f} V"
                 vadc_str  = f"{v_adc:.3f} V"
             else:
                 vtia_str = "" if sig_idx not in self._STATS_RAW_ROWS else "---"
                 vadc_str = vtia_str
             if sig_idx in self._STATS_RAW_ROWS and buf:
-                vtia_bg = self._vtg_tia_color(sig_idx, v_tia)
+                vtia_bg = self._vtg_tia_color(sig_idx, v_tia_diff)
                 vadc_bg = self._vtg_adc_color(sig_idx, v_adc)
             else:
                 vtia_bg = vadc_bg = self._VTG_DEFAULT
@@ -11512,6 +11555,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             if _is_active:
                                 _fm_txt = line.lstrip('# ').strip()
                                 self.log(f"[FRAME] ✓ {_fm_txt}")
+                        elif line.startswith('# RESET_REASON:'):
+                            # ESP32 reboot diagnostic (sent once over UDP after WiFi reconnect)
+                            self.log(f"[RESET] ESP32 rebooted — reason: {line[15:].strip()}")
                         elif line.startswith('# SYS:'):
                             self.log(line[6:].strip())
                         elif line.startswith('# WiFi') or line.startswith('#   ['):
@@ -11684,7 +11730,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             # 7:LED2_SUB, 8:LED1_SUB, 9:PPG_DISP, 10:SpO2, 11:SpO2_SQI, 12:R, 13:PI,
                             # 14:HR1, 15:HR1_SQI, 16:HR2, 17:HR2_SQI, 18:HR3, 19:HR3_SQI,
                             # 20:RSQI, 21:DiagCode, 22:ProbeState
-                            # $M4 additionally: 23:V_TIA_LED1, 24:V_TIA_LED2, 25:V_TIA_ALED1, 26:V_TIA_ALED2,
+                            # $M4 additionally: 23:V_TIA_DIFF_LED1, 24:V_TIA_DIFF_LED2, 25:V_TIA_DIFF_ALED1, 26:V_TIA_DIFF_ALED2,
                             #                   27:I_PD_LED1,  28:I_PD_LED2,  29:I_PD_ALED1,  30:I_PD_ALED2
                             self.data_lib_id.append(lib_id)
                             p = [float(x) for x in parts[1:20]]
@@ -11712,10 +11758,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_probe_state.append(int(float(parts[22])))
                             cfg = self._last_cfg
                             if lib_id == "M4" and len(parts) >= 31:
-                                self.data_v_tia_led1.append(float(parts[23]))
-                                self.data_v_tia_led2.append(float(parts[24]))
-                                self.data_v_tia_aled1.append(float(parts[25]))
-                                self.data_v_tia_aled2.append(float(parts[26]))
+                                self.data_v_tia_diff_led1.append(float(parts[23]))
+                                self.data_v_tia_diff_led2.append(float(parts[24]))
+                                self.data_v_tia_diff_aled1.append(float(parts[25]))
+                                self.data_v_tia_diff_aled2.append(float(parts[26]))
                                 _ipd1  = float(parts[27]); _ipd2  = float(parts[28])
                                 _iamb1 = float(parts[29]); _iamb2 = float(parts[30])
                                 self.data_i_pd_led1.append(_ipd1)
@@ -11727,8 +11773,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self.data_ot2_led1.append((_ipd1 - _iamb1) / _led1_a if _led1_a != 0 else 0.0)
                                 self.data_ot2_led2.append((_ipd2 - _iamb2) / _led2_a if _led2_a != 0 else 0.0)
                             else:
-                                self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
-                                self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
+                                self.data_v_tia_diff_led1.append(0.0);  self.data_v_tia_diff_led2.append(0.0)
+                                self.data_v_tia_diff_aled1.append(0.0); self.data_v_tia_diff_aled2.append(0.0)
                                 self.data_i_pd_led1.append(0.0);   self.data_i_pd_led2.append(0.0)
                                 self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                                 self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
@@ -11745,10 +11791,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     self.data_rsqi[-1],
                                     self.data_diag_code[-1],
                                     self.data_probe_state[-1],
-                                    v_tia_led1=parts[23] if _m4 else None,
-                                    v_tia_led2=parts[24] if _m4 else None,
-                                    v_tia_aled1=parts[25] if _m4 else None,
-                                    v_tia_aled2=parts[26] if _m4 else None,
+                                    v_tia_diff_led1=parts[23] if _m4 else None,
+                                    v_tia_diff_led2=parts[24] if _m4 else None,
+                                    v_tia_diff_aled1=parts[25] if _m4 else None,
+                                    v_tia_diff_aled2=parts[26] if _m4 else None,
                                     i_pd_led1=parts[27] if _m4 else None,
                                     i_pd_led2=parts[28] if _m4 else None,
                                     i_pd_aled1=parts[29] if _m4 else None,
@@ -11793,8 +11839,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_spo2_r.append(-1.0); self.data_pi.append(-1.0)
                             self.data_hr1.append(-1.0);    self.data_hr1_sqi.append(0.0)
                             self.data_hr2.append(-1.0);    self.data_hr2_sqi.append(0.0)
-                            self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
-                            self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
+                            self.data_v_tia_diff_led1.append(0.0);  self.data_v_tia_diff_led2.append(0.0)
+                            self.data_v_tia_diff_aled1.append(0.0); self.data_v_tia_diff_aled2.append(0.0)
                             self.data_i_pd_led1.append(0.0);   self.data_i_pd_led2.append(0.0)
                             self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
@@ -11823,8 +11869,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_led2_sub.append(0.0);  self.data_led1_sub.append(0.0)
                             self.data_rsqi.append(0);        self.data_diag_code.append(0)
                             self.data_probe_state.append(0)
-                            self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
-                            self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
+                            self.data_v_tia_diff_led1.append(0.0);  self.data_v_tia_diff_led2.append(0.0)
+                            self.data_v_tia_diff_aled1.append(0.0); self.data_v_tia_diff_aled2.append(0.0)
                             self.data_i_pd_led1.append(0.0);   self.data_i_pd_led2.append(0.0)
                             self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
@@ -11925,7 +11971,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.signals_window.update_plots(
                     self.data_led2, self.data_led1,
                     self.data_aled2, self.data_aled1, self.data_led2_sub, self.data_led1_sub,
-                    self.data_ppgdisp)
+                    self.data_ppgdisp, self.data_sample_counter)
                 self._py_timing['plot_signals'].append((time.perf_counter() - _t0p) * 1000)
 
             # AlgoResultsWindow: throttled to 10 Hz
@@ -12202,6 +12248,24 @@ if __name__ == "__main__":
             return super().styleHint(hint, option, widget, returnData)
 
     app.setStyle(_FastTipStyle('Fusion'))
+
+    class _TooltipDurationFilter(QtCore.QObject):
+        """Event filter that gives every tooltip an indefinite display duration.
+
+        Qt fires QEvent.ToolTipChange on a widget whenever setToolTip() is
+        called on it. We intercept that event and pin the duration to INT_MAX
+        (~24 days) so tooltips never auto-hide.
+        """
+        def eventFilter(self, obj, event):
+            if (event.type() == QtCore.QEvent.ToolTipChange
+                    and isinstance(obj, QtWidgets.QWidget)
+                    and obj.toolTip()):
+                obj.setToolTipDuration(2_147_483_647)
+            return False  # never consume the event
+
+    _ttf = _TooltipDurationFilter(app)
+    app.installEventFilter(_ttf)
+
     app.setStyleSheet(
         "QToolTip { background-color: #5500AA; color: #F0F0F0; "
         "border: 2px solid #FFE066; padding: 8px; }"

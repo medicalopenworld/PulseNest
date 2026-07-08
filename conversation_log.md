@@ -13006,3 +13006,255 @@ Tooltip del combo STEP2 extendido con descripción completa de 2.5 Harmonics:
 - `update_plots()`: retorna inmediatamente si `_paused`; aplica `[-n:]` con `n = window_s × SPO2_RECEIVED_FS` a todas las curvas.
 - `closeEvent()`: persiste `PPGSignalsWindow/window_s`.
 - `__init__()`: inicializa `_paused = False`; restaura `window_s` desde `.ini`.
+
+## Sesión 2026-06-25a
+
+### Tema: PPGSignalsWindow — ampliar duración máxima a 60 s (Opción B: acumulador interno)
+
+**Problema:** el spinbox "Window (s)" estaba limitado a 10 s porque los deques principales de PPGMonitor tienen `maxlen=WINDOW_SIZE=500`.
+
+**Decisión — Opción B (acumulador interno en PPGSignalsWindow):**
+- No se tocan los deques de PPGMonitor ni el drain loop.
+- `PPGSignalsWindow` mantiene 7 deques internos (`_sig_led2`, `_sig_led1`, etc.) con `maxlen = SIG_MAX_S × SPO2_RECEIVED_FS = 3000` muestras (60 s @ 50 Hz).
+- `update_plots()` recibe adicionalmente `data_sample_counter`; detecta muestras nuevas contando entradas con `sc > _sig_last_sc`; acumula en buffers internos en cada llamada (incluso durante PAUSE).
+- Detección de reinicio de firmware: si `last_sc < _sig_last_sc`, limpia todos los buffers internos.
+- Render usa `[-n:]` sobre los buffers internos (no sobre los deques de PPGMonitor).
+- Spinbox rango ampliado a 1–60 s; default sigue siendo 10 s (guardado/restaurado en `.ini`).
+- Nueva constante de módulo: `SIG_MAX_S = 60`.
+
+## Sesión 2026-06-26a
+
+### Tema 1: Conversión ficheros CSV existentes de UTF-8-BOM a cp1252
+
+Todos los `.csv` en `captures/` que tenían BOM (`\xef\xbb\xbf`) fueron convertidos a `cp1252` (Windows ANSI). 2 ficheros contenían el símbolo `Ω` (no encodable en cp1252) — se sustituyó por `Ohm`. Total: 14 ficheros convertidos.
+
+### Tema 2: pulsenest_lab.py — todos los CSV generados cambiados a cp1252
+
+**Motivo:** LibreOffice no abría correctamente los `.csv` porque el BOM (`utf-8-sig`) hacía que las líneas de comentario iniciales se interpretasen como datos.
+
+**Cambios:** 8 puntos de apertura de fichero CSV actualizados a `encoding="cp1252", errors="replace"`:
+- Lab Capture stream (`utf-8-sig` → `cp1252`)
+- Lab Capture snapshot
+- CHK file
+- SpO2 Cal export
+- SPO2TEST / HR1TEST / HR2TEST / HR3TEST exports
+
+`errors="replace"` previene crashes si las notas contienen caracteres fuera de cp1252 (e.g. `Ω` → `?`).
+
+## Sesión 2026-07-06a
+
+### Tema: Tooltips — duración indefinida (event filter global)
+
+**Problema:** los tooltips se cerraban automáticamente después de ~10 s (comportamiento por defecto de Qt).
+
+**Solución implementada:** event filter `_TooltipDurationFilter` instalado en la `QApplication`. Intercepta `QEvent.ToolTipChange` (disparado cada vez que se llama `setToolTip()` sobre cualquier widget) y fija la duración con `setToolTipDuration(2_147_483_647)` (INT_MAX ms ≈ 24 días). Cero cambios en los 178 call sites existentes; cubre automáticamente cualquier tooltip futuro.
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — bloque de configuración de tooltips en `main()`, tras `app.setStyle(_FastTipStyle(...))`
+
+---
+
+## Sesión 2026-07-06c
+
+### Tema: HW CONFIG — tooltips Stage 2 gain mencionan RG
+
+**Pregunta:** en la ventana HW CONFIG, el label "RF Gain" menciona RF pero "Stage 2 gain" no menciona RG. ¿Debería mencionarlo?
+
+**Decisión:** Opción A — añadir explicación de RG en el tooltip (no cambiar el label). El label "Stage 2 gain" es más descriptivo funcionalmente; RG es un detalle de implementación que pertenece al tooltip.
+
+**Cambio implementado:** ambos tooltips de "Stage 2 gain" (LED1 IR y LED2 RED) en `HWConfigWindow` ahora incluyen: "Stage 2 inverting amplifier gain [...]. Implemented via feedback resistance RG — the kΩ values shown in the dropdown are the RG values (100 kΩ = ×1, 150 kΩ = ×1.5, etc.)."
+
+**Ficheros modificados:**
+- `pulsenest_lab.py` — tooltips `_combo_stg21` y `_combo_stg22` en `HWConfigWindow._setup_ui()`
+
+---
+
+## Sesión 2026-07-06b
+
+### Tema: Planning — inventario de tareas pendientes y propuesta de orden
+
+Revisión completa del backlog. Tareas agrupadas en 5 categorías y propuesta de planificación para los próximos días. Guardado en `memory/project_planning.md` (fichero vivo, se actualiza conforme se cierran tareas).
+
+**Orden propuesto:**
+- Día 1: limpieza rápida (HR3TestCalc bug SPO2_RECEIVED_FS, ADZ tooltip, LED default 20 mA, unit tests HR3, shared lib build check)
+- Día 2: calidad de señal firmware (HR3 SQI false positive estrategia A, RSQM HR2/HR3 invalid count, DIAG_EN poll)
+- Día 3: SpO2 DC split, serial fallback, Format_Task
+- Día 4: validación empírica (HR artefact test, PI stability, HR3 execution rate)
+- Backlog: HGAC (bloqueante: RSQM validado en HW), Spectral PI, Metrological uncertainty, HR1 improvements, refactor modular
+
+---
+
+## Sesión 2026-07-07/08 — Rediseño HGAC (revisión profunda, pendiente validación)
+
+### Tema: revisión en profundidad de la propuesta de diseño HGAC y sus objetivos
+
+**Contexto:** debate P1-P4. Críticas del usuario: P1 sube AMBDAC sin mirar RF/RG; estrategia P1-P4 poco fundamentada → re-fundamentar objetivos desde cero.
+
+**Trabajo previo de la sesión:** setters de actuadores verificados (todos existen); nomenclatura HGACInput renombrada (aled_pct/led_sub_pct); nomenclatura actuadores acordada (LED1Current, LED2Current, RF1, RF2, AMBDAC, RG1, RG2 — Opción B); análisis profundo de los 7 actuadores desde datasheet; fórmula V_TIA corregida en project_agc_design.md: `v_tia = (V_ADC/(2×RG_ohm) + ambdac×1e-6) × Ri` (verificada contra .cpp líneas 1113-1116; coef AMBDAC = 0.1 V/µA); ventana híbrida acordada (mediana 2s + persistencia 500ms/2000ms).
+
+**7 fallos estructurales identificados (F1-F7):**
+- F1: la saturación debe evaluarse sobre canales crudos (LED/ALED), no sobre led_sub (resta digital, no satura; LED clippeado → led_sub bajo → HGAC subiría LED agravando el problema)
+- F2: saturación negativa (sobre-cancelación AMBDAC) no contemplada
+- F3: decidir en %FS confunde causa óptica con configuración → medir en dominio físico (i_pd_*, OT), decidir configuración; %FS solo como verificación
+- F4: acoplamiento AMBDAC↔RF (rango de cancelación efectivo depende de RF: con RF=1M solo ~1 µA) → decidir conjuntamente
+- F5: cada actuación puede costar 18 s de warmup SpO2 → minimizar actuaciones + posible compensación analítica de estados de filtros (mean×k, var×k²)
+- F6: R es invariante a ganancia → target 40%FS no es objetivo real, solo proxy de región lineal + AC resoluble
+- F7: umbrales 70%/85% no derivados del datasheet (Stage 2 ±0.9 V vs ADC ±1.2 V → región lineal ~75%FS; pendiente verificar §9.2.2/Fig.135)
+
+**Física de actuadores → orden de preferencia:** LED (mejora SNR ∝√I_LED, shot noise) > RF (mejora parcial, Friis) > RG (casi neutro); AMBDAC neutro para SNR (solo libera rango dinámico). LED con coste térmico neonatal (ISO 80601-2-61) → suficiente, no máximo.
+
+**Objetivos re-fundamentados (orden lexicográfico):** G0 gating (APPLIED, sin settling, n_invalid≤0.5) · O1 sin saturación ADC en 4 canales crudos, ambos signos (prioritario por OBSERVABILIDAD: si ADC clippea, V_TIA/i_pd inestimables) · O2 sin saturación TIA (|v_tia|<0.9 V, solo evaluable si O1) · O3 AC resoluble (AC_counts > k×ruido) · O4 margen · O5 LED mínimo · O6 RF alto/RG mínimo · O7 AMBDAC mínimo · O8 mínimas actuaciones · O9 estabilidad/histéresis · O10 factibilidad conjunta IR+RED.
+
+**Arquitectura propuesta (PENDIENTE VALIDACIÓN DEL USUARIO):** FASE A medir en dominio físico (mediana P², 2 s) → FASE B solver feed-forward (enumerar 7RF×5RG×11AMBDAC=385 combos por canal + LED, elegir por orden lexicográfico O1→O10) → FASE C aplicar en una sola tanda + RSQM_HW_SETTLING + compensación de estados → FASE D trim fino solo con LED. P1-P4 relegado a capa de emergencia.
+
+**5 preguntas abiertas:** (1) ¿solver feed-forward + trim, o P1-P4 incremental corregido? (2) ¿verificación post-aplicación por error de modelo (tolerancias RF/AMBDAC)? (3) ¿leer §9.2.2/Fig.135 (p.85+) para derivar umbral región lineal? (4) ¿compensación analítica de estados: parte de HGAC o tarea separada? (5) ¿suelo de ruido para O3: analítico (datasheet) o empírico (LED off/sonda tapada)?
+
+**Nueva tarea apuntada:** `memory/project_ipd_aled_estimator_task.md` — usar i_pd_aled1 (corriente por luz ambiente, ya calculada en `_compute_analog_state()`, dominio físico) como estimador de "sonda mal colocada"/"excesiva luz ambiente". Válido solo sin saturación TIA/ADC/DAC. Preferir ALED1 (ALED2 posible leakage LED2).
+
+**Próximo paso (siguiente sesión):** validar arquitectura + responder las 5 preguntas → reescribir project_agc_design.md completo con la nueva fundamentación.
+
+---
+
+## Sesión 2026-07-08 — Fig. 57 (TIA), rangos de saturación y validación O1→O2 del HGAC
+
+**Tema:** formación sobre el front-end analógico (Fig. 57 del datasheet) y consolidación de los dos primeros objetivos del HGAC.
+
+**Preguntas clave y respuestas:**
+- **Fig. 57 explicada** (amplificadores operacionales, nivel básico): TIA = conversor I→V (ganancia = RF en Ω); la fotocorriente no puede entrar al op-amp y atraviesa RF forzosamente (V = I_PD×RF); CF = estabilidad + antialiasing; I_CANCEL resta ambiente en analógico antes de la etapa 2 (RG/RI, ×1–×4); Eq. 2 p.30.
+- **Fotodiodo a 0 V no es un problema, es el objetivo**: es fuente de corriente (no de tensión); a polarización nula → linealidad máxima, dark current mínima, capacidad parásita sin cargar. Modo común interno 0.9 V; la DIFERENCIA entre terminales es ~0 V.
+- **La corriente de RF** se cierra por la etapa de salida del op-amp (push-pull) hacia los rieles de alimentación.
+- **Convención V_TIA aclarada**: `v_tia_*` de la librería = POR RAMA (= I_PD×RF, FS 0.5 V). Diferencial entre salidas = 2×I_PD×RF (FS 1 V = V_OD(fs) p.11). Nodos físicos: 0.9 V ± 0.5 V (0.4–1.4 V). Verificación cruzada: tabla I_IN_FS p.10 cumple I_FS×RF = 0.5 V para los 7 RF.
+- **§9.2.2 dice ±1 V** porque: (1) es tensión DIFERENCIAL (puede ser negativa sin que ningún nodo baje de 0 V); (2) orientación del fotodiodo libre (invertido → códigos negativos, two's complement); (3) aguas abajo la señal sí es bipolar (sobrecancelación AMBDAC). Fig. 135 íntegramente en dominio diferencial (ideal 0.6 V diff = 0.3 V por rama). p.89: TI recomienda ADC ≤ ±1 V (~80% FS).
+
+**Decisiones tomadas:**
+1. **Usuario valida O1 → O2** (primero no saturar ADC, después no saturar TIA) por observabilidad: con ADC clipado no se puede estimar V_TIA; con ADC lineal la fórmula de recuperación hace la TIA observable. "TIA sat + ADC no sat" es caso real (RG=×1, AMBDAC cancelando ambiente grande) → O2 no es subcaso de O1. Registrado en `memory/project_agc_design.md`.
+2. **⚠️ Inconsistencia de unidades detectada** en las constantes TIA del diseño HGAC: `hgac_tia_sat/thr/ideal = 1.0/0.9/0.6 V` están en dominio DIFERENCIAL pero `v_tia_*` es por rama (FS 0.5 V) → comparar v_tia contra 0.9 V no dispararía nunca. Pendiente: redefinir por rama (sat=0.5, thr≈0.45, ideal≈0.3). También afecta a O2 tal como quedó redactado en la sesión anterior (|v_tia|<0.9 V).
+3. HGAC debe comparar **|v_tia|** (valor absoluto), no asumir signo → cubre fotodiodo invertido y sobrecancelación (enlaza con F2, saturación negativa).
+
+**Pendiente (próxima sesión):** validar O3–O10 y la arquitectura solver feed-forward; responder las 4 preguntas abiertas restantes (la nº 3 —leer §9.2.2/Fig.135— quedó resuelta hoy); corregir constantes TIA a convención por rama; reescribir project_agc_design.md completo tras validación.
+
+**Sin cambios de código** en esta sesión (solo documentación y memoria).
+
+---
+
+## Sesión 2026-07-08b — Nomenclatura de señales y V_TIA con STAGE2EN=0
+
+**Tema:** tabla de nomenclatura digital/analógica y explicación del cálculo de v_tia.
+
+**Tabla de nomenclatura verificada contra `incunest_afe4490.h`:**
+- Digital (counts, `AFE4490Data`): `led1`, `led2`, `aled1`, `aled2` + restas HW **`led1_sub`, `led2_sub`**
+- Analógico (`AFE4490AnalogState`): `v_adc_*`, `v_tia_*` (V), `i_pd_*` (A) para los 4 canales — nombres exactos en código
+- Cadena de reconstrucción: counts → v_adc (`×1.2/2097152`) → v_tia (`(v_adc/(2×RG_ohm) + ambdac×1e-6)×Ri`) → i_pd (`v_tia/RF`)
+- **Corrección de memoria:** las restas HW se llaman `led1_sub`/`led2_sub` en `AFE4490Data` (no `led1_aled1`/`led2_aled2`, nombre antiguo que persistía en algunas memorias)
+
+**V_TIA con STAGE2EN=0:** ganancia stage 2 = ×1 → RG_ohm = Ri = 100 kΩ → `v_tia = V_ADC/2 + ambdac_µA × 0.1 V`. El factor ÷2 deshace la conversión a diferencial (Eq. 2); el término AMBDAC suma de vuelta la corriente cancelada post-TIA (0.1 V/µA). Con AMBDAC=0: v_tia = V_ADC/2 → ADC FS (±1.2 V) ↔ v_tia ±0.6 V por rama. Nota: según la convención por rama consolidada en la sesión 2026-07-08 (FS v_tia = 0.5 V), con esta configuración el TIA satura ANTES de que el ADC llegue a FS — coherente con la inconsistencia de unidades detectada.
+
+**Sin cambios de código** (solo documentación y memoria).
+
+---
+
+## Cierre coordinado de sesiones (2026-07-08)
+
+El usuario cierra todas las sesiones Claude abiertas. Estado consolidado del rediseño HGAC:
+- Validado: O1→O2 (observabilidad ADC antes que TIA); pregunta 3 resuelta (§9.2.2/Fig.135, convención por rama)
+- Pendiente: validar O3-O10 + arquitectura solver feed-forward; preguntas 1, 2, 4, 5; corregir constantes TIA a convención por rama (0.5/0.45/0.3); reescribir `memory/project_agc_design.md` completo
+- Punto de entrada para la próxima sesión: sección "REVISIÓN PROFUNDA — PENDIENTE VALIDACIÓN" en `memory/project_agc_design.md`
+
+---
+
+## Sesión 2026-07-08c — Convención V_TIA (por rama vs diferencial) + experimento de linealidad TIA
+
+**Limpieza:** eliminada del log la sesión "2026-07-08 (bis)" a petición del usuario (revisión paralela duplicada). Se conservó su tarea `project_vtia_gray_task.md` y se anotó en `project_agc_design.md` el dato verificado: target AGC = 50%FS = 0.6 V (§9.2.2 p.87), no 40%.
+
+**Decisión inicial (en suspenso):** usuario eligió Opción B — pasar la librería a convención V_TIA diferencial. Análisis de impacto completado: `_compute_analog_state()` ×2 + `i_pd = v_tia/(2×RF)`; RSQM sin impacto (usa solo i_pd); constantes HGAC de main.cpp (1.0/0.9/0.6) pasarían a ser correctas sin tocarlas; umbrales `_vtg_tia_color` y tooltips de pulsenest_lab.py ya estaban en diferencial. **Implementación EN PAUSA** hasta resolver la duda experimental siguiente.
+
+**Debate experimental (clave de la sesión):** el usuario cuestionó la convención por rama con medidas reales:
+- Con AMBDAC=5..8 µA y luz constante, `v_tia` reconstruido queda fijo en 0.974–0.979 V mientras V_ADC baja 0.197 V/µA (teórico 0.2 = 2×RG×1µA → **valida el factor ×2 de la Eq. 2**).
+- Duplicar LED (20→40 mA) no mueve `v_tia` (0.979 V) → **saturación dura real en ~0.98 V** (en unidades de la columna).
+- Barrido manual con HW CONFIG: `v_tia` proporcional hasta detenerse bruscamente en 0.976 V, sin codo aparente en 0.5 V.
+
+**Conflicto identificado entre hipótesis:**
+- *Usuario (diferencial):* techo 0.976 ≈ V_OD(fs)=1 V → el valor reconstruido sería el diferencial. Contra: descuadra la tabla I_IN_FS (5 µA×100 kΩ=0.5 V) y la topología Fig. 57 (misma corriente por ambas RF → diff = 2×I_PD×RF).
+- *Reconciliadora (por rama):* 0.5 V = límite de linealidad especificado (V_OD(fs)); ~0.98 V = clip duro físico del nodo de salida contra el raíl (exige CM de salida ≈1.0 V, no especificado; el de entrada es 0.9 V).
+- Verificado que la columna V_TIA de SIGNAL STATS calcula la inversión exacta de Eq.2 (`(V_ADC/(2×RG)+I_CANCEL)×RI` = I_PD×RF), idéntica a la librería. **Incoherencia documental detectada:** el comentario del código dice por rama y el tooltip dice "differential".
+
+**Nuevo fichero: `tia_linearity_sweep.py`** — script standalone UDP (puerto datos 5005 / comandos 5006, checksum XOR) que rampea LED1 (2–150 mA, paso 2) × AMBDAC {0,3,5,8} µA × RF {50K,100K}, mediana de V_TIA_LED1 por paso, descarta ADC clipado, CSV cp1252 + PNG + análisis de pendiente por bins de 0.1 V vs baseline 0.10–0.40 V. Discriminador: codo en ~0.5 V → por rama; sin codo hasta ~0.9 V → diferencial. Doble RF separa droop del LED (función de mA) de compresión TIA (función de V_TIA). Restricción del usuario: NO modificar la ventana AFE SWEEP TEST. Requiere cerrar pulsenest_lab.py (mismo puerto 5005). Pendiente: ejecutar y decidir convención con el resultado.
+
+**Bugfix "NO DATA":** primera ejecución del sweep falló (todos los pasos sin datos). Causa raíz: el script envolvía `$MODE,M4` con checksum (`$MODE,M4*68`), pero el firmware (`process_command()`, main.cpp) hace `strcmp` exacto sobre el argumento de `$MODE` — solo `$SET` acepta/exige checksum. El modo nunca cambiaba a M4 y `collect()` no veía frames `$M4,`. Fix: método `send_raw()` (sin checksum) para `$MODE,M4`; los `$SET` siguen con checksum. Igual que hace pulsenest_lab.py (línea ~10473).
+
+**Segunda ejecución del sweep — descubrimiento de reset esporádico del ESP32:**
+- Pasos 1-8 (RF=50K, AMBDAC=0) OK: V_TIA lineal 0.089→0.51 V **cruzando 0.5 V sin codo** (pero con AMBDAC=0 el ADC satura a 1.2 V y limita V_TIA a 0.6 V — las ventanas AMBDAC>0 son las decisivas).
+- Desde el paso 9 (transición AMBDAC 0→3): NO DATA permanente. Diagnóstico en vivo: ESP32 con uptime 118 s emitiendo `$M3` → **el ESP32 se reseteó durante el sweep** y arrancó en modo default `$M3` (main.cpp:177), por lo que `collect()` (solo `$M4`) no ve nada.
+- El usuario confirma que los cambios en HW CONFIG provocan reset del ESP32 ~1 de cada 3-4 veces (bug conocido por él, causa desconocida).
+- crash.log solo contiene excepciones Python del lab (Qt), nada del ESP32.
+
+**Instrumentación de reset (implementada y flasheada por OTA):**
+- `reset_reason_str()` + `esp_reset_reason()` en main.cpp: línea `# SYS: Reset reason: X` en el banner de arranque + datagrama UDP único `# RESET_REASON: X` tras conectar WiFi (`udp_send_line`).
+- Verificado en vivo: `$RESET` → `# RESET_REASON: SW_RESET` recibido por UDP.
+- Interpretación: PANIC=crash de código (posible carrera Cmd_Task/Incunest_Task), TASK_WDT/INT_WDT=deadlock/bloqueo, BROWNOUT=alimentación (LED/AMBDAC cambian el consumo).
+- El backtrace de un PANIC solo sale por UART0 (el panic handler no puede usar WiFi/lwIP) → paso 2 si es PANIC: `pio device monitor -p COM15 --filter esp32_exception_decoder`.
+- Pendiente: reproducir el reset con HW CONFIG y leer `# RESET_REASON`; hacer el sweep robusto a reboots (detectar reinicio de SmpCnt / ausencia de $M4 y re-aplicar `$MODE,M4` + config).
+
+**Reproducción del reset por el usuario + fix de visualización en el lab:**
+- El usuario reprodujo el reset con HW CONFIG (ambdac 8: sin respuesta $CFG dos veces → reboot → `ambdac=0µA` de fábrica) pero `# RESET_REASON:` no aparecía en el log del lab.
+- Causa: el handler de líneas `#` (pulsenest_lab.py ~11526) solo muestra patrones concretos (`incunest`, `frame mode`, `# SYS:`, `# WiFi`); el resto cae al `continue` silenciosamente.
+- Fix: nueva rama `# RESET_REASON:` → `[RESET] ESP32 rebooted — reason: X`. Spec actualizada a v1.8 (§4.4 + changelog; añadida también entrada v1.7 LIB CONFIG que faltaba).
+
+**CAUSA RAÍZ DEL RESET ENCONTRADA Y CORREGIDA (misma sesión):**
+- Con el lab relanzado, el usuario reprodujo el reset → `[RESET] ESP32 rebooted — reason: PANIC (exception/abort)`.
+- Paso 2: monitor UART con `esp32_exception_decoder` (puerto real: **COM25**, USB-CDC nativo del S3, SER=10:51:DB:50:48:F8 — no COM15). Captura en `uart_panic_capture.log`.
+- Backtrace: `Guru Meditation Error: Core 0 panic'ed — Stack canary watchpoint triggered (CMD)` → **stack overflow de Cmd_Task** (4096 bytes).
+- Cadena culpable: `$SET` → `apply_set_cmd()` → `Serial_printf` (buf 128) + `send_cfg_frame()` (buf[600]) + `send_tcfg_frame()` (buf[512]) + internos vsnprintf con floats + lwIP/WiFiUDP + OTA `handleClient()` — todo en el mismo stack. Esporádico porque depende del camino/anidamiento exacto.
+- Fix: stack de Cmd_Task 4096 → 8192 (main.cpp, con comentario explicativo). Build OK, flasheado por OTA (MAC verificada). Pendiente: prueba de estrés del usuario (15-20 cambios en HW CONFIG sin reset) y luego reanudar `tia_linearity_sweep.py`.
+
+**Sweep completado — FÍSICA RESUELTA (2026-07-08, tarde):**
+- Con el fix de stack, `tia_linearity_sweep.py` completó las 8 ventanas (RF {50K,100K} × AMBDAC {0,3,5,8} µA, LED 2–150 mA). CSV `tia_linearity_sweep_2026-07-08_1913.csv` + PNG.
+- **Sin codo en 0.5 V:** V_TIA reconstruido lineal hasta ~0.90 V (pendiente 103% del baseline en 0.9 V). El patrón alternante 113%/86% en pasos de 2 mA es cuantización del DAC de LED (promedia 100%), no compresión.
+- **Clip duro en ~0.97 V** (0.968 @50K/AMBDAC5, 0.973 @8µA, 0.974 @100K): independiente de AMBDAC → el clip está DENTRO de la TIA, antes de la resta de ambiente; casi independiente de RF → límite de tensión del nodo de salida contra el raíl.
+- **Interpretación final:** el valor reconstruido `(V_ADC/(2×RG)+I_CANCEL)×RI` = I_PD×RF es algebraicamente POR RAMA (Eq.2 ×2 validada: pendiente AMBDAC medida −0.197 V/µA vs −0.2 teórica). 0.5 V/rama es el fondo de escala LINEAL especificado por TI, no un límite físico. El clip físico ~0.97 V/rama = 1.94 V diferencial (la rama baja toca el raíl ~0 V). La coincidencia 0.97 ≈ V_OD(fs)=1 V fue el origen de la confusión.
+- Tabla empírica: **rama** — ideal 0.3 / spec TI 0.5 / lineal medido ~0.90 / clip ~0.97 V. **Diferencial** — 0.6 / 1.0 / ~1.8 / ~1.94 V (los valores diff coinciden literalmente con el datasheet: target §9.2.2 = 0.6 V, V_OD(fs) = 1.0 V).
+
+**Reflexión sobre la respuesta de otra sesión de Claude (pro-Opción B, diferencial):**
+- Sus argumentos 3-4 ("el clip 0.976 es diferencial", "las medidas apuntan a diferencial") son factualmente erróneos post-sweep: el clip es magnitud por-rama pre-resta; el diferencial clipa en ~1.94 V.
+- Su argumento 2 (alineación literal con los números del datasheet §9.2.2 y V_OD(fs)) es el único motivo fuerte a favor de B. Argumento 1 (intuición STAGE2-bypassed) es neutro.
+
+**REGLA 4b FORMALIZADA (decisión del usuario):** el nombre desnudo `v_tia` queda PROHIBIDO en librería, firmware, Python y specs. Todo identificador de tensión de salida TIA debe llevar sufijo de dominio: `_branch` (= I_PD×RF) o `_diff` (= 2×I_PD×RF); relación `v_tia_diff = 2 × v_tia_branch`. Aplica también a constantes de umbral (e.g. `hgac_tia_thr_diff_volt`). Motivo: la ambigüedad de `v_tia` causó la incoherencia código/tooltip/constantes HGAC de esta sesión. Registrada en `project_nomenclature_dictionary.md` (Regla 4b) y `project_agc_design.md`.
+- **Dilema A/B sigue abierto** (puramente convencional, la física ya está resuelta): A = librería almacena por-rama (sin cambio de código, renombrar a `*_branch`); B = librería pasa a diferencial (×2 en `_compute_analog_state`, datasheet-literal, rompe CSVs históricos). Pendiente decidir en la próxima discusión.
+
+**DECISIÓN A/B RESUELTA + REGLA 4b APLICADA (2026-07-08, noche):**
+- El usuario eligió **Opción B (diferencial)**, preliminarmente (reversible gracias a la Regla 4b: B→A sería mecánico).
+- Aplicada la pasada completa de renombrado + cambio de dominio:
+  - **Librería v0.34** (spec+code alineados; antes había desalineación 0.32/0.33): `AFE4490AnalogState.v_tia_*` → `v_tia_diff_*`; `_compute_analog_state()` con ×2 (`v_tia_diff = 2×(V_ADC/(2×RG)+I_CANCEL)×RI`); `i_pd = v_tia_diff/(2×RF)` (i_pd no cambia de valor → RSQM intacto); constantes HGAC → `hgac_tia_{sat,thr,ideal}_diff_volt` (valores 1.0/0.9/0.6 sin cambio, ya eran diferenciales); límites empíricos documentados en comentarios y spec.
+  - **main.cpp:** `dbg.analog.v_tia_diff_*` en frame $M4 + comentarios `V_TIA_DIFF`.
+  - **pulsenest_lab.py (spec v1.9):** renombrado global (75 ocurrencias); cálculo local de SIGNAL STATS ahora con ×2 y término I_CANCEL (antes omitido — la columna ignoraba el AMBDAC); umbrales `_vtg_tia_color` sin cambio (ya diferenciales); tooltips corregidos con fórmula diff + límites empíricos; columnas CSV `V_TIA_DIFF_*`. La incoherencia código/tooltip de 2026-07-08 queda resuelta.
+  - **tia_linearity_sweep.py:** adaptado a dominio diff (baseline 0.20–0.80 V, bins hasta 2.2 V, líneas de referencia 1.0/1.94 V, columnas CSV `V_TIA_DIFF_*`); docstring documenta el resultado del experimento y avisa de que los CSVs pre-2026-07-09 son por-rama (×0.5).
+- Compilación Python OK (ambos scripts), build firmware OK, **flasheado por OTA** (MAC 10:51:DB:50:48:F8 verificada en ARP).
+- Verificación pendiente: relanzar el lab y comprobar que V_TIA_DIFF muestra ~2× los valores antiguos y que la columna de SIGNAL STATS coincide con el valor $M4 del firmware.
+
+**Refinamiento de nombres HGAC (propuesta del usuario, misma sesión):** las constantes `hgac_tia_{sat,thr,ideal}_diff_volt` pasan a `hgac_v_tia_diff_{sat,thr,ideal}`. Patrón formalizado: `<dominio>_v_tia_<sufijo>_<calificador>` — el nombre canónico completo de la magnitud (`v_tia_diff`) queda intacto y grepeable, el calificador al final, y se omite `_volt` (el prefijo `v_` ya implica la unidad). Solo definiciones (sin usos aún) → build OK, sin necesidad de reflashear. Regla 4b actualizada en el diccionario de nomenclatura.
+
+---
+
+## Sesión 2026-07-08 (sesión paralela) — Eq.2 con STAGE2 anulada, dilema A/B, V_OD(fs)
+
+**Preguntas del usuario:**
+1. ¿Cómo queda la Eq.2 (p.30 datasheet) si se anula STAGE2? → Con bypass desaparecen RG/RI e I_CANCEL (el DAC de cancelación actúa en la etapa 2): `V_DIFF = 2 × (I_PLETH + I_AMB) × RF`. Coherencia: Eq.2 con RG=100kΩ (0 dB) e I_CANCEL=0 da la misma expresión.
+2. Con STAGE2 anulada, ¿qué es más intuitivo: A (V_ADC = 2×V_TIA por rama) o B (V_ADC = V_TIA diferencial)? → Esta sesión respondió pro-B con 4 argumentos. **CORRECCIÓN post-hoc:** según el sweep de la sesión principal, los argumentos 3-4 ("el clip ~0.976 V es diferencial / las medidas apuntan a diferencial") eran factualmente erróneos — el clip ~0.97 V es magnitud POR RAMA pre-resta; el diferencial clipa en ~1.94 V. El único argumento fuerte pro-B es la alineación literal con el datasheet (§9.2.2, V_OD(fs)). La decisión final (Opción B + Regla 4b) ya está registrada arriba.
+3. ¿Qué significa V_OD(fs)? → Tensión de salida diferencial a fondo de escala del front-end: ±1 V nominal; el ADC de 22 bits mapea ±2097151 counts ↔ ±1 V. Nota: la afirmación de esta sesión "el clip ~0.976 ≈ V_OD(fs)" repetía la confusión rama/diferencial ya resuelta por el sweep.
+
+**Sin cambios de código en esta sesión** (solo lanzamientos de pulsenest_lab.py y consultas al datasheet).
+
+**Renombrado `_sat` → `_fs` + constante `_clip` reservada (pregunta del usuario, misma sesión):** el usuario detectó que `hgac_v_tia_diff_sat` (1.0 V) no es la saturación dura sino V_OD(fs), el límite hasta el que TI garantiza linealidad. Renombrada a `hgac_v_tia_diff_fs`; comentario del `_thr` actualizado ("before reaching fs"). Añadida comentada `hgac_v_tia_diff_clip = 1.94f` (clip duro físico empírico, sweep 2026-07-08) con documentación del final de linealidad medida (~1.8 V diff). Convención de calificadores añadida a la Regla 4b: `_fs` = límite especificado/garantía de linealidad, `_clip` = clip físico empírico; `_sat` prohibido por ambiguo. Build OK; sin usos → no requiere reflashear.
+
+---
+
+## Sesión 2026-07-08d — Consolidación del diseño HGAC en un único fichero
+
+**Tema:** el usuario detectó que el diseño HGAC estaba repartido en 3 sitios (`project_agc_design.md`, `project_hgac_task.md` y el detalle de las sesiones 2026-07-07/08 de este log) y pidió consolidarlo ("validar los objetivos y la arquitectura probablemente nos lleve muchísimo tiempo" → mejor consolidar ahora, no después de la validación).
+
+**Trabajo realizado (solo memoria/documentación, sin cambios de código):**
+- `memory/project_agc_design.md` **reescrito completo como documento ÚNICO del diseño HGAC**. Estructura: §0 estado (validado/pendiente), §1 base conceptual absorbida de project_hgac_task.md (ubicación en librería, ventana 2 s / mediana P², separación RSQM/HGAC, diag bits 4/5, control proporcional + histéresis, no reaccionar a artefactos), §2 física V_TIA resuelta (convención diferencial, Regla 4b, límites empíricos del sweep, constantes en código, ausencia deliberada de límites inferiores), §3 actuadores (nomenclatura, efectos, física LED>RF>RG/AMBDAC-neutro, acoplamiento F4), §4 fallos F1-F7 detallados (absorbidos del log 2026-07-07/08), §5 objetivos G0/O1-O10 con validaciones del usuario (O1→O2, target 50%FS), §6 arquitectura solver FASE A-D + preguntas abiertas 1/2/4/5, §7 diseño legado P1-P4 completo marcado como cuestionado/capa de emergencia (con avisos explícitos: target 40%FS invalidado → 50%; F1/F2/F3/F7), §8 decisiones misceláneas confirmadas.
+- `memory/project_hgac_task.md` **borrado** (contenido íntegramente absorbido — política de ficheros de memoria: borrar los absorbidos).
+- `memory/MEMORY.md`: eliminada la entrada de project_hgac_task; entrada de project_agc_design reescrita señalándolo como documento único.
+
+**Próximo paso (sesiones futuras):** validar O3-O10 y la arquitectura solver feed-forward; responder preguntas abiertas 1, 2, 4, 5. Punto de entrada: `memory/project_agc_design.md` §0.

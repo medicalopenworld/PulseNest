@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.7
+# pulsenest_lab — Specification v1.9
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -258,6 +258,11 @@ Lines starting with `#` are human-readable status messages from the firmware:
 - `# SYS: ...` — startup info (chip, flash, heap)
 - `# incunest_afe4490 started` — library started
 - `# frame mode ...` — frame mode change
+- `# RESET_REASON: <reason>` — sent once over UDP after every boot (WiFi reconnect);
+  logged as `[RESET] ESP32 rebooted — reason: <reason>`. Reasons: POWERON, SW_RESET,
+  PANIC, INT_WDT, TASK_WDT, BROWNOUT, etc. Used to diagnose sporadic firmware resets.
+
+Any other `#` line is appended to the Serial Console window (if open) but not logged.
 
 ### 4.5 Checksum
 
@@ -435,7 +440,7 @@ Located in the right panel. Rows = 17 signals. Columns:
 | 4 | Max-Min | Peak-to-peak range |
 | 5 | Min | Minimum value |
 | 6 | Max | Maximum value |
-| 7 | V_TIA | Estimated TIA differential output voltage (V) — raw rows only |
+| 7 | V_TIA_DIFF | Estimated TIA differential output voltage (V) — raw rows only |
 | 8 | V_ADC | Estimated ADC input voltage (V) — raw rows only |
 
 **Signal ordering (IR-first, mirrors firmware $M1 frame):**
@@ -443,19 +448,20 @@ IR, RED, IR_Amb, RED_Amb (rows 0–3, raw ADC — integer + narrow-space thousan
 IR_Sub, RED_Sub (rows 4–5, ambient-subtracted),
 PPGdisp, SpO2, SpO2_SQI, SpO2_R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI (rows 6–16, 2 dp).
 
-**V_TIA / V_ADC columns (cols 7–8):** populated only for rows 0–3 (IR, RED, IR_Amb, RED_Amb).
-Calculated from the current ADC mean using the AFE4490 gain chain:
+**V_TIA_DIFF / V_ADC columns (cols 7–8):** populated only for rows 0–3 (IR, RED, IR_Amb, RED_Amb).
+Calculated from the current ADC mean using the AFE4490 gain chain (naming rule 4b — bare
+`v_tia` is forbidden; V_TIA_DIFF = differential = 2 × I_PD × RF; per-branch = /2):
 - V_ADC = (mean_counts / 2²¹) × 1.2 V  (ADC full scale ±1.2 V, 22-bit signed)
-- V_TIA = (V_ADC / (2 × RG)) × RI = V_ADC × (RI / (2×RG))  (datasheet eq.2, p.30)
-  where RI = 100 kΩ (fixed), RG from current `$CFG` stg21/stg22 field.
+- V_TIA_DIFF = 2 × (V_ADC / (2 × RG) + I_CANCEL) × RI  (datasheet eq.2, p.30)
+  where RI = 100 kΩ (fixed), RG from current `$CFG` stg21/stg22 field, I_CANCEL = ambdac × 1 µA.
 
-**V_TIA / V_ADC color coding (background of cols 7–8):**
+**V_TIA_DIFF / V_ADC color coding (background of cols 7–8):**
 
 | Color | Hex | Condition — LED rows (0,1) | Condition — ALED rows (2,3) |
 |-------|-----|---------------------------|------------------------------|
-| Red | `#4A0800` | V_TIA > 0.95 V or < 0.15 V; V_ADC > 1.10 V or < 0.20 V | V_TIA > 0.70 V; V_ADC > 0.80 V |
-| Yellow | `#3A2D00` | V_TIA 0.80–0.95 V or 0.15–0.40 V; V_ADC 0.95–1.10 V or 0.20–0.45 V | V_TIA 0.30–0.70 V; V_ADC 0.35–0.80 V |
-| Green | `#0F3A0F` | V_TIA 0.40–0.80 V; V_ADC 0.45–0.95 V | V_TIA < 0.30 V; V_ADC < 0.35 V |
+| Red | `#4A0800` | V_TIA_DIFF > 0.95 V or < 0.15 V; V_ADC > 1.10 V or < 0.20 V | V_TIA_DIFF > 0.70 V; V_ADC > 0.80 V |
+| Yellow | `#3A2D00` | V_TIA_DIFF 0.80–0.95 V or 0.15–0.40 V; V_ADC 0.95–1.10 V or 0.20–0.45 V | V_TIA_DIFF 0.30–0.70 V; V_ADC 0.35–0.80 V |
+| Green | `#0F3A0F` | V_TIA_DIFF 0.40–0.80 V; V_ADC 0.45–0.95 V | V_TIA_DIFF < 0.30 V; V_ADC < 0.35 V |
 | Default | `#121212` | Row not in {0,1,2,3} or no data | — |
 
 **SQI colour coding (Mean column, col 2):** HR1, HR2, HR3 rows (indices 11, 13, 15):
@@ -937,7 +943,7 @@ port that happens to be first alphabetically).
 | Red tones | RED channel signals |
 | Blue tones | IR channel signals |
 
-### V_TIA / V_ADC color coding
+### V_TIA_DIFF / V_ADC color coding
 
 Voltage-based cell background colors in SIGNAL STATS table cols 7–8:
 - Green `#0F3A0F` — optimal operating range
@@ -987,6 +993,26 @@ pyqtgraph context menus from being too narrow to read.
 
 ## 12. Changelog
 
+### v1.9 — 2026-07-08
+- V_TIA convention switched to DIFFERENTIAL (naming rule 4b): all `v_tia`/`V_TIA` identifiers,
+  CSV columns, table headers and tooltips renamed to `v_tia_diff`/`V_TIA_DIFF`
+  (V_TIA_DIFF = 2 × I_PD × RF; per-branch = /2; bare `v_tia` forbidden).
+- SIGNAL STATS V_TIA_DIFF column (§6.3): local computation now includes the ×2 factor and the
+  I_CANCEL (AMBDAC) term — matches firmware `_compute_analog_state()` (library v0.34).
+  Color thresholds unchanged (they were already defined in the differential domain).
+- $M4 CSV capture columns renamed: `V_TIA_LED1..V_TIA_ALED2` → `V_TIA_DIFF_LED1..V_TIA_DIFF_ALED2`.
+  CSVs recorded before this version contain per-branch values (×0.5 vs new firmware).
+- Requires firmware/library ≥ v0.34 ($M4 streams differential values).
+
+### v1.8 — 2026-07-08
+- Added `# RESET_REASON:` handling (§4.4): firmware now emits its reset reason once over UDP
+  after every boot; the lab logs it as `[RESET] ESP32 rebooted — reason: <reason>`.
+  Added to diagnose sporadic ESP32 resets triggered by `$SET` commands (~1 in 3-4 HW CONFIG changes).
+
+### v1.7 — 2026-06-23
+- Added LIBConfigWindow (LIB CONFIG): 7 RSQM parameters configurable at runtime via
+  `$LCFG` frame and `$LCFG?` command (see git c45d0bb..dc2836d era).
+
 ### v1.6 — 2026-06-15
 - Fixed startup port fallback bug (`_populate_ports`): when the saved `combo_port` is not in
   the available port list, the combo is now left unselected (index -1) instead of falling back
@@ -1011,7 +1037,7 @@ pyqtgraph context menus from being too narrow to read.
 ### v1.3 — 2026-05-27
 - Added WiFi/UDP transport (§4.1, §4.7): `_udp_reader` thread, `_udp_queue`, `btn_udp` toggle, UdpComWindow.
 - Added `$SET` / `$CFG` / `$TCFG` / `$DIAG` / `$ERR` protocol documentation (§4.3, §4.4).
-- Updated SIGNAL STATS table (§6.3): expanded to 9 columns, IR-first row ordering, V_TIA/V_ADC columns with voltage-based color coding.
+- Updated SIGNAL STATS table (§6.3): expanded to 9 columns, IR-first row ordering, V_TIA/V_ADC columns with voltage-based color coding. *(V_TIA renamed V_TIA_DIFF in v1.9.)*
 - Added PPGSignalsWindow (§7.2), AlgoResultsWindow (§7.3), UdpComWindow (§7.5).
 - Added HWConfigWindow (§7.16): real-time AFE4490 parameter control via $SET/$CFG.
 - Added DiagnosticsWindow (§7.17): hardware diagnostic via $DIAG?.
