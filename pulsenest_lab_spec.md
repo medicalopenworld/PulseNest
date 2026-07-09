@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.9
+# pulsenest_lab — Specification v1.11
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -848,9 +848,20 @@ The combo count is recalculated live on any spin change and shown in the Control
 
 **State machine:** IDLE → SETTLING (sends `$SET`, waits settling_ms) → MEASURING (collects N samples) → next combo or IDLE.
 
-**Output file:** `afe_sweep_YYYYMMDD_HHMMSS.csv` in `CAPTURES_DIR`. 40 columns:
-`label`, `datetime`, `LED1mA`, `LED2mA`, `RF1`, `RF2`, `RG1`, `RG2`, `ambdac_uA`, `n_samples`,
-then for each of 6 signals (LED2, LED1, ALED2, ALED1, LED2_Sub, LED1_Sub): `_mean`, `_min`, `_max`, `_pp`, `_std`.
+**Output file:** CSV path from the window's text field (default `afe_sweep_test.csv`; header written
+only if the file does not exist). 92 columns, in order:
+1. `probe_state_expected`, `probe_state_calculated`, `probe_state_check` (OK/NOT OK)
+2. `label`, `datetime`, `LED1mA`, `LED2mA`, `RF1`, `RF2`, `RG1`, `RG2`, `ambdac_uA`, `n_samples`
+3. For each of 6 signals (LED2, LED1, ALED2, ALED1, LED2_Sub, LED1_Sub), grouped by stat type:
+   all `_mean`, then all `_min`, `_max`, `_pp`, `_std` (30 columns)
+4. RSQM: `rsqi_ok_pct`, `diag_code_{mean,min,max}`, `probe_state_fw_{mean,min,max}`
+5. `V_TIA_DIFF_{LED1,LED2,ALED1,ALED2}_{mean,std,min,max}` [V] — per-sample values received
+   from the `$M4` frame (firmware `_compute_analog_state()`), buffered during MEASURING
+6. `I_PD_{LED1,LED2,ALED1,ALED2}_uA_{mean,std,min,max}` [µA] — same source, ×1e6
+7. `I_PD_LED{1,2}_ALED{1,2}_diff_uA_{mean,std,min,max}` [µA] — per-sample LED−ALED difference
+8. `OT_LED1`, `OT_LED2` — optical transmittance `(mean(I_PD_LED) − mean(I_PD_ALED)) / I_LED`
+   [A/A, dimensionless], same formula as firmware `_update_rsqm()`; I_LED from the combo's
+   LED mA value. Empty if I_PD buffers are empty (non-$M4 mode) or LED mA is not numeric.
 
 #### _ComboSpin widget
 
@@ -992,6 +1003,23 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.11 — 2026-07-09
+- AFE SWEEP TEST CSV: `OT1`/`OT2` renamed to `OT_LED1`/`OT_LED2` and moved to the end of the
+  header (92 columns total, unchanged count). New computation: `(mean(I_PD_LED) − mean(I_PD_ALED))
+  / I_LED` [A/A] from the $M4 I_PD buffers — same formula as firmware `_update_rsqm()` and the
+  main window OT_LED columns. The old columns were always empty (legacy formula used
+  `self.parent()`, which is `None` by the window-parenting rule) — bug fixed by the rewrite.
+- Spec §7.18 output-file section rewritten to describe the real 92-column header (was stale at 40).
+
+### v1.10 — 2026-07-08
+- Fix: main window `closeEvent` crashed with `AttributeError` when `self.ser` was `None`
+  (UDP-only sessions / serial never opened): `hasattr(self, 'ser')` guard replaced by
+  `getattr(self, 'ser', None) is not None`. The exception aborted `closeEvent` before the
+  subwindow-closing block, leaving all secondary windows open (they use `parent=None`)
+  and the app running after the main window closed.
+- Fix: `lib_config_window` (LIB CONFIG) added to the `closeEvent` subwindow-closing list
+  (it was the only subwindow missing since v1.7).
 
 ### v1.9 — 2026-07-08
 - V_TIA convention switched to DIFFERENTIAL (naming rule 4b): all `v_tia`/`V_TIA` identifiers,

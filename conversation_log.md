@@ -13246,6 +13246,29 @@ El usuario cierra todas las sesiones Claude abiertas. Estado consolidado del red
 
 **Renombrado `_sat` → `_fs` + constante `_clip` reservada (pregunta del usuario, misma sesión):** el usuario detectó que `hgac_v_tia_diff_sat` (1.0 V) no es la saturación dura sino V_OD(fs), el límite hasta el que TI garantiza linealidad. Renombrada a `hgac_v_tia_diff_fs`; comentario del `_thr` actualizado ("before reaching fs"). Añadida comentada `hgac_v_tia_diff_clip = 1.94f` (clip duro físico empírico, sweep 2026-07-08) con documentación del final de linealidad medida (~1.8 V diff). Convención de calificadores añadida a la Regla 4b: `_fs` = límite especificado/garantía de linealidad, `_clip` = clip físico empírico; `_sat` prohibido por ambiguo. Build OK; sin usos → no requiere reflashear.
 
+**Corrección V_OD(fs) (sesión paralela):** verificado en la tabla de características eléctricas (p.11 datasheet): V_OD(fs)=1 V es spec de la **TIA** (full-scale differential output voltage, sección I-V TRANSIMPEDANCE AMPLIFIER, medida con stage 2 disabled), NO del ADC. El ADC tiene su propia spec: **ADC full-scale voltage = ±1.2 V**. Cuadro correcto: 1 V = límite lineal especificado TIA (diff) · ~1.94 V diff = clip físico medido · ±1.2 V = rango de digitalización ADC. Pendiente menor: verificar qué FS usa `_compute_analog_state()` para code→V_ADC (la pendiente AMBDAC del sweep −0.197 vs −0.2 V/µA sugiere que ya es correcta).
+
+**Verificación `v_tia_branch` (sesión paralela):** 0 ocurrencias en código (PulseNest + incunest_afe4490); solo en documentación (Regla 4b en conversation_log y memoria). Coherente con Opción B.
+
+**BUG FIX — ventanas secundarias no se cerraban al cerrar el main window (lab v1.10, sesión paralela):**
+- Síntoma: al cerrar la ventana principal, las secundarias quedaban abiertas y el proceso vivo.
+- Causa (crash.log, repetida en cada cierre): `closeEvent` — `hasattr(self, 'ser') and self.ser.is_open` lanza `AttributeError` cuando `self.ser is None` (sesión solo-UDP). La excepción abortaba `closeEvent` antes del bloque que cierra las secundarias (todas con `parent=None` por la regla Alt-TAB → Qt no las cierra en cascada) y antes de `QApplication.quit()`.
+- Fix 1: guarda cambiada a `getattr(self, 'ser', None) is not None and self.ser.is_open`.
+- Fix 2 (encontrado de paso): `lib_config_window` (LIB CONFIG) faltaba en la lista de cierres de `closeEvent` — única ventana ausente desde v1.7. Añadida.
+- Compilación OK. Spec actualizada a v1.10 (§12 changelog).
+
+---
+
+## Sesión 2026-07-09 — AFE SWEEP TEST: OT1/OT2 → OT_LED1/OT_LED2 (lab v1.11)
+
+**Pregunta:** condición de PROBE_DISCONNECTED → criterio instantáneo AND de 6 condiciones en `_update_rsqm()`: |i_pd| de los 4 canales < `rsqm_disconn_i_pd_thr` (150 nA) Y |led1_sub|,|led2_sub| < `rsqm_disconn_led_sub_thr` (5000 counts). Sin fotodiodo, i_pd solo refleja bias de TIA (~nA); led_sub≈0 confirma entrada flotante. Pasa por debounce de `_set_probe_state()`.
+
+**Cambio pedido:** columnas OT1/OT2 del CSV del AFE SWEEP TEST salían vacías; renombrar a OT_LED1/OT_LED2 y mover al final.
+- Causa raíz del vacío: el bloque legado usaba `_mon = self.parent()`, pero la ventana se crea con `parent=None` (regla Alt-TAB) → `_cfg={}` → siempre "". Además fórmula legado sin sentido físico (LED_Sub_mean/(mA·Ω·RG)).
+- Implementación: `OT_LED1/OT_LED2` al final del header (92 columnas, sin cambio de total); cálculo `(mean(I_PD_LED) − mean(I_PD_ALED)) / I_LED` [A/A] desde los buffers I_PD del $M4 — misma fórmula que `_update_rsqm()` del firmware y que las columnas OT_LED del main window. Formato `{:.3e}`; vacío si buffers vacíos (modo no-$M4) o LED mA no numérico.
+- Spec v1.11: changelog + §7.18 reescrita (describía 40 columnas, el CSV real tiene 92).
+- Nota: el header solo se escribe si el fichero no existe → usar fichero CSV nuevo para no desalinear columnas con capturas antiguas.
+
 ---
 
 ## Sesión 2026-07-08d — Consolidación del diseño HGAC en un único fichero

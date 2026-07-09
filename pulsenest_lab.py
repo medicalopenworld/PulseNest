@@ -8304,7 +8304,6 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         "LED2_max",   "LED1_max",   "ALED2_max",   "ALED1_max",   "LED2_Sub_max",   "LED1_Sub_max",
         "LED2_pp",    "LED1_pp",    "ALED2_pp",    "ALED1_pp",    "LED2_Sub_pp",    "LED1_Sub_pp",
         "LED2_std",   "LED1_std",   "ALED2_std",   "ALED1_std",   "LED2_Sub_std",   "LED1_Sub_std",
-        "OT1", "OT2",
         # ── RSQM columns ──────────────────────────────────────────────────────
         "rsqi_ok_pct",
         "diag_code_mean", "diag_code_min", "diag_code_max",
@@ -8322,6 +8321,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         # ── I_PD differential LED−ALED [µA] ─────────────────────────────────
         "I_PD_LED1_ALED1_diff_uA_mean", "I_PD_LED1_ALED1_diff_uA_std", "I_PD_LED1_ALED1_diff_uA_min", "I_PD_LED1_ALED1_diff_uA_max",
         "I_PD_LED2_ALED2_diff_uA_mean", "I_PD_LED2_ALED2_diff_uA_std", "I_PD_LED2_ALED2_diff_uA_min", "I_PD_LED2_ALED2_diff_uA_max",
+        # ── Optical transmittance OT = (I_PD_LED − I_PD_ALED) / I_LED [A/A] ──
+        "OT_LED1", "OT_LED2",
     ]  # 92 columns
 
     _ST_IDLE      = 0
@@ -8922,28 +8923,6 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         for stat_idx in range(5):
             for sig in self._SIGNALS:
                 row.append(stats[sig][stat_idx])
-        # OT1 / OT2: LED_Sub_mean / (LED_mA × RF_Ω × RG_linear)
-        # Physical values sourced from firmware $CFG frame via parent monitor's _last_cfg
-        _mon = self.parent()
-        _cfg = _mon._last_cfg if _mon is not None and hasattr(_mon, "_last_cfg") else {}
-        try:
-            _led1_ma = float(led1)
-            _rf1 = float(_cfg.get("rf1_ohm", 0)) or None
-            _rg1 = (float(_cfg.get("rg1_x", 1.0)) if _cfg.get("stage2en1", "0") == "1" else 1.0) if _rf1 else None
-            ot1 = f"{float(stats['LED1_SUB'][0]) / (_led1_ma * _rf1 * _rg1):.4f}" \
-                  if (_rf1 and _rg1 and _led1_ma) else ""
-        except Exception:
-            ot1 = ""
-        try:
-            _led2_ma = float(led2)
-            _rf2 = float(_cfg.get("rf2_ohm", 0)) or None
-            _rg2 = (float(_cfg.get("rg2_x", 1.0)) if _cfg.get("stage2en2", "0") == "1" else 1.0) if _rf2 else None
-            ot2 = f"{float(stats['LED2_SUB'][0]) / (_led2_ma * _rf2 * _rg2):.4f}" \
-                  if (_rf2 and _rg2 and _led2_ma) else ""
-        except Exception:
-            ot2 = ""
-        row.extend([ot1, ot2])
-
         # ── RSQM columns ──────────────────────────────────────────────────────
         rsqi_vals = self._buf["RSQI"]
         if rsqi_vals:
@@ -8984,6 +8963,22 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
                 row.extend(_fstats([(x - y) * 1e6 for x, y in zip(_a, _b)], "{:.3f}"))
             else:
                 row.extend([""] * 4)
+
+        # ── OT_LED1 / OT_LED2: (mean(I_PD_LED) − mean(I_PD_ALED)) / I_LED [A/A] ──
+        # Same formula as firmware _update_rsqm() and main window OT_LED columns.
+        # I_PD buffers come from the $M4 frame (firmware-computed, in A); LED current in mA.
+        def _ot(led_key, amb_key, led_ma):
+            _a, _b = self._buf[led_key], self._buf[amb_key]
+            try:
+                _i_led_a = float(led_ma) * 1e-3
+                if _a and _b and _i_led_a != 0.0:
+                    return "{:.3e}".format(
+                        (sum(_a) / len(_a) - sum(_b) / len(_b)) / _i_led_a)
+            except (ValueError, TypeError):
+                pass
+            return ""
+        row.extend([_ot("I_PD_LED1", "I_PD_ALED1", led1),
+                    _ot("I_PD_LED2", "I_PD_ALED2", led2)])
 
         path = self._edit_csv.text().strip() or "afe_sweep_test.csv"
         write_header = not os.path.exists(path)
@@ -12169,7 +12164,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._udp_thread.join(timeout=1.0)
         if hasattr(self, '_cmd_udp_sock') and self._cmd_udp_sock is not None:
             self._cmd_udp_sock.close()
-        if hasattr(self, 'ser') and self.ser.is_open:
+        if getattr(self, 'ser', None) is not None and self.ser.is_open:
             self.ser.close()
         if self.ppgplots_window is not None:
             self.ppgplots_window.main_monitor = None
@@ -12213,6 +12208,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hw_config_window is not None:
             self.hw_config_window.main_monitor = None
             self.hw_config_window.close()
+        if self.lib_config_window is not None:
+            self.lib_config_window.main_monitor = None
+            self.lib_config_window.close()
         if self.diag_window is not None:
             self.diag_window.main_monitor = None
             self.diag_window.close()
