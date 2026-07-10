@@ -13311,3 +13311,28 @@ Alex midió empíricamente los raíles del ADC (via AMBDAC): **positivo = +20969
 **Bug destapado:** el supuesto de simetría `kAdcSatNeg = −2096921` hacía la comparación `code <= kAdcSatNeg` imposible de cumplir (rail real 2 counts por encima) → `adc_sat_neg` era un flag muerto.
 
 **Decisión:** banda de guarda de ~220 counts (×2 la peor distancia ALED-rail observada, 109 counts) hacia dentro del rail, aplicada a AMBAS polaridades (el mecanismo del averaging no depende del signo) → `kAdcSatPos = +2096700`, `kAdcSatNeg = −2096700`. Falso positivo impracticable: un código legítimo a <220 counts del rail (0.01% del rango) está funcionalmente saturado. Corregido también el comentario heredado "≈95% of FS" (era falso). Spec §3c: nueva sección "ADC rail characterization". Build V16 OK.
+
+### Adenda 2026-07-10b — Cita de datasheet errónea en la escala ADC→V (comentario)
+
+Pregunta de Alex: ¿dónde indica el datasheet la escala de `incunest_afe4490.cpp:1096` (`scale = kAFE_ADC_FSR / kAFE_ADC_FS_COUNTS`)? Rastreo completo del PDF: **el datasheet no da la fórmula explícita en ningún sitio** — se deriva de dos lugares: **p.11** (Electrical Characteristics, ADC: Resolution 22 bits, ADC full-scale voltage ±1.2 V) + **p.43 §8.4.1** ("ADC output format is in 22-bit twos complement; the two MSB bits of the 24-bit data can be ignored") → 1 LSB = 1.2 V / (2²¹−1) ≈ 0.572 µV.
+
+El comentario del código citaba "Datasheet p.26" (incorrecto — p.26 son Typical Characteristics). Corregido a p.11 + p.43 en 3 sitios: `incunest_afe4490.cpp` (~1094), `incunest_afe4490.h` (~206, constantes kAFE_ADC_*) e `incunest_afe4490_spec.md` (bloque de constantes + fórmula V_ADC). Cambio solo de documentación — sin bump de versión.
+
+Además, a petición de Alex: el comentario de `kAdcSatPos/Neg` en `incunest_afe4490.h` no decía que el raíl +2096921 procede de un test empírico realizado por él — ahora indica explícitamente "rails measured empirically via an AMBDAC sweep test on IncuNest 16.A hardware (2026-07-10)". Mirroreado en la spec (§3c, bloque de constantes). Retoque posterior (también a petición): "positive rail" / "negative rail" → "empirical positive rail" / "empirical negative rail" en el mismo comentario (+ reflow del párrafo). Cambios solo de comentarios — sin bump de versión.
+
+---
+
+## Sesión 2026-07-11 — Auditoría de consumidores de flags RSQM + rename RSQM_DIAG_* (lib v0.36, lab spec v1.12)
+
+**Pregunta de Alex:** preocupación por chequeos de la librería sin consumidor que los valide — ¿quién consume los flags `RSQM_AMB_SAT`/`RSQM_SIGNAL_WEAK`/`RSQM_HW_SETTLING`?
+
+**Auditoría de consumidores (resultado):**
+- Único consumo FUNCIONAL: gate agregado `rsqi = (diag_code == 0)` (cpp) — nadie lee los bits individuales para actuar.
+- Resto = transporte/display: PulseNest main.cpp serializa `diag_code` en $M2/$M3/$M4; pulsenest_lab lo muestra (tabla + tooltip + CSV); IncuNest motherBoard (CommTask.cpp:838) solo lo imprime.
+- **`RSQM_HW_SETTLING` es inalcanzable:** nadie pone `_rsqm_settling_countdown > 0` (productor previsto: HGAC, no implementado).
+
+**Decisión de Alex:** (1) documentar como CÓDIGO ADELANTADO que puede no usarse nunca (HGAC podría hacer sus propios chequeos internos sin leer estos flags); (2) renombrar prefijo `RSQM_` → `RSQM_DIAG_` (simétrico con `AFE_DIAG_*`, evita colisión conceptual con los params operativos `rsqm_*`).
+
+**Implementación (lib v0.36, build V16 OK):**
+- `incunest_afe4490.h/.cpp/spec`: rename `RSQM_DIAG_AMB_SAT`/`RSQM_DIAG_SIGNAL_WEAK`/`RSQM_DIAG_HW_SETTLING`; bloque "ANTICIPATORY CODE" en header (junto a las constantes) y spec §5.6.3 (validarlos = parte del definition-of-done de HGAC); entrada histórica v0.27 preservada con nota "(renamed RSQM_DIAG_* in v0.36)". `library.json` 0.36.0.
+- `pulsenest_lab.py` (sin cambios funcionales): tooltips DiagCode (SIGNAL STATS) y `rsqm_signal_weak_std` (LIB CONFIG) actualizados con nuevos nombres + nota anticipatory. `pulsenest_lab_spec.md` v1.12 con changelog.

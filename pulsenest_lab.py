@@ -6971,7 +6971,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                                     "(OT > thr) from PROBE_APPLIED (OT ≤ thr).\n"
                                                                     "Physical scale [A/A]: APPLIED ≈ 1.4e-5, NOT_APPLIED ≈ 8e-4.\n"
                                                                     "Needs empirical calibration.",                               6,   0.0,    0.01,      " A/A",    1.0),
-        ("rsqm_signal_weak_std",      "Signal weak STD",           "LED1_Sub standard deviation threshold for RSQM_SIGNAL_WEAK.\n"
+        ("rsqm_signal_weak_std",      "Signal weak STD",           "LED1_Sub standard deviation threshold for RSQM_DIAG_SIGNAL_WEAK.\n"
                                                                     "If std(LED1_Sub) < this → signal is too weak to measure.\n"
                                                                     "Needs hardware calibration with known probe.",                0,   0.0,    50000.0,   " counts", 1.0),
         ("rsqm_disconn_led_sub_thr",  "Disconn. LED_sub thr",      "|led_sub| threshold for PROBE_DISCONNECTED detection.\n"
@@ -9749,7 +9749,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("HR3",        "data_hr3",        "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM.", "AFE4490Data::hr3"),
             ("HR3_SQI",    "data_hr3_sqi",    "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range.", "AFE4490Data::hr3_sqi"),
             ("RSQI",       "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary.",                                                   "AFE4490Data::rsqi"),
-            ("DiagCode",   "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM — 0x2000=AMB_SAT, 0x4000=SIGNAL_WEAK, 0x8000=HW_SETTLING. 0 = no active conditions.", "AFE4490Data::diag_code"),
+            ("DiagCode",   "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM_DIAG_* — 0x2000=AMB_SAT, 0x4000=SIGNAL_WEAK, 0x8000=HW_SETTLING (anticipatory: intended consumer is future HGAC; HW_SETTLING unreachable until HGAC exists). 0 = no active conditions.", "AFE4490Data::diag_code"),
             ("ProbeState", "data_probe_state",
              "Probe state computed by RSQM at 500 Hz. All transitions debounced: 100 consecutive samples required (200 ms).\n\n"
              "0 — DISCONNECTED (cable out)\n"

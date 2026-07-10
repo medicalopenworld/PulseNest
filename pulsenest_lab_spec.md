@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.11
+# pulsenest_lab — Specification v1.12
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -796,7 +796,7 @@ Purpose: view and change RSQM / algorithm library parameters in real time via `$
 
 **Contents (RSQM group):**
 - OT threshold (`rsqm_ot_thr`) — NOT_APPLIED vs APPLIED boundary [A/A]
-- Signal weak STD (`rsqm_signal_weak_std`) — SIGNAL_WEAK threshold [ADC counts]
+- Signal weak STD (`rsqm_signal_weak_std`) — RSQM_DIAG_SIGNAL_WEAK threshold [ADC counts]
 - DISCONNECTED LED_sub threshold (`rsqm_disconn_led_sub_thr`) [ADC counts]
 - DISCONNECTED I_PD threshold (`rsqm_disconn_i_pd_thr`) [nA displayed, A stored]
 - Probe debounce (`rsqm_probe_state_min_s`) [s] — converted to samples from `fs` internally
@@ -1003,6 +1003,12 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.12 — 2026-07-11
+- Tooltip texts updated for library v0.36 rename `RSQM_*` → `RSQM_DIAG_*` (DiagCode bits 13+):
+  SIGNAL STATS DiagCode tooltip (now also notes the flags are anticipatory — intended consumer
+  is the future HGAC; HW_SETTLING unreachable until HGAC exists) and LIB CONFIG
+  `rsqm_signal_weak_std` tooltip. No functional changes.
 
 ### v1.11 — 2026-07-09
 - AFE SWEEP TEST CSV: `OT1`/`OT2` renamed to `OT_LED1`/`OT_LED2` and moved to the end of the
