@@ -13336,3 +13336,62 @@ Además, a petición de Alex: el comentario de `kAdcSatPos/Neg` en `incunest_afe
 **Implementación (lib v0.36, build V16 OK):**
 - `incunest_afe4490.h/.cpp/spec`: rename `RSQM_DIAG_AMB_SAT`/`RSQM_DIAG_SIGNAL_WEAK`/`RSQM_DIAG_HW_SETTLING`; bloque "ANTICIPATORY CODE" en header (junto a las constantes) y spec §5.6.3 (validarlos = parte del definition-of-done de HGAC); entrada histórica v0.27 preservada con nota "(renamed RSQM_DIAG_* in v0.36)". `library.json` 0.36.0.
 - `pulsenest_lab.py` (sin cambios funcionales): tooltips DiagCode (SIGNAL STATS) y `rsqm_signal_weak_std` (LIB CONFIG) actualizados con nuevos nombres + nota anticipatory. `pulsenest_lab_spec.md` v1.12 con changelog.
+
+---
+
+## Sesión 2026-07-11 (continuación) — $M4 ampliado: OT_LED1/OT_LED2 + CH_MASKS desde firmware
+
+**Petición de Alex:** "adelante con $M4. Las dos últimas filas de SIGNAL STATS (OT_LED1 y OT_LED2)
+eran calculadas en el script — que pasen a leerse de la trama $M4". Aceptada también mi propuesta
+de incluir las 4 máscaras de validez (lib v0.35) en $M4 para darles su primer consumidor real.
+
+**Firmware PulseNest `src/main.cpp` (build V16 OK):**
+- $M4 ampliado con 3 campos: `OT_LED1,OT_LED2` (`%.4e`, A/A) + `CH_MASKS` (`%04X` hex).
+  CH_MASKS = 4 nibbles empaquetados: bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg,
+  [11:8]=tia_over_fs, [15:12]=tia_over_lin; dentro de cada nibble bit=canal según `AFE4490Ch`
+  (LED1=0, ALED1=1, LED2=2, ALED2=3).
+- `UDP_QUEUE_FRAME_SIZE` 256 → 288 (M4 ≈ 260 bytes; batch 5×288 = 1440 < 1472 MTU, static_assert OK).
+
+**Script `pulsenest_lab.py` (py_compile OK):**
+- Parser $M4 exige ≥ 34 campos: OT leídos de trama (eliminado cálculo local con `$CFG` led mA);
+  `CH_MASKS` parseado a deque nueva `data_ch_masks`; tramas de firmware antiguo → analógicos a cero.
+- SIGNAL STATS — primer consumidor de CH_MASKS (cierra project_vtia_gray_task, ampliado a
+  todas las etapas, no solo saturación positiva): acumulador `_stats_ch_masks_or` (OR por ventana
+  de stats); celdas V_TIA_DIFF/V_ADC (filas 0-3) con fondo gris `#3A3A3A` si su canal no estuvo
+  CLEAN (mapa `_STATS_ROW_TO_CH={0:0,1:2,2:1,3:3}`); filas OT_LED1/OT_LED2 con texto gris
+  `#808080` si algún canal fuente no CLEAN (espejo de `otLedxValid()`).
+- Cabeceras Serial COM / UDP COM / CSV de grabación live: `+OT_LED1,OT_LED2,CH_MASKS`.
+- Tooltips: filas OT (fuente = trama, gris = no válido) y leyenda "Gray" en los 4 tooltips
+  V_TIA/V_ADC.
+
+**Spec `pulsenest_lab_spec.md` v1.13:**
+- §4.2 reescrita: documentaba solo $M1/$M2 con formato pre-2026-06-09; ahora tabla de los 4
+  modos + formato completo $M3/$M4 con los campos nuevos.
+- §6.3 actualizada a la realidad del código: 30 filas de señal; V_TIA_DIFF/V_ADC son cols 1-2
+  (el texto anterior decía cols 7-8, previo al reorden); reglas de gris documentadas.
+
+**Pendiente:** flashear IncuNest 16.A (MAC 10:51:DB:50:48:F8) y validar en HW; luego lista de
+problemas prioritarios HGAC.
+
+---
+
+## Sesión 2026-07-11 (continuación 2) — Gris CLIPPED en filas analógicas de SIGNAL STATS (opción B)
+
+**Contexto:** tras flashear OTA la 16.A (192.168.137.215, MAC verificada) y verificar $M4 en vivo,
+Alex observó que los criterios de color de SIGNAL STATS se han vuelto caóticos y propuso una
+primera mejora: texto gris en filas V_TIA_*, I_PD_* y OT_* cuando CH_MASKS indique no fiabilidad.
+
+**Decisión (opción B, física):** gris solo cuando el canal está CLIPPED (`adc_sat_pos` |
+`adc_sat_neg` | `tia_over_lin`) — el valor es cota, no realidad. `tia_over_fs` (OFF_SPEC,
+1.0–1.8 V diff) NO se grisa: fuera de spec TI pero empíricamente lineal → el valor sigue siendo
+real y grisarlo perdería información en sweeps HGAC. Espejo del `CH_CLIPPED` de la librería.
+
+**Implementación (`pulsenest_lab.py`, lab spec → v1.14 pendiente de redactar en esta misma sesión):**
+- `_clipped = (_m | _m>>4 | _m>>12) & 0xF` (excluye nibble tia_over_fs) sustituye a `_not_clean`.
+- Filas 20–27 (V_TIA_DIFF_*, I_PD_*): texto gris si su canal CLIPPED (mapeo `_STATS_ROW_TO_CH[(sig_idx-20)%4]`).
+- Filas 28–29 (OT_*): criterio cambiado de not-CLEAN a CLIPPED (LEDx ∨ ALEDx).
+- Fondo gris de celdas V_TIA/V_ADC (filas 0–3): mismo criterio CLIPPED (coherencia).
+- Gris de texto más oscuro: `_STATS_INVALID_FG` `#808080` → `#5A5A5A` (petición de Alex).
+- Tooltips de las 10 filas analógicas + 4 leyendas V_TIA/V_ADC: explican CLIPPED vs OFF_SPEC.
+
+**Regla visual resultante:** gris = "este número no es real" (uniforme en toda la cadena analógica).

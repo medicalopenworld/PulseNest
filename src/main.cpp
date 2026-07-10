@@ -94,9 +94,9 @@ static WebServer g_ota_server(80);
 // UDP_Task batches up to UDP_BATCH_SIZE frames per datagram and calls sendto()
 // via raw lwIP socket — reduces packet rate from 500/sec to ~100/sec, staying
 // well below lwIP TX buffer limits (~6 slots) and within UDP MTU (1472 bytes).
-#define UDP_QUEUE_FRAME_SIZE  256   // max frame size; M4 ≈ 230 bytes
+#define UDP_QUEUE_FRAME_SIZE  288   // max frame size; M4 ≈ 260 bytes (v0.35: +OT_LED1/2 +CH_MASKS)
 #define UDP_QUEUE_DEPTH       64    // ~128 ms headroom at 500 Hz
-#define UDP_BATCH_SIZE        5     // frames per datagram: 5×230 ≈ 1150 bytes < 1472 MTU
+#define UDP_BATCH_SIZE        5     // frames per datagram: 5×288 = 1440 bytes < 1472 MTU
 #define UDP_MTU               1472  // max UDP payload without IP fragmentation (Ethernet/WiFi)
 
 // Compile-time guard: worst-case batch (all frames at max size) must fit within MTU.
@@ -173,7 +173,8 @@ static void udp_send_line(const char* buf) {
 // M1 = PPG only (minimal bandwidth)
 // M2 = PPG + SpO2 + HR3 + quality flags (lightweight monitoring)
 // M3 = full AFE4490Data — all production fields (default)
-// M4 = M3 + AFE4490DebugData analog signals (V_TIA_DIFF, I_PD for all 4 channels)
+// M4 = M3 + AFE4490DebugData analog signals (V_TIA_DIFF, I_PD for all 4 channels,
+//      OT_LED1/OT_LED2, CH_MASKS validity masks — lib v0.35)
 enum class IncunestFrameMode { M1, M2, M3, M4 };
 volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M3;
 
@@ -284,11 +285,20 @@ void Incunest_Task(void *pvParameters) {
                     if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
                     udp_send(buf);
                 } else {  // M4
-                    // $M4 = M3 + V_TIA_DIFF_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (all in scientific notation)
+                    // $M4 = M3 + V_TIA_DIFF_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (scientific notation)
+                    //     + OT_LED1/OT_LED2 [A/A] + CH_MASKS (validity masks, lib v0.35).
+                    // CH_MASKS = 4 nibbles packed as %04X:
+                    //   bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg, [11:8]=tia_over_fs, [15:12]=tia_over_lin
+                    //   within each nibble, bit = channel per AFE4490Ch: LED1=0, ALED1=1, LED2=2, ALED2=3
+                    const unsigned ch_masks =
+                        (unsigned)dbg.analog.adc_sat_pos
+                        | ((unsigned)dbg.analog.adc_sat_neg  << 4)
+                        | ((unsigned)dbg.analog.tia_over_fs  << 8)
+                        | ((unsigned)dbg.analog.tia_over_lin << 12);
                     char buf[512];
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
-                        ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e",
+                        ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%04X",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
                         (long)data.led2,       (long)data.led1,
@@ -311,7 +321,9 @@ void Incunest_Task(void *pvParameters) {
                         dbg.analog.v_tia_diff_led1,  dbg.analog.v_tia_diff_led2,
                         dbg.analog.v_tia_diff_aled1, dbg.analog.v_tia_diff_aled2,
                         dbg.analog.i_pd_led1,   dbg.analog.i_pd_led2,
-                        dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2);
+                        dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2,
+                        dbg.analog.ot_led1,     dbg.analog.ot_led2,
+                        ch_masks);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);
