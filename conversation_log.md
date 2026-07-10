@@ -13395,3 +13395,23 @@ real y grisarlo perdería información en sweeps HGAC. Espejo del `CH_CLIPPED` d
 - Tooltips de las 10 filas analógicas + 4 leyendas V_TIA/V_ADC: explican CLIPPED vs OFF_SPEC.
 
 **Regla visual resultante:** gris = "este número no es real" (uniforme en toda la cadena analógica).
+
+---
+
+## Sesión 2026-07-11 (continuación 3) — SIGNAL STATS filas 0-3: gris CLIPPED como texto (spec v1.15)
+
+**Petición de Alex** (segunda mejora de colores, tras validar en vivo la primera): que las
+4 primeras filas (raw ADC) usen texto gris en vez de fondo gris cuando CLIPPED, igual que
+las filas analógicas 20-29.
+
+**Decisión adicional (mía, aceptada implícitamente):** al grisar el texto, el fondo vuelve a
+neutro `#121212` — el color de gauge calculado sobre la media sería engañoso (media contaminada
+por valores-cota). No se mantiene ni el gauge ni el gris `#3A3A3A` (constante `_VTG_GRAY` eliminada).
+
+**Resultado — regla visual unificada en toda la tabla:**
+- Texto gris `#5A5A5A` = "este número no es real" (criterio CLIPPED, uniforme filas 0-3 y 20-29).
+- Fondos = solo gauges semánticos (rangos de tensión verde/amarillo/rojo, SQI verde/granate).
+
+**Ficheros:** `pulsenest_lab.py` (celdas V_TIA/V_ADC: `setForeground` + gauge suprimido si
+`_raw_clipped`; tooltips de leyenda reescritos), `pulsenest_lab_spec.md` v1.15.
+Verificación: py_compile OK, script relanzado. Pendiente validación visual de Alex.

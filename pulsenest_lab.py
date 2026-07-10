@@ -10353,8 +10353,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range (around 0.6 V ideal point)\n"
             "  Yellow  0.15 \u2013 0.40 V  or  0.80 \u2013 0.95 V \u2014 caution\n"
             "  Red     < 0.15 V  or  > 0.95 V \u2014 near spec saturation or insufficient signal\n"
-            "  Gray    channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA hard clip) \u2014 value is a bound, not reality.\n"
-            "          OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
+            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
+            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
+            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
         _TIP_VTIA_AMB = _make_tooltip("V_TIA_DIFF",
             "TIA DIFFERENTIAL output voltage estimated from the mean ADC count (naming rule 4b).\n"
             "Formula: V_TIA_DIFF = 2 \u00d7 (V_ADC / (2\u00d7RG) + I_CANCEL) \u00d7 RI  (datasheet eq.2, p.30)\n"
@@ -10365,8 +10366,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "  Green   < 0.30 V \u2014 low ambient (safe)\n"
             "  Yellow  0.30 \u2013 0.70 V \u2014 moderate ambient, monitor\n"
             "  Red     > 0.70 V \u2014 high ambient, risk of saturation\n"
-            "  Gray    channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA hard clip) \u2014 value is a bound, not reality.\n"
-            "          OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
+            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
+            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
+            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
         _TIP_VADC_LED = _make_tooltip("V_ADC",
             "ADC input voltage estimated from the mean ADC count.\n"
             "Formula: V_ADC = (mean_counts / 2\u00b2\u00b9) \u00d7 1.2 V  (ADC FS = \u00b11.2 V, 22-bit signed).\n"
@@ -10375,8 +10377,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "  Green   0.45 \u2013 0.95 V \u2014 optimal\n"
             "  Yellow  0.20 \u2013 0.45 V  or  0.95 \u2013 1.10 V \u2014 caution\n"
             "  Red     < 0.20 V  or  > 1.10 V \u2014 insufficient signal or near saturation\n"
-            "  Gray    channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA hard clip) \u2014 value is a bound, not reality.\n"
-            "          OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
+            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
+            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
+            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
         _TIP_VADC_AMB = _make_tooltip("V_ADC",
             "ADC input voltage estimated from the mean ADC count.\n"
             "Formula: V_ADC = (mean_counts / 2\u00b2\u00b9) \u00d7 1.2 V  (ADC FS = \u00b11.2 V, 22-bit signed).\n"
@@ -10385,8 +10388,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "  Green   < 0.35 V \u2014 low ambient (safe)\n"
             "  Yellow  0.35 \u2013 0.80 V \u2014 moderate ambient\n"
             "  Red     > 0.80 V \u2014 high ambient, risk of saturation\n"
-            "  Gray    channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA hard clip) \u2014 value is a bound, not reality.\n"
-            "          OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
+            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
+            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
+            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
         for _r in range(4):
             _tip7 = _TIP_VTIA_LED if _r in {0, 1} else _TIP_VTIA_AMB
             _tip8 = _TIP_VADC_LED if _r in {0, 1} else _TIP_VADC_AMB
@@ -11356,8 +11360,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _VTG_GREEN   = QtGui.QColor("#0F3A0F")  # optimal
     _VTG_YELLOW  = QtGui.QColor("#3A2D00")  # caution
     _VTG_RED     = QtGui.QColor("#4A0800")  # saturation / insufficient
-    _VTG_DEFAULT = QtGui.QColor("#121212")  # no data
-    _VTG_GRAY    = QtGui.QColor("#3A3A3A")  # channel CLIPPED (CH_MASKS) — estimate not valid
+    _VTG_DEFAULT = QtGui.QColor("#121212")  # no data / channel CLIPPED (gauge suppressed)
     _STATS_INVALID_FG = QtGui.QColor("#5A5A5A")  # dark gray text — value not valid (CH_MASKS CLIPPED)
     # SIGNAL STATS row index (sig_idx 0-3) → AFE4490Ch channel bit in CH_MASKS nibbles
     _STATS_ROW_TO_CH = {0: 0, 1: 2, 2: 1, 3: 3}  # LED1→0, LED2→2, ALED1→1, ALED2→3
@@ -11511,13 +11514,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
             else:
                 vtia_str = "" if sig_idx not in self._STATS_RAW_ROWS else "---"
                 vadc_str = vtia_str
-            if sig_idx in self._STATS_RAW_ROWS and buf:
-                if (_clipped >> self._STATS_ROW_TO_CH[sig_idx]) & 1:
-                    # Channel CLIPPED (lib v0.35 CH_MASKS): V_TIA/V_ADC estimate not valid → gray
-                    vtia_bg = vadc_bg = self._VTG_GRAY
-                else:
-                    vtia_bg = self._vtg_tia_color(sig_idx, v_tia_diff)
-                    vadc_bg = self._vtg_adc_color(sig_idx, v_adc)
+            # Channel CLIPPED (lib v0.35 CH_MASKS): V_TIA/V_ADC estimate not valid →
+            # gray text on neutral background (gauge color would be misleading)
+            _raw_clipped = (sig_idx in self._STATS_RAW_ROWS and buf
+                            and bool((_clipped >> self._STATS_ROW_TO_CH[sig_idx]) & 1))
+            if sig_idx in self._STATS_RAW_ROWS and buf and not _raw_clipped:
+                vtia_bg = self._vtg_tia_color(sig_idx, v_tia_diff)
+                vadc_bg = self._vtg_adc_color(sig_idx, v_adc)
             else:
                 vtia_bg = vadc_bg = self._VTG_DEFAULT
             for col, txt, bg in ((1, vtia_str, vtia_bg), (2, vadc_str, vadc_bg)):
@@ -11529,6 +11532,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 else:
                     it.setText(txt)
                 it.setBackground(bg)
+                it.setForeground(self._STATS_INVALID_FG if _raw_clipped else QtGui.QBrush())
             self._stats_buf[name].clear()
 
     def _process_frames_tick(self):

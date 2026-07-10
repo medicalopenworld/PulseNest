@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.14
+# pulsenest_lab — Specification v1.15
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -486,7 +486,7 @@ Calculated from the current ADC mean using the AFE4490 gain chain (naming rule 4
 
 | Color | Hex | Condition — LED rows (0,1) | Condition — ALED rows (2,3) |
 |-------|-----|---------------------------|------------------------------|
-| Gray | `#3A3A3A` | channel not CLEAN (CH_MASKS) — overrides all below | same |
+| Gray text on `#121212` | `#5A5A5A` | channel CLIPPED (CH_MASKS) — overrides all below | same |
 | Red | `#4A0800` | V_TIA_DIFF > 0.95 V or < 0.15 V; V_ADC > 1.10 V or < 0.20 V | V_TIA_DIFF > 0.70 V; V_ADC > 0.80 V |
 | Yellow | `#3A2D00` | V_TIA_DIFF 0.80–0.95 V or 0.15–0.40 V; V_ADC 0.95–1.10 V or 0.20–0.45 V | V_TIA_DIFF 0.30–0.70 V; V_ADC 0.35–0.80 V |
 | Green | `#0F3A0F` | V_TIA_DIFF 0.40–0.80 V; V_ADC 0.45–0.95 V | V_TIA_DIFF < 0.30 V; V_ADC < 0.35 V |
@@ -501,12 +501,14 @@ into a per-channel CLIPPED bitmap and reset:
 CLIPPED = the value is a bound, not reality (mirrors library `CH_CLIPPED`).
 Row→channel map `_STATS_ROW_TO_CH = {0:0, 1:2, 2:1, 3:3}`.
 Effects when a channel was CLIPPED at any point in the stats window:
-- V_TIA_DIFF / V_ADC cells (rows 0–3) → gray background `#3A3A3A` (estimate not valid).
+- V_TIA_DIFF / V_ADC cells (rows 0–3) → gray text `#5A5A5A` on neutral background `#121212`
+  (the voltage gauge color is suppressed — it would be computed from bound values and mislead).
 - V_TIA_DIFF_* rows (20–23) and I_PD_* rows (24–27) → gray text `#5A5A5A` on cols 4–8
   if their own channel was CLIPPED (`_STATS_ROW_TO_CH[(sig_idx − 20) % 4]`).
 - OT_LED1 row (28) → gray text `#5A5A5A` if LED1 **or** ALED1 CLIPPED;
   OT_LED2 row (29) likewise for LED2/ALED2.
-Visual rule: **gray = "this number is not real"**, uniform across the whole analog chain.
+Visual rule: **gray text = "this number is not real"**, uniform across the whole table.
+Backgrounds are reserved for semantic gauges (voltage ranges, SQI).
 
 **SQI colour coding (Mean column, col 4):** HR1, HR2, HR3 rows (indices 11, 13, 15):
 - Mean SQI > 0.9 → background `#1A5C1A` (dark green)
@@ -1004,8 +1006,9 @@ Voltage-based cell background colors in SIGNAL STATS table cols 1–2:
 - Green `#0F3A0F` — optimal operating range
 - Yellow `#3A2D00` — caution (approaching saturation or insufficient signal)
 - Red `#4A0800` — saturation or signal too low
-- Gray `#3A3A3A` — channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA hard clip) — estimate not valid.
-  Analog-chain rows (V_TIA_DIFF_*, I_PD_*, OT_*) use gray **text** `#5A5A5A` with the same criterion.
+- Gray **text** `#5A5A5A` on neutral `#121212` — channel CLIPPED (CH_MASKS from $M4: ADC rail
+  or TIA hard clip) — estimate not valid, gauge color suppressed. Same criterion and color as
+  the analog-chain rows (V_TIA_DIFF_*, I_PD_*, OT_*).
   OFF_SPEC (`tia_over_fs`) is never grayed — the value is still real.
 - Default `#121212` — no data or non-ADC row
 
@@ -1050,6 +1053,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.15 — 2026-07-11
+- SIGNAL STATS rows 0–3 (raw ADC): CLIPPED indication changed from gray background `#3A3A3A`
+  to gray text `#5A5A5A` on neutral background `#121212` in the V_TIA_DIFF/V_ADC cells (same
+  convention as the analog-chain rows). The voltage gauge color is suppressed when CLIPPED —
+  it would be computed from bound values and mislead. `_VTG_GRAY` constant removed.
+- Resulting uniform rule: gray text = "this number is not real"; backgrounds reserved for
+  semantic gauges (voltage ranges, SQI).
 
 ### v1.14 — 2026-07-11
 - SIGNAL STATS validity gray-out refined (option B, physical criterion): gray now means
