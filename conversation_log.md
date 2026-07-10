@@ -13281,3 +13281,33 @@ El usuario cierra todas las sesiones Claude abiertas. Estado consolidado del red
 - `memory/MEMORY.md`: eliminada la entrada de project_hgac_task; entrada de project_agc_design reescrita señalándolo como documento único.
 
 **Próximo paso (sesiones futuras):** validar O3-O10 y la arquitectura solver feed-forward; responder preguntas abiertas 1, 2, 4, 5. Punto de entrada: `memory/project_agc_design.md` §0.
+
+---
+
+## Sesión 2026-07-10 — AFE4490AnalogState: OT + estrategia de invalidez por saturación (lib v0.35)
+
+**Contexto:** continuación de la sesión de diseño HGAC. Antes de retomar la lista de problemas prioritarios, Alex pidió añadir `ot_led1`/`ot_led2` a `AFE4490AnalogState`, pero exigió diseñar primero la estrategia de gestión de invalidez cuando la saturación de un valor invalida los que dependen de él.
+
+**Preguntas clave del diálogo de diseño:**
+- ¿NaN o valor calculado cuando la cadena está saturada? → 3 casos donde el valor es útil (TIA off-spec = valor correcto; ADC clip = cota accionable; visualización de trazas) → **valor-siempre + máscaras de validez** (sin NaN, sin sentinels).
+- ¿Flags por etapa o por canal? → **Opción A (por etapa)**, con helpers inline obligatorios para poder migrar a opción B sin tocar consumidores.
+- Semántica de estados: **CH_CLEAN** (medida fiable) / **CH_OFF_SPEC** (v_tia_diff en 1.0–1.8 V: fuera de garantía TI pero empíricamente lineal — el valor es probablemente correcto, solo cambia el respaldo) / **CH_CLIPPED** (ADC saturado o TIA > 1.8 V: el valor es COTA, no medida). Precedencia CLIPPED > OFF_SPEC > CLEAN. Nombres BOUND/DEGRADED rechazados.
+- ¿Umbrales en la struct? → Desafío de Alex: ¿hay razón real para configurarlos en runtime? No (fs=datasheet, sat=silicio, lin=caracterización offline por placa) → **`static constexpr` en la struct**. Física → struct; política HGAC (`hgac_v_tia_diff_thr`=0.9, `ideal`=0.6) → controlador.
+
+**Implementación (incunest_afe4490 v0.35, build OK V15/V16/V17):**
+- `incunest_afe4490.h`: enums `AFE4490Ch` (bit index) y `AFE4490ChState`; struct con `ot_led1/ot_led2`, 4 máscaras (`adc_sat_pos/neg`, `tia_over_fs/lin`, bit=canal), constantes `kVTiaDiffFs=1.0/kVTiaDiffLin=1.8/kAdcSatPos/Neg=±2096921`, helpers (`chState`, `chClean`, `otLedxValid` estricto solo-CLEAN, `anyAdcSat` O1, `anyTiaOverFs` O2, `allClean`). Eliminados `rsqm_ot_saturated` y `rsqm_adc_positive_sat`.
+- `incunest_afe4490.cpp`: `_compute_analog_state()` calcula OT + máscaras (sin límite inferior TIA: fotocorriente unipolar); `_update_rsqm()` consume `as.ot_ledx` + `otLedxValid()` — política de saturación ahora EXPLÍCITA (antes escondida en el sentinel 100.0) y más estricta que pre-v0.35 (ambos raíles, ALED incluido, linealidad TIA); `RSQM_AMB_SAT` via `adcSatPos(ALEDx)`; `hgac_v_tia_diff_fs` sustituida por `kVTiaDiffFs`.
+- `incunest_afe4490_spec.md` v0.35: §3c reescrito (struct + política valor-siempre + racional de umbrales), §5.6.2, §5.6.3, historial v0.35. `library.json` 0.35.0.
+- Detectado: faltan las entradas v0.33/v0.34 en el historial de versiones de la spec (pendiente).
+
+**Fallos de test nativos preexistentes** (`pio test -e native`: no encuentra `incunest_afe4490.h` — infraestructura, no relacionado con este cambio; ya recogido en project_unit_tests_task).
+
+**Pendiente de retomar:** lista de problemas prioritarios HGAC (P1-P8 propuestos, sin validar); exponer ot/máscaras en $M4 (enlaza project_vtia_gray_task); calibración empírica de rsqm_ot_thr.
+
+### Adenda 2026-07-10 — Caracterización empírica de raíles ADC (corrige kAdcSatPos/Neg)
+
+Alex midió empíricamente los raíles del ADC (via AMBDAC): **positivo = +2096921** (constante e igual en los 4 canales; NO coincide con 2^21−1 = 2097151); **negativo = −2096919** (constante en led1/led2; aled1/aled2 NO clavan el rail — oscilan aprox. entre −2096912 y −2096810, mecanismo: el ADC averaging mezcla conversiones clipadas y no clipadas en la ventana).
+
+**Bug destapado:** el supuesto de simetría `kAdcSatNeg = −2096921` hacía la comparación `code <= kAdcSatNeg` imposible de cumplir (rail real 2 counts por encima) → `adc_sat_neg` era un flag muerto.
+
+**Decisión:** banda de guarda de ~220 counts (×2 la peor distancia ALED-rail observada, 109 counts) hacia dentro del rail, aplicada a AMBAS polaridades (el mecanismo del averaging no depende del signo) → `kAdcSatPos = +2096700`, `kAdcSatNeg = −2096700`. Falso positivo impracticable: un código legítimo a <220 counts del rail (0.01% del rango) está funcionalmente saturado. Corregido también el comentario heredado "≈95% of FS" (era falso). Spec §3c: nueva sección "ADC rail characterization". Build V16 OK.
