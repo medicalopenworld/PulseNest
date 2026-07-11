@@ -13415,3 +13415,272 @@ por valores-cota). No se mantiene ni el gauge ni el gris `#3A3A3A` (constante `_
 **Ficheros:** `pulsenest_lab.py` (celdas V_TIA/V_ADC: `setForeground` + gauge suprimido si
 `_raw_clipped`; tooltips de leyenda reescritos), `pulsenest_lab_spec.md` v1.15.
 Verificación: py_compile OK, script relanzado. Pendiente validación visual de Alex.
+
+---
+
+## Sesión 2026-07-09 — Diseño HGAC: «Prompt HGAC», modelo AS1-AS4, térmica ILED (bloque retroactivo, registrado 2026-07-11)
+
+**Nota:** esta sesión de diseño no se registró en su día (ese día solo se anotó la sesión del
+AFE SWEEP TEST). Se reconstruye aquí desde `memory/project_agc_design.md`, donde quedó el detalle.
+
+**«Prompt HGAC» (nombre canónico de la reflexión):** ejercicio propuesto por Alex — *si HGAC
+fuera una IA, ¿qué prompt le daríamos?* Formular la instrucción completa en lenguaje natural
+(como a un técnico humano o a un LLM); si el prompt es completo y no ambiguo, el orden
+lexicográfico O1→O10 es su traducción formal, y toda laguna revela un objetivo/desempate que
+falta. Resultado (enunciado ejecutivo, `project_agc_design.md` §5): "Mantén los 4 crudos lejos
+de la saturación ADC (ambos signos) y la TIA lejos de la suya; haz que led1_sub/led2_sub superen
+el mínimo que garantiza AC resoluble para el PI actual; y de todas las configuraciones que lo
+logran, elige la de menor ILED, mayor RF / menor RG, menor AMBDAC — cambiando de configuración
+lo menos posible."
+
+**Otros resultados de la sesión (detalle en `project_agc_design.md`):**
+- Modelo de sensibilidad actuador→señal AS1-AS4 (§3): ILED afín sobre el crudo, RF afín si
+  AMBDAC>0 (= F4 en fórmula), AMBDAC aditivo puro (0.2 V/µA × RG), RG multiplicativo puro.
+  Es el jacobiano que necesita la FASE B del solver.
+- Objeción a los desempates O5/O6 (§5): "menor ILED / mayor RF" solo son seguros si O3/O4
+  dependen del ambiente → suelo de ruido MEDIDO online (inclina la pregunta abierta 5 a
+  empírico y continuo), headroom proporcional a la variabilidad del ambiente.
+- Restricción térmica ILED (§5.1): base ISO 80601-2-61 §201.11/Annex BB, mecanismo (librería,
+  `afe_iled_max_mA`) vs política (integrador), sonda Medle I_F máx 50 mA, potencia media
+  conjunta con duty ~25% ya al máximo.
+- Regla 7 de nomenclatura: actuadores = ILED1/ILED2 (nunca led1/led2 ni LEDmA).
+
+---
+
+## Sesión 2026-07-11 (continuación 3) — HGAC: O3 validado con reformulación solo-DC
+
+**Reflexión de Alex:** dado que AC/DC son proporcionales (a SpO2/perfusión constantes), basta
+vigilar UNA señal: llevar DC a amplificación suficiente sin saturar y AC sale como consecuencia.
+"A veces la simplicidad es la clave del éxito."
+
+**Análisis (acuerdo con 3 matices):** la justificación profunda es más fuerte que la comodidad —
+ningún actuador amplifica AC selectivamente (§2 del diseño) → con DC bien colocado, AC ya es lo
+mejor que el hardware puede dar; vigilar AC no aporta palanca accionable. Si AC sigue irresoluble
+(PI minúsculo) es dominio RSQM, no HGAC. Coincide con Fig. 135/§9.2.2 del datasheet.
+Matices: **M1** vigilar el DC de `led_sub` (invariante a AMBDAC), nunca el ADC post-cancelación;
+**M2** DC en counts ≠ SNR → válido solo junto a la preferencia ILED>RF>RG (O6); **M3** criterio
+de parada = target fijo 50% FS (0.6 V diff) para no colisionar con O5 térmico, con `pi` de la
+librería como sanity check de solo-diagnóstico. Caveat aceptado: flicker ambiental sin vigilante
+directo en HGAC (lo caza RSQM).
+
+**Decisión:** O3 VALIDADO reformulado (solo-DC). Pregunta abierta 5 (suelo de ruido) DISUELTA —
+sin umbral `AC > k×ruido` no hace falta estimador de ruido en el lazo. FASE A se simplifica
+(sin estimador de AC ni de ruido). `project_agc_design.md` actualizado (§0, §5 O3, pregunta 5).
+
+**Pendiente:** O4-O10, arquitectura solver (preguntas 1, 2, 4).
+
+---
+
+## Sesión 2026-07-11 (continuación 4) — HGAC: Prompt HGAC v2 + O4 absorbido en O1/O2/O3
+
+**Prompt HGAC v2:** actualizado tras O3 solo-DC — "lleva el DC de led1_sub/led2_sub a un target
+adecuado (por ejemplo 50% FS) sin saturar" (Alex: el valor concreto del target se estudiará
+específicamente; 50% FS es solo ejemplo). v1 conservada en nota.
+
+**O4 (headroom):** objeción de Alex — "¿no debería ser parte y estar integrado en O1 y O2?" →
+correcta: el headroom no es un objetivo, es la **política de umbrales de actuación** de
+O1/O2/O3. Cada límite físico tiene par detección (librería, por muestra) / actuación (HGAC,
+con margen); el headroom es la distancia entre ambos. TIA ya lo tiene (0.9 vs 1.0 V); al ADC
+le falta su umbral de actuación (~80% FS, p.89); el target DC lo tendrá vía histéresis (O9).
+**Matiz añadido por Alex:** la detección de riesgo de saturación es más compleja que un umbral
+de amplitud — tripleta **(procesado previo, umbral de amplitud, persistencia temporal)**
+(la mediana 2 s sola es ciega a excursiones breves; el legado ya tenía persistencias 500/2000 ms).
+Margen dinámico ∝ variabilidad del ambiente = extensión futura condicionada a evidencia en HW.
+O4 marcado ABSORBIDO; numeración O5-O10 se mantiene. `project_agc_design.md` actualizado.
+
+**Pendiente:** O5-O10, arquitectura solver (preguntas 1, 2, 4).
+
+---
+
+## Sesión 2026-07-11 (continuación 5) — HGAC: AMBDAC + zona negativa del ADC descartado como default
+
+**Reflexión de Alex:** para minimizar actuaciones (O8), arrancar en el estado más favorable —
+¿AMBDAC por defecto para aprovechar la mitad negativa del ADC (rango muerto con fotocorriente
+unipolar)? (= esquema datasheet §8.3.1.1 p.28).
+
+**Análisis → DESCARTADO como default, conservado como capacidad del solver (FASE B):**
+- Hallazgo central: **AMBDAC y RG>1 son un pack**. Con RG=1 (default), `V_ADC = v_tia_diff −
+  0.2 V/µA × AMBDAC`; cumpliendo O2 (≤0.9 V) el ADC (±1.2 V) nunca es la restricción activa —
+  el techo es la TIA, que AMBDAC (post-TIA) no alivia. Restar solo desplaza una señal que ya
+  cabía: cero headroom útil, cero resolución, cero SNR. La zona negativa solo es recurso con
+  RG>1 (peaje O6/M2). El ambiente tampoco lo salva a RG=1 (I_AMB×RF entra DENTRO de la TIA →
+  remedio RF↓).
+- Inconvenientes del preset: I2 AMBDAC resta igual en las 4 fases → centrar LED en 0 hunde
+  ALED en negativo (con RG>1 clipea → RSQM ciego); I3 granularidad 0.2 V/µA; I4 un preset
+  adivina el punto de operación (variabilidad ×100) → mejor arranque neutro AMBDAC=0 + UN
+  disparo del solver tras la primera ventana de 2 s; I5 RF afín (F4) y F2 como estado normal.
+- Excepción legítima (medida, no operación): desplazar con AMBDAC para observar la zona
+  OFF_SPEC 1.2-1.8 V — el truco de tia_linearity_sweep y la caracterización de raíles.
+- Donde sí mejorar el arranque: defaults de los multiplicativos (ILED/RF cerca del target O3
+  → project_led_default_current_task).
+
+Registrado en `project_agc_design.md` §3 (subsección nueva). O5 queda pendiente (propuesta de
+formulación ya sobre la mesa: minimizar ILED1+ILED2 conjunto, trade-off SNR↔térmica explícito).
+
+---
+
+## Sesión 2026-07-11 (continuación 6) — Exégesis p.28 datasheet + AMBDAC recolocador + O7 validado
+
+**Petición de Alex:** análisis en profundidad de la frase p.28: "the second stage, which consists
+of a current DAC that sources the cancellation current and an amplifier that gains up the pleth
+component alone". Conclusiones (releídas pp.27-30):
+- "Pleth component" = TODA la señal inducida por LED (DC+AC), NO la AC pulsátil (trampa 1b).
+- "Alone" = solo bajo la HIPÓTESIS de cancelación perfecta (`I_CANCEL = I_AMB×RF/RI`) — propiedad
+  del ajuste, no del circuito; RG amplifica el residuo total, no distingue.
+- DAC inyecta POST-TIA (∈ etapa 2, nodos Ri, Fig. 57) — no alivia saturación TIA.
+- Orden: restar → amplificar. Resta idéntica en las 4 fases (no gateada).
+- **Corrección de un error mío:** el default real de la librería es STAGE2EN1/2=true +
+  STG2GAIN=0 dB (×1), NO "stage 2 deshabilitada" (dato viejo). Y la librería fuerza STAGE2EN
+  cuando AMBDAC>0 (cpp:1389-91: "cancellation current has no effect without it") → la lectura
+  literal "DAC ∈ stage 2" es funcionalmente cierta. Corregido en project_agc_design.md (§2, §3).
+
+**Reinterpretación de Alex (validada, más correcta que el datasheet):** AMBDAC NO cancela el
+ambiente — es un **recolocador de offset** constante sobre las 4 fases; el ambiente sigue entero
+en la TIA (remedio RF↓) y su ruido intacto; la eliminación funcional ya la hace LED−ALED digital.
+Única utilidad: recolocar las señales en la ventana ADC para que RG no clipe. Y la política
+óptima NO es anular I_AMB (deja toda la excursión en la mitad positiva) sino **CENTRAR el rango
+ocupado por las 4 medianas** → duplica el RG utilizable. Caveats: granularidad 0.2 V, registro
+único (centrado conjunto IR+RED → O10), fórmula de recuperación no afectada.
+
+**Decisión:** **O7 VALIDADO reformulado:** AMBDAC=0 salvo que el pack AMBDAC+RG>1 sea necesario;
+su valor entonces = centrado del rango, no cero de ambiente. AS3 ampliado en §3.
+Estado objetivos: O1-O3 y O7 validados; O4 absorbido; pendientes O5, O6, O8, O9, O10 + arquitectura.
+
+## Sesión 2026-07-11 (continuación 7) — Nueva tarea: estudio de sustitución del AFE4490
+
+**Petición:** crear tarea de estudio de viabilidad de usar un AFE más moderno que el AFE4490.
+
+**Creada `project_afe_replacement_study_task.md`** (memoria, status: pendiente) con los 3 puntos
+mínimos pedidos:
+1. **Problema AMBDAC** — resumen de la limitación de plataforma post-TIA (referencia a
+   project_agc_design.md §3): no protege la TIA, recolocador de offset, cadena de utilidad
+   acotada RG→AMBDAC, caso patológico fototerapia neonatal.
+2. **Comparativa con modelos posteriores** — las dos tablas elaboradas en esta sesión
+   (general familia TI AFE4400→4432 + específica de cancelación de ambiente: nodo de
+   inyección, rango, por-fase, lazo automático) preservadas íntegras en el fichero de tarea.
+3. **Estudio de candidatos** — pendiente; requisito EXCLUYENTE marcado por Alex: compatibilidad
+   con sondas médicas clínicas típicas estandarizadas de entorno hospitalario, baratas y
+   multi-fabricante (los AFE de wearables no cualifican). Candidatos preliminares AFE4900/4950;
+   verificar diagnóstico de sonda y drive 50 mA; considerar también fuera de TI (ADI, Maxim).
+
+Enlace cruzado añadido en project_agc_design.md §3 (limitación de plataforma) y entrada en
+MEMORY.md. La tarea NO bloquea HGAC — el diseño HGAC continúa sobre el AFE4490.
+
+---
+
+## Sesión 2026-07-11b — Citas de datasheet corregidas + ejemplo Claude Agent SDK
+
+**1. Escala ADC→V (`incunest_afe4490.cpp:1096`):** Alex preguntó dónde indica el datasheet la escala `kAFE_ADC_FSR / kAFE_ADC_FS_COUNTS`. Rastreo completo del PDF: no existe fórmula explícita código↔voltaje — se deriva de p.11 (Resolution 22 bits, ADC full-scale voltage ±1.2 V) + p.43 §8.4.1 (formato 22-bit twos complement) → 1 LSB = 1.2/(2²¹−1) ≈ 0.572 µV. La cita "p.26" del código era errónea → corregida a p.11+p.43 en cpp (~1094), h (~206) y spec (constantes + fórmula V_ADC).
+
+**2. Origen empírico de los raíles ADC:** a petición de Alex, el comentario de `kAdcSatPos/Neg` en el .h ahora dice explícitamente "rails measured empirically via an AMBDAC sweep test on IncuNest 16.A hardware (2026-07-10)" y "empirical positive/negative rail = +2096921/−2096919". Mirroreado en spec §3c. Todo solo comentarios — sin bump de versión. Memoria `project_analog_state_task.md` actualizada (estaba obsoleta respecto a v0.35: OT ya en el struct, sentinel eliminado).
+
+**3. Claude Agent SDK — ejemplo batch:** Alex recordaba un vídeo sobre agentes especializados en Python para trabajos 24/7 y procesamiento masivo de ficheros → identificado como Claude Agent SDK (`pip install claude-agent-sdk`). Creado **`agent_sweep_batch.py`** (raíz del proyecto): lanza un agente por cada `captures/afe_sweep_test_*.csv` (máx. 3 en paralelo), con prompt especializado que incluye el contexto físico (raíles ±2096921/−2096919, límites V_TIA 1.0/1.8 V, probe_state_check) y genera un informe Markdown por CSV en `reports/sweep_agents/`. Sin ejecutar aún. Es un ejemplo didáctico, no forma parte del pipeline del proyecto.
+
+## Sesión 2026-07-11 (continuación 8) — Alcance HGAC v1 = ILED + RF; entregable del estudio AFE
+
+**Decisiones:**
+1. **Estudio de sustitución del AFE4490** — se ejecutará en una sesión Claude separada (el
+   fichero de tarea es autocontenido). Entregable → `PulseNest/docs/afe_replacement_study.md`
+   (inglés, SÍ se commitea; los PDFs de terceros de docs/ no suben por copyright — exclusión
+   por contenido en .gitignore, no docs/ en bloque). Instrucciones de cierre apuntadas en el
+   fichero de tarea.
+2. **Alcance HGAC v1 = ILED + RF** (propuesto por Alex, validado): Stage 2 congelado
+   (AMBDAC=0, RG=0 dB). Razones: con RG=×1 y O2 cumplido el ADC nunca es restricción activa;
+   espacio de búsqueda 6→3 actuadores; v1 = prefijo preferente de la cadena ILED>RF>RG/AMBDAC;
+   en fototerapia AMBDAC post-TIA tampoco ayudaría. Pack AMBDAC+RG (O7) = capa de escalado v2
+   condicionada a evidencia empírica. Apuntado en project_agc_design.md §0 y §5.
+
+**En curso:** validación de O5 (ILED mínimo suficiente) — sobre la mesa 3 opciones de suelo
+mínimo de ILED (A: 10 mA rango HW / B: 20 mA test Medle / C: sin suelo explícito, emerge de O3
+con "RF razonable"). Opinión de Claude: C con matiz; 20 mA como default de arranque
+(project_led_default_current_task), no como suelo del solver.
+
+## Sesión 2026-07-11 (continuación 9) — O5 disuelto: ARQUITECTURA HGAC v1 = ESCALERA DE DESCENSO
+
+**Recorrido:** discutiendo O5 (suelo mínimo de ILED), Alex objetó dos veces con razón:
+1. En neonatos translúcidos también entra más luz ambiente (y por caminos más cortos que la del
+   LED) → cae el argumento contra el suelo B (20 mA).
+2. El ratio señal/ambiente NO es figura de mérito: la saturación depende de la SUMA (O1/O2 tal
+   cual) y lo que importa es el SNR. Claude rehizo el análisis: ruidos = Johnson ∝√(1/RF), shot
+   ∝√i_pd_total, flicker ∝ m×i_pd_amb. **Ley √:** sobre la frontera de O2, SNR ∝ √i_pd_led en
+   ambos regímenes → más fotocorriente siempre ayuda (rendimiento √), el contrapeso térmico es
+   lineal.
+
+**Propuesta de Alex (algoritmo de control):** arrancar con ILED máximo admitido + RF estimado
+típico; si satura V_TIA → bajar RF; si RF=mín y persiste → bajar ILED; si persiste → alarma
+"excessive ambient light" antes de que ILED llegue a cero. Es exactamente el orden de sacrificio
+óptimo de la ley √ (RF cuesta √, ILED cuesta lineal).
+
+**Validada como arquitectura candidata v1 con refinamientos R1-R5** (apuntada en
+project_agc_design.md §6; FASE A-D relegada a §6b como referencia):
+- R1: ILED_max = envolvente térmica conjunta §5.1 (sustituye al estimador "SNR suficiente").
+- R2: máscaras v0.35 por canal distinguen causa: ALED saturado con RF=mín → alarma directa
+  (bajar ILED no ayuda); solo LED saturado → tejido translúcido → bajar ILED.
+- R3: re-ascenso periódico + histéresis (adelanta O9).
+- R4: aterrizar un escalón de RF por debajo del límite → el target ~50% FS (O3) pasa a ser
+  consecuencia, no objetivo perseguido.
+- R5: pasos feed-forward con i_pd medido (Eq.2), ≤2 iteraciones; máscaras gobiernan validez.
+- Tripleta de actuación (O4) en cada decisión de descenso.
+
+**Consecuencia:** la escalera COLAPSA O3/O5/O6. Estado: O1→O7 cerrados; pendiente detallar
+O8/O9/O10 (acotados). Pregunta abierta 1 resuelta (ni solver ni P1-P4: escalera).
+
+**Próxima sesión:** detallar O8/O9/O10 sobre la escalera (N s de re-ascenso, histéresis,
+RF2 compartido con ENSEPGAIN=0 → descenso disparado por el peor de los 4 canales).
+
+---
+
+### 2026-07-11p — AFE Replacement Feasibility Study (Point 3: Candidate Evaluation)
+
+**Tema:** Completar el Punto 3 del estudio de viabilidad de sustitución del AFE4490
+(`project_afe_replacement_study_task.md`): evaluación de candidatos AFE4900, AFE4950,
+ADPD4100/4101 y MAX86171.
+
+**Hallazgo principal — el problema del H-Bridge:**
+Ningún AFE moderno de ningún fabricante (TI, ADI/Maxim) incluye driver LED H-Bridge.
+Esta feature es exclusiva de la familia clínica antigua de TI (AFE4490, AFE4400, AFE4403).
+El H-Bridge es esencial para sondas clínicas estándar con LEDs back-to-back (anti-paralelo)
+conectados por 2 hilos (Nellcor DB9, Masimo LNCS y compatibles). Sin H-Bridge, se requiere
+circuito externo (4 MOSFETs) o sondas custom no estándar — requisito excluyente para IncuNest.
+
+**Candidatos evaluados:**
+- **AFE4900:** Pre-TIA +-126 uA (soluciona AMBDAC), 200 mA LED, IEC 60601 report, ~$4 @3ku.
+  FALLA: no H-Bridge, no diagnóstico óptico de sonda. Mejor opción si se añade H-Bridge externo.
+- **AFE4950:** Pre-TIA dual DAC (256+64 uA), 250 mA LED. Mismo problema H-Bridge. Overkill.
+- **ADPD4100:** 200 mA LED, ambient rejection pre-ADC. No médico, no H-Bridge, no diag sonda.
+- **MAX86171:** ALC 200 uA, 3 drivers. No H-Bridge, no diag sonda. PoC/wearable.
+
+**Transmisivo vs. reflexivo — confirmado:**
+- Entorno médico/clínico: sondas transmisivas (dedo, pie neonatal, oreja). Estándar ISO 80601-2-61.
+- Entorno wearable: óptica reflexiva (muñeca, anillo). Todos los AFE modernos están optimizados
+  para reflexivo (common-anode, bajo consumo, PD en PCB, packages DSBGA ultra-pequeños).
+- El AFE en sí no "sabe" si es transmisivo o reflexivo; la especialización viene del driver LED
+  (H-Bridge vs. common-anode), corriente máxima, diagnóstico de sonda y diseño de entrada PD.
+
+**Conclusión:** No existe reemplazo drop-in del AFE4490. El 4490 sigue ACTIVE en TI.
+HGAC continúa sobre el AFE4490. Si futura migración necesaria: AFE4900 + H-Bridge externo.
+
+**Entregable:** `docs/afe_replacement_study.md` (inglés, commitable a git).
+**Tarea:** `project_afe_replacement_study_task.md` marcada status:done.
+
+## Sesión 2026-07-11 (continuación 10) — Término canónico «limitación AMBDAC post-TIA» + consolidación de docs
+
+**Decisiones:**
+1. **Término canónico registrado:** «limitación AMBDAC post-TIA» (EN: *post-TIA AMBDAC
+   limitation*) — nueva sección "Términos de proyecto" en project_nomenclature_dictionary.md
+   (incluye también «Prompt HGAC»). Definición de una línea para citar en documentos.
+2. Redactados para los compañeros: (a) explicación breve del problema (AMBDAC tras la TIA →
+   no protege su rango dinámico; corregido pre-TIA desde AFE4404) y (b) la parte positiva:
+   el control de incunest_afe4490 se simplifica (HGAC v1 = solo ILED+RF, escalera de descenso,
+   menos estados, validación HW abarcable).
+3. **Consolidación de project_agc_design.md tras las conclusiones:** tabla de actuadores §3
+   con columna "Alcance HGAC" (AMBDAC/RG ❄ CONGELADOS → v2); orden de preferencia §3 refinado
+   por la ley √ (ILED="suficiente no máximo" SUPERSEDIDO → envolvente térmica; RF primero a
+   sacrificar); lista de objetivos §5: O5 ✅ RESUELTO (ILED=máximo admitido; suelo fijo
+   descartado), O6 ✅ RESUELTO (absorbido en escalera), O3 nota R4 (target=consecuencia),
+   O7 marcado capa v2, O10 acotado a RF2 compartido; rótulo canónico en §2.
+
+**Nota:** la sesión paralela completó el estudio de sustitución del AFE4490
+(docs/afe_replacement_study.md, tarea done). Hallazgo clave: ningún AFE moderno tiene
+H-Bridge LED driver (exclusivo 4490/4400/4403) → sin reemplazo drop-in para sondas
+clínicas 2-wire; mejor candidato AFE4900 + H-Bridge externo.
