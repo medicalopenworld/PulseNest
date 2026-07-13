@@ -175,6 +175,7 @@ static void udp_send_line(const char* buf) {
 // M3 = full AFE4490Data — all production fields (default)
 // M4 = M3 + AFE4490DebugData analog signals (V_TIA_DIFF, I_PD for all 4 channels,
 //      OT_LED1/OT_LED2, CH_MASKS validity masks — lib v0.35)
+//      + HGAC_RF1/HGAC_RF2/HGAC_ALARM (Phase 1: RF-only descent — lib v0.37)
 enum class IncunestFrameMode { M1, M2, M3, M4 };
 volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M3;
 
@@ -286,7 +287,8 @@ void Incunest_Task(void *pvParameters) {
                     udp_send(buf);
                 } else {  // M4
                     // $M4 = M3 + V_TIA_DIFF_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (scientific notation)
-                    //     + OT_LED1/OT_LED2 [A/A] + CH_MASKS (validity masks, lib v0.35).
+                    //     + OT_LED1/OT_LED2 [A/A] + CH_MASKS (validity masks, lib v0.35)
+                    //     + HGAC_RF1/HGAC_RF2/HGAC_ALARM (Phase 1: RF-only descent, lib v0.37).
                     // CH_MASKS = 4 nibbles packed as %04X:
                     //   bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg, [11:8]=tia_over_fs, [15:12]=tia_over_lin
                     //   within each nibble, bit = channel per AFE4490Ch: LED1=0, ALED1=1, LED2=2, ALED2=3
@@ -298,7 +300,8 @@ void Incunest_Task(void *pvParameters) {
                     char buf[512];
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
-                        ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%04X",
+                        ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%04X"
+                        ",%s,%s,%d",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
                         (long)data.led2,       (long)data.led1,
@@ -323,7 +326,9 @@ void Incunest_Task(void *pvParameters) {
                         dbg.analog.i_pd_led1,   dbg.analog.i_pd_led2,
                         dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2,
                         dbg.analog.ot_led1,     dbg.analog.ot_led2,
-                        ch_masks);
+                        ch_masks,
+                        afeRFToStr(dbg.hgac_rf_led1), afeRFToStr(dbg.hgac_rf_led2),
+                        dbg.hgac_alarm_gain_floor ? 1 : 0);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);
@@ -442,19 +447,23 @@ static void send_cfg_frame() {
     send_tcfg_frame();  // always emit timing config alongside $CFG
 }
 
-// Emit a $LCFG frame with the current RSQM / algorithm library parameters.
+// Emit a $LCFG frame with the current RSQM / HGAC algorithm library parameters.
 static void send_lcfg_frame() {
     AFE4490Config cfg = afe.getConfig();
-    char buf[256];
+    char buf[320];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$LCFG,rsqm_ot_thr=%.4e,rsqm_signal_weak_std=%.1f"
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
         ",rsqm_probe_state_min_s=%.3f"
-        ",rsqm_ema_mean_tau_s=%.3f,rsqm_ema_var_tau_s=%.3f",
+        ",rsqm_ema_mean_tau_s=%.3f,rsqm_ema_var_tau_s=%.3f"
+        ",hgac_enable=%d,hgac_v_tia_diff_thr=%.3f"
+        ",hgac_descent_persist_s=%.3f,hgac_gate_invalid_frac_max=%.3f",
         cfg.rsqm_ot_thr, cfg.rsqm_signal_weak_std,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
-        cfg.rsqm_ema_mean_tau_s, cfg.rsqm_ema_var_tau_s);
+        cfg.rsqm_ema_mean_tau_s, cfg.rsqm_ema_var_tau_s,
+        cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_diff_thr,
+        cfg.hgac_descent_persist_s, cfg.hgac_gate_invalid_frac_max);
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
     Serial_print_locked(buf);
@@ -673,6 +682,42 @@ static void apply_set_cmd(const char* key, const char* val) {
             send_lcfg_frame();
         } else {
             Serial_printf("$ERR,rsqm_ema_var_tau_s,invalid (must be > 0)\r\n");
+        }
+        return;
+    // ── HGAC parameters (Phase 1: RF-only descent) ───────────────────────────
+    } else if (strcmp(key, "hgac_enable") == 0) {
+        int v = atoi(val);
+        if (v == 0 || v == 1) {
+            afe.setHgacEnable(v == 1);
+            Serial_printf("# SET hgac_enable=%d\n", v);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,hgac_enable,invalid (0 or 1)\r\n");
+        }
+        return;
+    } else if (strcmp(key, "hgac_v_tia_diff_thr") == 0) {
+        afe.setHgacVTiaDiffThr(atof(val));
+        Serial_printf("# SET hgac_v_tia_diff_thr=%.3f\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "hgac_descent_persist_s") == 0) {
+        float s = atof(val);
+        if (s > 0.0f && s <= 10.0f) {
+            afe.setHgacDescentPersistS(s);
+            Serial_printf("# SET hgac_descent_persist_s=%.3f\n", s);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,hgac_descent_persist_s,invalid (0.0–10.0)\r\n");
+        }
+        return;
+    } else if (strcmp(key, "hgac_gate_invalid_frac_max") == 0) {
+        float v = atof(val);
+        if (v >= 0.0f && v <= 1.0f) {
+            afe.setHgacGateInvalidFracMax(v);
+            Serial_printf("# SET hgac_gate_invalid_frac_max=%.3f\n", v);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,hgac_gate_invalid_frac_max,invalid (0.0–1.0)\r\n");
         }
         return;
     } else {

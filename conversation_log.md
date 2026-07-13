@@ -13684,3 +13684,239 @@ HGAC continúa sobre el AFE4490. Si futura migración necesaria: AFE4900 + H-Bri
 (docs/afe_replacement_study.md, tarea done). Hallazgo clave: ningún AFE moderno tiene
 H-Bridge LED driver (exclusivo 4490/4400/4403) → sin reemplazo drop-in para sondas
 clínicas 2-wire; mejor candidato AFE4900 + H-Bridge externo.
+
+## Sesión 2026-07-11 (continuación 11) — Reestructuración de project_agc_design.md (diseño limpio, axiomas primero)
+
+**Crítica del usuario:** project_agc_design.md parecía un histórico de reflexiones — no
+reflejaba desde el principio las simplificaciones estructurales (limitación AMBDAC post-TIA,
+Stage 2 sin uso, y la NUEVA: sin Stage 2 ya no hay que vigilar la saturación del ADC por
+separado).
+
+**Decisiones:**
+1. **Reestructuración ejecutada:** el histórico completo (O1-O10 con validaciones, solver
+   FASE A-D, legado P1-P4, AS1-AS4, F1-F7, debates descartados) se movió a
+   `project_agc_design_history.md` (archivo congelado). `project_agc_design.md` reescrito
+   como documento de diseño VIGENTE: §1 axiomas A1-A6, §2 física (Eq.2 + ley √), §3
+   envolvente térmica, §4 escalera de descenso + R1-R5 + Prompt HGAC v3, §5 pendiente
+   O8/O9/O10, §6 capa v2, §7 referencias.
+2. **Nuevo axioma A3 — UNA SOLA guardia de saturación (aportación del usuario):** con
+   Stage 2 congelado (RG=×1), V_ADC ≡ V_TIA_DIFF → los antiguos O1 (saturación ADC) y O2
+   (saturación TIA) colapsan en una única guardia `v_tia_diff < 0.9 V`. La zona TIA
+   1.2–1.8 V es inobservable e inalcanzable en v1 (el ADC ±1.2 V clipa antes).
+3. **Nueva tarea pendiente:** `project_ambdac_tia_offspec_zone_task.md` — estudiar uso
+   OPERATIVO de AMBDAC para acceder a la zona TIA 1.2–1.8 V (desplaza −0.2 V/µA la ventana
+   del ADC; truco ya usado como MEDIDA en tia_linearity_sweep). Beneficio: headroom ×1.5
+   sin bajar RF. Riesgos: zona OFF_SPEC, granularidad 0.2 V, ALED al raíl negativo, F2
+   normalizado, registro AMBDAC compartido IR+RED. Capa v2, condicionada a evidencia.
+
+**Pendiente:** validar con el usuario las propuestas O8 (mínimo número de actuaciones),
+O9 (histéresis/re-ascenso predicho) y O10 (factibilidad conjunta IR+RED + decisión
+ENSEPGAIN=0 vs =1).
+
+## Sesión 2026-07-11 (continuación 12) — Propuesta O8 presentada (pendiente de validación)
+
+**Presentada la propuesta O8 (mínimo número de actuaciones) en 4 piezas, SIN validar aún:**
+- O8.1 asimetría de urgencia: descenso ~500 ms (datos ya inválidos) / ascenso ~30-60 s
+  (solo suboptimalidad; coste real por actuación ~18 s de medida degradada por memoria
+  de los EMA, ~3τ con τ_ac=6 s).
+- O8.2 cambios agrupados en una tanda (RF+ILED en la misma actuación, un solo settling)
+  + `_rsqm_settling_countdown` → bit RSQM_DIAG_HW_SETTLING (su primer consumidor).
+- O8.3 compensación analítica de estados de filtros (mean×k, var×k² con k de LUT
+  kAFE_RF_OHM) — propuesta como tarea SEPARADA no bloqueante de v1.
+- O8.4 métrica de éxito: ~0 actuaciones/hora en estacionario (detecta hunting de O9).
+- Nota: rate limit hgac_led_step_max_factor=2.0 solo aplica a SUBIDAS de ILED.
+
+**Próxima sesión:** validar O8 (a-d), luego O9 (histéresis/re-ascenso predicho) y O10
+(factibilidad conjunta IR+RED + decisión ENSEPGAIN).
+
+## Sesión 2026-07-12 — Cierre HGAC O8/O9/O10 + refutación A1 + compactación de memoria
+
+**Tema:** validar los puntos abiertos de la escalera de descenso de HGAC v1 (O8, O9, O10)
+y empezar el análisis que condiciona la decisión ENSEPGAIN.
+
+**O8 — Mínimo número de actuaciones (CERRADO):**
+- O8.1 asimetría de urgencia. Descenso ~500 ms (datos inválidos). Ascenso NO urgente: el
+  suelo lo pone la fiabilidad de la decisión (re-ascenso predicho), no la urgencia →
+  parametrizable `hgac_reascent_persist_s`, **default = 5×τ_ac (=30 s con τ_ac=6 s)**,
+  atado a τ_ac.
+- O8.2 cambios agrupados en UNA tanda con un único settling cuando una decisión requiere
+  RF+ILED (solo en saltos feed-forward R5) → primer consumidor de `RSQM_DIAG_HW_SETTLING`.
+- O8.3 compensación analítica de estados de filtro → tarea SEPARADA no bloqueante
+  (`project_filter_state_compensation_task.md`). Motivo: la mediana P² de la guardia NO se
+  reescala limpio como los EMA.
+- O8.4 métrica ~0 actuaciones/hora en estacionario.
+
+**O9 — Anti-hunting MULTICAPA (CERRADO, aportación del usuario):** no solo histéresis.
+4 capas aplicadas asimétricamente (descenso ligero / ascenso conservador):
+(1) filtro LP del estimador (mediana P² 2 s), (2) debounce temporal = mismo mecanismo que
+ProbeState, (3) histéresis (banda muerta, solo protege el ascenso; umbral_ascenso =
+0.75×0.9 ≈ 0.675 V), (4) rate limit solo en subidas de ILED. Riesgo documentado: no apilar
+capas fuertes en el descenso (ceguera a saturación). Re-ascenso PREDICHO (no probado):
+V(RF₊₁)=i_pd_total×RF₊₁ ≤ umbral_ascenso sostenido 5×τ_ac. Recuperación espejo: ILED primero.
+
+**O10 — Factibilidad conjunta IR+RED (datasheet leído):**
+- Hallazgo datasheet (regs TIAGAIN 0x20 / TIA_AMB_GAIN 0x21): ENSEPGAIN (bit D15) separa
+  SOLO LED1 vs LED2, NO los 4 canales. Solo hay RF_LED1 y RF_LED2 → **2 dominios de
+  ganancia**; cada color comparte RF entre su fase LED y su ambient (obligatorio para la
+  resta). RF = 7 niveles (1M…10k); "None" no cuenta (corrección usuario C2).
+- Corrección usuario C1: en v1 (fotocorriente unipolar, AMBDAC=0) LEDx ≥ ALEDx siempre →
+  la guardia la dispara la fase LED, no "el peor de 2". ALED solo como diagnóstico de causa.
+- R es INVARIANTE al RF/ILED por color en régimen permanente (AC/DC cancela RF e ILED) →
+  ENSEPGAIN=1 no corrompe SpO2; es ENSEPGAIN=0 el que penaliza al color débil.
+- **Recomendación provisional: ENSEPGAIN=1** (dos escaleras independientes), condicionada a
+  cerrar el análisis de transitorios → nueva tarea `project_gain_changes_ratio_influence_task.md`
+  (vías A1 respuesta frecuencia RF·CF, B1 residuo ambiente, C1 warm-up desincronizado).
+
+**A1 — Barrido teórico |H(f)| del LP RF·CF (REFUTADA):** fc=1/(2π·RF·CF) para los 42 pares
+de las LUT reales → fc va de 1.0 MHz a un mínimo de 1027 Hz (peor par 1M×155p). Sesgo
+DIFERENCIAL RED↔IR (lo que sesga R) en el caso extremo: 0.0006% @3.67 Hz, 0.011% @15 Hz.
+El LP fijo de 500 Hz es común a ambos colores → se cancela. A1 NO es vía de contaminación
+de R. Script en scratchpad (`a1_hf_sweep.py` + `a1_hf_response.png`).
+
+**Mantenimiento:** MEMORY.md superó el límite de tamaño → compactado de 24.3 KB a 14.6 KB;
+detalle inline movido a topic files nuevos (frame_modes, udp_transport, lib_config_window,
+ema_tau_config, debugdata, freeze_fix, pilab, rsqm_diag_flags); punteros inflados
+comprimidos a una línea. Corregido enlace roto afe4490_datasheet_toc → afe4490_toc.
+
+**Estado HGAC:** O1–O10 cerrados a nivel de arquitectura. Pendientes: análisis B1 y C1 de
+la tarea de influencia AC/DC (decidirán ENSEPGAIN en firme) e implementación (depende de
+RSQM validado en HW).
+
+**Próxima sesión:** continuar la tarea de análisis AC/DC — C1 (warm-up desincronizado,
+simular en mirror Python) es la vía de mayor impacto; luego B1 (residuo de ambiente).
+
+### 2026-07-12 (continuación) — Análisis B1 (residuo de resta de ambiente)
+
+Continuada la tarea `project_gain_changes_ratio_influence_task.md`, vía B1.
+
+**B1 — VÍA REAL, no refutable** (contrasta con A1). Derivación simbólica + simulación:
+- Dos residuos opuestos: (i) leakage LED proporcional `(1−β)` → se cancela en AC/DC,
+  benigno para R; (ii) ambiente no cancelado `Δi_amb = i_amb(t₁)−i_amb(t₂)` → aditivo al
+  DC, independiente de ILED → sesga R.
+- Sesgo `R_bias = (1+f_ir)/(1+f_red) − 1`, `f_c = Δi_amb/i_dc_c`. **Puramente DIFERENCIAL:**
+  si `i_dc_red=i_dc_ir` → 0; el daño viene de la asimetría (RED más absorbido).
+  Simulación: residuo 10%, rho=0.5 → −8.3% R (~1.4 %SpO2); rho=0.25 → −21% (~3.5 %SpO2).
+  Bajar ILED de un color amplifica: residuo 8%, RED 100→20% ILED → −6.9%→−40%.
+- **RF y ENSEPGAIN NO cambian B1** (`f_c` en dominio corriente); pero la escalera con
+  ENSEPGAIN=1 puede agravarla (bajar ILED de un solo color → dispara asimetría).
+- Solo existe con `Δi_amb>0` = ambiente sub-ms (flicker 100/120 Hz, fototerapia PWM);
+  ambiente DC → B1≈0. Peor caso: flicker múltiplo de PRF → sesgo DC sostenido.
+- Mitigaciones: escalera mantiene ILED alto (defensa por defecto); medir `Δi_amb` vía
+  `i_pd_aled`; GATE de SpO2 cuando `f` alto; coherencia IR/RED. Cuantificación de `Δi_amb`
+  pendiente de MEDIDA en HW.
+- Scripts scratchpad: `b1_ambient_residual.py` + `.png`.
+
+**Estado tarea AC/DC:** A1 refutada, B1 vía real. Pendiente C1 (warm-up desincronizado,
+simular en mirror Python) — la de mayor impacto para decidir ENSEPGAIN en firme.
+
+### 2026-07-12 (continuación) — Análisis C1 (warm-up desincronizado) + cierre de O10
+
+Corrección de nomenclatura (usuario): **LED1=IR, LED2=RED**; empíricamente LED2>LED1 →
+i_dc(RED)>i_dc(IR) → el color débil (vulnerable a B1) es el IR, no el RED. Corregida la
+dirección en la tarea B1 (mi "RED se absorbe más" era racionalización errónea).
+
+Nueva tarea (usuario): `project_ambient_phase_noise_detector_task.md` — detector de ruido
+ambiente por diferencia entre muestras ambient consecutivas (ALED1/ALED2/…), estima Δi_amb
+(flicker/fototerapia). Candidato a vivir en RSQM. Es el detector medible de B1 → alimenta el
+gate de SpO2.
+
+**C1 — VÍA DOMINANTE, catastrófica sin mitigación** (simulación del pipeline EMA de SpO2):
+- Un cambio de RF/ILED = escalón ×k en la señal cruda; el DC (τ=2s) lo persigue con retardo
+  → el escalón se cuela en AC=señal−DC (~100× el AC pulsátil) → rms_ac disparado ~3τ≈18s.
+- Con ENSEPGAIN=1 los cambios de IR/RED están desincronizados → R corrupto por actuación.
+  Sim (IR RF×0.5 @10s, RED RF×2 @20s): R error −84%…−97% y +90%; ventanas encadenadas.
+- **Solución:** compensación analítica de EMA (dc×k, ac²×k²) → error máx 0.016%. C1 desaparece.
+- Matiz que REHABILITA O8.3: la P² que nos hizo aparcar O8.3 es de la GUARDIA de HGAC, no del
+  pipeline SpO2; SpO2 usa EMA lineales → compensación EXACTA. Limpia para RF; imperfecta para
+  ILED (ambiente no escala → B1). O8.3 dividida en (a) EMA de SpO2 prioritaria, (b) P² opcional.
+
+**O10 CERRADO:** R invariante en régimen permanente; contaminaciones transitorias (C1) o de
+ambiente (B1), no de la ganancia. **ENSEPGAIN=1 recomendado, viable con 3 condiciones:**
+(1) compensar EMA de SpO2 en cambios de RF (mata C1); (2) gate de SpO2 durante settling de
+ILED/cualquier color; (3) detector de ambiente inter-fase (B1). Decisión final pendiente solo
+de cuantificar Δi_amb en HW.
+
+Scripts scratchpad: `c1_warmup_desync.py` + `.png`.
+
+**Estado HGAC:** diseño v1 completo (O1–O10 cerrados). Tarea análisis AC/DC cerrada a nivel
+teórico. Pendientes: medida HW de Δi_amb (B1), implementación (depende de RSQM validado en HW),
+sub-tarea (a) compensación EMA de SpO2 (prioritaria), detector ambiente inter-fase.
+
+### 2026-07-12 (continuación) — Plan de medida HW de Δi_amb
+
+Añadido a `project_gain_changes_ratio_influence_task.md` (tarea B1) el PLAN DE MEDIDA HW de
+Δi_amb para fijar ENSEPGAIN en firme. Verificado que NO requiere tocar firmware: `AFE4490Data`
+ya publica `aled1/aled2` crudos + `i_pd_aled1/2` (capturar en $M3). Protocolo: LEDs OFF
+(Δi_amb aislado) + LEDs ON con dedo (impacto en R vs pulsioxímetro de referencia), barriendo
+fuente de luz (DC/fluorescente/fototerapia PWM), timing de ventana ambient (ALEDxSTC) e ILED
+(separar leakage proporcional del ambiente real). Aviso de aliasing (PWM múltiplo de PRF →
+medir |aled1−aled2|, no solo varianza). Decisión vía fórmula B1 + presupuesto ISO 80601-2-61.
+Bonus: calibra el detector de ambiente inter-fase. Pendiente de banco con lámpara de fototerapia.
+
+## Sesión 2026-07-13 — HGAC Fase 1 implementada (código real, no más análisis)
+
+**Tema:** el usuario expresó frustración por meses de análisis de HGAC sin escribir código
+("cuanto más analizamos, más complejo se vuelve, nunca empezaremos"). Se decidió parar el
+ciclo de pre-análisis y empezar a implementar ya, con un plan de fases donde cada fase
+compila y es verificable — ninguna fase es "más análisis".
+
+**Corrección de bloqueantes fantasma:**
+- "RSQM necesita simularse" — falso: RSQM ya corre en HW real desde v0.27 (45+ días), con
+  `rsqi`/`diag_code`/`probe_state` ya calculados y transmitidos por `$M1`/`$M3`. No hacía
+  falta ningún mirror Python.
+- "RSQM validado en HW" como prerequisito de HGAC — bloqueante fantasma: lo pendiente eran
+  3 detalles puntuales (bit `RSQM_DIAG_HW_SETTLING` reservado para HGAC, calibración de
+  `rsqm_signal_weak_std`, integración HR2/HR3), ninguno bloqueante para empezar a escribir
+  el código de HGAC contra la librería real.
+
+**Plan de implementación (3 agentes Explore + 1 Plan, luego verificado línea a línea):**
+Fase 1 = guardia de saturación (A3, `v_tia_diff < 0.9V`) + descenso de RF (solo bajada,
+sin ascenso — limitación documentada, no descuido) + reescalado EMA de SpO2 obligatorio en
+el mismo commit que la primera bajada automática de RF (sin eso, HGAC v1 sería una versión
+rota conocida — análisis C1 previo).
+
+**Implementado en `incunest_afe4490` (v0.36→v0.37):**
+- `_update_hgac()` enganchado en `_process_sample()` tras `_update_rsqm()`. Hereda
+  `_state_mutex` del llamador; `_hgac_descend_rf()` anida `_spi_mutex` (vía
+  `setTIAGainLED1/2()` reutilizados) de forma segura (sin path inverso de locks).
+- `EmaChannel::rescale(k)` — reescalado exacto `mean×k, var×k²` para SpO2 en cambios de RF.
+- Nuevos campos `AFE4490Config`: `hgac_enable` (default false), `hgac_v_tia_diff_thr`,
+  `hgac_v_tia_diff_ideal`, `hgac_descent_persist_s`, `hgac_gate_invalid_frac_max`,
+  `hgac_gate_window_s`. Setters + `$SET`/`$LCFG` en `src/main.cpp`.
+- Nuevo bit `HGAC_DIAG_GAIN_FLOOR` (0x10000) — alarma "excessive ambient light" cuando RF
+  llega a 10k y sigue saturando. Primer productor real de `RSQM_DIAG_HW_SETTLING` (antes
+  código muerto).
+- **Gate G0 implementado como `probe_state != PROBE_DISCONNECTED`** (no literalmente
+  `== PROBE_APPLIED` como decía el axioma A6 original): la saturación real invalida el OT
+  de RSQM y lo clasifica NOT_APPLIED — exigir PROBE_APPLIED habría creado un deadlock (HGAC
+  bloqueado justo cuando más se necesita). Desviación documentada en spec §5.8.2.
+- `$M4` extendido con `HGAC_RF1,HGAC_RF2,HGAC_ALARM` (vía nuevos campos en
+  `AFE4490DebugData`, no vía `getConfig()` para evitar contención de mutex en el hot path).
+- Nuevos tests `test/test_hgac/test_hgac.cpp` (6 tests, todos verificados con presupuesto de
+  muestras derivado y confirmado con un programa de diagnóstico standalone).
+
+**Bug real encontrado y corregido durante la verificación:** el bit `HGAC_DIAG_GAIN_FLOOR`
+se fusionaba en `_diag_code` pero `_current_data.diag_code` ya había sido escrito por
+`_update_rsqm()` (que corre antes) — el bit quedaba una muestra por detrás en la telemetría
+pública. Corregido refrescando `_current_data.diag_code` al final de `_update_hgac()`.
+
+**Infraestructura de test nativo arreglada (pre-existente, nunca había compilado en este
+entorno):** `pio test -e native` fallaba para TODOS los tests, no solo los nuevos:
+(1) `[env:native]` no tenía `-I lib/incunest_afe4490` ni `lib_deps` — el header no se
+encontraba; (2) `library.json` de incunest_afe4490 restringía `platforms:"espressif32"` /
+`frameworks:"arduino"`, bloqueando que el `.cpp` se compilara para el entorno `native`;
+(3) `incunest_afe4490.h` usa `strcmp`/`expf` sin incluir `<cstring>`/`<cmath>` (funcionaba
+por suerte vía includes transitivos del `Arduino.h` real); (4) `test/stubs/freertos/task.h`
+no declaraba `xTaskNotify`/`xTaskNotifyWait`/`eNoAction`. Los 4 arreglados. Tras esto,
+`test_hr1/hr2/hr3/hello/hgac` pasan limpio (26/26). Quedan al descubierto 2 problemas
+pre-existentes SIN relación con HGAC, no corregidos (fuera de alcance): `test_biquad` no
+compila (API de test desincronizada del header actual) y `test_spo2` tiene 3 fallos
+(lógica de calidad SpO2 desincronizada). Build real ESP32-S3 (`incunest_V16`) verificado
+con éxito (45s, RAM 18.4%, Flash 30.1%).
+
+**Estado HGAC:** Fase 1 implementada, testeada (unit + build real), **`hgac_enable=false`
+por defecto** — no activa hasta validar en banco. Hoja de ruta para próximas sesiones:
+Fase 2 (ascenso de RF con predicción/histéresis), Fase 3 (cierre de telemetría/spec), Fase 4
+(actuación de ILED + envolvente térmica), Fases 5-7 (feed-forward, estimador P², UI —
+opcionales/diferidas). Ver `incunest_afe4490_spec.md` §5.8/§10.9/§14 y el plan guardado en
+`C:\Users\alexc\.claude\plans\groovy-scribbling-oasis.md`.

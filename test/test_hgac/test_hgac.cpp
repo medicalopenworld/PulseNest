@@ -1,0 +1,124 @@
+#include <unity.h>
+#include "incunest_afe4490.h"
+
+// HGAC Phase 1 (RF-only descent + mandatory SpO2 EMA rescale) — see incunest_afe4490_spec.md §5.8.
+//
+// Physics reminder (v1: AMBDAC=0, Stage2 gain ×1 default): v_tia_diff == v_adc, i.e.
+// v_tia_diff_led1 = led1_code * (1.2 / 2097151). To saturate above the 0.9 V guard
+// (hgac_v_tia_diff_thr) without tripping kVTiaDiffFs (1.0 V, which would flip probe_state
+// via OT invalidity), use a code around 1,700,000 → v_tia_diff ≈ 0.973 V.
+static constexpr int32_t SAT_LED1_CODE = 1700000;  // v_tia_diff_led1 ≈ 0.973 V (> 0.9, < 1.0)
+
+// Sample-budget model (defaults: hgac_descent_persist_s=0.5s, hgac_settle_time_s=0.15s,
+// rsqm_probe_state_min_s=0.2s, fs=500 Hz), verified against a standalone instrumented run:
+//   - Gate opens at sample 100: PROBE_NOT_APPLIED debounce commits (100 = 0.2s*500Hz).
+//     (LED1 saturating with ALED1=0 reads as a very high OT ratio — RSQM classifies this
+//     as NOT_APPLIED, not APPLIED; Gate G0 only excludes PROBE_DISCONNECTED, so this does
+//     not block HGAC — see _hgac_gate_ok() rationale.)
+//   - 1st descent (RF_100K->RF_50K) at sample 100 + 250 - 1 = 349.
+//   - Settling (75 samples) active 350-424; gate reopens at 425.
+//   - 2nd descent (RF_50K->RF_25K) at 425 + 250 - 1 = 674.
+//   - Settling 675-749; gate reopens at 750.
+//   - 3rd descent (RF_25K->RF_10K) at 750 + 250 - 1 = 999.
+//   - Settling 1000-1074; gate reopens at 1075.
+//   - Gain-floor alarm (debounced the same way) at 1075 + 250 - 1 = 1324.
+static void feed_saturating_led1(INCUNEST_AFE4490& afe, int n) {
+    for (int i = 0; i < n; i++) afe.test_feed_sample(SAT_LED1_CODE, 0, 0, 0);
+}
+
+// AFE4490RF is an enum class — cast to int for Unity's integer comparison macros.
+static void assert_rf_led1(INCUNEST_AFE4490& afe, AFE4490RF expected) {
+    TEST_ASSERT_EQUAL((int)expected, (int)afe.test_hgac_rf_led1());
+}
+
+void setUp() {}
+void tearDown() {}
+
+// ── Test 1: guard trips and RF steps down after the descent persistence window ──
+void test_hgac_descent_after_persistence() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+    assert_rf_led1(afe, AFE4490RF::RF_100K);  // constructor default
+
+    feed_saturating_led1(afe, 349);
+    assert_rf_led1(afe, AFE4490RF::RF_50K);  // stepped down exactly one LUT level
+}
+
+// ── Test 2: debounce — one sample short of the persistence window does not trigger ──
+void test_hgac_descent_debounce() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+
+    feed_saturating_led1(afe, 348);  // one short of the trigger sample
+    assert_rf_led1(afe, AFE4490RF::RF_100K);  // unchanged — no premature action
+
+    feed_saturating_led1(afe, 1);  // sample 349 completes the window
+    assert_rf_led1(afe, AFE4490RF::RF_50K);
+}
+
+// ── Test 3: SpO2 EMA rescale is exact (mean×k, var×k²) ──────────────────────────
+// Isolated via test_hgac_descend_rf_led1() so the full sample pipeline's own
+// _update_spo2() EMA update does not contaminate the assertion.
+void test_hgac_ema_rescale_exact() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+    afe.test_set_spo2_ir_ema(1000.0f, 25.0f);
+
+    // RF_100K -> RF_50K: k = 50e3/100e3 = 0.5
+    afe.test_hgac_descend_rf_led1(AFE4490RF::RF_50K);
+
+    TEST_ASSERT_EQUAL_FLOAT(500.0f, afe.test_spo2_ir_ema_mean());   // 1000 * 0.5
+    TEST_ASSERT_EQUAL_FLOAT(6.25f,  afe.test_spo2_ir_ema_var());    // 25 * 0.5^2
+}
+
+// ── Test 4: Gate G0 blocks actuation during RSQM_DIAG_HW_SETTLING ───────────────
+// After the first descent (which arms the settling countdown, 75 samples), continued
+// saturation must NOT trigger a second descent until a full fresh persistence window has
+// elapsed AFTER settling clears (the gate closing resets the debounce counter — see
+// _update_hgac()).
+void test_hgac_gate_blocks_during_settling() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+
+    feed_saturating_led1(afe, 349);  // 1st descent: RF_100K -> RF_50K, arms settling
+    assert_rf_led1(afe, AFE4490RF::RF_50K);
+
+    feed_saturating_led1(afe, 251);  // through settling (350-424) + partial fresh window (425-600)
+    assert_rf_led1(afe, AFE4490RF::RF_50K);  // not yet — total 600 < trigger at 674
+
+    feed_saturating_led1(afe, 74);  // total 674: 2nd descent fires
+    assert_rf_led1(afe, AFE4490RF::RF_25K);
+}
+
+// ── Test 5: gain-floor alarm sets HGAC_DIAG_GAIN_FLOOR once RF bottoms out ──────
+void test_hgac_alarm_at_gain_floor() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+
+    // 3 descents (RF_100K->50K->25K->10K) at samples 349/674/999, then the alarm's own
+    // debounce completes at sample 1324 (see sample-budget model above). Feed extra margin.
+    feed_saturating_led1(afe, 1400);
+
+    assert_rf_led1(afe, AFE4490RF::RF_10K);
+    TEST_ASSERT_TRUE(afe.test_hgac_alarm_gain_floor());
+    TEST_ASSERT_TRUE((afe.test_diag_code() & HGAC_DIAG_GAIN_FLOOR) != 0);
+}
+
+// ── Test 6: HGAC disabled (default) never actuates ──────────────────────────────
+void test_hgac_disabled_by_default() {
+    INCUNEST_AFE4490 afe;  // hgac_enable defaults to false — never call setHgacEnable()
+
+    feed_saturating_led1(afe, 1000);
+    assert_rf_led1(afe, AFE4490RF::RF_100K);  // unchanged
+}
+
+int main() {
+    UNITY_BEGIN();
+    RUN_TEST(test_hgac_descent_after_persistence);
+    RUN_TEST(test_hgac_descent_debounce);
+    RUN_TEST(test_hgac_ema_rescale_exact);
+    RUN_TEST(test_hgac_gate_blocks_during_settling);
+    RUN_TEST(test_hgac_alarm_at_gain_floor);
+    RUN_TEST(test_hgac_disabled_by_default);
+    return UNITY_END();
+}
