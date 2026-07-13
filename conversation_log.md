@@ -13920,3 +13920,35 @@ Fase 2 (ascenso de RF con predicción/histéresis), Fase 3 (cierre de telemetrí
 (actuación de ILED + envolvente térmica), Fases 5-7 (feed-forward, estimador P², UI —
 opcionales/diferidas). Ver `incunest_afe4490_spec.md` §5.8/§10.9/§14 y el plan guardado en
 `C:\Users\alexc\.claude\plans\groovy-scribbling-oasis.md`.
+
+### 2026-07-13 (continuación) — Checkpoint cerrado antes de experimento OT
+
+**Tema:** el usuario propuso usar OT (Optical Transmittance) en vez de la salida ADC cruda
+como entrada de SpO2/HR1/HR2/HR3, para eliminar de raíz la corrupción de R tras cambios de
+RF (problema C1) sin depender del reescalado reactivo de HGAC Fase 1. Tras analizar ventajas
+(elimina el acoplamiento entre la tasa de actuación de HGAC y la sofisticación futura del
+estimador de SpO2/PI), inconvenientes (toca las 4 familias de algoritmos, recalibración,
+impacto en `pulsenest_lab.py`: las 4 clases-espejo de verificación quedarían desincronizadas,
+OT solo viaja en `$M4` — no en el modo por defecto `$M3` —, y las CSVs capturadas sin OT no
+serían reanalizables sin una vía de cálculo local con su propio riesgo de sincronización),
+decisión: **probarlo en vez de seguir analizando** ("la mejor manera de saber si merece la
+pena es intentarlo").
+
+**Checkpoint cerrado (commit + tag) en ambos repos, para poder volver atrás sin perder nada:**
+- `PulseNest`: commit `a8b1d32` ("feat: HGAC Phase 1 wiring..."), tag **`hgac-phase1-checkpoint`**.
+- `incunest_afe4490`: commit `ed62279` ("feat: HGAC v0.37 — Phase 1..."), tag **`v0.37-hgac-phase1`**.
+- Ambos repos en rama nueva **`experiment/ot-domain-inputs`** (creada desde el checkpoint) —
+  el trabajo de OT se hace ahí; `master` queda congelado en el tag.
+
+**Cómo volver atrás si nos arrepentimos (sin tocar nada más):**
+```
+cd C:\PRJ\MOW\PulseNest             && git checkout master
+cd C:\PRJ\MOW\PulseNest\lib\incunest_afe4490  && git checkout master
+```
+Eso basta — `master` en ambos repos vuelve a ser exactamente HGAC Fase 1 tal y como quedó
+verificado (tests nativos 26/26, build ESP32-S3 exitoso), sin ningún rastro del experimento.
+Si además se quiere borrar la rama del experimento (opcional, no necesario para "volver"):
+`git branch -D experiment/ot-domain-inputs` en cada repo.
+
+**Estado:** checkpoint cerrado, rama de experimento activa. Implementación de OT pendiente
+de empezar en la próxima sesión/turno.
