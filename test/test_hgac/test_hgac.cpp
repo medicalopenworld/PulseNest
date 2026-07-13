@@ -1,7 +1,10 @@
 #include <unity.h>
 #include "incunest_afe4490.h"
 
-// HGAC Phase 1 (RF-only descent + mandatory SpO2 EMA rescale) — see incunest_afe4490_spec.md §5.8.
+// HGAC Phase 1 (RF-only descent) — see incunest_afe4490_spec.md §5.8.
+// EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, spec §5.1): SpO2 now
+// consumes as.ot_led1/ot_led2 (gain-invariant), so _hgac_descend_rf() no longer rescales the
+// SpO2 EmaChannel by k — see test_hgac_no_longer_rescales_spo2_ema below.
 //
 // Physics reminder (v1: AMBDAC=0, Stage2 gain ×1 default): v_tia_diff == v_adc, i.e.
 // v_tia_diff_led1 = led1_code * (1.2 / 2097151). To saturate above the 0.9 V guard
@@ -56,19 +59,20 @@ void test_hgac_descent_debounce() {
     assert_rf_led1(afe, AFE4490RF::RF_50K);
 }
 
-// ── Test 3: SpO2 EMA rescale is exact (mean×k, var×k²) ──────────────────────────
-// Isolated via test_hgac_descend_rf_led1() so the full sample pipeline's own
-// _update_spo2() EMA update does not contaminate the assertion.
-void test_hgac_ema_rescale_exact() {
+// ── Test 3 (OT-domain experiment): RF change no longer touches the SpO2 EMA ─────
+// Before the OT-domain migration, _hgac_descend_rf() rescaled the SpO2 EmaChannel by
+// (mean*k, var*k^2) because the raw-ADC-domain input jumped by k. Now that SpO2 consumes OT
+// (gain-invariant), that rescale is unnecessary AND would be wrong if still applied — this
+// test proves the EMA state is left untouched by an RF change.
+void test_hgac_no_longer_rescales_spo2_ema() {
     INCUNEST_AFE4490 afe;
     afe.setHgacEnable(true);
     afe.test_set_spo2_ir_ema(1000.0f, 25.0f);
 
-    // RF_100K -> RF_50K: k = 50e3/100e3 = 0.5
-    afe.test_hgac_descend_rf_led1(AFE4490RF::RF_50K);
+    afe.test_hgac_descend_rf_led1(AFE4490RF::RF_50K);  // RF_100K -> RF_50K
 
-    TEST_ASSERT_EQUAL_FLOAT(500.0f, afe.test_spo2_ir_ema_mean());   // 1000 * 0.5
-    TEST_ASSERT_EQUAL_FLOAT(6.25f,  afe.test_spo2_ir_ema_var());    // 25 * 0.5^2
+    TEST_ASSERT_EQUAL_FLOAT(1000.0f, afe.test_spo2_ir_ema_mean());  // unchanged
+    TEST_ASSERT_EQUAL_FLOAT(25.0f,   afe.test_spo2_ir_ema_var());   // unchanged
 }
 
 // ── Test 4: Gate G0 blocks actuation during RSQM_DIAG_HW_SETTLING ───────────────
@@ -116,7 +120,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_hgac_descent_after_persistence);
     RUN_TEST(test_hgac_descent_debounce);
-    RUN_TEST(test_hgac_ema_rescale_exact);
+    RUN_TEST(test_hgac_no_longer_rescales_spo2_ema);
     RUN_TEST(test_hgac_gate_blocks_during_settling);
     RUN_TEST(test_hgac_alarm_at_gain_floor);
     RUN_TEST(test_hgac_disabled_by_default);
