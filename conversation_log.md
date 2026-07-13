@@ -13952,3 +13952,28 @@ Si además se quiere borrar la rama del experimento (opcional, no necesario para
 
 **Estado:** checkpoint cerrado, rama de experimento activa. Implementación de OT pendiente
 de empezar en la próxima sesión/turno.
+
+### 2026-07-13 (continuación) — Experimento OT: SpO2 migrado (rama experiment/ot-domain-inputs)
+
+**Implementado en `incunest_afe4490` v0.38-experiment:** `_update_spo2()` pasa a recibir
+`(ot_ir, ot_red, i_pd_ir, i_pd_red)` en vez de `(led1_sub, led2_sub)`. Gate de "no hay dedo"
+cambiado de `spo2_min_dc` (counts) a `spo2_min_i_pd_a` (magnitud absoluta de i_pd) — el ratio
+OT es poco fiable cerca de señal nula, justo donde ese gate más importa. `_hgac_descend_rf()`
+ya NO reescala la EMA de SpO2 (innecesario: OT no da salto) — `EmaChannel::rescale()` queda
+sin uso y se ha borrado.
+
+**Hallazgo durante la verificación (no relacionado con OT, propiedad de la cascada de
+filtros):** el tiempo de asentamiento real de DC(τ=2s)→AC²(τ=6s) desde arranque en frío es
+mucho mayor que la estimación ingenua `3×τ_var=18s` — confirmado con simulación extendida,
+tarda ~60s en converger con precisión. Esto de paso arregla los 3 fallos pre-existentes de
+`test_spo2.cpp` (la constante de warmup del test estaba desincronizada de `spo2_warmup_s`).
+
+**Verificado:** 7/7 tests de `test_spo2.cpp` (reescrito), 6/6 de `test_hgac.cpp` (test de
+reescalado sustituido por uno que prueba que la EMA queda intacta), build ESP32-S3 exitoso.
+
+**Commits en `experiment/ot-domain-inputs`:** `incunest_afe4490` commit `7687789`; `PulseNest`
+commit `cd492f4`.
+
+**Pendiente:** HR1/HR2/HR3 siguen en dominio crudo (no migrados, prioridad menor). Impacto en
+`pulsenest_lab.py` (4 clases-espejo, `OT_LED1/2` solo en `$M4`) analizado pero sin resolver —
+ver `project_ot_domain_experiment_task.md`.
