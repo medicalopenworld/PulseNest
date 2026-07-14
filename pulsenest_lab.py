@@ -9777,8 +9777,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("I_PD_LED2 [µA]",   "data_i_pd_led2",   "Photodiode current LED2/RED channel [µA]. Gray text = channel CLIPPED per CH_MASKS. Only available in $M4 frame mode.",                                                                    "AFE4490DebugData::i_pd_led2"),
             ("I_PD_ALED1 [µA]",  "data_i_pd_aled1",  "Photodiode current ALED1/IR ambient channel [µA]. Gray text = channel CLIPPED per CH_MASKS. Only available in $M4 frame mode.",                                                           "AFE4490DebugData::i_pd_aled1"),
             ("I_PD_ALED2 [µA]",  "data_i_pd_aled2",  "Photodiode current ALED2/RED ambient channel [µA]. Gray text = channel CLIPPED per CH_MASKS. Only available in $M4 frame mode.",                                                          "AFE4490DebugData::i_pd_aled2"),
-            ("OT_LED1",     "data_ot2_led1",     "Optical transmittance LED1 (IR): (I_PD_LED1 - I_PD_ALED1) / I_LED1 [A/A, dimensionless]. Received directly from the $M4 frame — computed per sample by firmware in _compute_analog_state() (lib v0.35), no local calculation. Gray text = not valid (LED1 or ALED1 channel CLIPPED per CH_MASKS: ADC rail or TIA hard clip; OFF_SPEC not grayed). Only available in $M4 frame mode.", "AFE4490AnalogState::ot_led1"),
-            ("OT_LED2",     "data_ot2_led2",     "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Received directly from the $M4 frame — computed per sample by firmware in _compute_analog_state() (lib v0.35), no local calculation. Gray text = not valid (LED2 or ALED2 channel CLIPPED per CH_MASKS: ADC rail or TIA hard clip; OFF_SPEC not grayed). Only available in $M4 frame mode.", "AFE4490AnalogState::ot_led2"),
+            ("OT_LED1 [ppm]",     "data_ot2_led1",     "Optical transmittance LED1 (IR): (I_PD_LED1 - I_PD_ALED1) / I_LED1 [A/A, dimensionless]. Displayed in ppm (×1e6) for readability. Received directly from the $M4 frame — computed per sample by firmware in _compute_analog_state() (lib v0.35), no local calculation. Gray text = not valid (LED1 or ALED1 channel CLIPPED per CH_MASKS: ADC rail or TIA hard clip; OFF_SPEC not grayed). Only available in $M4 frame mode.", "AFE4490AnalogState::ot_led1"),
+            ("OT_LED2 [ppm]",     "data_ot2_led2",     "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Displayed in ppm (×1e6) for readability. Received directly from the $M4 frame — computed per sample by firmware in _compute_analog_state() (lib v0.35), no local calculation. Gray text = not valid (LED2 or ALED2 channel CLIPPED per CH_MASKS: ADC rail or TIA hard clip; OFF_SPEC not grayed). Only available in $M4 frame mode.", "AFE4490AnalogState::ot_led2"),
         ]
         self._stats_buf = {name: [] for name, _, __, _src in self._STATS_SIGNALS}
         self._stats_ch_masks_or = 0       # OR of CH_MASKS over the current stats window
@@ -11441,8 +11441,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     def _fmt(v): return f"{v:.6f}"
                 elif sig_idx in {24, 25, 26, 27}:  # I_PD_*: display in µA (×1e6), 3 decimal places
                     def _fmt(v): return f"{v * 1e6:.3f}"
-                elif sig_idx in {28, 29}:  # OT_LED1/OT_LED2: 6 decimal places
-                    def _fmt(v): return f"{v:.6f}"
+                elif sig_idx in {28, 29}:  # OT_LED1/OT_LED2: display in ppm (×1e6), 2 decimal places
+                    def _fmt(v): return f"{v * 1e6:.2f}"
                 else:
                     def _fmt(v): return f"{v:.2f}"
                 snr_str = f"{std / mean * 100:.2f}" if (sig_idx in self._STATS_SUB_ROWS and mean != 0) else (

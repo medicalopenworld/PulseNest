@@ -13977,3 +13977,11 @@ commit `cd492f4`.
 **Pendiente:** HR1/HR2/HR3 siguen en dominio crudo (no migrados, prioridad menor). Impacto en
 `pulsenest_lab.py` (4 clases-espejo, `OT_LED1/2` solo en `$M4`) analizado pero sin resolver —
 ver `project_ot_domain_experiment_task.md`.
+
+### 2026-07-14 — SIGNAL STATS: OT_LED1/OT_LED2 mostrados en ppm
+
+**Cambio en `pulsenest_lab.py` (v1.16):** filas `OT_LED1`/`OT_LED2` de la tabla SIGNAL STATS
+renombradas a `OT_LED1 [ppm]`/`OT_LED2 [ppm]`, valor mostrado ×1e6 (A/A → ppm) con 2 decimales
+(antes 6 decimales sin convertir). Solo formato de visualización — el protocolo `$M4` no
+cambia (firmware sigue enviando `%.4e` crudo). Verificado `python -m py_compile` sin errores.
+Sin commitear (pendiente de que el usuario lo pida).

@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.15
+# pulsenest_lab — Specification v1.16
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -473,7 +473,9 @@ LED1_SUB, LED2_SUB (4–5),
 PPG_DISP, SpO2, SpO2_SQI, R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI, RSQI, DiagCode,
 ProbeState (6–19, 2 dp),
 V_TIA_DIFF_LED1/LED2/ALED1/ALED2 (20–23, 6 dp V), I_PD_LED1/LED2/ALED1/ALED2 (24–27, µA 3 dp),
-OT_LED1, OT_LED2 (28–29, 6 dp — **read from the $M4 frame**, not computed locally; $M4 mode only).
+OT_LED1 [ppm], OT_LED2 [ppm] (28–29, displayed ×1e6 for readability, 2 dp — **read from the
+$M4 frame**, not computed locally; $M4 mode only. Wire protocol unchanged: firmware still
+sends raw A/A in `%.4e` — the ×1e6 + 2dp formatting is local to the Python display only).
 
 **V_TIA_DIFF / V_ADC columns (cols 1–2):** populated only for rows 0–3 (LED1, LED2, ALED1, ALED2).
 Calculated from the current ADC mean using the AFE4490 gain chain (naming rule 4b — bare
@@ -1053,6 +1055,12 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.16 — 2026-07-14
+- SIGNAL STATS: `OT_LED1`/`OT_LED2` rows renamed `OT_LED1 [ppm]`/`OT_LED2 [ppm]` and their
+  displayed value multiplied by 1e6 (A/A → ppm), 2 decimal places (was 6 dp, raw A/A). Display
+  formatting only — the `$M4` wire protocol is unchanged (firmware still sends raw A/A in
+  `%.4e`); the ×1e6 conversion happens in `_fmt()` at render time (§6.3).
 
 ### v1.15 — 2026-07-11
 - SIGNAL STATS rows 0–3 (raw ADC): CLIPPED indication changed from gray background `#3A3A3A`
