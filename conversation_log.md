@@ -13985,3 +13985,28 @@ renombradas a `OT_LED1 [ppm]`/`OT_LED2 [ppm]`, valor mostrado ×1e6 (A/A → ppm
 (antes 6 decimales sin convertir). Solo formato de visualización — el protocolo `$M4` no
 cambia (firmware sigue enviando `%.4e` crudo). Verificado `python -m py_compile` sin errores.
 Sin commitear (pendiente de que el usuario lo pida).
+
+### 2026-07-14 — Experimento OT: HR1/HR2/HR3 migrados (rama experiment/ot-domain-inputs)
+
+**Implementado en `incunest_afe4490` v0.39-experiment:** `_update_hr1/hr2/hr3()` (y sus
+fast-paths) pasan a recibir `float` (`as.ot_led1`) en vez de `int32_t led1_sub`. Confirmado
+en código: **HR1 (timing de picos) y HR3 (ratio HPS) no necesitaron recalibrar ningún
+umbral** — son invariantes a escala por construcción (una escala uniforme no mueve el
+instante del pico ni la frecuencia dominante FFT/HPS). **HR2 sí tenía un guard absoluto**
+(`acorr0 < 1.0f`, dimensionado para counts ADC) que habría bloqueado siempre HR2 en escala
+OT — recalibrado a `acorr0 < hr2_ot_energy_eps` (1e-16, guard de división-por-casi-cero, no
+umbral fisiológico).
+
+**Hallazgo de verificación:** los 3 tests ya compilaban y PASABAN con los valores viejos en
+escala de counts (500000) sin tocar nada — confirma empíricamente que los 3 algoritmos son
+invariantes a escala. Aun así se han reescrito con magnitudes OT realistas (~1e-5) para que
+la verificación sea genuina y no "pase por casualidad".
+
+**Verificado:** 33/33 tests nativos, build ESP32-S3 exitoso.
+
+**Commits en `experiment/ot-domain-inputs`:** `incunest_afe4490` → `14ba1d4`; `PulseNest` →
+`378f8c8`.
+
+**Migración OT completa** (SpO2 + HR1 + HR2 + HR3). Pendiente: impacto en
+`pulsenest_lab.py` (4 clases-espejo, ver `project_ot_domain_experiment_task.md`) y decisión
+final de fusionar a `master` o revertir.
