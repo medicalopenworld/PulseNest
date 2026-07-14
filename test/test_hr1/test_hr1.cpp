@@ -2,22 +2,31 @@
 #include <math.h>
 #include "incunest_afe4490.h"
 
-// Helper: feed N samples of a sine at freq_hz (with DC offset) into HR1.
-// Amplitude 50000 matches typical AFE4490 ADC range.
+// EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs): HR1 now consumes OT
+// (dimensionless A/A, ~1e-5 typical per incunest_afe4490_spec.md) instead of raw
+// ambient-corrected ADC counts. HR1 is peak-timing based (not a ratio like SpO2's R), so a
+// uniform gain scale does not change peak timing — this is a pure domain/type change, no
+// threshold recalibration needed (confirmed: _hr1_running_max/threshold are self-relative).
+
+// Helper: feed N samples of a sine at freq_hz (with DC offset) into HR1, in OT-scale units.
 static void feed_hr1_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
+    const float ot_dc = 1.4e-5f;
+    const float scale = 1.4e-10f;
     for (int i = 0; i < n_samples; i++) {
-        float x = 500000.0f + 50000.0f * sinf(2.0f * (float)M_PI * freq_hz * i / fs);
-        afe.test_feed_hr1((int32_t)x);
+        float x = ot_dc + 50000.0f * scale * sinf(2.0f * (float)M_PI * freq_hz * i / fs);
+        afe.test_feed_hr1(x);
     }
 }
 
-// Helper: same as feed_hr1_sine but with uniform noise ±5000 (~10% of amplitude, ~20 dB SNR).
+// Helper: same as feed_hr1_sine but with uniform noise (~10% of amplitude, ~20 dB SNR).
 // srand(42) called by the test before use for reproducibility.
 static void feed_hr1_sine_noisy(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
+    const float ot_dc = 1.4e-5f;
+    const float scale = 1.4e-10f;
     for (int i = 0; i < n_samples; i++) {
-        float noise = 5000.0f * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
-        float x = 500000.0f + 50000.0f * sinf(2.0f * (float)M_PI * freq_hz * i / fs) + noise;
-        afe.test_feed_hr1((int32_t)x);
+        float noise = 5000.0f * scale * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
+        float x = ot_dc + 50000.0f * scale * sinf(2.0f * (float)M_PI * freq_hz * i / fs) + noise;
+        afe.test_feed_hr1(x);
     }
 }
 
@@ -57,7 +66,7 @@ void test_hr1_120bpm() {
 void test_hr1_flat_signal_invalid() {
     INCUNEST_AFE4490 afe;
     for (int i = 0; i < 6000; i++)
-        afe.test_feed_hr1(500000);  // constant DC, no PPG pulses
+        afe.test_feed_hr1(1.4e-5f);  // constant DC (OT scale), no PPG pulses
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
 }
 

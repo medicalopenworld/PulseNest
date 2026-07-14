@@ -3,38 +3,47 @@
 #include <stdlib.h>
 #include "incunest_afe4490.h"
 
+// EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs): HR3 now consumes OT
+// (dimensionless A/A, ~1e-5 typical) instead of raw ambient-corrected ADC counts. SQI is a
+// ratio of HPS values (same power units, cancels scale), so a uniform gain scale does not
+// change the result — pure domain/type change, no threshold recalibration needed.
+
 // HR3 constants (mirror of incunest_afe4490.cpp namespace)
 static constexpr int HR3_BUF_LEN      = 512;   // decimated samples
 static constexpr int HR3_DECIM_FACTOR = 10;
 static constexpr int HR3_BUF_RAW      = HR3_BUF_LEN * HR3_DECIM_FACTOR;  // 5120 raw samples
 
-// Helper: feed N raw samples of a PPG-like signal (fundamental + 2nd + 3rd harmonic) into HR3.
-// HR3 uses the Harmonic Product Spectrum (HPS = P[k]*P[2k]*P[3k]), which requires energy
-// at the harmonic frequencies to produce a clear peak. A pure sine would yield near-zero HPS
-// at all bins and SQI ≈ 0. All harmonics stay below the 10 Hz LP filter cutoff for freq_hz ≤ 3 Hz.
+static constexpr float OT_DC = 1.4e-5f;
+static constexpr float SCALE = 1.4e-10f;
+
+// Helper: feed N raw samples of a PPG-like signal (fundamental + 2nd + 3rd harmonic) into HR3,
+// in OT-scale units. HR3 uses the Harmonic Product Spectrum (HPS = P[k]*P[2k]*P[3k]), which
+// requires energy at the harmonic frequencies to produce a clear peak. A pure sine would
+// yield near-zero HPS at all bins and SQI ≈ 0. All harmonics stay below the 10 Hz LP filter
+// cutoff for freq_hz ≤ 3 Hz.
 static void feed_hr3_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
     for (int i = 0; i < n_samples; i++) {
         float t = (float)i / fs;
-        float x = 500000.0f
-                + 40000.0f * sinf(2.0f * (float)M_PI * freq_hz * t)   // fundamental
-                + 20000.0f * sinf(4.0f * (float)M_PI * freq_hz * t)   // 2nd harmonic
-                +  8000.0f * sinf(6.0f * (float)M_PI * freq_hz * t);  // 3rd harmonic
-        afe.test_feed_hr3((int32_t)x);
+        float x = OT_DC
+                + 40000.0f * SCALE * sinf(2.0f * (float)M_PI * freq_hz * t)   // fundamental
+                + 20000.0f * SCALE * sinf(4.0f * (float)M_PI * freq_hz * t)   // 2nd harmonic
+                +  8000.0f * SCALE * sinf(6.0f * (float)M_PI * freq_hz * t);  // 3rd harmonic
+        afe.test_feed_hr3(x);
     }
 }
 
-// Helper: same as feed_hr3_sine but with uniform noise ±4000 (~10% of fundamental, ~20 dB SNR).
+// Helper: same as feed_hr3_sine but with uniform noise (~10% of fundamental, ~20 dB SNR).
 // srand(42) called by the test before use for reproducibility.
 static void feed_hr3_sine_noisy(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
     for (int i = 0; i < n_samples; i++) {
         float t = (float)i / fs;
-        float noise = 4000.0f * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
-        float x = 500000.0f
-                + 40000.0f * sinf(2.0f * (float)M_PI * freq_hz * t)   // fundamental
-                + 20000.0f * sinf(4.0f * (float)M_PI * freq_hz * t)   // 2nd harmonic
-                +  8000.0f * sinf(6.0f * (float)M_PI * freq_hz * t)   // 3rd harmonic
+        float noise = 4000.0f * SCALE * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
+        float x = OT_DC
+                + 40000.0f * SCALE * sinf(2.0f * (float)M_PI * freq_hz * t)   // fundamental
+                + 20000.0f * SCALE * sinf(4.0f * (float)M_PI * freq_hz * t)   // 2nd harmonic
+                +  8000.0f * SCALE * sinf(6.0f * (float)M_PI * freq_hz * t)   // 3rd harmonic
                 + noise;
-        afe.test_feed_hr3((int32_t)x);
+        afe.test_feed_hr3(x);
     }
 }
 
@@ -88,7 +97,7 @@ void test_hr3_85bpm() {
 void test_hr3_flat_signal_invalid() {
     INCUNEST_AFE4490 afe;
     for (int i = 0; i < HR3_BUF_RAW + 1000; i++)
-        afe.test_feed_hr3(500000);  // constant DC, no PPG pulses
+        afe.test_feed_hr3(OT_DC);  // constant DC (OT scale), no PPG pulses
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr3_sqi());
 }
 

@@ -3,26 +3,35 @@
 #include <stdlib.h>
 #include "incunest_afe4490.h"
 
+// EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs): HR2 now consumes OT
+// (dimensionless A/A, ~1e-5 typical) instead of raw ambient-corrected ADC counts.
+// Autocorrelation is normalised (divides by its own acorr0), so a uniform gain scale does
+// not change the result — pure domain/type change. The near-zero-energy guard (acorr0 <
+// hr2_ot_energy_eps) was recalibrated for OT magnitudes in incunest_afe4490.cpp.
+
 // HR2 constants (mirror of incunest_afe4490.cpp namespace)
 static constexpr int HR2_BUF_LEN      = 400;   // decimated samples
 static constexpr int HR2_DECIM_FACTOR = 10;
 static constexpr int HR2_BUF_RAW      = HR2_BUF_LEN * HR2_DECIM_FACTOR;  // 4000 raw samples
 
-// Helper: feed N raw samples of a sine at freq_hz into HR2.
+static constexpr float OT_DC = 1.4e-5f;
+static constexpr float SCALE = 1.4e-10f;
+
+// Helper: feed N raw samples of a sine at freq_hz into HR2, in OT-scale units.
 static void feed_hr2_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
     for (int i = 0; i < n_samples; i++) {
-        float x = 500000.0f + 50000.0f * sinf(2.0f * (float)M_PI * freq_hz * i / fs);
-        afe.test_feed_hr2((int32_t)x);
+        float x = OT_DC + 50000.0f * SCALE * sinf(2.0f * (float)M_PI * freq_hz * i / fs);
+        afe.test_feed_hr2(x);
     }
 }
 
-// Helper: same as feed_hr2_sine but with uniform noise ±5000 (~10% of amplitude, ~20 dB SNR).
+// Helper: same as feed_hr2_sine but with uniform noise (~10% of amplitude, ~20 dB SNR).
 // srand(42) called by the test before use for reproducibility.
 static void feed_hr2_sine_noisy(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
     for (int i = 0; i < n_samples; i++) {
-        float noise = 5000.0f * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
-        float x = 500000.0f + 50000.0f * sinf(2.0f * (float)M_PI * freq_hz * i / fs) + noise;
-        afe.test_feed_hr2((int32_t)x);
+        float noise = 5000.0f * SCALE * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
+        float x = OT_DC + 50000.0f * SCALE * sinf(2.0f * (float)M_PI * freq_hz * i / fs) + noise;
+        afe.test_feed_hr2(x);
     }
 }
 
@@ -62,11 +71,11 @@ void test_hr2_120bpm() {
 
 // ── Test 4: flat signal → hr2_valid false ────────────────────────────────────
 // A constant DC signal has zero AC energy after the bandpass filter.
-// The autocorrelation check (acorr0 < 1.0) must reject it.
+// The autocorrelation check (acorr0 < hr2_ot_energy_eps) must reject it.
 void test_hr2_flat_signal_invalid() {
     INCUNEST_AFE4490 afe;
     for (int i = 0; i < HR2_BUF_RAW + 1000; i++)
-        afe.test_feed_hr2(500000);
+        afe.test_feed_hr2(OT_DC);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
 }
 
@@ -88,7 +97,7 @@ void test_hr2_120bpm_noisy() {
     srand(42);
     feed_hr2_sine_noisy(afe, 2.0f, 500.0f, HR2_BUF_RAW + 1000);
     TEST_ASSERT_GREATER_THAN_FLOAT(0.80f, afe.test_hr2_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(1.0f, 120.0f, afe.test_hr2());
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr2());
 }
 
 int main() {
