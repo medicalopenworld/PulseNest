@@ -14405,3 +14405,66 @@ librería 7/7 + 33/33 (ver arriba). No verificado con HW real.
 la corriente LED por defecto de 20 mA a 50 mA — guardado en
 `project_led_current_increase_50ma_task.md` (50 mA es el I_F máximo absoluto de la sonda
 Medle, sin margen — derating térmico y caracterización sonda-piel aún sin medir).
+
+### 2026-07-16 — SpO2: probe_state como entrada + NaN unificado (lib v0.41, lab v1.23)
+
+**Contexto:** continuación del diseño iniciado la sesión anterior (commit `099be24`/`2c66d7d`,
+eliminación de `spo2_min_i_pd_a`). Alex propuso el principio arquitectónico: RSQM es el único
+responsable de detectar sonda conectada/aplicada; SpO2/HR1/HR2/HR3 **consumen** `probe_state`
+si lo necesitan pero no lo generan; los algoritmos solo deben vigilar división por
+casi-cero (numérico, no fisiológico).
+
+**Diseño acordado tras varias rondas de análisis:**
+- `_update_spo2()` gana un tercer parámetro `probe_state` (o Python: `probe_state` int
+  0/1/2). Mientras `probe_state != PROBE_APPLIED` (NOT_APPLIED y DISCONNECTED tratados
+  igual): resetear las EMAs **cada muestra** (idempotente — sin guardar "probe_state anterior",
+  totalmente encapsulado: nada externo toca la memoria interna de la función; a petición
+  explícita de Alex sobre encapsulación).
+- Eliminado `spo2_min_ot_dc` (el suelo fisiológico de la sesión anterior) — su rol pasa a
+  `probe_state`. Solo queda `spo2_div_eps` (`1e-9`, único, no ajustable), guard puramente
+  numérico sobre los divisores reales (`dc_ir` en PI; `dc_red`/`ac_ir`/`rms_ac_ir` en R).
+- `_spo2_sample_count` eliminado — se usa `EmaChannel::count` (Python: `_sample_count` ya
+  cumplía este rol, sin cambio ahí) directamente para el warmup, confirmado redundante con el
+  contador de la propia EMA (incrementados siempre en lockstep).
+- **Centinela de inválido: `NaN` en vez de `-1.0f`**, decidido tras comparar ventajas/
+  inconvenientes con Alex — motivo decisivo: `NaN` falla de forma segura ante comparaciones
+  (`nan < 70` es `False`), mientras que `-1.0f` podría disparar una falsa alarma de
+  desaturación severa si un consumidor futuro olvida comprobar `sqi`. Verificado antes de
+  decidir que no hay `-ffast-math` en el proyecto (que rompería la semántica de NaN).
+  Unificado también en warmup (antes solo `pi` tenía centinela; `spo2`/`spo2_r` quedaban
+  "stale"). Contrato final: `sqi==0 ⟹ pi==spo2==spo2_r==NaN`, sin excepciones.
+
+**Implementado en `incunest_afe4490` (lib v0.41-experiment):**
+- `_update_spo2(float ot_ir, float ot_red, ProbeState probe_state)`.
+- `spo2_min_ot_dc`+`spo2_ac_div_eps` → un único `spo2_div_eps=1e-9`.
+- `_spo2_sample_count` eliminado del header/constructor/reset.
+- `test_feed_spo2()` (wrapper de test) actualizado a 3 argumentos.
+- `test_spo2.cpp`: test 2 renombrado `test_spo2_not_applied_resets` — feeds señal convergida,
+  fuerza `PROBE_DISCONNECTED` 1000 muestras (verifica sqi=0, NaN, EMA reseteada a 0), reaplica
+  y verifica que exige warmup nuevo, y repite con `PROBE_NOT_APPLIED`.
+- **Verificado: 7/7 test_spo2 + 33/33 resto de tests nativos** (`test_biquad` roto de antes,
+  no relacionado) **+ build real ESP32-S3 V16 exitoso** (16.4% RAM, 30.1% flash).
+- `library.json` → v0.41.0-experiment. Spec actualizada (§5.1, changelog v0.41).
+
+**Implementado en `pulsenest_lab.py` (lab v1.23):**
+- `SpO2TestCalc.update(ot_ir, ot_red, probe_state, fs)` — mismo diseño que la librería.
+- Constantes `PROBE_DISCONNECTED/NOT_APPLIED/APPLIED=0/1/2` (deben coincidir con
+  `incunest_afe4490.h`). `FW_SPO2_DIV_EPS` único.
+- UI: spinbox "Min OT DC [ppm]" **eliminado por completo** — SpO2TestWindow vuelve a sus 5
+  parámetros originales (a, b, DC τ, AC τ, warmup), sin ningún parámetro de detección de
+  presencia (coherente con "eso es responsabilidad de RSQM, no configurable por algoritmo").
+  CSV loader y feed en vivo ahora leen/pasan `ProbeState` (columna ya parseada) a
+  `SpO2TestCalc`.
+- `pulsenest_lab_spec.md` → v1.23 (§5.2, §7.7, changelog v1.23).
+
+**Verificado:** `python -m py_compile` sin errores. No verificado con HW real.
+
+**Commiteado:** sí — ver commits de esta sesión en ambos repos (librería y PulseNest).
+
+**Nota de proceso (feedback explícito de Alex):** pidió no pararme por trivialidades como
+`cd` para operar en `lib/incunest_afe4490` — usar `git -C lib/incunest_afe4490 <subcomando>`
+en vez de `cd ... && git ...`. Guardado en `feedback_bash_cd_redirection.md` (ampliado).
+
+**Pendiente:** verificar con HW real; decidir si HR1/HR2/HR3 reciben el mismo tratamiento de
+`probe_state` (mismo principio, no implementado todavía — solo SpO2 por ahora); decisión final
+de fusionar/revertir el experimento OT completo.

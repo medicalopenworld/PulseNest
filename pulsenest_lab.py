@@ -491,7 +491,7 @@ class SpO2TestCalc:
     Independent reimplementation of firmware _update_spo2() from incunest_afe4490_spec.md §5.1.
     Purpose: post-implementation verification — compare against firmware output to detect bugs.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.40-experiment):
+    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
     input is OT_LED1/OT_LED2 [A/A] (gain-invariant optical transmittance), not the raw
     ambient-corrected counts (LED1_SUB/LED2_SUB) used before this migration. OT only travels
     in the $M4 frame — this mirror requires $M4 (live) or a CSV captured in $M4.
@@ -506,34 +506,39 @@ class SpO2TestCalc:
       PI = (RMS_AC_ir / DC_ir) × 100 →
       SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1)  [forced to 0 if SpO2 out of range]
 
-    No-signal gate: absolute floor on OT DC (dc_ir/dc_red), NOT a separate i_pd-based gate
-    (removed lib v0.40 — analysis showed it rarely detected an actual no-finger condition and
-    mostly duplicated RSQM's own disconnected classification). AC keeps a separate, purely
-    numerical div-by-zero guard (AC legitimately gets tiny at low PI — conflating the two into
-    one shared threshold was tried first and wrongly invalidated valid low-perfusion signals).
+    Presence detection (finger/probe applied) is RSQM's responsibility alone — mirrors
+    ProbeState from the firmware, never computes its own no-finger/no-signal classification
+    (two such attempts, i_pd-based then OT-DC-based, were tried and removed — both mostly
+    duplicated RSQM's own disconnected/not-applied classification with a weaker criterion).
+    While probe_state != PROBE_APPLIED (2): state is reset every sample (dc/ac EMA + sample
+    count) and outputs are NaN — mirrors lib v0.41. The only guard left inside this class is
+    a purely numerical division-safety epsilon (FW_SPO2_DIV_EPS), not physiological.
     """
 
+    # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
+    PROBE_DISCONNECTED = 0
+    PROBE_NOT_APPLIED  = 1
+    PROBE_APPLIED      = 2
+
     # Firmware defaults — must match incunest_afe4490_spec.md §5.1 and incunest_afe4490.cpp constants
-    FW_DC_IIR_TAU_S    = 2.0    # spo2_ema_mean_tau_s (EmaChannel τ_mean)
-    FW_AC_EMA_TAU_S    = 6.0    # spo2_ema_var_tau_s  (EmaChannel τ_var, ISO 80601-2-61:2026 JJ.2 d ≥ 6 s)
-    FW_SPO2_MIN_OT_DC  = 1e-6   # spo2_min_ot_dc — OT DC floor: below this, no real signal [A/A]
-    FW_SPO2_AC_DIV_EPS = 1e-9   # spo2_ac_div_eps — numerical guard on AC only, not user-adjustable
-    FW_WARMUP_S        = 18.0   # spo2_warmup_s = 3 × τ_var
-    FW_SPO2_A          = 114.9208
-    FW_SPO2_B          =  30.5547
-    FW_SPO2_MIN        = 70.0
-    FW_SPO2_MAX        = 100.0
-    FW_PI_SQI_LOW      = 0.5    # PI below this → SQI = 0
-    FW_PI_SQI_HIGH     = 2.0    # PI at or above this → SQI = 1
+    FW_DC_IIR_TAU_S = 2.0    # spo2_ema_mean_tau_s (EmaChannel τ_mean)
+    FW_AC_EMA_TAU_S = 6.0    # spo2_ema_var_tau_s  (EmaChannel τ_var, ISO 80601-2-61:2026 JJ.2 d ≥ 6 s)
+    FW_SPO2_DIV_EPS = 1e-9   # spo2_div_eps — numerical guard only, not user-adjustable
+    FW_WARMUP_S     = 18.0   # spo2_warmup_s = 3 × τ_var
+    FW_SPO2_A       = 114.9208
+    FW_SPO2_B       =  30.5547
+    FW_SPO2_MIN     = 70.0
+    FW_SPO2_MAX     = 100.0
+    FW_PI_SQI_LOW   = 0.5    # PI below this → SQI = 0
+    FW_PI_SQI_HIGH  = 2.0    # PI at or above this → SQI = 1
 
     def __init__(self):
         # User-adjustable parameters (start at firmware defaults)
-        self.dc_iir_tau_s  = self.FW_DC_IIR_TAU_S
-        self.ac_ema_tau_s  = self.FW_AC_EMA_TAU_S
-        self.spo2_min_ot_dc = self.FW_SPO2_MIN_OT_DC
-        self.warmup_s      = self.FW_WARMUP_S
-        self.spo2_a        = self.FW_SPO2_A
-        self.spo2_b        = self.FW_SPO2_B
+        self.dc_iir_tau_s = self.FW_DC_IIR_TAU_S
+        self.ac_ema_tau_s = self.FW_AC_EMA_TAU_S
+        self.warmup_s     = self.FW_WARMUP_S
+        self.spo2_a       = self.FW_SPO2_A
+        self.spo2_b       = self.FW_SPO2_B
         # Internal state
         self._fs           = 0.0
         self._alpha        = 0.0
@@ -556,24 +561,22 @@ class SpO2TestCalc:
 
     def reset_to_defaults(self):
         """Restore all parameters to firmware defaults and reset state."""
-        self.dc_iir_tau_s   = self.FW_DC_IIR_TAU_S
-        self.ac_ema_tau_s   = self.FW_AC_EMA_TAU_S
-        self.spo2_min_ot_dc = self.FW_SPO2_MIN_OT_DC
-        self.warmup_s       = self.FW_WARMUP_S
-        self.spo2_a         = self.FW_SPO2_A
-        self.spo2_b         = self.FW_SPO2_B
+        self.dc_iir_tau_s = self.FW_DC_IIR_TAU_S
+        self.ac_ema_tau_s = self.FW_AC_EMA_TAU_S
+        self.warmup_s     = self.FW_WARMUP_S
+        self.spo2_a       = self.FW_SPO2_A
+        self.spo2_b       = self.FW_SPO2_B
         self.reset()
 
     @property
     def using_defaults(self):
         """True when all parameters equal their firmware defaults."""
         return (
-            self.dc_iir_tau_s   == self.FW_DC_IIR_TAU_S   and
-            self.ac_ema_tau_s   == self.FW_AC_EMA_TAU_S   and
-            self.spo2_min_ot_dc == self.FW_SPO2_MIN_OT_DC and
-            self.warmup_s       == self.FW_WARMUP_S       and
-            self.spo2_a         == self.FW_SPO2_A         and
-            self.spo2_b         == self.FW_SPO2_B
+            self.dc_iir_tau_s == self.FW_DC_IIR_TAU_S and
+            self.ac_ema_tau_s == self.FW_AC_EMA_TAU_S and
+            self.warmup_s     == self.FW_WARMUP_S     and
+            self.spo2_a       == self.FW_SPO2_A       and
+            self.spo2_b       == self.FW_SPO2_B
         )
 
     def _recalc_params(self, fs):
@@ -587,12 +590,14 @@ class SpO2TestCalc:
         self._ac2_red  = 0.0
         self._sample_count = 0
 
-    def update(self, ot_ir, ot_red, fs):
+    def update(self, ot_ir, ot_red, probe_state, fs):
         """Process one sample. Always returns a dict with intermediates.
 
         Parameters
         ----------
         ot_ir, ot_red : float — OT_LED1/OT_LED2 [A/A], gain-invariant optical transmittance
+        probe_state   : int — RSQM's ProbeState (0=DISCONNECTED, 1=NOT_APPLIED, 2=APPLIED),
+                        consumed only — this class never classifies presence itself.
         fs            : float — sample rate (Hz)
 
         Returns
@@ -607,6 +612,20 @@ class SpO2TestCalc:
           valid               — bool: SpO2 and DC are within valid range
           warmup              — bool: still in warmup period
         """
+        nan = float('nan')
+
+        if probe_state != self.PROBE_APPLIED:
+            # Reset every sample while not applied (idempotent, mirrors lib v0.41): state is
+            # already clean the instant probe_state returns to APPLIED, so warmup restarts
+            # naturally via _sample_count below — no separate "previous probe_state" needed.
+            self._dc_ir = self._dc_red = self._ac2_ir = self._ac2_red = 0.0
+            self._sample_count = 0
+            return {
+                'dc_ir': 0.0, 'dc_red': 0.0, 'rms_ac_ir': 0.0, 'rms_ac_red': 0.0,
+                'R': nan, 'pi': nan, 'spo2': nan, 'sqi': nan,
+                'valid': False, 'warmup': True,
+            }
+
         if fs != self._fs:
             self._recalc_params(fs)
 
@@ -624,14 +643,14 @@ class SpO2TestCalc:
 
         rms_ac_ir  = float(np.sqrt(max(0.0, self._ac2_ir)))
         rms_ac_red = float(np.sqrt(max(0.0, self._ac2_red)))
-        nan = float('nan')
 
         warmup_done = self._sample_count >= self._warmup_n
-        # DC no-signal floor (user-adjustable) + AC division-safety guard (fixed, not
-        # user-adjustable — AC legitimately gets tiny at low PI, not a physiological threshold)
+        # Division-safety guard only (FW_SPO2_DIV_EPS, purely numerical — presence detection
+        # is probe_state's job above, not this class's). dc_ir/dc_red/rms_ac_ir are the actual
+        # divisors below (R divides by dc_red and rms_ac_ir; pi divides by dc_ir).
         if (not warmup_done or
-                self._dc_ir < self.spo2_min_ot_dc or self._dc_red < self.spo2_min_ot_dc or
-                rms_ac_ir < self.FW_SPO2_AC_DIV_EPS):
+                self._dc_ir < self.FW_SPO2_DIV_EPS or self._dc_red < self.FW_SPO2_DIV_EPS or
+                rms_ac_ir < self.FW_SPO2_DIV_EPS):
             return {
                 'dc_ir': self._dc_ir, 'dc_red': self._dc_red,
                 'rms_ac_ir': rms_ac_ir, 'rms_ac_red': rms_ac_red,
@@ -1862,7 +1881,6 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._spin_dc_tau  = _dspin(0.1,    20.0,   SpO2TestCalc.FW_DC_IIR_TAU_S, 1, 0.1,  " s")
         self._spin_ac_tau  = _dspin(0.1,    20.0,   SpO2TestCalc.FW_AC_EMA_TAU_S, 1, 0.1,  " s")
         self._spin_warmup  = _dspin(0.0,    60.0,   SpO2TestCalc.FW_WARMUP_S,     1, 0.5,  " s")
-        self._spin_min_ot_dc_ppm = _dspin(0.0, 1000.0, SpO2TestCalc.FW_SPO2_MIN_OT_DC * 1e6, 3, 0.01, " ppm")
 
         self._spin_a.setToolTip(_make_tooltip(
             "SpO2 coefficient a",
@@ -1889,23 +1907,12 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             "Number of seconds before the algorithm starts outputting valid SpO2 [s]. "
             "Firmware default: 5.0 s.",
             src="spo2_warmup_s"))
-        self._spin_min_ot_dc_ppm.setToolTip(_make_tooltip(
-            "Min OT DC [ppm]",
-            "No-signal floor: minimum OT DC level (dc_ir/dc_red) to produce a valid SpO2 "
-            "[ppm, OT ×1e6]. Firmware default: 1.0 ppm (1e-6 A/A). Below this on either "
-            "channel → no real signal (DC should not legitimately collapse this low while a "
-            "probe is genuinely present). AC keeps its own separate, non-adjustable numerical "
-            "guard — conflating the two would wrongly invalidate valid low-perfusion signals "
-            "(EXPERIMENT: OT-domain input, lib v0.40 — replaces the earlier i_pd-based gate).",
-            src="spo2_min_ot_dc"))
-
         _lbl = lambda t: (lambda: (w := QtWidgets.QLabel(t), w.setStyleSheet(_lbl_style), w)[-1])()
         form.addRow(_lbl("SpO2  a"),    self._spin_a)
         form.addRow(_lbl("SpO2  b"),    self._spin_b)
         form.addRow(_lbl("DC τ"),       self._spin_dc_tau)
         form.addRow(_lbl("AC τ"),       self._spin_ac_tau)
         form.addRow(_lbl("Warmup"),     self._spin_warmup)
-        form.addRow(_lbl("Min OT DC [ppm]"), self._spin_min_ot_dc_ppm)
 
         right_vbox.addWidget(grp_params)
 
@@ -1954,7 +1961,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
         # Connect parameter spinboxes to update handler
         for sp in [self._spin_a, self._spin_b, self._spin_dc_tau,
-                   self._spin_ac_tau, self._spin_warmup, self._spin_min_ot_dc_ppm]:
+                   self._spin_ac_tau, self._spin_warmup]:
             sp.valueChanged.connect(self._on_param_changed)
 
         # Cached arrays for offline/live plotting
@@ -1977,12 +1984,11 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     def _on_param_changed(self):
         """Called when any parameter spinbox changes. Pushes values to calc and updates indicator."""
-        self._calc.dc_iir_tau_s  = self._spin_dc_tau.value()
-        self._calc.ac_ema_tau_s  = self._spin_ac_tau.value()
-        self._calc.spo2_min_ot_dc = self._spin_min_ot_dc_ppm.value() * 1e-6   # ppm → A/A
-        self._calc.warmup_s      = self._spin_warmup.value()
-        self._calc.spo2_a        = self._spin_a.value()
-        self._calc.spo2_b        = self._spin_b.value()
+        self._calc.dc_iir_tau_s = self._spin_dc_tau.value()
+        self._calc.ac_ema_tau_s = self._spin_ac_tau.value()
+        self._calc.warmup_s     = self._spin_warmup.value()
+        self._calc.spo2_a       = self._spin_a.value()
+        self._calc.spo2_b       = self._spin_b.value()
         self._calc.reset()   # reset filter state when params change
         self._last_sample_cnt = -1
         self._t0_us = None
@@ -2000,9 +2006,6 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             sp.blockSignals(True)
             sp.setValue(getattr(SpO2TestCalc, attr))
             sp.blockSignals(False)
-        self._spin_min_ot_dc_ppm.blockSignals(True)
-        self._spin_min_ot_dc_ppm.setValue(SpO2TestCalc.FW_SPO2_MIN_OT_DC * 1e6)   # A/A → ppm
-        self._spin_min_ot_dc_ppm.blockSignals(False)
         self._calc.reset_to_defaults()
         self._last_sample_cnt = -1
         self._t0_us = None
@@ -2047,12 +2050,13 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         $M4 rows raises a clear error.
         """
         import csv as _csv
-        rows_ot_ir   = []
-        rows_ot_red  = []
-        rows_spo2_fw = []
-        rows_R_fw    = []
-        rows_sqi_fw  = []
-        rows_ts_us   = []
+        rows_ot_ir      = []
+        rows_ot_red     = []
+        rows_probe_state = []
+        rows_spo2_fw    = []
+        rows_R_fw       = []
+        rows_sqi_fw     = []
+        rows_ts_us      = []
         saw_any_frame = False
 
         with open(path, 'r', newline='') as f:
@@ -2082,13 +2086,14 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                                 saw_any_frame = True
                             if len(parts) < 34 or parts[0] != '$M4':
                                 continue
-                        # $M4,SmpCnt,Ts_us,...,31:OT_LED1,32:OT_LED2
-                        ts_us     = float(parts[2])
-                        ot_ir     = float(parts[31])
-                        ot_red    = float(parts[32])
-                        spo2_fw   = float(parts[10])
-                        R_fw      = float(parts[12])
-                        sqi_fw    = float(parts[11])
+                        # $M4,SmpCnt,Ts_us,...,22:ProbeState,...,31:OT_LED1,32:OT_LED2
+                        ts_us       = float(parts[2])
+                        ot_ir       = float(parts[31])
+                        ot_red      = float(parts[32])
+                        probe_state = int(float(parts[22]))
+                        spo2_fw     = float(parts[10])
+                        R_fw        = float(parts[12])
+                        sqi_fw      = float(parts[11])
                     elif is_raw:
                         # Format: Timestamp_PC,Diff_us_PC,FrameMode,SmpCnt,Ts_us,...
                         if len(row) < 3:
@@ -2099,17 +2104,19 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         if lib_id not in ('M4', '$M4') or len(row) < 36:
                             continue
                         # row[2 + partsIdx] — row prepends Timestamp_PC,Diff_us_PC before FrameMode
-                        ts_us     = float(row[2 + 2])
-                        ot_ir     = float(row[2 + 31])
-                        ot_red    = float(row[2 + 32])
-                        spo2_fw   = float(row[2 + 10])
-                        R_fw      = float(row[2 + 12])
-                        sqi_fw    = float(row[2 + 11])
+                        ts_us       = float(row[2 + 2])
+                        ot_ir       = float(row[2 + 31])
+                        ot_red      = float(row[2 + 32])
+                        probe_state = int(float(row[2 + 22]))
+                        spo2_fw     = float(row[2 + 10])
+                        R_fw        = float(row[2 + 12])
+                        sqi_fw      = float(row[2 + 11])
                     else:
                         continue
                     rows_ts_us.append(ts_us)
                     rows_ot_ir.append(ot_ir)
                     rows_ot_red.append(ot_red)
+                    rows_probe_state.append(probe_state)
                     rows_spo2_fw.append(spo2_fw if spo2_fw >= 0 else float('nan'))
                     rows_R_fw.append(R_fw if R_fw >= 0 else float('nan'))
                     rows_sqi_fw.append(sqi_fw if sqi_fw >= 0 else float('nan'))
@@ -2151,8 +2158,9 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         arr_rms_ir   = np.full(len(rows_ot_ir), nan)
         arr_rms_red  = np.full(len(rows_ot_ir), nan)
 
-        for i, (ot_ir, ot_red) in enumerate(zip(rows_ot_ir, rows_ot_red)):
-            r = self._calc.update(ot_ir, ot_red, fs)
+        for i, (ot_ir, ot_red, probe_state) in enumerate(
+                zip(rows_ot_ir, rows_ot_red, rows_probe_state)):
+            r = self._calc.update(ot_ir, ot_red, probe_state, fs)
             arr_dc_ir[i]   = r['dc_ir']
             arr_dc_red[i]  = r['dc_red']
             arr_rms_ir[i]  = r['rms_ac_ir']
@@ -2239,14 +2247,15 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     # ── Live update (called from PPGMonitor) ──────────────────────────────────
 
-    def update_algorithms(self, data_ot_led1, data_ot_led2,
+    def update_algorithms(self, data_ot_led1, data_ot_led2, data_probe_state,
                           data_spo2, data_spo2_r, data_spo2_sqi,
                           data_timestamp_us, data_sample_counter):
         """Run per-sample algorithm (called from PPGMonitor._process_frames_tick).
 
         data_ot_led1/data_ot_led2 are only meaningful while frame mode $M4 is active —
-        otherwise they are firmware-side zero-filled (see PPGMonitor's $M3/$M4 parser) and
-        the OT DC no-signal floor keeps SpO2/sqi invalid.
+        otherwise they are firmware-side zero-filled (see PPGMonitor's $M3/$M4 parser).
+        data_probe_state (RSQM's classification) is consumed directly — SpO2TestCalc never
+        classifies presence itself; probe_state != PROBE_APPLIED keeps SpO2/sqi invalid.
         """
         if self._offline_mode:
             return
@@ -2281,9 +2290,10 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         nan = float('nan')
         r = None
         for i in new_indices:
-            ts     = float(data_timestamp_us[i])
-            ot_ir  = float(data_ot_led1[i])
-            ot_red = float(data_ot_led2[i])
+            ts          = float(data_timestamp_us[i])
+            ot_ir       = float(data_ot_led1[i])
+            ot_red      = float(data_ot_led2[i])
+            probe_state = int(data_probe_state[i])
             spo2_f = float(data_spo2[i])
             R_f    = float(data_spo2_r[i])
             sqi_f  = float(data_spo2_sqi[i])
@@ -2292,7 +2302,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            r = self._calc.update(ot_ir, ot_red, SPO2_RECEIVED_FS)
+            r = self._calc.update(ot_ir, ot_red, probe_state, SPO2_RECEIVED_FS)
 
             spo2_fw_v = spo2_f if spo2_f >= 0 else nan
             R_fw_v    = R_f    if R_f    >= 0 else nan
@@ -12386,7 +12396,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if self.spo2test_window is not None:
                     _t0a = time.perf_counter()
                     self.spo2test_window.update_algorithms(
-                        self.data_ot2_led1, self.data_ot2_led2,
+                        self.data_ot2_led1, self.data_ot2_led2, self.data_probe_state,
                         self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
                         self.data_timestamp_us, self.data_sample_counter)
                     self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)

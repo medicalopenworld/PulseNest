@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.22
+# pulsenest_lab — Specification v1.23
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -383,23 +383,31 @@ Replicates `INCUNEST_AFE4490::_update_spo2()`.
 Extended version of `SpO2LocalCalc` with user-adjustable parameters (used in SpO2TestWindow).
 All constants are exposed as instance attributes overridable at runtime from the UI spinboxes.
 
-**EXPERIMENT (OT-domain input, branch `experiment/ot-domain-inputs`, mirrors lib v0.40):**
-`update(ot_ir, ot_red, fs)` — input is `OT_LED1`/`OT_LED2` [A/A] (gain-invariant optical
-transmittance), not the raw ambient-corrected `LED1_SUB`/`LED2_SUB` used before this
-migration. `OT_LED1`/`OT_LED2` only travel in the `$M4` frame — SpO2TestWindow requires `$M4`
-(live) or a CSV captured in `$M4`; it shows a status-bar warning and stops feeding the calc
-otherwise.
+**EXPERIMENT (OT-domain input, branch `experiment/ot-domain-inputs`, mirrors lib v0.41):**
+`update(ot_ir, ot_red, probe_state, fs)` — input is `OT_LED1`/`OT_LED2` [A/A] (gain-invariant
+optical transmittance), not the raw ambient-corrected `LED1_SUB`/`LED2_SUB` used before this
+migration, plus `probe_state` (RSQM's `ProbeState` ordinal — 0/1/2 for
+DISCONNECTED/NOT_APPLIED/APPLIED, read from the already-parsed `ProbeState` column/field).
+`OT_LED1`/`OT_LED2` only travel in the `$M4` frame — SpO2TestWindow requires `$M4` (live) or
+a CSV captured in `$M4`; it shows a status-bar warning and stops feeding the calc otherwise.
 
-No-signal detection is a single floor on OT DC, `spo2_min_ot_dc` (A/A, default `1e-6`, UI
-spinbox in ppm — "Min OT DC [ppm]"), applied only to `dc_ir`/`dc_red`. An earlier version of
-this mirror added a separate `spo2_min_i_pd_a` gate on absolute `I_PD_LED1`/`I_PD_LED2`
-magnitude, mirroring the firmware's v0.38 design — **removed in lib v0.40** after analysis
-showed it rarely detected an actual no-finger condition (a transmittance probe with no finger
-shows HIGH OT, not low i_pd) and mostly duplicated RSQM's own disconnected classification. AC
-keeps a separate, non-user-adjustable numerical guard `FW_SPO2_AC_DIV_EPS` (`1e-9`, on
-`rms_ac_ir` only) — AC legitimately gets tiny at low PI, so conflating it with the DC floor
-above would wrongly invalidate valid low-perfusion signals (this was tried first and broke
-4/7 native `test_spo2` cases before the two roles were split apart).
+**Presence detection is RSQM's responsibility alone — `SpO2TestCalc` never classifies
+presence itself.** Two earlier attempts at a self-contained "no-finger"/"no-signal" gate
+inside this class were tried and removed in turn: `spo2_min_i_pd_a` (absolute
+`I_PD_LED1`/`I_PD_LED2` magnitude, mirroring firmware v0.38) and `spo2_min_ot_dc` (absolute OT
+DC floor, mirroring firmware v0.40) — both mostly duplicated RSQM's own
+disconnected/not-applied classification with a weaker, uncalibrated criterion (a
+transmittance probe with no finger shows HIGH OT, not low i_pd/DC).
+
+While `probe_state != PROBE_APPLIED` (2) — covering both NOT_APPLIED and DISCONNECTED
+identically: internal state (`_dc_ir`/`_dc_red`/`_ac2_ir`/`_ac2_red`/`_sample_count`) is reset
+every sample (idempotent, no stored "previous probe_state" needed — mirrors lib v0.41), and
+`pi`/`spo2`/`spo2_r` are `nan`. What remains inside the class is only a purely numerical
+division-safety guard, `FW_SPO2_DIV_EPS` (`1e-9`, not user-adjustable) — on `dc_ir` (PI calc
+divisor) and `dc_red`/`rms_ac_ir` (R calc divisors). No UI parameter for presence detection
+exists anymore — the "Min OT DC [ppm]"/"Min I_PD [µA]" spinboxes from earlier versions were
+both removed; SpO2TestWindow's parameter panel is back to its original five: a, b, DC τ, AC τ,
+warmup.
 
 `DC LED1/LED2` and `RMS AC LED1/LED2` are displayed in ppm (×1e6) in SpO2TestWindow's plots
 and value table, consistent with `OT_LED1`/`OT_LED2` in SIGNAL STATS.
@@ -701,14 +709,15 @@ Layout: left 6 stacked plots + right parameter/values panel.
 5. DC OT_LED1 (IR) + DC OT_LED2 (RED) [ppm]
 6. RMS AC OT_LED1 (IR) + RMS AC OT_LED2 (RED) [ppm]
 
-**Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup, Min OT DC [ppm]),
-live current-values table, [EXPORT CSV] button, [LOAD CSV] for offline reprocessing.
+**Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup — no presence-detection
+parameter anymore, see §5.2), live current-values table, [EXPORT CSV] button, [LOAD CSV] for
+offline reprocessing.
 
-**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`/`OT_LED2`,
-which do not travel in `$M1`/`$M2`/`$M3`. Live mode shows a status-bar warning and stops
-feeding the calc when the active mode is not `$M4`. [LOAD CSV] only accepts `$M4` rows — a
-file with no `$M4` samples raises a clear error instead of silently reprocessing stale/zero
-data.
+**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`/`OT_LED2`
+and `ProbeState`, none of which travel in `$M1`/`$M2`/`$M3`. Live mode shows a status-bar
+warning and stops feeding the calc when the active mode is not `$M4`. [LOAD CSV] only accepts
+`$M4` rows — a file with no `$M4` samples raises a clear error instead of silently
+reprocessing stale/zero data.
 
 ### 7.8 HR1TestWindow — "HR1TEST"
 
@@ -1130,6 +1139,33 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.23 — 2026-07-16
+
+**Mirrors lib v0.41-experiment: presence detection fully delegated to RSQM; `NaN` replaces
+`-1.0f` as the invalid-output sentinel, unified across warmup/not-applied/division-guard.**
+
+- `SpO2TestCalc.update()` gains a third parameter, `probe_state` (RSQM's `ProbeState` ordinal,
+  0/1/2 = DISCONNECTED/NOT_APPLIED/APPLIED) — consumed, never computed internally. Removes
+  `spo2_min_ot_dc` (the v1.22 "no-signal" floor) entirely: while `probe_state != PROBE_APPLIED`
+  (both NOT_APPLIED and DISCONNECTED treated identically), internal state
+  (`_dc_ir`/`_dc_red`/`_ac2_ir`/`_ac2_red`/`_sample_count`) resets every sample (idempotent —
+  no "previous probe_state" stored), and `pi`/`spo2`/`spo2_r` become `nan`.
+- `FW_SPO2_MIN_OT_DC`/`FW_SPO2_AC_DIV_EPS` collapsed into a single `FW_SPO2_DIV_EPS` (`1e-9`,
+  not user-adjustable) — a purely numerical division-safety guard on `dc_ir`/`dc_red`/
+  `rms_ac_ir` (the actual divisors), now that presence detection is `probe_state`'s job.
+- Output contract unified: `sqi==0` now always means `spo2`/`spo2_r`/`pi` are `nan`, across all
+  three invalid paths (warmup, not-applied, division guard) — previously only some paths
+  produced `nan`, others left the dict's values from the last successful call.
+- UI: the "Min OT DC [ppm]" spinbox (added in v1.22) removed entirely — no presence-detection
+  parameter remains in SpO2TestWindow's panel, back to the original 5 (a, b, DC τ, AC τ,
+  warmup). CSV loader and live feed now also read/pass `ProbeState` (already-parsed column)
+  into `SpO2TestCalc`.
+- Native test suite (`test_spo2.cpp`, `incunest_afe4490`): `test_spo2_low_dc_invalid` replaced
+  by `test_spo2_not_applied_resets` (feeds a converged valid signal, forces
+  `PROBE_DISCONNECTED` for 1000 samples, asserts `sqi=0`/`nan` outputs/EMA reset, then asserts
+  a fresh warmup is required after returning to `PROBE_APPLIED`, and again for
+  `PROBE_NOT_APPLIED`). 7/7 `test_spo2` + 33/33 other native tests, ESP32-S3 build OK.
 
 ### v1.22 — 2026-07-15
 

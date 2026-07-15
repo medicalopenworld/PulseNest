@@ -4,12 +4,13 @@
 
 // EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs): SpO2 now consumes OT
 // (dimensionless A/A, ~1e-5 typical per incunest_afe4490_spec.md) instead of raw
-// ambient-corrected ADC counts. No-signal detection is a single absolute-magnitude floor on
-// the resulting OT DC (spo2_min_ot_dc) — see _update_spo2() rationale in incunest_afe4490.cpp.
-// (A separate i_pd-based "no-finger" gate existed briefly during this experiment and was
-// removed: analysis showed it rarely detected an actual no-finger condition — a transmittance
-// probe with no finger typically shows HIGH OT, not low i_pd — and mostly duplicated, with a
-// weaker/uncalibrated criterion, what RSQM's own disconnected classification already covers.)
+// ambient-corrected ADC counts. Presence detection (finger/probe applied) is RSQM's
+// responsibility alone (ProbeState, passed into _update_spo2()) — SpO2 never computes its own
+// no-finger/no-signal classification, only a purely numerical division-safety guard
+// (spo2_div_eps). See _update_spo2() rationale in incunest_afe4490.cpp.
+//
+// Output contract: sqi==0.0f always implies pi==spo2==spo2_r==NaN (never a stale value),
+// unified across warmup, PROBE_DISCONNECTED/PROBE_NOT_APPLIED, and the division-safety guard.
 //
 // Default calibration coefficients (must match incunest_afe4490.cpp)
 static constexpr float SPO2_A = 114.9208f;
@@ -27,8 +28,7 @@ static constexpr int WARMUP_SAMPLES = 9500;
 // not something this experiment changes or fixes.
 static constexpr int CONVERGED_SAMPLES = 40000;
 
-// Typical OT DC magnitude (per spec: APPLIED ~1.4e-5) — comfortably above spo2_min_ot_dc
-// (1e-6 placeholder).
+// Typical OT DC magnitude (per spec: APPLIED ~1.4e-5).
 static constexpr float OT_DC = 1.4e-5f;
 
 // Helper: feed N samples of dual-channel sines (same freq, different AC amplitude), scaled
@@ -36,35 +36,61 @@ static constexpr float OT_DC = 1.4e-5f;
 // R = (AC_red/DC)/(AC_ir/DC) = a_red/a_ir (DC cancels, same as the original count-domain test).
 static void feed_spo2_sine(INCUNEST_AFE4490& afe,
                             float a_ir, float a_red,
-                            float freq_hz, int n_samples) {
+                            float freq_hz, int n_samples,
+                            ProbeState probe_state = ProbeState::PROBE_APPLIED) {
     const float fs = 500.0f;
     const float scale = 1.4e-10f;  // brings a_ir~10000-scale amplitudes into OT-DC-scale AC
     for (int i = 0; i < n_samples; i++) {
         float phase = 2.0f * (float)M_PI * freq_hz * i / fs;
         float ot_ir  = OT_DC + a_ir  * scale * sinf(phase);
         float ot_red = OT_DC + a_red * scale * sinf(phase);
-        afe.test_feed_spo2(ot_ir, ot_red);
+        afe.test_feed_spo2(ot_ir, ot_red, probe_state);
     }
 }
 
 void setUp() {}
 void tearDown() {}
 
-// ── Test 1: not valid during warmup ──────────────────────────────────────────
+// ── Test 1: not valid during warmup — outputs are NaN, not stale ─────────────
 void test_spo2_not_valid_during_warmup() {
     INCUNEST_AFE4490 afe;
     feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, 1000);  // well short of warmup
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2_r()));
 }
 
-// ── Test 2: no real signal (OT DC too low) → invalid ─────────────────────────
-// spo2_min_ot_dc = 1e-6. Feeding a flat OT DC of 1e-7 (below threshold, no AC at all) should
-// keep spo2_sqi at 0 — both the no-signal floor and the zero-AC/PI path forbid validity.
-void test_spo2_low_dc_invalid() {
+// ── Test 2: PROBE_DISCONNECTED/NOT_APPLIED forces invalid + resets state ─────
+// SpO2 never classifies presence itself — it only consumes probe_state. Feeding a real,
+// already-converged signal, then switching to PROBE_DISCONNECTED must: force sqi=0 and
+// pi/spo2/spo2_r to NaN, reset the internal EMAs, and require a fresh warmup once
+// probe_state returns to PROBE_APPLIED (no instant resume from stale pre-disconnect state).
+void test_spo2_not_applied_resets() {
     INCUNEST_AFE4490 afe;
-    for (int i = 0; i < WARMUP_SAMPLES; i++)
-        afe.test_feed_spo2(1e-7f, 1e-7f);  // OT DC below spo2_min_ot_dc
+    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());  // valid before disconnecting
+
+    // Sustained disconnect: probe_state alone must force invalidity, regardless of what OT
+    // values are fed (even a plausible-looking DC/AC pair must NOT produce a valid reading).
+    for (int i = 0; i < 1000; i++)
+        afe.test_feed_spo2(OT_DC, OT_DC, ProbeState::PROBE_DISCONNECTED);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2_r()));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_ir_ema_mean());  // EMA reset, not just gated
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_ir_ema_var());
+
+    // Re-applying (PROBE_APPLIED) must require a fresh warmup, not resume instantly from
+    // whatever the pre-disconnect state was.
+    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, 1000);  // well short of warmup
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
+
+    // PROBE_NOT_APPLIED gets the same treatment as PROBE_DISCONNECTED (both non-APPLIED).
+    for (int i = 0; i < 1000; i++)
+        afe.test_feed_spo2(OT_DC, OT_DC, ProbeState::PROBE_NOT_APPLIED);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_ir_ema_mean());
 }
 
 // ── Test 3: SpO2 ≈ 98% ───────────────────────────────────────────────────────
@@ -102,6 +128,7 @@ void test_spo2_too_high_invalid() {
     INCUNEST_AFE4490 afe;
     feed_spo2_sine(afe, 10000.0f, 3000.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 }
 
 // ── Test 7 (new, OT-domain-specific): R is invariant to a fixed gain scale ───
@@ -123,7 +150,7 @@ void test_spo2_r_invariant_to_uniform_scale() {
         float phase = 2.0f * (float)M_PI * 1.0f * i / fs;
         float ot_ir  = k * (OT_DC + 10000.0f * scale * sinf(phase));
         float ot_red = k * (OT_DC + 5538.0f  * scale * sinf(phase));
-        afe_b.test_feed_spo2(ot_ir, ot_red);
+        afe_b.test_feed_spo2(ot_ir, ot_red, ProbeState::PROBE_APPLIED);
     }
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe_b.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(0.05f, afe_a.test_spo2(), afe_b.test_spo2());
@@ -133,7 +160,7 @@ void test_spo2_r_invariant_to_uniform_scale() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_spo2_not_valid_during_warmup);
-    RUN_TEST(test_spo2_low_dc_invalid);
+    RUN_TEST(test_spo2_not_applied_resets);
     RUN_TEST(test_spo2_98_percent);
     RUN_TEST(test_spo2_90_percent);
     RUN_TEST(test_spo2_clamp_above_100);
