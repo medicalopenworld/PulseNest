@@ -14110,13 +14110,15 @@ desincronización silenciosa si HGAC se activa. Se optó por exigir `$M4` direct
 - Fuera de alcance intencionadamente (mirrors análogos no migrados, incluyen sus propias
   entradas crudas): `SpO2LocalCalc`/SpO2LabWindow, `HRFFTCalc`/`self.hr3_calc` (HR3LAB),
   `PICalc`/PILabWindow.
-- **Bug pre-existente encontrado, NO arreglado (fuera de alcance de esta tarea):** en el
+- **Bug pre-existente encontrado y arreglado como efecto colateral de esta tarea:** en el
   formato CSV "raw" (cabecera con `FrameMode`, el que genera el botón SAVE normal), los
-  loaders offline de SpO2TestWindow/HR1TestWindow/HR2TestWindow leen las columnas de
+  loaders offline de SpO2TestWindow/HR1TestWindow/HR2TestWindow leían las columnas de
   referencia del firmware una posición antes de la correcta (p. ej. `spo2_fw` de
-  SpO2TestWindow lee en realidad `PPG_DISP`). `HR3TestWindow` y el formato `is_chk` (los 4
-  ventanas) están bien indexados. Documentado en el changelog de la spec; pendiente de fix
-  dedicado.
+  SpO2TestWindow leía en realidad `PPG_DISP`). Al reescribir esos bloques para exigir `$M4` se
+  usó la fórmula correcta `row[2+partsIdx]` en todo el bloque, lo cual corrigió el desfase sin
+  que me diera cuenta en el momento — lo documenté por error como "no arreglado" en esta misma
+  entrada. `HR3TestWindow` y el formato `is_chk` (las 4 ventanas) ya estaban bien indexados
+  antes de esta sesión.
 
 **Verificado:** `python -m py_compile pulsenest_lab.py` sin errores (varias veces, tras cada
 bloque de cambios). No verificado con hardware real (requiere HW conectado en `$M4`).
@@ -14129,7 +14131,6 @@ que había quedado sin versionar, y v1.19 con todo lo de esta sesión).
 
 **Pendiente:**
 - Verificar con HW real en `$M4` que las 4 clases-espejo migradas coinciden con firmware.
-- Decidir si arreglar el bug pre-existente de índices en los CSV loaders "raw" (SpO2/HR1/HR2).
 - Parsear `HGAC_RF1`/`HGAC_RF2`/`HGAC_ALARM` en `pulsenest_lab.py` (ya vienen en `$M4`, sin
   consumidor todavía).
 - Decisión final del experimento OT: fusionar `experiment/ot-domain-inputs` a `master` o
@@ -14211,3 +14212,196 @@ documentando `_crash_handler`+`crash.log` y `faulthandler`+`faulthandler.log`; c
   (o descartar) la hipótesis del crash nativo por auto-rango de pyqtgraph.
 - Si se confirma: decidir fix de fondo — eje Y independiente por slot en SIGNALS2, o bloquear/
   avisar activamente cuando se combinan señales de escala muy dispar (hoy solo hay tooltip).
+
+### 2026-07-15 (continuación) — SIGNALS2: spin más grande + color rosa→rojo
+
+**Pedido por Alex:** en SIGNALS2, letra del spin más grande y cambiar el rosa por rojo.
+
+**Implementado (`pulsenest_lab.py` v1.21):**
+- `spin_window_s` ("Window (s)"): `font-size` 32px → 40px.
+- `_SLOT_COLORS` (color del slot 3, curva + punto "●"): `#FF66FF` (rosa) → `#FF4444` (rojo),
+  mismo tono ya usado en el resto de la app para curvas LED2/RED.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. No verificado
+visualmente en pantalla (pendiente relanzar y comprobar).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` → v1.21.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: spin todavía pequeño, subido a 56px
+
+**Feedback de Alex:** tras relanzar con el cambio anterior (32px→40px), "el font size los spins
+sigue siendo muy pequeño".
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear todavía):**
+- `spin_window_s`: `font-size` 40px → 56px, + `setMinimumHeight(64)` para que el glifo más
+  grande no quede recortado por la altura por defecto del widget.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`) para que Alex compruebe visualmente.
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 corregida in-place (no se subió
+a v1.22 porque el cambio anterior de esta misma versión no se había commiteado todavía).
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: aclarado el malentendido — eran los combos, no el spin
+
+**Aclaración de Alex:** el "font pequeño" no era el spin de duración (ese ya está muy grande
+tras el cambio anterior) sino los 9 combos de selección de señal. Pidió doblar su font, y
+también cambiar el color blanco por amarillo (mismo patrón que el rosa→rojo anterior).
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `_COMBO_STYLE`: `font-size` 17px → 34px (doblado, según lo pedido).
+- Ancho de cada columna `Graph N` (`group.setFixedWidth`): 220px → 420px — necesario para que
+  nombres largos (`V_TIA_DIFF_ALED1`, etc.) no queden recortados con el font doblado.
+- `_SLOT_COLORS[0]` (slot 1): `#FFFFFF` (blanco) → `#FFDD44` (amarillo), mismo tono usado en
+  el resto de la app (p. ej. curva SpO2 fw).
+
+**Nota de proceso:** hubo un ciclo previo de confusión (2 rondas) subiendo el font del spin de
+duración en vez de los combos — el usuario interrumpió un intento de verificación por
+captura de pantalla y aclaró directamente el malentendido.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: combos 18→28
+
+**Pedido por Alex:** cambiar el font de los combos de 18 a 28.
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `_COMBO_STYLE`: `font-size` 18px → 28px.
+- Ancho de columna `Graph N` (`group.setFixedWidth`): 220px → 360px (escalado
+  proporcionalmente) para que nombres largos no se recorten a 28px.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: texto del combo con el color de su slot
+
+**Pedido por Alex:** que el font del propio combo sea del color correspondiente (el de su
+curva).
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `_COMBO_STYLE` (constante fija) → `_combo_style(color)` (método estático): el texto
+  mostrado en cada combo ahora usa el color de `_SLOT_COLORS` de su slot (amarillo/cian/
+  rojo), igual que su curva. La lista desplegable se mantiene en gris neutro `#E0E0E0` para
+  que todas las opciones sigan siendo legibles.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: reducción de tamaños (spin -1/3, combos 34→18)
+
+**Pedido por Alex:** reducir el font del spin de duración un tercio, y el font de los combos
+de 34 a 18.
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `spin_window_s`: `font-size` 56px → 37px (56 × 2/3, redondeado).
+- `_COMBO_STYLE`: `font-size` 34px → 18px (valor exacto pedido).
+- Ancho de columna `Graph N` (`group.setFixedWidth`): 420px → 220px, revertido porque 18px
+  es casi igual al original 17px y ya no necesita el ensanchado.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — Corrección: el bug off-by-one de los CSV loaders ya estaba arreglado
+
+**Contexto:** al retomar la sesión de migración OT (commit `ca14dbf`) para "seguir con el bug
+off-by-one" documentado como pendiente, se verificó el código actual de
+`_process_csv_offline()` en SpO2TestWindow/HR1TestWindow/HR2TestWindow con un test sintético
+(fila CSV con un valor distinto por columna) — las 14 correspondencias comprobadas
+(SpO2/R/SQI, HR1/HR2/HR3+SQI, OT/I_PD) son correctas.
+
+**Conclusión:** el bug **ya estaba arreglado** desde el propio commit `ca14dbf` — al reescribir
+esos bloques para exigir `$M4` se usó la fórmula correcta `row[2+partsIdx]` en todo el bloque,
+lo que corrigió el desfase de forma incidental. La entrada de sesión anterior lo documentaba
+por error como "encontrado, NO arreglado, pendiente de fix dedicado" — corregido en
+`pulsenest_lab_spec.md` (changelog v1.19) y en la entrada correspondiente de este mismo log.
+Eliminado de la lista de pendientes.
+
+No hubo cambio de código — solo corrección de documentación.
+
+### 2026-07-15 (continuación) — probe_state: análisis + eliminación de spo2_min_i_pd_a (lib v0.40, lab v1.22)
+
+**Preguntas del usuario sobre probe_state (2 partes):**
+1. ¿Es necesario el gate `fabsf(i_pd) < spo2_min_i_pd_a` en `_update_spo2()`? → Analizado con
+   cifras reales (100nA vs 150nA del disconnected de RSQM, debounce 200ms vs instantáneo) —
+   recomendación inicial: mantener (protege timing distinto).
+2. ¿Quiénes son los consumidores de `probe_state` actuales y deseables? → Mapeado: librería
+   (`_diag_task_body`, `_hgac_gate_ok`, cálculo RSQI), firmware (solo relay en `$M1`-`$M4`),
+   script (cosmético + QA en AFESweepTestWindow). Candidatos deseables: IncuNest motherBoard
+   (alarmas, no verificable — repo externo), SIGNAL STATS de pulsenest_lab.py (gris en filas
+   SpO2/HR cuando `probe_state != APPLIED`, hoy solo por CLIPPED).
+
+**Corrección importante durante el análisis:** el usuario detectó que yo mezclaba "sonda
+desconectada" (RSQM) con "no hay dedo" (SpO2) como si protegieran condiciones físicas
+distintas. Re-derivado con las fórmulas reales (`i_pd_led1 = v_tia_diff_led1/(2·RF)`, sin
+restar ambiente): para una sonda de transmitancia, "no hay dedo" da OT **alto** (luz sin
+atenuar), no `i_pd` bajo — el gate de SpO2 casi nunca detecta eso; lo que detecta solapa con
+el mismo fenómeno físico que RSQM llama DISCONNECTED, solo que con criterio parcial (2 de 4
+canales) y sin debounce.
+
+**Decisión final (tras discutir si el gate era complejidad innecesaria):** eliminar
+`spo2_min_i_pd_a` y toda su plomería, sustituyéndolo por un único suelo fisiológico
+`spo2_min_ot_dc` aplicado SOLO a `dc_ir`/`dc_red` (no a `ac_ir`) — motivo: `PI=RMS_AC/DC` es
+un ratio que puede parecer válido por casualidad cuando AC y DC son ambos ruido; solo un
+chequeo de magnitud absoluta en DC lo detecta con fiabilidad. El guard de AC se mantiene como
+epsilon puramente numérico (`spo2_ac_div_eps=1e-9`), NO fisiológico, porque el AC real puede
+ser legítimamente muy pequeño con perfusión baja (PI=0.5% → AC≈7e-8) — **error cometido y
+corregido en el propio proceso**: usar un único umbral de 1e-6 para DC y AC a la vez rompió
+4/7 tests nativos de `test_spo2.cpp` (invalidaba señales de perfusión baja pero reales).
+
+**Implementado en `incunest_afe4490` (lib v0.40-experiment):**
+- `_update_spo2()`: firma simplificada a `(ot_ir, ot_red)` — sin `i_pd_ir`/`i_pd_red`.
+- Eliminados: constante `spo2_min_i_pd_a`, miembro `_spo2_min_i_pd_a`, setter
+  `setSpO2MinIPdA()`, campo `AFE4490Config::spo2_min_i_pd_a`.
+- Nuevas constantes: `spo2_min_ot_dc=1e-6` (DC, ajustable en runtime) y `spo2_ac_div_eps=1e-9`
+  (AC, fijo, no expuesto).
+- `test_feed_spo2()` (wrapper de test) simplificado a `(ot_ir, ot_red)`.
+- `test_spo2.cpp`: test 2 renombrado `test_spo2_no_finger_invalid` →
+  `test_spo2_low_dc_invalid`, alimenta OT plano por debajo de `spo2_min_ot_dc` en vez de i_pd
+  bajo. **Verificado: 7/7 `test_spo2` + 33/33 resto de tests nativos** (excepto `test_biquad`,
+  roto de antes de esta sesión, no relacionado — confirmado con `git status` que no lo toqué).
+- `library.json` → v0.40.0-experiment. Spec `incunest_afe4490_spec.md` actualizada (§5.1,
+  changelog v0.40 nuevo, nota de `pulsenest_lab.py` refrescada de "not yet migrated" a
+  "migrated").
+
+**Implementado en `pulsenest_lab.py` (lab v1.22, sin commitear):**
+- `SpO2TestCalc`: mismo rediseño que la librería — `update(ot_ir, ot_red, fs)`, constantes
+  `FW_SPO2_MIN_OT_DC`/`FW_SPO2_AC_DIV_EPS`, atributo ajustable `spo2_min_ot_dc`.
+- UI: spinbox "Min I_PD [µA]" → "Min OT DC [ppm]" (`_spin_min_ot_dc_ppm`), tooltip reescrito.
+- CSV loader offline y feed en vivo de SpO2TestWindow ya no leen/pasan `I_PD_LED1`/`I_PD_LED2`
+  a `SpO2TestCalc` (siguen existiendo para SIGNAL STATS/AFESweepTestWindow, sin cambios ahí).
+- `pulsenest_lab_spec.md` → v1.22 (§5.2, §7.7, changelog v1.22 nuevo).
+
+**Tarea nueva anotada (a petición del usuario, para después):** ¿debe ser asimétrico el
+debounce de 200ms de `probe_state` entre APPLIED y NOT_APPLIED/DISCONNECTED? →
+`project_probe_state_debounce_asymmetry_task.md`.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores; suite nativa de la
+librería 7/7 + 33/33 (ver arriba). No verificado con HW real.
+
+**Sin commitear todavía** (ni librería ni script — pendiente de que el usuario lo pida).
+
+**Nota aparte (fuera de esta tarea):** el usuario pidió anotar como pendiente analizar subir
+la corriente LED por defecto de 20 mA a 50 mA — guardado en
+`project_led_current_increase_50ma_task.md` (50 mA es el I_F máximo absoluto de la sonda
+Medle, sin margen — derating térmico y caracterización sonda-piel aún sin medir).

@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.20
+# pulsenest_lab — Specification v1.22
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -383,17 +383,26 @@ Replicates `INCUNEST_AFE4490::_update_spo2()`.
 Extended version of `SpO2LocalCalc` with user-adjustable parameters (used in SpO2TestWindow).
 All constants are exposed as instance attributes overridable at runtime from the UI spinboxes.
 
-**EXPERIMENT (OT-domain input, branch `experiment/ot-domain-inputs`, mirrors lib v0.38):**
-`update(ot_ir, ot_red, i_pd_ir, i_pd_red, fs)` — input is `OT_LED1`/`OT_LED2` [A/A]
-(gain-invariant optical transmittance), not the raw ambient-corrected `LED1_SUB`/`LED2_SUB`
-used before this migration. `OT_LED1`/`OT_LED2` only travel in the `$M4` frame — SpO2TestWindow
-requires `$M4` (live) or a CSV captured in `$M4`; it shows a status-bar warning and stops
-feeding the calc otherwise. No-finger gate changed from `spo2_min_dc` (counts, removed) to
-`spo2_min_i_pd_a` (absolute `I_PD_LED1`/`I_PD_LED2` magnitude [A], default `1e-7`, UI spinbox
-in µA) — gates on absolute i_pd, not the OT ratio itself (unreliable near zero signal).
-Numerical div-by-zero guard changed from a fixed `1.0` (counts scale) to `spo2_ot_div_eps`
-(`1e-9`, OT scale). `DC LED1/LED2` and `RMS AC LED1/LED2` are displayed in ppm (×1e6) in
-SpO2TestWindow's plots and value table, consistent with `OT_LED1`/`OT_LED2` in SIGNAL STATS.
+**EXPERIMENT (OT-domain input, branch `experiment/ot-domain-inputs`, mirrors lib v0.40):**
+`update(ot_ir, ot_red, fs)` — input is `OT_LED1`/`OT_LED2` [A/A] (gain-invariant optical
+transmittance), not the raw ambient-corrected `LED1_SUB`/`LED2_SUB` used before this
+migration. `OT_LED1`/`OT_LED2` only travel in the `$M4` frame — SpO2TestWindow requires `$M4`
+(live) or a CSV captured in `$M4`; it shows a status-bar warning and stops feeding the calc
+otherwise.
+
+No-signal detection is a single floor on OT DC, `spo2_min_ot_dc` (A/A, default `1e-6`, UI
+spinbox in ppm — "Min OT DC [ppm]"), applied only to `dc_ir`/`dc_red`. An earlier version of
+this mirror added a separate `spo2_min_i_pd_a` gate on absolute `I_PD_LED1`/`I_PD_LED2`
+magnitude, mirroring the firmware's v0.38 design — **removed in lib v0.40** after analysis
+showed it rarely detected an actual no-finger condition (a transmittance probe with no finger
+shows HIGH OT, not low i_pd) and mostly duplicated RSQM's own disconnected classification. AC
+keeps a separate, non-user-adjustable numerical guard `FW_SPO2_AC_DIV_EPS` (`1e-9`, on
+`rms_ac_ir` only) — AC legitimately gets tiny at low PI, so conflating it with the DC floor
+above would wrongly invalidate valid low-perfusion signals (this was tried first and broke
+4/7 native `test_spo2` cases before the two roles were split apart).
+
+`DC LED1/LED2` and `RMS AC LED1/LED2` are displayed in ppm (×1e6) in SpO2TestWindow's plots
+and value table, consistent with `OT_LED1`/`OT_LED2` in SIGNAL STATS.
 
 ### 5.3 HR1TestCalc
 
@@ -692,14 +701,14 @@ Layout: left 6 stacked plots + right parameter/values panel.
 5. DC OT_LED1 (IR) + DC OT_LED2 (RED) [ppm]
 6. RMS AC OT_LED1 (IR) + RMS AC OT_LED2 (RED) [ppm]
 
-**Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup, Min I_PD [µA]),
+**Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup, Min OT DC [ppm]),
 live current-values table, [EXPORT CSV] button, [LOAD CSV] for offline reprocessing.
 
-**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`/`OT_LED2` +
-`I_PD_LED1`/`I_PD_LED2`, none of which travel in `$M1`/`$M2`/`$M3`. Live mode shows a
-status-bar warning and stops feeding the calc when the active mode is not `$M4`. [LOAD CSV]
-only accepts `$M4` rows — a file with no `$M4` samples raises a clear error instead of
-silently reprocessing stale/zero data.
+**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`/`OT_LED2`,
+which do not travel in `$M1`/`$M2`/`$M3`. Live mode shows a status-bar warning and stops
+feeding the calc when the active mode is not `$M4`. [LOAD CSV] only accepts `$M4` rows — a
+file with no `$M4` samples raises a clear error instead of silently reprocessing stale/zero
+data.
 
 ### 7.8 HR1TestWindow — "HR1TEST"
 
@@ -1122,6 +1131,51 @@ pyqtgraph context menus from being too narrow to read.
 
 ## 12. Changelog
 
+### v1.22 — 2026-07-15
+
+**Mirrors lib v0.40-experiment: removed the `spo2_min_i_pd_a` "no-finger" gate added in
+v1.19.** Analysis showed it rarely detected an actual no-finger condition (a transmittance
+probe with no finger shows HIGH OT, not low i_pd) and mostly duplicated, with a
+weaker/uncalibrated criterion, RSQM's own `PROBE_DISCONNECTED` classification.
+
+- `SpO2TestCalc.update()` simplified to `(ot_ir, ot_red, fs)` — no more `i_pd_ir`/`i_pd_red`.
+- Replaced by `spo2_min_ot_dc` (A/A, `1e-6` placeholder default), applied only to
+  `dc_ir`/`dc_red`. AC keeps a separate, non-user-adjustable numerical guard
+  `FW_SPO2_AC_DIV_EPS` (`1e-9`, on `rms_ac_ir` only) — conflating the two into one shared
+  threshold was tried first and broke 4/7 native `test_spo2` cases (AC legitimately gets tiny
+  at low PI, e.g. PI=0.5% on typical DC gives AC≈7e-8, far below a physiologically-motivated
+  DC floor).
+- UI: "Min I_PD [µA]" spinbox → "Min OT DC [ppm]" (`_spin_min_ot_dc_ppm`), tooltip rewritten.
+- CSV offline loader and live feed for SpO2TestWindow no longer read/pass
+  `I_PD_LED1`/`I_PD_LED2` (still parsed/displayed elsewhere — SIGNAL STATS, AFESweepTestWindow
+  — just no longer fed to `SpO2TestCalc`).
+- Native test suite: `test_spo2.cpp` test 2 renamed `test_spo2_no_finger_invalid` →
+  `test_spo2_low_dc_invalid`, now feeds flat OT below `spo2_min_ot_dc` instead of low i_pd.
+  7/7 `test_spo2` + 33/33 other native tests pass (see incunest_afe4490_spec.md v0.40
+  changelog for the library-side change).
+
+### v1.21 — 2026-07-15
+- SIGNALS2 (`PPGSignals2Window`): `spin_window_s` (the "Window (s)" duration spinbox)
+  font-size increased 32px → 40px, then further to 56px (first bump read as still too small)
+  + `setMinimumHeight(64)` so the larger glyphs aren't clipped. Slot-3 curve/dot color changed
+  from pink `#FF66FF` to red `#FF4444` (`_SLOT_COLORS`) — same red tone already used elsewhere
+  in the app for LED2/RED curves, for visual consistency.
+- Clarified after the fact: the "font still too small" feedback was actually about the 9
+  signal-selection combos (`_COMBO_STYLE`), not `spin_window_s`. Combo font-size doubled
+  17px → 34px; each graph's combo-group column widened `setFixedWidth` 220px → 420px so
+  long signal names (e.g. `V_TIA_DIFF_ALED1`) aren't clipped at the larger size. Slot-1
+  color changed from white `#FFFFFF` to yellow `#FFDD44` (`_SLOT_COLORS`) — same yellow tone
+  used elsewhere in the app (e.g. SpO2 fw curve).
+- Both sizes walked back down: `spin_window_s` font-size 56px → 37px (one third smaller);
+  combo font-size 34px → 18px, with the combo-group column reverted 420px → 220px (18px is
+  close enough to the original 17px that the wider column is no longer needed).
+- Combo font-size nudged back up 18px → 28px; combo-group column widened 220px → 360px
+  (scaled proportionally) so long signal names stay readable at 28px.
+- `_COMBO_STYLE` (fixed constant) → `_combo_style(color)` (static method): each combo's own
+  displayed text is now tinted with its slot's `_SLOT_COLORS` entry (yellow/cyan/red),
+  matching its plotted curve. The dropdown list itself stays neutral `#E0E0E0` so all entries
+  remain legible regardless of slot.
+
 ### v1.20 — 2026-07-15
 - Added `faulthandler.enable(file=..., all_threads=True)` at module top (before any other
   import), writing to `faulthandler.log`. Diagnostic addition to investigate abrupt,
@@ -1159,13 +1213,16 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
 - Out of scope (intentionally left on raw `LED1_SUB`/`LED2_SUB`, analogous unmigrated mirrors):
   `SpO2LocalCalc`/SpO2LabWindow ("SPO2LAB"), `HRFFTCalc`/`self.hr3_calc` ("HR3LAB"), `PICalc`
   ("PILAB").
-- **Known pre-existing bug found during this work, NOT fixed (separate from the OT
-  migration):** the "raw" CSV format branch (`FrameMode` header, i.e. normal captures saved
-  via the main [SAVE] button) of `_process_csv_offline()` in `SpO2TestWindow`, `HR1TestWindow`,
-  and `HR2TestWindow` reads the firmware reference columns (SpO2/R/SQI or HR1/HR2 + SQI) one
-  column too early — e.g. SpO2TestWindow's `spo2_fw` actually reads `PPG_DISP`, `R_fw` reads
-  `SpO2_SQI`, `sqi_fw` reads `SpO2`. `HR3TestWindow`'s equivalent code and the `is_chk` CSV
-  format branch (all 4 windows) are correctly indexed. Needs a dedicated fix.
+- **Pre-existing bug found and fixed as a side effect of this work:** the "raw" CSV format
+  branch (`FrameMode` header, i.e. normal captures saved via the main [SAVE] button) of
+  `_process_csv_offline()` in `SpO2TestWindow`, `HR1TestWindow`, and `HR2TestWindow` used to
+  read the firmware reference columns (SpO2/R/SQI or HR1/HR2 + SQI) one column too early —
+  e.g. SpO2TestWindow's `spo2_fw` actually read `PPG_DISP`, `R_fw` read `SpO2_SQI`, `sqi_fw`
+  read `SpO2`. Rewriting these branches to require `$M4` used the correct `row[2+partsIdx]`
+  mapping throughout, which incidentally fixed the pre-existing off-by-one (verified against
+  a synthetic CSV row with one distinct value per column — see commit `ca14dbf`).
+  `HR3TestWindow`'s equivalent code and the `is_chk` CSV format branch (all 4 windows) were
+  already correctly indexed before this session.
 
 ### v1.18 — 2026-07-15
 - SIGNALS2: font size increased for the 9 signal-selection combos (13px → 17px) and for the

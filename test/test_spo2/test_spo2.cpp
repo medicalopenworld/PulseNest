@@ -4,8 +4,12 @@
 
 // EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs): SpO2 now consumes OT
 // (dimensionless A/A, ~1e-5 typical per incunest_afe4490_spec.md) instead of raw
-// ambient-corrected ADC counts. i_pd (Amps) drives the no-finger gate separately — see
-// _update_spo2() rationale in incunest_afe4490.cpp.
+// ambient-corrected ADC counts. No-signal detection is a single absolute-magnitude floor on
+// the resulting OT DC (spo2_min_ot_dc) — see _update_spo2() rationale in incunest_afe4490.cpp.
+// (A separate i_pd-based "no-finger" gate existed briefly during this experiment and was
+// removed: analysis showed it rarely detected an actual no-finger condition — a transmittance
+// probe with no finger typically shows HIGH OT, not low i_pd — and mostly duplicated, with a
+// weaker/uncalibrated criterion, what RSQM's own disconnected classification already covers.)
 //
 // Default calibration coefficients (must match incunest_afe4490.cpp)
 static constexpr float SPO2_A = 114.9208f;
@@ -23,10 +27,9 @@ static constexpr int WARMUP_SAMPLES = 9500;
 // not something this experiment changes or fixes.
 static constexpr int CONVERGED_SAMPLES = 40000;
 
-// Typical OT DC magnitude (per spec: APPLIED ~1.4e-5). i_pd well above the no-finger
-// threshold (spo2_min_i_pd_a = 1e-7 A placeholder).
-static constexpr float OT_DC   = 1.4e-5f;
-static constexpr float I_PD_OK = 5e-6f;   // 5 uA — comfortably above spo2_min_i_pd_a
+// Typical OT DC magnitude (per spec: APPLIED ~1.4e-5) — comfortably above spo2_min_ot_dc
+// (1e-6 placeholder).
+static constexpr float OT_DC = 1.4e-5f;
 
 // Helper: feed N samples of dual-channel sines (same freq, different AC amplitude), scaled
 // into OT units. IR: DC=OT_DC, AC=a_ir*scale. RED: DC=OT_DC, AC=a_red*scale.
@@ -40,7 +43,7 @@ static void feed_spo2_sine(INCUNEST_AFE4490& afe,
         float phase = 2.0f * (float)M_PI * freq_hz * i / fs;
         float ot_ir  = OT_DC + a_ir  * scale * sinf(phase);
         float ot_red = OT_DC + a_red * scale * sinf(phase);
-        afe.test_feed_spo2(ot_ir, ot_red, I_PD_OK, I_PD_OK);
+        afe.test_feed_spo2(ot_ir, ot_red);
     }
 }
 
@@ -54,12 +57,13 @@ void test_spo2_not_valid_during_warmup() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
 }
 
-// ── Test 2: no finger (i_pd too low) → invalid ───────────────────────────────
-// spo2_min_i_pd_a = 1e-7. Feeding i_pd=1e-8 (below threshold) should keep spo2_sqi at 0.
-void test_spo2_no_finger_invalid() {
+// ── Test 2: no real signal (OT DC too low) → invalid ─────────────────────────
+// spo2_min_ot_dc = 1e-6. Feeding a flat OT DC of 1e-7 (below threshold, no AC at all) should
+// keep spo2_sqi at 0 — both the no-signal floor and the zero-AC/PI path forbid validity.
+void test_spo2_low_dc_invalid() {
     INCUNEST_AFE4490 afe;
     for (int i = 0; i < WARMUP_SAMPLES; i++)
-        afe.test_feed_spo2(OT_DC, OT_DC, 1e-8f, 1e-8f);  // i_pd below no-finger threshold
+        afe.test_feed_spo2(1e-7f, 1e-7f);  // OT DC below spo2_min_ot_dc
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
 }
 
@@ -119,7 +123,7 @@ void test_spo2_r_invariant_to_uniform_scale() {
         float phase = 2.0f * (float)M_PI * 1.0f * i / fs;
         float ot_ir  = k * (OT_DC + 10000.0f * scale * sinf(phase));
         float ot_red = k * (OT_DC + 5538.0f  * scale * sinf(phase));
-        afe_b.test_feed_spo2(ot_ir, ot_red, I_PD_OK, I_PD_OK);
+        afe_b.test_feed_spo2(ot_ir, ot_red);
     }
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe_b.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(0.05f, afe_a.test_spo2(), afe_b.test_spo2());
@@ -129,7 +133,7 @@ void test_spo2_r_invariant_to_uniform_scale() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_spo2_not_valid_during_warmup);
-    RUN_TEST(test_spo2_no_finger_invalid);
+    RUN_TEST(test_spo2_low_dc_invalid);
     RUN_TEST(test_spo2_98_percent);
     RUN_TEST(test_spo2_90_percent);
     RUN_TEST(test_spo2_clamp_above_100);

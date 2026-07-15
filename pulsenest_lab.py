@@ -491,7 +491,7 @@ class SpO2TestCalc:
     Independent reimplementation of firmware _update_spo2() from incunest_afe4490_spec.md §5.1.
     Purpose: post-implementation verification — compare against firmware output to detect bugs.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.38-experiment):
+    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.40-experiment):
     input is OT_LED1/OT_LED2 [A/A] (gain-invariant optical transmittance), not the raw
     ambient-corrected counts (LED1_SUB/LED2_SUB) used before this migration. OT only travels
     in the $M4 frame — this mirror requires $M4 (live) or a CSV captured in $M4.
@@ -506,15 +506,18 @@ class SpO2TestCalc:
       PI = (RMS_AC_ir / DC_ir) × 100 →
       SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1)  [forced to 0 if SpO2 out of range]
 
-    No-finger gate: absolute magnitude of I_PD_LED1/I_PD_LED2 [A] (NOT the OT ratio itself,
-    which is unreliable near zero signal — numerator and denominator both tiny).
+    No-signal gate: absolute floor on OT DC (dc_ir/dc_red), NOT a separate i_pd-based gate
+    (removed lib v0.40 — analysis showed it rarely detected an actual no-finger condition and
+    mostly duplicated RSQM's own disconnected classification). AC keeps a separate, purely
+    numerical div-by-zero guard (AC legitimately gets tiny at low PI — conflating the two into
+    one shared threshold was tried first and wrongly invalidated valid low-perfusion signals).
     """
 
     # Firmware defaults — must match incunest_afe4490_spec.md §5.1 and incunest_afe4490.cpp constants
     FW_DC_IIR_TAU_S    = 2.0    # spo2_ema_mean_tau_s (EmaChannel τ_mean)
     FW_AC_EMA_TAU_S    = 6.0    # spo2_ema_var_tau_s  (EmaChannel τ_var, ISO 80601-2-61:2026 JJ.2 d ≥ 6 s)
-    FW_SPO2_MIN_I_PD_A = 1e-7   # spo2_min_i_pd_a — no-finger gate, absolute i_pd magnitude [A]
-    FW_SPO2_OT_DIV_EPS = 1e-9   # spo2_ot_div_eps — numerical div-by-zero guard (OT scale ~1e-5)
+    FW_SPO2_MIN_OT_DC  = 1e-6   # spo2_min_ot_dc — OT DC floor: below this, no real signal [A/A]
+    FW_SPO2_AC_DIV_EPS = 1e-9   # spo2_ac_div_eps — numerical guard on AC only, not user-adjustable
     FW_WARMUP_S        = 18.0   # spo2_warmup_s = 3 × τ_var
     FW_SPO2_A          = 114.9208
     FW_SPO2_B          =  30.5547
@@ -525,12 +528,12 @@ class SpO2TestCalc:
 
     def __init__(self):
         # User-adjustable parameters (start at firmware defaults)
-        self.dc_iir_tau_s   = self.FW_DC_IIR_TAU_S
-        self.ac_ema_tau_s   = self.FW_AC_EMA_TAU_S
-        self.spo2_min_i_pd_a = self.FW_SPO2_MIN_I_PD_A
-        self.warmup_s       = self.FW_WARMUP_S
-        self.spo2_a         = self.FW_SPO2_A
-        self.spo2_b         = self.FW_SPO2_B
+        self.dc_iir_tau_s  = self.FW_DC_IIR_TAU_S
+        self.ac_ema_tau_s  = self.FW_AC_EMA_TAU_S
+        self.spo2_min_ot_dc = self.FW_SPO2_MIN_OT_DC
+        self.warmup_s      = self.FW_WARMUP_S
+        self.spo2_a        = self.FW_SPO2_A
+        self.spo2_b        = self.FW_SPO2_B
         # Internal state
         self._fs           = 0.0
         self._alpha        = 0.0
@@ -553,24 +556,24 @@ class SpO2TestCalc:
 
     def reset_to_defaults(self):
         """Restore all parameters to firmware defaults and reset state."""
-        self.dc_iir_tau_s     = self.FW_DC_IIR_TAU_S
-        self.ac_ema_tau_s     = self.FW_AC_EMA_TAU_S
-        self.spo2_min_i_pd_a  = self.FW_SPO2_MIN_I_PD_A
-        self.warmup_s         = self.FW_WARMUP_S
-        self.spo2_a           = self.FW_SPO2_A
-        self.spo2_b           = self.FW_SPO2_B
+        self.dc_iir_tau_s   = self.FW_DC_IIR_TAU_S
+        self.ac_ema_tau_s   = self.FW_AC_EMA_TAU_S
+        self.spo2_min_ot_dc = self.FW_SPO2_MIN_OT_DC
+        self.warmup_s       = self.FW_WARMUP_S
+        self.spo2_a         = self.FW_SPO2_A
+        self.spo2_b         = self.FW_SPO2_B
         self.reset()
 
     @property
     def using_defaults(self):
         """True when all parameters equal their firmware defaults."""
         return (
-            self.dc_iir_tau_s     == self.FW_DC_IIR_TAU_S     and
-            self.ac_ema_tau_s     == self.FW_AC_EMA_TAU_S     and
-            self.spo2_min_i_pd_a  == self.FW_SPO2_MIN_I_PD_A  and
-            self.warmup_s         == self.FW_WARMUP_S         and
-            self.spo2_a           == self.FW_SPO2_A           and
-            self.spo2_b           == self.FW_SPO2_B
+            self.dc_iir_tau_s   == self.FW_DC_IIR_TAU_S   and
+            self.ac_ema_tau_s   == self.FW_AC_EMA_TAU_S   and
+            self.spo2_min_ot_dc == self.FW_SPO2_MIN_OT_DC and
+            self.warmup_s       == self.FW_WARMUP_S       and
+            self.spo2_a         == self.FW_SPO2_A         and
+            self.spo2_b         == self.FW_SPO2_B
         )
 
     def _recalc_params(self, fs):
@@ -584,14 +587,13 @@ class SpO2TestCalc:
         self._ac2_red  = 0.0
         self._sample_count = 0
 
-    def update(self, ot_ir, ot_red, i_pd_ir, i_pd_red, fs):
+    def update(self, ot_ir, ot_red, fs):
         """Process one sample. Always returns a dict with intermediates.
 
         Parameters
         ----------
-        ot_ir, ot_red     : float — OT_LED1/OT_LED2 [A/A], gain-invariant optical transmittance
-        i_pd_ir, i_pd_red : float — I_PD_LED1/I_PD_LED2 [A], absolute magnitude for the no-finger gate
-        fs                : float — sample rate (Hz)
+        ot_ir, ot_red : float — OT_LED1/OT_LED2 [A/A], gain-invariant optical transmittance
+        fs            : float — sample rate (Hz)
 
         Returns
         -------
@@ -625,12 +627,11 @@ class SpO2TestCalc:
         nan = float('nan')
 
         warmup_done = self._sample_count >= self._warmup_n
-        # No-finger gate: absolute i_pd magnitude, NOT the OT ratio (unreliable near zero signal)
-        finger_ok = (abs(i_pd_ir) >= self.spo2_min_i_pd_a and abs(i_pd_red) >= self.spo2_min_i_pd_a)
-
-        if (not warmup_done or not finger_ok or
-                self._dc_ir < self.FW_SPO2_OT_DIV_EPS or self._dc_red < self.FW_SPO2_OT_DIV_EPS or
-                rms_ac_ir < self.FW_SPO2_OT_DIV_EPS):
+        # DC no-signal floor (user-adjustable) + AC division-safety guard (fixed, not
+        # user-adjustable — AC legitimately gets tiny at low PI, not a physiological threshold)
+        if (not warmup_done or
+                self._dc_ir < self.spo2_min_ot_dc or self._dc_red < self.spo2_min_ot_dc or
+                rms_ac_ir < self.FW_SPO2_AC_DIV_EPS):
             return {
                 'dc_ir': self._dc_ir, 'dc_red': self._dc_red,
                 'rms_ac_ir': rms_ac_ir, 'rms_ac_red': rms_ac_red,
@@ -1861,7 +1862,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._spin_dc_tau  = _dspin(0.1,    20.0,   SpO2TestCalc.FW_DC_IIR_TAU_S, 1, 0.1,  " s")
         self._spin_ac_tau  = _dspin(0.1,    20.0,   SpO2TestCalc.FW_AC_EMA_TAU_S, 1, 0.1,  " s")
         self._spin_warmup  = _dspin(0.0,    60.0,   SpO2TestCalc.FW_WARMUP_S,     1, 0.5,  " s")
-        self._spin_min_i_pd_a = _dspin(0.0, 1000.0, SpO2TestCalc.FW_SPO2_MIN_I_PD_A * 1e6, 3, 0.01, " µA")
+        self._spin_min_ot_dc_ppm = _dspin(0.0, 1000.0, SpO2TestCalc.FW_SPO2_MIN_OT_DC * 1e6, 3, 0.01, " ppm")
 
         self._spin_a.setToolTip(_make_tooltip(
             "SpO2 coefficient a",
@@ -1888,13 +1889,15 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             "Number of seconds before the algorithm starts outputting valid SpO2 [s]. "
             "Firmware default: 5.0 s.",
             src="spo2_warmup_s"))
-        self._spin_min_i_pd_a.setToolTip(_make_tooltip(
-            "Min I_PD magnitude",
-            "No-finger gate: minimum absolute magnitude of I_PD on both IR and RED channels "
-            "to produce a valid SpO2 [µA]. Firmware default: 0.1 µA (1e-7 A). Below this on "
-            "either channel → no finger detected. Gates on absolute i_pd, NOT the OT ratio — "
-            "OT is unreliable near zero signal (EXPERIMENT: OT-domain input, lib v0.38).",
-            src="spo2_min_i_pd_a"))
+        self._spin_min_ot_dc_ppm.setToolTip(_make_tooltip(
+            "Min OT DC [ppm]",
+            "No-signal floor: minimum OT DC level (dc_ir/dc_red) to produce a valid SpO2 "
+            "[ppm, OT ×1e6]. Firmware default: 1.0 ppm (1e-6 A/A). Below this on either "
+            "channel → no real signal (DC should not legitimately collapse this low while a "
+            "probe is genuinely present). AC keeps its own separate, non-adjustable numerical "
+            "guard — conflating the two would wrongly invalidate valid low-perfusion signals "
+            "(EXPERIMENT: OT-domain input, lib v0.40 — replaces the earlier i_pd-based gate).",
+            src="spo2_min_ot_dc"))
 
         _lbl = lambda t: (lambda: (w := QtWidgets.QLabel(t), w.setStyleSheet(_lbl_style), w)[-1])()
         form.addRow(_lbl("SpO2  a"),    self._spin_a)
@@ -1902,7 +1905,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         form.addRow(_lbl("DC τ"),       self._spin_dc_tau)
         form.addRow(_lbl("AC τ"),       self._spin_ac_tau)
         form.addRow(_lbl("Warmup"),     self._spin_warmup)
-        form.addRow(_lbl("Min I_PD"),   self._spin_min_i_pd_a)
+        form.addRow(_lbl("Min OT DC [ppm]"), self._spin_min_ot_dc_ppm)
 
         right_vbox.addWidget(grp_params)
 
@@ -1951,7 +1954,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
         # Connect parameter spinboxes to update handler
         for sp in [self._spin_a, self._spin_b, self._spin_dc_tau,
-                   self._spin_ac_tau, self._spin_warmup, self._spin_min_i_pd_a]:
+                   self._spin_ac_tau, self._spin_warmup, self._spin_min_ot_dc_ppm]:
             sp.valueChanged.connect(self._on_param_changed)
 
         # Cached arrays for offline/live plotting
@@ -1974,12 +1977,12 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     def _on_param_changed(self):
         """Called when any parameter spinbox changes. Pushes values to calc and updates indicator."""
-        self._calc.dc_iir_tau_s    = self._spin_dc_tau.value()
-        self._calc.ac_ema_tau_s    = self._spin_ac_tau.value()
-        self._calc.spo2_min_i_pd_a = self._spin_min_i_pd_a.value() * 1e-6   # µA → A
-        self._calc.warmup_s        = self._spin_warmup.value()
-        self._calc.spo2_a       = self._spin_a.value()
-        self._calc.spo2_b       = self._spin_b.value()
+        self._calc.dc_iir_tau_s  = self._spin_dc_tau.value()
+        self._calc.ac_ema_tau_s  = self._spin_ac_tau.value()
+        self._calc.spo2_min_ot_dc = self._spin_min_ot_dc_ppm.value() * 1e-6   # ppm → A/A
+        self._calc.warmup_s      = self._spin_warmup.value()
+        self._calc.spo2_a        = self._spin_a.value()
+        self._calc.spo2_b        = self._spin_b.value()
         self._calc.reset()   # reset filter state when params change
         self._last_sample_cnt = -1
         self._t0_us = None
@@ -1997,9 +2000,9 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             sp.blockSignals(True)
             sp.setValue(getattr(SpO2TestCalc, attr))
             sp.blockSignals(False)
-        self._spin_min_i_pd_a.blockSignals(True)
-        self._spin_min_i_pd_a.setValue(SpO2TestCalc.FW_SPO2_MIN_I_PD_A * 1e6)   # A → µA
-        self._spin_min_i_pd_a.blockSignals(False)
+        self._spin_min_ot_dc_ppm.blockSignals(True)
+        self._spin_min_ot_dc_ppm.setValue(SpO2TestCalc.FW_SPO2_MIN_OT_DC * 1e6)   # A/A → ppm
+        self._spin_min_ot_dc_ppm.blockSignals(False)
         self._calc.reset_to_defaults()
         self._last_sample_cnt = -1
         self._t0_us = None
@@ -2039,15 +2042,13 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
     def _process_csv_offline(self, path):
         """Parse a CSV file and batch-process all samples through SpO2TestCalc.
 
-        EXPERIMENT (OT-domain input): SpO2TestCalc now requires OT_LED1/OT_LED2 and
-        I_PD_LED1/I_PD_LED2, which only travel in the $M4 frame — rows captured in
-        $M1/$M2/$M3 are skipped. A file with no $M4 rows raises a clear error.
+        EXPERIMENT (OT-domain input): SpO2TestCalc now requires OT_LED1/OT_LED2, which only
+        travel in the $M4 frame — rows captured in $M1/$M2/$M3 are skipped. A file with no
+        $M4 rows raises a clear error.
         """
         import csv as _csv
-        rows_ot_ir    = []
-        rows_ot_red   = []
-        rows_i_pd_ir  = []
-        rows_i_pd_red = []
+        rows_ot_ir   = []
+        rows_ot_red  = []
         rows_spo2_fw = []
         rows_R_fw    = []
         rows_sqi_fw  = []
@@ -2081,12 +2082,10 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                                 saw_any_frame = True
                             if len(parts) < 34 or parts[0] != '$M4':
                                 continue
-                        # $M4,SmpCnt,Ts_us,...,27:I_PD_LED1,28:I_PD_LED2,...,31:OT_LED1,32:OT_LED2
+                        # $M4,SmpCnt,Ts_us,...,31:OT_LED1,32:OT_LED2
                         ts_us     = float(parts[2])
                         ot_ir     = float(parts[31])
                         ot_red    = float(parts[32])
-                        i_pd_ir   = float(parts[27])
-                        i_pd_red  = float(parts[28])
                         spo2_fw   = float(parts[10])
                         R_fw      = float(parts[12])
                         sqi_fw    = float(parts[11])
@@ -2103,8 +2102,6 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         ts_us     = float(row[2 + 2])
                         ot_ir     = float(row[2 + 31])
                         ot_red    = float(row[2 + 32])
-                        i_pd_ir   = float(row[2 + 27])
-                        i_pd_red  = float(row[2 + 28])
                         spo2_fw   = float(row[2 + 10])
                         R_fw      = float(row[2 + 12])
                         sqi_fw    = float(row[2 + 11])
@@ -2113,8 +2110,6 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                     rows_ts_us.append(ts_us)
                     rows_ot_ir.append(ot_ir)
                     rows_ot_red.append(ot_red)
-                    rows_i_pd_ir.append(i_pd_ir)
-                    rows_i_pd_red.append(i_pd_red)
                     rows_spo2_fw.append(spo2_fw if spo2_fw >= 0 else float('nan'))
                     rows_R_fw.append(R_fw if R_fw >= 0 else float('nan'))
                     rows_sqi_fw.append(sqi_fw if sqi_fw >= 0 else float('nan'))
@@ -2124,9 +2119,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         if not rows_ts_us:
             if saw_any_frame:
                 raise ValueError(
-                    "No $M4 samples found in the file. SpO2TestCalc requires OT_LED1/OT_LED2 "
-                    "and I_PD_LED1/I_PD_LED2, which only travel in $M4 — recapture with frame "
-                    "mode $M4 active.")
+                    "No $M4 samples found in the file. SpO2TestCalc requires OT_LED1/OT_LED2, "
+                    "which only travel in $M4 — recapture with frame mode $M4 active.")
             raise ValueError("No valid samples found in the file.")
 
         # Determine sample rate from timestamps
@@ -2157,9 +2151,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         arr_rms_ir   = np.full(len(rows_ot_ir), nan)
         arr_rms_red  = np.full(len(rows_ot_ir), nan)
 
-        for i, (ot_ir, ot_red, i_pd_ir, i_pd_red) in enumerate(
-                zip(rows_ot_ir, rows_ot_red, rows_i_pd_ir, rows_i_pd_red)):
-            r = self._calc.update(ot_ir, ot_red, i_pd_ir, i_pd_red, fs)
+        for i, (ot_ir, ot_red) in enumerate(zip(rows_ot_ir, rows_ot_red)):
+            r = self._calc.update(ot_ir, ot_red, fs)
             arr_dc_ir[i]   = r['dc_ir']
             arr_dc_red[i]  = r['dc_red']
             arr_rms_ir[i]  = r['rms_ac_ir']
@@ -2246,14 +2239,14 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     # ── Live update (called from PPGMonitor) ──────────────────────────────────
 
-    def update_algorithms(self, data_ot_led1, data_ot_led2, data_i_pd_led1, data_i_pd_led2,
+    def update_algorithms(self, data_ot_led1, data_ot_led2,
                           data_spo2, data_spo2_r, data_spo2_sqi,
                           data_timestamp_us, data_sample_counter):
         """Run per-sample algorithm (called from PPGMonitor._process_frames_tick).
 
-        data_ot_led1/data_ot_led2 and data_i_pd_led1/data_i_pd_led2 are only meaningful
-        while frame mode $M4 is active — otherwise they are firmware-side zero-filled
-        (see PPGMonitor's $M3/$M4 parser) and the no-finger gate keeps SpO2/sqi invalid.
+        data_ot_led1/data_ot_led2 are only meaningful while frame mode $M4 is active —
+        otherwise they are firmware-side zero-filled (see PPGMonitor's $M3/$M4 parser) and
+        the OT DC no-signal floor keeps SpO2/sqi invalid.
         """
         if self._offline_mode:
             return
@@ -2288,11 +2281,9 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         nan = float('nan')
         r = None
         for i in new_indices:
-            ts       = float(data_timestamp_us[i])
-            ot_ir    = float(data_ot_led1[i])
-            ot_red   = float(data_ot_led2[i])
-            i_pd_ir  = float(data_i_pd_led1[i])
-            i_pd_red = float(data_i_pd_led2[i])
+            ts     = float(data_timestamp_us[i])
+            ot_ir  = float(data_ot_led1[i])
+            ot_red = float(data_ot_led2[i])
             spo2_f = float(data_spo2[i])
             R_f    = float(data_spo2_r[i])
             sqi_f  = float(data_spo2_sqi[i])
@@ -2301,7 +2292,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            r = self._calc.update(ot_ir, ot_red, i_pd_ir, i_pd_red, SPO2_RECEIVED_FS)
+            r = self._calc.update(ot_ir, ot_red, SPO2_RECEIVED_FS)
 
             spo2_fw_v = spo2_f if spo2_f >= 0 else nan
             R_fw_v    = R_f    if R_f    >= 0 else nan
@@ -8264,7 +8255,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
         ("CH_MASKS", "data_ch_masks"),
     ]
     _NONE = "— none —"
-    _SLOT_COLORS = ["#FFFFFF", "#00CCFF", "#FF66FF"]
+    _SLOT_COLORS = ["#FFDD44", "#00CCFF", "#FF4444"]
     # Default selection on first-ever launch (no saved settings): a useful starting point
     # for cross-checking the OT-domain migration — raw vs OT vs algorithm result.
     _DEFAULTS = [
@@ -8272,12 +8263,16 @@ class PPGSignals2Window(QtWidgets.QWidget):
         ["LED2_SUB", "OT_LED2", "R"],
         ["HR1", "HR2", "HR3"],
     ]
-    _COMBO_STYLE = (
-        "QComboBox { background-color:#2A2A2A; color:#E0E0E0; font-size:17px; "
-        "border:1px solid #555555; border-radius:3px; padding:3px 6px; }"
-        "QComboBox QAbstractItemView { background-color:#2A2A2A; color:#E0E0E0; "
-        "font-size:17px; selection-background-color:#404040; }"
-    )
+    @staticmethod
+    def _combo_style(color):
+        """Combo stylesheet with the box's own text tinted `color` (matching its slot's
+        curve color); the dropdown list itself stays neutral so all entries stay legible."""
+        return (
+            f"QComboBox {{ background-color:#2A2A2A; color:{color}; font-size:28px; "
+            "border:1px solid #555555; border-radius:3px; padding:3px 6px; }"
+            "QComboBox QAbstractItemView { background-color:#2A2A2A; color:#E0E0E0; "
+            "font-size:28px; selection-background-color:#404040; }"
+        )
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -8332,8 +8327,9 @@ class PPGSignals2Window(QtWidgets.QWidget):
         self.spin_window_s.setValue(int(WINDOW_SIZE / SPO2_RECEIVED_FS))
         self.spin_window_s.setSuffix(" s")
         self.spin_window_s.setStyleSheet(
-            "QSpinBox { background-color: #2A2A2A; color: #E0E0E0; font-size: 32px; "
-            "border: 1px solid #555555; border-radius: 3px; padding: 2px 8px; }")
+            "QSpinBox { background-color: #2A2A2A; color: #E0E0E0; font-size: 37px; "
+            "border: 1px solid #555555; border-radius: 3px; padding: 4px 10px; }")
+        self.spin_window_s.setMinimumHeight(64)
         self.spin_window_s.setToolTip(_make_tooltip(
             "Window duration",
             f"Duration of the visible time window in the plots. Range: 1–{SIG_MAX_S} s. "
@@ -8375,12 +8371,12 @@ class PPGSignals2Window(QtWidgets.QWidget):
                 "QGroupBox { color: #AAAAAA; font-size: 13px; border: 1px solid #444444; "
                 "border-radius: 4px; margin-top: 8px; padding-top: 6px; } "
                 "QGroupBox::title { subcontrol-origin: margin; left: 8px; }")
-            group.setFixedWidth(220)
+            group.setFixedWidth(360)
             group_layout = QtWidgets.QVBoxLayout(group)
             for slot in range(3):
                 combo = QtWidgets.QComboBox()
                 combo.addItems(signal_names)
-                combo.setStyleSheet(self._COMBO_STYLE)
+                combo.setStyleSheet(self._combo_style(self._SLOT_COLORS[slot]))
                 combo.setToolTip(_make_tooltip(
                     f"Graph {g + 1}, slot {slot + 1}",
                     "Pick any parsed $M1-$M4 signal to plot in this slot, or "
@@ -12391,7 +12387,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     _t0a = time.perf_counter()
                     self.spo2test_window.update_algorithms(
                         self.data_ot2_led1, self.data_ot2_led2,
-                        self.data_i_pd_led1, self.data_i_pd_led2,
                         self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
                         self.data_timestamp_us, self.data_sample_counter)
                     self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
