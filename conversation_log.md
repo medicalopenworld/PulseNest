@@ -14010,3 +14010,204 @@ la verificación sea genuina y no "pase por casualidad".
 **Migración OT completa** (SpO2 + HR1 + HR2 + HR3). Pendiente: impacto en
 `pulsenest_lab.py` (4 clases-espejo, ver `project_ot_domain_experiment_task.md`) y decisión
 final de fusionar a `master` o revertir.
+
+### 2026-07-14 (continuación) — Nueva ventana SIGNALS2 (pulsenest_lab.py v1.17)
+
+**Contexto:** antes de decidir cómo verificar que la migración a OT cumple su propósito, el
+usuario pidió una herramienta de visualización más flexible que la ventana SIGNALS actual
+(fija a los 6 canales crudos).
+
+**Implementado:** botón `SIGNALS2` junto a `SIGNALS`, abre `PPGSignals2Window` — 3 gráficas,
+cada una con 3 combos que permiten elegir CUALQUIERA de las 30 señales ya parseadas de
+`$M1`-`$M4` (canales crudos, OT, V_TIA_DIFF, I_PD, SpO2/HR/R/PI, RSQI, DiagCode, ProbeState,
+CH_MASKS). Lee directamente de los buffers ya existentes de `PPGMonitor` (sin acumulación
+propia). Colores fijos por slot (blanco/cian/magenta) en las 3 gráficas. Selección por
+defecto en el primer arranque: Gráfica 1 = LED1_SUB/OT_LED1/SpO2, Gráfica 2 =
+LED2_SUB/OT_LED2/R, Gráfica 3 = HR1/HR2/HR3 — pensada como punto de partida para comparar
+crudo vs OT vs resultado del algoritmo. Selección y geometría persistidas en ajustes.
+Limitación conocida (no resuelta, mencionada al usuario): señales de escala muy distinta
+comparten un solo eje Y por gráfica, sin auto dual-axis.
+
+Verificado: `python -m py_compile` sin errores. Script relanzado (`taskkill` + `start
+pythonw`) para que el usuario lo pruebe visualmente — no verificado por mí en pantalla.
+
+**Sin commitear** (pendiente de que el usuario lo pida, como hizo con el cambio anterior de
+pulsenest_lab.py).
+
+### 2026-07-14 (continuación) — SIGNALS2: layout + duración de ventana + pause
+
+**Cambio pedido:** mover cada grupo de 3 combos a la izquierda de su gráfica (antes estaban
+todos juntos debajo de las 3 gráficas) y añadir control de duración de ventana + botón
+PAUSE/CONTINUE, igual que en SIGNALS.
+
+**Implementado:** 3 filas (combos a la izquierda, gráfica a la derecha) en vez de 3 gráficas
+apiladas + fila de combos debajo. Barra superior compartida con `spin_window_s` (1-SIG_MAX_S,
+persistido) y botón PAUSE. Cada uno de los 9 slots mantiene su propio buffer circular
+independiente (mismo patrón de diff por sample-counter que PPGSignalsWindow), que se limpia y
+re-siembra con el historial actual cada vez que se cambia la señal de ese slot.
+
+Verificado: `python -m py_compile` sin errores. Script relanzado.
+
+### 2026-07-15 — SIGNALS2: tamaños de fuente aumentados + captura de pantalla
+
+**Cambio:** fuente de los 9 combos de señal 13px→17px. Fuente de "Window (s)" (label+spin) y
+del botón PAUSE aumentada mucho más: 14/16/15px → 22/32/32px, para que destaquen claramente
+sobre el resto de controles.
+
+Verificado visualmente: se forzó temporalmente `signals2_open=true` en `pulsenest_lab.ini`
+(vía QSettings, mismo mecanismo de persistencia que ya usa la app) para que la ventana se
+abriera sola al lanzar el script, y se capturó una captura de pantalla (PowerShell +
+Win32 SetWindowPos/CopyFromScreen) que se envió al usuario. Layout confirmado correcto:
+combos a la izquierda de cada gráfica, barra superior con Window(s)+PAUSE en fuente grande.
+
+`python -m py_compile` sin errores. Sin commitear todavía.
+
+### 2026-07-15 (continuación) — PC reiniciado: hook Bash arreglado + clases-espejo migradas a OT (pulsenest_lab v1.19)
+
+**Contexto:** tras un reinicio del PC, se retomó la sesión. De paso se detectó y corrigió un
+hook `PostToolUse:Bash` en `.claude/settings.local.json` que disparaba un aviso falso de
+"pulsenest_lab.py launched" cada vez que la cadena `pulsenest_lab.py` aparecía en la salida de
+CUALQUIER comando Bash (p. ej. `tail conversation_log.md`), no solo al lanzarlo de verdad —
+el `grep` original leía el JSON completo del evento (comando + salida) en vez de solo el
+comando. Arreglado creando `~/.claude/hooks/pulsenest_launch_pre.sh` y
+`pulsenest_launch_post.sh`, que extraen `tool_input.command` con Python y exigen un patrón de
+lanzamiento real (`python(w)?...pulsenest_lab\.py`), igual que el patrón ya usado en
+`code_changed_flag.sh`/`stop_check.sh`. Verificado con un caso inocuo (sin disparo) y uno de
+lanzamiento real (dispara correctamente). Nota: sigue disparando en falso si el propio
+comando de test/compilación contiene literalmente la cadena de lanzamiento (p. ej. `python -m
+py_compile pulsenest_lab.py`) — caso residual aceptado, no bloqueante.
+
+**Tarea principal:** completar el lado Python de la migración a dominio OT
+(`experiment/ot-domain-inputs`) — el firmware ya estaba migrado (SpO2+HR1+HR2+HR3, sesiones
+2026-07-13/14); faltaban las 4 clases-espejo de `pulsenest_lab.py` (`SpO2TestCalc`,
+`HR1TestCalc`, `HR2TestCalc`, `HR3TestCalc`), desincronizadas del firmware desde entonces.
+
+**Decisión de diseño (con el usuario):** exigir `$M4` en vez de reconstruir OT localmente
+desde crudo+RF. Se descubrió que `HGAC_RF1`/`HGAC_RF2`/`HGAC_ALARM` ya viajan en `$M4`
+(`main.cpp:330-331`, lib v0.37) pero `pulsenest_lab.py` no los parsea todavía (gap aparte,
+no resuelto). Como `OT_LED1`/`OT_LED2` YA viajan calculados en `$M4` y ya se parseaban
+(`data_ot2_led1/2`), reconstruir localmente habría sido redundante y con riesgo de
+desincronización silenciosa si HGAC se activa. Se optó por exigir `$M4` directamente.
+
+**Implementado:**
+- `SpO2TestCalc.update()`: `(ir, red, fs)` → `(ot_ir, ot_red, i_pd_ir, i_pd_red, fs)`. Gate de
+  "no hay dedo" `spo2_min_dc` (counts) → `spo2_min_i_pd_a` (magnitud absoluta i_pd, `1e-7` A,
+  UI en µA). Guard numérico de división `< 1.0` → `FW_SPO2_OT_DIV_EPS` (`1e-9`, escala OT).
+  Bug de paso encontrado y arreglado: `reset_to_defaults()` seguía referenciando el atributo
+  viejo `spo2_min_dc` (habría lanzado `AttributeError` al pulsar RESET TO DEFAULTS).
+- `HR1TestCalc`/`HR2TestCalc`/`HR3TestCalc`: solo renombrado de parámetro (`led1_sub`→
+  `ot_led1`), sin recalibrar ningún umbral — confirmado que los 3 algoritmos son invariantes a
+  escala uniforme (igual que ya se había verificado en el firmware).
+- Todos los puntos de alimentación en vivo (`PPGMonitor`) y los 4 `_load_csv`/
+  `_process_csv_offline` de las ventanas TEST actualizados para requerir `$M4`: en vivo
+  muestran aviso en la barra de estado y dejan de alimentar el cálculo si el modo activo no es
+  `$M4`; CSV solo acepta filas `$M4` (ambos formatos `ppg_chk_*` y `ppg_data_raw_*`), con error
+  claro si el fichero no tiene ninguna. `HR1TestWindow` cambió su feed de tasa completa
+  (500 Hz, antes de decimar) de escuchar `$M1` a escuchar `$M4` (`$M1` nunca lleva OT_LED1).
+- Etiquetado en ppm (petición explícita del usuario durante la sesión): plots, leyenda y tabla
+  de valores de `DC`/`RMS AC` en SpO2TestWindow ahora en ppm (×1e6), mismo criterio que
+  `OT_LED1 [ppm]`/`OT_LED2 [ppm]` en SIGNAL STATS (v1.16). Spinbox "Min DC" → "Min I_PD" (µA).
+- Fuera de alcance intencionadamente (mirrors análogos no migrados, incluyen sus propias
+  entradas crudas): `SpO2LocalCalc`/SpO2LabWindow, `HRFFTCalc`/`self.hr3_calc` (HR3LAB),
+  `PICalc`/PILabWindow.
+- **Bug pre-existente encontrado, NO arreglado (fuera de alcance de esta tarea):** en el
+  formato CSV "raw" (cabecera con `FrameMode`, el que genera el botón SAVE normal), los
+  loaders offline de SpO2TestWindow/HR1TestWindow/HR2TestWindow leen las columnas de
+  referencia del firmware una posición antes de la correcta (p. ej. `spo2_fw` de
+  SpO2TestWindow lee en realidad `PPG_DISP`). `HR3TestWindow` y el formato `is_chk` (los 4
+  ventanas) están bien indexados. Documentado en el changelog de la spec; pendiente de fix
+  dedicado.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores (varias veces, tras cada
+bloque de cambios). No verificado con hardware real (requiere HW conectado en `$M4`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` → v1.19 (§5.2-5.5 clases-espejo, §7.7-7.10
+ventanas TEST, changelog v1.18 con el cambio de fuentes de SIGNALS2 del 2026-07-15 anterior
+que había quedado sin versionar, y v1.19 con todo lo de esta sesión).
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+**Pendiente:**
+- Verificar con HW real en `$M4` que las 4 clases-espejo migradas coinciden con firmware.
+- Decidir si arreglar el bug pre-existente de índices en los CSV loaders "raw" (SpO2/HR1/HR2).
+- Parsear `HGAC_RF1`/`HGAC_RF2`/`HGAC_ALARM` en `pulsenest_lab.py` (ya vienen en `$M4`, sin
+  consumidor todavía).
+- Decisión final del experimento OT: fusionar `experiment/ot-domain-inputs` a `master` o
+  revertir (checkpoint de vuelta atrás: tags `hgac-phase1-checkpoint`/`v0.37-hgac-phase1`).
+
+### 2026-07-15 (continuación) — Regla ppm + análisis de arquitectura OT/ppm + rename
+
+**Pregunta del usuario:** en qué capas del código (librería/firmware/script) debería
+expresarse OT_LED1/OT_LED2 en ppm, dado que en A/A (~1e-5) son poco legibles.
+
+**Análisis y recomendación (sin implementar cambios de arquitectura):** mantener A/A crudo en
+librería (`_compute_analog_state()`), firmware (`$M4`, `%.4e`) y almacenamiento del script
+(`data_ot2_led1/2`, entradas de las 4 clases-espejo) — los umbrales ya calibrados a esa escala
+(`spo2_ot_div_eps`, `hr2_ot_energy_eps`, `rsqm_ot_thr`) tendrían que re-derivarse todos sin
+ganancia real (la trama ya es legible en notación científica). ppm solo en la capa de
+visualización del script, como ya estaba en SIGNAL STATS (v1.16) y SpO2TestWindow (v1.19).
+
+**Regla nueva del usuario:** toda magnitud OT expresada en ppm debe llevar el sufijo `ppm`/
+`_ppm` en su identificador (variable, columna, label, leyenda); si sigue en A/A crudo, sin
+sufijo. Guardada en memoria (`feedback_ot_ppm_suffix.md`).
+
+**Revisión y rename aplicado:** los únicos identificadores que ya contenían valores escalados
+a ppm sin decirlo estaban en `SpO2TestWindow`:
+- `_refresh_plots_from_arrays()`: nuevas locales `dc_ir_ppm`/`dc_red_ppm`/`rms_ir_ppm`/
+  `rms_red_ppm` (antes reasignaban `dc_ir`/`dc_red`/`rms_ir`/`rms_red`, que llegan crudos como
+  parámetros).
+- `update_plots()` (tabla en vivo): extraídas a variables nombradas `dc_ir_ppm_v`/
+  `dc_red_ppm_v`/`rms_ir_ppm_v`/`rms_red_ppm_v` en vez de multiplicar inline dentro del
+  literal de `py_vals`.
+
+Resto ya cumplía la regla sin tocar: `OT_LED1 [ppm]`/`OT_LED2 [ppm]` en SIGNAL STATS (v1.16);
+el combo de SIGNALS2 (`"OT_LED1"`/`"OT_LED2"`) correctamente sin sufijo (grafica crudo A/A sin
+escalar); `data_ot2_led1/2` correctamente sin sufijo (almacenamiento crudo).
+
+Verificado: `python -m py_compile` sin errores. Sin commitear todavía (parte de la migración
+OT de la sesión anterior, ya documentada como v1.19 sin commitear).
+
+Memorias guardadas: `feedback_ot_ppm_suffix.md` (regla), `project_pulsenest_ot_ppm_display_task.md`
+(decisión de arquitectura: A/A crudo en librería/firmware/almacenamiento, ppm solo en render).
+
+### 2026-07-15 (continuación) — Investigación: cierre abrupto de pulsenest_lab.py + faulthandler
+
+**Reportado por Alex:** el script se detiene abruptamente, sin causa aparente, "a menudo"
+desde que se añadió la ventana SIGNALS2.
+
+**Investigado:**
+- Patrón de parenting huérfano (causa de crashes anteriores, ver `feedback_window_parenting.md`):
+  descartado — `PPGSignals2Window` se crea con `parent=None` pero SÍ está correctamente
+  incluida en el `closeEvent()` de `PPGMonitor` (`main_monitor=None` + `.close()`).
+- `crash.log` (alimentado por el `sys.excepthook` personalizado, captura excepciones Python no
+  manejadas) **no existe en el proyecto** — dato clave: descarta que el cierre sea una excepción
+  Python normal capturable; apunta a un **crash nativo** (C++/Qt) que ni `sys.excepthook` ni el
+  `try/except` de `_refresh_plots_tick()` pueden interceptar. Con `pythonw` (sin consola) esto
+  es completamente silencioso.
+- **Sospecha principal (sin confirmar todavía):** `PPGSignals2Window` permite combinar
+  libremente cualquier señal en el mismo eje Y compartido (su propio tooltip ya avisa: "OT
+  ~1e-5 vs raw ADC counts ~1e6 no serán legibles en el mismo eje"). El preset por defecto
+  (`_DEFAULTS`) hace justo esa mezcla peligrosa en el Gráfico 1 (`LED1_SUB` ~1e6 + `OT_LED1`
+  ~1e-5 + `SpO2` 0-100 — 11 órdenes de magnitud). Rango así de extremo es un caso límite
+  conocido para el auto-rango de pyqtgraph (cálculo de ticks), que puede fallar dentro del
+  `paintEvent` nativo de Qt, fuera del alcance de cualquier `try/except` Python.
+
+**Implementado (diagnóstico, a petición de Alex):**
+- Añadido `faulthandler.enable(file=..., all_threads=True)` al principio del módulo (antes de
+  cualquier otro import), escribiendo a `faulthandler.log` (fichero nuevo, handle mantenido
+  abierto todo el proceso). A diferencia de `sys.excepthook`, `faulthandler` SÍ captura crashes
+  nativos (segfault) con traceback en C — próxima vez que ocurra el cierre abrupto,
+  `faulthandler.log` debería tener evidencia real.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores.
+
+**Spec actualizada:** `pulsenest_lab_spec.md` → v1.20 (nueva §2.1 "Crash diagnostics"
+documentando `_crash_handler`+`crash.log` y `faulthandler`+`faulthandler.log`; changelog v1.20).
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+**Pendiente:**
+- Esperar a que ocurra el próximo cierre abrupto y revisar `faulthandler.log` para confirmar
+  (o descartar) la hipótesis del crash nativo por auto-rango de pyqtgraph.
+- Si se confirma: decidir fix de fondo — eje Y independiente por slot en SIGNALS2, o bloquear/
+  avisar activamente cuando se combinan señales de escala muy dispar (hoy solo hay tooltip).

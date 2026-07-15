@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.16
+# pulsenest_lab — Specification v1.20
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -35,6 +35,24 @@ Responsibilities:
 | `pyserial` | Serial port access |
 
 Python ≥ 3.9. No PlatformIO or hardware required to run the script.
+
+---
+
+## 2.1 Crash diagnostics
+
+The script is normally launched via `pythonw` (no console), so any unhandled error is
+otherwise invisible. Two independent, complementary handlers are installed at the very
+top of the module, before any other import:
+
+| Handler | Catches | Output file |
+|---------|---------|-------------|
+| `sys.excepthook = _crash_handler` | Unhandled **Python** exceptions (any thread reachable by the interpreter) | `crash.log` (appended, timestamped) |
+| `faulthandler.enable(file=..., all_threads=True)` | **Native-level** crashes (segfault, Qt/pyqtgraph C++ abort) that bypass `sys.excepthook` entirely | `faulthandler.log` (appended; file handle kept open for the process lifetime, never closed) |
+
+Both log files live next to `pulsenest_lab.py` and are not cleared between runs. If the
+process disappears with no visible cause, check `faulthandler.log` first — an empty
+`crash.log` combined with a populated `faulthandler.log` indicates a native crash (e.g.
+triggered by pyqtgraph axis autorange on extreme-scale data), not a Python-level bug.
 
 ---
 
@@ -365,6 +383,18 @@ Replicates `INCUNEST_AFE4490::_update_spo2()`.
 Extended version of `SpO2LocalCalc` with user-adjustable parameters (used in SpO2TestWindow).
 All constants are exposed as instance attributes overridable at runtime from the UI spinboxes.
 
+**EXPERIMENT (OT-domain input, branch `experiment/ot-domain-inputs`, mirrors lib v0.38):**
+`update(ot_ir, ot_red, i_pd_ir, i_pd_red, fs)` — input is `OT_LED1`/`OT_LED2` [A/A]
+(gain-invariant optical transmittance), not the raw ambient-corrected `LED1_SUB`/`LED2_SUB`
+used before this migration. `OT_LED1`/`OT_LED2` only travel in the `$M4` frame — SpO2TestWindow
+requires `$M4` (live) or a CSV captured in `$M4`; it shows a status-bar warning and stops
+feeding the calc otherwise. No-finger gate changed from `spo2_min_dc` (counts, removed) to
+`spo2_min_i_pd_a` (absolute `I_PD_LED1`/`I_PD_LED2` magnitude [A], default `1e-7`, UI spinbox
+in µA) — gates on absolute i_pd, not the OT ratio itself (unreliable near zero signal).
+Numerical div-by-zero guard changed from a fixed `1.0` (counts scale) to `spo2_ot_div_eps`
+(`1e-9`, OT scale). `DC LED1/LED2` and `RMS AC LED1/LED2` are displayed in ppm (×1e6) in
+SpO2TestWindow's plots and value table, consistent with `OT_LED1`/`OT_LED2` in SIGNAL STATS.
+
 ### 5.3 HR1TestCalc
 
 Replicates `INCUNEST_AFE4490::_update_hr1()`.
@@ -372,6 +402,13 @@ Replicates `INCUNEST_AFE4490::_update_hr1()`.
 **Algorithm:** IIR DC removal → moving average LP filter (cutoff 5 Hz) → threshold-based peak detection (threshold = 0.6 × running max) → refractory period 185 ms → RR intervals buffer (5 intervals) → HR = 60 / mean(RR).
 
 SQI: `1 − CV/0.15` where CV = std(RR)/mean(RR); clamped to [0, 1]. SQI = 0 if < 2 peaks.
+
+**EXPERIMENT (OT-domain input, mirrors lib v0.39):** `update(ot_led1, fs, sample_counter=None)`
+— input is `OT_LED1` [A/A], not raw `LED1_SUB`. No threshold recalibration needed: peak timing
+(relative running-max threshold) and CV are invariant to a uniform input scale. Requires `$M4`
+— HR1TestWindow's full-rate (500 Hz, pre-decimation) live feed now listens for `$M4` frames
+instead of `$M1` (which never carries `OT_LED1`); shows a status-bar warning and stops feeding
+the calc when frame mode is not `$M4`.
 
 ### 5.4 HR2TestCalc
 
@@ -385,6 +422,11 @@ Two internal cross-correlation implementations:
 - `_estimate_hr_xcorr_v1()` — cross-correlation variant (reference, not used in production path)
 - `_estimate_hr_autocorr_v2()` — true autocorrelation (production, matches firmware)
 
+**EXPERIMENT (OT-domain input, mirrors lib v0.39):** `update(ot_led1, fs)` — input is `OT_LED1`
+[A/A], not raw `LED1_SUB`. Firmware recalibrated its near-zero-energy guard to
+`hr2_ot_energy_eps` for the OT scale; this mirror's own guard (`acorr0 != 0`) is already
+scale-agnostic, so no constant changed here. Requires `$M4`.
+
 ### 5.5 HR3TestCalc / HRFFTCalc
 
 Replicates `INCUNEST_AFE4490::_update_hr3()`.
@@ -394,6 +436,13 @@ Replicates `INCUNEST_AFE4490::_update_hr3()`.
 SQI = HPS peak prominence in the search range [0–1].
 
 `HRFFTCalc` is the base class. `HR3TestCalc` extends it with user-adjustable parameters for the HR3TestWindow.
+
+**EXPERIMENT (OT-domain input, mirrors lib v0.39):** `HR3TestCalc.update(ot_led1, fs,
+sample_counter=None)` — input is `OT_LED1` [A/A], not raw `LED1_SUB`. No threshold
+recalibration needed: the HPS ratio/SQI are invariant to a uniform input scale. Requires
+`$M4`. Note: `HRFFTCalc`/`self.hr3_calc` ("HR3LAB" diagnostics, distinct from `HR3TestCalc`)
+was intentionally left unmigrated — still fed raw `LED1_SUB` — out of scope for this
+experiment (analogous to `SpO2LocalCalc`/SpO2LAB and `PICalc`/PILAB, also unmigrated).
 
 ---
 
@@ -640,11 +689,17 @@ Layout: left 6 stacked plots + right parameter/values panel.
 2. Delta SpO2 (fw − py)
 3. R ratio fw + R ratio py
 4. SpO2 SQI
-5. DC IR + DC RED
-6. RMS AC IR + RMS AC RED
+5. DC OT_LED1 (IR) + DC OT_LED2 (RED) [ppm]
+6. RMS AC OT_LED1 (IR) + RMS AC OT_LED2 (RED) [ppm]
 
-**Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup), live current-values table,
-[EXPORT CSV] button, [LOAD CSV] for offline reprocessing.
+**Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup, Min I_PD [µA]),
+live current-values table, [EXPORT CSV] button, [LOAD CSV] for offline reprocessing.
+
+**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`/`OT_LED2` +
+`I_PD_LED1`/`I_PD_LED2`, none of which travel in `$M1`/`$M2`/`$M3`. Live mode shows a
+status-bar warning and stops feeding the calc when the active mode is not `$M4`. [LOAD CSV]
+only accepts `$M4` rows — a file with no `$M4` samples raises a clear error instead of
+silently reprocessing stale/zero data.
 
 ### 7.8 HR1TestWindow — "HR1TEST"
 
@@ -653,7 +708,7 @@ Purpose: verify Python HR1 replica matches firmware output.
 Layout: left 4 plots + RR distribution + right panel.
 
 **Plots:**
-1. Signal chain: raw IR_Sub → DC-removed → LP-filtered
+1. Signal chain: raw OT_LED1 → DC-removed → LP-filtered
 2. HR1 fw (green) + HR1 py (yellow)
 3. Delta HR1
 4. HR1 SQI fw + py
@@ -661,6 +716,11 @@ Layout: left 4 plots + RR distribution + right panel.
 **Bar chart:** RR interval distribution (last N beats).
 
 **Right panel:** parameter spinboxes, current-values table, [EXPORT CSV], [LOAD CSV].
+
+**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — the full-rate (500 Hz,
+pre-decimation) live feed listens for `$M4` frames (`OT_LED1` field) instead of `$M1`, which
+never carries it. Status-bar warning shown when not in `$M4`. [LOAD CSV] only accepts `$M4`
+rows.
 
 ### 7.9 HR2TestWindow — "HR2TEST"
 
@@ -677,6 +737,9 @@ Layout: left 4 plots + right panel.
 **Right panel:** BPF cutoff spinboxes, window/update interval spinboxes,
 current-values table, [EXPORT CSV], [LOAD CSV].
 
+**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`, not in
+`$M1`/`$M3`. Status-bar warning shown when not in `$M4`. [LOAD CSV] only accepts `$M4` rows.
+
 ### 7.10 HR3TestWindow — "HR3TEST"
 
 Purpose: verify Python HR3 (FFT+HPS) replica matches firmware output.
@@ -690,6 +753,9 @@ Layout: left 4 plots + right panel.
 4. HR3 SQI fw + py
 
 **Right panel:** LP cutoff, HPS harmonics count spinboxes, current-values table, [EXPORT CSV], [LOAD CSV].
+
+**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`, not in
+`$M1`/`$M3`. Status-bar warning shown when not in `$M4`. [LOAD CSV] only accepts `$M4` rows.
 
 ### 5.6 PICalc
 
@@ -1055,6 +1121,77 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.20 — 2026-07-15
+- Added `faulthandler.enable(file=..., all_threads=True)` at module top (before any other
+  import), writing to `faulthandler.log`. Diagnostic addition to investigate abrupt,
+  untraceable process termination reported since SIGNALS2 was added — the existing
+  `sys.excepthook`-based `_crash_handler` only catches unhandled **Python** exceptions
+  (written to `crash.log`); it cannot catch a native-level crash (segfault, Qt/pyqtgraph C++
+  abort), which is the leading hypothesis given `crash.log` was empty despite repeated
+  crashes. See new §2.1. Suspected trigger (not yet confirmed): SIGNALS2's default preset
+  (`_DEFAULTS`, `PPGSignals2Window`) mixes signals ~11 orders of magnitude apart (`LED1_SUB`
+  raw ADC ~1e6 vs `OT_LED1` ~1e-5) on the same shared Y axis — a known edge case for
+  pyqtgraph's axis autorange. Not fixed yet, pending confirmation via `faulthandler.log` on
+  next crash.
+
+### v1.19 — 2026-07-15
+
+**Experiment (`experiment/ot-domain-inputs`): the 4 mirror classes migrated to OT-domain
+input**, completing the Python side of the OT migration (firmware side was already done —
+see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.10 for details.
+
+- `SpO2TestCalc`, `HR1TestCalc`, `HR2TestCalc`, `HR3TestCalc`: `update()` now takes
+  `OT_LED1`/`OT_LED2` [A/A] instead of raw `LED1_SUB`/`LED2_SUB`. `SpO2TestCalc` additionally
+  takes `I_PD_LED1`/`I_PD_LED2` [A] for its no-finger gate (`spo2_min_i_pd_a`, replacing the
+  counts-based `spo2_min_dc`); its numerical div-by-zero guard moved from a fixed `1.0` to
+  `spo2_ot_div_eps` (`1e-9`). HR1/HR2/HR3 needed no threshold recalibration (invariant to a
+  uniform input scale).
+- All 4 `*TestWindow` classes now require frame mode `$M4` (`OT_LED1`/`OT_LED2`/`I_PD_*` only
+  travel in `$M4`): live mode shows a status-bar warning and stops feeding the calc when not
+  in `$M4`; [LOAD CSV] only accepts `$M4` rows (both `ppg_chk_*` and `ppg_data_raw_*` CSV
+  formats) and raises a clear error on a file with none.
+- `HR1TestWindow`'s full-rate (500 Hz, pre-decimation) live feed switched from listening for
+  `$M1` frames to `$M4` frames, since `$M1` never carries `OT_LED1`.
+- SpO2TestWindow's `DC`/`RMS AC` plots, legend, and value-table rows now display in ppm (×1e6,
+  OT is A/A ~1e-5) instead of raw ADC counts — same convention as `OT_LED1 [ppm]`/`OT_LED2
+  [ppm]` in SIGNAL STATS (v1.16). The "Min DC" parameter spinbox became "Min I_PD" (µA).
+- Out of scope (intentionally left on raw `LED1_SUB`/`LED2_SUB`, analogous unmigrated mirrors):
+  `SpO2LocalCalc`/SpO2LabWindow ("SPO2LAB"), `HRFFTCalc`/`self.hr3_calc` ("HR3LAB"), `PICalc`
+  ("PILAB").
+- **Known pre-existing bug found during this work, NOT fixed (separate from the OT
+  migration):** the "raw" CSV format branch (`FrameMode` header, i.e. normal captures saved
+  via the main [SAVE] button) of `_process_csv_offline()` in `SpO2TestWindow`, `HR1TestWindow`,
+  and `HR2TestWindow` reads the firmware reference columns (SpO2/R/SQI or HR1/HR2 + SQI) one
+  column too early — e.g. SpO2TestWindow's `spo2_fw` actually reads `PPG_DISP`, `R_fw` reads
+  `SpO2_SQI`, `sqi_fw` reads `SpO2`. `HR3TestWindow`'s equivalent code and the `is_chk` CSV
+  format branch (all 4 windows) are correctly indexed. Needs a dedicated fix.
+
+### v1.18 — 2026-07-15
+- SIGNALS2: font size increased for the 9 signal-selection combos (13px → 17px) and for the
+  shared `Window (s)` label/spinbox and `PAUSE`/`CONTINUE` button (14/16/15px → 22/32/32px),
+  so they stand out clearly from the rest of the controls. Verified visually via a forced
+  `signals2_open=true` in `pulsenest_lab.ini` + screenshot capture.
+
+### v1.17 — 2026-07-14
+- New `PPGSignals2Window` (`SIGNALS2` button, next to `SIGNALS`): 3 freely-configurable plots,
+  each with 3 slots individually selectable (via `QComboBox`) from any of the 30 signals
+  currently parsed from `$M1`-`$M4` (raw channels, OT, V_TIA_DIFF, I_PD, SpO2/HR/R/PI, RSQI,
+  DiagCode, ProbeState, CH_MASKS) — unlike `PPGSignalsWindow` (`SIGNALS`), which is fixed to
+  the 6 raw AFE4490 channels. Curve colors fixed per slot (white/cyan/magenta) across all 3
+  graphs; plot titles show the selected signal names color-coded. Default selection on first
+  launch: Graph 1 = LED1_SUB/OT_LED1/SpO2, Graph 2 = LED2_SUB/OT_LED2/R, Graph 3 =
+  HR1/HR2/HR3 — a starting point for cross-checking the OT-domain input migration
+  (`experiment/ot-domain-inputs`).
+  - Layout: each graph's 3-combo group sits to the **left** of its own plot (3 stacked rows),
+    with a shared top bar (window duration `spin_window_s` + `PAUSE`/`CONTINUE` button — same
+    controls and pattern as `PPGSignalsWindow`).
+  - Each of the 9 slots keeps its own independent rolling buffer (up to `SIG_MAX_S` seconds,
+    same sample-counter-diff accumulation as `PPGSignalsWindow`), cleared and re-seeded from
+    current history whenever that slot's signal selection changes.
+  - Selections, window duration, and geometry persisted in settings.
+  - Note: signals of very different scale share one Y axis per plot (no auto dual-axis) —
+    group similar-magnitude signals together.
 
 ### v1.16 — 2026-07-14
 - SIGNAL STATS: `OT_LED1`/`OT_LED2` rows renamed `OT_LED1 [ppm]`/`OT_LED2 [ppm]` and their
