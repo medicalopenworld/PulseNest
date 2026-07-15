@@ -14468,3 +14468,61 @@ en vez de `cd ... && git ...`. Guardado en `feedback_bash_cd_redirection.md` (am
 **Pendiente:** verificar con HW real; decidir si HR1/HR2/HR3 reciben el mismo tratamiento de
 `probe_state` (mismo principio, no implementado todavía — solo SpO2 por ahora); decisión final
 de fusionar/revertir el experimento OT completo.
+
+---
+
+## Sesión 2026-07-16 — Extensión de `probe_state` a HR1/HR2/HR3 (mismo diseño que SpO2 v0.41)
+
+**Pregunta de Alex:** "Aplica el mismo diseño de probe_state a HR1/HR2/HR3."
+
+**Diseño replicado (idéntico al de SpO2 v0.41):** cada función gana `probe_state` como
+parámetro de entrada (consumido, nunca generado — sigue siendo responsabilidad exclusiva de
+RSQM). Mientras `probe_state != PROBE_APPLIED`, el estado interno se resetea en **cada
+muestra** (idempotente, sin necesidad de guardar un "probe_state anterior") y la salida
+(`hr*`/`hr*_sqi`) se fuerza a `NaN`/`0`, unificando el centinela en las 4 funciones de
+algoritmo (SpO2/HR1/HR2/HR3).
+
+**Implementado en `incunest_afe4490` (lib v0.42-experiment):**
+- `_update_hr1(float ir, ProbeState probe_state)` — resetea DC filter, running max, flag de
+  cruce de umbral, índices de pico/intervalo, buffer de RR, buffer de media móvil.
+- `_update_hr2_sample(float ir, ProbeState probe_state)` / `_update_hr3_sample(...)` — el gate
+  vive en el **fast path** (compartido por el call site de producción y el wrapper síncrono de
+  test), de modo que mientras no está aplicada la sonda, la tarea lenta (Task B/C de
+  autocorrelación/FFT) ni siquiera se señaliza.
+- `test_feed_hr1/hr2/hr3()` (wrappers de test) actualizados a 2 argumentos.
+- `test_hr1/hr2/hr3.cpp`: nuevo test `test_hr*_not_applied_resets` en cada uno (feed señal
+  convergida, fuerza `PROBE_DISCONNECTED` 1000 muestras, verifica sqi=0/NaN + reset de estado,
+  reaplica y verifica que exige buffer/intervalos frescos, repite con `PROBE_NOT_APPLIED`).
+  Corregido un `isnan()` mal añadido en `test_hr2/hr3_not_valid_until_buffer_full` (el fast
+  path de HR2/HR3 no comete ningún valor a `_current_data` mientras el buffer se llena —
+  se queda en el valor por defecto del constructor, `0.0f`, no `NaN` — a diferencia de
+  SpO2/HR1 que sí ejecutan su rama de "inválido" en cada muestra).
+- **Verificado: 36/36 tests nativos relevantes** (`test_biquad` roto de antes, no
+  relacionado) — incluye un falso positivo de crash `CTRL_BREAK_EVENT` en test_hr2/hr3 tras
+  PASS de todos los tests individuales, investigado por bisección y confirmado como flake de
+  entorno Windows (3 reruns limpios), no un bug real.
+- `library.json` → v0.42.0-experiment. Spec actualizada (§5.2-§5.4, changelog v0.42).
+
+**Implementado en `pulsenest_lab.py` (lab v1.24):**
+- `HR1TestCalc`/`HR2TestCalc`/`HR3TestCalc.update()` ganan `probe_state`; constantes
+  `PROBE_DISCONNECTED/NOT_APPLIED/APPLIED=0/1/2` añadidas a las 3 clases.
+- La lógica de detección de huecos (gap detection, vía `sample_counter`) en HR1/HR3 sigue
+  ejecutándose independientemente de `probe_state` — rastrea continuidad de frames, no
+  presencia del dedo.
+- Todos los call sites actualizados: loaders CSV offline de las 3 ventanas (nueva columna
+  `rows_probe_state`), `HR2TestWindow.update_algorithms()` (+ su llamador en `PPGMonitor`),
+  feeds en vivo de frames crudos (HR1 fast-path `$M4`; HR3 en `$M3`/`$M4`/`$M2`/`$M1` — `$M1`
+  no lleva `ProbeState`, se hardcodea `0`=DISCONNECTED, igual que `data_probe_state.append(0)`
+  en esa misma rama).
+- `HRFFTCalc`/`self.hr3_calc` ("HR3LAB", clase separada sin herencia con `HR3TestCalc`,
+  confirmado leyendo el código) deliberadamente fuera de alcance, sin cambios.
+- `pulsenest_lab_spec.md` → v1.24 (§5.2-§5.4, changelog v1.24).
+
+**Verificado:** `python -m py_compile` sin errores; 36/36 tests nativos. No verificado con HW
+real.
+
+**Commiteado:** sí — ver commits de esta sesión en ambos repos (librería y PulseNest).
+
+**Pendiente:** verificar con HW real; decisión final de fusionar/revertir el experimento OT
+completo; `project_spo2_ipd_gate_redundancy_task.md` puede marcarse resuelto (mismo
+tratamiento ya aplicado a HR1/HR2/HR3).

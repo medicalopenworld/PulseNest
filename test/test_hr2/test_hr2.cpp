@@ -8,6 +8,11 @@
 // Autocorrelation is normalised (divides by its own acorr0), so a uniform gain scale does
 // not change the result — pure domain/type change. The near-zero-energy guard (acorr0 <
 // hr2_ot_energy_eps) was recalibrated for OT magnitudes in incunest_afe4490.cpp.
+//
+// probe_state (RSQM's classification) is consumed, never computed here — mirrors SpO2 v0.41
+// (see incunest_afe4490_spec.md §5.1/§5.2). While probe_state != PROBE_APPLIED, the fast-path
+// buffer resets every sample (never triggers the slow autocorrelation path) and
+// hr2/hr2_sqi become NaN/0.
 
 // HR2 constants (mirror of incunest_afe4490.cpp namespace)
 static constexpr int HR2_BUF_LEN      = 400;   // decimated samples
@@ -18,10 +23,11 @@ static constexpr float OT_DC = 1.4e-5f;
 static constexpr float SCALE = 1.4e-10f;
 
 // Helper: feed N raw samples of a sine at freq_hz into HR2, in OT-scale units.
-static void feed_hr2_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
+static void feed_hr2_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples,
+                           ProbeState probe_state = ProbeState::PROBE_APPLIED) {
     for (int i = 0; i < n_samples; i++) {
         float x = OT_DC + 50000.0f * SCALE * sinf(2.0f * (float)M_PI * freq_hz * i / fs);
-        afe.test_feed_hr2(x);
+        afe.test_feed_hr2(x, probe_state);
     }
 }
 
@@ -31,7 +37,7 @@ static void feed_hr2_sine_noisy(INCUNEST_AFE4490& afe, float freq_hz, float fs, 
     for (int i = 0; i < n_samples; i++) {
         float noise = 5000.0f * SCALE * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
         float x = OT_DC + 50000.0f * SCALE * sinf(2.0f * (float)M_PI * freq_hz * i / fs) + noise;
-        afe.test_feed_hr2(x);
+        afe.test_feed_hr2(x, ProbeState::PROBE_APPLIED);
     }
 }
 
@@ -45,6 +51,9 @@ void test_hr2_not_valid_until_buffer_full() {
     INCUNEST_AFE4490 afe;
     feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW / 2);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
+    // Note: unlike SpO2/HR1 (which run their full invalid-path logic every sample), HR2's
+    // fast path simply returns early while the buffer is filling — no commit to
+    // _current_data happens yet, so hr2 stays at its construction default (0.0f), not NaN.
 }
 
 // ── Test 2: 60 BPM (1 Hz sine) ───────────────────────────────────────────────
@@ -75,8 +84,9 @@ void test_hr2_120bpm() {
 void test_hr2_flat_signal_invalid() {
     INCUNEST_AFE4490 afe;
     for (int i = 0; i < HR2_BUF_RAW + 1000; i++)
-        afe.test_feed_hr2(OT_DC);
+        afe.test_feed_hr2(OT_DC, ProbeState::PROBE_APPLIED);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_hr2()));
 }
 
 // ── Test 5: 60 BPM with noise (~20 dB SNR) ───────────────────────────────────
@@ -100,6 +110,31 @@ void test_hr2_120bpm_noisy() {
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr2());
 }
 
+// ── Test 7 (new): PROBE_DISCONNECTED/NOT_APPLIED forces invalid + resets state ─
+// HR2 never classifies presence itself — it only consumes probe_state. Feeding a converged
+// signal, then switching to PROBE_DISCONNECTED must: force sqi=0/hr2=NaN, reset the fast-path
+// buffer, and require a full fresh buffer once PROBE_APPLIED resumes (never triggers the
+// slow autocorrelation path while not applied).
+void test_hr2_not_applied_resets() {
+    INCUNEST_AFE4490 afe;
+    feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW + 1000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());  // valid before disconnecting
+
+    feed_hr2_sine(afe, 1.0f, 500.0f, 1000, ProbeState::PROBE_DISCONNECTED);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_hr2()));
+
+    // Re-applying must require a full fresh buffer, not resume instantly from stale state.
+    feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW / 2);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
+
+    // PROBE_NOT_APPLIED gets the same treatment as PROBE_DISCONNECTED.
+    feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW + 1000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
+    feed_hr2_sine(afe, 1.0f, 500.0f, 1000, ProbeState::PROBE_NOT_APPLIED);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_hr2_not_valid_until_buffer_full);
@@ -108,5 +143,6 @@ int main() {
     RUN_TEST(test_hr2_flat_signal_invalid);
     RUN_TEST(test_hr2_60bpm_noisy);
     RUN_TEST(test_hr2_120bpm_noisy);
+    RUN_TEST(test_hr2_not_applied_resets);
     return UNITY_END();
 }

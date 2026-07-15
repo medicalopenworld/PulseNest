@@ -680,10 +680,14 @@ class HR1TestCalc:
     Independent reimplementation of firmware _update_hr1() from incunest_afe4490_spec.md §5.2.
     Purpose: post-implementation verification — compare against firmware output to detect bugs.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.39-experiment):
+    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
     input is OT_LED1 [A/A], not the raw ambient-corrected LED1_SUB used before this migration.
     No threshold recalibration needed — peak timing/CV are invariant to a uniform input scale.
     OT only travels in the $M4 frame — this mirror requires $M4 (live) or a CSV captured in $M4.
+
+    probe_state (RSQM's classification) is consumed, never computed here — mirrors lib v0.41
+    (see SpO2TestCalc for the design). While probe_state != PROBE_APPLIED, internal state
+    resets every sample (idempotent) and hr_bpm/hr_sqi become nan/0.
 
     Processing chain per sample:
       OT_LED1 → IIR DC removal (τ=1.6 s) → negate (PPG polarity) →
@@ -697,6 +701,11 @@ class HR1TestCalc:
     Diagnostic buffers expose every intermediate signal for visualization.
     PPGMonitor feeds this calc at full 500 Hz (before decimation).
     """
+
+    # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
+    PROBE_DISCONNECTED = 0
+    PROBE_NOT_APPLIED  = 1
+    PROBE_APPLIED      = 2
 
     # Firmware defaults — must match incunest_afe4490_spec.md §5.2
     FW_DC_IIR_TAU_S      = 1.6
@@ -822,17 +831,17 @@ class HR1TestCalc:
         self._hr_bpm       = 0.0
         self._hr_sqi       = 0.0
 
-    def update(self, ot_led1, fs, sample_counter=None):
+    def update(self, ot_led1, fs, probe_state, sample_counter=None):
         """Process one sample at full firmware rate.
 
         Parameters
         ----------
         ot_led1        : float — OT_LED1 [A/A], gain-invariant optical transmittance
         fs             : float — sample rate (Hz)
+        probe_state    : int — RSQM's ProbeState (0/1/2), consumed only — see class docstring
         sample_counter : int | None — data_sample_counter from serial frame (for gap detection)
         """
-        if fs != self._fs:
-            self._recalc_params(fs)
+        # Gap detection runs regardless of probe_state (frame continuity, not presence).
         if sample_counter is not None:
             if self._last_counter is not None:
                 step = sample_counter - self._last_counter
@@ -841,6 +850,16 @@ class HR1TestCalc:
                 elif step > self._nominal_step:
                     self.gap_count += step - self._nominal_step
             self._last_counter = sample_counter
+
+        if probe_state != self.PROBE_APPLIED:
+            # Reset every sample while not applied (idempotent) — mirrors lib v0.41.
+            self.reset()
+            self.hr_bpm = float('nan')
+            self.hr_sqi = 0.0
+            return
+
+        if fs != self._fs:
+            self._recalc_params(fs)
 
         # 1. IIR DC removal
         self._dc_est = self._dc_alpha * self._dc_est + (1.0 - self._dc_alpha) * ot_led1
@@ -923,12 +942,17 @@ class HR2TestCalc:
     Independent reimplementation of firmware _update_hr2() from incunest_afe4490_spec.md §5.3.
     Purpose: post-implementation verification.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.39-experiment):
+    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
     input is OT_LED1 [A/A], not the raw ambient-corrected LED1_SUB used before this migration.
     Firmware recalibrated its near-zero-energy guard to hr2_ot_energy_eps for the OT scale;
     this mirror's own guard (acorr0 != 0) is already scale-agnostic, so no constant change is
     needed here. OT only travels in the $M4 frame — this mirror requires $M4 (live) or a CSV
     captured in $M4.
+
+    probe_state (RSQM's classification) is consumed, never computed here — mirrors lib v0.41
+    (see SpO2TestCalc for the design). While probe_state != PROBE_APPLIED, internal state
+    resets every sample (idempotent, never triggers the autocorrelation computation) and
+    hr_bpm/hr_sqi become nan/0.
 
     Processing chain per sample (at 50 Hz after firmware decimation):
       OT_LED1 → biquad BPF 0.5–5 Hz → circular buffer 400 samples →
@@ -941,6 +965,11 @@ class HR2TestCalc:
       last_peak_lag_s — detected peak lag (s)
       last_filtered   — last 400 filtered samples (circular buffer, ordered oldest→newest)
     """
+
+    # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
+    PROBE_DISCONNECTED = 0
+    PROBE_NOT_APPLIED  = 1
+    PROBE_APPLIED      = 2
 
     FW_FS            = 50.0
     FW_BPF_LOW_HZ    = 0.5
@@ -1029,7 +1058,15 @@ class HR2TestCalc:
         self.hr_bpm  = 0.0
         self.hr_sqi  = 0.0
 
-    def update(self, ot_led1, fs):
+    def update(self, ot_led1, fs, probe_state):
+        if probe_state != self.PROBE_APPLIED:
+            # Reset every sample while not applied (idempotent) — mirrors lib v0.41. Never
+            # triggers the autocorrelation computation while not applied.
+            self.reset()
+            self.hr_bpm = float('nan')
+            self.hr_sqi = 0.0
+            return
+
         if fs != self._fs or self._b is None:
             self._recalc_filter(fs)
 
@@ -2819,7 +2856,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
     def _process_csv_offline(self, path):
         """EXPERIMENT (OT-domain input): requires $M4 rows (OT_LED1 not in $M1/$M3)."""
         import csv as _csv
-        rows_ot_led1 = []
+        rows_ot_led1     = []
+        rows_probe_state = []
         rows_hr_fw  = []
         rows_sqi_fw = []
         rows_ts_us  = []
@@ -2843,10 +2881,11 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                             saw_any_frame = True
                         if len(parts) < 34 or parts[0] != '$M4':
                             continue
-                        ts_us  = float(parts[2])
-                        ot_led1 = float(parts[31])
-                        hr_fw  = float(parts[14])
-                        sqi_fw = float(parts[15])
+                        ts_us       = float(parts[2])
+                        ot_led1     = float(parts[31])
+                        probe_state = int(float(parts[22]))
+                        hr_fw       = float(parts[14])
+                        sqi_fw      = float(parts[15])
                     else:
                         # FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,...,OT_LED1,OT_LED2,...
                         if len(row) < 3:
@@ -2856,12 +2895,14 @@ class HR1TestWindow(QtWidgets.QMainWindow):
                             saw_any_frame = True
                         if lib_id not in ('M4', '$M4') or len(row) < 36:
                             continue
-                        ot_led1 = float(row[2 + 31])
-                        ts_us  = float(row[2 + 2])
-                        hr_fw  = float(row[2 + 14])
-                        sqi_fw = float(row[2 + 15])
+                        ot_led1     = float(row[2 + 31])
+                        probe_state = int(float(row[2 + 22]))
+                        ts_us       = float(row[2 + 2])
+                        hr_fw       = float(row[2 + 14])
+                        sqi_fw      = float(row[2 + 15])
                     rows_ts_us.append(ts_us)
                     rows_ot_led1.append(ot_led1)
+                    rows_probe_state.append(probe_state)
                     rows_hr_fw.append(hr_fw if hr_fw > 0 else float('nan'))
                     rows_sqi_fw.append(sqi_fw if sqi_fw >= 0 else float('nan'))
                 except (ValueError, IndexError):
@@ -2902,8 +2943,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         arr_hr_py  = np.full(n, nan)
         arr_sqi_py = np.full(n, nan)
 
-        for i, ot_led1 in enumerate(rows_ot_led1):
-            self._offline_calc.update(ot_led1, fs)
+        for i, (ot_led1, probe_state) in enumerate(zip(rows_ot_led1, rows_probe_state)):
+            self._offline_calc.update(ot_led1, fs, probe_state)
             hr_py = self._offline_calc.hr_bpm
             sq_py = self._offline_calc.hr_sqi
             if hr_py > 0:
@@ -3469,7 +3510,8 @@ class HR2TestWindow(QtWidgets.QMainWindow):
     def _process_csv_offline(self, path):
         """EXPERIMENT (OT-domain input): requires $M4 rows (OT_LED1 not in $M1/$M3)."""
         import csv as _csv
-        rows_ot_led1 = []
+        rows_ot_led1     = []
+        rows_probe_state = []
         rows_hr_fw  = []
         rows_sqi_fw = []
         rows_ts_us  = []
@@ -3493,10 +3535,11 @@ class HR2TestWindow(QtWidgets.QMainWindow):
                             saw_any_frame = True
                         if len(parts) < 34 or parts[0] != '$M4':
                             continue
-                        ts_us  = float(parts[2])
-                        ot_led1 = float(parts[31])
-                        hr_fw  = float(parts[16])
-                        sqi_fw = float(parts[17])
+                        ts_us       = float(parts[2])
+                        ot_led1     = float(parts[31])
+                        probe_state = int(float(parts[22]))
+                        hr_fw       = float(parts[16])
+                        sqi_fw      = float(parts[17])
                     else:
                         if len(row) < 3:
                             continue
@@ -3505,12 +3548,14 @@ class HR2TestWindow(QtWidgets.QMainWindow):
                             saw_any_frame = True
                         if lib_id not in ('M4', '$M4') or len(row) < 36:
                             continue
-                        ot_led1 = float(row[2 + 31])
-                        ts_us  = float(row[2 + 2])
-                        hr_fw  = float(row[2 + 16])
-                        sqi_fw = float(row[2 + 17])
+                        ot_led1     = float(row[2 + 31])
+                        probe_state = int(float(row[2 + 22]))
+                        ts_us       = float(row[2 + 2])
+                        hr_fw       = float(row[2 + 16])
+                        sqi_fw      = float(row[2 + 17])
                     rows_ts_us.append(ts_us)
                     rows_ot_led1.append(ot_led1)
+                    rows_probe_state.append(probe_state)
                     rows_hr_fw.append(hr_fw if hr_fw > 0 else float('nan'))
                     rows_sqi_fw.append(sqi_fw if sqi_fw >= 0 else float('nan'))
                 except (ValueError, IndexError):
@@ -3549,8 +3594,8 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         arr_hr_py  = np.full(n, nan)
         arr_sqi_py = np.full(n, nan)
 
-        for i, ot_led1 in enumerate(rows_ot_led1):
-            self._calc.update(ot_led1, fs)
+        for i, (ot_led1, probe_state) in enumerate(zip(rows_ot_led1, rows_probe_state)):
+            self._calc.update(ot_led1, fs, probe_state)
             if self._calc.hr_bpm > 0:
                 arr_hr_py[i]  = self._calc.hr_bpm
                 arr_sqi_py[i] = self._calc.hr_sqi
@@ -3613,12 +3658,14 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 
     # ── Live update ───────────────────────────────────────────────────────────
 
-    def update_algorithms(self, data_ot_led1, data_hr2, data_hr2_sqi,
+    def update_algorithms(self, data_ot_led1, data_probe_state, data_hr2, data_hr2_sqi,
                           data_timestamp_us, data_sample_counter):
         """Run per-sample algorithm (called from PPGMonitor._process_frames_tick).
 
         data_ot_led1 (OT_LED1) is only meaningful while frame mode $M4 is active —
         otherwise it is firmware-side zero-filled (see PPGMonitor's $M3/$M4 parser).
+        data_probe_state (RSQM's classification) is consumed directly — HR2TestCalc never
+        classifies presence itself; probe_state != PROBE_APPLIED keeps hr2/sqi invalid.
         """
         if self._offline_mode:
             return
@@ -3651,15 +3698,16 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 
         nan = float('nan')
         for i in new_indices:
-            ts      = float(data_timestamp_us[i])
-            ot_led1 = float(data_ot_led1[i])
+            ts          = float(data_timestamp_us[i])
+            ot_led1     = float(data_ot_led1[i])
+            probe_state = int(data_probe_state[i])
             hr_f  = float(data_hr2[i])
             sqi_f = float(data_hr2_sqi[i])
             if self._t0_us is None:
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            self._calc.update(ot_led1, SPO2_RECEIVED_FS)
+            self._calc.update(ot_led1, SPO2_RECEIVED_FS, probe_state)
 
             hr_fw  = hr_f  if hr_f  > 0 else nan
             sqi_fw = sqi_f if sqi_f >= 0 else nan
@@ -3768,10 +3816,15 @@ class HR3TestCalc:
     Independent reimplementation of firmware _update_hr3() from incunest_afe4490_spec.md §5.4.
     Purpose: post-implementation verification.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.39-experiment):
+    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
     input is OT_LED1 [A/A], not the raw ambient-corrected LED1_SUB used before this migration.
     No threshold recalibration needed — HPS ratio/SQI are invariant to a uniform input scale.
     OT only travels in the $M4 frame — this mirror requires $M4 (live) or a CSV captured in $M4.
+
+    probe_state (RSQM's classification) is consumed, never computed here — mirrors lib v0.41
+    (see SpO2TestCalc for the design). While probe_state != PROBE_APPLIED, internal state
+    resets every sample (idempotent, never triggers the FFT/HPS computation) and hr_bpm/
+    hr_sqi become nan/0.
 
     Processing chain per sample (at 50 Hz after firmware decimation):
       OT_LED1 → 2nd-order Butterworth BP 0.4–15 Hz → circular buffer 512 samples →
@@ -3795,6 +3848,11 @@ class HR3TestCalc:
       last_peak_freq     — detected peak frequency (Hz)
       last_filtered_buf  — LP filtered circular buffer (ordered oldest→newest)
     """
+
+    # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
+    PROBE_DISCONNECTED = 0
+    PROBE_NOT_APPLIED  = 1
+    PROBE_APPLIED      = 2
 
     FW_FS            = 50.0
     FW_BP_LOW_HZ     = 0.4
@@ -3883,10 +3941,9 @@ class HR3TestCalc:
         self.hr_bpm = 0.0
         self.hr_sqi = 0.0
 
-    def update(self, ot_led1, fs, sample_counter=None):
+    def update(self, ot_led1, fs, probe_state, sample_counter=None):
         """Process one sample at the given fs. Returns (hr_bpm, hr_sqi)."""
-        if fs != self._fs or self._b is None:
-            self._recalc_filter(fs)
+        # Gap detection runs regardless of probe_state (frame continuity, not presence).
         if sample_counter is not None:
             if self._last_counter is not None:
                 step = sample_counter - self._last_counter
@@ -3895,6 +3952,17 @@ class HR3TestCalc:
                 elif step > self._nominal_step:
                     self.gap_count += step - self._nominal_step
             self._last_counter = sample_counter
+
+        if probe_state != self.PROBE_APPLIED:
+            # Reset every sample while not applied (idempotent) — mirrors lib v0.41. Never
+            # triggers the FFT/HPS computation while not applied.
+            self.reset()
+            self.hr_bpm = float('nan')
+            self.hr_sqi = 0.0
+            return self.hr_bpm, self.hr_sqi
+
+        if fs != self._fs or self._b is None:
+            self._recalc_filter(fs)
 
         # BP filter
         filtered, self._zi = signal.lfilter(self._b, self._a, [float(ot_led1)], zi=self._zi)
@@ -4616,7 +4684,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
     def _process_csv_offline(self, path):
         """EXPERIMENT (OT-domain input): requires $M4 rows (OT_LED1 not in $M1/$M3)."""
         import csv as _csv
-        rows_ot_led1 = []
+        rows_ot_led1     = []
+        rows_probe_state = []
         rows_hr_fw  = []
         rows_sqi_fw = []
         rows_ts_us  = []
@@ -4640,10 +4709,11 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                             saw_any_frame = True
                         if len(parts) < 34 or parts[0] != '$M4':
                             continue
-                        ts_us  = float(parts[2])
-                        ot_led1 = float(parts[31])
-                        hr_fw  = float(parts[18])
-                        sqi_fw = float(parts[19])
+                        ts_us       = float(parts[2])
+                        ot_led1     = float(parts[31])
+                        probe_state = int(float(parts[22]))
+                        hr_fw       = float(parts[18])
+                        sqi_fw      = float(parts[19])
                     else:
                         if len(row) < 3:
                             continue
@@ -4652,12 +4722,14 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                             saw_any_frame = True
                         if lib_id not in ('M4', '$M4') or len(row) < 36:
                             continue
-                        ot_led1 = float(row[2 + 31])
-                        ts_us  = float(row[2 + 2])
-                        hr_fw  = float(row[2 + 18])
-                        sqi_fw = float(row[2 + 19])
+                        ot_led1     = float(row[2 + 31])
+                        probe_state = int(float(row[2 + 22]))
+                        ts_us       = float(row[2 + 2])
+                        hr_fw       = float(row[2 + 18])
+                        sqi_fw      = float(row[2 + 19])
                     rows_ts_us.append(ts_us)
                     rows_ot_led1.append(ot_led1)
+                    rows_probe_state.append(probe_state)
                     rows_hr_fw.append(hr_fw if hr_fw > 0 else float('nan'))
                     rows_sqi_fw.append(sqi_fw if sqi_fw >= 0 else float('nan'))
                 except (ValueError, IndexError):
@@ -4694,8 +4766,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         arr_hr_py  = np.full(n, nan)
         arr_sqi_py = np.full(n, nan)
 
-        for i, ot_led1 in enumerate(rows_ot_led1):
-            self._offline_calc.update(ot_led1, fs)
+        for i, (ot_led1, probe_state) in enumerate(zip(rows_ot_led1, rows_probe_state)):
+            self._offline_calc.update(ot_led1, fs, probe_state)
             if self._offline_calc.hr_bpm > 0:
                 arr_hr_py[i]  = self._offline_calc.hr_bpm
                 arr_sqi_py[i] = self._offline_calc.hr_sqi
@@ -12129,7 +12201,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         _p500 = line[1:].split(',')
                         if len(_p500) >= 32 and _p500[0] == 'M4':
                             try:
-                                self.hr1test_calc.update(float(_p500[31]), 500.0, int(_p500[1]))
+                                self.hr1test_calc.update(float(_p500[31]), 500.0,
+                                                          int(float(_p500[22])), int(_p500[1]))
                             except (ValueError, IndexError):
                                 pass
 
@@ -12277,7 +12350,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 # EXPERIMENT (OT-domain input): OT_LED1 only in $M4 (parts[31]);
                                 # feed 0.0 while in $M3 (mirror stays invalid, same as M1/M2 below).
                                 _ot_led1 = float(parts[31]) if lib_id == "M4" and len(parts) >= 34 else 0.0
-                                self.hr3test_calc.update(_ot_led1, SPO2_RECEIVED_FS, int(p[0]))
+                                self.hr3test_calc.update(_ot_led1, SPO2_RECEIVED_FS,
+                                                          int(float(parts[22])), int(p[0]))
                             if self.pilab_window is not None:
                                 self.pilab_window.feed_sample(
                                     p[7], p[6], SPO2_RECEIVED_FS, p[1])
@@ -12344,7 +12418,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_ch_masks.append(0)
                             self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
                             if self.hr3test_window is not None:
-                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[9]), int(p[0]))
                             for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
@@ -12375,7 +12449,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_ch_masks.append(0)
                             self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
                             if self.hr3test_window is not None:
-                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, 0, int(p[0]))
                             for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
@@ -12403,7 +12477,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if self.hr2test_window is not None:
                     _t0a = time.perf_counter()
                     self.hr2test_window.update_algorithms(
-                        self.data_ot2_led1, self.data_hr2, self.data_hr2_sqi,
+                        self.data_ot2_led1, self.data_probe_state, self.data_hr2, self.data_hr2_sqi,
                         self.data_timestamp_us, self.data_sample_counter)
                     self._py_timing['algo_hr2test'].append((time.perf_counter() - _t0a) * 1000)
             if _new_data and not self.is_paused:

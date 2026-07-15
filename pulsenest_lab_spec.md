@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.23
+# pulsenest_lab — Specification v1.24
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -427,6 +427,13 @@ SQI: `1 − CV/0.15` where CV = std(RR)/mean(RR); clamped to [0, 1]. SQI = 0 if 
 instead of `$M1` (which never carries `OT_LED1`); shows a status-bar warning and stops feeding
 the calc when frame mode is not `$M4`.
 
+**v1.24: `probe_state` (mirrors lib v0.42):** `update(ot_led1, fs, probe_state, sample_counter=None)`
+— `probe_state` (RSQM's classification, `PROBE_DISCONNECTED`/`NOT_APPLIED`/`APPLIED` = 0/1/2
+class constants) consumed, never computed here. While `probe_state != PROBE_APPLIED`:
+`reset()` runs every sample (idempotent), `hr_bpm`/`hr_sqi` forced to `nan`/`0`. Gap detection
+(via `sample_counter`) still runs regardless of `probe_state` — it tracks frame continuity, not
+finger presence.
+
 ### 5.4 HR2TestCalc
 
 Replicates `INCUNEST_AFE4490::_update_hr2()` via `_estimate_hr_autocorr_v2()`.
@@ -444,6 +451,10 @@ Two internal cross-correlation implementations:
 `hr2_ot_energy_eps` for the OT scale; this mirror's own guard (`acorr0 != 0`) is already
 scale-agnostic, so no constant changed here. Requires `$M4`.
 
+**v1.24: `probe_state` (mirrors lib v0.42):** `update(ot_led1, fs, probe_state)` — same design
+as HR1TestCalc above: while `probe_state != PROBE_APPLIED`, `reset()` runs every sample and
+`hr_bpm`/`hr_sqi` are forced to `nan`/`0`.
+
 ### 5.5 HR3TestCalc / HRFFTCalc
 
 Replicates `INCUNEST_AFE4490::_update_hr3()`.
@@ -460,6 +471,12 @@ recalibration needed: the HPS ratio/SQI are invariant to a uniform input scale. 
 `$M4`. Note: `HRFFTCalc`/`self.hr3_calc` ("HR3LAB" diagnostics, distinct from `HR3TestCalc`)
 was intentionally left unmigrated — still fed raw `LED1_SUB` — out of scope for this
 experiment (analogous to `SpO2LocalCalc`/SpO2LAB and `PICalc`/PILAB, also unmigrated).
+
+**v1.24: `probe_state` (mirrors lib v0.42):** `HR3TestCalc.update(ot_led1, fs, probe_state,
+sample_counter=None)` — same design as HR1TestCalc/HR2TestCalc above: while
+`probe_state != PROBE_APPLIED`, `reset()` runs every sample and `hr_bpm`/`hr_sqi` are forced
+to `nan`/`0`. Gap detection (via `sample_counter`) still runs regardless of `probe_state`.
+`HRFFTCalc`/`self.hr3_calc` remains out of scope, as above — no `probe_state` added there.
 
 ---
 
@@ -1139,6 +1156,37 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.24 — 2026-07-16
+
+**Mirrors lib v0.42-experiment: same `probe_state` design as v1.23's SpO2 applied to
+HR1TestCalc/HR2TestCalc/HR3TestCalc.**
+
+- `HR1TestCalc.update()`, `HR2TestCalc.update()`, `HR3TestCalc.update()` all gain a
+  `probe_state` parameter (RSQM's `ProbeState` ordinal, 0/1/2 = DISCONNECTED/NOT_APPLIED/
+  APPLIED — same class constants added to all three: `PROBE_DISCONNECTED`/`NOT_APPLIED`/
+  `APPLIED`) — consumed, never computed internally, matching §5.1's design exactly.
+- While `probe_state != PROBE_APPLIED`: `reset()` runs every sample (idempotent, no stored
+  "previous probe_state"), and `hr_bpm`/`hr_sqi` are forced to `nan`/`0` — unifying the `NaN`
+  sentinel across all 4 mirror classes (SpO2/HR1/HR2/HR3). HR1's and HR3's gap-detection logic
+  (via `sample_counter`) still runs regardless of `probe_state` — it tracks frame continuity,
+  not finger presence, so it must not be gated by it.
+- Call sites updated to thread `probe_state` through: `HR1TestWindow`/`HR2TestWindow`/
+  `HR3TestWindow`'s `_process_csv_offline()` offline loaders (new `rows_probe_state` column
+  parsed alongside `rows_ot_led1`); `HR2TestWindow.update_algorithms()` (new
+  `data_probe_state` parameter, threaded from its `PPGMonitor` caller); the raw-frame live
+  feeds — HR1's `$M4`-gated fast path, HR3's `$M3`/`$M4`/`$M2`/`$M1` branches (`$M1` carries no
+  `ProbeState` field at all, so `PROBE_DISCONNECTED` is hardcoded there, matching
+  `data_probe_state.append(0)` in the same branch).
+- `HRFFTCalc`/`self.hr3_calc` (the separate "HR3LAB" diagnostics class — confirmed via code to
+  have no inheritance relationship with `HR3TestCalc` despite similar naming) deliberately
+  left untouched, out of scope, same as the OT-domain migration before it.
+- Native test suite (`incunest_afe4490` lib v0.42): `test_hr1/hr2/hr3.cpp` each gained
+  `test_hr1/hr2/hr3_not_applied_resets` (feeds a converged valid signal, forces
+  `PROBE_DISCONNECTED` for 1000 samples, asserts `sqi=0`/`nan` + state reset, then asserts a
+  fresh buffer/interval-count is required after returning to `PROBE_APPLIED`, and again for
+  `PROBE_NOT_APPLIED`). 36/36 native tests (test_biquad pre-existing unrelated failure),
+  `py_compile` clean. See §5.2–§5.4.
 
 ### v1.23 — 2026-07-16
 

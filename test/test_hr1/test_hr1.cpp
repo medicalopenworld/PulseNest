@@ -7,14 +7,19 @@
 // ambient-corrected ADC counts. HR1 is peak-timing based (not a ratio like SpO2's R), so a
 // uniform gain scale does not change peak timing — this is a pure domain/type change, no
 // threshold recalibration needed (confirmed: _hr1_running_max/threshold are self-relative).
+//
+// probe_state (RSQM's classification) is consumed, never computed here — mirrors SpO2 v0.41
+// (see incunest_afe4490_spec.md §5.1/§5.2). While probe_state != PROBE_APPLIED, internal
+// state resets every sample and hr1/hr1_sqi become NaN/0.
 
 // Helper: feed N samples of a sine at freq_hz (with DC offset) into HR1, in OT-scale units.
-static void feed_hr1_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples) {
+static void feed_hr1_sine(INCUNEST_AFE4490& afe, float freq_hz, float fs, int n_samples,
+                           ProbeState probe_state = ProbeState::PROBE_APPLIED) {
     const float ot_dc = 1.4e-5f;
     const float scale = 1.4e-10f;
     for (int i = 0; i < n_samples; i++) {
         float x = ot_dc + 50000.0f * scale * sinf(2.0f * (float)M_PI * freq_hz * i / fs);
-        afe.test_feed_hr1(x);
+        afe.test_feed_hr1(x, probe_state);
     }
 }
 
@@ -26,7 +31,7 @@ static void feed_hr1_sine_noisy(INCUNEST_AFE4490& afe, float freq_hz, float fs, 
     for (int i = 0; i < n_samples; i++) {
         float noise = 5000.0f * scale * (2.0f * (float)rand() / (float)RAND_MAX - 1.0f);
         float x = ot_dc + 50000.0f * scale * sinf(2.0f * (float)M_PI * freq_hz * i / fs) + noise;
-        afe.test_feed_hr1(x);
+        afe.test_feed_hr1(x, ProbeState::PROBE_APPLIED);
     }
 }
 
@@ -40,6 +45,7 @@ void test_hr1_not_valid_too_soon() {
     INCUNEST_AFE4490 afe;
     feed_hr1_sine(afe, 1.0f, 500.0f, 500);  // 1 second — not enough intervals
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_hr1()));
 }
 
 // ── Test 2: 60 BPM (1 Hz sine) ───────────────────────────────────────────────
@@ -66,8 +72,9 @@ void test_hr1_120bpm() {
 void test_hr1_flat_signal_invalid() {
     INCUNEST_AFE4490 afe;
     for (int i = 0; i < 6000; i++)
-        afe.test_feed_hr1(1.4e-5f);  // constant DC (OT scale), no PPG pulses
+        afe.test_feed_hr1(1.4e-5f, ProbeState::PROBE_APPLIED);  // constant DC (OT scale), no PPG pulses
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_hr1()));
 }
 
 // ── Test 5: 60 BPM with noise (~20 dB SNR) ───────────────────────────────────
@@ -90,6 +97,31 @@ void test_hr1_120bpm_noisy() {
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 120.0f, afe.test_hr1());
 }
 
+// ── Test 7 (new): PROBE_DISCONNECTED/NOT_APPLIED forces invalid + resets state ─
+// HR1 never classifies presence itself — it only consumes probe_state. Feeding a converged
+// signal, then switching to PROBE_DISCONNECTED must: force sqi=0/hr1=NaN, reset internal
+// state (peak/interval tracking), and require 5 fresh intervals once PROBE_APPLIED resumes.
+void test_hr1_not_applied_resets() {
+    INCUNEST_AFE4490 afe;
+    feed_hr1_sine(afe, 1.0f, 500.0f, 6000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr1_sqi());  // valid before disconnecting
+
+    feed_hr1_sine(afe, 1.0f, 500.0f, 1000, ProbeState::PROBE_DISCONNECTED);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_hr1()));
+
+    // Re-applying must require fresh intervals, not resume instantly from stale state.
+    feed_hr1_sine(afe, 1.0f, 500.0f, 500);  // 1 second — not enough intervals from scratch
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_hr1()));
+
+    // PROBE_NOT_APPLIED gets the same treatment as PROBE_DISCONNECTED.
+    feed_hr1_sine(afe, 1.0f, 500.0f, 6000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr1_sqi());
+    feed_hr1_sine(afe, 1.0f, 500.0f, 1000, ProbeState::PROBE_NOT_APPLIED);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_hr1_not_valid_too_soon);
@@ -98,5 +130,6 @@ int main() {
     RUN_TEST(test_hr1_flat_signal_invalid);
     RUN_TEST(test_hr1_60bpm_noisy);
     RUN_TEST(test_hr1_120bpm_noisy);
+    RUN_TEST(test_hr1_not_applied_resets);
     return UNITY_END();
 }
