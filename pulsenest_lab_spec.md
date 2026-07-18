@@ -359,7 +359,7 @@ They use the same constants as the firmware (matching `incunest_afe4490.cpp`).
 
 ### 5.1 SpO2LocalCalc
 
-Replicates `INCUNEST_AFE4490::_update_spo2()`.
+Replicates `INCUNEST_AFE4490::_spo2_update()`.
 
 **Constants:**
 
@@ -414,7 +414,7 @@ and value table, consistent with `OT_LED1`/`OT_LED2` in SIGNAL STATS.
 
 ### 5.3 HR1TestCalc
 
-Replicates `INCUNEST_AFE4490::_update_hr1()`.
+Replicates `INCUNEST_AFE4490::_hr1_update()`.
 
 **Algorithm:** IIR DC removal → moving average LP filter (cutoff 5 Hz) → threshold-based peak detection (threshold = 0.6 × running max) → refractory period 185 ms → RR intervals buffer (5 intervals) → HR = 60 / mean(RR).
 
@@ -436,7 +436,7 @@ finger presence.
 
 ### 5.4 HR2TestCalc
 
-Replicates `INCUNEST_AFE4490::_update_hr2()` via `_estimate_hr_autocorr_v2()`.
+Replicates `INCUNEST_AFE4490::_hr2_update_for_test()` via `_estimate_hr_autocorr_v2()`.
 
 **Algorithm:** 2nd-order Butterworth bandpass [0.5–5 Hz] → decimate ×10 (500 → 50 Hz) → circular buffer 400 samples (8 s) → every 25 decimated samples: unbiased normalised autocorrelation (FFT-based, `scipy.signal.correlate`) → find first significant peak above min_lag → HR = 60 / peak_lag.
 
@@ -457,7 +457,7 @@ as HR1TestCalc above: while `probe_state != PROBE_APPLIED`, `reset()` runs every
 
 ### 5.5 HR3TestCalc / HRFFTCalc
 
-Replicates `INCUNEST_AFE4490::_update_hr3()`.
+Replicates `INCUNEST_AFE4490::_hr3_update_for_test()`.
 
 **Algorithm:** 2nd-order Butterworth LP 10 Hz (anti-aliasing) → decimate ×10 → circular buffer 512 samples (10.24 s) → every 25 decimated samples: Hann window → real FFT → Harmonic Product Spectrum (HPS, 2nd and 3rd harmonics) → peak in [25, 240] BPM → HR = peak_freq × 60.
 
@@ -1009,7 +1009,7 @@ only if the file does not exist). 92 columns, in order:
 6. `I_PD_{LED1,LED2,ALED1,ALED2}_uA_{mean,std,min,max}` [µA] — same source, ×1e6
 7. `I_PD_LED{1,2}_ALED{1,2}_diff_uA_{mean,std,min,max}` [µA] — per-sample LED−ALED difference
 8. `OT_LED1`, `OT_LED2` — optical transmittance `(mean(I_PD_LED) − mean(I_PD_ALED)) / I_LED`
-   [A/A, dimensionless], same formula as firmware `_update_rsqm()`; I_LED from the combo's
+   [A/A, dimensionless], same formula as firmware `_rsqm_update()`; I_LED from the combo's
    LED mA value. Empty if I_PD buffers are empty (non-$M4 mode) or LED mA is not numeric.
 
 #### _ComboSpin widget

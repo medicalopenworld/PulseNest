@@ -5,9 +5,9 @@
 // EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs): SpO2 now consumes OT
 // (dimensionless A/A, ~1e-5 typical per incunest_afe4490_spec.md) instead of raw
 // ambient-corrected ADC counts. Presence detection (finger/probe applied) is RSQM's
-// responsibility alone (ProbeState, passed into _update_spo2()) — SpO2 never computes its own
+// responsibility alone (ProbeState, passed into _spo2_update()) — SpO2 never computes its own
 // no-finger/no-signal classification, only a purely numerical division-safety guard
-// (spo2_div_eps). See _update_spo2() rationale in incunest_afe4490.cpp.
+// (spo2_div_eps). See _spo2_update() rationale in incunest_afe4490.cpp.
 //
 // Output contract: sqi==0.0f always implies pi==spo2==spo2_r==NaN (never a stale value),
 // unified across warmup, PROBE_DISCONNECTED/PROBE_NOT_APPLIED, and the division-safety guard.

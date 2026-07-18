@@ -14526,3 +14526,65 @@ real.
 **Pendiente:** verificar con HW real; decisión final de fusionar/revertir el experimento OT
 completo; `project_spo2_ipd_gate_redundancy_task.md` puede marcarse resuelto (mismo
 tratamiento ya aplicado a HR1/HR2/HR3).
+
+---
+
+## Sesión 2026-07-18 — Renombrado de naming interno de incunest_afe4490 (`_verbo_algoritmo` → `_algoritmo_verbo`)
+
+**Origen:** pregunta de Alex sobre por qué `BiquadFilter` usa `process()` y `EmaChannel` usa
+`update()` (respuesta: contratos distintos — filtro transforma entrada→salida, estimador
+acumula estado leído aparte). De ahí surgió una revisión conjunta, en forma de tabla iterada
+paso a paso, de 9 métodos/miembros HR2/HR3 con naming inconsistente
+(`_update_hr2_sample()`/`_compute_hr2()`/`_update_hr2()`/`_hr2_calc_sem` y análogos HR3).
+
+**Hallazgo clave:** toda variable miembro de la clase ya usa prefijo (`_hr2_buf`, `_spo2_a`,
+`_rsqm_led1_sub_ema`...) y hasta los métodos de tarea FreeRTOS (`_hr2_task_body`) — solo la
+familia "verbo primero" (`_update_*`, `_compute_*`, `_linearize_*`) rompía el patrón. Alex
+decidió ampliar el alcance a toda la clase, no solo HR2/HR3.
+
+**15 renombrados aplicados** (tabla revisada en varias iteraciones, con Alex eligiendo el
+sufijo final `_for_test` tras descartar `_sync`/`_sync_test`/etc. por ambigüedad con
+vocabulario de concurrencia ya presente en el fichero):
+
+| Actual | Nuevo |
+|---|---|
+| `_update_rsqm` | `_rsqm_update` |
+| `_update_hgac` | `_hgac_update` |
+| `_update_spo2` | `_spo2_update` |
+| `_update_hr1` | `_hr1_update` |
+| `_update_hr2_sample` | `_hr2_update_sample` |
+| `_linearize_hr2` | `_hr2_linearize` |
+| `_compute_hr2` | `_hr2_compute` |
+| `_update_hr2` (wrapper solo-test) | `_hr2_update_for_test` |
+| `_hr2_calc_sem` | `_hr2_compute_sem` |
+| `_update_hr3_sample` | `_hr3_update_sample` |
+| `_linearize_hr3` | `_hr3_linearize` |
+| `_compute_hr3` | `_hr3_compute` |
+| `_update_hr3` (wrapper solo-test) | `_hr3_update_for_test` |
+| `_hr3_calc_sem` | `_hr3_compute_sem` |
+| `_set_probe_state` | `_rsqm_set_probe_state` |
+
+**Naturaleza del cambio:** puramente de nombres — ninguna firma, semántica ni temporización
+se ha modificado. Aplicado con `Edit` (orden cuidadoso: variantes `_sample` antes que sus
+prefijos cortos, para evitar colisiones de subcadena).
+
+**Implementado en `incunest_afe4490` (lib v0.43-experiment):**
+- `incunest_afe4490.h`/`incunest_afe4490.cpp`: los 15 renombrados aplicados en declaración,
+  definición y todos los call sites.
+- `incunest_afe4490_spec.md`: secciones "vivas" (§1.3, §3d, §5.1-§5.8, §9.3/§9.7, §11)
+  actualizadas a los nombres nuevos. El histórico `## 14. Version history` (registro de
+  versiones pasadas) se dejó **intacto** — describe fielmente el código tal como era en cada
+  versión anterior; se añadió una entrada nueva `v0.43-experiment` documentando el rename.
+  Versión de cabecera → v0.43.
+- `library.json` → 0.43.0-experiment. Comentario de versión y `INCUNEST_AFE4490_VERSION` en
+  el header corregidos de v0.39 (desfasado de sesiones anteriores) a v0.43.
+- `test_spo2.cpp`/`test_hgac.cpp`: comentarios que citaban los nombres antiguos actualizados.
+- **Verificado: 36/36 tests nativos** (`test_biquad` roto de antes, no relacionado) **+ build
+  ESP32-S3 V16 real exitoso** (18.4% RAM, 30.1% flash).
+
+**Implementado en `pulsenest_lab_spec.md`:** 6 referencias de documentación (secciones
+"vivas" §5.2-§5.5, §10.x) actualizadas a los nombres nuevos de la librería; una mención
+dentro de un changelog histórico (v1.11) se dejó intacta por la misma razón que en la
+librería. Sin cambios en `pulsenest_lab.py` (no llama a estos métodos privados de C++).
+
+**Commiteado:** sí — ver commits de esta sesión en ambos repos.

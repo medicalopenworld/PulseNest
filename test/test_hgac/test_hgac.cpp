@@ -79,7 +79,7 @@ void test_hgac_no_longer_rescales_spo2_ema() {
 // After the first descent (which arms the settling countdown, 75 samples), continued
 // saturation must NOT trigger a second descent until a full fresh persistence window has
 // elapsed AFTER settling clears (the gate closing resets the debounce counter — see
-// _update_hgac()).
+// _hgac_update()).
 void test_hgac_gate_blocks_during_settling() {
     INCUNEST_AFE4490 afe;
     afe.setHgacEnable(true);
