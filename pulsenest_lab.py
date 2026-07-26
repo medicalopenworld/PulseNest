@@ -519,6 +519,7 @@ class SpO2TestCalc:
     PROBE_DISCONNECTED = 0
     PROBE_NOT_APPLIED  = 1
     PROBE_APPLIED      = 2
+    PROBE_SATURATING   = 3
 
     # Firmware defaults — must match incunest_afe4490_spec.md §5.1 and incunest_afe4490.cpp constants
     FW_DC_IIR_TAU_S = 2.0    # spo2_ema_mean_tau_s (EmaChannel τ_mean)
@@ -706,6 +707,7 @@ class HR1TestCalc:
     PROBE_DISCONNECTED = 0
     PROBE_NOT_APPLIED  = 1
     PROBE_APPLIED      = 2
+    PROBE_SATURATING   = 3
 
     # Firmware defaults — must match incunest_afe4490_spec.md §5.2
     FW_DC_IIR_TAU_S      = 1.6
@@ -970,6 +972,7 @@ class HR2TestCalc:
     PROBE_DISCONNECTED = 0
     PROBE_NOT_APPLIED  = 1
     PROBE_APPLIED      = 2
+    PROBE_SATURATING   = 3
 
     FW_FS            = 50.0
     FW_BPF_LOW_HZ    = 0.5
@@ -3853,6 +3856,7 @@ class HR3TestCalc:
     PROBE_DISCONNECTED = 0
     PROBE_NOT_APPLIED  = 1
     PROBE_APPLIED      = 2
+    PROBE_SATURATING   = 3
 
     FW_FS            = 50.0
     FW_BP_LOW_HZ     = 0.4
@@ -7193,9 +7197,12 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
     _PARAMS = [
         # key                         label                        tooltip                                                       dec  min     max        suffix     scale
         ("rsqm_ot_thr",               "OT threshold",              "Optical Transmittance threshold separating PROBE_NOT_APPLIED\n"
-                                                                    "(OT > thr) from PROBE_APPLIED (OT ≤ thr).\n"
-                                                                    "Physical scale [A/A]: APPLIED ≈ 1.4e-5, NOT_APPLIED ≈ 8e-4.\n"
-                                                                    "Needs empirical calibration.",                               6,   0.0,    0.01,      " A/A",    1.0),
+                                                                    "(OT > thr) from PROBE_APPLIED (OT ≤ thr) — only checked when\n"
+                                                                    "the channel is CH_VALID_RANGE; an invalid/saturated channel is\n"
+                                                                    "PROBE_SATURATING instead, regardless of this threshold.\n"
+                                                                    "Default 1.0e-4 (widened 2026-07-19 from 8.5e-5: CONTEC MS100\n"
+                                                                    "simulator is very sensitive to probe placement).\n"
+                                                                    "Still needs empirical calibration with a real probe.",         6,   0.0,    0.01,      " A/A",    1.0),
         ("rsqm_signal_weak_std",      "Signal weak STD",           "LED1_Sub standard deviation threshold for RSQM_DIAG_SIGNAL_WEAK.\n"
                                                                     "If std(LED1_Sub) < this → signal is too weak to measure.\n"
                                                                     "Needs hardware calibration with known probe.",                0,   0.0,    50000.0,   " counts", 1.0),
@@ -8784,6 +8791,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
         (0, "PROBE_DISCONNECTED"),
         (1, "PROBE_NOT_APPLIED"),
         (2, "PROBE_APPLIED"),
+        (3, "PROBE_SATURATING"),
     ]
 
     _CSV_HEADER = [
@@ -8995,8 +9003,8 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             "Written as the first CSV column (probe_state_expected). "
             "The second CSV column (probe_state_check) is OK if every sample in the combo "
             "matches this value, NOT OK otherwise. "
-            "Values: 0=PROBE_DISCONNECTED, 1=PROBE_NOT_APPLIED, 2=PROBE_APPLIED "
-            "(enum ProbeState in incunest_afe4490.h)."))
+            "Values: 0=PROBE_DISCONNECTED, 1=PROBE_NOT_APPLIED, 2=PROBE_APPLIED, "
+            "3=PROBE_SATURATING (enum ProbeState in incunest_afe4490.h)."))
 
         fl.addRow("Test label:", self._edit_label)
         fl.addRow("Expected probe_state:", self._combo_probe_state)
@@ -10256,12 +10264,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
              "  · |I_PD_LED1 [µA]|, |I_PD_LED2 [µA]|, |I_PD_ALED1 [µA]|, |I_PD_ALED2 [µA]| < 0.15 µA\n"
              "  · |LED1_SUB|, |LED2_SUB| < 5000 ADC\n"
              "  Note: both criteria are redundant by design — the led_sub guard prevents false positives when AMBDAC raises i_pd even without probe connected.\n\n"
+             "3 — SATURATING (checked before NOT_APPLIED/APPLIED, since 2026-07-24)\n"
+             "Not DISCONNECTED AND either LED1 or LED2's own channel or its ambient (ALED) channel\n"
+             "is not CH_VALID_RANGE (ADC railed or beyond TIA linearity — see CH_MASKS). The OT ratio is\n"
+             "not trustworthy under saturation, so it is not even checked in this case. Does NOT\n"
+             "imply a patient is present — an unapplied probe under strong/flickering light (e.g.\n"
+             "phototherapy) can saturate too. HGAC treats this like APPLIED (acts to clear it);\n"
+             "SpO2/HR1/HR2/HR3/RSQI treat it like any other non-APPLIED state (invalid/reset).\n\n"
              "1 — NOT_APPLIED (no finger)\n"
-             "Not DISCONNECTED AND at least one channel OT > 8.5×10⁻⁵ (OR logic)  →  rows OT_LED1, OT_LED2\n"
-             "  OT = (I_PD_LEDx − I_PD_ALEDx) / I_LEDx  [A/A, dimensionless]\n"
-             "  Special case: LED_raw ≥ saturation (2 096 921 ADC) → OT forced to 100 → always NOT_APPLIED.\n\n"
+             "Not DISCONNECTED, not SATURATING (both channels CH_VALID_RANGE), AND at least one channel\n"
+             "OT > 1.0×10⁻⁴ (rsqm_ot_thr, OR logic)  →  rows OT_LED1, OT_LED2\n"
+             "  OT = (I_PD_LEDx − I_PD_ALEDx) / I_LEDx  [A/A, dimensionless]\n\n"
              "2 — APPLIED (finger on sensor)\n"
-             "Not DISCONNECTED AND <b>OT ≤ 8.5×10⁻⁵ on both channels</b>.",
+             "Not DISCONNECTED, not SATURATING, AND <b>OT ≤ 1.0×10⁻⁴ on both channels</b>\n"
+             "(rsqm_ot_thr, runtime-configurable via $LCFG).",
              "AFE4490Data::probe_state"),
             # AFE4490DebugData analog signals — only populated in $M4 frame mode
             ("V_TIA_DIFF_LED1",  "data_v_tia_diff_led1",  "TIA DIFFERENTIAL output voltage, LED1/IR channel [V]. V_TIA_DIFF = 2 × I_PD × RF (per-branch = /2). Computed per sample by firmware. Gray text = channel CLIPPED per CH_MASKS (ADC rail or TIA hard clip — value is a bound, not reality). Only available in $M4 frame mode.",                  "AFE4490DebugData::v_tia_diff_led1"),
@@ -10856,7 +10872,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "= 2 \u00d7 I_PD \u00d7 RF. Per-branch value = V_TIA_DIFF / 2.\n"
             "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22, I_CANCEL from ambdac.\n"
             "Units: V (volts).\n"
-            "Datasheet: ideal operating point 0.6 V, spec full scale V_OD(fs) = 1.0 V (\u00a79.2.2).\n"
+            "Datasheet: ideal operating point 0.6 V, TIA full-scale output 1.0 V\n"
+            "(\u00a79.2.2 + Fig. 135 'TIA max'; the datasheet has no symbol named 'V_OD').\n"
             "Empirical (IncuNest 16.A sweep 2026-07-08): linear to ~1.8 V, hard clip ~1.94 V.\n\n"
             "Background color (LED phases \u2014 LED1 (IR), LED2 (RED)):\n"
             "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range (around 0.6 V ideal point)\n"
@@ -11882,6 +11899,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _PROBE_APPLIED_BG       = QtGui.QColor("#00A000")  # green  — APPLIED (2)
     _PROBE_NOT_APPLIED_BG   = QtGui.QColor("#7A6400")  # amber  — NOT_APPLIED (1)
     _PROBE_DISCONNECTED_BG  = QtGui.QColor("#7A0000")  # red    — DISCONNECTED (0)
+    _PROBE_SATURATING_BG    = QtGui.QColor("#7A3D00")  # orange — SATURATING (3): signal present but out of range
     # V_TIA_DIFF / V_ADC cell background colors
     _VTG_GREEN   = QtGui.QColor("#0F3A0F")  # optimal
     _VTG_YELLOW  = QtGui.QColor("#3A2D00")  # caution
@@ -11948,7 +11966,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # Per-channel CLIPPED bits: OR of CH_MASKS nibbles adc_sat_pos | adc_sat_neg | tia_over_lin
         # over the stats window. Bit = channel per AFE4490Ch. tia_over_fs (OFF_SPEC) is EXCLUDED:
         # 1.0-1.8 V diff is out of TI spec but empirically linear — the value is still real.
-        # CLIPPED means the value is a bound, not reality → gray (mirrors lib CH_CLIPPED).
+        # CLIPPED means the value is a bound, not reality → gray (mirrors lib CH_CLIPPED_RANGE).
         _m = self._stats_ch_masks_or
         _clipped = (_m | (_m >> 4) | (_m >> 12)) & 0xF
         self._stats_ch_masks_or = 0
@@ -12510,6 +12528,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             _ps = int(self.data_probe_state[-1]) if self.data_probe_state else -1
             if _ps == 2:
                 _ps_bg = self._PROBE_APPLIED_BG
+            elif _ps == 3:
+                _ps_bg = self._PROBE_SATURATING_BG
             elif _ps == 1:
                 _ps_bg = self._PROBE_NOT_APPLIED_BG
             elif _ps == 0:

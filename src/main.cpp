@@ -457,13 +457,13 @@ static void send_lcfg_frame() {
         ",rsqm_probe_state_min_s=%.3f"
         ",rsqm_ema_mean_tau_s=%.3f,rsqm_ema_var_tau_s=%.3f"
         ",hgac_enable=%d,hgac_v_tia_diff_thr=%.3f"
-        ",hgac_descent_persist_s=%.3f,hgac_gate_invalid_frac_max=%.3f",
+        ",hgac_tiasat_persist_s=%.3f",
         cfg.rsqm_ot_thr, cfg.rsqm_signal_weak_std,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
         cfg.rsqm_ema_mean_tau_s, cfg.rsqm_ema_var_tau_s,
         cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_diff_thr,
-        cfg.hgac_descent_persist_s, cfg.hgac_gate_invalid_frac_max);
+        cfg.hgac_tiasat_persist_s);
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
     Serial_print_locked(buf);
@@ -700,24 +700,14 @@ static void apply_set_cmd(const char* key, const char* val) {
         Serial_printf("# SET hgac_v_tia_diff_thr=%.3f\n", atof(val));
         send_lcfg_frame();
         return;
-    } else if (strcmp(key, "hgac_descent_persist_s") == 0) {
+    } else if (strcmp(key, "hgac_tiasat_persist_s") == 0) {
         float s = atof(val);
         if (s > 0.0f && s <= 10.0f) {
-            afe.setHgacDescentPersistS(s);
-            Serial_printf("# SET hgac_descent_persist_s=%.3f\n", s);
+            afe.setHgacTiasatPersistS(s);
+            Serial_printf("# SET hgac_tiasat_persist_s=%.3f\n", s);
             send_lcfg_frame();
         } else {
-            Serial_printf("$ERR,hgac_descent_persist_s,invalid (0.0–10.0)\r\n");
-        }
-        return;
-    } else if (strcmp(key, "hgac_gate_invalid_frac_max") == 0) {
-        float v = atof(val);
-        if (v >= 0.0f && v <= 1.0f) {
-            afe.setHgacGateInvalidFracMax(v);
-            Serial_printf("# SET hgac_gate_invalid_frac_max=%.3f\n", v);
-            send_lcfg_frame();
-        } else {
-            Serial_printf("$ERR,hgac_gate_invalid_frac_max,invalid (0.0–1.0)\r\n");
+            Serial_printf("$ERR,hgac_tiasat_persist_s,invalid (0.0–10.0)\r\n");
         }
         return;
     } else {

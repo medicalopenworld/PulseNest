@@ -3,21 +3,25 @@
 
 // HGAC Phase 1 (RF-only descent) — see incunest_afe4490_spec.md §5.8.
 // EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, spec §5.1): SpO2 now
-// consumes as.ot_led1/ot_led2 (gain-invariant), so _hgac_descend_rf() no longer rescales the
+// consumes as.ot_led1/ot_led2 (gain-invariant), so _hgac_step_rf_down() no longer rescales the
 // SpO2 EmaChannel by k — see test_hgac_no_longer_rescales_spo2_ema below.
 //
 // Physics reminder (v1: AMBDAC=0, Stage2 gain ×1 default): v_tia_diff == v_adc, i.e.
-// v_tia_diff_led1 = led1_code * (1.2 / 2097151). To saturate above the 0.9 V guard
-// (hgac_v_tia_diff_thr) without tripping kVTiaDiffFs (1.0 V, which would flip probe_state
-// via OT invalidity), use a code around 1,700,000 → v_tia_diff ≈ 0.973 V.
-static constexpr int32_t SAT_LED1_CODE = 1700000;  // v_tia_diff_led1 ≈ 0.973 V (> 0.9, < 1.0)
+// v_tia_diff_led1 = led1_code * (1.2 / 2097151). Since 2026-07-24, PROBE_SATURATING is a
+// distinct state from PROBE_NOT_APPLIED (see enum ProbeState) and HGAC's gate requires
+// PROBE_APPLIED or PROBE_SATURATING — so the stimulus must trip TIA-linearity invalidity
+// (v_tia_diff > kVTiaDiffFs = 1.0 V, i.e. !otLed1Valid()) to open the gate at all. Use a
+// code around 1,900,000 → v_tia_diff ≈ 1.087 V: above kVTiaDiffFs (invalid → SATURATING)
+// but below the ADC positive rail (kAdcSatPos = 2,096,700 counts, no ADC clipping) and
+// still comfortably above the 0.9 V HGAC actuation guard.
+static constexpr int32_t SAT_LED1_CODE = 1900000;  // v_tia_diff_led1 ≈ 1.087 V (OFF_SPEC, not clipped)
 
-// Sample-budget model (defaults: hgac_descent_persist_s=0.5s, hgac_settle_time_s=0.15s,
+// Sample-budget model (defaults: hgac_tiasat_persist_s=0.5s, hgac_settle_time_s=0.15s,
 // rsqm_probe_state_min_s=0.2s, fs=500 Hz), verified against a standalone instrumented run:
-//   - Gate opens at sample 100: PROBE_NOT_APPLIED debounce commits (100 = 0.2s*500Hz).
-//     (LED1 saturating with ALED1=0 reads as a very high OT ratio — RSQM classifies this
-//     as NOT_APPLIED, not APPLIED; Gate G0 only excludes PROBE_DISCONNECTED, so this does
-//     not block HGAC — see _hgac_gate_ok() rationale.)
+//   - Gate opens at sample 100: PROBE_SATURATING debounce commits (100 = 0.2s*500Hz).
+//     (LED1's v_tia_diff > kVTiaDiffFs makes the channel !CH_VALID_RANGE, so otLed1Valid() is
+//     false — RSQM classifies this as PROBE_SATURATING, which _hgac_gate_ok() treats like
+//     PROBE_APPLIED — see its rationale comment.)
 //   - 1st descent (RF_100K->RF_50K) at sample 100 + 250 - 1 = 349.
 //   - Settling (75 samples) active 350-424; gate reopens at 425.
 //   - 2nd descent (RF_50K->RF_25K) at 425 + 250 - 1 = 674.
@@ -60,7 +64,7 @@ void test_hgac_descent_debounce() {
 }
 
 // ── Test 3 (OT-domain experiment): RF change no longer touches the SpO2 EMA ─────
-// Before the OT-domain migration, _hgac_descend_rf() rescaled the SpO2 EmaChannel by
+// Before the OT-domain migration, _hgac_step_rf_down() rescaled the SpO2 EmaChannel by
 // (mean*k, var*k^2) because the raw-ADC-domain input jumped by k. Now that SpO2 consumes OT
 // (gain-invariant), that rescale is unnecessary AND would be wrong if still applied — this
 // test proves the EMA state is left untouched by an RF change.
@@ -69,7 +73,7 @@ void test_hgac_no_longer_rescales_spo2_ema() {
     afe.setHgacEnable(true);
     afe.test_set_spo2_ir_ema(1000.0f, 25.0f);
 
-    afe.test_hgac_descend_rf_led1(AFE4490RF::RF_50K);  // RF_100K -> RF_50K
+    afe.test_hgac_step_rf_down_led1(AFE4490RF::RF_50K);  // RF_100K -> RF_50K
 
     TEST_ASSERT_EQUAL_FLOAT(1000.0f, afe.test_spo2_ir_ema_mean());  // unchanged
     TEST_ASSERT_EQUAL_FLOAT(25.0f,   afe.test_spo2_ir_ema_var());   // unchanged

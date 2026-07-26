@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.24
+# pulsenest_lab — Specification v1.27
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -583,7 +583,7 @@ into a per-channel CLIPPED bitmap and reset:
 `_clipped = (_m | _m>>4 | _m>>12) & 0xF` — nibbles `adc_sat_pos` | `adc_sat_neg` | `tia_over_lin`
 (bit = channel per `AFE4490Ch`). The `tia_over_fs` nibble (OFF_SPEC, 1.0–1.8 V diff) is
 **excluded**: out of TI spec but empirically linear on IncuNest 16.A — the value is still real.
-CLIPPED = the value is a bound, not reality (mirrors library `CH_CLIPPED`).
+CLIPPED = the value is a bound, not reality (mirrors library `CH_CLIPPED_RANGE`).
 Row→channel map `_STATS_ROW_TO_CH = {0:0, 1:2, 2:1, 3:3}`.
 Effects when a channel was CLIPPED at any point in the stats window:
 - V_TIA_DIFF / V_ADC cells (rows 0–3) → gray text `#5A5A5A` on neutral background `#121212`
@@ -1116,7 +1116,8 @@ Voltage-based cell background colors in SIGNAL STATS table cols 1–2:
 - Default `#121212` — no data or non-ADC row
 
 Thresholds derived from AFE4490 datasheet: VCMREF = 0.9 V internal, ADC FS = ±1.2 V,
-V_OD(s) = 1.0 V differential. See §6.3 for per-row thresholds.
+TIA full-scale output (differential) = 1.0 V (§9.2.2/Fig. 135 "TIA max"; the datasheet has
+no symbol named "V_OD"). See §6.3 for per-row thresholds.
 
 ### Tooltip convention
 
@@ -1156,6 +1157,51 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.27 — 2026-07-24
+
+**Mirrors lib v0.45: new `ProbeState.PROBE_SATURATING = 3`, split out of `PROBE_NOT_APPLIED`.**
+
+- `PROBE_SATURATING = 3` added to the local `ProbeState` ordinal mirror in `SpO2TestCalc`,
+  `HR1TestCalc`, `HR2TestCalc`, `HR3TestCalc` (each already gates on `!= PROBE_APPLIED`, so no
+  other code change needed in these classes — `PROBE_SATURATING` is excluded automatically,
+  same as before).
+- `AFESweepTestWindow._PROBE_STATES` combo gained the `(3, "PROBE_SATURATING")` entry, and its
+  tooltip text updated, so the offline verification tool can select/check the new state.
+- SIGNAL STATS `ProbeState` cell: new `_PROBE_SATURATING_BG` (orange `#7A3D00`), distinct from
+  `PROBE_NOT_APPLIED`'s amber — a saturating channel means signal is present but out of range,
+  a different diagnostic situation from "no probe applied" that previously shared the same
+  amber color.
+- `ProbeState` row tooltip (SIGNAL STATS table) rewritten to document the new priority order
+  (DISCONNECTED > SATURATING > NOT_APPLIED > APPLIED) and that SATURATING does not imply a
+  patient is present.
+- `rsqm_ot_thr` tooltip in `LIBConfigWindow` clarified: only checked once the channel is
+  already known `CH_VALID_RANGE` — an invalid/saturated channel is `PROBE_SATURATING` regardless of
+  this threshold.
+
+### v1.26 — 2026-07-23
+
+**Follow-up to v1.25: the SIGNAL STATS `ProbeState` tooltip was missed when `rsqm_ot_thr`'s
+default was widened.** Found by Alex.
+
+- `ProbeState` row tooltip (SIGNAL STATS table) still hardcoded the old `8.5×10⁻⁵` threshold
+  in both the NOT_APPLIED and APPLIED descriptions. Updated to `1.0×10⁻⁴`, matching the
+  current `rsqm_ot_thr` default (`incunest_afe4490.h:765`) and the `LIBConfigWindow` tooltip
+  fixed in v1.25. APPLIED description also now explicitly notes `rsqm_ot_thr` is
+  runtime-configurable via `$LCFG` (it wasn't clear from the old wording that this was a
+  live-adjustable parameter, not a fixed constant).
+
+### v1.25 — 2026-07-19
+
+**Mirrors lib v0.44-experiment: `rsqm_ot_thr` tooltip updated for widened default.**
+
+- `LIBConfigWindow._PARAMS` tooltip for `rsqm_ot_thr` updated: default widened 8.5e-5 → 1.0e-4.
+  Reason: first real-HW test on the OT-domain experiment (CONTEC MS100 simulator, probe
+  applied) found `probe_state` never reached PROBE_APPLIED at 8.5e-5 — the simulator is very
+  sensitive to probe placement and OT frequently read above that value with the probe on.
+  Practical mitigation, not an empirical calibration with a real probe/patient. The actual
+  runtime default lives in firmware (`incunest_afe4490.h`); this is a display-only change —
+  the spinbox default is populated from `$LCFG` readback, not hardcoded here.
 
 ### v1.24 — 2026-07-16
 
