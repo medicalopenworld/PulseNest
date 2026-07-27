@@ -101,7 +101,7 @@ Pre-TIA advantage: ambient current is subtracted BEFORE the TIA converts it to v
 
 Per `project_afe_replacement_study_task.md`:
 
-1. **LED drive current** vs. clinical probes (I_F up to 50 mA typ. Medle; max rated per probe spec)
+1. **LED drive current** vs. clinical probes (Medle I_F = 50 mA *absolute maximum* @25 °C, I_FP 100 mA @ 1/8 duty — per datasheet in `docs/Medle_probe/`, reliability caveated; not a typical operating point — optical params are characterized at I_F = 20 mA)
 2. **Probe diagnostics** (LED open/short, PD open/short, cable detection)
 3. **Transmissive topology** with remote PD by cable (1-3 m): noise, cable capacitance, EMC robustness
 4. **Pre-TIA ambient cancellation**: range sufficient for neonatal phototherapy
