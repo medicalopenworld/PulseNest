@@ -20,8 +20,8 @@ static constexpr int32_t SAT_LED1_CODE = 1900000;  // v_tia_diff_led1 ≈ 1.087 
 // rsqm_probe_state_min_s=0.2s, fs=500 Hz), verified against a standalone instrumented run:
 //   - Gate opens at sample 100: PROBE_SATURATING debounce commits (100 = 0.2s*500Hz).
 //     (LED1's v_tia_diff > kVTiaDiffFs makes the channel !CH_VALID_RANGE, so otLed1Valid() is
-//     false — RSQM classifies this as PROBE_SATURATING, which _hgac_gate_ok() treats like
-//     PROBE_APPLIED — see its rationale comment.)
+//     false — RSQM classifies this as PROBE_SATURATING, which HGAC's Gate G0 (inlined in
+//     _hgac_update()) treats like PROBE_APPLIED — see spec §5.8.)
 //   - 1st descent (RF_100K->RF_50K) at sample 100 + 250 - 1 = 349.
 //   - Settling (75 samples) active 350-424; gate reopens at 425.
 //   - 2nd descent (RF_50K->RF_25K) at 425 + 250 - 1 = 674.

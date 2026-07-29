@@ -14953,3 +14953,179 @@ tramo (1.2, 1.8] es inobservable sin AMBDAC (`tia_over_lin` es código muerto co
 - Puramente documental — sin cambio de comportamiento ni bump de versión.
 
 **Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+---
+
+## Sesión 2026-07-27 — Decisión ILED default (20→50 mA) + hallazgo datasheet Medle
+
+### Análisis ventajas/inconvenientes de subir ILED 20→50 mA
+A petición de Alex (tarea aparcada). Ventajas: ↑SNR (clave en baja perfusión neonatal),
+↑robustez óptica, margen para bajar RF (fototerapia), mejor rechazo de ambiente. Inconvenientes:
+operar en máx. absoluto sin margen, seguridad térmica neonatal (ISO ≤41 °C, sin caracterización
+sonda-piel), derating desconocido, riesgo saturación TIA (RF_100K calibrado a 20 mA), empeora
+leakage LED2→ALED2, sin motivación establecida.
+
+### Trazabilidad del "50 mA": ambigüedad detectada
+Alex cuestionó de dónde salía "50 mA = absolute maximum". Rastreo: no había fuente primaria en
+el repo; el valor circulaba entre docs internos que se citaban entre sí, con caracterización
+INCOMPATIBLE — memoria decía "absolute maximum", `docs/afe_replacement_study.md` decía "50 mA
+typ". Reconocido que mi inconveniente #1 no estaba fundamentado hasta resolverlo.
+
+### Datasheet Medle aportado (docs/Medle_probe/, 2 JPEG) — resuelve la ambigüedad
+"Blood oxygen sensors — 2-Pin 660/905 launcher tube — v1.0". Leído con Read tool.
+- **I_F = 50 mA CONFIRMADO como máximo absoluto** (tabla "Maximum limit") → mi caracterización
+  original era correcta; el "typ" de afe_replacement_study.md era el impreciso. Inconveniente #1
+  SE SOSTIENE, ahora con fuente primaria.
+- **I_FP = 100 mA a 1/8 duty (12.5 %), 1 kHz** (nuevo; resuelve fila #5). Relevante para peak/media:
+  el AFE pulsa el LED → comparar duty real del AFE con 1/8.
+- λ: RED 665 nm (663–667), IR 905 nm (895–915); V_F: RED 1.85 V, IR 1.3 V; Fe RED 5.0/IR 4.5 mW;
+  P_d 100/75 mW; todo caracterizado a I_F=20 mA → respalda el default de 20 mA.
+- ⚠️ **Fiabilidad limitada:** Alex no halló correspondencia entre el datasheet y los
+  identificadores de las sondas Medle físicas → no hay certeza de que sea exactamente este modelo.
+
+### Conclusión provisional
+No subir el default estático a 50 mA (máx. absoluto sin margen; falta derating fila #4 y
+caracterización térmica sonda-piel fila #6). Camino correcto: control adaptativo de ILED por
+HGAC (Fase 4). Si se quiere más SNR antes: valor intermedio (~30 mA) tras medir calentamiento.
+
+Memorias actualizadas: `project_probe_dependent_specs` (datos + aviso fiabilidad, filas #2/#3/#5/#9),
+`project_led_current_increase_50ma_task` (conclusión provisional).
+
+### Corrección del razonamiento ILED (2026-07-27, misma sesión) — el rating del LED no es el bloqueante
+
+Alex preguntó si `I_FP`=100 mA @1/8 duty es por LED, dado que el AFE enciende cada LED ~25 %.
+Análisis:
+- `I_FP` es **por LED individual** (emisor 2-Pin antiparalelo → solo uno conduce a la vez; en la
+  tabla Maximum limit es valor único del componente, a diferencia de Pd que sí desglosa red/IR).
+- Cruzando ratings (V_F típicos @20 mA del datasheet, fila Vf: RED 1.85 V, IR 1.3 V):
+  · `I_F`=50 mA DC ↔ límite térmico Pd (RED 92.5 mW≈100; IR 65≈75 — coincidencia casi exacta).
+  · `I_FP`=100 mA @12.5 % ↔ límite de pico instantáneo (potencia media ~16-23 mW ≪ Pd).
+- Como el AFE **pulsa**, programar ILED=50 mA = PICO 50 mA a ~25 % duty: ≪100 mA (I_FP, ×2) y
+  potencia media ~23 mW ≪ Pd (×4) → margen amplio.
+
+**Inconveniente #1 corregido (era erróneo):** comparaba ILED programado (pico pulsado) con
+`I_F`=50 mA (límite DC/térmico), magnitudes no comparables con el AFE pulsando. El rating del
+LED NO impide subir ILED. El bloqueante real es la **temperatura sonda-piel** (ISO ≤41 °C,
+caracterización #6 sin medir) + **saturación TIA** (RF_100K a 20 mA).
+
+Nota V_F: 1.85 V/1.3 V son típicos @IF=20 mA (datasheet); a 50 mA V_F sería mayor → el cálculo
+subestima P, lo que refuerza que I_F=50 mA está topado por Pd.
+
+Pendiente: calcular el duty REAL del LED desde los registros de timing (no asumir 25 %).
+Memorias actualizadas: project_led_current_increase_50ma_task, project_probe_dependent_specs.
+
+### Default LED 20→50 mA aplicado (preliminar, v0.47-experiment) — 2026-07-27
+
+Alex decidió, en fase de desarrollo y de forma preliminar, poner el default de corriente LED a
+50 mA para ganar experiencia con ese valor.
+- **Librería:** constructor `_afe_led1/2_current_mA` 20.0→50.0 (DAC code 85=0x55, ~49.8 mA @
+  range 150). Spec §3/§8: tablas de defaults, `LEDCNTRL`→0x005555, nota RF, changelog §14.
+  Bump **v0.47-experiment** (cabeceras, #define, library.json, spec).
+- **Verificado:** 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK.
+- ⚠️ **Efectos acoplados NO ajustados (avisados):** (a) RF_100K puede acercarse a saturación TIA
+  a 50 mA; (b) ambient settling t5/t11 (200 counts) solo adecuado hasta ~25 mA — a ≥50 mA subir
+  a 400+ counts (spec §8) → riesgo de más leakage LED→ALED; (c) térmico-piel sin caracterizar.
+- Memorias: project_led_current_increase_50ma_task (aplicado + efectos), project_led_default_current_task
+  (superado), project_library_workflow (v0.47).
+- **Sin commitear** (pendiente de que Alex lo pida).
+
+### Ambient settling 200→400 counts (v0.47, mismo paquete que ILED 50 mA) — 2026-07-28
+
+Alex pidió ajustar el ambient settling a 400 counts (coherente con operar a 50 mA; lo pedía la
+propia spec §8). Cambio en `_apply_timing_regs()`: `ambient_margin` 200→400 counts (50→100 µs),
+usado en t5 (ALED2STC) y t11 (ALED1STC). Da más tiempo de extinción del LED / descarga de CF
+antes de muestrear el ambiente → mitiga el leakage LED→ALED.
+- Verificado seguro a PRF=500 Hz (q=2000): ventana ambient 400..1998, holgada; no afecta a las
+  conversiones del ADC. Válido para PRF ≤ ~2 kHz (a PRF mayor la ventana q−2 se estrecha).
+- Spec: filas t5/t11 (§8 Table 2), nota de ambient settling, y changelog §14 v0.47 actualizados.
+- Agrupado en **v0.47-experiment** (no consolidada aún; es consecuencia directa del 50 mA).
+- Verificado: 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK.
+
+Pendientes de v0.47 aún abiertos: (a) RF_100K vs saturación TIA a 50 mA (¿bajar RF o dejar a
+HGAC?); (c) caracterización térmica sonda-piel (ISO ≤41 °C). Sin commitear.
+
+### Flash OTA de v0.47-experiment a IncuNest 16.A — 2026-07-29
+
+Alex pidió "haz flash". Procedimiento OTA seguro seguido:
+- Verificada MAC en ARP: 16.A (10:51:DB:50:48:F8) en **192.168.50.117** (no en el hotspot
+  192.168.137.x habitual, pero accesible; MAC correcta = lo crítico). Ping OK, HTTP 200, MAC
+  re-verificada tras ping (no stale).
+- OTA: `curl -F "update=@.pio/build/incunest_V16/firmware.bin" http://192.168.50.117/update`
+  (campo 'update', handler HTTP_POST en src/main.cpp). Binario 828 KB → respuesta OK, HTTP 200,
+  10.3 s. Placa reinicia sola; verificado arranque (ping 0% pérdida, HTTP 200, MAC intacta).
+- La 16.A corre ya todo el acumulado experiment: OT domain + PROBE_SATURATING + rename _RANGE +
+  ILED 50 mA + ambient settling 400 counts (v0.47).
+- Resuelve el "flash OTA pendiente" que arrastrábamos desde v0.45.
+
+Pendiente de v0.47: validar en HW (SpO2/HR reales, PROBE_SATURATING, ¿satura la TIA a 50 mA con
+RF_100K?), caracterización térmica sonda-piel. Código sin commitear.
+
+### Verificación HW: RF vs saturación TIA a 50 mA — frente (a) cerrado — 2026-07-29
+
+Alex confirmó empíricamente: con la sonda en el dedo, ILED a 50 mA produce `v_tia_diff < 0.5 V`
+→ NO satura (≪ 1.0 V FS diferencial, incluso por debajo del punto ideal 0.6 V). RF_100K es
+adecuado a 50 mA, no hace falta bajarlo. Cierra el frente abierto (a) de v0.47.
+Salvedad: medido con dedo adulto; dedo/pie neonatal (más fino) por confirmar (margen ×2 hasta FS).
+Actualizado: spec (nota RF §9), memoria project_led_current_increase_50ma_task. Sin cambio de código.
+
+### Corrección: salvedad neonatal no fundamentada → formulación neutral — 2026-07-29
+
+Alex cuestionó la fuente de mi afirmación "el pie/dedo neonatal es más delgado que un pulgar
+adulto → más señal". Reconocido: sin fuente — inferencia mía (antropométrica no verificada +
+Beer-Lambert). Además la dirección del efecto no está clara (perfusión, geometría de sonda).
+Reemplazada por formulación neutral en spec (nota RF §9, changelog v0.47) y memoria
+project_led_current_increase_50ma_task: "comportamiento con sonda/paciente neonatal real sin
+caracterizar — confirmar v_tia_diff". Otro CLI añadirá datos antropométricos/de sonda después.
+
+### Análisis I_LED 50 mA (ventajas/inconvenientes), observación térmica del pulgar y datos antropométricos del pie — 2026-07-29
+
+Sesión sin cambios de código (los .cpp/.py del working tree son de sesiones previas: v0.47).
+Trabajo de análisis y documentación:
+
+- **Análisis en profundidad 20→50 mA:** ventajas (SNR ∝ √i_pd_led → +58 % a 50 mA, rendimiento
+  decreciente; mejor en baja perfusión; headroom para RF más bajo; ruido del driver neutro,
+  110 dB a cualquier corriente) vs inconvenientes (coste térmico LINEAL ×2.5; margen ISO de solo
+  4 °C sobre 37 °C de incubadora; lazo abierto sin °C/mA medido; posible resaturación TIA/RF).
+  Datos duros del datasheet AFE4490 (SBAS602H) extraídos: FS driver 150 mA @TX_REF=0.75 V,
+  LSB ≈0.586 mA, ruido input-referred 36 pA_RMS @RF=100k, VHR 1.3–1.4 V, disipación lineal con I.
+  Conclusión: el freno real es térmico-piel (sin caracterizar) + TIA, no el rating del LED.
+
+- **Observación del pulgar (Alex: no nota calentamiento a 50 mA):** analizado como **falso
+  negativo esperable, NO evidencia de seguridad neonatal**. Motivos: potencia media minúscula
+  (~19 mW/LED, ~30–40 mW total con duty 25 %); el pulgar adulto es un disipador enorme (masa,
+  perfusión, aire ~22 °C con 19 °C de colchón) vs pie de prematuro (masa 10–20× menor, mala
+  perfusión = peor caso BB.3, incubadora 37 °C, 4 °C de colchón); sensación térmica humana mala
+  (se nota hacia ~43–45 °C > umbral ISO 41 °C); el tacto mide el dedo global, no el punto de
+  contacto LED-piel; prueba de segundos vs monitorización de horas (regla de Moritz). Registrado
+  en memoria project_led_current_increase_50ma_task (punto Térmico-piel).
+
+- **Datos antropométricos del pie del prematuro** (búsqueda web): longitud por edad gestacional
+  (GA = 4.5·FL + 3.61 → ~4.5 cm @24 sem … ~8.1 cm @término; umbral prematuridad ≤7.35 cm),
+  anchura ~40–45 % de la longitud, y el dato crítico ausente en la literatura: grosor/path óptico
+  dorso-plantar ~5–10 mm (estimación de ingeniería). Implicación: path fino y translúcido ⇒ mucha
+  luz con poca corriente ⇒ subir I_LED solo ayuda en baja perfusión, no por grosor de tejido.
+  Nueva memoria: reference_preterm_foot_dimensions. (Corresponde al "otro CLI añadirá datos
+  antropométricos/de sonda" anotado antes.)
+
+- **Acceso móvil (Remote Control + push):** configurado el acceso a esta sesión desde el móvil vía
+  Remote Control (`/remote-control PulseNest Lab`, empareja por QR en la app Claude → pestaña Code).
+  Verificados prerrequisitos por CLI: versión 2.1.218 (≥ mínimo), sin env vars bloqueantes
+  (DISABLE_TELEMETRY/DO_NOT_TRACK/ANTHROPIC_BASE_URL/API_KEY todas unset), workspace ya confiado.
+  Notificaciones push vía `/config` (toggles "Push when Claude decides" / "Push when actions
+  required"), requieren Remote Control activo. Solo instrucciones, sin cambios en el repo.
+
+### Refactor: inline de Gate G0 en _hgac_update() (elimina _hgac_gate_ok) — 2026-07-29
+
+Alex criticó (con razón en el fondo) la extracción de la condición del gate a `_hgac_gate_ok()`:
+al usarse UNA sola vez, con nombre genérico, definición 80 líneas lejos del uso y comentario de
+12 líneas, la abstracción partía el concepto "gate" en dos — la condición en la función y sus
+consecuencias (reset de contadores TIASAT + return) en el llamador — dificultando seguir el flujo.
+Además el comentario del header ya había divergido ("probe not disconnected" = lógica vieja).
+Matiz: extraer condicionales a métodos con nombre revelador NO es chapuza per se (técnica
+estándar), pero aquí los inconvenientes pesaban.
+
+**Aplicado:** condición inlineada en `_hgac_update()` (probe_active APPLIED||SATURATING &&
+!HW_SETTLING) con comentario conciso; eliminada la función `_hgac_gate_ok()` y su declaración
+en el .h (comentario obsoleto incluido). Razonamiento histórico completo queda en spec §5.8.
+Spec: §1121 (ref a la función), changelog v0.47 (nota del inline). Sin cambio de comportamiento.
+Verificado: 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK. Agrupado en v0.47. Sin commitear.
