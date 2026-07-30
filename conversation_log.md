@@ -15270,3 +15270,40 @@ regla: la MAGNITUD de salida del ADC pasa a `adc_code`/`code`.
   counts, TIA settle AFECLK counts), contadores de muestras (`_sample_count`, `_buf_count`,
   `_interval_count`, `_afe_adc_averages` nº de promediados).
 - 36/36 tests + build ESP32-S3 OK. Sin cambio de comportamiento. Dentro de v0.49. Sin commitear.
+
+### Doc: comentario de PROBE_SATURATING más claro (incunest_afe4490.h) — 2026-07-31
+
+Alex: la doc de PROBE_SATURATING (enum ProbeState) era difícil de entender. Reescrita para abrir
+con la idea clave: "OT is NOT trustworthy: ADC saturated or TIA beyond linearity — i.e. some
+channel is not CH_VALID_RANGE (!as.allValidRange())", seguido de las implicaciones (presencia
+desconocida; consumidores). Solo comentario → sin cambio de comportamiento ni bump. Sin commitear.
+Pendiente ofrecido: alinear la descripción de la spec §5.6.2 con esta redacción.
+
+### Legibilidad: allValidRange() omite tia_over_lin (redundante) — 2026-07-31
+
+Alex: quitar `| tia_over_lin` de allValidRange() (incunest_afe4490.h). Es redundante —
+`tia_over_lin ⊆ tia_over_fs` (FS_V < LIN_V garantizado por el static_assert de tia_axis; v_tia > LIN
+implica > FS). allValidRange = `(adc_sat_pos | adc_sat_neg | tia_over_fs) == 0`. Añadido comentario
+que documenta la omisión (no re-añadir sin causa). Comportamiento idéntico → sin bump.
+36/36 tests + build OK. Sin commitear (retoque post-v0.49, junto con doc de PROBE_SATURATING).
+
+### v0.50: PROBE_SATURATING chequea solo saturación POSITIVA (anyPositiveSaturation) — 2026-07-31
+
+Alex corrigió mi modelo: `adc_sat_neg` solo puede ocurrir con AMBDAC (fotocorriente unipolar →
+v_adc ≥ 0 sin AMBDAC; el propio raíl negativo se caracterizó "via AMBDAC sweep"). La sonda solo
+satura por arriba, que es lo que hay que detectar antes de que HGAC reduzca RG/ILED; reducir
+ganancia no corregiría un adc_sat_neg de AMBDAC.
+- `_rsqm_update()` 1257: `!as.allValidRange()` → `as.anyPositiveSaturation()`.
+- Nuevo helper: `anyPositiveSaturation() = (adc_sat_pos | tia_over_fs) != 0` (excluye adc_sat_neg
+  a propósito). Comentarios del bloque (a)/(b), doc de PROBE_SATURATING y test_hgac actualizados.
+- **Equivalente hoy** (AMBDAC=0 → adc_sat_neg siempre 0); difiere solo si se activa AMBDAC (capa v2).
+- `allValidRange()` queda huérfano (0 usos) — pendiente decidir si eliminarlo.
+- Bump v0.50. 36/36 tests + build ESP32-S3 OK. Sin commitear.
+
+### v0.50 (cont.): eliminado allValidRange() (huérfano) — 2026-07-31
+
+Tras el cambio a anyPositiveSaturation(), allValidRange() quedó sin uso. Eliminado (.h + declaración
+en spec §struct). La nota de "tia_over_lin subsumido por tia_over_fs" se trasladó al comentario de
+anyPositiveSaturation() (que también lo omite). Menciones históricas de allValidRange en la spec
+(changelogs v0.44c/v0.46/v0.47b y prosa §5.8) se conservan como registro. 36/36 tests + build OK.
+Commiteado y pusheado: librería 38b9c6d (v0.50).

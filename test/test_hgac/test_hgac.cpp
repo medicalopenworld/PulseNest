@@ -19,8 +19,8 @@ static constexpr int32_t SAT_LED1_CODE = 1900000;  // v_tia_diff_led1 ≈ 1.087 
 // Sample-budget model (defaults: hgac_tiaguard_debounce_min_s=0.5s, hgac_settle_time_s=0.15s,
 // rsqm_probe_state_min_s=0.2s, fs=500 Hz), verified against a standalone instrumented run:
 //   - Gate opens at sample 100: PROBE_SATURATING debounce commits (100 = 0.2s*500Hz).
-//     (LED1's v_tia_diff > kVTiaDiffFs makes the channel not CH_VALID_RANGE, so allValidRange()
-//     is false — RSQM classifies this as PROBE_SATURATING, which HGAC's Gate G0 (inlined in
+//     (LED1's v_tia_diff > kVTiaDiffFs sets tia_over_fs, so anyPositiveSaturation() is true —
+//     RSQM classifies this as PROBE_SATURATING, which HGAC's Gate G0 (inlined in
 //     _hgac_update()) treats like PROBE_APPLIED — see spec §5.8.)
 //   - 1st descent (RF_100K->RF_50K) at sample 100 + 250 - 1 = 349.
 //   - Settling (75 samples) active 350-424; gate reopens at 425.
