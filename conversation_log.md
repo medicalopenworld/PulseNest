@@ -15129,3 +15129,144 @@ estándar), pero aquí los inconvenientes pesaban.
 en el .h (comentario obsoleto incluido). Razonamiento histórico completo queda en spec §5.8.
 Spec: §1121 (ref a la función), changelog v0.47 (nota del inline). Sin cambio de comportamiento.
 Verificado: 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK. Agrupado en v0.47. Sin commitear.
+
+### Commit + push de v0.47-experiment — 2026-07-29
+
+Alex pidió commit y push. Realizado en ambos repos, a rama nueva `experiment/ot-domain-inputs`
+(no existía en remoto; creada con tracking):
+- Librería `incunest_afe4490`: commit `5116874` (v0.47: 50 mA LED + ambient settling 400 +
+  inline Gate G0 + valores datasheet Medle en spec). 6 ficheros.
+- PulseNest: commit `f5c5eec` (test_hgac comentario + conversation_log). 2 ficheros.
+Excluidos deliberadamente (sin trackear/no relacionados): pulsenest_lab.ini, tia_linearity_sweep.py,
+agent_sweep_batch.py, docs/masimo_whitepapers, slaa655.pdf, CSVs de sweep, y el conversation_log
+del repo librería. Decisión fusionar/revertir a master sigue pendiente (tras validación HW).
+
+### Refactor v0.47b: RSQM detecta saturación con allValidRange() (no !otLedxValid) — 2026-07-29
+
+Alex discrepó (con razón) de mantener `otLedxValid()` en el clasificador RSQM. Argumento
+decisivo: usar `otLed1Valid()` (predicado "OT usable") para detectar saturación es coincidencia
+de IMPLEMENTACIÓN, no de intención — si la definición de "OT válida" evoluciona, el detector de
+PROBE_SATURATING heredaría el cambio sin querer. La intención real es "¿los 4 canales en rango
+válido?" = `allValidRange()` (que ya existía; hay que usarlo, no es adorno).
+
+Verificada equivalencia EXACTA: `!otLed1Valid() || !otLed2Valid()` ≡ `!allValidRange()`
+(ambos miran los mismos 4 flags sobre los 4 canales; allValidRange además exige 0 en bits 4-7,
+que nunca se escriben → sin diferencia observable). test_hgac (ejercita PROBE_SATURATING) pasa.
+
+Cambio en `_rsqm_update()`: eliminadas las 2 variables `led1/led2_saturating`, ahora
+`if (!as.allValidRange())`. Alinea el código con su propio comentario ("channel not
+CH_VALID_RANGE → SATURATING"). Bump **v0.47b** (refactor de legibilidad, sin cambio de
+comportamiento). 36/36 tests, build ESP32-S3 OK. Sin commitear.
+
+**Pendiente:** `otLed1Valid()`/`otLed2Valid()` quedan SIN USO funcional (solo comentarios).
+NO eliminados (API pública documentada) — pendiente confirmar con Alex si se borran.
+
+### v0.47b (cont.): eliminados otLed1Valid()/otLed2Valid() — 2026-07-29
+
+Alex: "elimínalos, no dejemos API sin uso". Tras el refactor a `allValidRange()`, los helpers
+`otLed1Valid()`/`otLed2Valid()` quedaron sin uso funcional. Eliminados del `.h` (métodos +
+comentario "OT validity is strict"). Comentarios actualizados: `ot_led` en el `.h`
+("Valid iff both source channels chValidRange()") y dos comentarios en `test_hgac.cpp`
+(referencias a `!otLed1Valid()` → `not CH_VALID_RANGE` / `allValidRange()`). Changelog v0.47b
+actualizado. Verificado: 0 refs restantes, 36/36 tests nativos, build ESP32-S3 OK. Sin commitear.
+
+### v0.48: eje v_tia_diff como fuente única de verdad (namespace tia_axis) — 2026-07-29
+
+Alex: la tabla de los 5 voltajes es crítica; ¿agruparla en un único sitio? Los 5 umbrales
+estaban dispersos entre `AFE4490AnalogState` (físicos constexpr) y `AFE4490Config` (defaults de
+política HGAC), y su ORDEN (ideal<guard<FS<adc_sat<lin) era un invariante tácito.
+
+**Aplicado (`incunest_afe4490.h`):** `namespace tia_axis` con IDEAL_V 0.6 / GUARD_V 0.9 / FS_V 1.0
+/ ADC_SAT_V 1.2 / LIN_V 1.8, y un **`static_assert`** que garantiza el orden estricto en
+COMPILACIÓN (si alguien pone GUARD>FS, no compila). `kVTiaDiffFs/Lin` y los defaults
+`hgac_v_tia_diff_thr/ideal` ahora DERIVAN del eje. Preserva la separación físico/política.
+`setHgacVTiaDiffThr()` clampa a ≤ FS_V (el guard no puede quedar por encima del rango fiable en
+runtime). Valores sin cambio → comportamiento idéntico salvo ese clamp defensivo.
+Matiz: ADC_SAT_V es nominal; `kAdcSatPos` sigue siendo el rail empírico en counts (~1.199 V).
+Spec: §thresholds reescrita + changelog. Bump **v0.48-experiment**.
+Verificado: 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK. Sin commitear.
+
+Base natural para el pendiente rename TIASAT→guard (GUARD_V ya es el nombre del umbral 0.9 V).
+
+### v0.49: rename TIASAT→TIAGUARD + esquema debounce + convención adc_code — 2026-07-30
+
+Tras larga discusión de naming, Alex decidió:
+1. **`count` NUNCA para salida ADC → `adc_code`** (regla memorizada en [feedback_naming_adc_code_samples]).
+2. **TIASAT → TIAGUARD**: TIASAT colisionaba con PROBE_SATURATING y engañaba (la guarda dispara a
+   GUARD_V=0.9V, por DEBAJO de FS → es preventiva, no saturación).
+3. **Esquema debounce sin ambigüedad count/samples**: estado=`elapsed_samples`, umbral=`min_samples`, config=`_s`.
+
+Renombrado (sed word-boundary, 5 ficheros; `pulsenest_lab.py`=0):
+- `_hgac_tiasat_count_led1/2` → `_hgac_tiaguard_debounce_elapsed_samples_led1/2`
+- `_hgac_tiasat_min_samples` → `_hgac_tiaguard_debounce_min_samples`
+- `hgac_tiasat_persist_s`/`setHgacTiasatPersistS()` → `hgac_tiaguard_debounce_min_s`/`setHgacTiaguardDebounceMinS()`
+- `_hgac_check_tiasat()` → `_hgac_check_tiaguard()`; TIASAT→TIAGUARD; var local `tiasat`→`tiaguard`.
+- `$SET`/`$LCFG` wire key en `main.cpp` actualizado.
+Prosa corregida (glosas "TIA saturation" tras TIAGUARD → "guard trip, below FS") en §5.8/§5.8.1 y comentarios.
+Restaurado el changelog histórico de v0.44d (el sed lo había reescrito a tiaguard; v0.44d fue descent→TIASAT).
+Bump **v0.49-experiment**. 36/36 tests + build ESP32-S3 OK. Sin cambio de comportamiento. Sin commitear.
+
+Pendiente global (nueva regla): migrar usos actuales de count-para-ADC (`kAFE_ADC_FS_COUNTS`, etc.) a `adc_code`.
+
+### Ajuste (dentro de v0.49): debounce_elapsed_samples → debounce_count — 2026-07-30
+
+Alex reconsideró: el contador dinámico del debounce vuelve a `_count` (no `elapsed_samples`).
+Razón: `_count` es más corto y coherente con la convención EXISTENTE del proyecto (`_sample_count`,
+`_buf_count`, `_interval_count`); `elapsed_samples` habría sido el único de su tipo. Seguro porque
+el ADC usa `adc_code` (ya no hay ambigüedad ADC).
+- `_hgac_tiaguard_debounce_elapsed_samples_led1/2` → `_hgac_tiaguard_debounce_count_led1/2` (+ parámetro
+  local y comentarios). Umbral sigue `_debounce_min_samples`, config `_debounce_min_s`.
+- Convención global revisada (memoria [feedback_naming_adc_code_samples]): contador dinámico = `_count`
+  (convención proyecto), umbral = `_min_samples`, ADC = `adc_code`.
+- Dentro de v0.49 (no consolidada). 36/36 tests + build OK. Sin cambio de comportamiento. Sin commitear.
+
+### Datasheet: salida TIA (diferencial) y terminología ADC; alcance de renames; tarea ADC_FSR/ADC_SAT_V — 2026-07-30
+
+Sesión sin cambios de código (los .cpp/.py del working tree son de sesiones previas). Trabajo de
+consulta del datasheet AFE4490 (SBAS602H, verificado leyendo el PDF de primera mano) y análisis:
+
+- **Cómo referencia el datasheet la salida de la TIA (diferencial vs single-ended):** predominan-
+  temente DIFERENCIAL. Símbolos propios de TI: `VOD(fs)` = "Full-scale differential output voltage"
+  = 1 V (p.11, bloque I-V Transimpedance Amplifier — CONFIRMADO leyendo p.11); `VDIFF` con factor ×2
+  (Ec. 2, p.30); "TIA max (Differential) ±1 V" (Fig. 135, p.88, confirmada). Única vista por rama:
+  ADC-bypass RXOUTP/RXOUTN en torno a Vcm ≈0.9 V (p.47). **Correcciones detectadas:** (1) el comentario
+  de `incunest_afe4490.h:252-254` afirma "the datasheet has no symbol named 'V_OD'" — es FALSO,
+  `VOD(fs)` existe en p.11; (2) `V_TIA` NO aparece en el PDF (nombre interno nuestro). → respalda la
+  decisión previa de NO renombrar `v_tia_diff` a `v_tia`.
+
+- **Cómo nombra el datasheet la salida digital del ADC:** término canónico "ADC output code" /
+  "22-bit code" (Tabla 7 "22-BIT ADC OUTPUT CODE", p.88 — confirmada); "digital code" (p.29/31/32);
+  "digital value" en registros LEDxVAL (p.80-82); formato complemento a dos 22-bit. **TI NUNCA usa
+  "counts" para el ADC** — reserva "count" para ciclos de reloj del temporizador (LED2STC, PRPCOUNT).
+  Nuestra librería usa "counts", que además colisiona semánticamente con los counts del timer. Alinea
+  con la nueva memoria [[feedback_naming_adc_code_samples]] (usar `adc_code`).
+
+- **Alcance de dos renames potenciales (solo medición, sin tocar nada):**
+  - `v_tia_diff → v_tia`: ~286 ocurrencias, muchos símbolos, ROMPE schema CSV (varias cabeceras),
+    deroga la regla 4b. Empeora la fidelidad al datasheet → NO recomendado.
+  - `counts → adc_code`: ~100 ocurrencias cat. A, ~8 símbolos, contrato externo casi intacto (1 sola
+    cabecera CSV secundaria en tia_linearity_sweep.py:206; protocolo limpio; sin static_assert que
+    derogar). MEJORA fidelidad al datasheet. Riesgo = ambigüedad léxica "counts" ADC vs timer en
+    comentarios/spec/tooltips → rename símbolo-a-símbolo + revisión manual, NO automatizable.
+
+- **Nueva tarea:** [[project_adc_fsr_sat_v_duplication_task]] — dos constantes con el mismo literal
+  1.2 V para el FS del ADC: `kAFE_ADC_FSR` (.h:235, fórmula) y `tia_axis::ADC_SAT_V` (.h:293, eje de
+  umbrales). Matiz: hay 3 representaciones del tope del ADC (2 nominales = 1.2 duplicado + kAdcSatPos
+  empírico ≈1.199 V en counts). Estudiar unificar (derivar una de otra) o documentar la separación.
+
+- **Consejo de flujo de trabajo (no código):** ante la lentitud creciente por sesión larga, se
+  recomendó capturar ideas en un BACKLOG.md editado por Alex directamente (bandeja de entrada → triage
+  a memorias de tarea al cerrar sesión) y acortar sesiones apoyándose en MEMORY.md + conversation_log
+  (/compact o sesión nueva por tema). Pendiente de decisión de Alex si crear el BACKLOG.md.
+
+### Migración count → adc_code (salida ADC) — 2026-07-31 (dentro de v0.49)
+
+Alex señaló que "count" seguía apareciendo asociado a la salida ADC (comentarios). Aplicada la
+regla: la MAGNITUD de salida del ADC pasa a `adc_code`/`code`.
+- Identificador: `kAFE_ADC_FS_COUNTS` → `kAFE_ADC_FS_CODE` (lib .h/.cpp + spec).
+- Comentarios de unidad: `[ADC counts]` → `[adc_code]`; rail `counts —` → `adc_code —`;
+  "220-count guard" → "220-code guard"; "ambient-corrected counts" → "adc_code"; etc.
+- **NO tocados** (no son salida ADC): AFECLK ticks (`PRPCOUNT`, "1 count = 0.25 µs", `adc_reset`
+  counts, TIA settle AFECLK counts), contadores de muestras (`_sample_count`, `_buf_count`,
+  `_interval_count`, `_afe_adc_averages` nº de promediados).
+- 36/36 tests + build ESP32-S3 OK. Sin cambio de comportamiento. Dentro de v0.49. Sin commitear.

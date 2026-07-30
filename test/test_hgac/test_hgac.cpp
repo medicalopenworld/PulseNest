@@ -10,17 +10,17 @@
 // v_tia_diff_led1 = led1_code * (1.2 / 2097151). Since 2026-07-24, PROBE_SATURATING is a
 // distinct state from PROBE_NOT_APPLIED (see enum ProbeState) and HGAC's gate requires
 // PROBE_APPLIED or PROBE_SATURATING — so the stimulus must trip TIA-linearity invalidity
-// (v_tia_diff > kVTiaDiffFs = 1.0 V, i.e. !otLed1Valid()) to open the gate at all. Use a
+// (v_tia_diff > kVTiaDiffFs = 1.0 V, i.e. LED1 not CH_VALID_RANGE) to open the gate at all. Use a
 // code around 1,900,000 → v_tia_diff ≈ 1.087 V: above kVTiaDiffFs (invalid → SATURATING)
 // but below the ADC positive rail (kAdcSatPos = 2,096,700 counts, no ADC clipping) and
 // still comfortably above the 0.9 V HGAC actuation guard.
 static constexpr int32_t SAT_LED1_CODE = 1900000;  // v_tia_diff_led1 ≈ 1.087 V (OFF_SPEC, not clipped)
 
-// Sample-budget model (defaults: hgac_tiasat_persist_s=0.5s, hgac_settle_time_s=0.15s,
+// Sample-budget model (defaults: hgac_tiaguard_debounce_min_s=0.5s, hgac_settle_time_s=0.15s,
 // rsqm_probe_state_min_s=0.2s, fs=500 Hz), verified against a standalone instrumented run:
 //   - Gate opens at sample 100: PROBE_SATURATING debounce commits (100 = 0.2s*500Hz).
-//     (LED1's v_tia_diff > kVTiaDiffFs makes the channel !CH_VALID_RANGE, so otLed1Valid() is
-//     false — RSQM classifies this as PROBE_SATURATING, which HGAC's Gate G0 (inlined in
+//     (LED1's v_tia_diff > kVTiaDiffFs makes the channel not CH_VALID_RANGE, so allValidRange()
+//     is false — RSQM classifies this as PROBE_SATURATING, which HGAC's Gate G0 (inlined in
 //     _hgac_update()) treats like PROBE_APPLIED — see spec §5.8.)
 //   - 1st descent (RF_100K->RF_50K) at sample 100 + 250 - 1 = 349.
 //   - Settling (75 samples) active 350-424; gate reopens at 425.
