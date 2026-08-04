@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
 tia_linearity_sweep.py — experiment: characterize the AFE4490 TIA linearity
-(knee/clip location) via the firmware-reconstructed V_TIA_DIFF_LED1.
+(knee/clip location) via the firmware-reconstructed V_TIA_LED1.
 
 RESULT (2026-07-08, IncuNest 16.A, firmware pre-v0.34 per-branch values):
 no knee at 0.5 V/branch; linear to ~0.90 V/branch; hard clip ~0.97 V/branch,
 independent of AMBDAC (clip is inside the TIA, pre-ambient-subtraction) and
 of RF (output node hits the rail).  In the differential domain: linear to
 ~1.8 V, clip ~1.94 V.  Convention settled: library >= v0.34 stores/streams
-V_TIA_DIFF (differential = 2 x I_PD x RF, naming rule 4b).
+V_TIA (differential = 2 x I_PD x RF).
 
 NOTE: CSVs recorded before 2026-07-09 contain PER-BRANCH values (V_TIA_LED1
-column); newer runs record V_TIA_DIFF_LED1 (values x2).
+column); newer runs record V_TIA_LED1 (values x2).
 
 Method
 ------
-Ramps LED1 current in fine steps and records V_TIA_DIFF_LED1 from $M4 frames.
-V_TIA_DIFF grows proportionally to LED current until the TIA compresses.
+Ramps LED1 current in fine steps and records V_TIA_LED1 from $M4 frames.
+V_TIA grows proportionally to LED current until the TIA compresses.
 The ramp is repeated with several AMBDAC values (shifts the ADC observation
-window: v_adc = v_tia_diff - 0.2*AMBDAC_uA, RG=x1) so every V_TIA_DIFF region
+window: v_adc = v_tia - 0.2*AMBDAC_uA, RG=x1) so every V_TIA region
 is observed with the ADC unsaturated.  It is also repeated with two RF
 settings: LED droop is a function of LED mA while TIA compression is a
-function of V_TIA_DIFF — if the knee lands on the same V_TIA_DIFF (not the
+function of V_TIA — if the knee lands on the same V_TIA (not the
 same mA) for both RF values, the compression is in the TIA, not in the LED.
 
 Usage
@@ -59,7 +59,7 @@ ADC_SAT_COUNTS = 2_050_000         # |counts| above this -> ADC clipped
 V_ADC_VALID    = 1.05              # |v_adc| beyond this -> discard (near clip)
 SAT_BREAK      = 3                 # consecutive ADC+ saturated steps -> next window
 CMD_GAP_S      = 0.06              # >= one Cmd_Task cycle between $SET datagrams
-BASE_LO, BASE_HI = 0.20, 0.80      # v_tia_diff baseline slope segment [V]
+BASE_LO, BASE_HI = 0.20, 0.80      # v_tia baseline slope segment [V]
 KNEE_DROP      = 0.90              # local slope below 90% of baseline -> knee
 
 
@@ -118,8 +118,8 @@ class Esp32Link:
                 pass
 
     def collect(self, n: int, timeout_s=6.0):
-        """Collect n $M4 samples -> list of (led1_counts, v_tia_diff_led1).
-        parts[23] is V_TIA_DIFF_LED1 with firmware >= v0.34 (differential)."""
+        """Collect n $M4 samples -> list of (led1_counts, v_tia_led1).
+        parts[23] is V_TIA_LED1 with firmware >= v0.34 (differential)."""
         out = []
         t_end = time.monotonic() + timeout_s
         while len(out) < n and time.monotonic() < t_end:
@@ -132,15 +132,15 @@ class Esp32Link:
                 if not line.startswith(b"$M4,"):
                     continue
                 parts = line.decode(errors="replace").split(",")
-                # 0:$M4 1:SmpCnt 2:Ts_us 3:LED2 4:LED1 ... 23:V_TIA_DIFF_LED1 ...
+                # 0:$M4 1:SmpCnt 2:Ts_us 3:LED2 4:LED1 ... 23:V_TIA_LED1 ...
                 if len(parts) < 31:
                     continue
                 try:
                     led1_counts = int(parts[4])
-                    v_tia_diff_led1  = float(parts[23])
+                    v_tia_led1  = float(parts[23])
                 except ValueError:
                     continue
-                out.append((led1_counts, v_tia_diff_led1))
+                out.append((led1_counts, v_tia_led1))
         return out
 
 
@@ -156,7 +156,7 @@ def main():
     link.send("$SET,led2,0")
     link.send("$SET,stg21,0dB")
 
-    rows = []   # (rf, ambdac, led_mA, n, counts_mean, v_adc, v_tia_diff_med, v_tia_diff_std, valid) — diff domain
+    rows = []   # (rf, ambdac, led_mA, n, counts_mean, v_adc, v_tia_med, v_tia_std, valid) — diff domain
     led_values = list(range(LED_MIN_MA, LED_MAX_MA + 1, LED_STEP_MA))
     total = len(RF_LIST) * len(AMBDAC_LIST) * len(led_values)
     done  = 0
@@ -179,15 +179,15 @@ def main():
                 vtias  = [s[1] for s in samples]
                 counts_mean = sum(counts) / len(counts)
                 v_adc       = counts_mean / ADC_FS_COUNTS * ADC_FSR
-                v_tia_diff_med   = statistics.median(vtias)
-                v_tia_diff_std   = statistics.pstdev(vtias)
+                v_tia_med   = statistics.median(vtias)
+                v_tia_std   = statistics.pstdev(vtias)
                 adc_sat_pos = max(counts) >= ADC_SAT_COUNTS
                 valid       = (abs(v_adc) <= V_ADC_VALID
                                and max(abs(c) for c in counts) < ADC_SAT_COUNTS)
                 rows.append((rf, amb, led, len(samples), counts_mean, v_adc,
-                             v_tia_diff_med, v_tia_diff_std, int(valid)))
+                             v_tia_med, v_tia_std, int(valid)))
                 print(f"  [{done}/{total}] RF={rf} AMBDAC={amb} LED={led:3d} mA  "
-                      f"V_ADC={v_adc:+.3f} V  V_TIA_DIFF={v_tia_diff_med:.4f} V  "
+                      f"V_ADC={v_adc:+.3f} V  V_TIA={v_tia_med:.4f} V  "
                       f"{'ok' if valid else 'DISCARD'}")
                 if adc_sat_pos:
                     sat_streak += 1
@@ -199,12 +199,12 @@ def main():
 
     # ── CSV (cp1252, project convention) ────────────────────────────────────
     with open(csv_path, "w", encoding="cp1252", errors="replace") as f:
-        f.write("# TIA linearity sweep — V_TIA_DIFF domain (differential = 2 x I_PD x RF, "
+        f.write("# TIA linearity sweep — V_TIA domain (differential = 2 x I_PD x RF, "
                 "firmware >= v0.34; CSVs before 2026-07-09 were per-branch)\n")
         f.write(f"# date={stamp} led2=0mA stg21=0dB settle={SETTLE_S}s "
                 f"n={N_SAMPLES} probe=NO FINGER (expected)\n")
         f.write("RF,ambdac_uA,LED1_mA,n,LED1_counts_mean,V_ADC_LED1_V,"
-                "V_TIA_DIFF_LED1_median_V,V_TIA_DIFF_LED1_std_V,adc_valid\n")
+                "V_TIA_LED1_median_V,V_TIA_LED1_std_V,adc_valid\n")
         for r in rows:
             f.write(f"{r[0]},{r[1]},{r[2]},{r[3]},{r[4]:.1f},{r[5]:.5f},"
                     f"{r[6]:.5f},{r[7]:.5f},{r[8]}\n")
@@ -216,12 +216,12 @@ def main():
 
 
 def analyze(rows):
-    """Per-RF piecewise slope table: local d(V_TIA_DIFF)/d(LED mA) within each
-    (RF, AMBDAC) segment, binned by V_TIA_DIFF and normalized to the baseline
+    """Per-RF piecewise slope table: local d(V_TIA)/d(LED mA) within each
+    (RF, AMBDAC) segment, binned by V_TIA and normalized to the baseline
     slope measured in BASE_LO..BASE_HI V."""
     print("\n================ ANALYSIS ================")
     for rf in RF_LIST:
-        slopes = []   # (v_tia_diff_mid, slope) from consecutive valid points
+        slopes = []   # (v_tia_mid, slope) from consecutive valid points
         for amb in AMBDAC_LIST:
             seg = [r for r in rows if r[0] == rf and r[1] == amb and r[8]]
             seg.sort(key=lambda r: r[2])
@@ -236,7 +236,7 @@ def analyze(rows):
         base_slope = statistics.median(base)
         print(f"\nRF={rf}  baseline slope ({BASE_LO}-{BASE_HI} V): "
               f"{base_slope * 1000:.3f} mV/mA")
-        print("  V_TIA_DIFF bin [V]   slope/baseline   n")
+        print("  V_TIA bin [V]   slope/baseline   n")
         knee = None
         for lo10 in range(0, 22):
             lo, hi = lo10 / 10.0, lo10 / 10.0 + 0.1
@@ -254,7 +254,7 @@ def analyze(rows):
             print("  --> no knee detected within observed range")
     print("\nReference (2026-07-08 sweep, diff domain): linear to ~1.8 V, "
           "hard clip ~1.94 V, independent of AMBDAC and RF.  Same-knee-"
-          "V_TIA_DIFF across both RF values rules out LED droop as the cause.")
+          "V_TIA across both RF values rules out LED droop as the cause.")
 
 
 def plot(rows, png_path):
@@ -274,11 +274,11 @@ def plot(rows, png_path):
             if seg:
                 ax.plot([r[2] for r in seg], [r[6] for r in seg],
                         marker=".", label=f"AMBDAC={amb} uA")
-        ax.axhline(1.0,  ls="--", c="orange", label="1.0 V (spec V_OD(fs), diff)")
+        ax.axhline(1.0,  ls="--", c="orange", label="1.0 V (TIA full-scale, diff, spec)")
         ax.axhline(1.94, ls="--", c="red",    label="1.94 V (observed clip, diff)")
         ax.set_title(f"RF = {rf}")
         ax.set_xlabel("LED1 current [mA]")
-        ax.set_ylabel("V_TIA_DIFF_LED1 median [V]")
+        ax.set_ylabel("V_TIA_LED1 median [V]")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
     fig.tight_layout()

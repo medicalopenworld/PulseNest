@@ -13920,3 +13920,1740 @@ Fase 2 (ascenso de RF con predicción/histéresis), Fase 3 (cierre de telemetrí
 (actuación de ILED + envolvente térmica), Fases 5-7 (feed-forward, estimador P², UI —
 opcionales/diferidas). Ver `incunest_afe4490_spec.md` §5.8/§10.9/§14 y el plan guardado en
 `C:\Users\alexc\.claude\plans\groovy-scribbling-oasis.md`.
+
+### 2026-07-13 (continuación) — Checkpoint cerrado antes de experimento OT
+
+**Tema:** el usuario propuso usar OT (Optical Transmittance) en vez de la salida ADC cruda
+como entrada de SpO2/HR1/HR2/HR3, para eliminar de raíz la corrupción de R tras cambios de
+RF (problema C1) sin depender del reescalado reactivo de HGAC Fase 1. Tras analizar ventajas
+(elimina el acoplamiento entre la tasa de actuación de HGAC y la sofisticación futura del
+estimador de SpO2/PI), inconvenientes (toca las 4 familias de algoritmos, recalibración,
+impacto en `pulsenest_lab.py`: las 4 clases-espejo de verificación quedarían desincronizadas,
+OT solo viaja en `$M4` — no en el modo por defecto `$M3` —, y las CSVs capturadas sin OT no
+serían reanalizables sin una vía de cálculo local con su propio riesgo de sincronización),
+decisión: **probarlo en vez de seguir analizando** ("la mejor manera de saber si merece la
+pena es intentarlo").
+
+**Checkpoint cerrado (commit + tag) en ambos repos, para poder volver atrás sin perder nada:**
+- `PulseNest`: commit `a8b1d32` ("feat: HGAC Phase 1 wiring..."), tag **`hgac-phase1-checkpoint`**.
+- `incunest_afe4490`: commit `ed62279` ("feat: HGAC v0.37 — Phase 1..."), tag **`v0.37-hgac-phase1`**.
+- Ambos repos en rama nueva **`experiment/ot-domain-inputs`** (creada desde el checkpoint) —
+  el trabajo de OT se hace ahí; `master` queda congelado en el tag.
+
+**Cómo volver atrás si nos arrepentimos (sin tocar nada más):**
+```
+cd C:\PRJ\MOW\PulseNest             && git checkout master
+cd C:\PRJ\MOW\PulseNest\lib\incunest_afe4490  && git checkout master
+```
+Eso basta — `master` en ambos repos vuelve a ser exactamente HGAC Fase 1 tal y como quedó
+verificado (tests nativos 26/26, build ESP32-S3 exitoso), sin ningún rastro del experimento.
+Si además se quiere borrar la rama del experimento (opcional, no necesario para "volver"):
+`git branch -D experiment/ot-domain-inputs` en cada repo.
+
+**Estado:** checkpoint cerrado, rama de experimento activa. Implementación de OT pendiente
+de empezar en la próxima sesión/turno.
+
+### 2026-07-13 (continuación) — Experimento OT: SpO2 migrado (rama experiment/ot-domain-inputs)
+
+**Implementado en `incunest_afe4490` v0.38-experiment:** `_update_spo2()` pasa a recibir
+`(ot_ir, ot_red, i_pd_ir, i_pd_red)` en vez de `(led1_sub, led2_sub)`. Gate de "no hay dedo"
+cambiado de `spo2_min_dc` (counts) a `spo2_min_i_pd_a` (magnitud absoluta de i_pd) — el ratio
+OT es poco fiable cerca de señal nula, justo donde ese gate más importa. `_hgac_descend_rf()`
+ya NO reescala la EMA de SpO2 (innecesario: OT no da salto) — `EmaChannel::rescale()` queda
+sin uso y se ha borrado.
+
+**Hallazgo durante la verificación (no relacionado con OT, propiedad de la cascada de
+filtros):** el tiempo de asentamiento real de DC(τ=2s)→AC²(τ=6s) desde arranque en frío es
+mucho mayor que la estimación ingenua `3×τ_var=18s` — confirmado con simulación extendida,
+tarda ~60s en converger con precisión. Esto de paso arregla los 3 fallos pre-existentes de
+`test_spo2.cpp` (la constante de warmup del test estaba desincronizada de `spo2_warmup_s`).
+
+**Verificado:** 7/7 tests de `test_spo2.cpp` (reescrito), 6/6 de `test_hgac.cpp` (test de
+reescalado sustituido por uno que prueba que la EMA queda intacta), build ESP32-S3 exitoso.
+
+**Commits en `experiment/ot-domain-inputs`:** `incunest_afe4490` commit `7687789`; `PulseNest`
+commit `cd492f4`.
+
+**Pendiente:** HR1/HR2/HR3 siguen en dominio crudo (no migrados, prioridad menor). Impacto en
+`pulsenest_lab.py` (4 clases-espejo, `OT_LED1/2` solo en `$M4`) analizado pero sin resolver —
+ver `project_ot_domain_experiment_task.md`.
+
+### 2026-07-14 — SIGNAL STATS: OT_LED1/OT_LED2 mostrados en ppm
+
+**Cambio en `pulsenest_lab.py` (v1.16):** filas `OT_LED1`/`OT_LED2` de la tabla SIGNAL STATS
+renombradas a `OT_LED1 [ppm]`/`OT_LED2 [ppm]`, valor mostrado ×1e6 (A/A → ppm) con 2 decimales
+(antes 6 decimales sin convertir). Solo formato de visualización — el protocolo `$M4` no
+cambia (firmware sigue enviando `%.4e` crudo). Verificado `python -m py_compile` sin errores.
+Sin commitear (pendiente de que el usuario lo pida).
+
+### 2026-07-14 — Experimento OT: HR1/HR2/HR3 migrados (rama experiment/ot-domain-inputs)
+
+**Implementado en `incunest_afe4490` v0.39-experiment:** `_update_hr1/hr2/hr3()` (y sus
+fast-paths) pasan a recibir `float` (`as.ot_led1`) en vez de `int32_t led1_sub`. Confirmado
+en código: **HR1 (timing de picos) y HR3 (ratio HPS) no necesitaron recalibrar ningún
+umbral** — son invariantes a escala por construcción (una escala uniforme no mueve el
+instante del pico ni la frecuencia dominante FFT/HPS). **HR2 sí tenía un guard absoluto**
+(`acorr0 < 1.0f`, dimensionado para counts ADC) que habría bloqueado siempre HR2 en escala
+OT — recalibrado a `acorr0 < hr2_ot_energy_eps` (1e-16, guard de división-por-casi-cero, no
+umbral fisiológico).
+
+**Hallazgo de verificación:** los 3 tests ya compilaban y PASABAN con los valores viejos en
+escala de counts (500000) sin tocar nada — confirma empíricamente que los 3 algoritmos son
+invariantes a escala. Aun así se han reescrito con magnitudes OT realistas (~1e-5) para que
+la verificación sea genuina y no "pase por casualidad".
+
+**Verificado:** 33/33 tests nativos, build ESP32-S3 exitoso.
+
+**Commits en `experiment/ot-domain-inputs`:** `incunest_afe4490` → `14ba1d4`; `PulseNest` →
+`378f8c8`.
+
+**Migración OT completa** (SpO2 + HR1 + HR2 + HR3). Pendiente: impacto en
+`pulsenest_lab.py` (4 clases-espejo, ver `project_ot_domain_experiment_task.md`) y decisión
+final de fusionar a `master` o revertir.
+
+### 2026-07-14 (continuación) — Nueva ventana SIGNALS2 (pulsenest_lab.py v1.17)
+
+**Contexto:** antes de decidir cómo verificar que la migración a OT cumple su propósito, el
+usuario pidió una herramienta de visualización más flexible que la ventana SIGNALS actual
+(fija a los 6 canales crudos).
+
+**Implementado:** botón `SIGNALS2` junto a `SIGNALS`, abre `PPGSignals2Window` — 3 gráficas,
+cada una con 3 combos que permiten elegir CUALQUIERA de las 30 señales ya parseadas de
+`$M1`-`$M4` (canales crudos, OT, V_TIA_DIFF, I_PD, SpO2/HR/R/PI, RSQI, DiagCode, ProbeState,
+CH_MASKS). Lee directamente de los buffers ya existentes de `PPGMonitor` (sin acumulación
+propia). Colores fijos por slot (blanco/cian/magenta) en las 3 gráficas. Selección por
+defecto en el primer arranque: Gráfica 1 = LED1_SUB/OT_LED1/SpO2, Gráfica 2 =
+LED2_SUB/OT_LED2/R, Gráfica 3 = HR1/HR2/HR3 — pensada como punto de partida para comparar
+crudo vs OT vs resultado del algoritmo. Selección y geometría persistidas en ajustes.
+Limitación conocida (no resuelta, mencionada al usuario): señales de escala muy distinta
+comparten un solo eje Y por gráfica, sin auto dual-axis.
+
+Verificado: `python -m py_compile` sin errores. Script relanzado (`taskkill` + `start
+pythonw`) para que el usuario lo pruebe visualmente — no verificado por mí en pantalla.
+
+**Sin commitear** (pendiente de que el usuario lo pida, como hizo con el cambio anterior de
+pulsenest_lab.py).
+
+### 2026-07-14 (continuación) — SIGNALS2: layout + duración de ventana + pause
+
+**Cambio pedido:** mover cada grupo de 3 combos a la izquierda de su gráfica (antes estaban
+todos juntos debajo de las 3 gráficas) y añadir control de duración de ventana + botón
+PAUSE/CONTINUE, igual que en SIGNALS.
+
+**Implementado:** 3 filas (combos a la izquierda, gráfica a la derecha) en vez de 3 gráficas
+apiladas + fila de combos debajo. Barra superior compartida con `spin_window_s` (1-SIG_MAX_S,
+persistido) y botón PAUSE. Cada uno de los 9 slots mantiene su propio buffer circular
+independiente (mismo patrón de diff por sample-counter que PPGSignalsWindow), que se limpia y
+re-siembra con el historial actual cada vez que se cambia la señal de ese slot.
+
+Verificado: `python -m py_compile` sin errores. Script relanzado.
+
+### 2026-07-15 — SIGNALS2: tamaños de fuente aumentados + captura de pantalla
+
+**Cambio:** fuente de los 9 combos de señal 13px→17px. Fuente de "Window (s)" (label+spin) y
+del botón PAUSE aumentada mucho más: 14/16/15px → 22/32/32px, para que destaquen claramente
+sobre el resto de controles.
+
+Verificado visualmente: se forzó temporalmente `signals2_open=true` en `pulsenest_lab.ini`
+(vía QSettings, mismo mecanismo de persistencia que ya usa la app) para que la ventana se
+abriera sola al lanzar el script, y se capturó una captura de pantalla (PowerShell +
+Win32 SetWindowPos/CopyFromScreen) que se envió al usuario. Layout confirmado correcto:
+combos a la izquierda de cada gráfica, barra superior con Window(s)+PAUSE en fuente grande.
+
+`python -m py_compile` sin errores. Sin commitear todavía.
+
+### 2026-07-15 (continuación) — PC reiniciado: hook Bash arreglado + clases-espejo migradas a OT (pulsenest_lab v1.19)
+
+**Contexto:** tras un reinicio del PC, se retomó la sesión. De paso se detectó y corrigió un
+hook `PostToolUse:Bash` en `.claude/settings.local.json` que disparaba un aviso falso de
+"pulsenest_lab.py launched" cada vez que la cadena `pulsenest_lab.py` aparecía en la salida de
+CUALQUIER comando Bash (p. ej. `tail conversation_log.md`), no solo al lanzarlo de verdad —
+el `grep` original leía el JSON completo del evento (comando + salida) en vez de solo el
+comando. Arreglado creando `~/.claude/hooks/pulsenest_launch_pre.sh` y
+`pulsenest_launch_post.sh`, que extraen `tool_input.command` con Python y exigen un patrón de
+lanzamiento real (`python(w)?...pulsenest_lab\.py`), igual que el patrón ya usado en
+`code_changed_flag.sh`/`stop_check.sh`. Verificado con un caso inocuo (sin disparo) y uno de
+lanzamiento real (dispara correctamente). Nota: sigue disparando en falso si el propio
+comando de test/compilación contiene literalmente la cadena de lanzamiento (p. ej. `python -m
+py_compile pulsenest_lab.py`) — caso residual aceptado, no bloqueante.
+
+**Tarea principal:** completar el lado Python de la migración a dominio OT
+(`experiment/ot-domain-inputs`) — el firmware ya estaba migrado (SpO2+HR1+HR2+HR3, sesiones
+2026-07-13/14); faltaban las 4 clases-espejo de `pulsenest_lab.py` (`SpO2TestCalc`,
+`HR1TestCalc`, `HR2TestCalc`, `HR3TestCalc`), desincronizadas del firmware desde entonces.
+
+**Decisión de diseño (con el usuario):** exigir `$M4` en vez de reconstruir OT localmente
+desde crudo+RF. Se descubrió que `HGAC_RF1`/`HGAC_RF2`/`HGAC_ALARM` ya viajan en `$M4`
+(`main.cpp:330-331`, lib v0.37) pero `pulsenest_lab.py` no los parsea todavía (gap aparte,
+no resuelto). Como `OT_LED1`/`OT_LED2` YA viajan calculados en `$M4` y ya se parseaban
+(`data_ot2_led1/2`), reconstruir localmente habría sido redundante y con riesgo de
+desincronización silenciosa si HGAC se activa. Se optó por exigir `$M4` directamente.
+
+**Implementado:**
+- `SpO2TestCalc.update()`: `(ir, red, fs)` → `(ot_ir, ot_red, i_pd_ir, i_pd_red, fs)`. Gate de
+  "no hay dedo" `spo2_min_dc` (counts) → `spo2_min_i_pd_a` (magnitud absoluta i_pd, `1e-7` A,
+  UI en µA). Guard numérico de división `< 1.0` → `FW_SPO2_OT_DIV_EPS` (`1e-9`, escala OT).
+  Bug de paso encontrado y arreglado: `reset_to_defaults()` seguía referenciando el atributo
+  viejo `spo2_min_dc` (habría lanzado `AttributeError` al pulsar RESET TO DEFAULTS).
+- `HR1TestCalc`/`HR2TestCalc`/`HR3TestCalc`: solo renombrado de parámetro (`led1_sub`→
+  `ot_led1`), sin recalibrar ningún umbral — confirmado que los 3 algoritmos son invariantes a
+  escala uniforme (igual que ya se había verificado en el firmware).
+- Todos los puntos de alimentación en vivo (`PPGMonitor`) y los 4 `_load_csv`/
+  `_process_csv_offline` de las ventanas TEST actualizados para requerir `$M4`: en vivo
+  muestran aviso en la barra de estado y dejan de alimentar el cálculo si el modo activo no es
+  `$M4`; CSV solo acepta filas `$M4` (ambos formatos `ppg_chk_*` y `ppg_data_raw_*`), con error
+  claro si el fichero no tiene ninguna. `HR1TestWindow` cambió su feed de tasa completa
+  (500 Hz, antes de decimar) de escuchar `$M1` a escuchar `$M4` (`$M1` nunca lleva OT_LED1).
+- Etiquetado en ppm (petición explícita del usuario durante la sesión): plots, leyenda y tabla
+  de valores de `DC`/`RMS AC` en SpO2TestWindow ahora en ppm (×1e6), mismo criterio que
+  `OT_LED1 [ppm]`/`OT_LED2 [ppm]` en SIGNAL STATS (v1.16). Spinbox "Min DC" → "Min I_PD" (µA).
+- Fuera de alcance intencionadamente (mirrors análogos no migrados, incluyen sus propias
+  entradas crudas): `SpO2LocalCalc`/SpO2LabWindow, `HRFFTCalc`/`self.hr3_calc` (HR3LAB),
+  `PICalc`/PILabWindow.
+- **Bug pre-existente encontrado y arreglado como efecto colateral de esta tarea:** en el
+  formato CSV "raw" (cabecera con `FrameMode`, el que genera el botón SAVE normal), los
+  loaders offline de SpO2TestWindow/HR1TestWindow/HR2TestWindow leían las columnas de
+  referencia del firmware una posición antes de la correcta (p. ej. `spo2_fw` de
+  SpO2TestWindow leía en realidad `PPG_DISP`). Al reescribir esos bloques para exigir `$M4` se
+  usó la fórmula correcta `row[2+partsIdx]` en todo el bloque, lo cual corrigió el desfase sin
+  que me diera cuenta en el momento — lo documenté por error como "no arreglado" en esta misma
+  entrada. `HR3TestWindow` y el formato `is_chk` (las 4 ventanas) ya estaban bien indexados
+  antes de esta sesión.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores (varias veces, tras cada
+bloque de cambios). No verificado con hardware real (requiere HW conectado en `$M4`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` → v1.19 (§5.2-5.5 clases-espejo, §7.7-7.10
+ventanas TEST, changelog v1.18 con el cambio de fuentes de SIGNALS2 del 2026-07-15 anterior
+que había quedado sin versionar, y v1.19 con todo lo de esta sesión).
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+**Pendiente:**
+- Verificar con HW real en `$M4` que las 4 clases-espejo migradas coinciden con firmware.
+- Parsear `HGAC_RF1`/`HGAC_RF2`/`HGAC_ALARM` en `pulsenest_lab.py` (ya vienen en `$M4`, sin
+  consumidor todavía).
+- Decisión final del experimento OT: fusionar `experiment/ot-domain-inputs` a `master` o
+  revertir (checkpoint de vuelta atrás: tags `hgac-phase1-checkpoint`/`v0.37-hgac-phase1`).
+
+### 2026-07-15 (continuación) — Regla ppm + análisis de arquitectura OT/ppm + rename
+
+**Pregunta del usuario:** en qué capas del código (librería/firmware/script) debería
+expresarse OT_LED1/OT_LED2 en ppm, dado que en A/A (~1e-5) son poco legibles.
+
+**Análisis y recomendación (sin implementar cambios de arquitectura):** mantener A/A crudo en
+librería (`_compute_analog_state()`), firmware (`$M4`, `%.4e`) y almacenamiento del script
+(`data_ot2_led1/2`, entradas de las 4 clases-espejo) — los umbrales ya calibrados a esa escala
+(`spo2_ot_div_eps`, `hr2_ot_energy_eps`, `rsqm_ot_thr`) tendrían que re-derivarse todos sin
+ganancia real (la trama ya es legible en notación científica). ppm solo en la capa de
+visualización del script, como ya estaba en SIGNAL STATS (v1.16) y SpO2TestWindow (v1.19).
+
+**Regla nueva del usuario:** toda magnitud OT expresada en ppm debe llevar el sufijo `ppm`/
+`_ppm` en su identificador (variable, columna, label, leyenda); si sigue en A/A crudo, sin
+sufijo. Guardada en memoria (`feedback_ot_ppm_suffix.md`).
+
+**Revisión y rename aplicado:** los únicos identificadores que ya contenían valores escalados
+a ppm sin decirlo estaban en `SpO2TestWindow`:
+- `_refresh_plots_from_arrays()`: nuevas locales `dc_ir_ppm`/`dc_red_ppm`/`rms_ir_ppm`/
+  `rms_red_ppm` (antes reasignaban `dc_ir`/`dc_red`/`rms_ir`/`rms_red`, que llegan crudos como
+  parámetros).
+- `update_plots()` (tabla en vivo): extraídas a variables nombradas `dc_ir_ppm_v`/
+  `dc_red_ppm_v`/`rms_ir_ppm_v`/`rms_red_ppm_v` en vez de multiplicar inline dentro del
+  literal de `py_vals`.
+
+Resto ya cumplía la regla sin tocar: `OT_LED1 [ppm]`/`OT_LED2 [ppm]` en SIGNAL STATS (v1.16);
+el combo de SIGNALS2 (`"OT_LED1"`/`"OT_LED2"`) correctamente sin sufijo (grafica crudo A/A sin
+escalar); `data_ot2_led1/2` correctamente sin sufijo (almacenamiento crudo).
+
+Verificado: `python -m py_compile` sin errores. Sin commitear todavía (parte de la migración
+OT de la sesión anterior, ya documentada como v1.19 sin commitear).
+
+Memorias guardadas: `feedback_ot_ppm_suffix.md` (regla), `project_pulsenest_ot_ppm_display_task.md`
+(decisión de arquitectura: A/A crudo en librería/firmware/almacenamiento, ppm solo en render).
+
+### 2026-07-15 (continuación) — Investigación: cierre abrupto de pulsenest_lab.py + faulthandler
+
+**Reportado por Alex:** el script se detiene abruptamente, sin causa aparente, "a menudo"
+desde que se añadió la ventana SIGNALS2.
+
+**Investigado:**
+- Patrón de parenting huérfano (causa de crashes anteriores, ver `feedback_window_parenting.md`):
+  descartado — `PPGSignals2Window` se crea con `parent=None` pero SÍ está correctamente
+  incluida en el `closeEvent()` de `PPGMonitor` (`main_monitor=None` + `.close()`).
+- `crash.log` (alimentado por el `sys.excepthook` personalizado, captura excepciones Python no
+  manejadas) **no existe en el proyecto** — dato clave: descarta que el cierre sea una excepción
+  Python normal capturable; apunta a un **crash nativo** (C++/Qt) que ni `sys.excepthook` ni el
+  `try/except` de `_refresh_plots_tick()` pueden interceptar. Con `pythonw` (sin consola) esto
+  es completamente silencioso.
+- **Sospecha principal (sin confirmar todavía):** `PPGSignals2Window` permite combinar
+  libremente cualquier señal en el mismo eje Y compartido (su propio tooltip ya avisa: "OT
+  ~1e-5 vs raw ADC counts ~1e6 no serán legibles en el mismo eje"). El preset por defecto
+  (`_DEFAULTS`) hace justo esa mezcla peligrosa en el Gráfico 1 (`LED1_SUB` ~1e6 + `OT_LED1`
+  ~1e-5 + `SpO2` 0-100 — 11 órdenes de magnitud). Rango así de extremo es un caso límite
+  conocido para el auto-rango de pyqtgraph (cálculo de ticks), que puede fallar dentro del
+  `paintEvent` nativo de Qt, fuera del alcance de cualquier `try/except` Python.
+
+**Implementado (diagnóstico, a petición de Alex):**
+- Añadido `faulthandler.enable(file=..., all_threads=True)` al principio del módulo (antes de
+  cualquier otro import), escribiendo a `faulthandler.log` (fichero nuevo, handle mantenido
+  abierto todo el proceso). A diferencia de `sys.excepthook`, `faulthandler` SÍ captura crashes
+  nativos (segfault) con traceback en C — próxima vez que ocurra el cierre abrupto,
+  `faulthandler.log` debería tener evidencia real.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores.
+
+**Spec actualizada:** `pulsenest_lab_spec.md` → v1.20 (nueva §2.1 "Crash diagnostics"
+documentando `_crash_handler`+`crash.log` y `faulthandler`+`faulthandler.log`; changelog v1.20).
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+**Pendiente:**
+- Esperar a que ocurra el próximo cierre abrupto y revisar `faulthandler.log` para confirmar
+  (o descartar) la hipótesis del crash nativo por auto-rango de pyqtgraph.
+- Si se confirma: decidir fix de fondo — eje Y independiente por slot en SIGNALS2, o bloquear/
+  avisar activamente cuando se combinan señales de escala muy dispar (hoy solo hay tooltip).
+
+### 2026-07-15 (continuación) — SIGNALS2: spin más grande + color rosa→rojo
+
+**Pedido por Alex:** en SIGNALS2, letra del spin más grande y cambiar el rosa por rojo.
+
+**Implementado (`pulsenest_lab.py` v1.21):**
+- `spin_window_s` ("Window (s)"): `font-size` 32px → 40px.
+- `_SLOT_COLORS` (color del slot 3, curva + punto "●"): `#FF66FF` (rosa) → `#FF4444` (rojo),
+  mismo tono ya usado en el resto de la app para curvas LED2/RED.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. No verificado
+visualmente en pantalla (pendiente relanzar y comprobar).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` → v1.21.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: spin todavía pequeño, subido a 56px
+
+**Feedback de Alex:** tras relanzar con el cambio anterior (32px→40px), "el font size los spins
+sigue siendo muy pequeño".
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear todavía):**
+- `spin_window_s`: `font-size` 40px → 56px, + `setMinimumHeight(64)` para que el glifo más
+  grande no quede recortado por la altura por defecto del widget.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`) para que Alex compruebe visualmente.
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 corregida in-place (no se subió
+a v1.22 porque el cambio anterior de esta misma versión no se había commiteado todavía).
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: aclarado el malentendido — eran los combos, no el spin
+
+**Aclaración de Alex:** el "font pequeño" no era el spin de duración (ese ya está muy grande
+tras el cambio anterior) sino los 9 combos de selección de señal. Pidió doblar su font, y
+también cambiar el color blanco por amarillo (mismo patrón que el rosa→rojo anterior).
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `_COMBO_STYLE`: `font-size` 17px → 34px (doblado, según lo pedido).
+- Ancho de cada columna `Graph N` (`group.setFixedWidth`): 220px → 420px — necesario para que
+  nombres largos (`V_TIA_DIFF_ALED1`, etc.) no queden recortados con el font doblado.
+- `_SLOT_COLORS[0]` (slot 1): `#FFFFFF` (blanco) → `#FFDD44` (amarillo), mismo tono usado en
+  el resto de la app (p. ej. curva SpO2 fw).
+
+**Nota de proceso:** hubo un ciclo previo de confusión (2 rondas) subiendo el font del spin de
+duración en vez de los combos — el usuario interrumpió un intento de verificación por
+captura de pantalla y aclaró directamente el malentendido.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: combos 18→28
+
+**Pedido por Alex:** cambiar el font de los combos de 18 a 28.
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `_COMBO_STYLE`: `font-size` 18px → 28px.
+- Ancho de columna `Graph N` (`group.setFixedWidth`): 220px → 360px (escalado
+  proporcionalmente) para que nombres largos no se recorten a 28px.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: texto del combo con el color de su slot
+
+**Pedido por Alex:** que el font del propio combo sea del color correspondiente (el de su
+curva).
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `_COMBO_STYLE` (constante fija) → `_combo_style(color)` (método estático): el texto
+  mostrado en cada combo ahora usa el color de `_SLOT_COLORS` de su slot (amarillo/cian/
+  rojo), igual que su curva. La lista desplegable se mantiene en gris neutro `#E0E0E0` para
+  que todas las opciones sigan siendo legibles.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — SIGNALS2: reducción de tamaños (spin -1/3, combos 34→18)
+
+**Pedido por Alex:** reducir el font del spin de duración un tercio, y el font de los combos
+de 34 a 18.
+
+**Implementado (`pulsenest_lab.py`, mismo v1.21 sin commitear):**
+- `spin_window_s`: `font-size` 56px → 37px (56 × 2/3, redondeado).
+- `_COMBO_STYLE`: `font-size` 34px → 18px (valor exacto pedido).
+- Ancho de columna `Graph N` (`group.setFixedWidth`): 420px → 220px, revertido porque 18px
+  es casi igual al original 17px y ya no necesita el ensanchado.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` — entrada v1.21 ampliada in-place.
+
+**Sin commitear todavía** (pendiente de que el usuario lo pida).
+
+### 2026-07-15 (continuación) — Corrección: el bug off-by-one de los CSV loaders ya estaba arreglado
+
+**Contexto:** al retomar la sesión de migración OT (commit `ca14dbf`) para "seguir con el bug
+off-by-one" documentado como pendiente, se verificó el código actual de
+`_process_csv_offline()` en SpO2TestWindow/HR1TestWindow/HR2TestWindow con un test sintético
+(fila CSV con un valor distinto por columna) — las 14 correspondencias comprobadas
+(SpO2/R/SQI, HR1/HR2/HR3+SQI, OT/I_PD) son correctas.
+
+**Conclusión:** el bug **ya estaba arreglado** desde el propio commit `ca14dbf` — al reescribir
+esos bloques para exigir `$M4` se usó la fórmula correcta `row[2+partsIdx]` en todo el bloque,
+lo que corrigió el desfase de forma incidental. La entrada de sesión anterior lo documentaba
+por error como "encontrado, NO arreglado, pendiente de fix dedicado" — corregido en
+`pulsenest_lab_spec.md` (changelog v1.19) y en la entrada correspondiente de este mismo log.
+Eliminado de la lista de pendientes.
+
+No hubo cambio de código — solo corrección de documentación.
+
+### 2026-07-15 (continuación) — probe_state: análisis + eliminación de spo2_min_i_pd_a (lib v0.40, lab v1.22)
+
+**Preguntas del usuario sobre probe_state (2 partes):**
+1. ¿Es necesario el gate `fabsf(i_pd) < spo2_min_i_pd_a` en `_update_spo2()`? → Analizado con
+   cifras reales (100nA vs 150nA del disconnected de RSQM, debounce 200ms vs instantáneo) —
+   recomendación inicial: mantener (protege timing distinto).
+2. ¿Quiénes son los consumidores de `probe_state` actuales y deseables? → Mapeado: librería
+   (`_diag_task_body`, `_hgac_gate_ok`, cálculo RSQI), firmware (solo relay en `$M1`-`$M4`),
+   script (cosmético + QA en AFESweepTestWindow). Candidatos deseables: IncuNest motherBoard
+   (alarmas, no verificable — repo externo), SIGNAL STATS de pulsenest_lab.py (gris en filas
+   SpO2/HR cuando `probe_state != APPLIED`, hoy solo por CLIPPED).
+
+**Corrección importante durante el análisis:** el usuario detectó que yo mezclaba "sonda
+desconectada" (RSQM) con "no hay dedo" (SpO2) como si protegieran condiciones físicas
+distintas. Re-derivado con las fórmulas reales (`i_pd_led1 = v_tia_diff_led1/(2·RF)`, sin
+restar ambiente): para una sonda de transmitancia, "no hay dedo" da OT **alto** (luz sin
+atenuar), no `i_pd` bajo — el gate de SpO2 casi nunca detecta eso; lo que detecta solapa con
+el mismo fenómeno físico que RSQM llama DISCONNECTED, solo que con criterio parcial (2 de 4
+canales) y sin debounce.
+
+**Decisión final (tras discutir si el gate era complejidad innecesaria):** eliminar
+`spo2_min_i_pd_a` y toda su plomería, sustituyéndolo por un único suelo fisiológico
+`spo2_min_ot_dc` aplicado SOLO a `dc_ir`/`dc_red` (no a `ac_ir`) — motivo: `PI=RMS_AC/DC` es
+un ratio que puede parecer válido por casualidad cuando AC y DC son ambos ruido; solo un
+chequeo de magnitud absoluta en DC lo detecta con fiabilidad. El guard de AC se mantiene como
+epsilon puramente numérico (`spo2_ac_div_eps=1e-9`), NO fisiológico, porque el AC real puede
+ser legítimamente muy pequeño con perfusión baja (PI=0.5% → AC≈7e-8) — **error cometido y
+corregido en el propio proceso**: usar un único umbral de 1e-6 para DC y AC a la vez rompió
+4/7 tests nativos de `test_spo2.cpp` (invalidaba señales de perfusión baja pero reales).
+
+**Implementado en `incunest_afe4490` (lib v0.40-experiment):**
+- `_update_spo2()`: firma simplificada a `(ot_ir, ot_red)` — sin `i_pd_ir`/`i_pd_red`.
+- Eliminados: constante `spo2_min_i_pd_a`, miembro `_spo2_min_i_pd_a`, setter
+  `setSpO2MinIPdA()`, campo `AFE4490Config::spo2_min_i_pd_a`.
+- Nuevas constantes: `spo2_min_ot_dc=1e-6` (DC, ajustable en runtime) y `spo2_ac_div_eps=1e-9`
+  (AC, fijo, no expuesto).
+- `test_feed_spo2()` (wrapper de test) simplificado a `(ot_ir, ot_red)`.
+- `test_spo2.cpp`: test 2 renombrado `test_spo2_no_finger_invalid` →
+  `test_spo2_low_dc_invalid`, alimenta OT plano por debajo de `spo2_min_ot_dc` en vez de i_pd
+  bajo. **Verificado: 7/7 `test_spo2` + 33/33 resto de tests nativos** (excepto `test_biquad`,
+  roto de antes de esta sesión, no relacionado — confirmado con `git status` que no lo toqué).
+- `library.json` → v0.40.0-experiment. Spec `incunest_afe4490_spec.md` actualizada (§5.1,
+  changelog v0.40 nuevo, nota de `pulsenest_lab.py` refrescada de "not yet migrated" a
+  "migrated").
+
+**Implementado en `pulsenest_lab.py` (lab v1.22, sin commitear):**
+- `SpO2TestCalc`: mismo rediseño que la librería — `update(ot_ir, ot_red, fs)`, constantes
+  `FW_SPO2_MIN_OT_DC`/`FW_SPO2_AC_DIV_EPS`, atributo ajustable `spo2_min_ot_dc`.
+- UI: spinbox "Min I_PD [µA]" → "Min OT DC [ppm]" (`_spin_min_ot_dc_ppm`), tooltip reescrito.
+- CSV loader offline y feed en vivo de SpO2TestWindow ya no leen/pasan `I_PD_LED1`/`I_PD_LED2`
+  a `SpO2TestCalc` (siguen existiendo para SIGNAL STATS/AFESweepTestWindow, sin cambios ahí).
+- `pulsenest_lab_spec.md` → v1.22 (§5.2, §7.7, changelog v1.22 nuevo).
+
+**Tarea nueva anotada (a petición del usuario, para después):** ¿debe ser asimétrico el
+debounce de 200ms de `probe_state` entre APPLIED y NOT_APPLIED/DISCONNECTED? →
+`project_probe_state_debounce_asymmetry_task.md`.
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores; suite nativa de la
+librería 7/7 + 33/33 (ver arriba). No verificado con HW real.
+
+**Sin commitear todavía** (ni librería ni script — pendiente de que el usuario lo pida).
+
+**Nota aparte (fuera de esta tarea):** el usuario pidió anotar como pendiente analizar subir
+la corriente LED por defecto de 20 mA a 50 mA — guardado en
+`project_led_current_increase_50ma_task.md` (50 mA es el I_F máximo absoluto de la sonda
+Medle, sin margen — derating térmico y caracterización sonda-piel aún sin medir).
+
+### 2026-07-16 — SpO2: probe_state como entrada + NaN unificado (lib v0.41, lab v1.23)
+
+**Contexto:** continuación del diseño iniciado la sesión anterior (commit `099be24`/`2c66d7d`,
+eliminación de `spo2_min_i_pd_a`). Alex propuso el principio arquitectónico: RSQM es el único
+responsable de detectar sonda conectada/aplicada; SpO2/HR1/HR2/HR3 **consumen** `probe_state`
+si lo necesitan pero no lo generan; los algoritmos solo deben vigilar división por
+casi-cero (numérico, no fisiológico).
+
+**Diseño acordado tras varias rondas de análisis:**
+- `_update_spo2()` gana un tercer parámetro `probe_state` (o Python: `probe_state` int
+  0/1/2). Mientras `probe_state != PROBE_APPLIED` (NOT_APPLIED y DISCONNECTED tratados
+  igual): resetear las EMAs **cada muestra** (idempotente — sin guardar "probe_state anterior",
+  totalmente encapsulado: nada externo toca la memoria interna de la función; a petición
+  explícita de Alex sobre encapsulación).
+- Eliminado `spo2_min_ot_dc` (el suelo fisiológico de la sesión anterior) — su rol pasa a
+  `probe_state`. Solo queda `spo2_div_eps` (`1e-9`, único, no ajustable), guard puramente
+  numérico sobre los divisores reales (`dc_ir` en PI; `dc_red`/`ac_ir`/`rms_ac_ir` en R).
+- `_spo2_sample_count` eliminado — se usa `EmaChannel::count` (Python: `_sample_count` ya
+  cumplía este rol, sin cambio ahí) directamente para el warmup, confirmado redundante con el
+  contador de la propia EMA (incrementados siempre en lockstep).
+- **Centinela de inválido: `NaN` en vez de `-1.0f`**, decidido tras comparar ventajas/
+  inconvenientes con Alex — motivo decisivo: `NaN` falla de forma segura ante comparaciones
+  (`nan < 70` es `False`), mientras que `-1.0f` podría disparar una falsa alarma de
+  desaturación severa si un consumidor futuro olvida comprobar `sqi`. Verificado antes de
+  decidir que no hay `-ffast-math` en el proyecto (que rompería la semántica de NaN).
+  Unificado también en warmup (antes solo `pi` tenía centinela; `spo2`/`spo2_r` quedaban
+  "stale"). Contrato final: `sqi==0 ⟹ pi==spo2==spo2_r==NaN`, sin excepciones.
+
+**Implementado en `incunest_afe4490` (lib v0.41-experiment):**
+- `_update_spo2(float ot_ir, float ot_red, ProbeState probe_state)`.
+- `spo2_min_ot_dc`+`spo2_ac_div_eps` → un único `spo2_div_eps=1e-9`.
+- `_spo2_sample_count` eliminado del header/constructor/reset.
+- `test_feed_spo2()` (wrapper de test) actualizado a 3 argumentos.
+- `test_spo2.cpp`: test 2 renombrado `test_spo2_not_applied_resets` — feeds señal convergida,
+  fuerza `PROBE_DISCONNECTED` 1000 muestras (verifica sqi=0, NaN, EMA reseteada a 0), reaplica
+  y verifica que exige warmup nuevo, y repite con `PROBE_NOT_APPLIED`.
+- **Verificado: 7/7 test_spo2 + 33/33 resto de tests nativos** (`test_biquad` roto de antes,
+  no relacionado) **+ build real ESP32-S3 V16 exitoso** (16.4% RAM, 30.1% flash).
+- `library.json` → v0.41.0-experiment. Spec actualizada (§5.1, changelog v0.41).
+
+**Implementado en `pulsenest_lab.py` (lab v1.23):**
+- `SpO2TestCalc.update(ot_ir, ot_red, probe_state, fs)` — mismo diseño que la librería.
+- Constantes `PROBE_DISCONNECTED/NOT_APPLIED/APPLIED=0/1/2` (deben coincidir con
+  `incunest_afe4490.h`). `FW_SPO2_DIV_EPS` único.
+- UI: spinbox "Min OT DC [ppm]" **eliminado por completo** — SpO2TestWindow vuelve a sus 5
+  parámetros originales (a, b, DC τ, AC τ, warmup), sin ningún parámetro de detección de
+  presencia (coherente con "eso es responsabilidad de RSQM, no configurable por algoritmo").
+  CSV loader y feed en vivo ahora leen/pasan `ProbeState` (columna ya parseada) a
+  `SpO2TestCalc`.
+- `pulsenest_lab_spec.md` → v1.23 (§5.2, §7.7, changelog v1.23).
+
+**Verificado:** `python -m py_compile` sin errores. No verificado con HW real.
+
+**Commiteado:** sí — ver commits de esta sesión en ambos repos (librería y PulseNest).
+
+**Nota de proceso (feedback explícito de Alex):** pidió no pararme por trivialidades como
+`cd` para operar en `lib/incunest_afe4490` — usar `git -C lib/incunest_afe4490 <subcomando>`
+en vez de `cd ... && git ...`. Guardado en `feedback_bash_cd_redirection.md` (ampliado).
+
+**Pendiente:** verificar con HW real; decidir si HR1/HR2/HR3 reciben el mismo tratamiento de
+`probe_state` (mismo principio, no implementado todavía — solo SpO2 por ahora); decisión final
+de fusionar/revertir el experimento OT completo.
+
+---
+
+## Sesión 2026-07-16 — Extensión de `probe_state` a HR1/HR2/HR3 (mismo diseño que SpO2 v0.41)
+
+**Pregunta de Alex:** "Aplica el mismo diseño de probe_state a HR1/HR2/HR3."
+
+**Diseño replicado (idéntico al de SpO2 v0.41):** cada función gana `probe_state` como
+parámetro de entrada (consumido, nunca generado — sigue siendo responsabilidad exclusiva de
+RSQM). Mientras `probe_state != PROBE_APPLIED`, el estado interno se resetea en **cada
+muestra** (idempotente, sin necesidad de guardar un "probe_state anterior") y la salida
+(`hr*`/`hr*_sqi`) se fuerza a `NaN`/`0`, unificando el centinela en las 4 funciones de
+algoritmo (SpO2/HR1/HR2/HR3).
+
+**Implementado en `incunest_afe4490` (lib v0.42-experiment):**
+- `_update_hr1(float ir, ProbeState probe_state)` — resetea DC filter, running max, flag de
+  cruce de umbral, índices de pico/intervalo, buffer de RR, buffer de media móvil.
+- `_update_hr2_sample(float ir, ProbeState probe_state)` / `_update_hr3_sample(...)` — el gate
+  vive en el **fast path** (compartido por el call site de producción y el wrapper síncrono de
+  test), de modo que mientras no está aplicada la sonda, la tarea lenta (Task B/C de
+  autocorrelación/FFT) ni siquiera se señaliza.
+- `test_feed_hr1/hr2/hr3()` (wrappers de test) actualizados a 2 argumentos.
+- `test_hr1/hr2/hr3.cpp`: nuevo test `test_hr*_not_applied_resets` en cada uno (feed señal
+  convergida, fuerza `PROBE_DISCONNECTED` 1000 muestras, verifica sqi=0/NaN + reset de estado,
+  reaplica y verifica que exige buffer/intervalos frescos, repite con `PROBE_NOT_APPLIED`).
+  Corregido un `isnan()` mal añadido en `test_hr2/hr3_not_valid_until_buffer_full` (el fast
+  path de HR2/HR3 no comete ningún valor a `_current_data` mientras el buffer se llena —
+  se queda en el valor por defecto del constructor, `0.0f`, no `NaN` — a diferencia de
+  SpO2/HR1 que sí ejecutan su rama de "inválido" en cada muestra).
+- **Verificado: 36/36 tests nativos relevantes** (`test_biquad` roto de antes, no
+  relacionado) — incluye un falso positivo de crash `CTRL_BREAK_EVENT` en test_hr2/hr3 tras
+  PASS de todos los tests individuales, investigado por bisección y confirmado como flake de
+  entorno Windows (3 reruns limpios), no un bug real.
+- `library.json` → v0.42.0-experiment. Spec actualizada (§5.2-§5.4, changelog v0.42).
+
+**Implementado en `pulsenest_lab.py` (lab v1.24):**
+- `HR1TestCalc`/`HR2TestCalc`/`HR3TestCalc.update()` ganan `probe_state`; constantes
+  `PROBE_DISCONNECTED/NOT_APPLIED/APPLIED=0/1/2` añadidas a las 3 clases.
+- La lógica de detección de huecos (gap detection, vía `sample_counter`) en HR1/HR3 sigue
+  ejecutándose independientemente de `probe_state` — rastrea continuidad de frames, no
+  presencia del dedo.
+- Todos los call sites actualizados: loaders CSV offline de las 3 ventanas (nueva columna
+  `rows_probe_state`), `HR2TestWindow.update_algorithms()` (+ su llamador en `PPGMonitor`),
+  feeds en vivo de frames crudos (HR1 fast-path `$M4`; HR3 en `$M3`/`$M4`/`$M2`/`$M1` — `$M1`
+  no lleva `ProbeState`, se hardcodea `0`=DISCONNECTED, igual que `data_probe_state.append(0)`
+  en esa misma rama).
+- `HRFFTCalc`/`self.hr3_calc` ("HR3LAB", clase separada sin herencia con `HR3TestCalc`,
+  confirmado leyendo el código) deliberadamente fuera de alcance, sin cambios.
+- `pulsenest_lab_spec.md` → v1.24 (§5.2-§5.4, changelog v1.24).
+
+**Verificado:** `python -m py_compile` sin errores; 36/36 tests nativos. No verificado con HW
+real.
+
+**Commiteado:** sí — ver commits de esta sesión en ambos repos (librería y PulseNest).
+
+**Pendiente:** verificar con HW real; decisión final de fusionar/revertir el experimento OT
+completo; `project_spo2_ipd_gate_redundancy_task.md` puede marcarse resuelto (mismo
+tratamiento ya aplicado a HR1/HR2/HR3).
+
+---
+
+## Sesión 2026-07-18 — Renombrado de naming interno de incunest_afe4490 (`_verbo_algoritmo` → `_algoritmo_verbo`)
+
+**Origen:** pregunta de Alex sobre por qué `BiquadFilter` usa `process()` y `EmaChannel` usa
+`update()` (respuesta: contratos distintos — filtro transforma entrada→salida, estimador
+acumula estado leído aparte). De ahí surgió una revisión conjunta, en forma de tabla iterada
+paso a paso, de 9 métodos/miembros HR2/HR3 con naming inconsistente
+(`_update_hr2_sample()`/`_compute_hr2()`/`_update_hr2()`/`_hr2_calc_sem` y análogos HR3).
+
+**Hallazgo clave:** toda variable miembro de la clase ya usa prefijo (`_hr2_buf`, `_spo2_a`,
+`_rsqm_led1_sub_ema`...) y hasta los métodos de tarea FreeRTOS (`_hr2_task_body`) — solo la
+familia "verbo primero" (`_update_*`, `_compute_*`, `_linearize_*`) rompía el patrón. Alex
+decidió ampliar el alcance a toda la clase, no solo HR2/HR3.
+
+**15 renombrados aplicados** (tabla revisada en varias iteraciones, con Alex eligiendo el
+sufijo final `_for_test` tras descartar `_sync`/`_sync_test`/etc. por ambigüedad con
+vocabulario de concurrencia ya presente en el fichero):
+
+| Actual | Nuevo |
+|---|---|
+| `_update_rsqm` | `_rsqm_update` |
+| `_update_hgac` | `_hgac_update` |
+| `_update_spo2` | `_spo2_update` |
+| `_update_hr1` | `_hr1_update` |
+| `_update_hr2_sample` | `_hr2_update_sample` |
+| `_linearize_hr2` | `_hr2_linearize` |
+| `_compute_hr2` | `_hr2_compute` |
+| `_update_hr2` (wrapper solo-test) | `_hr2_update_for_test` |
+| `_hr2_calc_sem` | `_hr2_compute_sem` |
+| `_update_hr3_sample` | `_hr3_update_sample` |
+| `_linearize_hr3` | `_hr3_linearize` |
+| `_compute_hr3` | `_hr3_compute` |
+| `_update_hr3` (wrapper solo-test) | `_hr3_update_for_test` |
+| `_hr3_calc_sem` | `_hr3_compute_sem` |
+| `_set_probe_state` | `_rsqm_set_probe_state` |
+
+**Naturaleza del cambio:** puramente de nombres — ninguna firma, semántica ni temporización
+se ha modificado. Aplicado con `Edit` (orden cuidadoso: variantes `_sample` antes que sus
+prefijos cortos, para evitar colisiones de subcadena).
+
+**Implementado en `incunest_afe4490` (lib v0.43-experiment):**
+- `incunest_afe4490.h`/`incunest_afe4490.cpp`: los 15 renombrados aplicados en declaración,
+  definición y todos los call sites.
+- `incunest_afe4490_spec.md`: secciones "vivas" (§1.3, §3d, §5.1-§5.8, §9.3/§9.7, §11)
+  actualizadas a los nombres nuevos. El histórico `## 14. Version history` (registro de
+  versiones pasadas) se dejó **intacto** — describe fielmente el código tal como era en cada
+  versión anterior; se añadió una entrada nueva `v0.43-experiment` documentando el rename.
+  Versión de cabecera → v0.43.
+- `library.json` → 0.43.0-experiment. Comentario de versión y `INCUNEST_AFE4490_VERSION` en
+  el header corregidos de v0.39 (desfasado de sesiones anteriores) a v0.43.
+- `test_spo2.cpp`/`test_hgac.cpp`: comentarios que citaban los nombres antiguos actualizados.
+- **Verificado: 36/36 tests nativos** (`test_biquad` roto de antes, no relacionado) **+ build
+  ESP32-S3 V16 real exitoso** (18.4% RAM, 30.1% flash).
+
+**Implementado en `pulsenest_lab_spec.md`:** 6 referencias de documentación (secciones
+"vivas" §5.2-§5.5, §10.x) actualizadas a los nombres nuevos de la librería; una mención
+dentro de un changelog histórico (v1.11) se dejó intacta por la misma razón que en la
+librería. Sin cambios en `pulsenest_lab.py` (no llama a estos métodos privados de C++).
+
+**Commiteado:** sí — ver commits de esta sesión en ambos repos.
+
+---
+
+## Sesión 2026-07-19 — Primer flash OTA verificado + primer bloqueante real del experimento OT
+
+### Corrección de dos regresiones de proceso (antes de tocar código)
+
+Alex reportó dos problemas que ya se habían resuelto antes y habían "vuelto":
+
+1. **Flash por USB en vez de OTA.** Se usó por error una memoria antigua (`feedback_platformio_tasks.md`, flujo COM15) en vez de la vigente desde 2026-06-04 (OTA por WiFi, `curl -X POST http://<IP>/update`, verificando MAC por ARP). Corregido: memoria marcada como legacy/fallback, señalando OTA como método por defecto.
+2. **Prompts de permiso para acciones triviales de solo lectura** (ej. explorar `C:\PRJ\MOW\incunest_afe4490`, repo hermano fuera del cwd de PulseNest) y por usar la herramienta PowerShell dedicada en vez de `Bash` con `powershell -Command`. Corregido: `additionalDirectories: ["C:\\PRJ\\MOW"]` añadido a `settings.local.json` del proyecto, comandos de lectura triviales (`ls`/`dir`/`find`/`cat`) añadidos a la allowlist, y entrada plana `"PowerShell"` añadida al `settings.json` global.
+
+### Primer flash OTA con firmware de la rama `experiment/ot-domain-inputs`
+
+Confirmado el procedimiento completo: `arp -a` para localizar IncuNest 16.A (MAC `10:51:DB:50:48:F8`) en `192.168.137.109`, `curl -X POST .../update` con el `.bin` compilado, respuesta `OK`.
+
+### Bloqueante encontrado: `probe_state` nunca llega a APPLIED
+
+Con la sonda puesta y PPG visualmente correcto, los 4 algoritmos (SpO2/HR1/HR2/HR3) devolvían `-1` y SQI=0. Investigación (agente en background) descartó la hipótesis inicial de "umbral con escala equivocada" — `rsqm_ot_thr=8.5e-5` sí estaba correctamente convertido al dominio OT (factor ×3495 documentado). La causa real, aportada por Alex: el **simulador CONTEC MS100** es muy sensible a la posición de la sonda y produce lecturas de OT_LED1/OT_LED2 frecuentemente por encima de 8.5e-5 incluso con la sonda bien puesta.
+
+**Decisión:** ampliar `rsqm_ot_thr` de 8.5e-5 a **1.0e-4** como mitigación práctica temporal (no una calibración empírica definitiva, que sigue pendiente con sonda/paciente real).
+
+**Cambios:**
+- `incunest_afe4490.h:761` — `rsqm_ot_thr` 8.5e-5f → 1.0e-4f, comentario actualizado con la razón.
+- Librería → **v0.44-experiment** (`.h`, `.cpp`, `platform_stub.h`, `examples/basic/main.cpp`, `library.json`, spec).
+- `incunest_afe4490_spec.md` → v0.44, §5 y §10 actualizados, entrada nueva en §14 Version history.
+- `pulsenest_lab.py`: tooltip del spinbox `rsqm_ot_thr` en `LIBConfigWindow._PARAMS` actualizado.
+- `pulsenest_lab_spec.md` → v1.25, entrada de changelog.
+- Flasheado OTA en IncuNest 16.A y script relanzado.
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+**Pendiente:** calibración empírica real de `rsqm_ot_thr` (no solo mitigación), y continuar la verificación con HW real del experimento OT (decisión final: fusionar a `master` o revertir).
+
+---
+
+### Refactor de legibilidad: `_hgac_check_descent()` (mismo día)
+
+Alex señaló que `incunest_afe4490.cpp:1348-1363` tenía una lógica difícil de seguir: el
+debounce O8.1 estaba duplicado entre la rama "ya en el suelo de ganancia (RF_10K) → alarma" y
+la rama "no en el suelo → descenso", cada una con un estilo de incremento distinto (capado en
+una, pre-incremento incondicional en la otra), lo que dificultaba comparar ambos caminos.
+
+**Refactor aplicado:** el chequeo de debounce se extrajo una sola vez, compartido por ambos
+desenlaces; la rama `cur_rf == RF_10K` ahora solo decide alarma-vs-descenso una vez satisfecho
+el debounce. Verificado equivalente por análisis manual caso por caso (incluyendo el borde
+`_hgac_descent_min_samples == 0`) antes de aplicar.
+
+**Verificación:** 6/6 tests de `test_hgac.cpp` (incl. `test_hgac_descent_debounce` y
+`test_hgac_alarm_at_gain_floor`) en verde, build ESP32-S3 V16 OK.
+
+**Cambios:**
+- `incunest_afe4490.cpp` — refactor de `_hgac_check_descent()`, sin cambio de comportamiento.
+- Librería → **v0.44b-experiment** (fix rápido sobre la misma versión).
+- `incunest_afe4490_spec.md` → v0.44b, entrada nueva en §14 Version history (§5/§10 ya
+  describían la semántica correcta a nivel de prosa, sin cambios de contenido).
+- `library.json` → 0.44.1-experiment.
+
+Flasheado OTA en IncuNest 16.A (IP cambió a 192.168.137.133 — el hotspot móvil se había caído
+un momento entre sesiones, se recuperó al reintentar) y script relanzado.
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+---
+
+## Sesión 2026-07-21 — Naming HGAC "alarm" (pendiente), aclaración A4/O10, comentario de máscaras de validez
+
+### Propuesta de rename `hgac_alarm_*` → sin resolver
+
+Alex señaló que "alarm" se reserva en este proyecto para alarmas clínicas reales (macro
+`logAlarm` de IncuNest, ISO 60601), no para la condición interna de HGAC "RF ya en el suelo
+(RF_10K) y sigue saturando". Se identificó el alcance completo del rename (`hgac_alarm_gain_floor`
+en `AFE4490DebugData`, `_hgac_alarm_gain_floor_led1/2`, parámetro `alarm_flag` de
+`_hgac_check_descent()`, accessor de test `test_hgac_alarm_gain_floor()`, etiqueta documental
+`HGAC_ALARM` sin consumidor todavía en `pulsenest_lab.py`) y se propusieron 3 esquemas
+alternativos (`gain_floor`, `gain_floor_flag`, `gain_exhausted`), recomendando `gain_floor` por
+alinear con el bit de diagnóstico ya existente `HGAC_DIAG_GAIN_FLOOR`. **Alex no respondió la
+pregunta — pendiente de decisión, ningún nombre se ha cambiado todavía.**
+
+### Aclaración de referencias de diseño A4/O10
+
+Explicado qué son `A4` y `O10` (comentario en `incunest_afe4490.cpp:1337`): atajos a secciones
+de `project_agc_design.md` (memoria, no fichero del repo). A4 = axioma "Actuadores v1: SOLO
+ILED y RF" (sin AMBDAC/RG hasta v2). O10 = hallazgo "los 4 canales del AFE4490 son 2 dominios
+de ganancia" (solo hay registros RF para LED1/LED2, no para las fases ambient) — justifica por
+qué `_hgac_check_descent()` recibe la fase LED y su ambient juntas como un único par que
+comparte RF.
+
+### Comentario ampliado: máscaras de validez de 4 bits
+
+Alex pidió explicar mejor `incunest_afe4490.h:297` (confusión de fichero: pidió `.cpp:297`,
+que es la lista de inicialización del constructor sin relación — la ubicación correcta está en
+el `.h`). Las 4 variables (`adc_sat_pos`, `adc_sat_neg`, `tia_over_fs`, `tia_over_lin`) son cada
+una un `uint8_t` que empaqueta 4 bits (los 4 altos sin usar), uno por canal físico, con la misma
+posición de bit que `AFE4490Ch` (LED1=bit0, ALED1=bit1, LED2=bit2, ALED2=bit3). Comentario
+reescrito para decirlo explícitamente y remitir a los accessors (`adcSatPos()` etc.) como vía
+de acceso obligatoria. **Evaluados los 4 nombres: se consideran ya correctos y consistentes
+(prefijo `adc_`/`tia_` + condición `sat_pos`/`sat_neg`/`over_fs`/`over_lin`, alineados con las
+constantes `kAdcSatPos`/`kVTiaDiffFs`/`kVTiaDiffLin` y los accessors) — no se ha renombrado
+nada.**
+
+**Cambios:** solo comentario en `incunest_afe4490.h` (sin cambio funcional) — build ESP32-S3 V16
+verificado OK. Sin bump de versión (política: corrección de comentarios no sube versión). Sin
+flash OTA (no afecta al binario en tiempo de ejecución más allá de metadata de comentarios).
+Sin commitear.
+
+---
+
+## Sesión 2026-07-21 (continuación) — Rediseño de `_hgac_update()`: eliminado `_hgac_invalid_ema`
+
+### Petición de Alex
+"vamos a rediseñar `_hgac_update()`. No me gusta porque a pesar de tener una lógica muy sencilla
+actualmente, no se entiende con facilidad." Primer paso propuesto por Alex: estudiar por qué
+existe `_hgac_gate_ok()` como función separada.
+
+### Punto 1 — `_hgac_gate_ok()` como función separada
+Análisis: no está por testabilidad (ningún test la llama directamente), solo por valor
+documental — ancla el comentario que justifica `!= PROBE_DISCONNECTED` en vez de
+`== PROBE_APPLIED`, citado por nombre desde `test_hgac.cpp:20`. **Alex no quedó convencido.**
+
+### Punto 2 (más grave, según Alex) — la condición `!= PROBE_DISCONNECTED`
+Investigado en profundidad (`_rsqm_update()` líneas 1221-1260). Hallazgo: el axioma **A6**
+cerrado (2026-04-30) decía literalmente "Gating G0: solo actuar si PROBE_APPLIED" — la
+implementación se desvió de ese axioma cerrado sin actualizar `project_agc_design.md`, solo
+con un comentario de código. La justificación escrita (evitar deadlock cuando saturación real
+hace que RSQM clasifique como NOT_APPLIED) es válida pero estrecha: el gate implementado
+(`!= DISCONNECTED`) es mucho más permisivo de lo necesario — deja actuar a HGAC también
+durante `PROBE_NOT_APPLIED` "normal" (sonda al aire, sin paciente), el estado más frecuente
+antes/después de cada uso. Como la Fase 1 de HGAC no tiene ascenso (solo desciende RF), un
+evento óptico irrelevante en ese estado (ej. lámpara de fototerapia con la sonda no aplicada
+al bebé) podría hundir la ganancia de forma irreversible antes de que llegue el paciente real.
+Propuesta sobre la mesa (no aplicada): `(probe_state == PROBE_APPLIED) || !as.allClean()` en
+vez de `!= PROBE_DISCONNECTED`. **Alex quiere pensarlo más — queda pendiente, sin decidir.**
+
+### Punto 3 — ¿por qué `allClean()` se usa dos veces en el gate? → bug real encontrado y arreglado
+Alex preguntó por qué `allClean()` aparecía tanto de forma instantánea (mi propuesta del
+punto 2) como suavizada vía `_hgac_invalid_ema` (ya existente). Investigación con números
+reales de la fórmula de `EmaChannel` (`α = 1−exp(−1/(τ·fs))`): con τ=0.2s y fs=500Hz, una
+saturación continua cruza el umbral 0.5 de `_hgac_invalid_ema` en **~139 ms** — mucho antes
+que el debounce de descenso (`hgac_descent_persist_s=0.5s`). Conclusión: la cláusula
+`invalid_fraction_ema.mean <= hgac_gate_invalid_frac_max` era **autodestructiva**, no solo
+redundante — mide la misma condición que HGAC existe para corregir, y con saturación
+sostenida cierra el gate y resetea los contadores de descenso ANTES de que el debounce pueda
+completarse, bloqueando el arreglo justo cuando más se necesita. Evidencia concreta: el único
+test de descenso (`test_hgac_descent_after_persistence`) usa un estímulo (`v_tia_diff≈0.973V`)
+elegido a propósito para quedarse por debajo de `kVTiaDiffFs` (por otra razón, documentada en
+el propio test) — efecto colateral: `allClean()` nunca pasaba a `false` en ese test, así que
+nadie detectó el problema.
+
+**Acción: Alex pidió eliminar `_hgac_invalid_ema`.**
+
+**Cambios:**
+- `incunest_afe4490.h`/`.cpp`: eliminados `_hgac_invalid_ema` (miembro `EmaChannel`),
+  `hgac_gate_invalid_frac_max`/`hgac_gate_window_s` (campos de `AFE4490Config` + defaults),
+  `setHgacGateInvalidFracMax()` (declaración + implementación), su `.init()`/`.reset()`/
+  `.update()` y su uso en `getConfig()`. `_hgac_gate_ok()` queda solo con las cláusulas
+  `probe_state`/`HW_SETTLING` (la discusión del punto 2 sigue abierta, sin tocar).
+- `PulseNest/src/main.cpp`: quitado `hgac_gate_invalid_frac_max` del frame `$LCFG` y su
+  handler `$SET,hgac_gate_invalid_frac_max`.
+- Librería → **v0.44c-experiment** (`.h`, `.cpp`, `platform_stub.h`, `examples/basic/main.cpp`,
+  `library.json`). Spec → v0.44c, §5.8.2/§5.8.5/§10.9 actualizados, entrada nueva en §14.
+- Verificado: **36/36 tests nativos** (`test_biquad` fallo preexistente no relacionado),
+  build ESP32-S3 V16 OK.
+- **Flash OTA pendiente** — el hotspot móvil no estaba activo (IncuNest 16.A no aparecía en
+  el ARP); Alex prefirió dejarlo pendiente en vez de reintentar en el momento.
+- Memoria actualizada: `project_hgac_implementation_task.md` (sección nueva "Rediseño de
+  legibilidad de `_hgac_update()`/`_hgac_gate_ok()`").
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+**Pendiente:** decisión sobre el punto 2 (`!= PROBE_DISCONNECTED` vs propuesta alternativa),
+flash OTA de v0.44c, y continuar el rediseño de `_hgac_update()` en general.
+
+---
+
+## Sesión 2026-07-21 (continuación 2) — Rename "descent" → TIASAT, correcciones de proceso
+
+### Investigación V_OD interrumpida y autocorrección
+Alex propuso sustituir "descent" por TIASAT y pidió instalar poppler para buscar el término en
+el datasheet. Al extraer el texto completo con `pdftotext` para buscar "TIASAT"/"saturation",
+se descubrió que la corrección de la sesión anterior sobre "V_OD" (que Claude declaró "no
+existe en el datasheet") era **errónea**: la tabla de Electrical Characteristics (§7.5, p.11)
+tiene una fila literal `VOD(fs)  Full-scale differential output voltage ... 1 ... V` — el
+símbolo sí existe, solo que en una sección (tabla eléctrica) distinta a las dos que se habían
+revisado (Feature Description p.30, Typical Application p.85-89). **Alex pidió explícitamente
+no revertir ni gastar más tiempo en esto** ("olvídate de VOD, ese tema está pasado") — se deja
+como está, sin revertir los cambios de la sesión anterior.
+
+### Fricción de proceso — nueva regla permanente
+Un comando Bash con expansión de variable (`$TEMP`) disparó un prompt de permiso evitable
+("Contains simple_expansion"). Alex, ya cansado de esta fricción repetida, pidió como regla
+permanente: **nunca pedir permiso para tareas triviales** (guardado en
+`feedback_general.md`). Aplica a exploración, instalación de herramientas de desarrollo local,
+comandos de solo lectura, etc. — no a acciones genuinamente arriesgadas (push, flash a la
+placa equivocada, borrar código).
+
+### Rename "descent" → TIASAT (condición) + acción separada — aplicado, lib v0.44d
+Retomada la propuesta de Alex. Aclarado: TIASAT cubre **solo la condición** (TIA saturando),
+no la acción de bajar RF, que mantiene un verbo simple. Reparto acordado y aplicado:
+
+- **Condición → TIASAT:** `_hgac_descent_count_led1/2`→`_hgac_tiasat_count_led1/2`,
+  `hgac_descent_persist_s`/`setHgacDescentPersistS()`→`hgac_tiasat_persist_s`/
+  `setHgacTiasatPersistS()`, `_hgac_descent_min_samples`→`_hgac_tiasat_min_samples`,
+  `_hgac_check_descent()`→`_hgac_check_tiasat()`.
+- **Acción → verbo simple:** `_hgac_descend_rf()`→`_hgac_step_rf_down()`.
+
+**Cambios:**
+- `incunest_afe4490.h`/`.cpp`: los 4+1 renombrados aplicados en declaración, definición y
+  todos los call sites (constructor, setter, `getConfig()`, reset, `init()`).
+- `PulseNest/src/main.cpp`: wire key `$SET`/`$LCFG` `hgac_descent_persist_s`→
+  `hgac_tiasat_persist_s` (sin consumidor en `pulsenest_lab.py`, sin rotura Python).
+- `test/test_hgac/test_hgac.cpp`: accessors `test_hgac_descend_rf_led1/2`→
+  `test_hgac_step_rf_down_led1/2` y comentarios que citaban los nombres antiguos. Nombres de
+  función de test (`test_hgac_descent_after_persistence` etc.) dejados intactos — describen
+  la acción en prosa inglesa, no colisionan con los identificadores renombrados.
+- `incunest_afe4490_spec.md`: §5.8 completo (título, §5.8.1-§5.8.5, §10.9) actualizado a los
+  nombres nuevos; añadida nota de "pregunta abierta" sobre el punto 2 pendiente
+  (`!= PROBE_DISCONNECTED`). Histórico `## 14. Version history` intacto (v0.44c/v0.37
+  describen el código como era entonces). Entrada nueva v0.44d.
+- Librería → **v0.44d-experiment** (`.h`, `.cpp`, `platform_stub.h`,
+  `examples/basic/main.cpp`, `library.json`).
+- **Verificado: 36/36 tests nativos** (`test_biquad` pre-existente no relacionado), build
+  ESP32-S3 V16 OK.
+- **Flash OTA pendiente** — hotspot móvil inactivo de nuevo.
+- Memoria actualizada: `project_hgac_implementation_task.md` (sección nueva del rename) y
+  `feedback_general.md` (regla de no pedir permiso para tareas triviales).
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+**Pendiente:** decisión sobre `!= PROBE_DISCONNECTED` (punto 2, sin resolver), flash OTA de
+v0.44d, continuar el rediseño general de `_hgac_update()`.
+
+### 2026-07-23 — pulsenest_lab.py: tooltip de ProbeState (SIGNAL STATS) desactualizado
+
+**Reportado por Alex:** el tooltip de `ProbeState` en SIGNAL STATS no tenía el umbral OT
+actualizado.
+
+**Confirmado:** `rsqm_ot_thr` se amplió a `1.0e-4` el 2026-07-19 (v1.25, ver changelog spec —
+motivado por pruebas con el simulador CONTEC MS100). Ese cambio solo actualizó el tooltip de
+`LIBConfigWindow._PARAMS`; el tooltip de la fila `ProbeState` en la tabla SIGNAL STATS
+(`pulsenest_lab.py`, dos menciones: descripción de NOT_APPLIED y de APPLIED) se quedó con el
+valor antiguo `8.5×10⁻⁵`.
+
+**Implementado (`pulsenest_lab.py` v1.26):**
+- Ambas menciones actualizadas a `1.0×10⁻⁴` (coincide con `incunest_afe4490.h:765`).
+- Añadida nota de que `rsqm_ot_thr` es configurable en runtime vía `$LCFG` (no estaba claro
+  en el texto antiguo).
+
+**Verificado:** `python -m py_compile pulsenest_lab.py` sin errores. Relanzado
+(`taskkill`+`start pythonw`).
+
+**Spec actualizada:** `pulsenest_lab_spec.md` → v1.26.
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+---
+
+## Sesión 2026-07-23/24 — Nuevo estado `PROBE_SATURATING`, resuelve la pregunta abierta del gate de HGAC
+
+### Punto de partida: "¿por qué RF/ILED arreglan un fallo de detección?"
+Alex retomó el punto pendiente de sesiones anteriores (`!= PROBE_DISCONNECTED` en
+`_hgac_gate_ok()`): "no entiendo por qué un fallo en la detección de PROBE_APPLIED se deba
+corregir modificando RF o ILED... de momento no es necesario, en el futuro ya veremos".
+
+Análisis: HGAC no corrige la lógica del detector — corrige la saturación física que también
+confunde al detector (la propia política de RSQM decía "HGAC se encargará de ese caso"). Pero
+el acoplamiento SÍ era el problema real: el gate de HGAC dependía de una clasificación
+(`probe_state`) que puede estar equivocada precisamente durante saturación. La propuesta
+alternativa (`(probe_state==APPLIED) || !as.allClean()`) ya resolvía esto desacoplando: en vez
+de confiar en el detector durante saturación, mira la física cruda directamente.
+
+### Decisión: crear `PROBE_SATURATING` como estado dedicado de RSQM
+Alex decidió ir más allá y arreglar la causa raíz en el propio detector, no solo en el gate de
+HGAC. Pidió primero la lista de consumidores de `probe_state` antes de nombrar/implementar.
+
+**Naming:** propuesta inicial de Alex `PROBE_CONNECTED_BUT_SATURATION`; Claude sugirió
+`PROBE_SATURATING` (más corto, sin alternativa `PROBE_APPLIED_SATURATING`). Alex corrigió:
+la saturación **no implica presencia de paciente** (sonda al aire bajo fototerapia también
+satura) — nombre final confirmado `PROBE_SATURATING`, sin "APPLIED" en el nombre.
+
+**Consumidores (encuesta pedida antes de implementar):** la mayoría (SpO2/HR1/HR2/HR3/RSQI)
+no necesitan cambio (`!= PROBE_APPLIED` ya los excluye automáticamente). Cambios reales:
+`_rsqm_update()` (clasificador — separa causa saturación de causa umbral-OT, prioridad a
+saturación), `_hgac_gate_ok()` (motivo original), `_diag_task_body()` (hallazgo adicional no
+previsto: debía tratar SATURATING como APPLIED para no disrumpir el arreglo de HGAC con un
+diagnóstico HW disruptivo), y color dedicado en SIGNAL STATS de `pulsenest_lab.py`.
+
+### Implementación (lib v0.45)
+- `enum class ProbeState`: `PROBE_SATURATING` añadido al final (valores 0-2 intactos, wire
+  `$M2`/`$M3`/`$M4` estable).
+- `_rsqm_update()`: `!otLed1Valid()`/`!otLed2Valid()` → `PROBE_SATURATING` directo, con
+  prioridad sobre el umbral `rsqm_ot_thr` (antes colapsados en un único OR → `NOT_APPLIED`).
+- `_hgac_gate_ok()`: `== PROBE_APPLIED || == PROBE_SATURATING` — ya no necesita la burda
+  `!= PROBE_DISCONNECTED`, ya no abre durante `NOT_APPLIED` idle normal (el problema de fondo
+  de las últimas 2 sesiones, resuelto).
+- `_diag_task_body()`: también omite diagnóstico HW periódico durante `PROBE_SATURATING`.
+- `pulsenest_lab.py`: `PROBE_SATURATING=3` en las 4 clases TestCalc + combo
+  `AFESweepTestWindow`, color naranja dedicado `#7A3D00` en SIGNAL STATS (distinto del ámbar
+  de NOT_APPLIED), tooltips reescritos.
+- **Test roto y arreglado:** `SAT_LED1_CODE` en `test_hgac.cpp` (elegido antes para quedarse
+  `CH_CLEAN` y evitar flip de `probe_state`) ahora cae en `PROBE_NOT_APPLIED` puro con el
+  clasificador nuevo — que el gate excluye correctamente, rompiendo los tests de descenso.
+  Subido de 1,700,000 a 1,900,000 (v_tia_diff≈1.087V) para disparar `PROBE_SATURATING` real.
+- Librería → **v0.45-experiment** (salto completo, no sufijo — cambio de comportamiento real).
+- Spec `incunest_afe4490_spec.md`: §5.6.2 (máquina de estados, prioridad DISCONNECTED>
+  SATURATING>NOT_APPLIED>APPLIED), §5.7 (diag task), §5.8.2 (gate, pregunta abierta resuelta)
+  reescritas; tabla empírica corregida (nota obsoleta "HGAC must not act in NOT_APPLIED").
+  `pulsenest_lab_spec.md` → v1.27.
+- **Verificado: 36/36 tests nativos** (`test_biquad` no relacionado), build ESP32-S3 V16 OK.
+- **Flash OTA pendiente** — hotspot móvil inactivo de nuevo.
+- Memoria actualizada: `project_hgac_implementation_task.md` (sección nueva completa),
+  `project_probe_state_detector.md` y `MEMORY.md` (índice).
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+**Pendiente:** flash OTA de v0.45, continuar el rediseño general de `_hgac_update()` si queda
+algo más por revisar, decidir si HGAC (Fase 4, ILED) merece empezar a implementarse ya.
+
+---
+
+## Sesión 2026-07-26 — Refactor cosmético: eliminar variables locales `led1_not_applied`/`led2_not_applied`
+
+Alex pidió eliminar las variables `led1_not_applied`/`led2_not_applied` en `_rsqm_update()`
+(`incunest_afe4490.cpp`) porque "sólo generan confusión": el nombre mezcla el canal (`led1`)
+con un estado que pertenece a la sonda completa (un LED no se "aplica", a diferencia de
+`led1_saturating`/`led2_saturating`, donde el canal sí satura y el nombre es correcto).
+
+**Cambio:** condición inlineada directamente en el `else if`:
+```cpp
+} else if (as.ot_led1 > rsqm_ot_thr || as.ot_led2 > rsqm_ot_thr) {
+    requested = ProbeState::PROBE_NOT_APPLIED;
+```
+`led1_saturating`/`led2_saturating` se dejaron intactas.
+
+**Alcance:** refactor puramente cosmético — no cambia comportamiento ni la máquina de estados
+de RSQM. No toca `incunest_afe4490_spec.md` ni requiere bump de versión.
+
+**Verificado:** 36/36 tests nativos (`test_biquad` fallo preexistente no relacionado).
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+**Añadido después (misma sesión):** en `incunest_afe4490.h`, comentario de `CH_OFF_SPEC`
+ampliado para incluir el intervalo numérico explícito `(kVTiaDiffFs, kVTiaDiffLin] = (1.0, 1.8] V`.
+
+**Propuesta abierta (sin aplicar):** renombrar `CH_CLEAN`/`CH_OFF_SPEC` para que el trío de
+`AFE4490ChState` lea como una sola escala. Opciones: (A) `CH_IN_SPEC`/`CH_OFF_SPEC` — cambio
+mínimo, par simétrico; (B) `CH_VALID`/`CH_MARGINAL`/`CH_CLIPPED` — eje de confianza,
+recomendada; (C) `CH_LINEAR`/`CH_EXTENDED`/`CH_CLIPPED` — eje físico. Pendiente decisión de
+Alex; el rename tocaría `chState()`, `chClean()`, spec y `pulsenest_lab.py`.
+
+**Aclaración observabilidad `CH_OFF_SPEC` (misma sesión):** Alex detectó que el comentario de
+`CH_OFF_SPEC` daba el intervalo (1.0, 1.8] V sin mencionar que, con la config por defecto
+(RG=Ri → V_ADC=V_TIA_DIFF, AMBDAC=0), el ADC satura a ±1.2 V y `chState()` da precedencia a
+`adcSat` (`CLIPPED>OFF_SPEC`), por lo que el estado solo es alcanzable en (1.0, 1.2] V — el
+tramo (1.2, 1.8] es inobservable sin AMBDAC (`tia_over_lin` es código muerto con defaults).
+
+- (1.0, 1.8] es propiedad del **TIA** (linealidad del silicio); la observabilidad la gate la
+  cadena ADC/Stage2/AMBDAC. Stage 2 ×2 → ∅; AMBDAC ≥ 3 µA → alcanza 1.8 V.
+- **`incunest_afe4490.h`:** comentario de `CH_OFF_SPEC` ampliado con la nota ADC-gated y
+  referencia a la tarea AMBDAC off-spec-zone (capa v2).
+- **`incunest_afe4490_spec.md`:** comentario del enum actualizado + párrafo nuevo con tabla de
+  observabilidad por config (default / Stage2 ×2 / AMBDAC).
+- Puramente documental — sin cambio de comportamiento ni bump de versión.
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+---
+
+## Sesión 2026-07-27 — Decisión ILED default (20→50 mA) + hallazgo datasheet Medle
+
+### Análisis ventajas/inconvenientes de subir ILED 20→50 mA
+A petición de Alex (tarea aparcada). Ventajas: ↑SNR (clave en baja perfusión neonatal),
+↑robustez óptica, margen para bajar RF (fototerapia), mejor rechazo de ambiente. Inconvenientes:
+operar en máx. absoluto sin margen, seguridad térmica neonatal (ISO ≤41 °C, sin caracterización
+sonda-piel), derating desconocido, riesgo saturación TIA (RF_100K calibrado a 20 mA), empeora
+leakage LED2→ALED2, sin motivación establecida.
+
+### Trazabilidad del "50 mA": ambigüedad detectada
+Alex cuestionó de dónde salía "50 mA = absolute maximum". Rastreo: no había fuente primaria en
+el repo; el valor circulaba entre docs internos que se citaban entre sí, con caracterización
+INCOMPATIBLE — memoria decía "absolute maximum", `docs/afe_replacement_study.md` decía "50 mA
+typ". Reconocido que mi inconveniente #1 no estaba fundamentado hasta resolverlo.
+
+### Datasheet Medle aportado (docs/Medle_probe/, 2 JPEG) — resuelve la ambigüedad
+"Blood oxygen sensors — 2-Pin 660/905 launcher tube — v1.0". Leído con Read tool.
+- **I_F = 50 mA CONFIRMADO como máximo absoluto** (tabla "Maximum limit") → mi caracterización
+  original era correcta; el "typ" de afe_replacement_study.md era el impreciso. Inconveniente #1
+  SE SOSTIENE, ahora con fuente primaria.
+- **I_FP = 100 mA a 1/8 duty (12.5 %), 1 kHz** (nuevo; resuelve fila #5). Relevante para peak/media:
+  el AFE pulsa el LED → comparar duty real del AFE con 1/8.
+- λ: RED 665 nm (663–667), IR 905 nm (895–915); V_F: RED 1.85 V, IR 1.3 V; Fe RED 5.0/IR 4.5 mW;
+  P_d 100/75 mW; todo caracterizado a I_F=20 mA → respalda el default de 20 mA.
+- ⚠️ **Fiabilidad limitada:** Alex no halló correspondencia entre el datasheet y los
+  identificadores de las sondas Medle físicas → no hay certeza de que sea exactamente este modelo.
+
+### Conclusión provisional
+No subir el default estático a 50 mA (máx. absoluto sin margen; falta derating fila #4 y
+caracterización térmica sonda-piel fila #6). Camino correcto: control adaptativo de ILED por
+HGAC (Fase 4). Si se quiere más SNR antes: valor intermedio (~30 mA) tras medir calentamiento.
+
+Memorias actualizadas: `project_probe_dependent_specs` (datos + aviso fiabilidad, filas #2/#3/#5/#9),
+`project_led_current_increase_50ma_task` (conclusión provisional).
+
+### Corrección del razonamiento ILED (2026-07-27, misma sesión) — el rating del LED no es el bloqueante
+
+Alex preguntó si `I_FP`=100 mA @1/8 duty es por LED, dado que el AFE enciende cada LED ~25 %.
+Análisis:
+- `I_FP` es **por LED individual** (emisor 2-Pin antiparalelo → solo uno conduce a la vez; en la
+  tabla Maximum limit es valor único del componente, a diferencia de Pd que sí desglosa red/IR).
+- Cruzando ratings (V_F típicos @20 mA del datasheet, fila Vf: RED 1.85 V, IR 1.3 V):
+  · `I_F`=50 mA DC ↔ límite térmico Pd (RED 92.5 mW≈100; IR 65≈75 — coincidencia casi exacta).
+  · `I_FP`=100 mA @12.5 % ↔ límite de pico instantáneo (potencia media ~16-23 mW ≪ Pd).
+- Como el AFE **pulsa**, programar ILED=50 mA = PICO 50 mA a ~25 % duty: ≪100 mA (I_FP, ×2) y
+  potencia media ~23 mW ≪ Pd (×4) → margen amplio.
+
+**Inconveniente #1 corregido (era erróneo):** comparaba ILED programado (pico pulsado) con
+`I_F`=50 mA (límite DC/térmico), magnitudes no comparables con el AFE pulsando. El rating del
+LED NO impide subir ILED. El bloqueante real es la **temperatura sonda-piel** (ISO ≤41 °C,
+caracterización #6 sin medir) + **saturación TIA** (RF_100K a 20 mA).
+
+Nota V_F: 1.85 V/1.3 V son típicos @IF=20 mA (datasheet); a 50 mA V_F sería mayor → el cálculo
+subestima P, lo que refuerza que I_F=50 mA está topado por Pd.
+
+Pendiente: calcular el duty REAL del LED desde los registros de timing (no asumir 25 %).
+Memorias actualizadas: project_led_current_increase_50ma_task, project_probe_dependent_specs.
+
+### Default LED 20→50 mA aplicado (preliminar, v0.47-experiment) — 2026-07-27
+
+Alex decidió, en fase de desarrollo y de forma preliminar, poner el default de corriente LED a
+50 mA para ganar experiencia con ese valor.
+- **Librería:** constructor `_afe_led1/2_current_mA` 20.0→50.0 (DAC code 85=0x55, ~49.8 mA @
+  range 150). Spec §3/§8: tablas de defaults, `LEDCNTRL`→0x005555, nota RF, changelog §14.
+  Bump **v0.47-experiment** (cabeceras, #define, library.json, spec).
+- **Verificado:** 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK.
+- ⚠️ **Efectos acoplados NO ajustados (avisados):** (a) RF_100K puede acercarse a saturación TIA
+  a 50 mA; (b) ambient settling t5/t11 (200 counts) solo adecuado hasta ~25 mA — a ≥50 mA subir
+  a 400+ counts (spec §8) → riesgo de más leakage LED→ALED; (c) térmico-piel sin caracterizar.
+- Memorias: project_led_current_increase_50ma_task (aplicado + efectos), project_led_default_current_task
+  (superado), project_library_workflow (v0.47).
+- **Sin commitear** (pendiente de que Alex lo pida).
+
+### Ambient settling 200→400 counts (v0.47, mismo paquete que ILED 50 mA) — 2026-07-28
+
+Alex pidió ajustar el ambient settling a 400 counts (coherente con operar a 50 mA; lo pedía la
+propia spec §8). Cambio en `_apply_timing_regs()`: `ambient_margin` 200→400 counts (50→100 µs),
+usado en t5 (ALED2STC) y t11 (ALED1STC). Da más tiempo de extinción del LED / descarga de CF
+antes de muestrear el ambiente → mitiga el leakage LED→ALED.
+- Verificado seguro a PRF=500 Hz (q=2000): ventana ambient 400..1998, holgada; no afecta a las
+  conversiones del ADC. Válido para PRF ≤ ~2 kHz (a PRF mayor la ventana q−2 se estrecha).
+- Spec: filas t5/t11 (§8 Table 2), nota de ambient settling, y changelog §14 v0.47 actualizados.
+- Agrupado en **v0.47-experiment** (no consolidada aún; es consecuencia directa del 50 mA).
+- Verificado: 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK.
+
+Pendientes de v0.47 aún abiertos: (a) RF_100K vs saturación TIA a 50 mA (¿bajar RF o dejar a
+HGAC?); (c) caracterización térmica sonda-piel (ISO ≤41 °C). Sin commitear.
+
+### Flash OTA de v0.47-experiment a IncuNest 16.A — 2026-07-29
+
+Alex pidió "haz flash". Procedimiento OTA seguro seguido:
+- Verificada MAC en ARP: 16.A (10:51:DB:50:48:F8) en **192.168.50.117** (no en el hotspot
+  192.168.137.x habitual, pero accesible; MAC correcta = lo crítico). Ping OK, HTTP 200, MAC
+  re-verificada tras ping (no stale).
+- OTA: `curl -F "update=@.pio/build/incunest_V16/firmware.bin" http://192.168.50.117/update`
+  (campo 'update', handler HTTP_POST en src/main.cpp). Binario 828 KB → respuesta OK, HTTP 200,
+  10.3 s. Placa reinicia sola; verificado arranque (ping 0% pérdida, HTTP 200, MAC intacta).
+- La 16.A corre ya todo el acumulado experiment: OT domain + PROBE_SATURATING + rename _RANGE +
+  ILED 50 mA + ambient settling 400 counts (v0.47).
+- Resuelve el "flash OTA pendiente" que arrastrábamos desde v0.45.
+
+Pendiente de v0.47: validar en HW (SpO2/HR reales, PROBE_SATURATING, ¿satura la TIA a 50 mA con
+RF_100K?), caracterización térmica sonda-piel. Código sin commitear.
+
+### Verificación HW: RF vs saturación TIA a 50 mA — frente (a) cerrado — 2026-07-29
+
+Alex confirmó empíricamente: con la sonda en el dedo, ILED a 50 mA produce `v_tia_diff < 0.5 V`
+→ NO satura (≪ 1.0 V FS diferencial, incluso por debajo del punto ideal 0.6 V). RF_100K es
+adecuado a 50 mA, no hace falta bajarlo. Cierra el frente abierto (a) de v0.47.
+Salvedad: medido con dedo adulto; dedo/pie neonatal (más fino) por confirmar (margen ×2 hasta FS).
+Actualizado: spec (nota RF §9), memoria project_led_current_increase_50ma_task. Sin cambio de código.
+
+### Corrección: salvedad neonatal no fundamentada → formulación neutral — 2026-07-29
+
+Alex cuestionó la fuente de mi afirmación "el pie/dedo neonatal es más delgado que un pulgar
+adulto → más señal". Reconocido: sin fuente — inferencia mía (antropométrica no verificada +
+Beer-Lambert). Además la dirección del efecto no está clara (perfusión, geometría de sonda).
+Reemplazada por formulación neutral en spec (nota RF §9, changelog v0.47) y memoria
+project_led_current_increase_50ma_task: "comportamiento con sonda/paciente neonatal real sin
+caracterizar — confirmar v_tia_diff". Otro CLI añadirá datos antropométricos/de sonda después.
+
+### Análisis I_LED 50 mA (ventajas/inconvenientes), observación térmica del pulgar y datos antropométricos del pie — 2026-07-29
+
+Sesión sin cambios de código (los .cpp/.py del working tree son de sesiones previas: v0.47).
+Trabajo de análisis y documentación:
+
+- **Análisis en profundidad 20→50 mA:** ventajas (SNR ∝ √i_pd_led → +58 % a 50 mA, rendimiento
+  decreciente; mejor en baja perfusión; headroom para RF más bajo; ruido del driver neutro,
+  110 dB a cualquier corriente) vs inconvenientes (coste térmico LINEAL ×2.5; margen ISO de solo
+  4 °C sobre 37 °C de incubadora; lazo abierto sin °C/mA medido; posible resaturación TIA/RF).
+  Datos duros del datasheet AFE4490 (SBAS602H) extraídos: FS driver 150 mA @TX_REF=0.75 V,
+  LSB ≈0.586 mA, ruido input-referred 36 pA_RMS @RF=100k, VHR 1.3–1.4 V, disipación lineal con I.
+  Conclusión: el freno real es térmico-piel (sin caracterizar) + TIA, no el rating del LED.
+
+- **Observación del pulgar (Alex: no nota calentamiento a 50 mA):** analizado como **falso
+  negativo esperable, NO evidencia de seguridad neonatal**. Motivos: potencia media minúscula
+  (~19 mW/LED, ~30–40 mW total con duty 25 %); el pulgar adulto es un disipador enorme (masa,
+  perfusión, aire ~22 °C con 19 °C de colchón) vs pie de prematuro (masa 10–20× menor, mala
+  perfusión = peor caso BB.3, incubadora 37 °C, 4 °C de colchón); sensación térmica humana mala
+  (se nota hacia ~43–45 °C > umbral ISO 41 °C); el tacto mide el dedo global, no el punto de
+  contacto LED-piel; prueba de segundos vs monitorización de horas (regla de Moritz). Registrado
+  en memoria project_led_current_increase_50ma_task (punto Térmico-piel).
+
+- **Datos antropométricos del pie del prematuro** (búsqueda web): longitud por edad gestacional
+  (GA = 4.5·FL + 3.61 → ~4.5 cm @24 sem … ~8.1 cm @término; umbral prematuridad ≤7.35 cm),
+  anchura ~40–45 % de la longitud, y el dato crítico ausente en la literatura: grosor/path óptico
+  dorso-plantar ~5–10 mm (estimación de ingeniería). Implicación: path fino y translúcido ⇒ mucha
+  luz con poca corriente ⇒ subir I_LED solo ayuda en baja perfusión, no por grosor de tejido.
+  Nueva memoria: reference_preterm_foot_dimensions. (Corresponde al "otro CLI añadirá datos
+  antropométricos/de sonda" anotado antes.)
+
+- **Acceso móvil (Remote Control + push):** configurado el acceso a esta sesión desde el móvil vía
+  Remote Control (`/remote-control PulseNest Lab`, empareja por QR en la app Claude → pestaña Code).
+  Verificados prerrequisitos por CLI: versión 2.1.218 (≥ mínimo), sin env vars bloqueantes
+  (DISABLE_TELEMETRY/DO_NOT_TRACK/ANTHROPIC_BASE_URL/API_KEY todas unset), workspace ya confiado.
+  Notificaciones push vía `/config` (toggles "Push when Claude decides" / "Push when actions
+  required"), requieren Remote Control activo. Solo instrucciones, sin cambios en el repo.
+
+### Refactor: inline de Gate G0 en _hgac_update() (elimina _hgac_gate_ok) — 2026-07-29
+
+Alex criticó (con razón en el fondo) la extracción de la condición del gate a `_hgac_gate_ok()`:
+al usarse UNA sola vez, con nombre genérico, definición 80 líneas lejos del uso y comentario de
+12 líneas, la abstracción partía el concepto "gate" en dos — la condición en la función y sus
+consecuencias (reset de contadores TIASAT + return) en el llamador — dificultando seguir el flujo.
+Además el comentario del header ya había divergido ("probe not disconnected" = lógica vieja).
+Matiz: extraer condicionales a métodos con nombre revelador NO es chapuza per se (técnica
+estándar), pero aquí los inconvenientes pesaban.
+
+**Aplicado:** condición inlineada en `_hgac_update()` (probe_active APPLIED||SATURATING &&
+!HW_SETTLING) con comentario conciso; eliminada la función `_hgac_gate_ok()` y su declaración
+en el .h (comentario obsoleto incluido). Razonamiento histórico completo queda en spec §5.8.
+Spec: §1121 (ref a la función), changelog v0.47 (nota del inline). Sin cambio de comportamiento.
+Verificado: 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK. Agrupado en v0.47. Sin commitear.
+
+### Commit + push de v0.47-experiment — 2026-07-29
+
+Alex pidió commit y push. Realizado en ambos repos, a rama nueva `experiment/ot-domain-inputs`
+(no existía en remoto; creada con tracking):
+- Librería `incunest_afe4490`: commit `5116874` (v0.47: 50 mA LED + ambient settling 400 +
+  inline Gate G0 + valores datasheet Medle en spec). 6 ficheros.
+- PulseNest: commit `f5c5eec` (test_hgac comentario + conversation_log). 2 ficheros.
+Excluidos deliberadamente (sin trackear/no relacionados): pulsenest_lab.ini, tia_linearity_sweep.py,
+agent_sweep_batch.py, docs/masimo_whitepapers, slaa655.pdf, CSVs de sweep, y el conversation_log
+del repo librería. Decisión fusionar/revertir a master sigue pendiente (tras validación HW).
+
+### Refactor v0.47b: RSQM detecta saturación con allValidRange() (no !otLedxValid) — 2026-07-29
+
+Alex discrepó (con razón) de mantener `otLedxValid()` en el clasificador RSQM. Argumento
+decisivo: usar `otLed1Valid()` (predicado "OT usable") para detectar saturación es coincidencia
+de IMPLEMENTACIÓN, no de intención — si la definición de "OT válida" evoluciona, el detector de
+PROBE_SATURATING heredaría el cambio sin querer. La intención real es "¿los 4 canales en rango
+válido?" = `allValidRange()` (que ya existía; hay que usarlo, no es adorno).
+
+Verificada equivalencia EXACTA: `!otLed1Valid() || !otLed2Valid()` ≡ `!allValidRange()`
+(ambos miran los mismos 4 flags sobre los 4 canales; allValidRange además exige 0 en bits 4-7,
+que nunca se escriben → sin diferencia observable). test_hgac (ejercita PROBE_SATURATING) pasa.
+
+Cambio en `_rsqm_update()`: eliminadas las 2 variables `led1/led2_saturating`, ahora
+`if (!as.allValidRange())`. Alinea el código con su propio comentario ("channel not
+CH_VALID_RANGE → SATURATING"). Bump **v0.47b** (refactor de legibilidad, sin cambio de
+comportamiento). 36/36 tests, build ESP32-S3 OK. Sin commitear.
+
+**Pendiente:** `otLed1Valid()`/`otLed2Valid()` quedan SIN USO funcional (solo comentarios).
+NO eliminados (API pública documentada) — pendiente confirmar con Alex si se borran.
+
+### v0.47b (cont.): eliminados otLed1Valid()/otLed2Valid() — 2026-07-29
+
+Alex: "elimínalos, no dejemos API sin uso". Tras el refactor a `allValidRange()`, los helpers
+`otLed1Valid()`/`otLed2Valid()` quedaron sin uso funcional. Eliminados del `.h` (métodos +
+comentario "OT validity is strict"). Comentarios actualizados: `ot_led` en el `.h`
+("Valid iff both source channels chValidRange()") y dos comentarios en `test_hgac.cpp`
+(referencias a `!otLed1Valid()` → `not CH_VALID_RANGE` / `allValidRange()`). Changelog v0.47b
+actualizado. Verificado: 0 refs restantes, 36/36 tests nativos, build ESP32-S3 OK. Sin commitear.
+
+### v0.48: eje v_tia_diff como fuente única de verdad (namespace tia_axis) — 2026-07-29
+
+Alex: la tabla de los 5 voltajes es crítica; ¿agruparla en un único sitio? Los 5 umbrales
+estaban dispersos entre `AFE4490AnalogState` (físicos constexpr) y `AFE4490Config` (defaults de
+política HGAC), y su ORDEN (ideal<guard<FS<adc_sat<lin) era un invariante tácito.
+
+**Aplicado (`incunest_afe4490.h`):** `namespace tia_axis` con IDEAL_V 0.6 / GUARD_V 0.9 / FS_V 1.0
+/ ADC_SAT_V 1.2 / LIN_V 1.8, y un **`static_assert`** que garantiza el orden estricto en
+COMPILACIÓN (si alguien pone GUARD>FS, no compila). `kVTiaDiffFs/Lin` y los defaults
+`hgac_v_tia_diff_thr/ideal` ahora DERIVAN del eje. Preserva la separación físico/política.
+`setHgacVTiaDiffThr()` clampa a ≤ FS_V (el guard no puede quedar por encima del rango fiable en
+runtime). Valores sin cambio → comportamiento idéntico salvo ese clamp defensivo.
+Matiz: ADC_SAT_V es nominal; `kAdcSatPos` sigue siendo el rail empírico en counts (~1.199 V).
+Spec: §thresholds reescrita + changelog. Bump **v0.48-experiment**.
+Verificado: 36/36 tests nativos, build ESP32-S3 (incunest_V16) OK. Sin commitear.
+
+Base natural para el pendiente rename TIASAT→guard (GUARD_V ya es el nombre del umbral 0.9 V).
+
+### v0.49: rename TIASAT→TIAGUARD + esquema debounce + convención adc_code — 2026-07-30
+
+Tras larga discusión de naming, Alex decidió:
+1. **`count` NUNCA para salida ADC → `adc_code`** (regla memorizada en [feedback_naming_adc_code_samples]).
+2. **TIASAT → TIAGUARD**: TIASAT colisionaba con PROBE_SATURATING y engañaba (la guarda dispara a
+   GUARD_V=0.9V, por DEBAJO de FS → es preventiva, no saturación).
+3. **Esquema debounce sin ambigüedad count/samples**: estado=`elapsed_samples`, umbral=`min_samples`, config=`_s`.
+
+Renombrado (sed word-boundary, 5 ficheros; `pulsenest_lab.py`=0):
+- `_hgac_tiasat_count_led1/2` → `_hgac_tiaguard_debounce_elapsed_samples_led1/2`
+- `_hgac_tiasat_min_samples` → `_hgac_tiaguard_debounce_min_samples`
+- `hgac_tiasat_persist_s`/`setHgacTiasatPersistS()` → `hgac_tiaguard_debounce_min_s`/`setHgacTiaguardDebounceMinS()`
+- `_hgac_check_tiasat()` → `_hgac_check_tiaguard()`; TIASAT→TIAGUARD; var local `tiasat`→`tiaguard`.
+- `$SET`/`$LCFG` wire key en `main.cpp` actualizado.
+Prosa corregida (glosas "TIA saturation" tras TIAGUARD → "guard trip, below FS") en §5.8/§5.8.1 y comentarios.
+Restaurado el changelog histórico de v0.44d (el sed lo había reescrito a tiaguard; v0.44d fue descent→TIASAT).
+Bump **v0.49-experiment**. 36/36 tests + build ESP32-S3 OK. Sin cambio de comportamiento. Sin commitear.
+
+Pendiente global (nueva regla): migrar usos actuales de count-para-ADC (`kAFE_ADC_FS_COUNTS`, etc.) a `adc_code`.
+
+### Ajuste (dentro de v0.49): debounce_elapsed_samples → debounce_count — 2026-07-30
+
+Alex reconsideró: el contador dinámico del debounce vuelve a `_count` (no `elapsed_samples`).
+Razón: `_count` es más corto y coherente con la convención EXISTENTE del proyecto (`_sample_count`,
+`_buf_count`, `_interval_count`); `elapsed_samples` habría sido el único de su tipo. Seguro porque
+el ADC usa `adc_code` (ya no hay ambigüedad ADC).
+- `_hgac_tiaguard_debounce_elapsed_samples_led1/2` → `_hgac_tiaguard_debounce_count_led1/2` (+ parámetro
+  local y comentarios). Umbral sigue `_debounce_min_samples`, config `_debounce_min_s`.
+- Convención global revisada (memoria [feedback_naming_adc_code_samples]): contador dinámico = `_count`
+  (convención proyecto), umbral = `_min_samples`, ADC = `adc_code`.
+- Dentro de v0.49 (no consolidada). 36/36 tests + build OK. Sin cambio de comportamiento. Sin commitear.
+
+### Datasheet: salida TIA (diferencial) y terminología ADC; alcance de renames; tarea ADC_FSR/ADC_SAT_V — 2026-07-30
+
+Sesión sin cambios de código (los .cpp/.py del working tree son de sesiones previas). Trabajo de
+consulta del datasheet AFE4490 (SBAS602H, verificado leyendo el PDF de primera mano) y análisis:
+
+- **Cómo referencia el datasheet la salida de la TIA (diferencial vs single-ended):** predominan-
+  temente DIFERENCIAL. Símbolos propios de TI: `VOD(fs)` = "Full-scale differential output voltage"
+  = 1 V (p.11, bloque I-V Transimpedance Amplifier — CONFIRMADO leyendo p.11); `VDIFF` con factor ×2
+  (Ec. 2, p.30); "TIA max (Differential) ±1 V" (Fig. 135, p.88, confirmada). Única vista por rama:
+  ADC-bypass RXOUTP/RXOUTN en torno a Vcm ≈0.9 V (p.47). **Correcciones detectadas:** (1) el comentario
+  de `incunest_afe4490.h:252-254` afirma "the datasheet has no symbol named 'V_OD'" — es FALSO,
+  `VOD(fs)` existe en p.11; (2) `V_TIA` NO aparece en el PDF (nombre interno nuestro). → respalda la
+  decisión previa de NO renombrar `v_tia_diff` a `v_tia`.
+
+- **Cómo nombra el datasheet la salida digital del ADC:** término canónico "ADC output code" /
+  "22-bit code" (Tabla 7 "22-BIT ADC OUTPUT CODE", p.88 — confirmada); "digital code" (p.29/31/32);
+  "digital value" en registros LEDxVAL (p.80-82); formato complemento a dos 22-bit. **TI NUNCA usa
+  "counts" para el ADC** — reserva "count" para ciclos de reloj del temporizador (LED2STC, PRPCOUNT).
+  Nuestra librería usa "counts", que además colisiona semánticamente con los counts del timer. Alinea
+  con la nueva memoria [[feedback_naming_adc_code_samples]] (usar `adc_code`).
+
+- **Alcance de dos renames potenciales (solo medición, sin tocar nada):**
+  - `v_tia_diff → v_tia`: ~286 ocurrencias, muchos símbolos, ROMPE schema CSV (varias cabeceras),
+    deroga la regla 4b. Empeora la fidelidad al datasheet → NO recomendado.
+  - `counts → adc_code`: ~100 ocurrencias cat. A, ~8 símbolos, contrato externo casi intacto (1 sola
+    cabecera CSV secundaria en tia_linearity_sweep.py:206; protocolo limpio; sin static_assert que
+    derogar). MEJORA fidelidad al datasheet. Riesgo = ambigüedad léxica "counts" ADC vs timer en
+    comentarios/spec/tooltips → rename símbolo-a-símbolo + revisión manual, NO automatizable.
+
+- **Nueva tarea:** [[project_adc_fsr_sat_v_duplication_task]] — dos constantes con el mismo literal
+  1.2 V para el FS del ADC: `kAFE_ADC_FSR` (.h:235, fórmula) y `tia_axis::ADC_SAT_V` (.h:293, eje de
+  umbrales). Matiz: hay 3 representaciones del tope del ADC (2 nominales = 1.2 duplicado + kAdcSatPos
+  empírico ≈1.199 V en counts). Estudiar unificar (derivar una de otra) o documentar la separación.
+
+- **Consejo de flujo de trabajo (no código):** ante la lentitud creciente por sesión larga, se
+  recomendó capturar ideas en un BACKLOG.md editado por Alex directamente (bandeja de entrada → triage
+  a memorias de tarea al cerrar sesión) y acortar sesiones apoyándose en MEMORY.md + conversation_log
+  (/compact o sesión nueva por tema). Pendiente de decisión de Alex si crear el BACKLOG.md.
+
+### Migración count → adc_code (salida ADC) — 2026-07-31 (dentro de v0.49)
+
+Alex señaló que "count" seguía apareciendo asociado a la salida ADC (comentarios). Aplicada la
+regla: la MAGNITUD de salida del ADC pasa a `adc_code`/`code`.
+- Identificador: `kAFE_ADC_FS_COUNTS` → `kAFE_ADC_FS_CODE` (lib .h/.cpp + spec).
+- Comentarios de unidad: `[ADC counts]` → `[adc_code]`; rail `counts —` → `adc_code —`;
+  "220-count guard" → "220-code guard"; "ambient-corrected counts" → "adc_code"; etc.
+- **NO tocados** (no son salida ADC): AFECLK ticks (`PRPCOUNT`, "1 count = 0.25 µs", `adc_reset`
+  counts, TIA settle AFECLK counts), contadores de muestras (`_sample_count`, `_buf_count`,
+  `_interval_count`, `_afe_adc_averages` nº de promediados).
+- 36/36 tests + build ESP32-S3 OK. Sin cambio de comportamiento. Dentro de v0.49. Sin commitear.
+
+### Doc: comentario de PROBE_SATURATING más claro (incunest_afe4490.h) — 2026-07-31
+
+Alex: la doc de PROBE_SATURATING (enum ProbeState) era difícil de entender. Reescrita para abrir
+con la idea clave: "OT is NOT trustworthy: ADC saturated or TIA beyond linearity — i.e. some
+channel is not CH_VALID_RANGE (!as.allValidRange())", seguido de las implicaciones (presencia
+desconocida; consumidores). Solo comentario → sin cambio de comportamiento ni bump. Sin commitear.
+Pendiente ofrecido: alinear la descripción de la spec §5.6.2 con esta redacción.
+
+### Legibilidad: allValidRange() omite tia_over_lin (redundante) — 2026-07-31
+
+Alex: quitar `| tia_over_lin` de allValidRange() (incunest_afe4490.h). Es redundante —
+`tia_over_lin ⊆ tia_over_fs` (FS_V < LIN_V garantizado por el static_assert de tia_axis; v_tia > LIN
+implica > FS). allValidRange = `(adc_sat_pos | adc_sat_neg | tia_over_fs) == 0`. Añadido comentario
+que documenta la omisión (no re-añadir sin causa). Comportamiento idéntico → sin bump.
+36/36 tests + build OK. Sin commitear (retoque post-v0.49, junto con doc de PROBE_SATURATING).
+
+### v0.50: PROBE_SATURATING chequea solo saturación POSITIVA (anyPositiveSaturation) — 2026-07-31
+
+Alex corrigió mi modelo: `adc_sat_neg` solo puede ocurrir con AMBDAC (fotocorriente unipolar →
+v_adc ≥ 0 sin AMBDAC; el propio raíl negativo se caracterizó "via AMBDAC sweep"). La sonda solo
+satura por arriba, que es lo que hay que detectar antes de que HGAC reduzca RG/ILED; reducir
+ganancia no corregiría un adc_sat_neg de AMBDAC.
+- `_rsqm_update()` 1257: `!as.allValidRange()` → `as.anyPositiveSaturation()`.
+- Nuevo helper: `anyPositiveSaturation() = (adc_sat_pos | tia_over_fs) != 0` (excluye adc_sat_neg
+  a propósito). Comentarios del bloque (a)/(b), doc de PROBE_SATURATING y test_hgac actualizados.
+- **Equivalente hoy** (AMBDAC=0 → adc_sat_neg siempre 0); difiere solo si se activa AMBDAC (capa v2).
+- `allValidRange()` queda huérfano (0 usos) — pendiente decidir si eliminarlo.
+- Bump v0.50. 36/36 tests + build ESP32-S3 OK. Sin commitear.
+
+### v0.50 (cont.): eliminado allValidRange() (huérfano) — 2026-07-31
+
+Tras el cambio a anyPositiveSaturation(), allValidRange() quedó sin uso. Eliminado (.h + declaración
+en spec §struct). La nota de "tia_over_lin subsumido por tia_over_fs" se trasladó al comentario de
+anyPositiveSaturation() (que también lo omite). Menciones históricas de allValidRange en la spec
+(changelogs v0.44c/v0.46/v0.47b y prosa §5.8) se conservan como registro. 36/36 tests + build OK.
+Commiteado y pusheado: librería 38b9c6d (v0.50).
+
+### v0.50 (cont.): rename _rsqm_set_probe_state → _rsqm_request_probe_state — 2026-07-31
+
+Alex observó que el método no es un setter imperativo sino un *debounce gate*: recibe un estado
+propuesto (`requested`) y solo lo compromete a `_rsqm_probe_state` tras N muestras consecutivas
+iguales. El nombre `set_` sugería asignación directa. Renombrado a `_rsqm_request_probe_state()`,
+que refleja el contrato (el llamante propone; el gate decide cuándo aplicar) y casa con el
+parámetro `requested` y el vocabulario del header ("consecutive requests").
+- Rename en .cpp (decl 1113 + call sites 1239/1265 + comentarios 1047/1109/1256) y .h (872/1110).
+- Spec: secciones living (§ debounce, § diag task) actualizadas al nombre nuevo; celda de la tabla
+  histórica (rename previo _set_probe_state → _rsqm_set_probe_state) **revertida** para no falsear
+  el registro de aquel momento.
+- Método privado, sin cambio de firma/comportamiento → sin bump; documentado dentro de v0.50.
+  Sin commitear aún.
+
+### v0.50 (cont.): eliminado el trigger on-state-change del diag task — 2026-07-31
+
+Alex cuestionó las líneas 1116-1117 de `_rsqm_request_probe_state()` (el `xTaskNotify` al diag
+task). Análisis: el único efecto de la notificación era adelantar ≤5 s el primer diagnóstico al
+pasar a NOT_APPLIED/DISCONNECTED (sin paciente → sin urgencia) y despertar el task inútilmente en
+transiciones a APPLIED/SATURATING (donde el `if` no corre nada). Valor práctico nulo → eliminado.
+- `_rsqm_request_probe_state()`: quitadas la notificación y su guarda; queda solo el commit del
+  estado tras el debounce.
+- `_diag_task_body()`: era el único receptor de la notificación; `xTaskNotifyWait(…, period)` sin
+  emisor equivalía a un delay periódico → simplificado a `vTaskDelay(period)`. Comentario reescrito
+  (solo trigger periódico cada `rsqm_diag_period_ms`=5 s).
+- Spec §5.7 reescrita (sin trigger on-state-change) + nota en changelog v0.50.
+- **Cambio de comportamiento** (latencia diagnóstica ≤5 s cuando no hay sonda), documentado en
+  v0.50. Sin bump adicional (agrupado en v0.50). Sin commitear aún.
+
+### v0.50 (cont.): un solo call site para _rsqm_request_probe_state() — 2026-07-31
+
+Alex propuso reducir los dos call sites del detector (rama DISCONNECTED + rama else) a uno solo.
+Aplicado SIN guard: aplanado a una cadena `if/else if` de prioridad (disconnected → saturating →
+not_applied → applied) con una única `_rsqm_request_probe_state(requested)`, fuera del `else`
+(menos indentación). Coincide 1:1 con el "Priority order" ya descrito en spec §5.6 (l.953).
+- **Descartado el guard `if (requested != _rsqm_probe_state)`**: es el mismo early-return ya
+  rechazado (rompería el reset de racha del debounce, que se cuenta sobre `_pending`) y sacaría la
+  lógica de debounce fuera de la función que la encapsula. La función debe llamarse incondicional-
+  mente cada muestra.
+- Refactor puro, sin cambio de comportamiento ni de API → sin bump (agrupado en v0.50).
+- **Hallazgo colateral (no corregido):** inconsistencia "50 vs 100" en el nº de muestras del
+  debounce. Valor real en header = 100 (`_rsqm_probe_state_min_samples{100}`, 0.2 s × 500 Hz).
+  Quité el "N=50" del comentario que reescribí, pero quedan residuos: spec §(l.1850) "50-sample
+  debounce", memoria project_rsqm_task (l.128) "N=50". Pendiente decidir si unificar todo a 100.
+
+### v0.50 (cont.): gate del diag task a lista blanca — 2026-07-31
+
+Alex propuso que `_diag_task_body()` compruebe explícitamente `DISCONNECTED || NOT_APPLIED` en vez
+de `!APPLIED && !SATURATING`, "por si aparecen nuevos ProbeStates". De acuerdo: es riesgo
+asimétrico. El diagnóstico tiene blackout ~10 ms que interrumpe HR/SpO2. Con lista negra, un 5º
+estado futuro correría diag por defecto → interrumpiría adquisición (peligroso si implica
+paciente). Con lista blanca, un estado nuevo NO diagnostica por defecto → nunca interrumpe
+(peor caso benigno: se pierde un chequeo HW hasta añadirlo explícitamente). Default fail-safe +
+obliga a decisión consciente al añadir estados.
+- `if (_rsqm_probe_state == DISCONNECTED || == NOT_APPLIED) runAfeDiagnostics();`
+- Comentario reescrito en positivo ("solo en estados sin paciente confirmado") + nota whitelist.
+- Spec §5.7 actualizada + nota en changelog v0.50.
+- **Equivalente hoy** (4 estados) → sin cambio de comportamiento observable; robustez a futuro.
+  Sin bump. Sin commitear.
+
+### v0.50 (cont.): corrección doc debounce 50→100 + desmagificar {100} — 2026-07-31
+
+Alex pidió corregir la inconsistencia "50 vs 100" del debounce de probe_state y "hacer que
+_rsqm_probe_state_min_samples dependa de fs". Hallazgo al investigar: **ya depende de fs** — se
+recalcula como `roundf(rsqm_probe_state_min_s × fs)` en `_recalc_rate_params()` (cpp:1586), que
+corre en el constructor (339), al cambiar sample rate (445) y en cada setter relevante
+(setRsqmProbeStateMinS 855, etc.). El `{100}` del header es solo el placeholder inicial. Premisa
+corregida con Alex; no se tocó el cálculo (ya correcto).
+- Valor real del debounce = **100 muestras (0.2 s @ 500 Hz)**, no 50. El "N=50" era residuo
+  histórico (fue 50 al inicio, subido después a 0.2 s); el comentario "N=50" del código ya se
+  había quitado en el refactor del call site.
+- Corregido `spec:1850` ("50-sample" → "0.2 s debounce, 100 samples @ 500 Hz, derived from
+  rsqm_probe_state_min_s × fs"). Doc viva → corrección directa.
+- Comentario del header `_rsqm_probe_state_min_samples{100}` reescrito: "placeholder; recomputed
+  ... in _recalc_rate_params()". Desmagifica el 100.
+- Memoria `project_rsqm_task`: entrada histórica 2026-05-28t (N=50) intacta (correcta en su fecha);
+  aclaración añadida en la nota de actualización 2026-07-31 (valor actual 100, recalculado desde fs).
+- Solo doc/comentarios, sin cambio de comportamiento. Sin bump. Sin commitear.
+
+### v0.50 (cont.): gate G0 de _hgac_update() a blacklist explícita — 2026-07-31
+
+Alex: la línea del gate G0 (`if (!probe_active || HW_SETTLING)`) era difícil de leer — variable
+intermedia `probe_active` + doble negación. Propuso listar explícitamente los estados de gate-off.
+Señalé el trade-off (mismo eje whitelist/blacklist del diag task): su reescritura es equivalente
+hoy pero invierte la robustez futura de fail-safe (whitelist, un estado nuevo gatea HGAC off) a
+fail-open (blacklist, un estado nuevo dejaría HGAC actuando moviendo RF). Alex eligió la blacklist
+conscientemente (opción presentada con la etiqueta "fail-OPEN").
+- Nuevo gate: `if (NOT_APPLIED || DISCONNECTED || (diag_code & HW_SETTLING)) { reset; return; }`.
+  Eliminada la variable `probe_active`.
+- Comentario reescrito + NOTA explícita: estados idle listados a mano; un ProbeState futuro NO se
+  gatea aquí → revisar la lista al añadir estados.
+- Spec §5.8.2 actualizada (gate_off explícito + equivalencia gate_ok) + nota changelog v0.50.
+- **Nota de coherencia:** el diag task quedó en whitelist (fail-safe) y HGAC en blacklist
+  (fail-open) — decisiones opuestas ante estados nuevos, ambas elegidas por Alex a propósito.
+- Equivalente hoy (4 estados), sin cambio de comportamiento. Sin bump. Sin commitear.
+
+### v0.50 (cont.): eliminada variable local `tiaguard` en _hgac_check_tiaguard() — 2026-07-31
+
+Alex: mismo patrón que el gate G0 pero en la línea 1328 — variable `tiaguard` de un solo uso +
+`!tiaguard` (lógica inversa), innecesaria. Aquí SIN trade-off (no hay whitelist/blacklist ni
+robustez futura; es una condición booleana local). Eliminada: el early-return ahora prueba la
+condición directamente por De Morgan:
+`if (v_tia_diff_led <= thr && v_tia_diff_aled <= thr) { reset; return; }`.
+Equivalente exacto (incluido el borde ==thr). Refactor puro, sin cambio de comportamiento.
+Parte del hilo "rediseño de legibilidad de HGAC". Sin bump. Sin commitear.
+
+### v0.50 (cont.): eliminada señal gain-floor de HGAC end-to-end (opción B) — 2026-08-01
+
+Alex cuestionó `_hgac_alarm_gain_floor` / `alarm_flag`: "código innecesario que ofusca, y encima
+usa el término alarm". Rastreados los consumidores → NINGUNO accionable: el bit se empaquetaba en
+diag_code pero el script solo parsea hasta col 33 (no descodifica el bit 16 ni los campos HGAC
+34/35/36), y el motherBoard solo hace printf de diag_code entero. Su actuador real (ILED) es
+Phase 4. Además "alarm" es normativamente inapropiado (IEC 60601-1-8: no es alarma clínica, es DIAG).
+Alex eligió **opción B: eliminar TODO, incluido el bit público** (si Phase 4 lo necesita, se
+reintroduce). Cambio atómico multi-componente:
+- **Lib .h/.cpp:** eliminados constante `HGAC_DIAG_GAIN_FLOOR` (bit 16), 2 vars miembro
+  `_hgac_alarm_gain_floor_led1/2`, param `alarm_flag` de `_hgac_check_tiaguard()`, campo
+  `AFE4490DebugData::hgac_alarm_gain_floor`, getter `test_hgac_alarm_gain_floor()`. En
+  `_hgac_update()` se eliminó el bloque que ponía/limpiaba el bit (ya redundante: `_rsqm_update`
+  corre antes y ya escribe `_current_data.diag_code`). La rama `cur_rf==RF_10K` ahora solo retorna
+  (contador latcheado sin reset, comportamiento preservado).
+- **PulseNest src/main.cpp:** eliminado el último campo del frame $M4 (`HGAC_ALARM`, 37→36 cols) +
+  2 comentarios de layout. El parser del script no indexa ese campo → no requiere cambios.
+- **test_hgac.cpp:** Test 5 repurposado (`test_hgac_alarm_at_gain_floor` →
+  `test_hgac_descends_to_gain_floor`): mantiene la cobertura real (3 descensos llegan a RF_10K),
+  eliminadas las 2 aserciones del bit/getter. RUN_TEST actualizado.
+- **Spec:** tabla DiagCode (bit 16 fuera + nota), §5.8.3 paso 1/3, §5.8.5 telemetría, struct §3d,
+  eliminada §5.8.6 (obsoleta), fila param TIAGUARD, changelog v0.50. Changelog histórico §14 intacto.
+- **Cambio de comportamiento** (desaparece un bit de diag_code + un campo de $M4). Verificado:
+  36/36 tests nativos (test_biquad = fallo pre-existente no relacionado), build ESP32-S3 V16 OK
+  (18.4% RAM / 30.0% flash). Junction lib/incunest_afe4490 → repo editado confirmado (0 refs vivas).
+  Sin commitear.
+
+### v0.50 (cont.): rename hgac_settle_time_s → afe_settle_time_s — 2026-08-01
+
+Alex: ¿por qué `_rsqm_settling_countdown` (dominio RSQM) se arma con `hgac_settle_time_s` (prefijo
+hgac)? Análisis: el prefijo reflejaba el PRODUCTOR (HGAC arma el countdown en `_hgac_step_rf_down`),
+no el dueño del estado (RSQM). Pero el fenómeno —front-end analógico reasentándose tras un cambio
+de registro— NO es específico de HGAC; el propio comentario (cpp:1274) ya anticipa productores
+"HGAC OR config change". Bajo la regla [[feedback_domain_prefix]], el hogar correcto es `afe_`
+(propiedad física del front-end, independiente de qué disparó el cambio). Renombrado a
+`afe_settle_time_s`.
+- `static constexpr` (.h) + uso en cpp:1316 + comentarios (.cpp, test_hgac.cpp) + spec (§5.8.4,
+  tabla de params). Todas las 6 ocurrencias vivas; changelog histórico §14 sin `hgac_settle` → intacto.
+- Corregido de paso el "sample-budget model" de test_hgac.cpp: la línea del gain-floor alarm (1324)
+  quedó obsoleta tras eliminar la señal en v0.50 → reescrita (RF se queda en el suelo, sin alarma).
+- Sin API pública rota (constante privada). Verificado: test_hgac 6/6, build ESP32-S3 V16 OK.
+  Sin commitear.
+
+### v0.51: eliminar alias kVTiaDiffFs/kVTiaDiffLin — 2026-08-03
+
+Alex: "no me gusta que el mismo valor tenga dos nombres distintos, ni tener que dar saltos hacia
+atrás para buscar un valor". Los `static constexpr AFE4490AnalogState::kVTiaDiffFs`/`kVTiaDiffLin`
+eran simples alias de `tia_axis::FS_V`/`LIN_V`, que ya es la ÚNICA fuente de verdad del eje
+`v_tia_diff` (con `static_assert` de orden ascendente). El resto del código ya referencia
+`tia_axis::` directamente (`hgac_v_tia_diff_thr = tia_axis::GUARD_V`, etc.); los alias eran la
+única excepción que rompía esa convención. Decisión: borrar los alias y usar `tia_axis::` en el
+punto de uso, unificando un valor → un nombre → un sitio.
+- `incunest_afe4490.h`: eliminadas las 2 líneas de alias; comentarios del enum `CH_EXTENDED_RANGE`
+  y de las máscaras `tia_over_fs`/`tia_over_lin` citan ahora `tia_axis::FS_V`/`LIN_V`.
+- `incunest_afe4490.cpp`: `_compute_analog_state()` compara `vtd[ch]` contra `tia_axis::FS_V`/`LIN_V`
+  directamente (cpp:1198-1199); comentarios (cpp:112, 1188) actualizados.
+- `incunest_afe4490_spec.md`: struct normativa (§ Struct definition v0.35) sin los alias; prosa de
+  "single source of truth" y de "CH_EXTENDED_RANGE observability" actualizadas; nota
+  "aliases removed v0.51". Changelog/histórico (§1119, §1968, §2056, §2204, §2208) intacto.
+- `test/test_hgac/test_hgac.cpp` (PulseNest): comentarios (líneas 13-14, 22) actualizados.
+- NO se tocó `kAdcSatPos/kAdcSatNeg`: no son duplicados, son raíles EMPÍRICOS en `adc_code`
+  (±2096700), distintos de `tia_axis::ADC_SAT_V` (1.2 V nominal). Ver
+  [[project_adc_fsr_sat_v_duplication_task]].
+- Sin API pública rota (constantes privadas, 0 refs vivas fuera de los sitios editados).
+  Verificado: test_hgac PASSED + hr1/2/3 + spo2 PASSED (36/37; test_biquad ERRORED por fallo
+  PRE-EXISTENTE ajeno: referencia símbolos obsoletos `test_biquad_process`/`test_recalc_biquad`/
+  `TestBiquadFilter`). Sin commitear, sin subir versión de librería aún.
+
+### v0.52: rename v_tia_diff → v_tia (elimina sufijo _diff) — 2026-08-03
+
+Alex: quiere quitar el sufijo `_diff` por dos razones: (1) nombre más limpio; (2) `_diff` insinúa
+que existe un `v_tia_branch` que NO existe en el código. Como solo se usa el valor diferencial,
+`v_tia_diff` → `v_tia` unifica todo (`v_tia`, `tia_axis`, `tia_over_fs`) sin "diff". Decisión de
+alcance (AskUserQuestion): **rename completo, INCLUIDAS las cabeceras CSV** (rompe compat con CSVs
+guardados; requiere reflashear firmware+script juntos). Deroga la "regla 4b".
+- **Tokens sustituidos** (`replace_all`): `v_tia_diff`→`v_tia`, `V_TIA_DIFF`→`V_TIA`,
+  `VTiaDiff`→`VTia` (setter `setHgacVTiaDiffThr`→`setHgacVTiaThr`).
+- **Librería** `incunest_afe4490.h`/`.cpp`: miembros `v_tia_led/aled`, config `hgac_v_tia_thr`/
+  `hgac_v_tia_ideal`, setter `setHgacVTiaThr`, bloque de convención reescrito (sin regla 4b, deja
+  claro que no hay valor de rama en el código).
+- **PulseNest** `src/main.cpp`: frame $M4 (`dbg.analog.v_tia_led1`...), clave `$SET`/`$CFG`
+  `hgac_v_tia_thr`, comentarios `V_TIA`. `test_hgac.cpp`: campos y comentarios.
+- **PulseNest scripts**: `pulsenest_lab.py` (data_v_tia_*, buffers "V_TIA_*", tooltips, cabeceras
+  CSV, cálculo SIGNAL STATS), `tia_linearity_sweep.py`.
+- **Specs**: `incunest_afe4490_spec.md` (struct, convención V_TIA reescrita, tablas) y
+  `pulsenest_lab_spec.md`. `docs/afe_replacement_study.md`. Regla 4b eliminada de las 3 fuentes
+  vivas; changelog/histórico intacto.
+- **CAMBIO DE FORMATO**: cabeceras CSV `V_TIA_DIFF_*` → `V_TIA_*`. CSVs guardados con el nombre
+  viejo dejan de casar por nombre de columna (afecta [[project_regression_test_captures_task]]).
+- Verificado: `test_hgac` PASSED (6/6), build ESP32-S3 V16 SUCCESS (18.4% RAM / 30.0% flash),
+  `py_compile` OK en ambos scripts. Sin commitear, sin subir versión de librería aún (pendiente
+  v0.52 lib + commit/push cuando Alex lo indique).
+
+**v0.52 (cont.): version bump + commit de librería — 2026-08-03**
+- Subida versión librería `v0.50-experiment` → **`v0.52-experiment`** (cubre v0.51 kVTiaDiff + v0.52
+  rename, ambos sin versionar). Marcadores: `library.json`, `#define INCUNEST_AFE4490_VERSION`,
+  cabeceras `.h`/`.cpp`/`platform_stub.h`/`examples/basic/main.cpp`, spec `# Specification v0.52`
+  + 2 entradas changelog §14. `platform_stub.h`/`examples` no usan símbolos renombrados.
+- Commit atómico repo `incunest_afe4490` (rama `experiment/ot-domain-inputs`): **`2d7cea1`**, 6 ficheros.
+  `conversation_log.md` untracked del repo lib fuera a propósito. **NO pusheado** (Alex pidió solo commit).
+- Memoria `project_library_workflow.md` actualizada a v0.52.
+- PENDIENTE: `git push` de la lib; commit del repo PulseNest (rename abarca ambos repos, aún sin commitear).
+
+### Corrección kAFE_ADC_FS_CODE 2^21−1 → 2^21 (fidelidad al datasheet) — 2026-08-03
+
+CAMBIO DE CÓDIGO en la librería incunest_afe4490. Motivado por Alex: al revisar la conversión
+code→V_ADC (única función de `kAFE_ADC_FS_CODE` y `kAFE_ADC_FSR`: `scale = FSR/FS_CODE`,
+`v_adc = code × scale`), detectó que las dos últimas filas de la Tabla 7 (p.88) del datasheet son
+incompatibles.
+
+- **Análisis (verificado leyendo p.88 de primera mano):** el ADC es bipolar C2 de 22 bits →
+  1 LSB = FSR/2^21, rango de código [−2^21, +2^21−1] (ASIMÉTRICO). Cuatro filas de la Tabla 7 son
+  consistentes con ese LSB (code=±1 ↔ ±1.2/2^21; code=0 ↔ 0; raíl negativo −1.2 V ↔ −2^21 exacto).
+  La 5ª fila (+1.2 V ↔ +2^21−1) implica LSB=1.2/(2^21−1) → incompatible con las otras. Es etiqueta
+  NOMINAL: el código máximo positivo +2^21−1 representa en realidad +1.2 V − 1 LSB. El código antiguo
+  ancló el escalado justo en esa fila incompatible (dividía por 2^21−1 = 2097151).
+- **Corrección:** `kAFE_ADC_FS_CODE = 2097151.0f → 2097152.0f` (2^21). Impacto numérico ~0.5 ppm
+  (despreciable); el valor ahora es fiel a la función de transferencia del datasheet.
+- **Ficheros:** `incunest_afe4490.h:229` (valor + bloque de comentario sobre LSB/asimetría/fila
+  nominal), `incunest_afe4490.cpp:1134-1139` (comentario del cálculo de scale),
+  `incunest_afe4490_spec.md:453` (valor) + nota nueva tras las fórmulas explicando la incompatibilidad
+  de las 2 últimas filas de la Tabla 7. NO se tocan los raíles empíricos kAdcSatPos/Neg=±2096700
+  (medidas HW reales, distintas del FS teórico).
+- **Verificación:** tests nativos 36/36 (incluye test_spo2, que ejercita V_ADC→V_TIA→R→SpO2);
+  build ESP32-S3 incunest_V16 SUCCESS. `test_biquad` ERRORED pero es PREEXISTENTE y ajeno (drift
+  test↔código: referencia métodos test_biquad_process/test_recalc_biquad ya eliminados de la clase).
+
+Contexto observado (no mío): la librería está ya en v0.51 con el rename `v_tia_diff → v_tia`
+aplicado y cambios sin commitear de otra sesión; mi edición convive con ellos.
+DISCREPANCIA A REVISAR (fuera de este encargo): spec :504 afirma "the datasheet has no symbol named
+V_OD", pero la p.11 del datasheet SÍ lista `VOD(fs)` = "Full-scale differential output voltage" = 1 V
+(verificado leyendo la página). Candidato a corregir el spec.
+
+### namespace adc — consolidación de constantes del ADC — 2026-08-03
+
+Alex propuso un `namespace adc` análogo a `tia_axis` para las constantes del ADC (hasta ahora
+dispersas: `kAFE_ADC_FS_CODE`/`kAFE_ADC_FSR` file-scope, `kAdcSatPos/Neg` dentro de
+`AFE4490AnalogState`, raíles crudos solo en comentarios). Debate de diseño:
+- **Nombre:** `namespace adc` (no "axis": mezcla voltios `FSR` y códigos, no es un eje único ordenado).
+- **Par NOMINAL↔ACTUAL:** Alex insistió en preservar el matiz "empírico, no datasheet". Sufijo
+  `_ACTUAL` (empareja con "nominal", que ya usaba el código) sobre `_MEAS`/`_EMP`. `FS_CODE`=2²¹
+  nominal; raíles `POS/NEG_RAIL_ACTUAL` = +2096921/−2096919 medidos en 16.A.
+- **Guarda explícita:** `SAT_POS = POS_RAIL_ACTUAL − SAT_GUARD` (antes 2096700 era número mágico).
+  `SAT_NEG = −SAT_POS` (simétrico a propósito; `NEG_RAIL_ACTUAL` queda doc-only). `static_assert`
+  ata actual<nominal y sat<rail → los doc-only quedan *usados* (no `//` código muerto).
+- **`SCALE`** = `FSR/FS_CODE` (V por código): `v_adc = code × adc::SCALE` (`.cpp` usa `adc::SCALE`).
+- **`v_tia_adc_sat` descartado:** la saturación ya se detecta en dominio código (`adc_sat_pos/neg`,
+  agnóstico a RG/AMBDAC); un umbral en dominio v_tia sería redundante+circular. Techo dinámico
+  según RG/AMBDAC = helper de la capa v2 → nota en [[project_ambdac_tia_offspec_zone_task]].
+- **Cierra duplicación 1.2 V:** `tia_axis::ADC_SAT_V` ELIMINADO; el `static_assert` de `tia_axis`
+  referencia `adc::FSR` (mapeo a ganancia unidad). Un solo 1.2 V. Cierra
+  [[project_adc_fsr_sat_v_duplication_task]].
+- Alineados comentarios viejos `.cpp:106-110` (2097151 → `adc::SCALE`, coherente con `FS_CODE`=2²¹).
+- Cambios: `incunest_afe4490.h`/`.cpp` + `incunest_afe4490_spec.md`. Sin consumidores externos
+  (`main.cpp`/`pulsenest_lab.py` no referencian estas constantes).
+- Verificado: `test_hgac` 6/6, build ESP32-S3 V16 SUCCESS. **Sin bump de versión ni commit aún**
+  (pendiente v0.53 lib + commit cuando Alex lo indique).
+
+**v0.53 (cont.): version bump + commit de librería — 2026-08-03**
+- Subida versión librería `v0.52-experiment` → **`v0.53-experiment`** por el `namespace adc`.
+  Marcadores: `library.json`, `#define`, cabeceras `.h`/`.cpp`/`platform_stub.h`/`examples/basic/main.cpp`,
+  spec `# Specification v0.53` + entrada changelog §14. `platform_stub`/`examples` no usan las
+  constantes movidas → solo comentario de versión.
+- Commit atómico repo `incunest_afe4490` (rama `experiment/ot-domain-inputs`): **`5f03cad`**, 6 ficheros.
+- Memoria `project_library_workflow.md` a v0.53.
+- PENDIENTE: `git push` de la lib (commits locales `2d7cea1` v0.52 + `5f03cad` v0.53 sin pushear);
+  commit del repo PulseNest (rename v0.52 dejó cambios en `main.cpp`/tests/scripts/specs).
+
+### Reflexión: ILED es actuador anti-saturación MUY DÉBIL en RF=mín → posible causa de HGAC RF-only — 2026-08-04
+
+Sesión mixta (esta entrada = análisis + doc; también hubo cambio de código kAFE_ADC_FS_CODE, entrada aparte).
+Reflexión importante de Alex, verificada con física + código:
+
+- **Modelo:** fase LED `v_tia_led = 2·RF·(i_amb + i_led)`, `i_led = OT·ILED`. Solo i_led escala con
+  ILED (ambiente NO — spec §"ambient does not scale with ILED"). Techo de voltaje que suelta bajar
+  ILED: `Δv = 2·RF·OT·(ILED_max−ILED_min) = 800·OT` V (con RF=10K, 50→10 mA).
+- **Números:** sonda aplicada OT<rsqm_ot_thr≈1e-4 (típico 1e-5…1e-4) → **Δv ≈ 0.008…0.08 V**. MUY POCO
+  (confirma la intuición de Alex). A RF=10K la contribución del LED a v_tia es ella misma ~0.1 V; si
+  saturas ahí (~1.2 V raíl ADC), los ~1.1 V restantes son AMBIENTE, intocable por ILED.
+- **Implicación de diseño:** ILED es el actuador equivocado en el gain floor → refuerza paso 4/R2 de
+  la escalera (RF=mín y persiste ⇒ ambiente ⇒ ALARMA directa, discriminada por fase ALED), NO bajar
+  ILED. **Posible causa de fondo de que HGAC v1 sea RF-only** (ILED diferido a Fase 4, quizá casi
+  inútil anti-sat). Bajar ILED solo rinde en el caso raro LED-dominado (OT alto, tejido muy translúcido,
+  ALED sin saturar).
+- **Salvedad:** OT sin calibrar empíricamente → Δv es orden de magnitud, no cifra cerrada.
+- **Apuntado en:** memoria [[project_agc_design]] (§4, "Cuantificación del paso 3 (ILED)"),
+  [[project_led_current_increase_50ma_task]], y spec incunest_afe4490_spec.md (nota "Why HGAC is
+  RF-only in v1" junto a la lista de fases). Sin cambio de código en esta reflexión.
+
+### Sesión de diseño HGAC — modelo conceptual v1 refinado — 2026-08-04
+
+Sesión larga de diseño (SIN cambios de código; solo `project_agc_design.md` + memorias). Punto de
+partida (Alex): `_hgac_update()` solo hace la guardia de saturación (Fase 1); HGAC se pensó para más.
+
+**Decisiones:**
+- **Modelo → EJE ÚNICO de RF** (no "2 capas"). Guardia = escalón superior, más urgente, de la MISMA
+  bajada. Umbrales V_TIA: `LOW 0.25 · IDEAL 0.6 · HIGH 0.75 · GUARD 0.9`. Banda de nivelado
+  bidireccional [0.25, 0.75]; fuera de ella baja/sube RF; dentro, nada.
+- **v1 = RF-only.** ILED clavado al máximo térmico (política, no control). Motivo: reflexión de la
+  otra CLI en spec §5.8 (Δv=800·OT ≈ 0.01–0.08 V con sonda aplicada → ILED es actuador
+  anti-saturación DÉBIL en RF=mín). Estrategia ILED (decrementos/incrementos) → **Fase 4**.
+- **Invariante de estabilidad:** banda ≥ un escalón de RF → `HIGH/LOW > 2.5` (salto RF mayor); ratio
+  actual 3.0. Elegidos a ojo → nueva tarea [[project_hgac_setpoint_band_tuning_task]] (invariante DURA).
+- **Ascenso de un escalón → SIN predicción.** El invariante de banda ya evita overshoot
+  (`LOW×2.5=0.625<HIGH`); la predicción O9.1 solo hace falta para multi-salto (R5, opcional).
+- **Regla de prioridad (Alex):** bajar señal → prioridad RF; subir señal → prioridad ILED (espejo;
+  ILED tiende a quedarse arriba por ley √). En v1 inerte (ILED fijo).
+- **Nada de reflejos 0-debounce:** todo cambio de RF exige persistencia + **habilitación por sonda
+  activa** (APPLIED/SATURATING; off en NOT_APPLIED/DISCONNECTED → fototerapia sin paciente). El
+  transitorio (movimiento/flash) NO mueve RF; lo marca la detección (`adc_sat`→RSQM), no la actuación.
+- **"gate G0" retirado del modelo** (§4B) → "habilitación por sonda activa"; no-settling plegado en la
+  espera entre actuaciones. **GAP honesto:** el "<50 % inválidas" (anti-movimiento) es diseño A6, **NO
+  está en el código** (el gate real solo mira sonda activa + no-settling). Pendiente decidir si se
+  implementa.
+- **§4 paso 3 ramificado:** 3.a ALED saturado → alarma "excessive ambient light" (caso normal);
+  3.b ALED sin saturar → LED-dominado, *quizá* bajar ILED, pero **se cree que no ocurre** → no se
+  implementa de momento.
+- **RSQM_DIAG_HW_SETTLING:** Alex objeta que (1) espeja `_rsqm_settling_countdown` y (2) un settling
+  no es diagnóstico sino estado de control. Fix propuesto (gate lee el countdown directo; sacar el bit
+  de DiagCode) → **decisión diferida** → tarea [[project_rsqm_hw_settling_categorization_task]].
+
+**Plasmado en `project_agc_design.md`:** §4 rehecho (paso 3 → 3.a/3.b, Prompt v3 actualizado, R1-R5 y
+CUANTIFICACIÓN intactos); §4B reescrito (eje único, sin "G0" ni "<50 %"); §A4 nota sobre capacidad
+limitada de ILED. **Memorias nuevas:** setpoint band tuning, hw_settling categorization (ambas en índice).
+
+**Design rationale — versión preliminar creada — 2026-08-04**
+- Creado `incunest_afe4490_design.md` (repo `incunest_afe4490`, junto a la spec) como seguro por si
+  se pierde el contexto de la sesión. En inglés (casa con la spec). Relación: design = proceso/porqué
+  → spec = resultado normativo.
+- Contenido: HGAC en detalle (modelo de eje único, banda, invariantes, RF-only/ILED débil, 3.a/3.b,
+  gobierno de actuación + gap anti-movimiento, puntos abiertos, Fase 4); resúmenes con punteros de
+  analog/RSQM (tia_axis/adc, value-always, ProbeState), base clínica/HW (envolvente térmica, specs
+  sonda, pie prematuro, selección AFE) y nomenclatura.
+- Marcado PRELIMINAR. Consolidación/pulido → hito de congelación HGAC v1
+  ([[project_design_doc_promotion_task]]). Sin commitear.
+
+**Commits + push librería (docs) — 2026-08-04**
+- `36ca195` — `docs: add preliminary design rationale (incunest_afe4490_design.md)` (201 líneas).
+- `cbe4143` — `docs: explain why HGAC v1 is RF-only in spec §5.8 (ILED weak actuator)` (14 líneas,
+  reflexión añadida por otra sesión).
+- Ambos sin bump de versión (documentación). **Pusheados** a GitHub (rama `experiment/ot-domain-inputs`):
+  `5f03cad..36ca195..cbe4143`. Librería sin commits locales pendientes. Último tag funcional sigue
+  siendo v0.53 (`5f03cad`).

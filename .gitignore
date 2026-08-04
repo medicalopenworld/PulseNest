@@ -21,6 +21,9 @@ pio_build_log.txt
 pio_build_log_utf8.txt
 pio_output.txt
 
+# Logs de depuración (faulthandler, heartbeat, etc.)
+*.log
+
 # Python
 __pycache__/
 *.pyc

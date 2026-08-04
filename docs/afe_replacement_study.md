@@ -14,7 +14,7 @@ Full reference: `project_agc_design.md` section 3.
 The AFE4490 injects ambient cancellation current (AMBDAC) **after the TIA** (Eq. 2 p.30 of datasheet: outside the RF/RI gain factor). This means:
 
 - The TIA is unprotected against large ambient photocurrent. The only defense is reducing RF, which sacrifices signal gain.
-- With O2 constraint (V_TIA_DIFF <= 0.9 V) and RG=x1, the ADC (+-1.2 V) is never the active constraint, making RG>1 rarely useful and AMBDAC (useful only as AMBDAC+RG pack) equally marginal.
+- With O2 constraint (V_TIA <= 0.9 V) and RG=x1, the ADC (+-1.2 V) is never the active constraint, making RG>1 rarely useful and AMBDAC (useful only as AMBDAC+RG pack) equally marginal.
 - AMBDAC is an **offset relocator** (subtracts equally across all 4 phases), not a true ambient canceller. The datasheet assumes perfect cancellation that does not materialize in practice.
 - **Critical IncuNest scenario:** Neonatal phototherapy generates intense continuous ambient light. The AFE4490 has no pre-TIA electronic defense; mitigation is limited to optical shielding or a more modern AFE.
 
@@ -101,7 +101,7 @@ Pre-TIA advantage: ambient current is subtracted BEFORE the TIA converts it to v
 
 Per `project_afe_replacement_study_task.md`:
 
-1. **LED drive current** vs. clinical probes (I_F up to 50 mA typ. Medle; max rated per probe spec)
+1. **LED drive current** vs. clinical probes (Medle I_F = 50 mA *absolute maximum* @25 °C, I_FP 100 mA @ 1/8 duty — per datasheet in `docs/Medle_probe/`, reliability caveated; not a typical operating point — optical params are characterized at I_F = 20 mA)
 2. **Probe diagnostics** (LED open/short, PD open/short, cable detection)
 3. **Transmissive topology** with remote PD by cable (1-3 m): noise, cable capacitance, EMC robustness
 4. **Pre-TIA ambient cancellation**: range sufficient for neonatal phototherapy
