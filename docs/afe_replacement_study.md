@@ -14,7 +14,7 @@ Full reference: `project_agc_design.md` section 3.
 The AFE4490 injects ambient cancellation current (AMBDAC) **after the TIA** (Eq. 2 p.30 of datasheet: outside the RF/RI gain factor). This means:
 
 - The TIA is unprotected against large ambient photocurrent. The only defense is reducing RF, which sacrifices signal gain.
-- With O2 constraint (V_TIA_DIFF <= 0.9 V) and RG=x1, the ADC (+-1.2 V) is never the active constraint, making RG>1 rarely useful and AMBDAC (useful only as AMBDAC+RG pack) equally marginal.
+- With O2 constraint (V_TIA <= 0.9 V) and RG=x1, the ADC (+-1.2 V) is never the active constraint, making RG>1 rarely useful and AMBDAC (useful only as AMBDAC+RG pack) equally marginal.
 - AMBDAC is an **offset relocator** (subtracts equally across all 4 phases), not a true ambient canceller. The datasheet assumes perfect cancellation that does not materialize in practice.
 - **Critical IncuNest scenario:** Neonatal phototherapy generates intense continuous ambient light. The AFE4490 has no pre-TIA electronic defense; mitigation is limited to optical shielding or a more modern AFE.
 

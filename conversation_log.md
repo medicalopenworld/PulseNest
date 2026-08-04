@@ -15307,3 +15307,353 @@ en spec §struct). La nota de "tia_over_lin subsumido por tia_over_fs" se trasla
 anyPositiveSaturation() (que también lo omite). Menciones históricas de allValidRange en la spec
 (changelogs v0.44c/v0.46/v0.47b y prosa §5.8) se conservan como registro. 36/36 tests + build OK.
 Commiteado y pusheado: librería 38b9c6d (v0.50).
+
+### v0.50 (cont.): rename _rsqm_set_probe_state → _rsqm_request_probe_state — 2026-07-31
+
+Alex observó que el método no es un setter imperativo sino un *debounce gate*: recibe un estado
+propuesto (`requested`) y solo lo compromete a `_rsqm_probe_state` tras N muestras consecutivas
+iguales. El nombre `set_` sugería asignación directa. Renombrado a `_rsqm_request_probe_state()`,
+que refleja el contrato (el llamante propone; el gate decide cuándo aplicar) y casa con el
+parámetro `requested` y el vocabulario del header ("consecutive requests").
+- Rename en .cpp (decl 1113 + call sites 1239/1265 + comentarios 1047/1109/1256) y .h (872/1110).
+- Spec: secciones living (§ debounce, § diag task) actualizadas al nombre nuevo; celda de la tabla
+  histórica (rename previo _set_probe_state → _rsqm_set_probe_state) **revertida** para no falsear
+  el registro de aquel momento.
+- Método privado, sin cambio de firma/comportamiento → sin bump; documentado dentro de v0.50.
+  Sin commitear aún.
+
+### v0.50 (cont.): eliminado el trigger on-state-change del diag task — 2026-07-31
+
+Alex cuestionó las líneas 1116-1117 de `_rsqm_request_probe_state()` (el `xTaskNotify` al diag
+task). Análisis: el único efecto de la notificación era adelantar ≤5 s el primer diagnóstico al
+pasar a NOT_APPLIED/DISCONNECTED (sin paciente → sin urgencia) y despertar el task inútilmente en
+transiciones a APPLIED/SATURATING (donde el `if` no corre nada). Valor práctico nulo → eliminado.
+- `_rsqm_request_probe_state()`: quitadas la notificación y su guarda; queda solo el commit del
+  estado tras el debounce.
+- `_diag_task_body()`: era el único receptor de la notificación; `xTaskNotifyWait(…, period)` sin
+  emisor equivalía a un delay periódico → simplificado a `vTaskDelay(period)`. Comentario reescrito
+  (solo trigger periódico cada `rsqm_diag_period_ms`=5 s).
+- Spec §5.7 reescrita (sin trigger on-state-change) + nota en changelog v0.50.
+- **Cambio de comportamiento** (latencia diagnóstica ≤5 s cuando no hay sonda), documentado en
+  v0.50. Sin bump adicional (agrupado en v0.50). Sin commitear aún.
+
+### v0.50 (cont.): un solo call site para _rsqm_request_probe_state() — 2026-07-31
+
+Alex propuso reducir los dos call sites del detector (rama DISCONNECTED + rama else) a uno solo.
+Aplicado SIN guard: aplanado a una cadena `if/else if` de prioridad (disconnected → saturating →
+not_applied → applied) con una única `_rsqm_request_probe_state(requested)`, fuera del `else`
+(menos indentación). Coincide 1:1 con el "Priority order" ya descrito en spec §5.6 (l.953).
+- **Descartado el guard `if (requested != _rsqm_probe_state)`**: es el mismo early-return ya
+  rechazado (rompería el reset de racha del debounce, que se cuenta sobre `_pending`) y sacaría la
+  lógica de debounce fuera de la función que la encapsula. La función debe llamarse incondicional-
+  mente cada muestra.
+- Refactor puro, sin cambio de comportamiento ni de API → sin bump (agrupado en v0.50).
+- **Hallazgo colateral (no corregido):** inconsistencia "50 vs 100" en el nº de muestras del
+  debounce. Valor real en header = 100 (`_rsqm_probe_state_min_samples{100}`, 0.2 s × 500 Hz).
+  Quité el "N=50" del comentario que reescribí, pero quedan residuos: spec §(l.1850) "50-sample
+  debounce", memoria project_rsqm_task (l.128) "N=50". Pendiente decidir si unificar todo a 100.
+
+### v0.50 (cont.): gate del diag task a lista blanca — 2026-07-31
+
+Alex propuso que `_diag_task_body()` compruebe explícitamente `DISCONNECTED || NOT_APPLIED` en vez
+de `!APPLIED && !SATURATING`, "por si aparecen nuevos ProbeStates". De acuerdo: es riesgo
+asimétrico. El diagnóstico tiene blackout ~10 ms que interrumpe HR/SpO2. Con lista negra, un 5º
+estado futuro correría diag por defecto → interrumpiría adquisición (peligroso si implica
+paciente). Con lista blanca, un estado nuevo NO diagnostica por defecto → nunca interrumpe
+(peor caso benigno: se pierde un chequeo HW hasta añadirlo explícitamente). Default fail-safe +
+obliga a decisión consciente al añadir estados.
+- `if (_rsqm_probe_state == DISCONNECTED || == NOT_APPLIED) runAfeDiagnostics();`
+- Comentario reescrito en positivo ("solo en estados sin paciente confirmado") + nota whitelist.
+- Spec §5.7 actualizada + nota en changelog v0.50.
+- **Equivalente hoy** (4 estados) → sin cambio de comportamiento observable; robustez a futuro.
+  Sin bump. Sin commitear.
+
+### v0.50 (cont.): corrección doc debounce 50→100 + desmagificar {100} — 2026-07-31
+
+Alex pidió corregir la inconsistencia "50 vs 100" del debounce de probe_state y "hacer que
+_rsqm_probe_state_min_samples dependa de fs". Hallazgo al investigar: **ya depende de fs** — se
+recalcula como `roundf(rsqm_probe_state_min_s × fs)` en `_recalc_rate_params()` (cpp:1586), que
+corre en el constructor (339), al cambiar sample rate (445) y en cada setter relevante
+(setRsqmProbeStateMinS 855, etc.). El `{100}` del header es solo el placeholder inicial. Premisa
+corregida con Alex; no se tocó el cálculo (ya correcto).
+- Valor real del debounce = **100 muestras (0.2 s @ 500 Hz)**, no 50. El "N=50" era residuo
+  histórico (fue 50 al inicio, subido después a 0.2 s); el comentario "N=50" del código ya se
+  había quitado en el refactor del call site.
+- Corregido `spec:1850` ("50-sample" → "0.2 s debounce, 100 samples @ 500 Hz, derived from
+  rsqm_probe_state_min_s × fs"). Doc viva → corrección directa.
+- Comentario del header `_rsqm_probe_state_min_samples{100}` reescrito: "placeholder; recomputed
+  ... in _recalc_rate_params()". Desmagifica el 100.
+- Memoria `project_rsqm_task`: entrada histórica 2026-05-28t (N=50) intacta (correcta en su fecha);
+  aclaración añadida en la nota de actualización 2026-07-31 (valor actual 100, recalculado desde fs).
+- Solo doc/comentarios, sin cambio de comportamiento. Sin bump. Sin commitear.
+
+### v0.50 (cont.): gate G0 de _hgac_update() a blacklist explícita — 2026-07-31
+
+Alex: la línea del gate G0 (`if (!probe_active || HW_SETTLING)`) era difícil de leer — variable
+intermedia `probe_active` + doble negación. Propuso listar explícitamente los estados de gate-off.
+Señalé el trade-off (mismo eje whitelist/blacklist del diag task): su reescritura es equivalente
+hoy pero invierte la robustez futura de fail-safe (whitelist, un estado nuevo gatea HGAC off) a
+fail-open (blacklist, un estado nuevo dejaría HGAC actuando moviendo RF). Alex eligió la blacklist
+conscientemente (opción presentada con la etiqueta "fail-OPEN").
+- Nuevo gate: `if (NOT_APPLIED || DISCONNECTED || (diag_code & HW_SETTLING)) { reset; return; }`.
+  Eliminada la variable `probe_active`.
+- Comentario reescrito + NOTA explícita: estados idle listados a mano; un ProbeState futuro NO se
+  gatea aquí → revisar la lista al añadir estados.
+- Spec §5.8.2 actualizada (gate_off explícito + equivalencia gate_ok) + nota changelog v0.50.
+- **Nota de coherencia:** el diag task quedó en whitelist (fail-safe) y HGAC en blacklist
+  (fail-open) — decisiones opuestas ante estados nuevos, ambas elegidas por Alex a propósito.
+- Equivalente hoy (4 estados), sin cambio de comportamiento. Sin bump. Sin commitear.
+
+### v0.50 (cont.): eliminada variable local `tiaguard` en _hgac_check_tiaguard() — 2026-07-31
+
+Alex: mismo patrón que el gate G0 pero en la línea 1328 — variable `tiaguard` de un solo uso +
+`!tiaguard` (lógica inversa), innecesaria. Aquí SIN trade-off (no hay whitelist/blacklist ni
+robustez futura; es una condición booleana local). Eliminada: el early-return ahora prueba la
+condición directamente por De Morgan:
+`if (v_tia_diff_led <= thr && v_tia_diff_aled <= thr) { reset; return; }`.
+Equivalente exacto (incluido el borde ==thr). Refactor puro, sin cambio de comportamiento.
+Parte del hilo "rediseño de legibilidad de HGAC". Sin bump. Sin commitear.
+
+### v0.50 (cont.): eliminada señal gain-floor de HGAC end-to-end (opción B) — 2026-08-01
+
+Alex cuestionó `_hgac_alarm_gain_floor` / `alarm_flag`: "código innecesario que ofusca, y encima
+usa el término alarm". Rastreados los consumidores → NINGUNO accionable: el bit se empaquetaba en
+diag_code pero el script solo parsea hasta col 33 (no descodifica el bit 16 ni los campos HGAC
+34/35/36), y el motherBoard solo hace printf de diag_code entero. Su actuador real (ILED) es
+Phase 4. Además "alarm" es normativamente inapropiado (IEC 60601-1-8: no es alarma clínica, es DIAG).
+Alex eligió **opción B: eliminar TODO, incluido el bit público** (si Phase 4 lo necesita, se
+reintroduce). Cambio atómico multi-componente:
+- **Lib .h/.cpp:** eliminados constante `HGAC_DIAG_GAIN_FLOOR` (bit 16), 2 vars miembro
+  `_hgac_alarm_gain_floor_led1/2`, param `alarm_flag` de `_hgac_check_tiaguard()`, campo
+  `AFE4490DebugData::hgac_alarm_gain_floor`, getter `test_hgac_alarm_gain_floor()`. En
+  `_hgac_update()` se eliminó el bloque que ponía/limpiaba el bit (ya redundante: `_rsqm_update`
+  corre antes y ya escribe `_current_data.diag_code`). La rama `cur_rf==RF_10K` ahora solo retorna
+  (contador latcheado sin reset, comportamiento preservado).
+- **PulseNest src/main.cpp:** eliminado el último campo del frame $M4 (`HGAC_ALARM`, 37→36 cols) +
+  2 comentarios de layout. El parser del script no indexa ese campo → no requiere cambios.
+- **test_hgac.cpp:** Test 5 repurposado (`test_hgac_alarm_at_gain_floor` →
+  `test_hgac_descends_to_gain_floor`): mantiene la cobertura real (3 descensos llegan a RF_10K),
+  eliminadas las 2 aserciones del bit/getter. RUN_TEST actualizado.
+- **Spec:** tabla DiagCode (bit 16 fuera + nota), §5.8.3 paso 1/3, §5.8.5 telemetría, struct §3d,
+  eliminada §5.8.6 (obsoleta), fila param TIAGUARD, changelog v0.50. Changelog histórico §14 intacto.
+- **Cambio de comportamiento** (desaparece un bit de diag_code + un campo de $M4). Verificado:
+  36/36 tests nativos (test_biquad = fallo pre-existente no relacionado), build ESP32-S3 V16 OK
+  (18.4% RAM / 30.0% flash). Junction lib/incunest_afe4490 → repo editado confirmado (0 refs vivas).
+  Sin commitear.
+
+### v0.50 (cont.): rename hgac_settle_time_s → afe_settle_time_s — 2026-08-01
+
+Alex: ¿por qué `_rsqm_settling_countdown` (dominio RSQM) se arma con `hgac_settle_time_s` (prefijo
+hgac)? Análisis: el prefijo reflejaba el PRODUCTOR (HGAC arma el countdown en `_hgac_step_rf_down`),
+no el dueño del estado (RSQM). Pero el fenómeno —front-end analógico reasentándose tras un cambio
+de registro— NO es específico de HGAC; el propio comentario (cpp:1274) ya anticipa productores
+"HGAC OR config change". Bajo la regla [[feedback_domain_prefix]], el hogar correcto es `afe_`
+(propiedad física del front-end, independiente de qué disparó el cambio). Renombrado a
+`afe_settle_time_s`.
+- `static constexpr` (.h) + uso en cpp:1316 + comentarios (.cpp, test_hgac.cpp) + spec (§5.8.4,
+  tabla de params). Todas las 6 ocurrencias vivas; changelog histórico §14 sin `hgac_settle` → intacto.
+- Corregido de paso el "sample-budget model" de test_hgac.cpp: la línea del gain-floor alarm (1324)
+  quedó obsoleta tras eliminar la señal en v0.50 → reescrita (RF se queda en el suelo, sin alarma).
+- Sin API pública rota (constante privada). Verificado: test_hgac 6/6, build ESP32-S3 V16 OK.
+  Sin commitear.
+
+### v0.51: eliminar alias kVTiaDiffFs/kVTiaDiffLin — 2026-08-03
+
+Alex: "no me gusta que el mismo valor tenga dos nombres distintos, ni tener que dar saltos hacia
+atrás para buscar un valor". Los `static constexpr AFE4490AnalogState::kVTiaDiffFs`/`kVTiaDiffLin`
+eran simples alias de `tia_axis::FS_V`/`LIN_V`, que ya es la ÚNICA fuente de verdad del eje
+`v_tia_diff` (con `static_assert` de orden ascendente). El resto del código ya referencia
+`tia_axis::` directamente (`hgac_v_tia_diff_thr = tia_axis::GUARD_V`, etc.); los alias eran la
+única excepción que rompía esa convención. Decisión: borrar los alias y usar `tia_axis::` en el
+punto de uso, unificando un valor → un nombre → un sitio.
+- `incunest_afe4490.h`: eliminadas las 2 líneas de alias; comentarios del enum `CH_EXTENDED_RANGE`
+  y de las máscaras `tia_over_fs`/`tia_over_lin` citan ahora `tia_axis::FS_V`/`LIN_V`.
+- `incunest_afe4490.cpp`: `_compute_analog_state()` compara `vtd[ch]` contra `tia_axis::FS_V`/`LIN_V`
+  directamente (cpp:1198-1199); comentarios (cpp:112, 1188) actualizados.
+- `incunest_afe4490_spec.md`: struct normativa (§ Struct definition v0.35) sin los alias; prosa de
+  "single source of truth" y de "CH_EXTENDED_RANGE observability" actualizadas; nota
+  "aliases removed v0.51". Changelog/histórico (§1119, §1968, §2056, §2204, §2208) intacto.
+- `test/test_hgac/test_hgac.cpp` (PulseNest): comentarios (líneas 13-14, 22) actualizados.
+- NO se tocó `kAdcSatPos/kAdcSatNeg`: no son duplicados, son raíles EMPÍRICOS en `adc_code`
+  (±2096700), distintos de `tia_axis::ADC_SAT_V` (1.2 V nominal). Ver
+  [[project_adc_fsr_sat_v_duplication_task]].
+- Sin API pública rota (constantes privadas, 0 refs vivas fuera de los sitios editados).
+  Verificado: test_hgac PASSED + hr1/2/3 + spo2 PASSED (36/37; test_biquad ERRORED por fallo
+  PRE-EXISTENTE ajeno: referencia símbolos obsoletos `test_biquad_process`/`test_recalc_biquad`/
+  `TestBiquadFilter`). Sin commitear, sin subir versión de librería aún.
+
+### v0.52: rename v_tia_diff → v_tia (elimina sufijo _diff) — 2026-08-03
+
+Alex: quiere quitar el sufijo `_diff` por dos razones: (1) nombre más limpio; (2) `_diff` insinúa
+que existe un `v_tia_branch` que NO existe en el código. Como solo se usa el valor diferencial,
+`v_tia_diff` → `v_tia` unifica todo (`v_tia`, `tia_axis`, `tia_over_fs`) sin "diff". Decisión de
+alcance (AskUserQuestion): **rename completo, INCLUIDAS las cabeceras CSV** (rompe compat con CSVs
+guardados; requiere reflashear firmware+script juntos). Deroga la "regla 4b".
+- **Tokens sustituidos** (`replace_all`): `v_tia_diff`→`v_tia`, `V_TIA_DIFF`→`V_TIA`,
+  `VTiaDiff`→`VTia` (setter `setHgacVTiaDiffThr`→`setHgacVTiaThr`).
+- **Librería** `incunest_afe4490.h`/`.cpp`: miembros `v_tia_led/aled`, config `hgac_v_tia_thr`/
+  `hgac_v_tia_ideal`, setter `setHgacVTiaThr`, bloque de convención reescrito (sin regla 4b, deja
+  claro que no hay valor de rama en el código).
+- **PulseNest** `src/main.cpp`: frame $M4 (`dbg.analog.v_tia_led1`...), clave `$SET`/`$CFG`
+  `hgac_v_tia_thr`, comentarios `V_TIA`. `test_hgac.cpp`: campos y comentarios.
+- **PulseNest scripts**: `pulsenest_lab.py` (data_v_tia_*, buffers "V_TIA_*", tooltips, cabeceras
+  CSV, cálculo SIGNAL STATS), `tia_linearity_sweep.py`.
+- **Specs**: `incunest_afe4490_spec.md` (struct, convención V_TIA reescrita, tablas) y
+  `pulsenest_lab_spec.md`. `docs/afe_replacement_study.md`. Regla 4b eliminada de las 3 fuentes
+  vivas; changelog/histórico intacto.
+- **CAMBIO DE FORMATO**: cabeceras CSV `V_TIA_DIFF_*` → `V_TIA_*`. CSVs guardados con el nombre
+  viejo dejan de casar por nombre de columna (afecta [[project_regression_test_captures_task]]).
+- Verificado: `test_hgac` PASSED (6/6), build ESP32-S3 V16 SUCCESS (18.4% RAM / 30.0% flash),
+  `py_compile` OK en ambos scripts. Sin commitear, sin subir versión de librería aún (pendiente
+  v0.52 lib + commit/push cuando Alex lo indique).
+
+**v0.52 (cont.): version bump + commit de librería — 2026-08-03**
+- Subida versión librería `v0.50-experiment` → **`v0.52-experiment`** (cubre v0.51 kVTiaDiff + v0.52
+  rename, ambos sin versionar). Marcadores: `library.json`, `#define INCUNEST_AFE4490_VERSION`,
+  cabeceras `.h`/`.cpp`/`platform_stub.h`/`examples/basic/main.cpp`, spec `# Specification v0.52`
+  + 2 entradas changelog §14. `platform_stub.h`/`examples` no usan símbolos renombrados.
+- Commit atómico repo `incunest_afe4490` (rama `experiment/ot-domain-inputs`): **`2d7cea1`**, 6 ficheros.
+  `conversation_log.md` untracked del repo lib fuera a propósito. **NO pusheado** (Alex pidió solo commit).
+- Memoria `project_library_workflow.md` actualizada a v0.52.
+- PENDIENTE: `git push` de la lib; commit del repo PulseNest (rename abarca ambos repos, aún sin commitear).
+
+### Corrección kAFE_ADC_FS_CODE 2^21−1 → 2^21 (fidelidad al datasheet) — 2026-08-03
+
+CAMBIO DE CÓDIGO en la librería incunest_afe4490. Motivado por Alex: al revisar la conversión
+code→V_ADC (única función de `kAFE_ADC_FS_CODE` y `kAFE_ADC_FSR`: `scale = FSR/FS_CODE`,
+`v_adc = code × scale`), detectó que las dos últimas filas de la Tabla 7 (p.88) del datasheet son
+incompatibles.
+
+- **Análisis (verificado leyendo p.88 de primera mano):** el ADC es bipolar C2 de 22 bits →
+  1 LSB = FSR/2^21, rango de código [−2^21, +2^21−1] (ASIMÉTRICO). Cuatro filas de la Tabla 7 son
+  consistentes con ese LSB (code=±1 ↔ ±1.2/2^21; code=0 ↔ 0; raíl negativo −1.2 V ↔ −2^21 exacto).
+  La 5ª fila (+1.2 V ↔ +2^21−1) implica LSB=1.2/(2^21−1) → incompatible con las otras. Es etiqueta
+  NOMINAL: el código máximo positivo +2^21−1 representa en realidad +1.2 V − 1 LSB. El código antiguo
+  ancló el escalado justo en esa fila incompatible (dividía por 2^21−1 = 2097151).
+- **Corrección:** `kAFE_ADC_FS_CODE = 2097151.0f → 2097152.0f` (2^21). Impacto numérico ~0.5 ppm
+  (despreciable); el valor ahora es fiel a la función de transferencia del datasheet.
+- **Ficheros:** `incunest_afe4490.h:229` (valor + bloque de comentario sobre LSB/asimetría/fila
+  nominal), `incunest_afe4490.cpp:1134-1139` (comentario del cálculo de scale),
+  `incunest_afe4490_spec.md:453` (valor) + nota nueva tras las fórmulas explicando la incompatibilidad
+  de las 2 últimas filas de la Tabla 7. NO se tocan los raíles empíricos kAdcSatPos/Neg=±2096700
+  (medidas HW reales, distintas del FS teórico).
+- **Verificación:** tests nativos 36/36 (incluye test_spo2, que ejercita V_ADC→V_TIA→R→SpO2);
+  build ESP32-S3 incunest_V16 SUCCESS. `test_biquad` ERRORED pero es PREEXISTENTE y ajeno (drift
+  test↔código: referencia métodos test_biquad_process/test_recalc_biquad ya eliminados de la clase).
+
+Contexto observado (no mío): la librería está ya en v0.51 con el rename `v_tia_diff → v_tia`
+aplicado y cambios sin commitear de otra sesión; mi edición convive con ellos.
+DISCREPANCIA A REVISAR (fuera de este encargo): spec :504 afirma "the datasheet has no symbol named
+V_OD", pero la p.11 del datasheet SÍ lista `VOD(fs)` = "Full-scale differential output voltage" = 1 V
+(verificado leyendo la página). Candidato a corregir el spec.
+
+### namespace adc — consolidación de constantes del ADC — 2026-08-03
+
+Alex propuso un `namespace adc` análogo a `tia_axis` para las constantes del ADC (hasta ahora
+dispersas: `kAFE_ADC_FS_CODE`/`kAFE_ADC_FSR` file-scope, `kAdcSatPos/Neg` dentro de
+`AFE4490AnalogState`, raíles crudos solo en comentarios). Debate de diseño:
+- **Nombre:** `namespace adc` (no "axis": mezcla voltios `FSR` y códigos, no es un eje único ordenado).
+- **Par NOMINAL↔ACTUAL:** Alex insistió en preservar el matiz "empírico, no datasheet". Sufijo
+  `_ACTUAL` (empareja con "nominal", que ya usaba el código) sobre `_MEAS`/`_EMP`. `FS_CODE`=2²¹
+  nominal; raíles `POS/NEG_RAIL_ACTUAL` = +2096921/−2096919 medidos en 16.A.
+- **Guarda explícita:** `SAT_POS = POS_RAIL_ACTUAL − SAT_GUARD` (antes 2096700 era número mágico).
+  `SAT_NEG = −SAT_POS` (simétrico a propósito; `NEG_RAIL_ACTUAL` queda doc-only). `static_assert`
+  ata actual<nominal y sat<rail → los doc-only quedan *usados* (no `//` código muerto).
+- **`SCALE`** = `FSR/FS_CODE` (V por código): `v_adc = code × adc::SCALE` (`.cpp` usa `adc::SCALE`).
+- **`v_tia_adc_sat` descartado:** la saturación ya se detecta en dominio código (`adc_sat_pos/neg`,
+  agnóstico a RG/AMBDAC); un umbral en dominio v_tia sería redundante+circular. Techo dinámico
+  según RG/AMBDAC = helper de la capa v2 → nota en [[project_ambdac_tia_offspec_zone_task]].
+- **Cierra duplicación 1.2 V:** `tia_axis::ADC_SAT_V` ELIMINADO; el `static_assert` de `tia_axis`
+  referencia `adc::FSR` (mapeo a ganancia unidad). Un solo 1.2 V. Cierra
+  [[project_adc_fsr_sat_v_duplication_task]].
+- Alineados comentarios viejos `.cpp:106-110` (2097151 → `adc::SCALE`, coherente con `FS_CODE`=2²¹).
+- Cambios: `incunest_afe4490.h`/`.cpp` + `incunest_afe4490_spec.md`. Sin consumidores externos
+  (`main.cpp`/`pulsenest_lab.py` no referencian estas constantes).
+- Verificado: `test_hgac` 6/6, build ESP32-S3 V16 SUCCESS. **Sin bump de versión ni commit aún**
+  (pendiente v0.53 lib + commit cuando Alex lo indique).
+
+**v0.53 (cont.): version bump + commit de librería — 2026-08-03**
+- Subida versión librería `v0.52-experiment` → **`v0.53-experiment`** por el `namespace adc`.
+  Marcadores: `library.json`, `#define`, cabeceras `.h`/`.cpp`/`platform_stub.h`/`examples/basic/main.cpp`,
+  spec `# Specification v0.53` + entrada changelog §14. `platform_stub`/`examples` no usan las
+  constantes movidas → solo comentario de versión.
+- Commit atómico repo `incunest_afe4490` (rama `experiment/ot-domain-inputs`): **`5f03cad`**, 6 ficheros.
+- Memoria `project_library_workflow.md` a v0.53.
+- PENDIENTE: `git push` de la lib (commits locales `2d7cea1` v0.52 + `5f03cad` v0.53 sin pushear);
+  commit del repo PulseNest (rename v0.52 dejó cambios en `main.cpp`/tests/scripts/specs).
+
+### Reflexión: ILED es actuador anti-saturación MUY DÉBIL en RF=mín → posible causa de HGAC RF-only — 2026-08-04
+
+Sesión mixta (esta entrada = análisis + doc; también hubo cambio de código kAFE_ADC_FS_CODE, entrada aparte).
+Reflexión importante de Alex, verificada con física + código:
+
+- **Modelo:** fase LED `v_tia_led = 2·RF·(i_amb + i_led)`, `i_led = OT·ILED`. Solo i_led escala con
+  ILED (ambiente NO — spec §"ambient does not scale with ILED"). Techo de voltaje que suelta bajar
+  ILED: `Δv = 2·RF·OT·(ILED_max−ILED_min) = 800·OT` V (con RF=10K, 50→10 mA).
+- **Números:** sonda aplicada OT<rsqm_ot_thr≈1e-4 (típico 1e-5…1e-4) → **Δv ≈ 0.008…0.08 V**. MUY POCO
+  (confirma la intuición de Alex). A RF=10K la contribución del LED a v_tia es ella misma ~0.1 V; si
+  saturas ahí (~1.2 V raíl ADC), los ~1.1 V restantes son AMBIENTE, intocable por ILED.
+- **Implicación de diseño:** ILED es el actuador equivocado en el gain floor → refuerza paso 4/R2 de
+  la escalera (RF=mín y persiste ⇒ ambiente ⇒ ALARMA directa, discriminada por fase ALED), NO bajar
+  ILED. **Posible causa de fondo de que HGAC v1 sea RF-only** (ILED diferido a Fase 4, quizá casi
+  inútil anti-sat). Bajar ILED solo rinde en el caso raro LED-dominado (OT alto, tejido muy translúcido,
+  ALED sin saturar).
+- **Salvedad:** OT sin calibrar empíricamente → Δv es orden de magnitud, no cifra cerrada.
+- **Apuntado en:** memoria [[project_agc_design]] (§4, "Cuantificación del paso 3 (ILED)"),
+  [[project_led_current_increase_50ma_task]], y spec incunest_afe4490_spec.md (nota "Why HGAC is
+  RF-only in v1" junto a la lista de fases). Sin cambio de código en esta reflexión.
+
+### Sesión de diseño HGAC — modelo conceptual v1 refinado — 2026-08-04
+
+Sesión larga de diseño (SIN cambios de código; solo `project_agc_design.md` + memorias). Punto de
+partida (Alex): `_hgac_update()` solo hace la guardia de saturación (Fase 1); HGAC se pensó para más.
+
+**Decisiones:**
+- **Modelo → EJE ÚNICO de RF** (no "2 capas"). Guardia = escalón superior, más urgente, de la MISMA
+  bajada. Umbrales V_TIA: `LOW 0.25 · IDEAL 0.6 · HIGH 0.75 · GUARD 0.9`. Banda de nivelado
+  bidireccional [0.25, 0.75]; fuera de ella baja/sube RF; dentro, nada.
+- **v1 = RF-only.** ILED clavado al máximo térmico (política, no control). Motivo: reflexión de la
+  otra CLI en spec §5.8 (Δv=800·OT ≈ 0.01–0.08 V con sonda aplicada → ILED es actuador
+  anti-saturación DÉBIL en RF=mín). Estrategia ILED (decrementos/incrementos) → **Fase 4**.
+- **Invariante de estabilidad:** banda ≥ un escalón de RF → `HIGH/LOW > 2.5` (salto RF mayor); ratio
+  actual 3.0. Elegidos a ojo → nueva tarea [[project_hgac_setpoint_band_tuning_task]] (invariante DURA).
+- **Ascenso de un escalón → SIN predicción.** El invariante de banda ya evita overshoot
+  (`LOW×2.5=0.625<HIGH`); la predicción O9.1 solo hace falta para multi-salto (R5, opcional).
+- **Regla de prioridad (Alex):** bajar señal → prioridad RF; subir señal → prioridad ILED (espejo;
+  ILED tiende a quedarse arriba por ley √). En v1 inerte (ILED fijo).
+- **Nada de reflejos 0-debounce:** todo cambio de RF exige persistencia + **habilitación por sonda
+  activa** (APPLIED/SATURATING; off en NOT_APPLIED/DISCONNECTED → fototerapia sin paciente). El
+  transitorio (movimiento/flash) NO mueve RF; lo marca la detección (`adc_sat`→RSQM), no la actuación.
+- **"gate G0" retirado del modelo** (§4B) → "habilitación por sonda activa"; no-settling plegado en la
+  espera entre actuaciones. **GAP honesto:** el "<50 % inválidas" (anti-movimiento) es diseño A6, **NO
+  está en el código** (el gate real solo mira sonda activa + no-settling). Pendiente decidir si se
+  implementa.
+- **§4 paso 3 ramificado:** 3.a ALED saturado → alarma "excessive ambient light" (caso normal);
+  3.b ALED sin saturar → LED-dominado, *quizá* bajar ILED, pero **se cree que no ocurre** → no se
+  implementa de momento.
+- **RSQM_DIAG_HW_SETTLING:** Alex objeta que (1) espeja `_rsqm_settling_countdown` y (2) un settling
+  no es diagnóstico sino estado de control. Fix propuesto (gate lee el countdown directo; sacar el bit
+  de DiagCode) → **decisión diferida** → tarea [[project_rsqm_hw_settling_categorization_task]].
+
+**Plasmado en `project_agc_design.md`:** §4 rehecho (paso 3 → 3.a/3.b, Prompt v3 actualizado, R1-R5 y
+CUANTIFICACIÓN intactos); §4B reescrito (eje único, sin "G0" ni "<50 %"); §A4 nota sobre capacidad
+limitada de ILED. **Memorias nuevas:** setpoint band tuning, hw_settling categorization (ambas en índice).
+
+**Design rationale — versión preliminar creada — 2026-08-04**
+- Creado `incunest_afe4490_design.md` (repo `incunest_afe4490`, junto a la spec) como seguro por si
+  se pierde el contexto de la sesión. En inglés (casa con la spec). Relación: design = proceso/porqué
+  → spec = resultado normativo.
+- Contenido: HGAC en detalle (modelo de eje único, banda, invariantes, RF-only/ILED débil, 3.a/3.b,
+  gobierno de actuación + gap anti-movimiento, puntos abiertos, Fase 4); resúmenes con punteros de
+  analog/RSQM (tia_axis/adc, value-always, ProbeState), base clínica/HW (envolvente térmica, specs
+  sonda, pie prematuro, selección AFE) y nomenclatura.
+- Marcado PRELIMINAR. Consolidación/pulido → hito de congelación HGAC v1
+  ([[project_design_doc_promotion_task]]). Sin commitear.
+
+**Commits + push librería (docs) — 2026-08-04**
+- `36ca195` — `docs: add preliminary design rationale (incunest_afe4490_design.md)` (201 líneas).
+- `cbe4143` — `docs: explain why HGAC v1 is RF-only in spec §5.8 (ILED weak actuator)` (14 líneas,
+  reflexión añadida por otra sesión).
+- Ambos sin bump de versión (documentación). **Pusheados** a GitHub (rama `experiment/ot-domain-inputs`):
+  `5f03cad..36ca195..cbe4143`. Librería sin commits locales pendientes. Último tag funcional sigue
+  siendo v0.53 (`5f03cad`).

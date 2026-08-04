@@ -173,9 +173,9 @@ static void udp_send_line(const char* buf) {
 // M1 = PPG only (minimal bandwidth)
 // M2 = PPG + SpO2 + HR3 + quality flags (lightweight monitoring)
 // M3 = full AFE4490Data — all production fields (default)
-// M4 = M3 + AFE4490DebugData analog signals (V_TIA_DIFF, I_PD for all 4 channels,
+// M4 = M3 + AFE4490DebugData analog signals (V_TIA, I_PD for all 4 channels,
 //      OT_LED1/OT_LED2, CH_MASKS validity masks — lib v0.35)
-//      + HGAC_RF1/HGAC_RF2/HGAC_ALARM (Phase 1: RF-only descent — lib v0.37)
+//      + HGAC_RF1/HGAC_RF2 (Phase 1: RF-only descent — lib v0.37; HGAC_ALARM removed v0.50)
 enum class IncunestFrameMode { M1, M2, M3, M4 };
 volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M3;
 
@@ -286,9 +286,9 @@ void Incunest_Task(void *pvParameters) {
                     if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
                     udp_send(buf);
                 } else {  // M4
-                    // $M4 = M3 + V_TIA_DIFF_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (scientific notation)
+                    // $M4 = M3 + V_TIA_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (scientific notation)
                     //     + OT_LED1/OT_LED2 [A/A] + CH_MASKS (validity masks, lib v0.35)
-                    //     + HGAC_RF1/HGAC_RF2/HGAC_ALARM (Phase 1: RF-only descent, lib v0.37).
+                    //     + HGAC_RF1/HGAC_RF2 (Phase 1: RF-only descent, lib v0.37; HGAC_ALARM removed v0.50).
                     // CH_MASKS = 4 nibbles packed as %04X:
                     //   bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg, [11:8]=tia_over_fs, [15:12]=tia_over_lin
                     //   within each nibble, bit = channel per AFE4490Ch: LED1=0, ALED1=1, LED2=2, ALED2=3
@@ -301,7 +301,7 @@ void Incunest_Task(void *pvParameters) {
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
                         ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%04X"
-                        ",%s,%s,%d",
+                        ",%s,%s",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
                         (long)data.led2,       (long)data.led1,
@@ -321,14 +321,13 @@ void Incunest_Task(void *pvParameters) {
                         (unsigned)data.rsqi,
                         (unsigned long)data.diag_code,
                         (int)data.probe_state,
-                        dbg.analog.v_tia_diff_led1,  dbg.analog.v_tia_diff_led2,
-                        dbg.analog.v_tia_diff_aled1, dbg.analog.v_tia_diff_aled2,
+                        dbg.analog.v_tia_led1,  dbg.analog.v_tia_led2,
+                        dbg.analog.v_tia_aled1, dbg.analog.v_tia_aled2,
                         dbg.analog.i_pd_led1,   dbg.analog.i_pd_led2,
                         dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2,
                         dbg.analog.ot_led1,     dbg.analog.ot_led2,
                         ch_masks,
-                        afeRFToStr(dbg.hgac_rf_led1), afeRFToStr(dbg.hgac_rf_led2),
-                        dbg.hgac_alarm_gain_floor ? 1 : 0);
+                        afeRFToStr(dbg.hgac_rf_led1), afeRFToStr(dbg.hgac_rf_led2));
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);
@@ -456,13 +455,13 @@ static void send_lcfg_frame() {
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
         ",rsqm_probe_state_min_s=%.3f"
         ",rsqm_ema_mean_tau_s=%.3f,rsqm_ema_var_tau_s=%.3f"
-        ",hgac_enable=%d,hgac_v_tia_diff_thr=%.3f"
+        ",hgac_enable=%d,hgac_v_tia_thr=%.3f"
         ",hgac_tiaguard_debounce_min_s=%.3f",
         cfg.rsqm_ot_thr, cfg.rsqm_signal_weak_std,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
         cfg.rsqm_ema_mean_tau_s, cfg.rsqm_ema_var_tau_s,
-        cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_diff_thr,
+        cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_thr,
         cfg.hgac_tiaguard_debounce_min_s);
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
@@ -695,9 +694,9 @@ static void apply_set_cmd(const char* key, const char* val) {
             Serial_printf("$ERR,hgac_enable,invalid (0 or 1)\r\n");
         }
         return;
-    } else if (strcmp(key, "hgac_v_tia_diff_thr") == 0) {
-        afe.setHgacVTiaDiffThr(atof(val));
-        Serial_printf("# SET hgac_v_tia_diff_thr=%.3f\n", atof(val));
+    } else if (strcmp(key, "hgac_v_tia_thr") == 0) {
+        afe.setHgacVTiaThr(atof(val));
+        Serial_printf("# SET hgac_v_tia_thr=%.3f\n", atof(val));
         send_lcfg_frame();
         return;
     } else if (strcmp(key, "hgac_tiaguard_debounce_min_s") == 0) {

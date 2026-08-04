@@ -116,7 +116,7 @@ Frame mode is selected with the `$MODE,Mx` command (no checksum — see §4.3):
 | `$M1` | `$M1,<SmpCnt>,<Ts_us>,<PPG_DISP>*XX` — minimal | |
 | `$M2` | `$M2,<SmpCnt>,<Ts_us>,<PPG_DISP>,<SpO2>,<SpO2_SQI>,<HR3>,<HR3_SQI>,<RSQI>,<DiagCode>,<ProbeState>*XX` | |
 | `$M3` | Full `AFE4490Data` (22 fields, table below) | |
-| `$M4` | M3 + analog debug: `V_TIA_DIFF`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS` | ✔ |
+| `$M4` | M3 + analog debug: `V_TIA`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS` | ✔ |
 
 #### $M3 — Full data frame
 
@@ -157,14 +157,14 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 `AFE4490DebugData::analog` (`AFE4490AnalogState`, lib ≥ v0.35):
 
 ```
-...,<V_TIA_DIFF_LED1>,<V_TIA_DIFF_LED2>,<V_TIA_DIFF_ALED1>,<V_TIA_DIFF_ALED2>,
+...,<V_TIA_LED1>,<V_TIA_LED2>,<V_TIA_ALED1>,<V_TIA_ALED2>,
     <I_PD_LED1>,<I_PD_LED2>,<I_PD_ALED1>,<I_PD_ALED2>,
     <OT_LED1>,<OT_LED2>,<CH_MASKS>*XX
 ```
 
 | Field | Format | Description |
 |-------|--------|-------------|
-| `V_TIA_DIFF_*` | `%.4e` | TIA differential output voltage per channel [V] (naming rule 4b) |
+| `V_TIA_*` | `%.4e` | TIA differential output voltage per channel [V] |
 | `I_PD_*` | `%.4e` | Photodiode current per channel [A] |
 | `OT_LED1`, `OT_LED2` | `%.4e` | Optical transmittance `(I_PD_LEDx − I_PD_ALEDx) / I_LEDx` [A/A], firmware-computed in `_compute_analog_state()` |
 | `CH_MASKS` | `%04X` hex | Validity masks packed in 4 nibbles: bits[3:0]=`adc_sat_pos`, [7:4]=`adc_sat_neg`, [11:8]=`tia_over_fs`, [15:12]=`tia_over_lin`. Within each nibble, bit = channel per `AFE4490Ch`: LED1=0, ALED1=1, LED2=2, ALED2=3. `0000` = all channels CLEAN |
@@ -541,7 +541,7 @@ the 4 raw ADC rows (`tbl_row = sig_idx if sig_idx < 4 else sig_idx + 1`). Column
 | Col | Name | Description |
 |-----|------|-------------|
 | 0 | Signal | Row label |
-| 1 | V_TIA_DIFF | Estimated TIA differential output voltage (V) — raw rows only |
+| 1 | V_TIA | Estimated TIA differential output voltage (V) — raw rows only |
 | 2 | V_ADC | Estimated ADC input voltage (V) — raw rows only |
 | 3 | % SD/Mean | Coefficient of variation as percentage (LED1_SUB/LED2_SUB rows; R estimate on R row) |
 | 4 | Mean | Mean value over stats interval |
@@ -555,26 +555,26 @@ LED1 (IR), LED2 (RED), ALED1, ALED2 (sig_idx 0–3, raw ADC — integer + narrow
 LED1_SUB, LED2_SUB (4–5),
 PPG_DISP, SpO2, SpO2_SQI, R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI, RSQI, DiagCode,
 ProbeState (6–19, 2 dp),
-V_TIA_DIFF_LED1/LED2/ALED1/ALED2 (20–23, 6 dp V), I_PD_LED1/LED2/ALED1/ALED2 (24–27, µA 3 dp),
+V_TIA_LED1/LED2/ALED1/ALED2 (20–23, 6 dp V), I_PD_LED1/LED2/ALED1/ALED2 (24–27, µA 3 dp),
 OT_LED1 [ppm], OT_LED2 [ppm] (28–29, displayed ×1e6 for readability, 2 dp — **read from the
 $M4 frame**, not computed locally; $M4 mode only. Wire protocol unchanged: firmware still
 sends raw A/A in `%.4e` — the ×1e6 + 2dp formatting is local to the Python display only).
 
-**V_TIA_DIFF / V_ADC columns (cols 1–2):** populated only for rows 0–3 (LED1, LED2, ALED1, ALED2).
-Calculated from the current ADC mean using the AFE4490 gain chain (naming rule 4b — bare
-`v_tia` is forbidden; V_TIA_DIFF = differential = 2 × I_PD × RF; per-branch = /2):
+**V_TIA / V_ADC columns (cols 1–2):** populated only for rows 0–3 (LED1, LED2, ALED1, ALED2).
+Calculated from the current ADC mean using the AFE4490 gain chain (V_TIA is the differential
+TIA output = 2 × I_PD × RF; the code has no separate branch value):
 - V_ADC = (mean_counts / 2²¹) × 1.2 V  (ADC full scale ±1.2 V, 22-bit signed)
-- V_TIA_DIFF = 2 × (V_ADC / (2 × RG) + I_CANCEL) × RI  (datasheet eq.2, p.30)
+- V_TIA = 2 × (V_ADC / (2 × RG) + I_CANCEL) × RI  (datasheet eq.2, p.30)
   where RI = 100 kΩ (fixed), RG from current `$CFG` stg21/stg22 field, I_CANCEL = ambdac × 1 µA.
 
-**V_TIA_DIFF / V_ADC color coding (background of cols 1–2):**
+**V_TIA / V_ADC color coding (background of cols 1–2):**
 
 | Color | Hex | Condition — LED rows (0,1) | Condition — ALED rows (2,3) |
 |-------|-----|---------------------------|------------------------------|
 | Gray text on `#121212` | `#5A5A5A` | channel CLIPPED (CH_MASKS) — overrides all below | same |
-| Red | `#4A0800` | V_TIA_DIFF > 0.95 V or < 0.15 V; V_ADC > 1.10 V or < 0.20 V | V_TIA_DIFF > 0.70 V; V_ADC > 0.80 V |
-| Yellow | `#3A2D00` | V_TIA_DIFF 0.80–0.95 V or 0.15–0.40 V; V_ADC 0.95–1.10 V or 0.20–0.45 V | V_TIA_DIFF 0.30–0.70 V; V_ADC 0.35–0.80 V |
-| Green | `#0F3A0F` | V_TIA_DIFF 0.40–0.80 V; V_ADC 0.45–0.95 V | V_TIA_DIFF < 0.30 V; V_ADC < 0.35 V |
+| Red | `#4A0800` | V_TIA > 0.95 V or < 0.15 V; V_ADC > 1.10 V or < 0.20 V | V_TIA > 0.70 V; V_ADC > 0.80 V |
+| Yellow | `#3A2D00` | V_TIA 0.80–0.95 V or 0.15–0.40 V; V_ADC 0.95–1.10 V or 0.20–0.45 V | V_TIA 0.30–0.70 V; V_ADC 0.35–0.80 V |
+| Green | `#0F3A0F` | V_TIA 0.40–0.80 V; V_ADC 0.45–0.95 V | V_TIA < 0.30 V; V_ADC < 0.35 V |
 | Default | `#121212` | Row not in {0,1,2,3} or no data | — |
 
 **Validity gray-out (CH_MASKS, lib v0.35 — CLIPPED criterion):** the parser ORs every received
@@ -586,9 +586,9 @@ into a per-channel CLIPPED bitmap and reset:
 CLIPPED = the value is a bound, not reality (mirrors library `CH_CLIPPED_RANGE`).
 Row→channel map `_STATS_ROW_TO_CH = {0:0, 1:2, 2:1, 3:3}`.
 Effects when a channel was CLIPPED at any point in the stats window:
-- V_TIA_DIFF / V_ADC cells (rows 0–3) → gray text `#5A5A5A` on neutral background `#121212`
+- V_TIA / V_ADC cells (rows 0–3) → gray text `#5A5A5A` on neutral background `#121212`
   (the voltage gauge color is suppressed — it would be computed from bound values and mislead).
-- V_TIA_DIFF_* rows (20–23) and I_PD_* rows (24–27) → gray text `#5A5A5A` on cols 4–8
+- V_TIA_* rows (20–23) and I_PD_* rows (24–27) → gray text `#5A5A5A` on cols 4–8
   if their own channel was CLIPPED (`_STATS_ROW_TO_CH[(sig_idx − 20) % 4]`).
 - OT_LED1 row (28) → gray text `#5A5A5A` if LED1 **or** ALED1 CLIPPED;
   OT_LED2 row (29) likewise for LED2/ALED2.
@@ -1004,7 +1004,7 @@ only if the file does not exist). 92 columns, in order:
 3. For each of 6 signals (LED2, LED1, ALED2, ALED1, LED2_Sub, LED1_Sub), grouped by stat type:
    all `_mean`, then all `_min`, `_max`, `_pp`, `_std` (30 columns)
 4. RSQM: `rsqi_ok_pct`, `diag_code_{mean,min,max}`, `probe_state_fw_{mean,min,max}`
-5. `V_TIA_DIFF_{LED1,LED2,ALED1,ALED2}_{mean,std,min,max}` [V] — per-sample values received
+5. `V_TIA_{LED1,LED2,ALED1,ALED2}_{mean,std,min,max}` [V] — per-sample values received
    from the `$M4` frame (firmware `_compute_analog_state()`), buffered during MEASURING
 6. `I_PD_{LED1,LED2,ALED1,ALED2}_uA_{mean,std,min,max}` [µA] — same source, ×1e6
 7. `I_PD_LED{1,2}_ALED{1,2}_diff_uA_{mean,std,min,max}` [µA] — per-sample LED−ALED difference
@@ -1103,7 +1103,7 @@ port that happens to be first alphabetically).
 | Red tones | RED channel signals |
 | Blue tones | IR channel signals |
 
-### V_TIA_DIFF / V_ADC color coding
+### V_TIA / V_ADC color coding
 
 Voltage-based cell background colors in SIGNAL STATS table cols 1–2:
 - Green `#0F3A0F` — optimal operating range
@@ -1111,7 +1111,7 @@ Voltage-based cell background colors in SIGNAL STATS table cols 1–2:
 - Red `#4A0800` — saturation or signal too low
 - Gray **text** `#5A5A5A` on neutral `#121212` — channel CLIPPED (CH_MASKS from $M4: ADC rail
   or TIA hard clip) — estimate not valid, gauge color suppressed. Same criterion and color as
-  the analog-chain rows (V_TIA_DIFF_*, I_PD_*, OT_*).
+  the analog-chain rows (V_TIA_*, I_PD_*, OT_*).
   OFF_SPEC (`tia_over_fs`) is never grayed — the value is still real.
 - Default `#121212` — no data or non-ADC row
 
@@ -1293,7 +1293,7 @@ weaker/uncalibrated criterion, RSQM's own `PROBE_DISCONNECTED` classification.
 - Clarified after the fact: the "font still too small" feedback was actually about the 9
   signal-selection combos (`_COMBO_STYLE`), not `spin_window_s`. Combo font-size doubled
   17px → 34px; each graph's combo-group column widened `setFixedWidth` 220px → 420px so
-  long signal names (e.g. `V_TIA_DIFF_ALED1`) aren't clipped at the larger size. Slot-1
+  long signal names (e.g. `V_TIA_ALED1`) aren't clipped at the larger size. Slot-1
   color changed from white `#FFFFFF` to yellow `#FFDD44` (`_SLOT_COLORS`) — same yellow tone
   used elsewhere in the app (e.g. SpO2 fw curve).
 - Both sizes walked back down: `spin_window_s` font-size 56px → 37px (one third smaller);
@@ -1363,7 +1363,7 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
 ### v1.17 — 2026-07-14
 - New `PPGSignals2Window` (`SIGNALS2` button, next to `SIGNALS`): 3 freely-configurable plots,
   each with 3 slots individually selectable (via `QComboBox`) from any of the 30 signals
-  currently parsed from `$M1`-`$M4` (raw channels, OT, V_TIA_DIFF, I_PD, SpO2/HR/R/PI, RSQI,
+  currently parsed from `$M1`-`$M4` (raw channels, OT, V_TIA, I_PD, SpO2/HR/R/PI, RSQI,
   DiagCode, ProbeState, CH_MASKS) — unlike `PPGSignalsWindow` (`SIGNALS`), which is fixed to
   the 6 raw AFE4490 channels. Curve colors fixed per slot (white/cyan/magenta) across all 3
   graphs; plot titles show the selected signal names color-coded. Default selection on first
@@ -1388,7 +1388,7 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
 
 ### v1.15 — 2026-07-11
 - SIGNAL STATS rows 0–3 (raw ADC): CLIPPED indication changed from gray background `#3A3A3A`
-  to gray text `#5A5A5A` on neutral background `#121212` in the V_TIA_DIFF/V_ADC cells (same
+  to gray text `#5A5A5A` on neutral background `#121212` in the V_TIA/V_ADC cells (same
   convention as the analog-chain rows). The voltage gauge color is suppressed when CLIPPED —
   it would be computed from bound values and mislead. `_VTG_GRAY` constant removed.
 - Resulting uniform rule: gray text = "this number is not real"; backgrounds reserved for
@@ -1399,7 +1399,7 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
   **CLIPPED** (`adc_sat_pos` | `adc_sat_neg` | `tia_over_lin`), not "not CLEAN" — the
   `tia_over_fs` (OFF_SPEC) nibble is excluded because 1.0–1.8 V diff is empirically linear
   and the value is still real (graying it would lose information during HGAC sweeps).
-- Gray text extended from OT rows to the whole analog chain: V_TIA_DIFF_* (rows 20–23) and
+- Gray text extended from OT rows to the whole analog chain: V_TIA_* (rows 20–23) and
   I_PD_* (rows 24–27) now gray when their own channel was CLIPPED during the stats window.
 - Gray text color darkened: `#808080` → `#5A5A5A` (`_STATS_INVALID_FG`).
 - Tooltips of the 10 analog rows + the 4 V_TIA/V_ADC column legends explain CLIPPED vs OFF_SPEC.
@@ -1413,12 +1413,12 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
 - SIGNAL STATS OT_LED1/OT_LED2 rows now **read from the $M4 frame** (firmware
   `_compute_analog_state()`), replacing the local `(I_PD_LED − I_PD_ALED)/I_LED` calculation
   from `$CFG` LED currents.
-- CH_MASKS first consumer (closes project_vtia_gray_task): V_TIA_DIFF/V_ADC cells gray
+- CH_MASKS first consumer (closes project_vtia_gray_task): V_TIA/V_ADC cells gray
   background `#3A3A3A` when the channel was not CLEAN during the stats window; OT rows gray
   text `#808080` when a source channel was not CLEAN (mirrors library `otLedxValid()`).
   New deque `data_ch_masks`; accumulator `_stats_ch_masks_or` (OR per stats window).
 - Serial COM / UDP COM / live-recording CSV headers: `+OT_LED1,OT_LED2,CH_MASKS`.
-- §6.3 updated to current layout (30 signal rows; V_TIA_DIFF/V_ADC are cols 1–2 — the
+- §6.3 updated to current layout (30 signal rows; V_TIA/V_ADC are cols 1–2 — the
   previous "cols 7–8" text predated the column reorder).
 - Firmware side (PulseNest `src/main.cpp`): `UDP_QUEUE_FRAME_SIZE` 256 → 288 (M4 ≈ 260 bytes;
   batch 5×288 = 1440 < 1472 MTU).
@@ -1448,12 +1448,12 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
 
 ### v1.9 — 2026-07-08
 - V_TIA convention switched to DIFFERENTIAL (naming rule 4b): all `v_tia`/`V_TIA` identifiers,
-  CSV columns, table headers and tooltips renamed to `v_tia_diff`/`V_TIA_DIFF`
-  (V_TIA_DIFF = 2 × I_PD × RF; per-branch = /2; bare `v_tia` forbidden).
-- SIGNAL STATS V_TIA_DIFF column (§6.3): local computation now includes the ×2 factor and the
+  CSV columns, table headers and tooltips renamed to `v_tia`/`V_TIA`
+  (V_TIA = 2 × I_PD × RF; per-branch = /2; bare `v_tia` forbidden).
+- SIGNAL STATS V_TIA column (§6.3): local computation now includes the ×2 factor and the
   I_CANCEL (AMBDAC) term — matches firmware `_compute_analog_state()` (library v0.34).
   Color thresholds unchanged (they were already defined in the differential domain).
-- $M4 CSV capture columns renamed: `V_TIA_LED1..V_TIA_ALED2` → `V_TIA_DIFF_LED1..V_TIA_DIFF_ALED2`.
+- $M4 CSV capture columns renamed: `V_TIA_LED1..V_TIA_ALED2` → `V_TIA_LED1..V_TIA_ALED2`.
   CSVs recorded before this version contain per-branch values (×0.5 vs new firmware).
 - Requires firmware/library ≥ v0.34 ($M4 streams differential values).
 
@@ -1490,7 +1490,7 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
 ### v1.3 — 2026-05-27
 - Added WiFi/UDP transport (§4.1, §4.7): `_udp_reader` thread, `_udp_queue`, `btn_udp` toggle, UdpComWindow.
 - Added `$SET` / `$CFG` / `$TCFG` / `$DIAG` / `$ERR` protocol documentation (§4.3, §4.4).
-- Updated SIGNAL STATS table (§6.3): expanded to 9 columns, IR-first row ordering, V_TIA/V_ADC columns with voltage-based color coding. *(V_TIA renamed V_TIA_DIFF in v1.9.)*
+- Updated SIGNAL STATS table (§6.3): expanded to 9 columns, IR-first row ordering, V_TIA/V_ADC columns with voltage-based color coding. *(V_TIA renamed V_TIA in v1.9.)*
 - Added PPGSignalsWindow (§7.2), AlgoResultsWindow (§7.3), UdpComWindow (§7.5).
 - Added HWConfigWindow (§7.16): real-time AFE4490 parameter control via $SET/$CFG.
 - Added DiagnosticsWindow (§7.17): hardware diagnostic via $DIAG?.
