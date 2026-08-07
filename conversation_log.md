@@ -15657,3 +15657,166 @@ limitada de ILED. **Memorias nuevas:** setpoint band tuning, hw_settling categor
 - Ambos sin bump de versión (documentación). **Pusheados** a GitHub (rama `experiment/ot-domain-inputs`):
   `5f03cad..36ca195..cbe4143`. Librería sin commits locales pendientes. Último tag funcional sigue
   siendo v0.53 (`5f03cad`).
+
+### Integración del experimento OT en master — 2026-08-04
+
+Alex dio por bueno `experiment/ot-domain-inputs` → **fusionado a master en ambos repos** para seguir
+el desarrollo en master. Estado previo: `experiment` = `master + N` commits, sin divergencia → merge
+limpio. Trampa detectada y resuelta: el rename `v_tia_diff→v_tia` (v0.52) estaba commiteado en la
+librería pero **sin commitear en PulseNest** → se commiteó antes del merge (`71725d1`) para no dejar
+master roto.
+- **incunest_afe4490:** sufijo `-experiment` eliminado → **v0.53.0** (`a39eac1`); merge `--no-ff`
+  `03001e3`; pusheado a `origin/master`.
+- **PulseNest:** rename+logs commiteados (`71725d1`); merge `--no-ff` `378b72a`; pusheado.
+- Untracked fuera del merge (BACKLOG.md, whitepapers, csv/png del sweep, etc.).
+- **Verificado en master:** test_hgac 6/6 PASSED + build ESP32-S3 V16 SUCCESS.
+- Memorias actualizadas: [[project_ot_domain_experiment_task]] (RESUELTO), [[project_library_workflow]]
+  (v0.53.0 en master). Ambos repos ahora en rama **master**.
+
+---
+
+## Sesión 2026-08-05 — HGAC: eliminación del umbral IDEAL (0.6 V) + arranque diseño Fase 2
+
+**Tema:** repaso del diseño HGAC para retomar la implementación (Fase 2) y decisión de nomenclatura de los umbrales del eje V_TIA.
+
+**Decisiones:**
+- **IDEAL (0.6 V) ELIMINADO del diseño y del código.** Razón (Alex): RF es un actuador discreto
+  de 7 niveles con saltos ×2–3 → no se puede aterrizar en un setpoint fino, así que un "target DC"
+  no tiene sentido. El control v1 es banda muerta `[LOW 0.25, HIGH 0.75]` + `GUARD 0.9`, sin atractor
+  al centro. IDEAL era "telemetry only", nunca lo consumía ninguna lógica. (Su único uso futuro sería
+  el feed-forward de salto calculado, Fase 5 — si algún día hace falta, se re-define entonces.)
+- Se aclaró el término **telemetría**: datos que el firmware/lib envía hacia fuera (UDP → pulsenest_lab,
+  frames $M4/$CFG/$LCFG) solo para observar/registrar, sin cerrar lazo. Principio HGAC: detección/telemetría ≠ actuación.
+- Nomenclatura de umbrales: se barajaron esquemas (semántico GUARD/HIGH/LOW, severidad HIGH2/HIGH1/LOW1,
+  nivel L#, etc.). Sin cerrar aún; depende del punto abierto (¿0.90 y 0.75 son dos escalones de bajada
+  separados o una sola bajada?). IDEAL queda fuera de la familia de umbrales de acción por no ser un umbral que se cruce.
+
+**Cambios de código (lib v0.53 → v0.54-experiment):**
+- `incunest_afe4490.h`: borrado `tia_axis::IDEAL_V`; `static_assert` sin el término `IDEAL_V <`;
+  borrado campo `hgac_v_tia_ideal` del struct `AFE4490Config` y su default privado; comentarios actualizados.
+- `incunest_afe4490.cpp`: borrada la copia `cfg.hgac_v_tia_ideal = ...` en `getConfig()`; comentario ajustado.
+- Spec §5.8.5 + tabla §10.9 (fila IDEAL fuera) + §14 (entrada v0.54); design doc §2.3/§3 (IDEAL fuera de la lista).
+- Firmware PulseNest y pulsenest_lab.py: **sin cambios** (nunca consumían `hgac_v_tia_ideal`; `$CFG` no lo enviaba).
+- **API-breaking** (AFE4490Config pierde un campo, sin consumidor wire/firmware).
+- **Verificado:** test_hgac 6/6 PASSED + build ESP32-S3 V16 SUCCESS.
+
+**Pendiente Fase 2** (sin empezar a codificar): brazo de subida (ascenso RF un escalón, sin predicción)
++ banda muerta [LOW, HIGH] + alarma de ambiente. Puntos abiertos: (1) ¿0.90 y 0.75 dos escalones o uno?;
+(2) protección anti-movimiento por fracción de inválidas (diseño A6, no implementada); (3) nomenclatura umbrales.
+
+---
+
+## Sesión 2026-08-06 — EmaChannel: seeding en la primera muestra (fix de arranque)
+
+**Tema:** tarea pequeña previa a HGAC Fase 2 (EmaChannel es el ladrillo de los estimadores HIGH1/LOW1).
+
+**Corrección (Alex):** en `EmaChannel::update()`, cuando `count==0` (tras construcción o `reset()`)
+sembrar `mean=x`, `var=0` en vez de arrancar la recursión con `mean=0`.
+
+**Por qué (más sutil que "converger antes"):** con `mean=0` inicial, `d = x − mean ≈ x` durante
+~3·τ → `var += α_var·(d²−var)` **infla var artificialmente** en el warm-up. Y `var` alimenta PI
+(SpO2) y RSQM SIGNAL_WEAK. El seeding elimina ese sesgo de arranque.
+
+**Matiz acordado:** sembrar `var=0` es correcto pero **no acorta** el tiempo que var necesita para
+ser representativa (~3·τ_var) → NO se toca `spo2_warmup_s` (18 s) ni `rsqm_ready_count` (6000).
+Régimen permanente idéntico; solo cambia el transitorio.
+
+**Verificación (cambio de comportamiento → prudencia médica):** baseline ANTES de editar = 36/36
+nativos (`test_biquad` ERRORED pre-existente; `test_spo2` ya pasa 7/7 — los 3 fallos que anotaba la
+memoria se arreglaron en sesión previa). DESPUÉS = 36/36 idéntico, **sin regresión**. Build ESP32-S3
+V16 SUCCESS.
+
+**Cambios (lib v0.54 → v0.55-experiment):** `incunest_afe4490.h` (`update()` + comentario), spec §5.1
+(nota "First-sample seeding") + changelog §14 + título, `library.json`/header a 0.55.
+Consumidores afectados: RSQM y SpO2 (solo transitorio). Firmware/script sin cambios.
+
+**Estado:** SIN commitear. Pendiente de commit: (1) IDEAL v0.54, (2) EmaChannel seeding v0.55 (dos commits atómicos).
+Retomamos HGAC Fase 2 (estimador · T_hgac · persistencia en ticks) tras esto.
+
+---
+
+## Sesión 2026-08-07 (cont.) — Eliminación de RSQM_DIAG_SIGNAL_WEAK (bit 14)
+
+**Decisión (Alex):** eliminar `SIGNAL_WEAK`. Justificación: (1) sin consumidor accionable —solo
+contribuía al `rsqi` agregado (diag_code==0) y al display; (2) HGAC decide con su propio DC (LOW1),
+no debe leerlo; (3) **no es actuable por ganancia**: RF amplifica AC y DC por igual → PI/ratio
+invariante, así que "AC bajo" (perfusión) no se arregla subiendo RF; (4) redundante con `spo2_sqi`
+(PI-based); (5) umbral `=2000` nunca calibrado en HW. Naming futuro acordado: si se reintroduce,
+`AC_LOW` (nombra la magnitud, no un juicio vago).
+
+**Matiz clave aclarado:** LOW1 (DC, gobierna ganancia) y SIGNAL_WEAK (AC/std, perfusión) son ejes
+ORTOGONALES. Se corrigió una afirmación previa imprecisa (SIGNAL_WEAK NO era el "consumidor natural"
+de LOW1). La "señal débil" de HGAC (RF=techo && DC<LOW1) es un diagnóstico propio, distinto.
+
+**Cambios (lib v0.55 → v0.56-experiment), end-to-end:**
+- Lib `.h`: bit `RSQM_DIAG_SIGNAL_WEAK` (bit 14 → LIBRE, documentado para reuso como `AC_LOW`);
+  campo config `rsqm_signal_weak_std` + default `2000`; setter `setRsqmSignalWeakStd()`; comentarios.
+- Lib `.cpp`: cuerpo del setter, copia en `getConfig()`, bloque productor en `_rsqm_update()`.
+- Firmware `main.cpp`: campo del frame `$LCFG` + arg; handler `$SET` de `rsqm_signal_weak_std`.
+- Script `pulsenest_lab.py`: control LIBConfig, log `$LCFG`, tooltip DiagCode.
+- Spec: fragmentos de código (§data/config/setters/bits), tabla DiagCode (0x4000→free), notas §5.6/§5.6.3, changelog §14, título → v0.56.
+- **API-breaking** (campo config + setter + bit + wire keys $LCFG/$SET).
+
+**Efecto colateral (documentado, no resuelto):** `_rsqm_led1/2_sub_ema` ahora solo se consumen por
+`.count` (para `ready`); su `var`/`mean` quedan huérfanos → **candidato a reducirlos a un simple
+contador de muestras**. Pendiente de decidir (ver más abajo / BACKLOG).
+
+**Verificación:** baseline previo 36/36 → tras cambios 36/36 (sin regresión; `test_biquad` ERRORED
+pre-existente). Build ESP32-S3 V16 SUCCESS. `py_compile pulsenest_lab.py` OK.
+
+**Estado git:** SIN commitear. Acumulados sin commit: IDEAL (v0.54), EmaChannel seeding (v0.55),
+SIGNAL_WEAK removal (v0.56).
+
+---
+
+## Sesión 2026-08-07 (cont. 2) — Eliminación de EMA de RSQM + ready + rsqm_ready_count
+
+**Decisión (Alex):** eliminar `_rsqm_led1/2_sub_ema`, `ready` y `rsqm_ready_count`; `rsqi` pasa a
+`PROBE_APPLIED && diag_code==0`. Continuación de la eliminación de SIGNAL_WEAK: tras ella, los EMA de
+RSQM solo aportaban `.count` (para `ready`), y `ready` solo gateaba `rsqi` con un warm-up de 12 s que
+era vestigio de SIGNAL_WEAK (sin estadística que madurar → sin función). Los SQI clínicos (spo2_sqi,
+hr*_sqi) tienen sus propios warm-ups, así que rsqi puede ser responsivo.
+
+**Cambios de CÓDIGO hechos (lib, aún en v0.56 — bump pendiente):**
+- `.h`: declaración de los 2 EMA, `rsqm_ready_count` (constexpr), comentario del `EmaChannel`
+  (rsqm_ready_count → spo2_warmup_s).
+- `.cpp`: construcción, `reset()`, bloque update+`ready` en `_rsqm_update()`, 2 `.init()` en
+  `_recalc_rate_params()`, y `rsqi` simplificado.
+- **Verificado:** 36/36 tests nativos + build ESP32-S3 V16 SUCCESS.
+
+**PENDIENTE (bloquea cierre):** efecto cascada — al quitar los EMA, los τ `rsqm_ema_mean_tau_s`(2s)/
+`rsqm_ema_var_tau_s`(4s) + `setRsqmEmaTau()` quedan HUÉRFANOS (inertes: nada los lee, pero siguen en
+config + $LCFG/$SET + script + spec §5.6). Pregunta abierta a Alex: ¿eliminarlos también? Hasta
+decidir, NO se ha tocado la spec (§5.6, líneas 747/970/1073 con rsqm_ready_count/ready aún vivas) ni
+subido a v0.57. Se cerrará todo (spec + bump) en un solo pase según la decisión.
+
+**Estado git:** SIN commitear. Acumulados: IDEAL v0.54, seeding v0.55, SIGNAL_WEAK v0.56, y este
+cambio (EMA/ready/ready_count) aún sin versionar.
+
+---
+
+## Sesión 2026-08-07 (cont. 3) — Cierre: eliminados τ de RSQM + bump v0.57
+
+**Decisión (Alex):** extender la limpieza al efecto cascada → eliminar también los τ de RSQM
+(`rsqm_ema_mean_tau_s`, `rsqm_ema_var_tau_s`) y `setRsqmEmaTau()`, que quedaron inertes al quitar
+los EMA. Cerrar spec + subir a v0.57.
+
+**Cambios (lib v0.56 → v0.57-experiment), end-to-end:**
+- Lib `.h`: campos config `rsqm_ema_mean/var_tau_s`, defaults + bloque de comentarios, setter decl
+  `setRsqmEmaTau`. Comentario de SpO2 EMA reformulado (quitada la referencia cruzada a rsqm_ema_mean_tau_s).
+- Lib `.cpp`: cuerpo de `setRsqmEmaTau`, copias en `getConfig()`.
+- Firmware `main.cpp`: campos del frame `$LCFG` + args; dos handlers `$SET`.
+- Script `pulsenest_lab.py`: dos controles LIBConfig (EMA mean/var τ).
+- Spec: §5.6.1 reescrita como nota histórica (RSQM ya no tiene EMA; numeración §5.6.2/§5.6.3
+  preservada para no romper refs vivas en 1177/1181/1214), nota seeding §5.1, fórmula rsqi §5.x,
+  changelog §14, título → v0.57.
+- **API-breaking** (config fields + setter + wire keys $LCFG/$SET).
+
+**Verificación:** 36/36 tests nativos (test_biquad ERRORED pre-existente), build ESP32-S3 V16 SUCCESS,
+`py_compile pulsenest_lab.py` OK. Grep: 0 referencias colgantes en lib/firmware/script.
+
+**Resultado neto de la depuración RSQM (v0.56+v0.57):** RSQM ya no mantiene estimadores EMA propios.
+`rsqi = PROBE_APPLIED && diag_code==0` (sin warm-up). ProbeState usa magnitudes instantáneas. El
+`EmaChannel` genérico queda solo para SpO2. Item de BACKLOG (EMA-como-contador) → RESUELTO.
+
+**Estado git:** SIN commitear. Acumulados: IDEAL v0.54, seeding v0.55, SIGNAL_WEAK v0.56, RSQM EMA/τ v0.57.

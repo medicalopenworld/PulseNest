@@ -7203,9 +7203,6 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                                     "Default 1.0e-4 (widened 2026-07-19 from 8.5e-5: CONTEC MS100\n"
                                                                     "simulator is very sensitive to probe placement).\n"
                                                                     "Still needs empirical calibration with a real probe.",         6,   0.0,    0.01,      " A/A",    1.0),
-        ("rsqm_signal_weak_std",      "Signal weak STD",           "LED1_Sub standard deviation threshold for RSQM_DIAG_SIGNAL_WEAK.\n"
-                                                                    "If std(LED1_Sub) < this → signal is too weak to measure.\n"
-                                                                    "Needs hardware calibration with known probe.",                0,   0.0,    50000.0,   " counts", 1.0),
         ("rsqm_disconn_led_sub_thr",  "Disconn. LED_sub thr",      "|led_sub| threshold for PROBE_DISCONNECTED detection.\n"
                                                                     "If |led1_sub| AND |led2_sub| < this → no probe connected.\n"
                                                                     "Measured worst case: LED2_Sub=4013 (×1.25 margin → 5000).",   0,   0.0,    100000.0,  " counts", 1.0),
@@ -7216,13 +7213,6 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                                     "Prevents rapid toggling due to transients.\n"
                                                                     "Default 0.200 s = 100 samples @ 500 Hz.\n"
                                                                     "Converted to samples internally based on current sample rate.",  3, 0.01,   10.0,      " s",      1.0),
-        ("rsqm_ema_mean_tau_s",       "EMA mean τ",                "RSQM EMA mean time constant [s].\n"
-                                                                    "Controls DC baseline tracking speed.\n"
-                                                                    "Must be slow enough (f_c << 0.5 Hz) to not follow pulsatile\n"
-                                                                    "component — otherwise variance is underestimated.",            3,   0.1,    30.0,      " s",      1.0),
-        ("rsqm_ema_var_tau_s",        "EMA var τ",                 "RSQM EMA variance time constant [s].\n"
-                                                                    "Must be > EMA mean τ to cover multiple cardiac cycles.\n"
-                                                                    "@ 60 bpm: τ=4s covers 4 cycles. @ 30 bpm: 2 cycles (min).",   3,   0.1,    60.0,      " s",      1.0),
     ]
 
     def __init__(self, parent=None):
@@ -10256,7 +10246,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("HR3",        "data_hr3",        "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM.", "AFE4490Data::hr3"),
             ("HR3_SQI",    "data_hr3_sqi",    "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range.", "AFE4490Data::hr3_sqi"),
             ("RSQI",       "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary.",                                                   "AFE4490Data::rsqi"),
-            ("DiagCode",   "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM_DIAG_* — 0x2000=AMB_SAT, 0x4000=SIGNAL_WEAK, 0x8000=HW_SETTLING (anticipatory: intended consumer is future HGAC; HW_SETTLING unreachable until HGAC exists). 0 = no active conditions.", "AFE4490Data::diag_code"),
+            ("DiagCode",   "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM_DIAG_* — 0x2000=AMB_SAT, 0x8000=HW_SETTLING (produced by HGAC after an RF change). 0x4000 is free (was SIGNAL_WEAK, removed v0.56). 0 = no active conditions.", "AFE4490Data::diag_code"),
             ("ProbeState", "data_probe_state",
              "Probe state computed by RSQM at 500 Hz. All transitions debounced: 100 consecutive samples required (200 ms).\n\n"
              "0 — DISCONNECTED (cable out)\n"
@@ -11089,7 +11079,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if '=' in part:
                 k, v = part.split('=', 1)
                 kv[k] = v
-        self.log(f"[LCFG] rsqm_ot_thr={kv.get('rsqm_ot_thr','?')}  signal_weak_std={kv.get('rsqm_signal_weak_std','?')}"
+        self.log(f"[LCFG] rsqm_ot_thr={kv.get('rsqm_ot_thr','?')}"
                  f"  probe_min_s={kv.get('rsqm_probe_state_min_s','?')}")
         if self.lib_config_window is not None:
             self.lib_config_window.update_from_lcfg(kv)

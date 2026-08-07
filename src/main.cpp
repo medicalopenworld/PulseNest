@@ -451,16 +451,14 @@ static void send_lcfg_frame() {
     AFE4490Config cfg = afe.getConfig();
     char buf[320];
     int n = snprintf(buf, sizeof(buf) - 6,
-        "$LCFG,rsqm_ot_thr=%.4e,rsqm_signal_weak_std=%.1f"
+        "$LCFG,rsqm_ot_thr=%.4e"
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
         ",rsqm_probe_state_min_s=%.3f"
-        ",rsqm_ema_mean_tau_s=%.3f,rsqm_ema_var_tau_s=%.3f"
         ",hgac_enable=%d,hgac_v_tia_thr=%.3f"
         ",hgac_tiaguard_debounce_min_s=%.3f",
-        cfg.rsqm_ot_thr, cfg.rsqm_signal_weak_std,
+        cfg.rsqm_ot_thr,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
-        cfg.rsqm_ema_mean_tau_s, cfg.rsqm_ema_var_tau_s,
         cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_thr,
         cfg.hgac_tiaguard_debounce_min_s);
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
@@ -636,11 +634,6 @@ static void apply_set_cmd(const char* key, const char* val) {
         Serial_printf("# SET rsqm_ot_thr=%.4e\n", atof(val));
         send_lcfg_frame();
         return;
-    } else if (strcmp(key, "rsqm_signal_weak_std") == 0) {
-        afe.setRsqmSignalWeakStd(atof(val));
-        Serial_printf("# SET rsqm_signal_weak_std=%.1f\n", atof(val));
-        send_lcfg_frame();
-        return;
     } else if (strcmp(key, "rsqm_disconn_led_sub_thr") == 0) {
         afe.setRsqmDisconnLedSubThr(atof(val));
         Serial_printf("# SET rsqm_disconn_led_sub_thr=%.1f\n", atof(val));
@@ -659,28 +652,6 @@ static void apply_set_cmd(const char* key, const char* val) {
             send_lcfg_frame();
         } else {
             Serial_printf("$ERR,rsqm_probe_state_min_s,invalid (0.0–10.0)\r\n");
-        }
-        return;
-    } else if (strcmp(key, "rsqm_ema_mean_tau_s") == 0) {
-        float mean_tau = atof(val);
-        AFE4490Config cfg = afe.getConfig();
-        if (mean_tau > 0.0f) {
-            afe.setRsqmEmaTau(mean_tau, cfg.rsqm_ema_var_tau_s);
-            Serial_printf("# SET rsqm_ema_mean_tau_s=%.3f\n", mean_tau);
-            send_lcfg_frame();
-        } else {
-            Serial_printf("$ERR,rsqm_ema_mean_tau_s,invalid (must be > 0)\r\n");
-        }
-        return;
-    } else if (strcmp(key, "rsqm_ema_var_tau_s") == 0) {
-        float var_tau = atof(val);
-        AFE4490Config cfg = afe.getConfig();
-        if (var_tau > 0.0f) {
-            afe.setRsqmEmaTau(cfg.rsqm_ema_mean_tau_s, var_tau);
-            Serial_printf("# SET rsqm_ema_var_tau_s=%.3f\n", var_tau);
-            send_lcfg_frame();
-        } else {
-            Serial_printf("$ERR,rsqm_ema_var_tau_s,invalid (must be > 0)\r\n");
         }
         return;
     // ── HGAC parameters (Phase 1: RF-only descent) ───────────────────────────
