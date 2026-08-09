@@ -454,13 +454,13 @@ static void send_lcfg_frame() {
         "$LCFG,rsqm_ot_thr=%.4e"
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
         ",rsqm_probe_state_min_s=%.3f"
-        ",hgac_enable=%d,hgac_v_tia_thr=%.3f"
-        ",hgac_tiaguard_debounce_min_s=%.3f",
+        ",hgac_enable=%d,hgac_v_tia_high2=%.3f,hgac_v_tia_high1=%.3f,hgac_v_tia_low1=%.3f"
+        ",hgac_ema_fast_tau_s=%.3f,hgac_ema_slow_tau_s=%.3f,hgac_ema_ambient_tau_s=%.3f",
         cfg.rsqm_ot_thr,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
-        cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_thr,
-        cfg.hgac_tiaguard_debounce_min_s);
+        cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_high2, cfg.hgac_v_tia_high1, cfg.hgac_v_tia_low1,
+        cfg.hgac_ema_fast_tau_s, cfg.hgac_ema_slow_tau_s, cfg.hgac_ema_ambient_tau_s);
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
     Serial_print_locked(buf);
@@ -665,19 +665,49 @@ static void apply_set_cmd(const char* key, const char* val) {
             Serial_printf("$ERR,hgac_enable,invalid (0 or 1)\r\n");
         }
         return;
-    } else if (strcmp(key, "hgac_v_tia_thr") == 0) {
-        afe.setHgacVTiaThr(atof(val));
-        Serial_printf("# SET hgac_v_tia_thr=%.3f\n", atof(val));
+    } else if (strcmp(key, "hgac_v_tia_high2") == 0) {
+        afe.setHgacVTiaHigh2(atof(val));
+        Serial_printf("# SET hgac_v_tia_high2=%.3f\n", atof(val));
         send_lcfg_frame();
         return;
-    } else if (strcmp(key, "hgac_tiaguard_debounce_min_s") == 0) {
+    } else if (strcmp(key, "hgac_v_tia_high1") == 0) {
+        afe.setHgacVTiaHigh1(atof(val));
+        Serial_printf("# SET hgac_v_tia_high1=%.3f\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "hgac_v_tia_low1") == 0) {
+        afe.setHgacVTiaLow1(atof(val));
+        Serial_printf("# SET hgac_v_tia_low1=%.3f\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "hgac_ema_fast_tau_s") == 0) {
         float s = atof(val);
         if (s > 0.0f && s <= 10.0f) {
-            afe.setHgacTiaguardDebounceMinS(s);
-            Serial_printf("# SET hgac_tiaguard_debounce_min_s=%.3f\n", s);
+            afe.setHgacEmaFastTauS(s);
+            Serial_printf("# SET hgac_ema_fast_tau_s=%.3f\n", s);
             send_lcfg_frame();
         } else {
-            Serial_printf("$ERR,hgac_tiaguard_debounce_min_s,invalid (0.0–10.0)\r\n");
+            Serial_printf("$ERR,hgac_ema_fast_tau_s,invalid (0.0–10.0)\r\n");
+        }
+        return;
+    } else if (strcmp(key, "hgac_ema_slow_tau_s") == 0) {
+        float s = atof(val);
+        if (s > 0.0f && s <= 30.0f) {
+            afe.setHgacEmaSlowTauS(s);
+            Serial_printf("# SET hgac_ema_slow_tau_s=%.3f\n", s);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,hgac_ema_slow_tau_s,invalid (0.0–30.0)\r\n");
+        }
+        return;
+    } else if (strcmp(key, "hgac_ema_ambient_tau_s") == 0) {
+        float s = atof(val);
+        if (s > 0.0f && s <= 30.0f) {
+            afe.setHgacEmaAmbientTauS(s);
+            Serial_printf("# SET hgac_ema_ambient_tau_s=%.3f\n", s);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,hgac_ema_ambient_tau_s,invalid (0.0–30.0)\r\n");
         }
         return;
     } else {

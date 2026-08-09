@@ -15820,3 +15820,100 @@ los EMA. Cerrar spec + subir a v0.57.
 `EmaChannel` genérico queda solo para SpO2. Item de BACKLOG (EMA-como-contador) → RESUELTO.
 
 **Estado git:** SIN commitear. Acumulados: IDEAL v0.54, seeding v0.55, SIGNAL_WEAK v0.56, RSQM EMA/τ v0.57.
+
+---
+
+## Sesión 2026-08-08 — HGAC reconstruido: RF-only, dos EMA por dominio (lib v0.58)
+
+**Implementado el punto de partida de diseño acordado** (ver project_agc_design §4B). Sustituye la
+guardia única TIAGUARD + debounce + solo-descenso por: por dominio (solo fase LED), un EMA **fast**
+(τ=0.1s) → guardia HIGH2 (0.90 V, urgente) y un EMA **slow** (τ=2s) → nivelado bidireccional
+HIGH1/LOW1 (0.75/0.25 V). Ahora RF **sube y baja**.
+
+**Decisiones de diseño cerradas esta sesión:**
+- Nombres umbrales: `hgac_v_tia_high2`/`high1`/`low1` (renombrado `hgac_v_tia_thr`→`high2`).
+- `tia_axis::GUARD_V` → `HIGH2_V` (opción b, con static_assert).
+- Sin debounce (la ponderación temporal la da el τ del EMA; magnitud×tiempo — razón de usar EMA y
+  no muestra cruda para HIGH2, aportada por Alex).
+- Reinicio (no reescalado) de los EMA del dominio al cambiar RF; warmup=3·τ hace de cooldown.
+- `EmaChannel`: añadido `warmup_s` opcional + `valid()`; NaN NO (se materializa vía cortocircuito
+  `valid() && mean>=thr` en la capa HGAC, sin vars intermedias). `enable_var` descartado (ahorro
+  inmedible con FPU). SpO2 usa warmup_s=0 → sin cambio.
+- Solo led1/led2 (ALED reservado para alarma de ambiente, diferida).
+
+**Cambios (lib v0.57 → v0.58-experiment), end-to-end:**
+- `.h`: tia_axis HIGH2_V; EmaChannel init(warmup_s)+valid()+_warmup_count; config fields
+  (high2/high1/low1/fast_tau/slow_tau, quitado debounce); defaults; setters (renombrados+nuevos);
+  métodos (_hgac_track, _hgac_change_rf; quitados _hgac_check_tiaguard/_hgac_step_rf_down); 4 EMA
+  miembros (quitados debounce counters); test accessors renombrados.
+- `.cpp`: setters, getConfig, constructor, reset, _recalc_rate_params (init 4 EMA), y las 3
+  funciones HGAC reescritas (_hgac_change_rf con reset EMAs, _hgac_track con cortocircuito valid(),
+  _hgac_update con gate→reset EMAs).
+- Firmware `main.cpp`: $LCFG (thr→high2 + 4 nuevos, quitado debounce) y handlers $SET.
+- `test/test_hgac/test_hgac.cpp`: reescrito (6 tests de comportamiento, márgenes amplios).
+- Spec: §5.8 completa reescrita, §5.1 (warmup/valid), §10.9 tabla, diagrama §3, changelog §14, título.
+- Script pulsenest_lab.py: **sin cambios** (no exponía params HGAC en LIBConfig; parser $LCFG genérico).
+- **API-breaking** (config fields, setters, wire keys, tia_axis).
+
+**Verificación:** test_hgac 6/6 (guard→floor, warmup, disabled, leveling→sube RF, reset+rewarm,
+SpO2-EMA-intacto) · suite completa 36/36 (test_biquad ERRORED pre-existente) · build ESP32-S3 V16
+SUCCESS · py_compile OK.
+
+**Estado git:** SIN commitear (lib v0.58 + firmware + tests + spec).
+
+---
+
+## Sesión 2026-08-08 (cont.) — HGAC: alarma de luz ambiente (bit 14 AMBIENT_HIGH, lib v0.59)
+
+**Propuesta de Alex, aceptada con ajuste:** en la rama de la guardia, cuando RF está en el suelo y
+no puede bajar más, discriminar la causa con un EMA del ambiente (fase ALED). Si ALED ≥ HIGH2 →
+ambiente satura solo (bajar RF/ILED no ayuda, `v_tia_led ≥ v_tia_aled`) → alarma "TOO MUCH AMBIENT
+LIGHT". Es el paso 3.a/R2 del diseño (estaba diferido).
+
+**Ajuste de ubicación (yo):** el `else` cuelga de la GUARDIA (rama `RF==suelo` del `if rf>RF_10K`),
+no del nivelado — la alarma es sobre HIGH2/saturación, no sobre HIGH1.
+
+**Decisiones (Alex):** (1) consumidor = bit 14 `RSQM_DIAG_AMBIENT_HIGH` (reusa el libre de
+SIGNAL_WEAK) + mostrarlo en el script. (2) τ del EMA de ambiente = 2 s (sostenido, evita parpadeo);
+nombre elegido `hgac_ema_ambient_tau_s`. Distinto de `AMB_SAT` (bit 13, raíl duro por-muestra):
+AMBIENT_HIGH es preventivo (EMA @ 0.90) + contextualizado (RF en suelo).
+
+**Cambios (lib v0.58 → v0.59-experiment):**
+- `.h`: bit `RSQM_DIAG_AMBIENT_HIGH`=0x4000; config `hgac_ema_ambient_tau_s`(2.0)+default+setter;
+  2 EMA `_hgac_ema_ambient_led1/2`; `_hgac_track` devuelve bool (alarma).
+- `.cpp`: setter, getConfig, recalc (init 2 EMA ambient, warmup 3·τ), reset, `_hgac_change_rf`
+  (reset ambient), `_hgac_track` (rama alarma: RF suelo + ambient≥HIGH2 → return true),
+  `_hgac_update` (alimenta ambient con `v_tia_aled1/2`; OR de ambos dominios; set/clear bit 14 y
+  refresca `_current_data.diag_code` — HGAC corre tras `_rsqm_update`).
+- Firmware `main.cpp`: `$LCFG` + handler `$SET` de `hgac_ema_ambient_tau_s`.
+- Script `pulsenest_lab.py`: tooltip DiagCode con 0x4000=AMBIENT_HIGH.
+- test_hgac: +2 (alarma en suelo con ALED alto; SIN alarma en caso LED-dominado ALED bajo).
+- Spec: §5.8.1/5.8.2/5.8.3 (rama alarma + EMA ambient), tabla DiagCode, §10.9, changelog §14, versión.
+
+**Verificación:** test_hgac 8/8 · suite 38/38 (test_biquad ERRORED pre-existente) · build V16 SUCCESS · py_compile OK.
+
+**Estado git:** SIN commitear (v0.58 HGAC rebuild + v0.59 alarma, ambos pendientes de commit).
+
+---
+
+## Sesión 2026-08-09 — HGAC: alarma de ambiente FUERA de _hgac_track (opción 2, lib v0.60)
+
+**Decisión (Alex, opción 2):** sacar la comprobación de AMBIENT_HIGH de `_hgac_track()`.
+Análisis previo descartó llevarla a RSQM (la condición depende del estado de RF, que es de HGAC;
+sin ese contexto sería redundante con AMB_SAT; rompería A6). Dentro de HGAC pero SEPARADA de la
+actuación.
+
+**Cambios (lib v0.59 → v0.60-experiment):**
+- `_hgac_track()` vuelve a `void` (actuación pura de RF; sin rama de alarma, sin return bool).
+- Nuevo `_hgac_ambient_high(color, ambient) const` → `RF==suelo && ambient.valid() && ambient.mean≥HIGH2`.
+- `_hgac_update()`: actúa (2 tracks) y LUEGO evalúa `_hgac_ambient_high(IR)||(RED)` → set/clear bit 14.
+- **Cambio de comportamiento:** la alarma ya NO exige que la guardia LED (`fast`) haya disparado;
+  condición = `RF==suelo && ambient≥HIGH2` (ALED es el indicador directo del ambiente). Elimina la
+  dependencia espuria de `fast` y separa actuación/diagnóstico.
+- Spec §5.8.3 reescrita (actuación vs diagnóstico separados), changelog §14, versión.
+- Firmware/script: sin cambios (el bit y los params no cambian).
+
+**Verificación:** test_hgac 8/8 (sin cambios en los tests; comportamiento observable idéntico) ·
+build ESP32-S3 V16 SUCCESS.
+
+**Estado git:** SIN commitear. Acumulado HGAC: v0.58 (rebuild) + v0.59 (alarma) + v0.60 (refactor alarma).
