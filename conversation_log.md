@@ -15917,3 +15917,93 @@ actuación.
 build ESP32-S3 V16 SUCCESS.
 
 **Estado git:** SIN commitear. Acumulado HGAC: v0.58 (rebuild) + v0.59 (alarma) + v0.60 (refactor alarma).
+
+---
+
+## Sesión 2026-08-09 (cont.) — LIBConfigWindow: añadido control de HGAC (script)
+
+**Motivo:** tras flashear v0.60 con telemetría en vivo (16.A, ProbeState=APPLIED, V_TIA<0.25),
+no había forma de habilitar HGAC desde el script — el `LIBConfigWindow` solo exponía RSQM y las
+consolas son de solo lectura. Sin control UI no se podía activar ni sintonizar.
+
+**Cambios (solo `pulsenest_lab.py`, NO toca firmware/lib → sin reflash):**
+- `LIBConfigWindow`: nuevo grupo "HGAC Parameters" con checkbox `hgac_enable` (+ botón Set) y los
+  6 params float (HIGH2/HIGH1/LOW1 + τ fast/slow/ambient), cada uno con spinbox + Set + tooltip.
+- Refactor: extraído `_add_param_row(form, tuple)` (reutilizado por RSQM y HGAC); constante `_GRP_SS`
+  para el estilo de grupo; lista `_HGAC_PARAMS`. Handler `_on_set_enable()`. `_on_set_all` y
+  `update_from_lcfg` extendidos al checkbox + HGAC params. Título ventana → "RSQM / HGAC Parameters".
+- Envía `$SET,hgac_enable,<0|1>` y `$SET,hgac_<param>,<valor>`; lee de `$LCFG` (ya incluye los
+  campos HGAC desde el firmware v0.58+).
+- py_compile OK. Script relanzado.
+
+**Pendiente:** actualizar `pulsenest_lab_spec.md` (sección LIBConfigWindow) con el grupo HGAC.
+Prueba en vivo en curso: habilitar HGAC y observar el brazo de subida (LOW1 → RF++) con V_TIA<0.25.
+
+**Refinamiento UI (mismo día):** el control `hgac_enable` pasó de checkbox "Enable" a **combo
+"HGAC" con Disabled/Enabled** (índice 0/1 mapea directo al valor $SET). Más claro (estado en texto,
+label del subsistema). Solo `pulsenest_lab.py`; py_compile OK; spec §7.17 actualizado.
+
+**Fix bug (mismo día):** tras "RESET ESP32", LIB CONFIG no se actualizaba (HW CONFIG sí). Causa:
+al arrancar el firmware (`# ... started`), el script solo pedía `$CFG?` (vía `request_chip_config`),
+nunca `$LCFG?`. Fix en `pulsenest_lab.py`: en la rama "started" del parser, si `lib_config_window`
+está abierta, disparar `_auto_read_lcfg()` (`$LCFG?`) a los 400 ms (escalonado entre $CFG? a 300 y
+frame mode a 500). Cubre serie y UDP. py_compile OK.
+
+**HGAC activo por defecto en banco (decisión Alex, mismo día):** en vez de cambiar el default de la
+librería (que va al motherBoard IncuNest — se mantiene OFF por seguridad "until bench-validated"),
+el SCRIPT auto-activa HGAC tras cada arranque del firmware. `pulsenest_lab.py`: nuevo método
+`_auto_enable_hgac()` (envía `$SET,hgac_enable,1` con checksum) disparado a 600 ms en la rama
+"started" (tras $CFG?/$LCFG?/frame mode). Incondicional en cada reset; para HGAC OFF puntual → combo
+Disabled (revierte a Enabled en el siguiente reset). Solo script, sin reflash. py_compile OK.
+
+**Fix bug (mismo día):** LIB CONFIG no recordaba su estado abierto al relanzar el script (todas las
+demás ventanas sí). Causa: faltaba `lib_config_open` en `_save_settings`/restauración. Fix en
+`pulsenest_lab.py`: añadido `lib_config_open` + geometry en `_save_settings`, rama de reapertura en
+la restauración, y método `_open_lib_config_default()` (setChecked+toggle, patrón de hw_config).
+py_compile OK.
+
+**Feature (mismo día):** auto-refresh de HW CONFIG cuando HGAC cambia RF. El script detecta cambios
+en `HGAC_RF1`/`HGAC_RF2` (campos 34/35 del $M4) en el parser en vivo (pre-decimación); si
+`hw_config_window` está abierta, dispara `request_chip_config()` ($CFG?) para sincronizar los combos
+TIA gain LED1/LED2. Coalescing con QTimer singleShot 300 ms (una sola petición tras una ráfaga de
+step-downs). `_last_hgac_rf` guarda el estado previo; no dispara en el primer frame. Solo
+`pulsenest_lab.py`, sin reflash. py_compile OK.
+
+---
+
+## Sesión 2026-08-10 — RSQM: clasificar saturación por fase (opción 3, lib v0.61)
+
+**Problema (Alex, en banco):** con HGAC activo, al quitar el dedo la sonda pasa a PROBE_SATURATING
+el tiempo suficiente para que HGAC baje RF al mínimo. Contraproducente: no hay paciente, y estropea
+el punto de operación (reenganche lento al volver el dedo).
+
+**Causa raíz:** el clasificador daba PROBE_SATURATING ante *cualquier* saturación positiva, sin
+distinguir "sonda al aire" (quitar dedo) de "saturación con tejido" (lámpara). HGAC actúa en
+SATURATING → baja al suelo.
+
+**Solución (opción 3, elegida tras descartar 1 y valorar 3):** discriminar la saturación por FASE,
+usando que OT es invariante al ambiente (resta la fase ALED). Nuevo clasificador `_rsqm_update()`:
+- No saturado → OT clasifica presencia (igual que antes).
+- Saturado → mirar qué fase clipa: fase **ambiente (ALED)** también clipa → luz externa
+  (lámpara) → **SATURATING** (HGAC corrige). Solo clipa la fase **LED**, ambiente limpia → luz
+  directa del propio LED sin tejido → **sonda al aire** → **NOT_APPLIED** (HGAC congela RF).
+- Refinamiento (cambio 2): en el caso saturado se usan las máscaras `adcSatPos||tiaOverFs` por fase
+  ALED (bits limpios), no la resta de OT clipado (frágil).
+- Limitación documentada: clip solo-LED no distingue aire de una rara sobre-saturación de tejido
+  sin ambiente → se asume aire (caso común e intencionado).
+
+**HGAC no cambia** (su gate ya excluye NOT_APPLIED → al reclasificar sonda-al-aire como NOT_APPLIED,
+HGAC deja de actuar y RF se congela).
+
+**Cambios (lib v0.60 → v0.61-experiment):** `_rsqm_update()` (clasificador reescrito); comentario del
+enum `PROBE_SATURATING` (.h); spec §5.6.2 reescrita + enum + changelog + versión. Firmware/script sin
+cambios. test_hgac: el antiguo `no_ambient_alarm_when_led_dominated` (led sat/aled 0 → esperaba bajar)
+pasó a `led_only_sat_is_probe_in_air` (led sat/aled 0 → NOT_APPLIED → RF NO baja). 
+
+**Verificación:** test_hgac 8/8 · suite 38/38 (test_biquad ERRORED pre-existente) · build V16 SUCCESS.
+
+**Estado git:** SIN commitear. Pendiente: reflash a 16.A para probar el fix en banco.
+
+**UI (mismo día):** color de la celda ProbeState=SATURATING(3) en SIGNAL STATS cambiado de naranja
+`#7A3D00` a **azul `#0050A0`** (petición de Alex). `pulsenest_lab.py` (`_PROBE_SATURATING_BG`);
+py_compile OK; spec del script anotado. Solo UI, sin reflash.

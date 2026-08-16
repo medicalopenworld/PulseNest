@@ -7191,6 +7191,10 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
 
     _SPIN_SS_CLEAN  = "background-color:#202020; color:#E0E0E0;"
     _SPIN_SS_DIRTY  = "background-color:#202020; color:#FF4444;"
+    _GRP_SS = (
+        "QGroupBox { font-size:26px; font-weight:bold; color:#AACCFF; "
+        "border:1px solid #334466; border-radius:6px; margin-top:8px; padding-top:6px; }"
+        "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }")
 
     # (key, label, tooltip, decimals, min, max, suffix, scale_for_display)
     # scale_for_display: multiply stored value by this to display (e.g. 1e9 for nA→nA label)
@@ -7215,14 +7219,33 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                                     "Converted to samples internally based on current sample rate.",  3, 0.01,   10.0,      " s",      1.0),
     ]
 
+    # HGAC parameters (RF-only, two EMA per gain domain — see incunest_afe4490_spec.md §5.8).
+    # hgac_enable is a bool → handled separately as a checkbox, not in this float list.
+    _HGAC_PARAMS = [
+        # key                      label            tooltip                                                    dec  min    max    suffix scale
+        ("hgac_v_tia_high2",       "HIGH2 guard",   "Guard threshold [V]. Fast-EMA v_tia_led ≥ this → urgent\n"
+                                                    "RF-- (per domain). Clamped ≤ 1.0 V (TIA full-scale).",     3,  0.0,   1.0,   " V",  1.0),
+        ("hgac_v_tia_high1",       "HIGH1 level ↑",  "Leveling upper [V]. Slow-EMA v_tia_led ≥ this → RF--\n"
+                                                    "(proactive). Dead-band is [LOW1, HIGH1].",                 3,  0.0,   1.0,   " V",  1.0),
+        ("hgac_v_tia_low1",        "LOW1 level ↓",   "Leveling lower [V]. Slow-EMA v_tia_led < this → RF++\n"
+                                                    "(raise gain). Invariant: HIGH1/LOW1 > 2.5× (RF step).",    3,  0.0,   1.0,   " V",  1.0),
+        ("hgac_ema_fast_tau_s",    "Fast EMA τ",     "Guard (fast) EMA time constant [s]. Integrates\n"
+                                                    "severity×time for HIGH2. Warmup = 3·τ.",                   3,  0.0,   10.0,  " s",  1.0),
+        ("hgac_ema_slow_tau_s",    "Slow EMA τ",     "Leveling (slow) EMA time constant [s]. Clean DC for\n"
+                                                    "HIGH1/LOW1 (f_c ≪ HR_min). Warmup = 3·τ.",                 3,  0.0,   30.0,  " s",  1.0),
+        ("hgac_ema_ambient_tau_s", "Ambient EMA τ",  "Ambient (ALED) EMA time constant [s]. Drives the\n"
+                                                    "AMBIENT_HIGH alarm at the RF floor. Sustained (avoids\n"
+                                                    "flicker). Warmup = 3·τ.",                                  3,  0.0,   30.0,  " s",  1.0),
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_monitor = parent
-        self.setWindowTitle("LIB CONFIG — RSQM Parameters")
+        self.setWindowTitle("LIB CONFIG — RSQM / HGAC Parameters")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("LIBConfigWindow/geometry")
         if geom: self.restoreGeometry(geom)
-        else:    self.resize(560, 520)
+        else:    self.resize(560, 820)
         self._spins = {}           # key → QDoubleSpinBox
         self._scales = {}          # key → scale factor (display = stored × scale)
         self._updating_from_lcfg = False
@@ -7256,57 +7279,94 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         btn_set_all.clicked.connect(self._on_set_all)
         btn_set_all.setToolTip(_make_tooltip(
             "Set all parameters",
-            "Sends $SET for every RSQM parameter in this window in sequence.",
+            "Sends $SET for hgac_enable and every RSQM + HGAC parameter in this window in sequence.",
             src="LIBConfigWindow"))
         btn_row.addWidget(btn_set_all)
         vbox.addLayout(btn_row)
 
         # RSQM group
-        grp = QtWidgets.QGroupBox("RSQM Parameters")
-        grp.setStyleSheet(
-            "QGroupBox { font-size:26px; font-weight:bold; color:#AACCFF; "
-            "border:1px solid #334466; border-radius:6px; margin-top:8px; padding-top:6px; }"
-            "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }")
-        form = QtWidgets.QFormLayout(grp)
-        form.setSpacing(6)
+        rsqm_grp = QtWidgets.QGroupBox("RSQM Parameters")
+        rsqm_grp.setStyleSheet(self._GRP_SS)
+        rsqm_form = QtWidgets.QFormLayout(rsqm_grp)
+        rsqm_form.setSpacing(6)
+        for p in self._PARAMS:
+            self._add_param_row(rsqm_form, p)
+        vbox.addWidget(rsqm_grp)
 
-        for key, label, tooltip, decimals, vmin, vmax, suffix, scale in self._PARAMS:
-            spin = QtWidgets.QDoubleSpinBox()
-            spin.setDecimals(decimals)
-            spin.setRange(vmin, vmax * scale if scale != 1.0 else vmax)
-            spin.setSuffix(suffix)
-            spin.setStyleSheet(self._SPIN_SS_CLEAN)
-            spin.setFixedHeight(44)
-            spin.valueChanged.connect(lambda _, s=spin: self._mark_dirty(s) if not self._updating_from_lcfg else None)
-            spin.setToolTip(_make_tooltip(label, tooltip, src="LIBConfigWindow"))
+        # HGAC group — master-enable checkbox + tuning params
+        hgac_grp = QtWidgets.QGroupBox("HGAC Parameters")
+        hgac_grp.setStyleSheet(self._GRP_SS)
+        hgac_form = QtWidgets.QFormLayout(hgac_grp)
+        hgac_form.setSpacing(6)
 
-            btn_set = QtWidgets.QPushButton("Set")
-            btn_set.setStyleSheet("font-size:22px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
-            btn_set.setFixedHeight(44)
-            btn_set.clicked.connect(lambda _, k=key, s=spin, sc=scale: self._on_set_one(k, s, sc))
-            btn_set.setToolTip(_make_tooltip(f"Set {label}", f"Sends $SET,{key},<value>*XX to the ESP32.", src="LIBConfigWindow"))
+        # HGAC master enable — combo (index 0=Disabled, 1=Enabled → maps directly to $SET value)
+        self._enable_combo = QtWidgets.QComboBox()
+        self._enable_combo.addItems(["Disabled", "Enabled"])
+        self._enable_combo.setStyleSheet(self._SPIN_SS_CLEAN)
+        self._enable_combo.setFixedHeight(44)
+        self._enable_combo.setToolTip(_make_tooltip(
+            "hgac_enable",
+            "Master enable for HGAC. When Disabled, HGAC never actuates (safe default). "
+            "Sends $SET,hgac_enable,<0|1>.", src="LIBConfigWindow"))
+        btn_en = QtWidgets.QPushButton("Set")
+        btn_en.setStyleSheet("font-size:22px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
+        btn_en.setFixedHeight(44)
+        btn_en.clicked.connect(self._on_set_enable)
+        btn_en.setToolTip(_make_tooltip("Set hgac_enable", "Sends $SET,hgac_enable,<0|1>*XX to the ESP32.", src="LIBConfigWindow"))
+        en_row = QtWidgets.QWidget()
+        en_l = QtWidgets.QHBoxLayout(en_row)
+        en_l.setContentsMargins(0, 0, 0, 0)
+        en_l.setSpacing(6)
+        en_l.addWidget(self._enable_combo, stretch=1)
+        en_l.addWidget(btn_en)
+        en_lbl = QtWidgets.QLabel("HGAC")
+        en_lbl.setStyleSheet("font-size:22px;")
+        hgac_form.addRow(en_lbl, en_row)
 
-            row_w = QtWidgets.QWidget()
-            row_l = QtWidgets.QHBoxLayout(row_w)
-            row_l.setContentsMargins(0, 0, 0, 0)
-            row_l.setSpacing(6)
-            row_l.addWidget(spin, stretch=1)
-            row_l.addWidget(btn_set)
-
-            lbl = QtWidgets.QLabel(label)
-            lbl.setStyleSheet("font-size:22px;")
-            form.addRow(lbl, row_w)
-
-            self._spins[key]  = spin
-            self._scales[key] = scale
-
-        vbox.addWidget(grp)
+        for p in self._HGAC_PARAMS:
+            self._add_param_row(hgac_form, p)
+        vbox.addWidget(hgac_grp)
         vbox.addStretch()
 
         self._statusbar = QtWidgets.QStatusBar()
         self._statusbar.setStyleSheet("font-size:20px; color:#AAAAAA;")
         self.setStatusBar(self._statusbar)
         self._statusbar.showMessage("Not connected — click 'Read from chip' after connecting")
+
+    def _add_param_row(self, form, p):
+        """Build one spinbox + Set button row from a _PARAMS/_HGAC_PARAMS tuple."""
+        key, label, tooltip, decimals, vmin, vmax, suffix, scale = p
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setDecimals(decimals)
+        spin.setRange(vmin, vmax * scale if scale != 1.0 else vmax)
+        spin.setSuffix(suffix)
+        spin.setStyleSheet(self._SPIN_SS_CLEAN)
+        spin.setFixedHeight(44)
+        spin.valueChanged.connect(lambda _, s=spin: self._mark_dirty(s) if not self._updating_from_lcfg else None)
+        spin.setToolTip(_make_tooltip(label, tooltip, src="LIBConfigWindow"))
+
+        btn_set = QtWidgets.QPushButton("Set")
+        btn_set.setStyleSheet("font-size:22px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
+        btn_set.setFixedHeight(44)
+        btn_set.clicked.connect(lambda _, k=key, s=spin, sc=scale: self._on_set_one(k, s, sc))
+        btn_set.setToolTip(_make_tooltip(f"Set {label}", f"Sends $SET,{key},<value>*XX to the ESP32.", src="LIBConfigWindow"))
+
+        row_w = QtWidgets.QWidget()
+        row_l = QtWidgets.QHBoxLayout(row_w)
+        row_l.setContentsMargins(0, 0, 0, 0)
+        row_l.setSpacing(6)
+        row_l.addWidget(spin, stretch=1)
+        row_l.addWidget(btn_set)
+
+        lbl = QtWidgets.QLabel(label)
+        lbl.setStyleSheet("font-size:22px;")
+        form.addRow(lbl, row_w)
+
+        self._spins[key]  = spin
+        self._scales[key] = scale
+
+    def _on_set_enable(self):
+        self._send_set("hgac_enable", str(self._enable_combo.currentIndex()))  # 0=Disabled, 1=Enabled
 
     def _mark_dirty(self, spin):
         spin.setStyleSheet(self._SPIN_SS_DIRTY)
@@ -7325,7 +7385,8 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         self._mark_clean(spin)
 
     def _on_set_all(self):
-        for key, _label, _tt, _dec, _vmin, _vmax, _sfx, scale in self._PARAMS:
+        self._on_set_enable()
+        for key, _label, _tt, _dec, _vmin, _vmax, _sfx, scale in (self._PARAMS + self._HGAC_PARAMS):
             spin = self._spins[key]
             stored_val = spin.value() / scale if scale != 1.0 else spin.value()
             if abs(stored_val) < 1e-3 and stored_val != 0.0:
@@ -7383,6 +7444,9 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                     self._mark_clean(spin)
                 except ValueError:
                     pass
+        if "hgac_enable" in kv:
+            enabled = kv["hgac_enable"].strip() in ("1", "1.0", "true", "True")
+            self._enable_combo.setCurrentIndex(1 if enabled else 0)
         self._updating_from_lcfg = False
         self._statusbar.showMessage("Lib config loaded from chip")
         self._lcfg_timer.stop()
@@ -11018,6 +11082,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.send_cmd(b'$CFG?\n')
         return True
 
+    def _auto_enable_hgac(self):
+        """Bench convenience: enable HGAC after each firmware start (the ESP32 boots with the
+        library default hgac_enable=false). The library default stays OFF — safe for the IncuNest
+        motherBoard; this auto-enable only affects PulseNest bench sessions. To run with HGAC off
+        temporarily, set the LIB CONFIG combo to Disabled (reverts to enabled on the next reset)."""
+        if not self._is_cmd_ready():
+            return
+        payload = "$SET,hgac_enable,1"
+        chk = 0
+        for c in payload[1:]:
+            chk ^= ord(c)
+        self.send_cmd(f"{payload}*{chk:02X}\r\n".encode())
+        self.log("→ auto-enable HGAC ($SET,hgac_enable,1)")
+
     def _is_cmd_ready(self):
         """True if a command channel is available: serial open, or UDP active with known ESP32 IP."""
         if self._active_transport == "udp" and self._esp32_ip is not None:
@@ -11348,6 +11426,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hw_config.setChecked(True)
         self.toggle_hw_config()
 
+    def _open_lib_config_default(self):
+        self.btn_lib_config.setChecked(True)
+        self.toggle_lib_config()
+
     def _open_diagnostics_default(self):
         self.btn_diagnostics.setChecked(True)
         self.toggle_diagnostics()
@@ -11596,6 +11678,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/esp32_timing_open",   self.esp32_timing_window   is not None)
         s.setValue("PPGMonitor/python_timing_open",  self.python_timing_window  is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
+        s.setValue("PPGMonitor/lib_config_open",  self.lib_config_window  is not None)
         s.setValue("PPGMonitor/diagnostics_open", self.diag_window         is not None)
         s.setValue("PPGMonitor/afe_sweep_open",    self.afe_sweep_window     is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
@@ -11616,6 +11699,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.esp32_timing_window  is not None: s.setValue("Esp32TimingWindow/geometry",   self.esp32_timing_window.saveGeometry())
         if self.python_timing_window is not None: s.setValue("PythonTimingWindow/geometry", self.python_timing_window.saveGeometry())
         if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
+        if self.lib_config_window    is not None: s.setValue("LIBConfigWindow/geometry",    self.lib_config_window.saveGeometry())
         if self.diag_window          is not None: s.setValue("DiagnosticsWindow/geometry",  self.diag_window.saveGeometry())
         if self.afe_sweep_window      is not None: s.setValue("AFESweepTestWindow/geometry",  self.afe_sweep_window.saveGeometry())
         if self.lab_capture_window   is not None: s.setValue("LabCaptureWindow/geometry",   self.lab_capture_window.saveGeometry())
@@ -11889,7 +11973,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _PROBE_APPLIED_BG       = QtGui.QColor("#00A000")  # green  — APPLIED (2)
     _PROBE_NOT_APPLIED_BG   = QtGui.QColor("#7A6400")  # amber  — NOT_APPLIED (1)
     _PROBE_DISCONNECTED_BG  = QtGui.QColor("#7A0000")  # red    — DISCONNECTED (0)
-    _PROBE_SATURATING_BG    = QtGui.QColor("#7A3D00")  # orange — SATURATING (3): signal present but out of range
+    _PROBE_SATURATING_BG    = QtGui.QColor("#0050A0")  # blue — SATURATING (3): external light saturating (ambient phase also clips)
     # V_TIA / V_ADC cell background colors
     _VTG_GREEN   = QtGui.QColor("#0F3A0F")  # optimal
     _VTG_YELLOW  = QtGui.QColor("#3A2D00")  # caution
@@ -12114,14 +12198,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _bm = _re.search(r'Board:\s*(\S+)', line)
                                 if _bm:
                                     self.log(f"Board: {_bm.group(1)}")
-                            # "# incunest_afe4490 started" → Cmd_Task is running → send $CFG? + $MODE
+                            # "# incunest_afe4490 started" → Cmd_Task is running → send $CFG? + $LCFG? + $MODE
                             if 'started' in line.lower():
                                 self._post_reset_cfg_pending = False
                                 QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
+                                # Also refresh LIB CONFIG (RSQM/HGAC) if open: request_chip_config()
+                                # only sends $CFG? (HW), not $LCFG? — so LIB CONFIG would otherwise
+                                # keep stale values after a reset.
+                                if self.lib_config_window is not None:
+                                    QtCore.QTimer.singleShot(400, self.lib_config_window._auto_read_lcfg)
                                 # Restore saved frame mode (ESP32 always boots in M3)
                                 _fm = self.frame_mode
                                 QtCore.QTimer.singleShot(500,
                                     lambda fm=_fm: self._send_frame_cmd(fm))
+                                # Bench convenience: re-enable HGAC (ESP32 boots with it OFF; the
+                                # library default stays OFF for the motherBoard — see _auto_enable_hgac).
+                                QtCore.QTimer.singleShot(600, self._auto_enable_hgac)
                         elif 'frame mode' in line.lower():
                             if _is_active:
                                 _fm_txt = line.lstrip('# ').strip()
@@ -12213,6 +12305,26 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                                           int(float(_p500[22])), int(_p500[1]))
                             except (ValueError, IndexError):
                                 pass
+
+                    # Auto-refresh HW CONFIG when HGAC changes RF. $M4 fields 34/35 = HGAC_RF1/RF2
+                    # (strings, e.g. "100K"); field 35 carries the trailing *XX checksum. HGAC
+                    # actuates on the chip, so mirror the new RF into the HW CONFIG combos via a
+                    # $CFG? — coalesced (one request 300 ms after the last change) so a burst of
+                    # guard step-downs doesn't spam $CFG?.
+                    if _is_active and self.hw_config_window is not None:
+                        _prf = line[1:].split(',')
+                        if len(_prf) >= 36 and _prf[0] == 'M4':
+                            _cur_rf = (_prf[34].split('*')[0], _prf[35].split('*')[0])
+                            if _cur_rf != getattr(self, '_last_hgac_rf', None):
+                                _prev_rf = getattr(self, '_last_hgac_rf', None)
+                                self._last_hgac_rf = _cur_rf
+                                if _prev_rf is not None:   # skip the first frame (no change yet)
+                                    if not hasattr(self, '_hgac_rf_cfg_timer'):
+                                        self._hgac_rf_cfg_timer = QtCore.QTimer(self)
+                                        self._hgac_rf_cfg_timer.setSingleShot(True)
+                                        self._hgac_rf_cfg_timer.timeout.connect(
+                                            lambda: self.request_chip_config(notify_lab_capture=False))
+                                    self._hgac_rf_cfg_timer.start(300)
 
                     # TIMING diagnostic frame: handle before decimation, not counted as data
                     # Format: $TIMING,hr1_mean,hr1_max,hr2fp_mean,hr2fp_max,hr3fp_mean,hr3fp_max,
@@ -12720,6 +12832,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_python_timing_default)
         if s.value("PPGMonitor/hw_config_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hw_config_default)
+        if s.value("PPGMonitor/lib_config_open",   False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_lib_config_default)
         if s.value("PPGMonitor/diagnostics_open",  False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_diagnostics_default)
         if s.value("PPGMonitor/afe_sweep_open",     False, type=bool):

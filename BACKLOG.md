@@ -33,7 +33,12 @@ has not been triaged yet.
 - Estudiar cada cuánto debe actual HGAC
 - Estudiar búffer de 10 estadísticos de 1 s (si hace falta más resolución temporal se disminuye 1 s o se divide cada estadístico en otro búffer de 2,3,4,5,... estadísticos)
 - En los ficheros de captura aparece "HR3 LPF: 15.00 Hz" en vez de BPF ¿por qué no se filtran las bajas frecuencias?
-
+- Analizar por qué HIGH2 está en tia_axis y HIGH1/LOW1 no lo están
+- Analizar la situación RF=10K y aled1/2 
+- Propuesta: que la alarma RSQM_DIAG_AMBIENT_HIGH genere un mensaje en el log del script cuando se active o cuando se desactive
+- Si la sonda no está aplicada es muy posible que led1/2 estén saturados pero aled1/2 no (si no hay mucha luz ambiental)
+	Esta situación actualmente provoca PROBE_SATURATING pero quizás deberíamos etiquetarla como PROBE_NOT_APPLIED.
+- la línea incunest_afe440.h:1127 induce a confusión (uint32_t       _rsqm_probe_state_min_samples { 100 }; )	
 ## Done / promoted
 
 - [x] EMA de RSQM como código muerto tras SIGNAL_WEAK → RESUELTO v0.57 (eliminados EMA + `ready` + τ; ver conversation_log 2026-08-07)

@@ -97,15 +97,17 @@ void test_hgac_ambient_alarm_at_floor() {
     TEST_ASSERT_TRUE((afe.test_diag_code() & RSQM_DIAG_AMBIENT_HIGH) != 0);
 }
 
-// ── No ambient alarm when saturation is LED-dominated (ALED low) ──
-void test_hgac_no_ambient_alarm_when_led_dominated() {
+// ── LED-only saturation (ambient phase clean) = probe in air → NOT_APPLIED, HGAC frozen ──
+// Option 3 (v0.61): removing the finger saturates the LED phase (its own light reaches the PD
+// directly) but NOT the ambient phase, so RSQM classifies it NOT_APPLIED and HGAC must NOT chase
+// RF down to the floor — otherwise the reading is ruined for when the finger returns.
+void test_hgac_led_only_sat_is_probe_in_air() {
     INCUNEST_AFE4490 afe;
     afe.setHgacEnable(true);
-    afe.setHgacEmaAmbientTauS(0.02f);
-    // LED phases saturate but ambient (ALED) stays at 0 → not an ambient problem.
+    // LED phases saturate, ambient (ALED) phases clean → probe in air (not an ambient problem).
     for (int i = 0; i < 4000; i++) afe.test_feed_sample(SAT_CODE, SAT_CODE, 0, 0);
-    assert_rf1(afe, AFE4490RF::RF_10K);
-    TEST_ASSERT_TRUE((afe.test_diag_code() & RSQM_DIAG_AMBIENT_HIGH) == 0);
+    assert_rf1(afe, AFE4490RF::RF_100K);   // NOT_APPLIED → HGAC frozen → RF unchanged from default
+    TEST_ASSERT_TRUE((afe.test_diag_code() & RSQM_DIAG_AMBIENT_HIGH) == 0);  // no ambient alarm
 }
 
 int main() {
@@ -117,6 +119,6 @@ int main() {
     RUN_TEST(test_hgac_change_rf_resets_and_rewarms);
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
-    RUN_TEST(test_hgac_no_ambient_alarm_when_led_dominated);
+    RUN_TEST(test_hgac_led_only_sat_is_probe_in_air);
     return UNITY_END();
 }

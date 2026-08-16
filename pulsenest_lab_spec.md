@@ -941,18 +941,26 @@ and **clean** (no border) after a matching `$CFG` confirms the change.
 
 ### 7.17 LIBConfigWindow — "LIB CONFIG"
 
-Purpose: view and change RSQM / algorithm library parameters in real time via `$SET`/`$LCFG` protocol.
+Purpose: view and change RSQM / HGAC library parameters in real time via `$SET`/`$LCFG` protocol.
 
 **Contents (RSQM group):**
 - OT threshold (`rsqm_ot_thr`) — NOT_APPLIED vs APPLIED boundary [A/A]
-- Signal weak STD (`rsqm_signal_weak_std`) — RSQM_DIAG_SIGNAL_WEAK threshold [ADC counts]
 - DISCONNECTED LED_sub threshold (`rsqm_disconn_led_sub_thr`) [ADC counts]
 - DISCONNECTED I_PD threshold (`rsqm_disconn_i_pd_thr`) [nA displayed, A stored]
 - Probe debounce (`rsqm_probe_state_min_s`) [s] — converted to samples from `fs` internally
-- EMA mean τ (`rsqm_ema_mean_tau_s`) [s]
-- EMA var τ (`rsqm_ema_var_tau_s`) [s]
+- (RSQM's `signal_weak_std` and `ema_mean/var_tau_s` were removed with the estimator cleanup — lib v0.56/v0.57.)
+
+**Contents (HGAC group, added 2026-08-09):** — see incunest_afe4490 §5.8
+- HGAC (`hgac_enable`) — combo Disabled/Enabled (index 0/1 → $SET value); master enable (Disabled = HGAC never actuates)
+- HIGH2 guard (`hgac_v_tia_high2`) [V] — fast-EMA guard threshold
+- HIGH1 level ↑ (`hgac_v_tia_high1`) [V] — slow-EMA leveling upper
+- LOW1 level ↓ (`hgac_v_tia_low1`) [V] — slow-EMA leveling lower
+- Fast EMA τ (`hgac_ema_fast_tau_s`) [s] — guard estimator
+- Slow EMA τ (`hgac_ema_slow_tau_s`) [s] — leveling estimator
+- Ambient EMA τ (`hgac_ema_ambient_tau_s`) [s] — ALED estimator for the AMBIENT_HIGH alarm
+
 - [Read from chip ($LCFG?)] — requests `$LCFG?` from firmware
-- [Set all] — sends `$SET` for every parameter in the window
+- [Set all] — sends `$SET` for `hgac_enable` and every RSQM + HGAC parameter in the window
 - Status bar: shows last command sent and confirmation status
 
 Controls are marked **dirty** (red text) when edited but not yet confirmed by firmware, and **clean** after a matching `$LCFG` arrives.
@@ -1171,7 +1179,7 @@ pyqtgraph context menus from being too narrow to read.
 - SIGNAL STATS `ProbeState` cell: new `_PROBE_SATURATING_BG` (orange `#7A3D00`), distinct from
   `PROBE_NOT_APPLIED`'s amber — a saturating channel means signal is present but out of range,
   a different diagnostic situation from "no probe applied" that previously shared the same
-  amber color.
+  amber color. *(2026-08-10: recolored to blue `#0050A0` at Alex's request.)*
 - `ProbeState` row tooltip (SIGNAL STATS table) rewritten to document the new priority order
   (DISCONNECTED > SATURATING > NOT_APPLIED > APPLIED) and that SATURATING does not imply a
   patient is present.
