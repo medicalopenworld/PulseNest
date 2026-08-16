@@ -426,11 +426,11 @@ static void send_cfg_frame() {
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_sep_tia_en ? 1 : 0,
         afeRFToStr(cfg.afe_tia_rf_led1), kAFE_RF_OHM[(int)cfg.afe_tia_rf_led1],
-        afeCFToStr(cfg.afe_tia_cf_led1),   kAFE_CF_PF[(int)cfg.afe_tia_cf_led1],
+        afeCFToStr(cfg.afe_tia_cf_led1_code), cfg.afe_tia_cf_led1_pF,
         afeRGToStr(cfg.afe_stg2_rg_led1), kAFE_RG_OHM[(int)cfg.afe_stg2_rg_led1], kAFE_RG_GAIN[(int)cfg.afe_stg2_rg_led1],
         cfg.afe_stg2_en_led1 ? 1 : 0,
         afeRFToStr(cfg.afe_tia_rf_led2), kAFE_RF_OHM[(int)cfg.afe_tia_rf_led2],
-        afeCFToStr(cfg.afe_tia_cf_led2),   kAFE_CF_PF[(int)cfg.afe_tia_cf_led2],
+        afeCFToStr(cfg.afe_tia_cf_led2_code), cfg.afe_tia_cf_led2_pF,
         afeRGToStr(cfg.afe_stg2_rg_led2), kAFE_RG_OHM[(int)cfg.afe_stg2_rg_led2], kAFE_RG_GAIN[(int)cfg.afe_stg2_rg_led2],
         cfg.afe_stg2_en_led2 ? 1 : 0,
         (unsigned)cfg.afe_ambdac_uA, kAFE_RI_OHM,
@@ -508,12 +508,12 @@ static void apply_set_cmd(const char* key, const char* val) {
             return;
         }
     } else if (strcmp(key, "tiacf") == 0) {
-        AFE4490TIACF cf;
+        AFE4490CFCode cf;
         if (afeStrToCF(val, cf)) {
-            afe.setTIACF(cf);
+            afe.setTIACF(afeCFCodeToPF(cf));
             Serial_printf("# SET tiacf=%s (both channels)\n", val);
         } else {
-            Serial_printf("$ERR,tiacf,invalid (5p/10p/20p/30p/55p/155p)\r\n");
+            Serial_printf("$ERR,tiacf,invalid (5p..250p, 32 steps)\r\n");
             return;
         }
     } else if (strcmp(key, "stg2") == 0) {
@@ -536,12 +536,12 @@ static void apply_set_cmd(const char* key, const char* val) {
             return;
         }
     } else if (strcmp(key, "tiacf1") == 0) {
-        AFE4490TIACF cf;
+        AFE4490CFCode cf;
         if (afeStrToCF(val, cf)) {
-            afe.setTIACFLED1(cf);
+            afe.setTIACFLED1(afeCFCodeToPF(cf));
             Serial_printf("# SET tiacf1=%s (LED1/IR)\n", val);
         } else {
-            Serial_printf("$ERR,tiacf1,invalid (5p/10p/20p/30p/55p/155p)\r\n");
+            Serial_printf("$ERR,tiacf1,invalid (5p..250p, 32 steps)\r\n");
             return;
         }
     } else if (strcmp(key, "stg21") == 0) {
@@ -564,12 +564,12 @@ static void apply_set_cmd(const char* key, const char* val) {
             return;
         }
     } else if (strcmp(key, "tiacf2") == 0) {
-        AFE4490TIACF cf;
+        AFE4490CFCode cf;
         if (afeStrToCF(val, cf)) {
-            afe.setTIACFLED2(cf);
+            afe.setTIACFLED2(afeCFCodeToPF(cf));
             Serial_printf("# SET tiacf2=%s (LED2/RED)\n", val);
         } else {
-            Serial_printf("$ERR,tiacf2,invalid (5p/10p/20p/30p/55p/155p)\r\n");
+            Serial_printf("$ERR,tiacf2,invalid (5p..250p, 32 steps)\r\n");
             return;
         }
     } else if (strcmp(key, "stg22") == 0) {

@@ -6405,7 +6405,12 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
     # TIA gain options — same strings as tia_gain_str() in main.cpp
     TIA_GAINS  = ["10K", "25K", "50K", "100K", "250K", "500K", "1M"]
-    TIA_CFS    = ["5p", "10p", "20p", "30p", "55p", "155p"]
+    # All 32 CF_LED[4:0] register codes (5 pF base + switchable 5/15/25/50/150 pF caps).
+    # Same strings and same order as kAFE_CF_STR[] in incunest_afe4490.h.
+    TIA_CFS    = ["5p",   "10p",  "20p",  "25p",  "30p",  "35p",  "45p",  "50p",
+                  "55p",  "60p",  "70p",  "75p",  "80p",  "85p",  "95p",  "100p",
+                  "155p", "160p", "170p", "175p", "180p", "185p", "195p", "200p",
+                  "205p", "210p", "220p", "225p", "230p", "235p", "245p", "250p"]
     STG2_GAINS         = ["0dB", "3.5dB", "6dB", "9.5dB", "12dB"]
     STG2_GAINS_DISPLAY = ["0dB  ×1  100 kΩ", "3.5dB  ×1.5  150 kΩ",
                           "6dB  ×2  200 kΩ",  "9.5dB  ×3  300 kΩ",

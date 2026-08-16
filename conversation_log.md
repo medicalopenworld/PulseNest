@@ -16007,3 +16007,55 @@ pasó a `led_only_sat_is_probe_in_air` (led sat/aled 0 → NOT_APPLIED → RF NO
 **UI (mismo día):** color de la celda ProbeState=SATURATING(3) en SIGNAL STATS cambiado de naranja
 `#7A3D00` a **azul `#0050A0`** (petición de Alex). `pulsenest_lab.py` (`_PROBE_SATURATING_BG`);
 py_compile OK; spec del script anotado. Solo UI, sin reflash.
+
+---
+
+## Sesión 2026-08-16 — TIA CF: exponer los 32 códigos del registro (lib v0.62)
+
+**Origen:** Alex, revisando `_recalc_afe_tia_cf_led1()`, detecta que `AFE4490TIACF` y `kAFE_CF_PF`
+no reflejan lo que dice el datasheet (Figure 114, bits D[7:3] de TIAGAIN): esos 5 bits no son
+6 valores sino **5 condensadores conmutables en paralelo sobre una base fija de 5 pF**
+(pesos 5/15/25/50/150 pF) → **32 combinaciones**, de 5 a 250 pF.
+
+**Verificación:** confirmado en el texto literal del datasheet, incluido su ejemplo
+`01111 = 50+25+15+5 +5 = 100 pF`. Los 6 valores que tenía la librería eran **correctos**
+(base de 5 pF bien incluida, bits bien colocados) — el problema era de **cobertura**, no de error:
+solo exponía las 6 combinaciones de un bit, así que el auto-CF infraseleccionaba.
+
+**Decisiones (Alex):**
+1. API pública **en pF, cuantizada a la baja** (`setTIACF(float pF)`), no código crudo ni enum de 32.
+   Coherente con el precedente `_quantize_led_mA()`. A la baja y nunca al alza: redondear
+   hacia arriba violaría el criterio 5τ.
+2. **Todo junto**: exponer los 32 códigos Y soltar el auto-CF a usarlos en el mismo commit.
+3. Commitear primero el trabajo pendiente (v0.61 + UI HGAC) para aislar el cambio.
+
+**Cambios (lib v0.61 → v0.62):**
+- `enum class AFE4490TIACF` → `using AFE4490CFCode = uint8_t` (el código ES el valor).
+- `kAFE_CF_PF[6]` → `[32]`; nuevo `kAFE_CF_STR[32]`; `afeCFCodeToPF()` / `afeCFPFToCode()`.
+- `cf_code[]` eliminado: ahora `(code & 0x1F) << 3` directo sobre D[7:3].
+- Setters en pF; `AFE4490Config` expone `afe_tia_cf_ledN_code` + `_pF`.
+- `_recalc_afe_tia_cf_led1/2()` delega en `afeCFPFToCode()` → una sola regla compartida
+  entre selección automática y setter manual (no pueden discrepar).
+- `afeStrToCF()` sigue aceptando los 6 strings antiguos → **sin ruptura de protocolo** $CFG/$SET.
+
+**Trampa encontrada durante la implementación (crítica):** `cf_max_pF` se calcula como
+`(settle_s/5/RF)*1e12` y en float da **99.9999924** en vez de 100.0 en el caso por defecto
+(500 Hz / RF_100K). Con `<=` estricto la selección caía a 95 pF y **el cambio entero quedaba
+anulado en silencio** por 8e-6 pF. Afectaba a más combinaciones (500 Hz/RF_50K → 195 vs 200;
+2000 Hz/RF_100K → 20 vs 25). Solución: `kAFE_CF_MATCH_TOL = 1e-4` (0.01% relativo, muy por
+debajo de la tolerancia real de los condensadores del chip) aplicada dentro de `afeCFPFToCode()`,
+así protege tanto el auto-CF como el setter manual.
+
+**Cambio de comportamiento:** auto-CF por defecto (500 Hz / RF_100K) pasa de **55 pF → 100 pF**
+(~1.8× más filtrado de ruido en el TIA; f_pole ≈ 15.9 kHz, muy por encima de la banda PPG).
+Todas las combinaciones RF/Fs mejoran o quedan igual; ninguna viola 5τ.
+
+**También:** C++11 en el build Arduino → el `static_assert` de monotonía necesitó `constexpr`
+recursivo (los tests nativos son C++17 y no lo detectaron; lo cazó el build del firmware).
+
+**Nuevo test `test_tia_cf` (9 casos):** LUT contra los pesos del datasheet, cuantización a la baja,
+round-trips código↔pF y string, strings legacy, y regresión de la tolerancia float.
+
+**Verificación:** 47/48 tests (test_biquad ERRORED pre-existente) · build V16 SUCCESS · py_compile OK.
+
+**Estado git:** pendiente de commit. **Pendiente: verificar en HW (16.A) v_tia y ruido con CF=100 pF.**

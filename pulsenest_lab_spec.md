@@ -203,11 +203,11 @@ Parameters accepted by `$SET`:
 | `ledrange` | 75, 150 | LED current full-scale range (mA) |
 | `ensepgain` | 0, 1 | Enable separate gain for LED1/LED2 TIA |
 | `tiagain1` | 0–6 | LED1 TIA feedback resistor index (RF1) |
-| `tiacf1` | 0–3 | LED1 TIA feedback capacitor index (CF1) |
+| `tiacf1` | 0–31 | LED1 TIA feedback capacitor code (CF1) — `CF_LED[4:0]`, 32 steps 5–250 pF |
 | `stg21` | 0–4 | LED1 stage-2 gain index (RG1) |
 | `stage2en1` | 0, 1 | Enable stage-2 for LED1 |
 | `tiagain2` | 0–6 | LED2 TIA feedback resistor index (RF2) |
-| `tiacf2` | 0–3 | LED2 TIA feedback capacitor index (CF2) |
+| `tiacf2` | 0–31 | LED2 TIA feedback capacitor code (CF2) — `CF_LED[4:0]`, 32 steps 5–250 pF |
 | `stg22` | 0–4 | LED2 stage-2 gain index (RG2) |
 | `stage2en2` | 0, 1 | Enable stage-2 for LED2 |
 | `ambdac` | 0–10 | Ambient cancellation current (µA, 2 µA/step) |
