@@ -16064,3 +16064,54 @@ PulseNest `ccf139a` (UI HGAC en LIBConfigWindow).
 
 **Pendiente: verificar en HW (16.A) v_tia y ruido con CF=100 pF** — el cambio de default no está
 validado en placa.
+
+---
+
+## Sesión 2026-08-17 — Verificación en HW del cambio de CF (v0.62): resultado NULO
+
+**Montaje:** IncuNest 16.A por OTA (192.168.137.204, MAC 10:51:DB:50:48:F8 — verificada por ARP;
+la 17.A estaba también en el hotspot en 192.168.137.182, cuidado). HGAC desactivado para que RF
+quedase fijo (HGAC llama a `setTIAGainLED1/2()`, que recalcula el auto-CF y borra el CF manual).
+
+**Resultado: CF no tiene ningún efecto observable en esta configuración.**
+Barrido del rango COMPLETO 5 pF → 250 pF (factor 50) a RF_100K / 500 Hz:
+
+| Magnitud | CF=5p | CF=250p |
+|---|---|---|
+| V_TIA (los 4 canales) | ~0.5 V | ~0.5 V (±1 mV = deriva del montaje) |
+| `LED1_SUB` %SD/Mean | 0.01 | 0.01 |
+
+**Control de la ruta de escritura:** bajar RF de 100K a 50K SÍ reduce V_TIA a la mitad. RF vive en
+los mismos dos registros que CF (TIAGAIN / TIA_AMB_GAIN), en bits contiguos → los bits de CF llegan
+al chip y el resultado nulo es físico, no un fallo de escritura.
+
+**Explicación:** el filtro paso-bajo interno del AFE (`FLTRCNRSEL`=500 Hz) está entre la etapa 2 y el
+muestreador y domina el ancho de banda de ruido. El polo del TIA va de 318 kHz (5p) a 6.4 kHz (250p),
+siempre muy por encima de 500 Hz; y como ese filtro precede al S/H, tampoco queda ruido fuera de
+banda que replegar por aliasing.
+
+**Error de modelo mío, corregido:** predije que 155p/250p hundirían V_TIA por falta de asentamiento.
+Falso. La fase de muestreo es una VENTANA de 449.5 µs y el valor retenido es el del final, así que el
+TIA dispone de margen + ventana ≈ 500 µs, no de los ~50 µs del margen previo que asume el criterio
+del auto-CF. A RF_100K/250p el residuo es e⁻²⁰ ≈ 1 nV. Consecuencia: el criterio de la librería
+(`5τ ≤ tia_margin`) es ~10× MÁS ESTRICTO que la Ec.1 del propio datasheet
+(`RF×CF ≤ RxSampleTime/10`), que a RF_100K/500 Hz permitiría hasta ~449 pF (toda la rejilla).
+
+**Decisión (Alex + Claude): NO tocar el criterio.** Relajarlo no compra nada medible y gasta margen
+de asentamiento, que es gratis. Revisar solo si aparece una configuración donde CF sí influya:
+`FLTRCNRSEL`=1000 Hz, RF mucho mayor, o una sonda/cable cuya capacidad haga que el límite sea la
+ESTABILIDAD del lazo del TIA — el único riesgo asociado a CF que estas medidas NO han explorado
+(no se observó repicado ni siquiera a 5 pF).
+
+**Corrección documental:** en el commit y la spec de v0.62 afirmé "~1.8× más filtrado de ruido".
+La medida lo desmiente; retirado de la spec (§7.2 + changelog). El valor real de v0.62 es haber
+corregido una rejilla de registro incompleta, NO mejorar el SNR.
+
+**Nota de UI:** `%SD/Mean` sale en blanco en casi todas las filas de SIGNAL STATS por diseño — solo
+se rellena en `LED1_SUB`, `LED2_SUB` y `R` (`pulsenest_lab.py:12071`). No es un bug.
+
+**Pregunta de Alex que motivó el análisis:** "¿por qué no poner siempre CF bajo?" → porque CF hace dos
+trabajos que se pierden: compensa el cero de ganancia de ruido que forma C_PD (fotodiodo + cable) y
+mantiene el margen de fase del lazo (CF bajo → repicado/oscilación), y acota la banda de ruido antes
+del muestreo. Por eso la política es el mayor CF que aún se asiente. En ESTE montaje resulta
+irrelevante porque el filtro interno de 500 Hz ya domina, pero la política sigue siendo correcta.
