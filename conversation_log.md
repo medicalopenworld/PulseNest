@@ -16058,4 +16058,9 @@ round-trips código↔pF y string, strings legacy, y regresión de la tolerancia
 
 **Verificación:** 47/48 tests (test_biquad ERRORED pre-existente) · build V16 SUCCESS · py_compile OK.
 
-**Estado git:** pendiente de commit. **Pendiente: verificar en HW (16.A) v_tia y ruido con CF=100 pF.**
+**Estado git:** COMMITEADO. Librería `2c68c1b` (v0.62), PulseNest `038a362`. Antes se aislaron los
+cambios que venían pendientes: librería `59f66fa` (v0.61, clasificador de saturación por fase) y
+PulseNest `ccf139a` (UI HGAC en LIBConfigWindow).
+
+**Pendiente: verificar en HW (16.A) v_tia y ruido con CF=100 pF** — el cambio de default no está
+validado en placa.
