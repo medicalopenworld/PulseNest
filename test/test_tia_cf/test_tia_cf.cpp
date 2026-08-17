@@ -127,6 +127,58 @@ void test_set_tiacf_overrides_and_quantises() {
     TEST_ASSERT_EQUAL_FLOAT(25.0f,  cfg.afe_tia_cf_led2_pF);
 }
 
+// ── Datasheet Equation 1 (§8.3.1.1): RF × CF ≤ Rx Sample Time / 10 ──
+// The library's auto-CF criterion is stricter (≈4.5×), so auto-selection must always sit
+// inside Eq. 1 — but a manual override can exceed it, which is what getCFMaxEq1PF() lets
+// the caller detect. Eq. 1 bounds CF; it says nothing about when the sample window opens
+// (that margin is for LED/cable settling per §8.3.1.3) — the two are not interchangeable.
+void test_eq1_limit_matches_sample_window() {
+    INCUNEST_AFE4490 afe;
+    afe.setSampleRate(500);
+    // 500 Hz: q = 2000, margin = 200 → Rx sample window = q − 2 − margin = 1798 counts = 449.5 µs.
+    // Eq. 1 → τ ≤ 44.95 µs → at RF_100K, CF ≤ 449.5 pF.
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 449.5f, afe.getCFMaxEq1PF(AFE4490RF::RF_100K));
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 179.8f, afe.getCFMaxEq1PF(AFE4490RF::RF_250K));
+    TEST_ASSERT_FLOAT_WITHIN(1.0f,  44.95f, afe.getCFMaxEq1PF(AFE4490RF::RF_1M));
+}
+
+// ── Auto-CF always stays inside Eq. 1, for every RF and every rate ──
+void test_autocf_always_within_eq1() {
+    const AFE4490RF rfs[7] = { AFE4490RF::RF_10K,  AFE4490RF::RF_25K, AFE4490RF::RF_50K,
+                               AFE4490RF::RF_100K, AFE4490RF::RF_250K, AFE4490RF::RF_500K,
+                               AFE4490RF::RF_1M };
+    const uint16_t rates[4] = { 125, 250, 500, 1000 };
+    for (int r = 0; r < 4; ++r) {
+        for (int i = 0; i < 7; ++i) {
+            INCUNEST_AFE4490 afe;
+            afe.setSampleRate(rates[r]);
+            afe.setTIAGain(rfs[i]);
+            AFE4490Config cfg = afe.getConfig();
+            TEST_ASSERT_TRUE(cfg.afe_tia_cf_led1_pF <= afe.getCFMaxEq1PF(rfs[i]));
+        }
+    }
+}
+
+// ── A manual override CAN exceed Eq. 1 — the library applies it and does not block ──
+void test_manual_cf_can_exceed_eq1() {
+    INCUNEST_AFE4490 afe;
+    afe.setSampleRate(500);
+    afe.setTIAGain(AFE4490RF::RF_250K);       // Eq. 1 limit ≈ 179.8 pF
+    afe.setTIACF(250.0f);                      // deliberately above it
+    AFE4490Config cfg = afe.getConfig();
+    TEST_ASSERT_EQUAL_FLOAT(250.0f, cfg.afe_tia_cf_led1_pF);          // applied, not clamped
+    TEST_ASSERT_TRUE(cfg.afe_tia_cf_led1_pF > afe.getCFMaxEq1PF(AFE4490RF::RF_250K));
+}
+
+// ── Eq. 1 limit scales with the sample window: halve the rate → roughly double the window ──
+void test_eq1_limit_scales_with_rate() {
+    INCUNEST_AFE4490 fast, slow;
+    fast.setSampleRate(1000);
+    slow.setSampleRate(500);
+    TEST_ASSERT_TRUE(slow.getCFMaxEq1PF(AFE4490RF::RF_100K) >
+                     fast.getCFMaxEq1PF(AFE4490RF::RF_100K));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_cf_table_matches_datasheet_weights);
@@ -138,5 +190,9 @@ int main() {
     RUN_TEST(test_autocf_respects_settling_budget);
     RUN_TEST(test_autocf_grows_when_rate_drops);
     RUN_TEST(test_set_tiacf_overrides_and_quantises);
+    RUN_TEST(test_eq1_limit_matches_sample_window);
+    RUN_TEST(test_autocf_always_within_eq1);
+    RUN_TEST(test_manual_cf_can_exceed_eq1);
+    RUN_TEST(test_eq1_limit_scales_with_rate);
     return UNITY_END();
 }

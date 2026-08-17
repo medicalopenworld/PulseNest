@@ -16094,8 +16094,20 @@ banda que replegar por aliasing.
 Falso. La fase de muestreo es una VENTANA de 449.5 µs y el valor retenido es el del final, así que el
 TIA dispone de margen + ventana ≈ 500 µs, no de los ~50 µs del margen previo que asume el criterio
 del auto-CF. A RF_100K/250p el residuo es e⁻²⁰ ≈ 1 nV. Consecuencia: el criterio de la librería
-(`5τ ≤ tia_margin`) es ~10× MÁS ESTRICTO que la Ec.1 del propio datasheet
+(`5τ ≤ tia_margin`) es **≈4,5× MÁS ESTRICTO** que la Ec.1 del propio datasheet
 (`RF×CF ≤ RxSampleTime/10`), que a RF_100K/500 Hz permitiría hasta ~449 pF (toda la rejilla).
+(Corregido: primero escribí "~10×", mal. `5τ ≤ 0,10·q` → τ ≤ 10 µs; Ec.1 → τ ≤ 44,95 µs → 4,5×.)
+
+**Origen probable del `tia_settle_fraction = 0.10`** (sin justificar desde v0.20, ya investigado al
+principio de la sesión sin encontrar base en el datasheet): es el `/10` de la Ec.1 aplicado a la
+magnitud equivocada — de "τ ≤ 10% de la ventana de muestreo" pasó a "reservar el 10% de la ventana
+del LED como tiempo muerto". Numéricamente casi coinciden (0,10·q = 200 counts vs 0,10·ventana =
+179,8), por eso el error es fácil de cometer y difícil de ver. Combinarlo además con el requisito
+de 5τ es lo que produce el factor 4,5 de conservadurismo.
+
+**Hueco detectado:** la Ec.1 NO se comprueba en el código (el único "10" es `tia_settle_fraction`).
+El auto-CF no puede violarla porque es más estricto, pero un `setTIACF*()` MANUAL sí puede y no
+avisa: p.ej. a 500 Hz, RF_250K + 250 pF → RF×CF = 62,5 µs contra un límite de 44,95 µs.
 
 **Decisión (Alex + Claude): NO tocar el criterio.** Relajarlo no compra nada medible y gasta margen
 de asentamiento, que es gratis. Revisar solo si aparece una configuración donde CF sí influya:
@@ -16115,3 +16127,37 @@ trabajos que se pierden: compensa el cero de ganancia de ruido que forma C_PD (f
 mantiene el margen de fase del lazo (CF bajo → repicado/oscilación), y acota la banda de ruido antes
 del muestreo. Por eso la política es el mayor CF que aún se asiente. En ESTE montaje resulta
 irrelevante porque el filtro interno de 500 Hz ya domina, pero la política sigue siendo correcta.
+
+## Sesión 2026-08-17 (cont.) — Ec.1 como comprobación, sin cambiar comportamiento (lib v0.63)
+
+**Pregunta de Alex:** ¿sustituimos `tia_settle_fraction = 0.1` por el `/10` de la Ec.1?
+
+**Respuesta: NO — gobiernan decisiones distintas.** Sustituir una por otra es un error de categoría:
+
+| Decisión | Criterio correcto | Depende de |
+|---|---|---|
+| Cuándo abre la ventana (`LEDxSTC = q + margen`) | transitorio de encendido LED + cable (§8.3.1.3) | LED y cableado, NO de RF/CF |
+| Cuánto CF cabe | Ec.1: τ ≤ ventana/10 (§8.3.1.1) | RF y la ventana |
+
+Clave del datasheet §8.3.1.3: *"To avoid settling effects resulting from the LED or cable, program
+S_LED2 to start after the LED turns on."* → el margen existe para el **LED y el cable**, no para el
+TIA. La librería lo dimensiona con un razonamiento de asentamiento del TIA (5τ) y además lo reutiliza
+como presupuesto del auto-CF: de ahí que ambas restricciones quedaran enredadas. La Ec.1 no puede
+sustituir al margen porque no dice nada sobre cuándo abrir la ventana — dejaría al margen sin criterio.
+
+**Decisión: los dos números se quedan como están.** El margen es conservador pero gratis (el muestreo
+no está limitado por la ventana, según las medidas de esta misma sesión), y recortarlo sin haber
+medido el transitorio del LED/cable arriesga muestrear antes de que el LED se estabilice — que sí
+sesgaría la lectura. Riesgo asimétrico.
+
+**Lo que sí se implementó (v0.63, sin cambio de comportamiento):**
+- `getCFMaxEq1PF(rf)` público + `_compute_sample_window_counts()` privado (= q − 2 − margen).
+- El auto-CF está probado que NUNCA sale de la Ec.1 (`test_autocf_always_within_eq1`, todas las
+  combinaciones RF × frecuencia). Un `setTIACF*()` MANUAL sí puede y NO se recorta a propósito.
+- Firmware: `warn_if_cf_over_eq1()` tras cada `$SET tiacf*` manual → emite
+  `# WARN cf1=250 pF exceeds datasheet Eq.1 limit 180 pF (RF=250K) - applied anyway`.
+  Comentario `#`, no `$ERR`: el ajuste SÍ se aplica. Recortar en silencio haría que un experimento
+  de banco mintiera sobre lo que estaba haciendo el chip.
+- Corregido el ratio de v0.62: ≈4,5×, no ~10×.
+
+**Verificación:** test_tia_cf 13/13 · suite 51/52 (test_biquad ERRORED pre-existente) · build V16 SUCCESS.

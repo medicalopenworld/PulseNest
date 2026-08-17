@@ -469,6 +469,22 @@ static void send_lcfg_frame() {
 // parse_tia_gain / parse_tia_cf / parse_stage2 — moved to incunest_afe4490.h as
 // afeStrToRF / afeStrToCF / afeStrToRG (inline). Removed local copies.
 
+// Warn (do not block) when a MANUAL CF override exceeds datasheet Equation 1
+// (§8.3.1.1: RF × CF ≤ Rx Sample Time / 10). Auto-CF uses a stricter criterion and can never
+// trip this; only a hand-picked $SET tiacf* can. The setting is still applied — this reports
+// that the chip is being driven outside its documented range so it is visible in the lab log.
+static void warn_if_cf_over_eq1() {
+    AFE4490Config c = afe.getConfig();
+    const float lim1 = afe.getCFMaxEq1PF(c.afe_tia_rf_led1);
+    const float lim2 = afe.getCFMaxEq1PF(c.afe_tia_rf_led2);
+    if (c.afe_tia_cf_led1_pF > lim1)
+        Serial_printf("# WARN cf1=%.0f pF exceeds datasheet Eq.1 limit %.0f pF (RF=%s) - applied anyway\n",
+                      c.afe_tia_cf_led1_pF, lim1, afeRFToStr(c.afe_tia_rf_led1));
+    if (c.afe_tia_cf_led2_pF > lim2)
+        Serial_printf("# WARN cf2=%.0f pF exceeds datasheet Eq.1 limit %.0f pF (RF=%s) - applied anyway\n",
+                      c.afe_tia_cf_led2_pF, lim2, afeRFToStr(c.afe_tia_rf_led2));
+}
+
 // Process a validated $SET command (key and value already split, checksum verified).
 // Hardware params (LED, TIA, gain) are applied hot via the library setters.
 // Sample rate requires stop/restart to recalculate timing registers and algorithm state.
@@ -512,6 +528,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         if (afeStrToCF(val, cf)) {
             afe.setTIACF(afeCFCodeToPF(cf));
             Serial_printf("# SET tiacf=%s (both channels)\n", val);
+            warn_if_cf_over_eq1();
         } else {
             Serial_printf("$ERR,tiacf,invalid (5p..250p, 32 steps)\r\n");
             return;
@@ -540,6 +557,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         if (afeStrToCF(val, cf)) {
             afe.setTIACFLED1(afeCFCodeToPF(cf));
             Serial_printf("# SET tiacf1=%s (LED1/IR)\n", val);
+            warn_if_cf_over_eq1();
         } else {
             Serial_printf("$ERR,tiacf1,invalid (5p..250p, 32 steps)\r\n");
             return;
@@ -568,6 +586,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         if (afeStrToCF(val, cf)) {
             afe.setTIACFLED2(afeCFCodeToPF(cf));
             Serial_printf("# SET tiacf2=%s (LED2/RED)\n", val);
+            warn_if_cf_over_eq1();
         } else {
             Serial_printf("$ERR,tiacf2,invalid (5p..250p, 32 steps)\r\n");
             return;
