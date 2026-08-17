@@ -16161,3 +16161,23 @@ sesgaría la lectura. Riesgo asimétrico.
 - Corregido el ratio de v0.62: ≈4,5×, no ~10×.
 
 **Verificación:** test_tia_cf 13/13 · suite 51/52 (test_biquad ERRORED pre-existente) · build V16 SUCCESS.
+
+**Procedencia de las tres constantes de asentamiento (pregunta de Alex, mismo día):** ninguna de las
+tres viene del datasheet. Documentado en spec §7.2 y en los comentarios del `.cpp`:
+
+| Constante | Valor | Procedencia real |
+|---|---|---|
+| `tia_settle_min` | 50 counts (12,5 µs) | Coincide con el valor de EJEMPLO de la Table 2 de TI (t1 = t3 + 50 a 500 Hz). Adoptado como suelo tras comparar EVM de TI (80, excesivo) y Protocentral (0, sin guarda). No es un requisito declarado. |
+| `tia_settle_fraction` | 0.10 | Probablemente el `/10` de la Ec.1 aplicado a la magnitud equivocada (ver entrada anterior). |
+| `tia_n_tau` | 5.0 | Regla de oro genérica de 5 constantes de tiempo. El comentario "<0.7% settling error" es CIRCULAR: 0,7 % ES e⁻⁵ (0,674 %) reescrito, no el motivo del 5. |
+
+**Dato clave:** el número de constantes de tiempo implícito en el datasheet es **10, no 5** (la Ec.1
+exige ventana ≥ 10τ → e⁻¹⁰ ≈ 45 ppm). La librería es más LAXA en número de τ pero lo aplica contra un
+intervalo mucho más corto → neto 4,5× más estricta.
+
+⚠️ **Las tres solo tienen sentido juntas.** Subir `tia_n_tau` de 5 a 10 "para alinearlo con TI"
+manteniendo la base del margen dejaría el criterio el DOBLE de estricto (τ ≤ 5 µs → CF ≤ 50 pF a
+RF_100K), lo contrario de la intención. Anotado en el código para evitar ese arreglo.
+
+Nada de esto es incorrecto ni peligroso — el conjunto yerra por conservador — pero la justificación es
+más débil de lo que sugieren los comentarios. Las tres se mantienen sin cambios.
