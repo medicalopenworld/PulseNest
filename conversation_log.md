@@ -16181,3 +16181,12 @@ RF_100K), lo contrario de la intención. Anotado en el código para evitar ese a
 
 Nada de esto es incorrecto ni peligroso — el conjunto yerra por conservador — pero la justificación es
 más débil de lo que sugieren los comentarios. Las tres se mantienen sin cambios.
+
+**ESTADO DE FLASHEO al cerrar la sesión 2026-08-17:** la placa 16.A tiene **v0.62** (flasheada por OTA
+a 192.168.137.204 al inicio de la sesión). **v0.63 NO está flasheada** — solo añade `getCFMaxEq1PF()`,
+el aviso `# WARN` de la Ec.1 y comentarios de procedencia; ningún cambio de comportamiento, por eso no
+se subió. Commits: librería `396b3ce` (v0.63) + `9fb2831` (procedencia); PulseNest `9fd568b` + `709fd88`.
+
+**Aviso para quien retome:** durante los experimentos se dejó HGAC **desactivado** y RF/CF tocados a
+mano desde LIB/HW CONFIG. Un reset del ESP32 devuelve todo a automático (el script reactiva HGAC a los
+600 ms y el auto-CF recalcula). Si se ven valores raros de RF/CF, es esto, no un fallo.
