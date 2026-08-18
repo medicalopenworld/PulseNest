@@ -40,3 +40,15 @@ captures/
 tools/offline_runner/build/
 tools/offline_runner/*_result.csv
 tools/offline_runner/batch_summary.csv
+# Estado de la UI del script (geometrías de ventanas, celdas resaltadas) — por máquina
+pulsenest_lab.ini
+
+# Salidas de experimentos en la raíz (mover a captures/ si el resultado vale)
+tia_linearity_sweep_*.csv
+tia_linearity_sweep_*.png
+
+# Documentación de terceros — NO redistribuir en un repo público.
+# Ver docs/third_party_references.md para saber de dónde obtener cada documento.
+docs/masimo_whitepapers/
+docs/slaa655.pdf
+docs/ISO_80601-2-61-2026.pdf
