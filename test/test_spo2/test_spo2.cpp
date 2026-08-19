@@ -12,13 +12,12 @@
 // Output contract: sqi==0.0f always implies pi==spo2==spo2_r==NaN (never a stale value),
 // unified across warmup, PROBE_DISCONNECTED/PROBE_NOT_APPLIED, and the division-safety guard.
 //
-// Default calibration coefficients (must match incunest_afe4490.cpp)
-static constexpr float SPO2_A = 114.9208f;
-static constexpr float SPO2_B =  30.5547f;
-
-// Warmup = spo2_warmup_s(18.0) * 500 Hz = 9000 samples.
-static constexpr int WARMUP_SAMPLES = 9500;
-
+// (SPO2_A/SPO2_B calibration coefficients and WARMUP_SAMPLES were removed 2026-08-19: both were
+// dead code — hardcoded duplicates of incunest_afe4490.cpp's spo2_a_default/spo2_b_default and
+// spo2_warmup_s, defined but never referenced by any assertion. If a future test needs them,
+// derive from afe.getConfig().spo2_a / .spo2_b / .spo2_warmup_s instead of re-hardcoding, per
+// the same fix applied to test_hgac.cpp's WEAK_CODE/SAT_CODE — see conversation_log.md.)
+//
 // R/SpO2-accuracy tests need much longer than the nominal warmup: the AC^2 EMA (tau_var=6s)
 // is fed d=x-mean, and mean (tau_mean=2s) itself has not fully settled either — the
 // compounded two-stage IIR settles far slower than the naive 3*tau_var=18s estimate.

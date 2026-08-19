@@ -11,17 +11,26 @@
 // a FIXED ADC code (not a photocurrent), so v_tia does NOT fall when RF steps — this lets a
 // sustained stimulus walk RF to a rail, which is what the guard/leveling tests rely on.
 
-// Saturating: v_tia ≈ 1.087 V — above tia_axis::FS_V (1.0 → PROBE_SATURATING opens the gate)
-// and above HIGH2 (0.9 → guard trips); below the ADC rail (no clipping).
-static constexpr int32_t SAT_CODE  = 1900000;
-// Weak-but-applied: led==aled → OT=0 → PROBE_APPLIED; v_tia ≈ 0.20 V < LOW1 (0.25).
-static constexpr int32_t WEAK_CODE = 349000;
+// Saturating: midpoint between tia_axis::FS_V (opens PROBE_SATURATING) and adc::FSR (the ADC
+// rail) — guaranteed above HIGH2 too (tia_axis's own static_assert orders HIGH2_V < FS_V), and
+// below the rail (no clipping). Derived from named constants, not a bare magic code, so it can't
+// silently drift out of the intended zone if those move (see weak_code_below_low1 below, and
+// conversation_log.md 2026-08-19).
+static constexpr float   SAT_V    = (tia_axis::FS_V + adc::FSR) / 2.0f;  // ≈ 1.1 V
+static constexpr int32_t SAT_CODE = (int32_t)(SAT_V / adc::SCALE);
 
 static void assert_rf1(INCUNEST_AFE4490& afe, AFE4490RF e) {
     TEST_ASSERT_EQUAL((int)e, (int)afe.test_hgac_rf_led1());
 }
 static void feed(INCUNEST_AFE4490& afe, int32_t code, int n) {
     for (int i = 0; i < n; i++) afe.test_feed_sample(code, code, code, code);
+}
+// Weak-but-applied ADC code: led==aled → OT=0 → PROBE_APPLIED; v_tia 25% below the object's
+// OWN hgac_v_tia_low1 (not a hardcoded voltage), so a future change to that policy default
+// can't silently break this test the way it did when LOW1 moved 0.25→0.20 (2026-08-19).
+static int32_t weak_code_below_low1(INCUNEST_AFE4490& afe) {
+    float weak_v = afe.getConfig().hgac_v_tia_low1 * 0.75f;
+    return (int32_t)(weak_v / adc::SCALE);
 }
 
 void setUp() {}
@@ -57,8 +66,8 @@ void test_hgac_leveling_raises_rf() {
     INCUNEST_AFE4490 afe;
     afe.setHgacEnable(true);
     afe.setHgacEmaSlowTauS(0.02f);               // shrink the slow warmup so the test stays short
-    feed(afe, WEAK_CODE, 6000);
-    // v_tia ≈ 0.20 < LOW1 → RF raised above the RF_100K default (toward RF_1M).
+    feed(afe, weak_code_below_low1(afe), 6000);
+    // v_tia 25% below LOW1 → RF raised above the RF_100K default (toward RF_1M).
     TEST_ASSERT_TRUE((int)afe.test_hgac_rf_led1() > (int)AFE4490RF::RF_100K);
 }
 
