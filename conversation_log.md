@@ -16322,3 +16322,139 @@ como memoria de referencia (`reference_afe4490_settling_catalog.md`) — quedó 
 confirmar. Sigue abierta la pregunta de si el filtro de 500 Hz post-stage2 (~1.6 ms de 5τ) y el
 acoplamiento CF↔RF en `_hgac_change_rf()` (¿se recalcula C_F atómicamente con el paso de RF?)
 necesitan revisión — quedó fuera del alcance de esta sesión, centrada solo en `afe_settle_time_s`.
+
+## Sesión 2026-08-20 (cont.) — Naming: `_compute_sample_window_counts` solo cubría LED
+
+**Pregunta de Alex:** `_compute_sample_window_counts()` y `_compute_afe_settle_samples()` solo
+calculan la ventana LED (no ALED) — ¿merece la pena que el nombre lo refleje?
+
+**Sí — motivo real, no solo cosmético:** la fórmula del margen (`(q > margin+2) ? q-2-margin : 0`)
+ya estaba duplicada (una vez como `_compute_sample_window_counts()`, otra vez inline dentro de
+`_compute_afe_settle_samples()` para la ventana ambient, introducida en v0.65 esta misma sesión).
+
+**Refactor aplicado (`incunest_afe4490` v0.65→v0.66):**
+- `_compute_sample_window_counts()` → `_compute_led_sample_window_counts()`.
+- Nueva `_compute_ambient_sample_window_counts()` (antes cálculo inline).
+- Ambas delegan en un helper compartido `_window_counts(margin)` — fórmula del clamp una sola vez.
+- `_compute_afe_settle_samples()` queda como `min(led(), ambient())`, sin aritmética `q`/margen suelta.
+- `getCFMaxEq1PF()` actualizado al nuevo nombre LED (la Ec.1 del datasheet, "Rx Sample Time" en
+  Fig.58, es específicamente la ventana LED, nunca ambient).
+- Spec §14 (v0.66), version bump en los 4 ficheros de cabecera + `library.json`.
+- Sin cambio de comportamiento. `pio test -e native` → test_hgac 8/8, test_tia_cf 12/12.
+
+**Incidente y corrección:** al hacer `git add -A` en `incunest_afe4490` para el commit del rename,
+se coló y se pusheó sin querer un `conversation_log.md` suelto (sin trackear, fragmento de una
+sesión antigua del 2026-07-26) que no debía estar en ese repo — por convención `conversation_log.md`
+vive solo en PulseNest. Detectado y corregido con un commit nuevo (`git rm --cached`, sin
+force-push ni reescritura de historia); el fichero se conserva en disco, sin trackear.
+
+**Commits:** librería `896cfe3` (rename v0.66) + `e8bc237` (fix del conversation_log.md colado),
+ambos pusheados.
+
+**Lección para próximas sesiones:** evitar `git add -A` en este repo — especificar ficheros
+explícitos, como ya era la práctica habitual antes de este desliz.
+
+## Sesión 2026-08-20 (cont.) — Rename `_compute_settle_margin()` → `_compute_led_on_to_sample_margin_counts()`
+
+**Pregunta de Alex:** el nombre `_compute_settle_margin()` es muy ambiguo, ¿otras opciones?
+
+**Análisis:** la ambigüedad tenía dos capas — (1) el datasheet dice que es asentamiento de
+LED/cable (§8.3.1.3), pero la librería reutiliza la misma cifra como presupuesto de asentamiento
+de la TIA (criterio 5τ en `_recalc_afe_tia_cf_led1/2()`), así que un nombre con una sola causa
+sería parcialmente falso para el otro uso; (2) colisionaba con `_compute_afe_settle_samples()`
+(v0.65, el t₅ del datasheet) — misma palabra "settle", conceptos y escalas temporales distintas
+(µs por fase vs. ms tras un cambio de registro).
+
+**4 opciones propuestas**, Alex eligió `_compute_led_on_to_sample_margin_counts()` (describe
+estructuralmente qué ES — `LEDxSTC = LEDxLEDSTC + este margen` — sin tomar partido sobre la causa).
+
+**Aplicado (`incunest_afe4490` v0.66→v0.67):** rename en `.h`/`.cpp` (4 puntos de uso), sufijo
+`_counts` añadido por consistencia con `_compute_led_sample_window_counts()`/
+`_compute_ambient_sample_window_counts()` (v0.66). Las dos citas literales del nombre viejo en la
+spec (histórico, entre comillas) se dejaron intactas — son citas de comentarios de código tal como
+estaban escritos entonces, no descripciones del estado actual. Sin cambio de comportamiento.
+
+**Verificación:** `pio test -e native` → test_hgac 8/8, test_tia_cf 12/12.
+
+**Commit:** librería `d445df2` (v0.67), pusheado — esta vez con `git add` de ficheros explícitos
+(lección de la sesión anterior), sin colar el `conversation_log.md` suelto.
+
+---
+
+## Sesión 2026-08-20 (cont.) — ⚠️ REESCRITURA DE HISTORIA: purga de la norma ISO del repo
+
+**Motivo:** `PulseNest` es un repo **PÚBLICO** (verificado con `gh`). `docs/ISO_80601-2-61-2026.pdf`
+(2,9 MB) estaba versionado y pusheado desde el 2026-04-29 (~3,5 meses). Las normas ISO se venden, no
+se redistribuyen: tenerla en un repo público es publicarla. Quitarla del HEAD (hecho el 18-08 en
+`e3df136`) NO bastaba — el blob seguía en el historial y llegaba a cualquiera que clonase.
+
+**Momento elegido:** el repo tenía **0 forks y 0 stars**, así que la purga era realmente efectiva
+(sin forks no sobreviven copias derivadas). Ese número solo puede subir con el tiempo.
+
+**Operación (autorizada por Alex):**
+1. Backup completo previo: `git bundle --all` → 12,8 MB (en scratchpad de la sesión).
+2. Copia de seguridad del `conversation_log.md` con WIP sin commitear (56 líneas de la sesión v0.66).
+3. `git filter-repo --path docs/ISO_80601-2-61-2026.pdf --invert-paths` en un **clon aparte**, para no
+   tocar el repo de trabajo (que tenía cambios sin commitear).
+4. Verificado: 219 commits antes y después (ninguno perdido), cero objetos ISO, resto de PDFs intactos.
+5. `push --force` de `master` y del tag `hgac-phase1-checkpoint`.
+6. Repo de trabajo: `fetch` + `reset --hard origin/master` + restauración del WIP del log.
+
+**master: `1839bac` → `5dc2c59`. Todos los hashes anteriores al 2026-08-20 ya NO existen.**
+Los hashes citados en entradas previas de este log y en memorias son inválidos a partir de ahora.
+
+**TRAMPA ENCONTRADA (importante):** tras el `reset --hard`, el blob de la ISO **seguía localmente**
+porque el **tag local** `hgac-phase1-checkpoint` aún apuntaba a la historia vieja (`91aaace`).
+`git rev-list --objects --all` incluye tags, de ahí que siguiera alcanzable. Consecuencia real: un
+`git push --tags` futuro habría **reintroducido la norma en GitHub**. Corregido: tag borrado y
+recuperado desde origin, + `reflog expire --all` + `gc --prune=now`. `.git`: 83 MB → 8,6 MB.
+
+**Estado final:** blob eliminado local y remoto; copia local del PDF intacta (sigue siendo fuente de
+verdad del proyecto, ahora en `.gitignore`); WIP del log preservado.
+
+**PENDIENTE (acciones humanas, no automatizables):**
+- **Avisar a quien tenga un clon:** su historia es incompatible → deben re-clonar. Si alguien pushea
+  desde un clon viejo, DEVUELVE la norma al repo.
+- **GitHub conserva objetos sin referenciar** un tiempo: para purgarlos hay que abrir ticket a soporte
+  citando el repo. Sin eso el blob sigue accesible por hash directo (no por navegación ni clonado).
+
+**Política nueva (2026-08-18, `e3df136`):** `docs/third_party_references.md` documenta qué documentos
+se dejan FUERA del repo a propósito y de dónde obtener cada uno. `.gitignore` cubre
+`docs/masimo_whitepapers/` (14 MB, documentos comerciales de Masimo), `docs/slaa655.pdf` (descarga
+libre de TI, basta el enlace) y la propia ISO. Se mantienen en el repo los de TI (permite
+reproducción) y las imágenes de la sonda Medle.
+
+## Sesión 2026-08-20 (cont.) — Cabo suelto: atomicidad CF↔RF en `_hgac_change_rf()`
+
+**Pregunta de Alex:** revisar el cabo suelto pendiente de `project_hgac_rf_change_settle_task.md`
+sobre si `C_F` podía quedar transitoriamente desincronizado de `R_F` tras un cambio de HGAC.
+
+**Conclusión: no hay bug, ya era atómico por construcción.** Dos niveles:
+1. **Registro/SPI:** `RF_LEDx` y `CF_LEDx` de un mismo color viven en el MISMO registro de 24 bits
+   (`TIAGAIN`/`TIA_AMB_GAIN`, datasheet p.57). `setTIAGainLED1/2()` recalcula CF para el RF nuevo
+   (`_recalc_afe_tia_cf_led1/2()`) ANTES de que `_apply_analog_regs()` escriba ambos campos en una
+   única transacción SPI — el chip nunca ve una combinación mixta.
+2. **Firmware/concurrencia:** todo bajo `_spi_mutex`; `getConfig()` lee esos mismos campos bajo el
+   mismo mutex — sin lectura entrecortada tampoco.
+
+**Hueco real encontrado:** `test_autocf_respects_settling_budget` ya verificaba el recálculo de CF
+para cada RF, pero solo vía el setter público `setTIAGain()` — ningún test ejercitaba el camino
+específico de HGAC (`_hgac_change_rf` → `setTIAGainLED1`).
+
+**Cambios (`incunest_afe4490` v0.67→v0.68):**
+- Comentario en `_hgac_change_rf()` documentando la garantía de atomicidad.
+- Spec §5.8.4: subsección "CF/RF atomicity (reviewed 2026-08-20, no bug found)".
+- Nuevo test `test_hgac_change_rf_recalculates_cf` (PulseNest `test_hgac.cpp`): cambia RF_100K→RF_10K
+  vía `test_hgac_change_rf_led1()` y verifica que CF pasa de 100pF a 250pF (techo de rejilla) y que
+  5τ sigue dentro del presupuesto para el RF NUEVO.
+- De paso, corregido `INCUNEST_AFE4490_VERSION` (macro `#define`), que se había quedado en "0.64"
+  desde v0.65 — el comentario de cabecera y `library.json` sí se habían actualizado cada vez, este
+  `#define` se me pasó por alto en los tres bumps anteriores de esta sesión.
+
+**Verificación:** `pio test -e native` → test_hgac 9/9, test_tia_cf 12/12.
+
+**Commits:** librería `dd30e72` (v0.68), pusheado. PulseNest (`test_hgac.cpp`) — pendiente de
+commit/push.
+
+**Memoria:** marcar en `project_hgac_rf_change_settle_task.md` el punto de atomicidad CF↔RF como
+resuelto; sigue abierto el chequeo del polo de 500 Hz post-stage2 frente a la ventana de settle.

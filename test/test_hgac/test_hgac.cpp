@@ -95,6 +95,24 @@ void test_hgac_change_rf_leaves_spo2_ema_untouched() {
     TEST_ASSERT_EQUAL_FLOAT(25.0f,   afe.test_spo2_ir_ema_var());   // unchanged
 }
 
+// ── Changing RF via HGAC recalculates CF for the NEW RF, not left stale from the old one ──
+// RF and CF for one color share the SAME 24-bit register (TIAGAIN), written in a single SPI
+// transaction inside setTIAGainLED1() — see incunest_afe4490_spec.md §5.8.4 ("CF/RF atomicity").
+// This exercises that guarantee through the HGAC entry point specifically (_hgac_change_rf),
+// not just the public setTIAGain() already covered by test_tia_cf.cpp.
+void test_hgac_change_rf_recalculates_cf() {
+    INCUNEST_AFE4490 afe;                                        // RF_100K default, 500 Hz
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, afe.getConfig().afe_tia_cf_led1_pF);
+    afe.test_hgac_change_rf_led1(AFE4490RF::RF_10K);
+    AFE4490Config cfg = afe.getConfig();
+    TEST_ASSERT_EQUAL((int)AFE4490RF::RF_10K, (int)cfg.afe_tia_rf_led1);
+    TEST_ASSERT_EQUAL_FLOAT(250.0f, cfg.afe_tia_cf_led1_pF);      // clamps to the grid ceiling at RF_10K
+    // 5tau <= settle budget holds for the NEW (RF, CF) pairing, not a stale 100K/100pF one.
+    const float settle_s = 200.0f / 4000000.0f;                  // 500 Hz LED window margin (see test_tia_cf.cpp)
+    float tau_s = kAFE_RF_OHM[(int)AFE4490RF::RF_10K] * cfg.afe_tia_cf_led1_pF * 1e-12f;
+    TEST_ASSERT_TRUE(5.0f * tau_s <= settle_s * (1.0f + kAFE_CF_MATCH_TOL));
+}
+
 // ── Ambient alarm: at the RF floor with ambient (ALED) also above HIGH2 → AMBIENT_HIGH ──
 void test_hgac_ambient_alarm_at_floor() {
     INCUNEST_AFE4490 afe;
@@ -128,6 +146,7 @@ int main() {
     RUN_TEST(test_hgac_leveling_raises_rf);
     RUN_TEST(test_hgac_change_rf_resets_and_rewarms);
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
+    RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
     RUN_TEST(test_hgac_led_only_sat_is_probe_in_air);
     return UNITY_END();
