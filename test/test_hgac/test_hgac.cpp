@@ -79,7 +79,8 @@ void test_hgac_change_rf_resets_and_rewarms() {
     assert_rf1(afe, AFE4490RF::RF_10K);          // at the floor
     afe.test_hgac_change_rf_led1(AFE4490RF::RF_100K);  // force back up: resets EMAs + arms settling
     assert_rf1(afe, AFE4490RF::RF_100K);
-    // Right after: settling (75) + fresh warmup (150) → 100 saturating samples can't re-descend yet.
+    // Right after: settling (~8, datasheet t5 @500Hz) + fresh warmup (150) → 100 saturating
+    // samples can't re-descend yet.
     feed(afe, SAT_CODE, 100);
     assert_rf1(afe, AFE4490RF::RF_100K);
 }

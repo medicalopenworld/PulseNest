@@ -16190,3 +16190,135 @@ Commits: librería `396b3ce` (v0.63) + `9fb2831` (procedencia); PulseNest `9fd56
 **Aviso para quien retome:** durante los experimentos se dejó HGAC **desactivado** y RF/CF tocados a
 mano desde LIB/HW CONFIG. Un reset del ESP32 devuelve todo a automático (el script reactiva HGAC a los
 600 ms y el auto-CF recalcula). Si se ven valores raros de RF/CF, es esto, no un fallo.
+
+## Sesión 2026-08-19 — HGAC: banda de nivelado LOW1/HIGH1, hunting y version bump (lib v0.64)
+
+**Contexto previo (misma sesión):** settling time de un cambio de RF en el datasheet (§7.7,
+t5: >3 ms acumulados por fase tras cualquier cambio de la cadena analógica, incluida TIA gain);
+ventajas/inconvenientes de `ENSEPGAIN=1`.
+
+**Pregunta de Alex:** con `HIGH1=0.75`, `LOW1=0.25` y saltos de RF entre ×2.0 y ×2.5, ¿hay riesgo
+de hunting?
+
+**Análisis:** el invariante agregado `HIGH1/LOW1 > 2.5×` se cumple (3.0), pero con solo 20% de
+margen, y ese margen es **asimétrico en voltios absolutos**: tras una bajada en una frontera ×2.5
+(10k↔25k, 100k↔250k) el aterrizaje queda a solo **0.05 V** de volver a disparar subida — frente a
+0.125 V de margen en el sentido contrario. El warmup tras cada cambio de RF (3×τ_slow=6 s, NaN
+fail-safe) protege del rebote instantáneo, pero no de una deriva sostenida real (fisiológica,
+movimiento, ambiente) en ese margen ajustado.
+
+**Propuesta de Alex:** ensanchar la banda separando LOW1 y HIGH1, bajando LOW1 en vez de subir
+HIGH1 (intuición: subir HIGH1 es más arriesgado). **Confirmado:** HIGH1 está acotado por su margen
+de 0.15 V a HIGH2/GUARD (0.9 V) — subirlo erosiona el colchón de SEGURIDAD entre la reacción
+proactiva (slow EMA) y la de emergencia (fast EMA). LOW1 no tiene guardia inferior simétrica
+(`v_tia_diff ≥ 0` siempre) — bajarlo solo cuesta SNR (coste blando).
+
+**Decisión aplicada: `hgac_v_tia_low1` 0.25→0.20 V.** Nuevo ratio HIGH1/LOW1 = 3.75 (era 3.0);
+margen tras bajada en frontera ×2.5 se duplica a 0.10 V.
+
+**Cambios:**
+- `incunest_afe4490.h`: default `hgac_v_tia_low1` = 0.20f.
+- `incunest_afe4490_spec.md` §5.8.1: tabla + invariante + nota de justificación; §14 changelog v0.64.
+- Version bump v0.63→v0.64 en los 4 ficheros con cabecera (`.h`, `.cpp`, `platform_stub.h`,
+  `examples/basic/main.cpp` — estos tres últimos estaban además desincronizados desde v0.53,
+  arrastrando el desfase varias versiones; corregido de paso).
+- `test_hgac.cpp` (PulseNest): `WEAK_CODE` (código ADC crudo hardcodeado, 349000→260000 al
+  principio) sustituido por `weak_code_below_low1(afe)` — deriva el código en runtime desde
+  `afe.getConfig().hgac_v_tia_low1` (25% por debajo), usando `adc::SCALE` ya existente. Motivo:
+  el valor hardcodeado ya se rompió una vez en esta misma sesión al mover LOW1; con la nueva
+  forma un cambio futuro no puede romper el test en silencio.
+  Se descartó la alternativa de crear una constante con nombre en `tia_axis` (ej. `LOW1_V`):
+  ese namespace es explícitamente para constantes de FÍSICA; HIGH1/LOW1 son política runtime del
+  controlador (`AFE4490Config`), documentado así en el propio código — meterlos en `tia_axis`
+  habría contradicho esa separación.
+
+**Verificación:** `pio test -e native` → 51/52 (test_biquad ERRORED, pre-existente en `master`
+antes de esta sesión — API vieja sin relación con HGAC, confirmado con `git stash`).
+
+**Commits:** librería `02f21e1` (v0.64), pusheado. PulseNest (`test_hgac.cpp`) — **sin commit**,
+el repo tenía cambios previos sin relación mezclados en el working tree; pendiente confirmar con
+Alex antes de pushear.
+
+**Meta — protocolo de trabajo:** Alex se quejó de que una respuesta puramente analítica (el
+análisis de hunting, sin tool calls) tardó varios minutos. Se generalizó
+`feedback_mechanical_task_protocol.md` → `feedback_response_speed_protocol.md`: la regla de
+brevedad/economía ahora cubre explícitamente tareas analíticas/de diseño (conclusión en 1-3
+frases primero, detalle solo si se pide), no solo ediciones mecánicas de código.
+
+**Pendiente:** criterio general de optimización SNR-vs-headroom para la banda (sigue abierto,
+ver [[project_hgac_setpoint_band_tuning_task]]); commit/push de PulseNest.
+
+## Sesión 2026-08-19 (cont.) — Barrido de valores hardcodeados en tests (WEAK_CODE/SAT_CODE)
+
+**Pregunta de Alex:** tras el fix de `WEAK_CODE`, ¿merece la pena buscar riesgos similares
+(valores mágicos que duplican defaults/constantes de la librería) en el resto de tests?
+
+**Barrido (grep dirigido, no auditoría completa):** `static constexpr` con literales en
+`test/*.cpp`. Encontrados 4 candidatos; clasificados por riesgo real:
+- **`SAT_CODE`** (`test_hgac.cpp`) — mismo patrón que `WEAK_CODE`: código ADC fijo debía quedar
+  por encima de `tia_axis::FS_V`/`HIGH2_V`, ambas constantes CON NOMBRE. **Arreglado:** ahora
+  `constexpr` derivado de `(tia_axis::FS_V + adc::FSR) / 2` — sigue siendo compile-time (no
+  necesita instancia `afe`, son namespaces de física puros).
+- **`WARMUP_SAMPLES`** y **`SPO2_A`/`SPO2_B`** (`test_spo2.cpp`) — al revisar el uso real,
+  resultaron ser **código muerto** (definidas, nunca referenciadas en ningún assert). No eran el
+  mismo riesgo de acoplamiento que `WEAK_CODE`/`SAT_CODE` (nada las consumía, así que nada podía
+  romperse en silencio). **Arreglado:** eliminadas; comentario dejado indicando cómo derivarlas
+  de `getConfig().spo2_a/.spo2_b/.spo2_warmup_s` si un test futuro las necesita.
+- **`hr2_buf_len`/`hr3_buf_len`/decim factors** — duplican constantes PRIVADAS de arquitectura
+  (no política runtime-tunable). Riesgo bajo, coste de arreglo peor que el beneficio → sin tocar.
+
+**Verificación:** `test_hgac` 8/8 + `test_spo2` 7/7 (comando único, ambos tests).
+
+**Meta — protocolo de velocidad:** este barrido se hizo con grep dirigido y lectura acotada
+(no exploración exhaustiva de toda la librería), consistente con
+`feedback_response_speed_protocol.md` — coste bajo, hallazgos concretos.
+
+## Sesión 2026-08-20 — Estudio de tiempos de asentamiento AFE4490 + sustitución de `afe_settle_time_s`
+
+**Contexto:** preocupación de Alex por los tiempos de asentamiento cuando HGAC cambia RF.
+Estudio en profundidad del datasheet completo (Electrical Characteristics, Supply Ramp/Power-Down
+Timing §7.7, Feature Description §8.3, Register Maps §8.6) cruzado con `incunest_afe4490_spec.md`.
+
+**Hallazgo principal:** datasheet §7.7, fila t₅ (p.17) — "> 3 ms de tiempo de muestreo acumulado
+en cada fase" tras cualquier cambio de la cadena de señal; footnote (1) generaliza explícitamente
+a "TIA gain". Es la única cifra del datasheet directamente aplicable a "cuánto esperar tras un
+cambio de RF de HGAC" — no estaba citada en ningún sitio de la spec ni del commit de procedencia
+`9fb2831` (que solo cubría `tia_settle_min`/`tia_settle_fraction`/`tia_n_tau`).
+
+**Procedencia de `afe_settle_time_s` (0.15 s) — verificada en git log:** introducida en `ed62279`
+("HGAC v0.37 — Phase 1") como valor a ojo, sin derivación en el mensaje de commit; el propio
+comentario del código ya decía "approximate... NOT derived from `_compute_settle_margin()`".
+Renombrada en `25b2e09` sin cambiar el valor. Nunca cruzada con la regla t₅.
+
+**Decisión de Alex: sustituir `afe_settle_time_s` por un cálculo basado en t₅** (no solo documentar
+su falta de procedencia, como se hizo con las otras tres constantes).
+
+**Implementación (`incunest_afe4490` v0.64→v0.65):**
+- Nueva `_compute_afe_settle_samples()`: `ceil(3ms / ventana_fase_s)`, evaluada sobre la ventana
+  más corta entre LED y ambient (ambas simétricas entre LED1/LED2, dependen solo de
+  `_afe_sample_rate_hz`, no de RF → una sola cifra cubre ambos dominios de color de HGAC).
+- Nueva constante con nombre `afe_ambient_margin_counts` (antes literal `400` suelto en
+  `_apply_timing_regs()`), compartida por ambos puntos de uso.
+- `_hgac_change_rf()` ahora arma `_rsqm_settling_countdown` con esta función en vez del fijo
+  `roundf(0.15f * fs)`.
+- En la config por defecto (500 Hz/25% duty): 8 muestras ≈ 16 ms (antes 150 ms fijos) — ≈9× más
+  corto, y trazable al datasheet.
+- Spec §5.8.4 actualizada (derivación completa + cifras de retardo total tras cambio de RF:
+  guard ~0.32 s, leveling/ambient ~6.02 s, antes 0.45 s/6.15 s). §7.2: nota explicando por qué esta
+  constante se sustituyó (no solo se documentó, a diferencia de las tres de auto-CF). §14 changelog.
+- Version bump v0.64→v0.65 en los 4 ficheros con cabecera + `library.json` (0.63.0→0.65.0, que ya
+  venía desincronizado de la spec desde antes de esta sesión).
+- `test_hgac.cpp` (PulseNest): comentario de `test_hgac_change_rf_resets_and_rewarms` actualizado
+  (75→~8 muestras de settling); el assert no cambia (100 < 8+150 sigue cumpliéndose).
+
+**Verificación:** `pio test -e native` → test_hgac 8/8, test_tia_cf 12/12 (unrelated `test_biquad`
+ERRORED, pre-existente, ya confirmado en sesión anterior vía `git stash`).
+
+**Commits:** librería `52eb92d` (v0.65), pusheado. PulseNest (`test_hgac.cpp`) — pendiente de
+commit/push, igual que el cambio de la sesión anterior sobre este mismo fichero.
+
+**Pendiente:** decidir si guardar el catálogo completo de tiempos de asentamiento del datasheet
+como memoria de referencia (`reference_afe4490_settling_catalog.md`) — quedó preguntado, sin
+confirmar. Sigue abierta la pregunta de si el filtro de 500 Hz post-stage2 (~1.6 ms de 5τ) y el
+acoplamiento CF↔RF en `_hgac_change_rf()` (¿se recalcula C_F atómicamente con el paso de RF?)
+necesitan revisión — quedó fuera del alcance de esta sesión, centrada solo en `afe_settle_time_s`.
