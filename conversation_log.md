@@ -16458,3 +16458,54 @@ commit/push.
 
 **Memoria:** marcar en `project_hgac_rf_change_settle_task.md` el punto de atomicidad CF↔RF como
 resuelto; sigue abierto el chequeo del polo de 500 Hz post-stage2 frente a la ventana de settle.
+
+## Sesión 2026-08-20/21 — Migración de `ppg_disp` a dominio OT (extremo a extremo)
+
+**Pregunta de Alex:** ¿hemos analizado la posibilidad de que `ppg_disp` sea `ot_led1` en vez de
+`led1_sub`?
+
+**Hallazgo: no, y es un hueco real.** SpO2, HR1, HR2 y HR3 ya migraron completamente a OT desde
+v0.38-v0.42 (gain-invariance frente a cambios de RF de HGAC). `ppg_disp` era el único que se quedó
+en el dominio crudo (`led1_sub`/`led2_sub`) — sin ninguna razón documentada, simplemente no se tocó.
+Consecuencia: cada cambio de RF de HGAC producía un salto visible de escala en la forma de onda
+mostrada, exactamente el artefacto que OT resolvió en todo lo demás.
+
+**Hallazgo colateral — drift de documentación:** la spec describía `ppg_disp` como "normalized
+[0..1], PI-weighted", pero el `.h` real decía `int32_t ppg_disp` sin normalizar nada — alguien
+planeó ese diseño y nunca se implementó. También encontrado: un campo fantasma `int32_t ppg` en la
+spec que ya no existe en el `.h`, nombres de campo obsoletos (`led2_aled2`/`led1_aled1` en vez de
+`led2_sub`/`led1_sub`), y un diagrama de processing chain que seguía diciendo que HR1 pasaba por
+`setPPGChannel()` cuando consume OT directamente desde v0.38.
+
+**Decisión de Alex: migración completa extremo a extremo** (spec + librería + `main.cpp` + script +
+formato de trama), dejando explícitamente como tarea pendiente un futuro canal `ppg_disp_norm`
+(normalizado [0..1], PI-weighted) — eso NO se implementó hoy.
+
+**Cambios (`incunest_afe4490` v0.68→v0.69):**
+- `AFE4490Data::ppg_disp`: `int32_t` → `float`. Magnitud OT (~1e-5) truncaría a 0 como entero.
+- Fuente: `ot_led1`/`ot_led2` filtrados (antes `led1_sub`/`led2_sub`).
+- `AFE4490Channel`: 6 valores → 2 (`LED1`/`LED2`). Los 4 canales crudos sin corrección de ambiente
+  no tienen equivalente OT (`AFE4490AnalogState` no tiene `ot_aled1`/`ot_aled2`) y `setPPGChannel()`
+  era su único consumidor — se eliminaron en vez de dejarlos sin sentido.
+- De paso, corregido el drift de spec preexistente (§1.3, §2.1, §3): campo fantasma `ppg` eliminado,
+  nombres de campo actualizados, diagrama de processing chain corregido.
+
+**Cambios en PulseNest:**
+- `src/main.cpp`: formato de trama `$M1`-`$M4`, `PPG_DISP` pasa de `%ld` a `%.4e` (A/A, antes ADC
+  counts); `channel_str()` actualizado para el enum de 2 valores.
+- `pulsenest_lab.py`: el parseo YA usaba `float(x)` para todos los campos — sin cambio de código
+  necesario ahí. Tooltips corregidos: `PPG_DISP` (nueva descripción OT), y de paso `LED1_SUB`/
+  `LED2_SUB` (seguían diciendo que alimentaban HR1/HR2/HR3/SpO2 — drift de la migración OT de
+  v0.38 que nunca se reflejó en el laboratorio).
+- `pulsenest_lab_spec.md`: tipo/unidades de `PPG_DISP` corregidos.
+- `examples/basic/main.cpp` (librería): `Serial.print(data.ppg_disp)` → `Serial.print(data.ppg_disp, 6)`
+  (la precisión float por defecto de Arduino, 2 decimales, imprimiría siempre "0.00" a esta magnitud).
+
+**Verificación:** `pio test -e native` → 52/53 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS. `python -m py_compile pulsenest_lab.py`: OK.
+
+**Commits:** librería `0706de1` (v0.69), pusheado. PulseNest — pendiente de commit/push.
+
+**Memoria:** nueva tarea `project_ppg_disp_norm_task.md` — canal `ppg_disp_norm` (PI-weighted
+[0..1]) diferido explícitamente, con el diseño esbozado (reutilizar la EMA de SpO2 sobre el mismo
+OT, sin estado nuevo) para cuando se retome.

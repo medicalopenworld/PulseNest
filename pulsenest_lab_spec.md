@@ -136,7 +136,7 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 | `ALED1` | int32 | ALED1VAL — ambient after IR LED [counts] |
 | `LED2_SUB` | int32 | LED2 − ALED2 — RED ambient-corrected [counts] |
 | `LED1_SUB` | int32 | LED1 − ALED1 — IR ambient-corrected [counts] |
-| `PPG_DISP` | int32 | Display PPG: LED1_SUB → BPF → negated (display only) [counts] |
+| `PPG_DISP` | float | Display PPG, OT domain (lib v0.69): BPF(OT_LED1/OT_LED2) → negated (display only). NOT normalized — a candidate `ppg_disp_norm` (PI-weighted [0..1]) is backlog. [A/A, tiny magnitude ~1e-5..1e-6] |
 | `SpO2` | float | SpO2 [%] |
 | `SpO2_SQI` | float | SpO2 Signal Quality Index [0–1] |
 | `R` | float | Modulation ratio: (AC_red/DC_red)/(AC_ir/DC_ir) [dimensionless] |

@@ -226,25 +226,26 @@ void Incunest_Task(void *pvParameters) {
                 if (Serial.availableForWrite() < 30) incunest_tx_dropped++;
 
                 if (g_incunest_frame_mode == IncunestFrameMode::M1) {
-                    // $M1,SmpCnt,Ts_us,PPG_DISP*XX
+                    // $M1,SmpCnt,Ts_us,PPG_DISP*XX  (PPG_DISP: OT domain [A/A] since v0.69, was ADC counts)
                     char buf[128];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M1,%lu,%lu,%ld",
+                        "$M1,%lu,%lu,%.4e",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
-                        (long)data.ppg_disp);
+                        data.ppg_disp);
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);
                     udp_send(buf);
                 } else if (g_incunest_frame_mode == IncunestFrameMode::M2) {
                     // $M2,SmpCnt,Ts_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState*XX
+                    // (PPG_DISP: OT domain [A/A] since v0.69, was ADC counts)
                     char buf[192];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M2,%lu,%lu,%ld,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
+                        "$M2,%lu,%lu,%.4e,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
-                        (long)data.ppg_disp,
+                        data.ppg_disp,
                         data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
                         data.spo2_sqi,
                         data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
@@ -259,15 +260,16 @@ void Incunest_Task(void *pvParameters) {
                 } else if (g_incunest_frame_mode == IncunestFrameMode::M3) {
                     // $M3,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,
                     //     SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState*XX
+                    // (PPG_DISP: OT domain [A/A] since v0.69, was ADC counts)
                     char buf[384];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M3,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
+                        "$M3,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
                         (long)data.led2,       (long)data.led1,
                         (long)data.aled2,      (long)data.aled1,
                         (long)data.led2_sub,   (long)data.led1_sub,
-                        (long)data.ppg_disp,
+                        data.ppg_disp,
                         data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
                         data.spo2_sqi,
                         data.spo2_r,
@@ -297,9 +299,10 @@ void Incunest_Task(void *pvParameters) {
                         | ((unsigned)dbg.analog.adc_sat_neg  << 4)
                         | ((unsigned)dbg.analog.tia_over_fs  << 8)
                         | ((unsigned)dbg.analog.tia_over_lin << 12);
+                    // PPG_DISP: OT domain [A/A] since v0.69, was ADC counts.
                     char buf[512];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
+                        "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
                         ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%04X"
                         ",%s,%s",
                         (unsigned long)incunest_sample_count,
@@ -307,7 +310,7 @@ void Incunest_Task(void *pvParameters) {
                         (long)data.led2,       (long)data.led1,
                         (long)data.aled2,      (long)data.aled1,
                         (long)data.led2_sub,   (long)data.led1_sub,
-                        (long)data.ppg_disp,
+                        data.ppg_disp,
                         data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
                         data.spo2_sqi,
                         data.spo2_r,
@@ -371,14 +374,10 @@ void stop_incunest() {
 // tia_gain_str / tia_cf_str / stage2_str — moved to incunest_afe4490.h as
 // afeRFToStr / afeCFToStr / afeRGToStr (inline). Removed local copies.
 static const char* channel_str(AFE4490Channel ch) {
+    // v0.69: OT domain — only LED1(IR)/LED2(RED) remain (see incunest_afe4490.h AFE4490Channel).
     switch (ch) {
-        case AFE4490Channel::LED1:       return "LED1";
-        case AFE4490Channel::LED2:       return "LED2";
-        case AFE4490Channel::ALED1:      return "ALED1";
-        case AFE4490Channel::ALED2:      return "ALED2";
-        case AFE4490Channel::LED1_SUB: return "LED1_SUB";
-        case AFE4490Channel::LED2_SUB: return "LED2_SUB";
-        default:                         return "?";
+        case AFE4490Channel::LED2: return "LED2";
+        default:                    return "LED1";
     }
 }
 // Emit a $TCFG frame with all 28 raw timing register values read from the chip.
