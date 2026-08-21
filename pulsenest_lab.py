@@ -10354,6 +10354,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._stats_ch_masks_or = 0       # OR of CH_MASKS over the current stats window
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
         self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA/V_ADC)
+        # HGAC actuation thresholds driving the V_TIA gauge. Seeded with the library defaults
+        # and replaced by the live values from every $LCFG frame — they are runtime-tunable
+        # ($SET hgac_*, LIB CONFIG window), so hardcoding them here would silently go stale.
+        self._hgac_thr = dict(self._HGAC_THR_DEFAULTS)
+        self._hgac_thr_live = False       # True once a $LCFG frame has been parsed
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
@@ -10923,64 +10928,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.stats_table.item(5,  3).setBackground(_ACCENT_PAIR)  # LED1_SUB  / % SD/Mean
         self.stats_table.item(11, 4).setBackground(_ACCENT_PAIR)  # PI      / Mean
 
-        # Override V_TIA (col 7) and V_ADC (col 8) tooltips on raw rows (0-3)
-        # with specific descriptions including color-coding legend and voltage units.
-        _TIP_VTIA_LED = _make_tooltip("V_TIA",
-            "TIA DIFFERENTIAL output voltage estimated from the mean ADC count.\n"
-            "Formula: V_TIA = 2 \u00d7 (V_ADC / (2\u00d7RG) + I_CANCEL) \u00d7 RI  (datasheet eq.2, p.30)\n"
-            "= 2 \u00d7 I_PD \u00d7 RF. Per-branch value = V_TIA / 2.\n"
-            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22, I_CANCEL from ambdac.\n"
-            "Units: V (volts).\n"
-            "Datasheet: ideal operating point 0.6 V, TIA full-scale output 1.0 V\n"
-            "(\u00a79.2.2 + Fig. 135 'TIA max'; the datasheet has no symbol named 'V_OD').\n"
-            "Empirical (IncuNest 16.A sweep 2026-07-08): linear to ~1.8 V, hard clip ~1.94 V.\n\n"
-            "Background color (LED phases \u2014 LED1 (IR), LED2 (RED)):\n"
-            "  Green   0.40 \u2013 0.80 V \u2014 optimal operating range (around 0.6 V ideal point)\n"
-            "  Yellow  0.15 \u2013 0.40 V  or  0.80 \u2013 0.95 V \u2014 caution\n"
-            "  Red     < 0.15 V  or  > 0.95 V \u2014 near spec saturation or insufficient signal\n"
-            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
-            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
-            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
-        _TIP_VTIA_AMB = _make_tooltip("V_TIA",
-            "TIA DIFFERENTIAL output voltage estimated from the mean ADC count.\n"
-            "Formula: V_TIA = 2 \u00d7 (V_ADC / (2\u00d7RG) + I_CANCEL) \u00d7 RI  (datasheet eq.2, p.30)\n"
-            "= 2 \u00d7 I_PD \u00d7 RF. Per-branch value = V_TIA / 2.\n"
-            "RI = 100 k\u03a9 (fixed internal), RG from current \\$CFG stg21/stg22, I_CANCEL from ambdac.\n"
-            "Units: V (volts).\n\n"
-            "Background color (ALED phases \u2014 ALED1, ALED2):\n"
-            "  Green   < 0.30 V \u2014 low ambient (safe)\n"
-            "  Yellow  0.30 \u2013 0.70 V \u2014 moderate ambient, monitor\n"
-            "  Red     > 0.70 V \u2014 high ambient, risk of saturation\n"
-            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
-            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
-            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
-        _TIP_VADC_LED = _make_tooltip("V_ADC",
-            "ADC input voltage estimated from the mean ADC count.\n"
-            "Formula: V_ADC = (mean_counts / 2\u00b2\u00b9) \u00d7 1.2 V  (ADC FS = \u00b11.2 V, 22-bit signed).\n"
-            "Units: V (volts).\n\n"
-            "Background color (LED phases \u2014 LED1 (IR), LED2 (RED)):\n"
-            "  Green   0.45 \u2013 0.95 V \u2014 optimal\n"
-            "  Yellow  0.20 \u2013 0.45 V  or  0.95 \u2013 1.10 V \u2014 caution\n"
-            "  Red     < 0.20 V  or  > 1.10 V \u2014 insufficient signal or near saturation\n"
-            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
-            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
-            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
-        _TIP_VADC_AMB = _make_tooltip("V_ADC",
-            "ADC input voltage estimated from the mean ADC count.\n"
-            "Formula: V_ADC = (mean_counts / 2\u00b2\u00b9) \u00d7 1.2 V  (ADC FS = \u00b11.2 V, 22-bit signed).\n"
-            "Units: V (volts).\n\n"
-            "Background color (ALED phases \u2014 ALED1, ALED2):\n"
-            "  Green   < 0.35 V \u2014 low ambient (safe)\n"
-            "  Yellow  0.35 \u2013 0.80 V \u2014 moderate ambient\n"
-            "  Red     > 0.80 V \u2014 high ambient, risk of saturation\n"
-            "\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from $M4: ADC rail or TIA\n"
-            "hard clip) \u2014 value is a bound, not reality; gauge color suppressed as misleading.\n"
-            "OFF_SPEC (1.0\u20131.8 V diff, empirically linear) is NOT grayed \u2014 value still real.")
-        for _r in range(4):
-            _tip7 = _TIP_VTIA_LED if _r in {0, 1} else _TIP_VTIA_AMB
-            _tip8 = _TIP_VADC_LED if _r in {0, 1} else _TIP_VADC_AMB
-            self.stats_table.item(_r, 1).setToolTip(_tip7)
-            self.stats_table.item(_r, 2).setToolTip(_tip8)
+        # V_TIA (col 1) / V_ADC (col 2) tooltips on raw rows 0-3 are built by
+        # _refresh_vtg_tooltips(), which is re-run on every $LCFG frame so the documented
+        # thresholds always match the HGAC values actually in force.
+        self._refresh_vtg_tooltips()
 
         # Override R col 1 tooltip: derived R estimate, not true % SD/Mean
         self.stats_table.item(10, 3).setToolTip(_make_tooltip("R estimate",
@@ -11164,6 +11115,24 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 kv[k] = v
         self.log(f"[LCFG] rsqm_ot_thr={kv.get('rsqm_ot_thr','?')}"
                  f"  probe_min_s={kv.get('rsqm_probe_state_min_s','?')}")
+        # Cache the HGAC actuation thresholds: they drive the V_TIA gauge in SIGNAL STATS and
+        # the text of its tooltip. Runtime-tunable, so reading them here is what keeps the
+        # gauge from drifting away from the values actually in force.
+        _changed = False
+        for _k in self._HGAC_THR_DEFAULTS:
+            if _k in kv:
+                try:
+                    _v = float(kv[_k])
+                except ValueError:
+                    continue
+                if _v != self._hgac_thr[_k]:
+                    self._hgac_thr[_k] = _v
+                    _changed = True
+                self._hgac_thr_live = True
+        if _changed or not getattr(self, "_vtg_tips_from_lcfg", False):
+            self._vtg_tips_from_lcfg = True
+            self._refresh_vtg_tooltips()
+            self.stats_table.viewport().update()   # repaint gauges with the new thresholds
         if self.lib_config_window is not None:
             self.lib_config_window.update_from_lcfg(kv)
 
@@ -11989,6 +11958,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _STATS_ROW_TO_CH = {0: 0, 1: 2, 2: 1, 3: 3}  # LED1→0, LED2→2, ALED1→1, ALED2→3
     _ADC_FSR             = 1.2            # V — AFE4490 ADC full-scale voltage (±1.2 V)
     _ADC_FS_COUNTS       = 2 ** 21 - 1    # 22-bit signed: positive full-scale code (datasheet Table 7)
+    # ── V_TIA / V_ADC gauge thresholds ────────────────────────────────────────────
+    # PHYSICS — mirror `namespace adc` / `namespace tia_axis` in incunest_afe4490.h.
+    # Not tunable: these are chip properties, so the V_ADC gauge uses only these.
+    _TIA_FS_V   = 1.0                             # tia_axis::FS_V — TI full-scale guarantee;
+                                                  # above it a channel is CH_EXTENDED_RANGE
+    _ADC_SAT_V  = 2096700 * (1.2 / 2 ** 21)       # adc::SAT_POS in volts (~1.1997 V) — guarded
+                                                  # ADC rail measured on 16.A; at/above → CLIPPED
+    # HGAC POLICY defaults (incunest_afe4490.h). Only a fallback: the live values arrive in
+    # $LCFG and land in self._hgac_thr. HGAC acts on v_tia, so only that column uses these.
+    _HGAC_THR_DEFAULTS = {
+        "hgac_v_tia_high2": 0.90,   # guard: fast EMA (τ≈0.1 s) above this → urgent RF--
+        "hgac_v_tia_high1": 0.75,   # leveling upper: slow EMA (τ≈2 s) above this → RF--
+        "hgac_v_tia_low1":  0.20,   # leveling lower: slow EMA (τ≈2 s) below this → RF++
+    }
     def _on_stats_cell_clicked(self, row, col):
         key = (row, col)
         if key in self._stats_highlighted:
@@ -12000,29 +11983,108 @@ class PPGMonitor(QtWidgets.QMainWindow):
         encoded = ";".join(f"{r},{c}" for r, c in sorted(self._stats_highlighted))
         s.setValue("PPGMonitor/stats_highlighted", encoded)
 
+    def _refresh_vtg_tooltips(self):
+        """(Re)build the 8 V_TIA / V_ADC value-cell tooltips on raw rows 0-3.
+
+        Called when the table is built and again on every $LCFG frame, so the thresholds the
+        tooltip documents are always the ones HGAC is actually using.
+        """
+        high2 = self._hgac_thr["hgac_v_tia_high2"]
+        high1 = self._hgac_thr["hgac_v_tia_high1"]
+        low1  = self._hgac_thr["hgac_v_tia_low1"]
+        src   = "live \\$LCFG" if self._hgac_thr_live else "library defaults — no \\$LCFG yet"
+
+        _formula = (
+            "TIA DIFFERENTIAL output voltage estimated from the mean ADC count.\n"
+            "Formula: V_TIA = 2 × (V_ADC / (2×RG) + I_CANCEL) × RI  (datasheet eq.2, p.30)\n"
+            "= 2 × I_PD × RF. Per-branch value = V_TIA / 2.\n"
+            "RI = 100 kΩ (fixed internal), RG from current \\$CFG stg21/stg22, I_CANCEL from ambdac.\n"
+            "Units: V (volts).\n\n")
+        # Shared caveat: the gauge tracks HGAC's thresholds but not its estimators.
+        _ema_note = (
+            f"\nThresholds: HGAC actuation values ({src}); runtime-tunable via\n"
+            "\\$SET hgac_* or the LIB CONFIG window — the colours follow them automatically.\n"
+            "⚠ This cell shows the MEAN over the stats window, while HGAC decides on EMAs\n"
+            "(τ≈0.1 s guard, τ≈2 s leveling). The colour therefore APPROXIMATES HGAC's state\n"
+            "and can disagree transiently — a red cell does not prove the guard is acting.")
+        _clip_note = (
+            "\n\nGray TEXT on neutral background: channel CLIPPED (CH_MASKS from \\$M4: ADC rail or\n"
+            "TIA hard clip) — value is a bound, not reality; gauge colour suppressed as misleading.\n"
+            "EXTENDED_RANGE (1.0–1.8 V diff, empirically linear) is NOT grayed — value still real.")
+
+        tip_vtia_led = _make_tooltip("V_TIA", _formula +
+            "Background colour = what HGAC is doing with RF on this channel (LED1 IR / LED2 RED):\n"
+            f"  Green   {low1:.2f} – {high1:.2f} V — leveling dead band: HGAC does NOTHING (target)\n"
+            f"  Yellow  < {low1:.2f} V (LOW1) — leveling raising RF, signal too small\n"
+            f"  Yellow  {high1:.2f} – {high2:.2f} V (HIGH1) — leveling reducing RF\n"
+            f"  Red     ≥ {high2:.2f} V (HIGH2) — guard: urgent RF reduction\n"
+            "There is no 'ideal point': HGAC holds a dead BAND, it does not chase a setpoint."
+            + _ema_note + _clip_note)
+
+        tip_vtia_amb = _make_tooltip("V_TIA", _formula +
+            "Background colour (ALED phases — ALED1, ALED2):\n"
+            f"  Green   < {high2:.2f} V — ambient below the alarm threshold\n"
+            f"  Red     ≥ {high2:.2f} V (HIGH2) — ambient high\n"
+            "No yellow band: HGAC has no intermediate ambient threshold. Its alarm\n"
+            "(RSQM_DIAG_AMBIENT_HIGH) needs BOTH ambient EMA ≥ HIGH2 AND RF already at the floor,\n"
+            "so red here means 'ambient high', not necessarily 'alarm raised'."
+            + _ema_note + _clip_note)
+
+        tip_vadc = _make_tooltip("V_ADC",
+            "ADC input voltage estimated from the mean ADC count.\n"
+            "Formula: V_ADC = (mean_counts / 2²¹) × 1.2 V  (ADC FS = ±1.2 V, 22-bit signed).\n"
+            "Units: V (volts).\n\n"
+            "Background colour = ADC/TIA PHYSICS only, NOT HGAC policy: HGAC actuates on v_tia,\n"
+            "so applying its thresholds here would misrepresent them. Same bands on all 4 rows —\n"
+            "ADC saturation is channel-agnostic. Mirrors the library's channel-state taxonomy:\n"
+            f"  Green   < {self._TIA_FS_V:.2f} V — VALID_RANGE, inside TI's full-scale guarantee\n"
+            f"  Yellow  {self._TIA_FS_V:.2f} – {self._ADC_SAT_V:.4f} V — EXTENDED_RANGE, past TI's\n"
+            "          guarantee but empirically still linear; value remains usable\n"
+            f"  Red     ≥ {self._ADC_SAT_V:.4f} V — at the guarded ADC rail (adc::SAT_POS,\n"
+            "          measured on 16.A); the reading is a bound\n"
+            "No low-end warning: physics says nothing about 'too small'. That judgement is HGAC's\n"
+            "and it lives in the V_TIA column (LOW1)."
+            + _clip_note)
+
+        for _r in range(4):
+            self.stats_table.item(_r, 1).setToolTip(tip_vtia_led if _r in {0, 1} else tip_vtia_amb)
+            self.stats_table.item(_r, 2).setToolTip(tip_vadc)
+
     def _vtg_tia_color(self, row, v_tia):
-        """Background color for V_TIA cell. Uses abs(v_tia); thresholds in the differential domain."""
-        v = abs(v_tia)
-        if row in {0, 1}:   # LED phase
-            if v > 0.95 or v < 0.15:           return self._VTG_RED
-            if v >= 0.80 or v < 0.40:          return self._VTG_YELLOW
-            return self._VTG_GREEN              # 0.40 – 0.80 V optimal
-        else:               # ALED phase
-            if v > 0.70:                        return self._VTG_RED
-            if v >= 0.30:                       return self._VTG_YELLOW
-            return self._VTG_GREEN              # < 0.30 V safe
+        """Background color for V_TIA cell — one colour per HGAC actuation state.
+
+        Thresholds come from self._hgac_thr (live $LCFG values, library defaults until the
+        first frame), so the gauge follows HGAC instead of a hardcoded band.
+        Caveat: HGAC decides on EMAs (τ≈0.1 s guard, τ≈2 s leveling) while this cell shows the
+        stats-window mean, so the colour approximates HGAC's state and may differ transiently.
+        """
+        v     = abs(v_tia)
+        high2 = self._hgac_thr["hgac_v_tia_high2"]
+        high1 = self._hgac_thr["hgac_v_tia_high1"]
+        low1  = self._hgac_thr["hgac_v_tia_low1"]
+        if row in {0, 1}:   # LED phase — full leveling + guard ladder
+            if v >= high2:                      return self._VTG_RED     # guard: urgent RF--
+            if v >= high1 or v < low1:          return self._VTG_YELLOW  # leveling acting
+            return self._VTG_GREEN                                       # dead band: target
+        else:               # ALED phase — the only ambient criterion is HIGH2
+            # HGAC's ambient alarm is `RF == floor AND ambient EMA >= HIGH2`; there is no
+            # intermediate ambient threshold, hence no yellow band here.
+            if v >= high2:                      return self._VTG_RED
+            return self._VTG_GREEN
 
     def _vtg_adc_color(self, row, v_adc):
-        """Background color for V_ADC cell. Uses abs(v_adc) for comparison."""
+        """Background color for V_ADC cell — ADC/TIA PHYSICS only, no HGAC policy.
+
+        HGAC actuates on v_tia, not v_adc (see the note on AFE4490AnalogState in
+        incunest_afe4490.h), so mixing its thresholds in here would misrepresent them.
+        Bands mirror the library's channel-state taxonomy: VALID / EXTENDED / CLIPPED.
+        Same for every row — ADC saturation is channel-agnostic. No low-end warning: physics
+        says nothing about "too small"; that judgement is HGAC's and lives in the V_TIA column.
+        """
         v = abs(v_adc)
-        if row in {0, 1}:   # LED phase
-            if v > 1.10 or v < 0.20:           return self._VTG_RED
-            if v >= 0.95 or v < 0.45:          return self._VTG_YELLOW
-            return self._VTG_GREEN              # 0.45 – 0.95 V ideal
-        else:               # ALED phase
-            if v > 0.80:                        return self._VTG_RED
-            if v >= 0.35:                       return self._VTG_YELLOW
-            return self._VTG_GREEN              # < 0.35 V safe
+        if v >= self._ADC_SAT_V:                return self._VTG_RED     # at the guarded ADC rail
+        if v >= self._TIA_FS_V:                 return self._VTG_YELLOW  # past TI's FS guarantee
+        return self._VTG_GREEN                                           # inside guaranteed range
 
     def _copy_stats_selection(self):
         selected = self.stats_table.selectedIndexes()

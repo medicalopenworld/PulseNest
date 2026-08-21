@@ -39,6 +39,11 @@ has not been triaged yet.
 - Si la sonda no está aplicada es muy posible que led1/2 estén saturados pero aled1/2 no (si no hay mucha luz ambiental)
 	Esta situación actualmente provoca PROBE_SATURATING pero quizás deberíamos etiquetarla como PROBE_NOT_APPLIED.
 - la línea incunest_afe440.h:1127 induce a confusión (uint32_t       _rsqm_probe_state_min_samples { 100 }; )	
+- Segun claude:  2. El filtro de 500 Hz post-stage2 (~1.6 ms de 5τ) y el acoplamiento CF↔RF en _hgac_change_rf() — ¿se recalcula C_F de forma atómica junto con el
+  paso de RF, o queda una ventana desincronizada? Quedó fuera del alcance de hoy.
+- tia_settle_min depende de PRF (y otras también)
+- Apunta como tarea pendiente: estudiar la posibilidad de anular STAGE2 ya que no la
+  usamos (ventajas e inconvenientes)
 ## Done / promoted
 
 - [x] EMA de RSQM como código muerto tras SIGNAL_WEAK → RESUELTO v0.57 (eliminados EMA + `ready` + τ; ver conversation_log 2026-08-07)

@@ -16651,3 +16651,56 @@ ESP32-S3 (`incunest_V16`): SUCCESS.
 commit/push.
 
 **Memoria:** `project_ppg_disp_rf_change_spikes_task.md` → marcar **RESUELTO**.
+
+---
+
+## Sesión 2026-08-21 — SIGNAL STATS: los gauges V_TIA/V_ADC pasan a seguir a HGAC en vivo
+
+**Problema (Alex):** los tooltips de las 8 celdas con valor de las columnas V_TIA y V_ADC ya no
+obedecían a los criterios/umbrales de HGAC.
+
+**Diagnóstico:** no era solo el texto — los propios colores (`_vtg_tia_color`/`_vtg_adc_color`)
+usaban números que no correspondían a NADA de HGAC:
+
+| Zona | Script (V_TIA, LED) | HGAC real | Efecto |
+|---|---|---|---|
+| Verde arriba | 0,80 | HIGH1 = 0,75 | verde donde HGAC ya bajaba RF |
+| Verde abajo | 0,40 | LOW1 = 0,20 | amarillo 0,20–0,40 donde HGAC está conforme |
+| Rojo arriba | 0,95 | HIGH2 = 0,90 | amarillo con el guard disparando |
+
+En ALED era peor: el script usaba 0,30/0,70, pero **HGAC no tiene umbrales de ambiente propios** —
+su alarma es `RF == RF_10K && ambient_EMA >= HIGH2` (`_hgac_ambient_high`). El único número es HIGH2.
+
+**Cambios (solo `pulsenest_lab.py`, sin reflash):**
+1. **Umbrales en vivo, no cableados.** `_on_lcfg_frame_received()` cachea `hgac_v_tia_high2/high1/low1`
+   en `self._hgac_thr` y, si cambian, regenera colores y tooltips. `_HGAC_THR_DEFAULTS`
+   (0,90/0,75/0,20) solo como respaldo hasta el primer `$LCFG`. **Motivo:** son ajustables en
+   caliente y HIGH1/LOW1 están aún por ajustar → cablearlos garantiza una tercera deriva.
+2. **V_TIA = un color por estado de HGAC.** Verde `[LOW1, HIGH1)` (banda muerta), amarillo a ambos
+   lados (nivelado), rojo `>= HIGH2` (guard). ALED: sin amarillo (no existe umbral intermedio).
+   Operadores verificados contra `_hgac_track()`: `>= high2`, `>= high1`, `< low1` → verde es
+   intervalo SEMIABIERTO, replicado igual.
+3. **V_ADC = física, sin política.** Bandas iguales en las 4 filas (la saturación del ADC es
+   agnóstica al canal): verde < 1,0 V (garantía FS de TI), amarillo hasta 1,1997 V
+   (`adc::SAT_POS` medido en 16.A), rojo por encima. Sin aviso de señal baja: eso es criterio de
+   HGAC y vive en V_TIA (LOW1). Razón de no mezclar: HGAC actúa sobre `v_tia`, nunca sobre `v_adc`.
+4. **Tooltips generados por `_refresh_vtg_tooltips()`** (en construcción de tabla + cada `$LCFG`),
+   con los valores vigentes, si son vivos o defaults, y el aviso de que **la celda muestra la media
+   de la ventana mientras HGAC decide sobre EMAs** (τ≈0,1 s guard, τ≈2 s nivelado) → el color
+   APROXIMA el estado de HGAC y puede discrepar; una celda roja no prueba que el guard actúe.
+   Eliminado el "ideal operating point 0.6 V": contradecía el diseño de banda muerta (HGAC mantiene
+   una BANDA, no persigue un setpoint; el IDEAL se eliminó en v0.54).
+
+**Error propio corregido a mitad:** dejé el bloque de tooltips antiguo "de referencia". No era
+inocuo — el bucle final lo re-aplicaba y anulaba los nuevos. Eliminadas las 59 líneas.
+
+**Inconsistencia preexistente NO tocada (anotada en la spec):** el V_ADC mostrado divide por `2²¹−1`
+mientras `_ADC_SAT_V` y `adc::SCALE` de la librería usan `2²¹`. Son ~0,5 ppm (irrelevante en
+pantalla), pero el razonamiento de `namespace adc` dice que `2²¹` es el divisor correcto. Cambiarlo
+movería todos los valores mostrados → decisión de Alex.
+
+**Verificación:** `py_compile` OK, sin restos del bloque antiguo, script relanzado.
+`pulsenest_lab_spec.md` actualizada en §6.3 (tablas nuevas por columna) y en la sección de color
+coding (fuentes de umbral separadas por columna).
+
+**Estado git:** SIN commitear (el log acumula además el WIP de v0.66 y la entrada recuperada).
