@@ -16553,3 +16553,67 @@ commit/push.
 **Memoria:** `project_hgac_rf_change_settle_task.md` → **CERRADO** (los dos puntos resueltos).
 Nueva tarea `project_high_prf_ambient_window_collapse_task.md` para el hallazgo colateral de
 PRF > ~2487 Hz.
+
+---
+
+## [ENTRADA RECUPERADA] Sesión 2026-07-26 (cont.) — Rename `AFE4490ChState` a escala `_RANGE` + bump lib v0.46-experiment
+
+> Recuperada el 2026-08-21 desde un `conversation_log.md` huérfano que quedó en la raíz del repo
+> `incunest_afe4490` (se colló en el commit `896cfe3` por un `git add -A`, destrackeado en `e8bc237`).
+> Su contenido no estaba en este log. Se añade aquí, fuera de orden cronológico, por la regla del
+> proyecto de no reescribir el fichero. El original ya se ha borrado.
+
+### Discusión de naming
+Alex señaló que `CH_CLEAN`/`CH_OFF_SPEC` no eran paralelos (metáfora de limpieza vs. spec).
+Iteración de propuestas: Claude sugirió eje "confianza" (VALID/MARGINAL) o "spec"
+(IN_SPEC/OFF_SPEC); Alex propuso `CH_IN_VALID_RANGE`/`CH_IN_EXTENDED_RANGE`/`chInValidRange`.
+Claude objetó `chInValidRange` (ambigüedad "in-valid") y la asimetría de `CH_CLIPPED` sin
+sufijo. **Recontrapropuesta final de Alex (aceptada):** escala `_RANGE` simétrica.
+
+### Rename aplicado (lib v0.46-experiment)
+- `CH_CLEAN`→`CH_VALID_RANGE`, `CH_OFF_SPEC`→`CH_EXTENDED_RANGE`, `CH_CLIPPED`→`CH_CLIPPED_RANGE`.
+- Helpers `chClean()`→`chValidRange()`, `allClean()`→`allValidRange()`.
+- Propagado con `sed` (word boundaries) a 6 ficheros: `incunest_afe4490.{h,cpp}`,
+  `incunest_afe4490_spec.md`, `pulsenest_lab.py`, `pulsenest_lab_spec.md`, `test_hgac.cpp`.
+  Verificado: 0 nombres viejos restantes.
+- Comentario del enum ampliado: aclara que `VALID` = rango garantizado por TI (±1.0 V), NO que
+  `EXTENDED` sea inválido (sigue dando valores usables). Motivación del eje "range" documentada.
+- **Bump de versión** (decisión de Alex vía checklist, cambio de API pública): v0.45→v0.46-experiment.
+  Actualizado: cabeceras `.cpp`/`.h`/`platform_stub.h`/`examples/basic/main.cpp`, `#define
+  INCUNEST_AFE4490_VERSION`, `library.json`, cabecera y changelog §14 de la spec.
+
+### Verificación
+- **36/36 tests nativos** (`test_biquad` fallo preexistente no relacionado).
+- `python -m py_compile pulsenest_lab.py` OK.
+- **Build ESP32-S3 (env `incunest_V16`) SUCCESS.**
+
+### Memorias
+- `project_library_workflow.md`: versión actual → v0.46-experiment.
+- `project_ambdac_tia_offspec_zone_task.md`: nota de naming del rename.
+
+**Sin commitear todavía** (pendiente de que Alex lo pida explícitamente).
+
+## Sesión 2026-08-21 (cont.) — Derivación física plausible de `tia_axis::LIN_V` = 1.8 V
+
+**Pregunta/hipótesis de Alex:** en §8.3.1.1 aparece "...centered to near mid-point of the amplifier
+(±0.9 V)". Su lectura: el 0.9 V es el voltaje de modo común (irrelevante para el ADC, que mide
+diferencial) — pero, como curiosidad, ¿podría ser la causa de que la TIA sea lineal hasta 1.8 V?
+
+**Matiz sobre la primera parte:** el modo común no aparece en la lectura diferencial, pero sí
+determina cuánto margen queda antes de que una salida single-ended choque contra su rail — por
+eso el DAC de ambiente lo recentra, no porque el modo común "no importe".
+
+**La hipótesis del 1.8 V se valida con buen soporte cuantitativo:** §8.3.4 (Fig. 65) dice que
+`RX_ANA_SUP` se regula internamente a 1.8 V antes de alimentar los bloques analógicos del receptor
+(TIA, stage 2, DAC de ambiente, filtro) — el rail real de esa cadena es 1.8 V, no la alimentación
+externa. El modo común de 0.9 V es exactamente la mitad. En una salida diferencial simétrica
+centrada en 0.9 V sobre un rail 0–1.8 V, el máximo swing diferencial (un nodo a 1.8 V, el otro a
+0 V) es exactamente 1.8 V — coincide con `tia_axis::LIN_V` (empírico, sin base teórica hasta ahora).
+El pequeño hueco con el clip duro medido (~1.94 V) es margen real esperable, no contradicción.
+
+**Documentado en `incunest_afe4490_spec.md` §3c** (junto a los umbrales de `tia_axis`), con la
+salvedad explícita de que no está verificado contra el esquemático ni con TI — es la explicación
+más plausible encontrada para un número que hasta ahora quedaba sin explicar.
+
+**Commit:** librería `3c1d0c3` (v0.71), pusheado. Solo documentación, sin cambio de código ni de
+comportamiento. Build ESP32-S3 (`incunest_V16`) verificado tras el bump de versión: SUCCESS.
