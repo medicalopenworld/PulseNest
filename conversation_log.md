@@ -16734,3 +16734,25 @@ PRF — and that is almost certainly correct". Sin cambio de código.
 **Verificación:** build ESP32-S3 (`incunest_V16`) SUCCESS.
 
 **Commit:** librería `8833fa8` (v0.73), pusheado. Sin cambios en PulseNest esta vez.
+
+## Sesión 2026-08-21 (cont.) — Fix UI: el combo HGAC de LIB CONFIG nunca se ponía en rojo
+
+**Reporte de Alex:** en la ventana LIB CONFIG, al modificar un valor se pone en rojo hasta pulsar
+SET — excepto el control HGAC (combo Disabled/Enabled), que nunca cambia de color.
+
+**Causa:** todos los demás controles se construyen vía `_add_param_row()`, que conecta
+`valueChanged` a `_mark_dirty()`. El combo `hgac_enable` se construye a mano (líneas ~7307-7329)
+y nunca tuvo esa conexión — ni tampoco se marcaba "clean" tras `_on_set_enable()` ni tras
+`update_from_lcfg()` (aunque esto último era irrelevante mientras nunca se marcaba dirty).
+
+**Fix (`pulsenest_lab.py`):**
+- `self._enable_combo.currentIndexChanged` conectado a `_mark_dirty()`, con el mismo guard
+  `_updating_from_lcfg` que usan los spins (evita marcarlo dirty al repoblar desde `$LCFG?`).
+- `_on_set_enable()`: añadido `_mark_clean(self._enable_combo)` tras enviar el `$SET` (igual que
+  `_on_set_one()` ya hacía para los spins).
+- `update_from_lcfg()`: añadido `_mark_clean(self._enable_combo)` tras `setCurrentIndex()`.
+
+**Verificación:** `python -m py_compile pulsenest_lab.py` OK. Script relanzado (kill + start
+pythonw) tras el cambio, como es obligatorio.
+
+**Commit:** pendiente (PulseNest).

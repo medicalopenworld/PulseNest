@@ -7313,6 +7313,8 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
             "hgac_enable",
             "Master enable for HGAC. When Disabled, HGAC never actuates (safe default). "
             "Sends $SET,hgac_enable,<0|1>.", src="LIBConfigWindow"))
+        self._enable_combo.currentIndexChanged.connect(
+            lambda _: self._mark_dirty(self._enable_combo) if not self._updating_from_lcfg else None)
         btn_en = QtWidgets.QPushButton("Set")
         btn_en.setStyleSheet("font-size:22px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
         btn_en.setFixedHeight(44)
@@ -7372,6 +7374,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
 
     def _on_set_enable(self):
         self._send_set("hgac_enable", str(self._enable_combo.currentIndex()))  # 0=Disabled, 1=Enabled
+        self._mark_clean(self._enable_combo)
 
     def _mark_dirty(self, spin):
         spin.setStyleSheet(self._SPIN_SS_DIRTY)
@@ -7452,6 +7455,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         if "hgac_enable" in kv:
             enabled = kv["hgac_enable"].strip() in ("1", "1.0", "true", "True")
             self._enable_combo.setCurrentIndex(1 if enabled else 0)
+            self._mark_clean(self._enable_combo)
         self._updating_from_lcfg = False
         self._statusbar.showMessage("Lib config loaded from chip")
         self._lcfg_timer.stop()
