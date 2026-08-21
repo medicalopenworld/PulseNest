@@ -179,6 +179,23 @@ void test_eq1_limit_scales_with_rate() {
                      fast.getCFMaxEq1PF(AFE4490RF::RF_100K));
 }
 
+// ── The RF-change settle window (datasheet t5) covers the 500 Hz post-stage2 filter's own 5tau ──
+// Reviewed 2026-08-21 (spec S5.8.4 "500 Hz post-stage2 filter pole vs. the settle window"): the
+// FLTRCNRSEL low-pass (corner always 500 Hz in this library) settles in 5/(2*pi*500) ~= 1.59 ms,
+// independent of RF/CF. At the only rate this project actually configures (500 Hz default), the
+// t5-derived settle window must dominate that filter pole with margin, or a gain change could
+// re-enable HGAC/RSQM before the analog front end has actually settled.
+void test_afe_settle_window_covers_500hz_filter_pole() {
+    INCUNEST_AFE4490 afe;                       // 500 Hz default
+    uint32_t samples = afe.test_compute_afe_settle_samples();
+    float settle_s = (float)samples / 500.0f;
+    const float five_tau_500hz_s = 5.0f / (2.0f * 3.14159265f * 500.0f);  // ~1.59 ms
+    TEST_ASSERT_TRUE(settle_s >= five_tau_500hz_s);
+    // Not just barely — expect at least an order of magnitude of margin at the default rate
+    // (measured ~10x on 2026-08-21); a future change eroding this to <2x would be worth a look.
+    TEST_ASSERT_TRUE(settle_s >= 2.0f * five_tau_500hz_s);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_cf_table_matches_datasheet_weights);
@@ -194,5 +211,6 @@ int main() {
     RUN_TEST(test_autocf_always_within_eq1);
     RUN_TEST(test_manual_cf_can_exceed_eq1);
     RUN_TEST(test_eq1_limit_scales_with_rate);
+    RUN_TEST(test_afe_settle_window_covers_500hz_filter_pole);
     return UNITY_END();
 }

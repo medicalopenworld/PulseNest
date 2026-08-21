@@ -16509,3 +16509,47 @@ ESP32-S3 (`incunest_V16`): SUCCESS. `python -m py_compile pulsenest_lab.py`: OK.
 **Memoria:** nueva tarea `project_ppg_disp_norm_task.md` — canal `ppg_disp_norm` (PI-weighted
 [0..1]) diferido explícitamente, con el diseño esbozado (reutilizar la EMA de SpO2 sobre el mismo
 OT, sin estado nuevo) para cuando se retome.
+
+## Sesión 2026-08-21 (cont.) — Cabo suelto: polo de 500 Hz post-stage2 vs. ventana de settle
+
+**Petición de Alex:** cerrar el segundo cabo suelto pendiente de `project_hgac_rf_change_settle_task.md`
+— ¿el 5τ del filtro de 500 Hz post-stage2 (`FLTRCNRSEL`) queda cubierto por la ventana de settle
+derivada del t₅ (v0.65, ~16 ms @500Hz)?
+
+**Verificado numéricamente** (barrido Python 63–5000 Hz, todo el rango de `setSampleRate()`):
+para las tasas realmente usadas (≤2000 Hz, incluye el default 500 Hz), la ventana de settle cubre
+el 5τ del filtro (1.59 ms, independiente de RF/CF) con margen 10×-39×. **Cierra la pregunta — sin
+bug a las tasas en uso.**
+
+**Hallazgo colateral durante la verificación (no arreglado, nueva tarea):** por encima de ~2487 Hz
+(dentro del rango documentado de `setSampleRate()`), `_compute_ambient_sample_window_counts()`
+devuelve 0 — el margen ambient fijo (400 counts) excede la ventana de fase disponible. Esto:
+1. Colapsa `_compute_afe_settle_samples()` a su suelo de 1 muestra (por debajo incluso de los 3 ms
+   crudos del datasheet, no solo del 5τ del filtro).
+2. A nivel de registro real, `_apply_timing_regs()` escribiría `ALEDxSTC` (=400) DESPUÉS de
+   `ALEDxENDC` (=`q−2`, <400 ahí) — un par timer-compare invertido en el AFE4490 real.
+
+No es un problema nuevo — es la re-cuantificación de un aviso YA existente en el código
+(`ambient_margin`: "Valid for PRF ≤ ~2 kHz... revisit"), pero con el umbral exacto y una segunda
+consecuencia (rompe también el settle-window de HGAC) no documentada antes. No bloquea nada
+operativo — este proyecto solo configura la librería a 500 Hz.
+
+**Cambios (`incunest_afe4490` v0.69→v0.70):**
+- Spec §5.8.4: nueva subsección "500 Hz post-stage2 filter pole vs. the settle window", con la
+  tabla de verificación y el aviso del colapso a alto PRF.
+- Nuevo test wrapper `test_compute_afe_settle_samples()` + test
+  `test_afe_settle_window_covers_500hz_filter_pole` (PulseNest `test_tia_cf.cpp`): bloquea el margen
+  (≥2× el 5τ) como regresión.
+- De paso, corregidos dos comentarios obsoletos en `examples/basic/main.cpp` encontrados al pasar
+  por ahí: "PPG channel: LED1_SUB" (valor de enum eliminado en v0.69) y "TIA gain: 500 kΩ" (el
+  default real siempre ha sido RF_100K).
+
+**Verificación:** `pio test -e native` → 53/54 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commits:** librería `2a01170` (v0.70), pusheado. PulseNest (`test_tia_cf.cpp`) — pendiente de
+commit/push.
+
+**Memoria:** `project_hgac_rf_change_settle_task.md` → **CERRADO** (los dos puntos resueltos).
+Nueva tarea `project_high_prf_ambient_window_collapse_task.md` para el hallazgo colateral de
+PRF > ~2487 Hz.
