@@ -11543,11 +11543,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.lab_capture_window is not None:
             self.lab_capture_window.on_capture_done(count, filepath)
 
+    # Only these frames carry samples. Anything else on the stream ($CFG? replies,
+    # $ERR, ...) must never become a CSV row: the fields would be indexed against the
+    # column spec and written as a well-formed row of garbage (e.g. "sr=500,numav=8,...").
+    _LAB_CAPTURE_DATA_TAGS = ("M1", "M2", "M3", "M4")
+
     def _write_lab_capture_row(self, raw_line: str):
         """Write one CSV row from a raw serial frame. Called at 500 Hz."""
         parts = raw_line[1:].split('*')[0].split(',')   # strip '$' and checksum
         n = len(parts)
-        is_m2 = (n >= 1 and parts[0] == "M2")
+        if n < 1 or parts[0] not in self._LAB_CAPTURE_DATA_TAGS:
+            return
+        is_m2 = (parts[0] == "M2")
         # M2 parts layout: [0]=M2 [1]=cnt [2]=LED2 [3]=LED1 [4]=ALED2 [5]=ALED1 [6]=LED2_SUB [7]=LED1_SUB
         _M2_MAP = {3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7}
 

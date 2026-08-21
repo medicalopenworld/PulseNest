@@ -16756,3 +16756,93 @@ y nunca tuvo esa conexión — ni tampoco se marcaba "clean" tras `_on_set_enabl
 pythonw) tras el cambio, como es obligatorio.
 
 **Commit:** pendiente (PulseNest).
+
+---
+
+## Sesión 2026-08-22 — `tia_settle_min` vs PRF: análisis (NADA implementado)
+
+**Origen:** apunte de Alex en BACKLOG (*"tia_settle_min depende de PRF (y otras también)"*).
+Alex pidió analizarlo y dejarlo apuntado como tarea, sin tocar código.
+
+**Procedencia del valor 50** (ya trazada al inicio de la sesión, en la tabla de la spec):
+coincide con el valor de EJEMPLO de la Table 2 de TI (`t1 = t3 + 50` a 500 Hz), adoptado como suelo
+tras comparar el EVM de TI (80, excesivo) y Protocentral (0, sin guarda). Entró en v0.20 (`a07aa3c`).
+NO es requisito del datasheet.
+
+**El diseño está invertido.** El suelo es fijo en TIEMPO (12,5 µs) y esa es la forma CORRECTA: TI
+(§8.3.1.3) dice que el margen es para el asentamiento del LED y el cable, que no depende de PRF.
+Pero el suelo solo manda por encima de ~2,4 kHz; en todo el rango de uso real gobierna el 10 %, que
+no tiene base física. A 500 Hz el margen vigente (50 µs) es 4× el suelo que cubre la física.
+
+**Hallazgo mayor (calculado replicando las fórmulas del código, división entera incluida):**
+
+| PRF | q | margen | ventana LED | ventana AMBIENTE | estado |
+|---|---|---|---|---|---|
+| 500 Hz | 2000 | 50 µs | 449,5 µs | 399,5 µs | OK |
+| 2000 Hz | 500 | 12,5 µs | 112 µs | 24,5 µs | AMB < mínimo 50 µs de TI (p.29) |
+| 2500 Hz | 400 | 12,5 µs | 87 µs | −0,5 µs | **`ALED2ENDC`(398) < `ALED2STC`(400): REGISTROS INVERTIDOS** |
+| 4000 Hz | 250 | 12,5 µs | 49,5 µs | −38 µs | LED también fuera de spec |
+| 5000 Hz | 200 | 12,5 µs | 37 µs | −50,5 µs | ambas fuera |
+
+Causa: `afe_ambient_margin_counts = 400` es FIJO y la ventana es `q − 2 − 400`. `setSampleRate()`
+acepta 63–5000 Hz **sin guard** → una llamada legal a la API escribe registros inválidos en silencio.
+Matiz importante: `_compute_ambient_sample_window_counts()` clampea a 0, pero eso solo protege el
+cálculo derivado; `_apply_timing_regs()` escribe los valores CRUDOS (~líneas 1533-1534), así que el
+clamp NO protege al hardware.
+
+**Propuesta (no aplicada):** (1) guard en `setSampleRate()` con los 50 µs de TI como criterio — el
+techo real lo fija la ventana de ambiente (~2000 Hz), no los 5000 declarados; (2) NO encoger los 400
+counts de ambiente para hacer sitio (se subieron a propósito en v0.47 por la extinción del LED a
+50 mA); (3) dejar `tia_settle_min` como está, el candidato a revisión es el 10 %.
+
+**Pendiente de decisión de Alex:** qué techo de PRF se declara soportado.
+Apuntado en la memoria `project_prf_range_settle_windows_task` y promovido en BACKLOG.
+
+**Estado git:** solo BACKLOG.md modificado (item promovido) + esta entrada. Sin cambios de código.
+
+---
+
+## Sesión 2026-08-22 — CSV de CAPTURE LAB corruptos: respuestas `$CFG` escritas como filas de datos
+
+**Síntoma (Alex):** los CSV de CAPTURE LAB siempre se abrían bien en *Flow CSV Viewer*; de golpe los
+valores numéricos entran como cadenas de texto. Frontera exacta: `kk_20260821_235306.csv` **y
+posteriores** fallan, los anteriores no.
+
+**Causa raíz.** `_write_lab_capture_row()` (~línea 11546) escribía **cualquier** línea del stream, sin
+comprobar que fuera un frame de datos. Ayer se añadió (`ed9826c`, los gauges V_TIA siguiendo a HGAC
+en vivo) un auto-`$CFG?` que se dispara **cada vez que HGAC cambia RF** (~líneas 12380-12389). La
+respuesta `$CFG,sr=500,numav=8,…` llega por el mismo stream, la función le quita el `$` y el
+checksum, indexa `parts[1..22]` contra las 22 columnas del `col_spec` y escribe una fila
+**perfectamente formada de basura**:
+
+```
+sr=500,numav=8,led1=49.80,…,tia1=25K,rf1_ohm=25000,…
+t1=6200,t2=7998,…,t22=3
+```
+
+Un par de estas por cada cambio de ganancia de HGAC (8-16 filas por captura). El lector de CSV ve
+texto en columnas numéricas e infiere toda la columna como string.
+
+**Lo que despistó (dos hipótesis falsas descartadas, dejadas por su valor de aprendizaje):**
+- *Estructura*: contar campos por línea NO detectó nada — las filas de `$CFG` tienen exactamente 22
+  campos, igual que la cabecera. La comprobación estructural por nº de columnas es ciega a esto; hay
+  que validar que el **primer campo sea numérico**.
+- *Encoding*: los CSV se escriben en cp1252 y el bloque de notas emite `µ`/`—`/`–` (bytes `0xB5`,
+  `0x97`, `0x96`), inválidos en UTF-8, y el único fichero que estaba en UTF-8 era justo el primero
+  de la frontera. Correlación convincente y **falsa**: al probar variantes (UTF-8 / ASCII puro /
+  ASCII sin bloque `#`) las tres seguían fallando. Lección: la correlación de encoding era casual,
+  el fichero UTF-8 lo era por haber pasado por otra herramienta.
+
+**Fix aplicado** — guard en `_write_lab_capture_row()`: solo se escribe fila si
+`parts[0] in ("M1","M2","M3","M4")`; cualquier otra línea (`$CFG`, `$ERR`, …) se descarta y no
+incrementa el contador de muestras. Guard **dentro** de la función, no en el punto de llamada, para
+que proteja a cualquier llamante futuro. Reflejado en `pulsenest_lab_spec.md` §7.13 como requisito.
+
+**Ficheros ya generados:** limpiadas las 16/16/16/8 filas de basura de `kk_20260821_235306.csv`
+(+ su `- Copy`), `kk_20260822_002311.csv` y `kk_20260822_002437.csv`; original preservado en
+`<nombre>.csv.dirty`. Verificado: ni una línea no numérica.
+
+**Cabo suelto:** `kk_20260821_235306.csv` tiene 8208 `nan` legítimos en `FW_R` (firmware). Si el
+visor sigue mostrando esa columna como texto, es por los `nan`, no por corrupción.
+
+**Estado git:** `pulsenest_lab.py` (guard) + `pulsenest_lab_spec.md` (§7.13) + esta entrada.

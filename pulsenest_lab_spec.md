@@ -940,6 +940,15 @@ Purpose: controlled capture with metadata for lab sessions.
 
 **Output file:** `lab_capture_*.csv` in `CAPTURES_DIR`. All state persisted in .ini.
 
+**Row filter (mandatory).** `_write_lab_capture_row()` writes a row **only** for data frames —
+`$M1`, `$M2`, `$M3`, `$M4`. Any other line arriving on the stream (`$CFG` replies, `$ERR`, …) is
+discarded and does not advance the sample counter. Without this filter the non-data fields get
+indexed against the column spec and land in the file as a well-formed row of garbage (e.g.
+`sr=500,numav=8,led1=49.80,…` with exactly as many fields as the header), which silently corrupts the
+capture and makes CSV readers infer text columns. This is not hypothetical: it happened once the
+HGAC-driven auto-`$CFG?` refresh was added, which injects `$CFG` replies into the stream *during* a
+capture.
+
 ### 7.14 Esp32TimingWindow — "TIMING — CPU Budget & Load"
 
 Purpose: display FreeRTOS algorithm timing stats from `$TIMING` / `$TASK` frames.
