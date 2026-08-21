@@ -16704,3 +16704,33 @@ movería todos los valores mostrados → decisión de Alex.
 coding (fuentes de umbral separadas por columna).
 
 **Estado git:** SIN commitear (el log acumula además el WIP de v0.66 y la entrada recuperada).
+
+## Sesión 2026-08-21 (cont.) — ¿`tia_settle_min` depende de PRF? De dónde salió su valor
+
+**Pregunta de Alex:** revisar si `tia_settle_min` depende de PRF, y de dónde ha salido su valor
+actual (50 counts).
+
+**No depende de PRF — y probablemente esté bien que no dependa.** Es un `constexpr` fijo (50
+counts). Como AFECLK son siempre 4 MHz independientemente de PRF, 50 counts son siempre 12.5 µs
+en tiempo real, a cualquier tasa de muestreo. Solo "gana" el `max(tia_settle_min, tia_settle_fraction
+× q)` a PRF alta (cuando `q` se encoge por debajo).
+
+**Matiz nuevo sobre la procedencia ya documentada (commit `9fb2831`):** la Tabla 2 del datasheet
+lleva su propia nota al pie (footnote 1, p.36): "Values are based off a pulse repetition frequency
+(PRF) = 500 Hz and duty cycle = 25%." — TODOS los números de esa tabla, incluido el ejemplo del que
+sale el "50" (`t1 = t3 + 50`), son el ejemplo de TI a una PRF concreta, nunca declarados como regla
+general para otras tasas.
+
+**Valoración:** pese a ese origen débil para la magnitud exacta, mantener la FORMA independiente de
+PRF (un suelo fijo en counts/µs, no una fracción de la ventana) es físicamente correcto — la razón
+de este margen es el transitorio de encendido del LED/cable (§8.3.1.3), una propiedad del hardware
+que no depende de cuántas veces por segundo se pulsa. La estructura de la fórmula (suelo fijo +
+término proporcional a PRF, combinados con `max()`) ya estaba bien diseñada; solo la magnitud
+concreta "50" hereda la misma clase de justificación floja que `tia_settle_fraction`/`tia_n_tau`.
+
+**Cambios:** solo documentación — spec §7.2, nueva subsección "`tia_settle_min` does not depend on
+PRF — and that is almost certainly correct". Sin cambio de código.
+
+**Verificación:** build ESP32-S3 (`incunest_V16`) SUCCESS.
+
+**Commit:** librería `8833fa8` (v0.73), pusheado. Sin cambios en PulseNest esta vez.
