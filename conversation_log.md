@@ -16617,3 +16617,37 @@ más plausible encontrada para un número que hasta ahora quedaba sin explicar.
 
 **Commit:** librería `3c1d0c3` (v0.71), pusheado. Solo documentación, sin cambio de código ni de
 comportamiento. Build ESP32-S3 (`incunest_V16`) verificado tras el bump de versión: SUCCESS.
+
+## Sesión 2026-08-21 (cont.) — Cabo suelto: picos en `ppg_disp` al cambiar RF — RESUELTO
+
+**Retomada** `project_ppg_disp_rf_change_spikes_task.md`. Ya se había verificado que NO se
+congelaba nada durante el settling de HGAC; hoy se implementó el fix.
+
+**Solución:** el mecanismo de "congelar último valor válido" ya existía para el holdoff de
+diagnóstico (`_diag_active`/`_diag_holdoff_samples` en `_task_body()`) — bastó añadir
+`_rsqm_settling_countdown > 0` a esa misma condición ("mismo fenómeno físico, dos disparadores
+distintos"). Sin bookkeeping extra: el countdown ya se decrementa dentro de `_process_sample()`
+(`_rsqm_update()`) de forma incondicional, tanto si la entrada es congelada como real.
+
+**Alcance real del fix — más que los picos visuales:** `RSQM_DIAG_HW_SETTLING` se ponía en
+`diag_code` pero nada lo hacía cumplir — solo el Gate G0 de HGAC lo consultaba (para pausar su
+propia actuación). SpO2/HR1/HR2/HR3 solo se gatean por `probe_state`, no por este bit — así que
+**ya estaban procesando el transitorio real** durante cada cambio de RF, no solo `ppg_disp`. El
+fix los protege a todos.
+
+**Cambios (`incunest_afe4490` v0.71→v0.72):**
+- `_task_body()`: condición extraída a `_should_freeze_input()` (sin guard `INCUNEST_OFFLINE`,
+  solo lectura de miembros, testeable sin tarea real).
+- Rename `_diag_last_*` → `_last_valid_*` (ya no es específico de diagnóstico) en `.h`/`.cpp`.
+- Nuevo test `test_rf_change_freezes_input_for_settle_window` (PulseNest `test_hgac.cpp`): verifica
+  que `_should_freeze_input()` se mantiene `true` exactamente durante `_compute_afe_settle_samples()`
+  muestras y se libera justo después — ni una antes ni una después.
+- Spec §2.6b/§5.6.3/§5.8.4 actualizada; comentario del bit `RSQM_DIAG_HW_SETTLING` en `.h`.
+
+**Verificación:** `pio test -e native` → 54/55 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commits:** librería `3ed2485` (v0.72), pusheado. PulseNest (`test_hgac.cpp`) — pendiente de
+commit/push.
+
+**Memoria:** `project_ppg_disp_rf_change_spikes_task.md` → marcar **RESUELTO**.

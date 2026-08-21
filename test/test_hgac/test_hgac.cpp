@@ -85,6 +85,27 @@ void test_hgac_change_rf_resets_and_rewarms() {
     assert_rf1(afe, AFE4490RF::RF_100K);
 }
 
+// ── An RF change freezes input for the whole settle window, then releases it (v0.72) ──
+// _task_body() feeds frozen last-valid raw values while RSQM_DIAG_HW_SETTLING is active, the
+// same mechanism as the post-diagnostic holdoff — enforcing the bit instead of just labelling it.
+// _should_freeze_input() (the condition _task_body() checks) is exercised directly here since
+// _task_body() itself is SPI/task-only and not testable in the native/offline build.
+void test_rf_change_freezes_input_for_settle_window() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());  // nothing armed yet
+    afe.test_hgac_change_rf_led1(AFE4490RF::RF_10K);    // arms _rsqm_settling_countdown
+    TEST_ASSERT_TRUE(afe.test_should_freeze_input());
+    uint32_t samples = afe.test_compute_afe_settle_samples();
+    // Countdown decrements inside _process_sample() (_rsqm_update()) on every sample, frozen or
+    // not — feed exactly that many and it must be released, not one earlier or one later.
+    for (uint32_t i = 0; i < samples - 1; i++) {
+        afe.test_feed_sample(0, 0, 0, 0);
+        TEST_ASSERT_TRUE(afe.test_should_freeze_input());
+    }
+    afe.test_feed_sample(0, 0, 0, 0);
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+}
+
 // ── A gain change leaves the SpO2 EmaChannel untouched (OT-domain: no rescale needed) ──
 void test_hgac_change_rf_leaves_spo2_ema_untouched() {
     INCUNEST_AFE4490 afe;
@@ -145,6 +166,7 @@ int main() {
     RUN_TEST(test_hgac_disabled_by_default);
     RUN_TEST(test_hgac_leveling_raises_rf);
     RUN_TEST(test_hgac_change_rf_resets_and_rewarms);
+    RUN_TEST(test_rf_change_freezes_input_for_settle_window);
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
     RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
