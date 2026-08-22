@@ -17107,3 +17107,35 @@ build ESP32-S3 (`incunest_V16`) SUCCESS.
 
 **Pendiente:** flashear y verificar en placa real si Alex quiere confirmar en captura (es una
 ventana de carrera estrecha y poco frecuente — "alguna vez" — difícil de reproducir a demanda).
+
+---
+
+## Sesión 2026-08-22 (cont.) — Flash v0.80 y análisis: ¿afecta un cambio de RF a HR/SpO2?
+
+**Flash:** confirmado OTA a la 16.A (`192.168.137.73`, MAC `10:51:DB:50:48:F8` verificada en ARP)
+con el firmware v0.80 (fix arm-antes-de-mutar). Respuesta `OK` (HTTP 200). Alex confirma que los
+últimos cambios parecen funcionar.
+
+**Pregunta de Alex:** ¿podrían los cambios de RF alterar el cálculo de HR y SpO2? Qué precauciones
+tener en cuenta.
+
+**Análisis (leyendo `_spo2_update()`):** en régimen permanente un cambio de RF no debería afectar,
+porque OT es invariante a la ganancia por diseño (comentario explícito en el código) y la ventana
+de asentamiento analógico ya está protegida (v0.72→v0.80). Pero se identificó un efecto residual
+no contemplado hasta ahora: el DC de SpO2 es una EMA con τ≈2s (`mean`); el AC es `sqrt(var)` con
+τ=6s (más lento que el DC). El salto de nivel DC de ~±7% por tolerancia de fabricación del RF real
+(ya documentado, ver memoria `reference_rf_tolerance_ot_dc_shift`) ocurre en cada cambio de RF
+(manual o de HGAC). Justo tras el salto, `d = OT − mean` contiene temporalmente el residuo del
+propio salto (la `mean` aún convergiendo) y `var` lo integra como si fuera señal cardiaca real →
+PI se infla transitoriamente y R se sesga durante varios segundos hasta que ambos EMA convergen.
+Los EMA de SpO2 no se resetean en un cambio de RF (a diferencia de los de HGAC, que sí). HR se
+considera mucho menos afectado (trabaja sobre señal ya filtrada en banda, no sobre el cociente R),
+pero sin verificar. Posible relación con la tarea pendiente `project_pi_stability_task` (mismo
+síntoma, disparador distinto al investigado entonces).
+
+**Decisión de Alex:** dejarlo como tarea pendiente, sin urgencia — los cambios manuales de RF no
+están previstos en el proyecto IncuNest (solo los automáticos de HGAC). No se ha tocado código ni
+se ha medido el efecto en captura real todavía.
+
+**Memoria creada:** `project_spo2_ema_rf_change_bias_task.md` (enlazada a
+`project_pi_stability_task` y `reference_rf_tolerance_ot_dc_shift`), indexada en `MEMORY.md`.
