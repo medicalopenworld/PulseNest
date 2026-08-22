@@ -16986,3 +16986,24 @@ ESP32-S3 (`incunest_V16`): SUCCESS.
 setters de la cadena de señal" (RF, ILED, AMBDAC, RG, Stage2En) — solo `setTIACF*()` y
 `setLEDRange()` quedan fuera, por razones documentadas (CF no escalona el DC; LEDRange dispara
 un settling de TX_REF de ~1s, mecanismo distinto, ver memoria de referencia del catálogo).
+
+## Sesión 2026-08-22 (cont.) — Por qué `_apply_analog_regs()` es incondicional
+
+**Pregunta de Alex:** ¿por qué los setters del AFE llaman a `_apply_analog_regs()` aunque el valor
+no cambie, si hoy sí guardamos el armado de settling con un `changed`?
+
+**Respuesta:** son dos costes de naturaleza distinta. Varios campos comparten un mismo registro
+(`TIAGAIN` empaqueta `RF_LED1`+`CF_LED1`+`STG2GAIN1`+`STAGE2EN1`+`ENSEPGAIN`) — una escritura SPI
+ya retransmite los vecinos sin cambiar, así que reescribir los mismos bits no tiene ningún efecto
+físico en el chip (sin escalón de tensión, nada se re-asienta) y de paso sirve como re-sync forzado
+si el hardware y el software alguna vez se desincronizan. En cambio, armar el countdown de settling
+SÍ tiene un coste real (congela datos en vivo ~16 ms) — por eso ese sí lleva guard `changed` y esto
+no.
+
+**Cambio:** comentario breve añadido sobre `_apply_analog_regs()` explicando esto (`incunest_afe4490`
+v0.77→v0.78). Solo documentación, sin cambio de comportamiento.
+
+**Verificación:** `pio test -e native` → 62/63 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commit:** librería `141a303` (v0.78), pusheado. Sin cambios en PulseNest esta vez.
