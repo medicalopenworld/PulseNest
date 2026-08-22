@@ -106,6 +106,27 @@ void test_rf_change_freezes_input_for_settle_window() {
     TEST_ASSERT_FALSE(afe.test_should_freeze_input());
 }
 
+// ── A manual RF change (not via HGAC) also arms the settle window (v0.74) ──
+// Before this, only _hgac_change_rf() armed _rsqm_settling_countdown - a manual RF change (e.g. a
+// $SET,tiagain1,... from the script) got no input-freeze protection at all, even though the same
+// physical front-end transient occurs regardless of who changed RF. setTIAGain()/setTIAGainLED1/2()
+// now arm it themselves, so a manual change is protected exactly like an HGAC one.
+void test_manual_rf_change_also_arms_settling() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setTIAGainLED1(AFE4490RF::RF_10K);  // manual call, bypassing HGAC entirely
+    TEST_ASSERT_TRUE(afe.test_should_freeze_input());
+}
+
+// ── Re-applying the SAME gain does not spuriously re-arm settling ──
+void test_setting_same_gain_does_not_rearm_settling() {
+    INCUNEST_AFE4490 afe;                    // RF_100K default
+    afe.setTIAGainLED1(AFE4490RF::RF_100K);  // no-op value — nothing actually changed
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setTIAGain(AFE4490RF::RF_100K);      // joint setter, same no-op check
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+}
+
 // ── A gain change leaves the SpO2 EmaChannel untouched (OT-domain: no rescale needed) ──
 void test_hgac_change_rf_leaves_spo2_ema_untouched() {
     INCUNEST_AFE4490 afe;
@@ -167,6 +188,8 @@ int main() {
     RUN_TEST(test_hgac_leveling_raises_rf);
     RUN_TEST(test_hgac_change_rf_resets_and_rewarms);
     RUN_TEST(test_rf_change_freezes_input_for_settle_window);
+    RUN_TEST(test_manual_rf_change_also_arms_settling);
+    RUN_TEST(test_setting_same_gain_does_not_rearm_settling);
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
     RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);

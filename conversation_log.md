@@ -16846,3 +16846,44 @@ que proteja a cualquier llamante futuro. Reflejado en `pulsenest_lab_spec.md` §
 visor sigue mostrando esa columna como texto, es por los `nan`, no por corrupción.
 
 **Estado git:** `pulsenest_lab.py` (guard) + `pulsenest_lab_spec.md` (§7.13) + esta entrada.
+
+## Sesión 2026-08-22 — Cambio manual de RF no armaba el settling — RESUELTO
+
+**Observación de Alex:** revisando el fix de picos en `ppg_disp` (ayer), señaló que
+`_rsqm_settling_countdown` no lleva mutex ni `volatile`, y que solo `_hgac_change_rf()` la arma —
+un cambio manual de RF vía `setTIAGainLED1()` (p.ej. desde el script con `$SET tiagain1,...`) no
+disparaba ninguna protección de settling.
+
+**Confirmado ambos puntos:**
+1. `_rsqm_settling_countdown` era un `uint32_t` normal — hoy sin problema porque solo lo tocaba el
+   hilo de `_task_body()` (escritura en `_hgac_change_rf()`, lectura/decremento en
+   `_should_freeze_input()`/`_rsqm_update()`, todo secuencial en el mismo hilo).
+2. `setTIAGainLED1()`/`setTIAGainLED2()` nunca tocaban el countdown — confirmado en el código.
+
+**Por qué están relacionadas:** si movemos el armado al setter, este se llama tanto desde el hilo
+de `_task_body()` (vía HGAC) como desde `Cmd_Task` (vía `$SET` manual) — dos hilos distintos. Ahí
+sí hace falta `volatile`.
+
+**Fix (`incunest_afe4490` v0.73→v0.74):**
+- Nuevo `_arm_settling()` (helper privado), llamado desde `setTIAGain()`/`setTIAGainLED1()`/
+  `setTIAGainLED2()` — con guard: reaplicar el mismo valor no rearma nada (igual que el
+  `new_rf == old_rf` de `_hgac_change_rf()`).
+- `_hgac_change_rf()` ya no arma el countdown por separado — lo hereda gratis del setter que ya
+  llamaba.
+- `_rsqm_settling_countdown` ahora `volatile`. **Sin mutex**: ambos lados solo hacen un store o
+  decremento simple de 32 bits, nunca un read-modify-write cruzado entre hilos — el peor caso de
+  carrera es benigno (±1 muestra de duración del settling), mismo razonamiento ya aplicado a
+  `_diag_active`/`_diag_holdoff_samples`.
+- Nuevos tests `test_manual_rf_change_also_arms_settling` y
+  `test_setting_same_gain_does_not_rearm_settling` (PulseNest `test_hgac.cpp`).
+
+**Verificación:** `pio test -e native` → 56/57 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commits:** librería `7beb313` (v0.74), pusheado. PulseNest (`test_hgac.cpp`) — pendiente de
+commit/push.
+
+**Pendiente (mencionado por Alex, no abordado hoy):** ¿aplicamos el mismo razonamiento (armar
+settling) a los cambios de ILED? HGAC v1 no toca ILED (Fase 4 diferida), pero un cambio manual de
+corriente LED (`setLED1Current()`/`setLED2Current()`) también perturba el front-end analógico
+igual que un cambio de RF.
