@@ -17041,3 +17041,33 @@ un solo miembro nuevo en vez de nueve, `_compute_analog_state()` no se toca.
 ESP32-S3 (`incunest_V16`): SUCCESS.
 
 **Commits:** librería `35d04c4` (v0.79), pusheado. PulseNest (test) — pendiente de commit/push.
+
+## Sesión 2026-08-22 (cont.) — LAB CAPTURE no ofrecía OT_LED1 (ni V_TIA/I_PD/CH_MASKS)
+
+**Bloqueo de Alex:** para verificar el fix de settling (v0.79) necesitaba ver `OT_LED1` con
+resolución completa durante la ventana de 9 muestras. Con CAPTURE LAB no aparecía como canal
+seleccionable; con SAVE DATA la columna existe pero no tenía suficiente resolución temporal.
+
+**Diagnóstico de ambas causas:**
+- **SAVE DATA**: decimada por `spin_decim` también en el guardado (comportamiento documentado en
+  su propio tooltip, no un bug) — con una ventana de 9 muestras es fácil no caer en poner el
+  decimado a 1.
+- **CAPTURE LAB**: captura a 500 Hz completos **antes** de cualquier decimado (confirmado en el
+  propio docstring de `LabCaptureWindow` — es la herramienta correcta) — pero su lista `_COLS`
+  es de antes de que existieran los campos extendidos de `$M4` (V_TIA/I_PD/OT/CH_MASKS, índices
+  23-33), así que nunca se pudieron seleccionar.
+
+**Fix (`pulsenest_lab.py` v1.27→v1.28):**
+- Añadidas 11 columnas opcionales a `_COLS`: `V_TIA_LED1/2/ALED1/2`, `I_PD_LED1/2/ALED1/2`,
+  `OT_LED1/2`, `CH_MASKS` — mismos índices que usa `main.cpp` para la trama `$M4`.
+- Documentado que leen `"-1"` fuera de modo `$M4` (fallback ya existente en
+  `_write_lab_capture_row()`, sin cambio de lógica).
+- `pulsenest_lab_spec.md` §12 actualizada.
+
+**Verificación:** `python -m py_compile pulsenest_lab.py` OK. Script relanzado (kill + start).
+
+**Commit:** `7f77654`, pusheado.
+
+**Pendiente:** con esto Alex ya puede volver a intentar la captura para confirmar si el fix v0.79
+dejó `OT_LED1` plano durante el settling, o si el pulso en `FW_PPG` es solo la decaída esperada
+del filtro paso-banda (τ≈0.32s, muy por encima de la ventana de settling).
