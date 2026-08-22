@@ -187,7 +187,7 @@ void test_eq1_limit_scales_with_rate() {
 // re-enable HGAC/RSQM before the analog front end has actually settled.
 void test_afe_settle_window_covers_500hz_filter_pole() {
     INCUNEST_AFE4490 afe;                       // 500 Hz default
-    uint32_t samples = afe.test_compute_afe_settle_samples();
+    uint32_t samples = afe.test_compute_switched_rc_settling_samples();
     float settle_s = (float)samples / 500.0f;
     const float five_tau_500hz_s = 5.0f / (2.0f * 3.14159265f * 500.0f);  // ~1.59 ms
     TEST_ASSERT_TRUE(settle_s >= five_tau_500hz_s);

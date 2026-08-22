@@ -16887,3 +16887,45 @@ commit/push.
 settling) a los cambios de ILED? HGAC v1 no toca ILED (Fase 4 diferida), pero un cambio manual de
 corriente LED (`setLED1Current()`/`setLED2Current()`) también perturba el front-end analógico
 igual que un cambio de RF.
+
+## Sesión 2026-08-22 (cont.) — Rename: identificadores de settling ambiguos
+
+**Petición de Alex:** los nombres `_arm_settling()`, `_rsqm_settling_countdown`, etc. son
+ambiguos — la librería podría tener más de un tipo de "settling". Propuso pensar en
+`afe_settling`/`RCfilter_settling`/`RX_settling`/`gain_settling`, con la intuición correcta de
+que los 3 ms de muestreo acumulado (t₅) se deben a los condensadores de los filtros RC
+conmutados adaptándose a un cambio de tensión brusco (normalmente el cambio muestra-a-muestra es
+pequeño).
+
+**Análisis:** confirmado que "RC" a secas sería ambiguo — la librería ya tiene DOS conceptos "RC"
+distintos que se resuelven dentro de UNA sola muestra (el polo propio de la TIA, τ=RF×CF, que
+gobierna el auto-CF; y el transitorio LED/cable de
+`_compute_led_on_to_sample_margin_counts()`). Lo que nombra `_rsqm_settling_countdown` es un
+tercer fenómeno que necesita VARIOS ciclos de PRP (los 3 ms mínimos del datasheet), no
+microsegundos dentro de un ciclo.
+
+**4 opciones presentadas** (switched_rc_settling / rc_step_settling / sample_hold_settling /
+config_change_rc_settling) — Alex eligió **A: `switched_rc_settling`**, citando literalmente la
+frase del datasheet (§7.7 t5, footnote 1: "four switched RC filters"). El prefijo `RSQM_DIAG_`
+queda para otra sesión (también mal puesto — no es una métrica de RSQM, pero es una decisión
+aparte).
+
+**Cambios (`incunest_afe4490` v0.74→v0.75):**
+- `_rsqm_settling_countdown` → `_switched_rc_settling_countdown`
+- `RSQM_DIAG_HW_SETTLING` → `RSQM_DIAG_SWITCHED_RC_SETTLING`
+- `_arm_settling()` → `_arm_switched_rc_settling()`
+- `_compute_afe_settle_samples()` → `_compute_switched_rc_settling_samples()`
+- Comentario del bit en `.h` ampliado explicando la distinción de los otros dos "RC" del código.
+- Spec §5.8.4: nota de naming explicando por qué se descartaron las otras 3 opciones.
+- Las filas históricas del changelog §14 (v0.35-v0.72) mantienen deliberadamente los nombres
+  viejos — describen lo que hizo cada commit en su momento, no el identificador actual.
+- Renombrado también en `incunest_afe4490_design.md` y en los tests de PulseNest
+  (`test_hgac.cpp`, `test_tia_cf.cpp`).
+
+**Verificación:** `pio test -e native` → 56/57 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commits:** librería `7f628bf` (v0.75), pusheado. PulseNest (tests) — pendiente de commit/push.
+
+**Pendiente:** separar el prefijo `RSQM_DIAG_` de este bit (no es una métrica RSQM) — decisión
+aparte, diferida.
