@@ -17007,3 +17007,37 @@ v0.77→v0.78). Solo documentación, sin cambio de comportamiento.
 ESP32-S3 (`incunest_V16`): SUCCESS.
 
 **Commit:** librería `141a303` (v0.78), pusheado. Sin cambios en PulseNest esta vez.
+
+## Sesión 2026-08-22 (cont.) — Bug real: congelar los códigos crudos no bastaba
+
+**Observación de Alex (revisando una captura .CSV real):** durante un cambio de RF, LED1/ALED1
+quedan constantes 9 muestras (el congelado funciona), pero `FW_PPG` (deriva de `ot_led1`) no —
+y no es una decaída suave sino "un pulso exponencial bastante abrupto".
+
+**Diagnóstico:** el congelado (`_task_body()`) solo fija los códigos ADC crudos. Pero
+`_compute_analog_state()` sigue leyendo los parámetros de circuito (`_afe_tia_rf_led1/2`, RG, EN,
+AMBDAC, ILED) como miembros EN VIVO — que para las muestras congeladas ya son los valores NUEVOS
+(el propio setter que armó el congelado los actualiza de inmediato). Recalcular `V_TIA`/`I_PD`/`OT`
+con un código VIEJO y un parámetro NUEVO produce un valor artificialmente **escalonado** (p.ej. OT
+escalado por `RF_viejo/RF_nuevo`), no la línea plana que se pretendía — de ahí el pulso abrupto en
+vez de una decaída suave. Afecta también a RSQM y SpO2/HR1-3, no solo al display.
+
+**Diseño (pedido explícitamente "piénsalo bien, enséñamelo antes de implementar"):** dos opciones
+comparadas — (A) congelar también los ~9 parámetros de circuito por separado; (B) congelar el
+`AFE4490AnalogState` YA CALCULADO por completo y no recalcular nada durante la ventana. **Elegida
+la B**: arregla el desajuste por construcción (no existe estado parcialmente congelado posible),
+un solo miembro nuevo en vez de nueve, `_compute_analog_state()` no se toca.
+
+**Cambios (`incunest_afe4490` v0.78→v0.79):**
+- Nuevo miembro `_last_valid_analog_state` (el struct completo, no solo los códigos crudos).
+- `_process_sample()`: si `_should_freeze_input()`, reutiliza ese struct tal cual; si no, calcula
+  uno fresco y lo guarda.
+- Nuevo test `test_analog_state_stays_flat_during_settle_window` (PulseNest `test_hgac.cpp`) —
+  probado de la forma más exigente: alimenta un código crudo deliberadamente absurdo DURANTE la
+  ventana congelada y comprueba que OT no se mueve (si el bug siguiera presente, se movería).
+- Spec §5.8.4 ampliada con el diagnóstico completo y la comparación de diseños.
+
+**Verificación:** `pio test -e native` → 63/64 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commits:** librería `35d04c4` (v0.79), pusheado. PulseNest (test) — pendiente de commit/push.

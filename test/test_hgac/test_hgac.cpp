@@ -182,6 +182,36 @@ void test_setting_same_stage2_en_does_not_rearm_settling() {
     TEST_ASSERT_FALSE(afe.test_should_freeze_input());
 }
 
+// ── The analog state itself (OT) stays flat during the settle window, not just the raw codes ──
+// Reviewed 2026-08-22 (Alex, from a real capture): recomputing from the frozen raw codes with the
+// LIVE (already-changed) RF would combine an OLD code with a NEW gain, producing an artificially
+// STEPPED OT instead of a flat one - an abrupt pulse in ppg_disp instead of a benign constant.
+// Fix: _process_sample() reuses the last fully-computed AFE4490AnalogState wholesale while frozen,
+// instead of recomputing anything. Proven here the strong way: feed a WILDLY different (bogus) raw
+// code while frozen - if the bug were still present, recomputing it with the new RF would move OT;
+// the fix must ignore it completely.
+void test_analog_state_stays_flat_during_settle_window() {
+    INCUNEST_AFE4490 afe;
+    // Establish a stable, non-trivial OT (led1 != aled1, so OT != 0 and a scaling bug is visible).
+    for (int i = 0; i < 5; i++) afe.test_feed_sample(400000, 400000, 100000, 100000);
+    float ot_before = afe.test_last_ot_led1();
+    TEST_ASSERT_TRUE(ot_before != 0.0f);
+
+    afe.test_hgac_change_rf_led1(AFE4490RF::RF_10K);  // RF_100K -> RF_10K: arms settling, RF changes now
+    uint32_t samples = afe.test_compute_switched_rc_settling_samples();
+
+    for (uint32_t i = 0; i < samples; i++) {
+        afe.test_feed_sample(900000, 900000, 50000, 50000);  // bogus code, ignored while frozen
+        TEST_ASSERT_EQUAL_FLOAT(ot_before, afe.test_last_ot_led1());
+    }
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+
+    // Once released, fresh codes take effect again (proves OT isn't just stuck forever — with the
+    // new RF now really in effect, the reconstructed OT for this different code must differ).
+    afe.test_feed_sample(900000, 900000, 50000, 50000);
+    TEST_ASSERT_TRUE(afe.test_last_ot_led1() != ot_before);
+}
+
 // ── A gain change leaves the SpO2 EmaChannel untouched (OT-domain: no rescale needed) ──
 void test_hgac_change_rf_leaves_spo2_ema_untouched() {
     INCUNEST_AFE4490 afe;
@@ -251,6 +281,7 @@ int main() {
     RUN_TEST(test_setting_same_led_ambdac_rg_does_not_rearm_settling);
     RUN_TEST(test_stage2_en_toggle_arms_settling);
     RUN_TEST(test_setting_same_stage2_en_does_not_rearm_settling);
+    RUN_TEST(test_analog_state_stays_flat_during_settle_window);
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
     RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
