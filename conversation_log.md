@@ -16963,3 +16963,26 @@ ESP32-S3 (`incunest_V16`): SUCCESS.
 
 **Memoria:** `project_iled_change_settling_task.md` → resuelto para ILED (y de paso AMBDAC/RG).
 Pendiente nuevo (ligero): decisión sobre `setStage2En1/2()`.
+
+## Sesión 2026-08-22 (cont.) — Settling: incluido también `setStage2En1/2()`
+
+**Petición de Alex:** cerrar el pendiente ligero dejado en v0.76 — añadir el armado de settling
+también al bypass booleano de la Etapa 2.
+
+**Cambios (`incunest_afe4490` v0.76→v0.77):**
+- `setStage2En1()`/`setStage2En2()` ahora llaman a `_arm_switched_rc_settling()` (guard: no reamar
+  si el booleano no cambia) — activar/desactivar el bypass de Etapa 2 escalona la ganancia efectiva
+  entre unidad y `RG` exactamente igual que `setStage2Gain()`.
+- Nuevos tests `test_stage2_en_toggle_arms_settling` y
+  `test_setting_same_stage2_en_does_not_rearm_settling` (PulseNest `test_hgac.cpp`).
+- Spec §5.8.4 actualizada.
+
+**Verificación:** `pio test -e native` → 62/63 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commits:** librería `53c9a76` (v0.77), pusheado. PulseNest (tests) — pendiente de commit/push.
+
+**Con esto queda cerrado por completo** el hilo de "armar el switched-RC settling en todos los
+setters de la cadena de señal" (RF, ILED, AMBDAC, RG, Stage2En) — solo `setTIACF*()` y
+`setLEDRange()` quedan fuera, por razones documentadas (CF no escalona el DC; LEDRange dispara
+un settling de TX_REF de ~1s, mecanismo distinto, ver memoria de referencia del catálogo).

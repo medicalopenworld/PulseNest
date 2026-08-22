@@ -163,6 +163,25 @@ void test_setting_same_led_ambdac_rg_does_not_rearm_settling() {
     TEST_ASSERT_FALSE(afe.test_should_freeze_input());
 }
 
+// ── Toggling Stage 2 bypass also arms the settle window (v0.77) ──
+// STAGE2EN steps the effective gain between unity (bypassed) and RG (enabled) - the same kind of
+// front-end transient as setStage2Gain() itself, just via the enable bit instead of the gain value.
+void test_stage2_en_toggle_arms_settling() {
+    INCUNEST_AFE4490 afe;
+    bool was_en = afe.getConfig().afe_stg2_en_led1;
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setStage2En1(!was_en);
+    TEST_ASSERT_TRUE(afe.test_should_freeze_input());
+}
+
+// ── Re-setting Stage 2 enable to its current value does not spuriously re-arm settling ──
+void test_setting_same_stage2_en_does_not_rearm_settling() {
+    INCUNEST_AFE4490 afe;
+    bool was_en = afe.getConfig().afe_stg2_en_led1;
+    afe.setStage2En1(was_en);
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+}
+
 // ── A gain change leaves the SpO2 EmaChannel untouched (OT-domain: no rescale needed) ──
 void test_hgac_change_rf_leaves_spo2_ema_untouched() {
     INCUNEST_AFE4490 afe;
@@ -230,6 +249,8 @@ int main() {
     RUN_TEST(test_ambdac_change_arms_settling);
     RUN_TEST(test_stage2_gain_change_arms_settling);
     RUN_TEST(test_setting_same_led_ambdac_rg_does_not_rearm_settling);
+    RUN_TEST(test_stage2_en_toggle_arms_settling);
+    RUN_TEST(test_setting_same_stage2_en_does_not_rearm_settling);
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
     RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
