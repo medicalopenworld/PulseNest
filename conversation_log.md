@@ -16929,3 +16929,37 @@ ESP32-S3 (`incunest_V16`): SUCCESS.
 
 **Pendiente:** separar el prefijo `RSQM_DIAG_` de este bit (no es una métrica RSQM) — decisión
 aparte, diferida.
+
+## Sesión 2026-08-22 (cont.) — Settling extendido a ILED, AMBDAC y RG
+
+**Petición de Alex:** "seguimos con ILED settling, y con AMBDAC y RG" — extender el armado del
+switched-RC settling (hoy solo RF) a estos otros tres parámetros.
+
+**Base:** el propio footnote (1) de la fila t₅ del datasheet (§7.7, p.17) nombra explícitamente
+"LED current setting, TIA gain, and so forth" — RF era el único conectado hasta v0.75. AMBDAC y RG
+comparten la misma ruta de realimentación que RF (Ecuación 2, §3c), así que el mismo razonamiento
+físico aplica.
+
+**Cambios (`incunest_afe4490` v0.75→v0.76):**
+- `setLED1Current()`/`setLED2Current()`, `setAmbDac()`, `setStage2Gain()`/`setStage2GainLED1()`/
+  `setStage2GainLED2()` ahora llaman a `_arm_switched_rc_settling()`, con el mismo guard de "no
+  reamar si el valor no cambia" ya usado para RF.
+- **`setTIACF*()` deliberadamente excluido:** CF solo moldea la respuesta transitoria, no el punto
+  de operación DC (la Ecuación 2 no tiene término de CF) — un cambio de CF no produce el mismo
+  escalón de nivel DC que RF/ILED/AMBDAC/RG.
+- **`setStage2En1()`/`setStage2En2()` detectado pero no incluido** — también cambia la ganancia
+  efectiva (unidad↔RG), pero es un booleano de bypass, categoría distinta de los 4 setters de valor
+  cubiertos hoy; queda como decisión de seguimiento, no se coló en silencio.
+- Nuevos tests: `test_led_current_change_arms_settling`, `test_ambdac_change_arms_settling`,
+  `test_stage2_gain_change_arms_settling`, `test_setting_same_led_ambdac_rg_does_not_rearm_settling`
+  (PulseNest `test_hgac.cpp`).
+- Spec §5.8.4 ampliada con la justificación completa (por qué CF no, por qué Stage2En se deja
+  para después).
+
+**Verificación:** `pio test -e native` → 60/61 (test_biquad preexistente sin relación). Build
+ESP32-S3 (`incunest_V16`): SUCCESS.
+
+**Commits:** librería `3316e0e` (v0.76), pusheado. PulseNest (tests) — pendiente de commit/push.
+
+**Memoria:** `project_iled_change_settling_task.md` → resuelto para ILED (y de paso AMBDAC/RG).
+Pendiente nuevo (ligero): decisión sobre `setStage2En1/2()`.

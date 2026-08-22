@@ -127,6 +127,42 @@ void test_setting_same_gain_does_not_rearm_settling() {
     TEST_ASSERT_FALSE(afe.test_should_freeze_input());
 }
 
+// ── ILED, AMBDAC, and RG (Stage2 gain) changes also arm the settle window (v0.76) ──
+// Datasheet §7.7 t5 footnote (1) names "LED current setting... and so forth" alongside TIA gain
+// as triggers for the same switched-RC settling requirement. AMBDAC and RG (Stage 2) share the
+// identical feedback path (Eq. 2) as RF, so the same reasoning applies to them too.
+void test_led_current_change_arms_settling() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setLED1Current(10.0f);  // default ~49.8 mA
+    TEST_ASSERT_TRUE(afe.test_should_freeze_input());
+}
+
+void test_ambdac_change_arms_settling() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setAmbDac(5);  // default 0
+    TEST_ASSERT_TRUE(afe.test_should_freeze_input());
+}
+
+void test_stage2_gain_change_arms_settling() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setStage2Gain(AFE4490RG::RG_200K);  // default RG_100K (0 dB, bypass-equivalent)
+    TEST_ASSERT_TRUE(afe.test_should_freeze_input());
+}
+
+// ── Re-applying the same ILED/AMBDAC/RG value does not spuriously re-arm settling ──
+void test_setting_same_led_ambdac_rg_does_not_rearm_settling() {
+    INCUNEST_AFE4490 afe;
+    afe.setLED1Current(afe.getConfig().afe_led1_current_mA);
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setAmbDac(0);
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+    afe.setStage2Gain(AFE4490RG::RG_100K);
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());
+}
+
 // ── A gain change leaves the SpO2 EmaChannel untouched (OT-domain: no rescale needed) ──
 void test_hgac_change_rf_leaves_spo2_ema_untouched() {
     INCUNEST_AFE4490 afe;
@@ -190,6 +226,10 @@ int main() {
     RUN_TEST(test_rf_change_freezes_input_for_settle_window);
     RUN_TEST(test_manual_rf_change_also_arms_settling);
     RUN_TEST(test_setting_same_gain_does_not_rearm_settling);
+    RUN_TEST(test_led_current_change_arms_settling);
+    RUN_TEST(test_ambdac_change_arms_settling);
+    RUN_TEST(test_stage2_gain_change_arms_settling);
+    RUN_TEST(test_setting_same_led_ambdac_rg_does_not_rearm_settling);
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
     RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
