@@ -9709,6 +9709,9 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
       - Pre-capture notes as '# ...' lines before the column header.
       - Mandatory columns: LED2, LED1, ALED2, ALED1, LED2_SUB, LED1_SUB.
       - Optional FW columns: FW_SpO2, FW_HR1, FW_HR2, FW_HR3 (offline_runner names).
+      - Optional $M4-only columns (V_TIA_*, I_PD_*, OT_LED1/2, CH_MASKS, added 2026-08-22):
+        read "-1" if the active frame mode isn't $M4 — these fields don't exist in
+        $M1/$M2/$M3 frames, and _write_lab_capture_row() has no mode check of its own.
       - Post-capture notes as '# ...' lines after the last data row.
     """
 
@@ -9742,6 +9745,21 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         ("RSQI",      "FW_RSQI",      20,  False),
         ("DiagCode",  "FW_DiagCode",  21,  False),
         ("ProbeState","FW_ProbeState",22,  False),
+        # $M4-only fields (indices 23-33, see main.cpp's $M4 frame comment and
+        # incunest_afe4490_spec.md). Reading these while in $M1/$M2/$M3 mode writes "-1"
+        # (index out of range for that frame, per _write_lab_capture_row's fallback) — the
+        # generic "Optional column" tooltip doesn't say so explicitly; noted here for maintainers.
+        ("V_TIA_LED1",  "FW_V_TIA_LED1",  23, False),
+        ("V_TIA_LED2",  "FW_V_TIA_LED2",  24, False),
+        ("V_TIA_ALED1", "FW_V_TIA_ALED1", 25, False),
+        ("V_TIA_ALED2", "FW_V_TIA_ALED2", 26, False),
+        ("I_PD_LED1",   "FW_I_PD_LED1",   27, False),
+        ("I_PD_LED2",   "FW_I_PD_LED2",   28, False),
+        ("I_PD_ALED1",  "FW_I_PD_ALED1",  29, False),
+        ("I_PD_ALED2",  "FW_I_PD_ALED2",  30, False),
+        ("OT_LED1",     "FW_OT_LED1",     31, False),
+        ("OT_LED2",     "FW_OT_LED2",     32, False),
+        ("CH_MASKS",    "FW_CH_MASKS",    33, False),
     ]
 
     def __init__(self, main_monitor):

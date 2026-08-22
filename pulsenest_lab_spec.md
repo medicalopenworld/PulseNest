@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.27
+# pulsenest_lab — Specification v1.28
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -933,7 +933,8 @@ Purpose: controlled capture with metadata for lab sessions.
 - Filename prefix
 - Pre-notes text area (written as `#`-comment lines at start of CSV)
 - Post-notes text area (written as `#`-comment lines at end of CSV)
-- Column selection checkboxes (subset of M1 fields)
+- Column selection checkboxes (subset of M1 fields, plus $M4-only fields added 2026-08-22:
+  V_TIA_LED1/2/ALED1/2, I_PD_LED1/2/ALED1/2, OT_LED1/2, CH_MASKS — read "-1" outside $M4 mode)
 - Mode: continuous / timed (N samples)
 - Progress bar (timed mode)
 - [START] / [STOP]
@@ -1219,6 +1220,24 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.28 — 2026-08-22
+
+**`LabCaptureWindow` gains the 11 `$M4`-only columns — found missing while investigating the
+switched-RC settling fix (lib v0.79).** Alex needed `OT_LED1` at full temporal resolution to
+verify a 9-sample settling window and found it wasn't selectable anywhere: `SAVE DATA` has the
+column in its header but the row data is decimated by `spin_decim` (documented behaviour, not a
+bug — `_write_lab_capture_row()` runs *before* decimation, at the full 500 Hz, so it's the correct
+tool, but its `_COLS` list predates `$M4`'s extra fields).
+
+- `_COLS` gained `V_TIA_LED1/2/ALED1/2`, `I_PD_LED1/2/ALED1/2`, `OT_LED1/2`, `CH_MASKS` (indices
+  23-33, matching `main.cpp`'s `$M4` frame layout). All optional, unchecked-by-default behaviour
+  unchanged for the existing columns.
+- These new columns read `"-1"` (the existing out-of-range fallback in `_write_lab_capture_row()`)
+  when the active frame mode isn't `$M4` — noted in the class docstring and this section, since the
+  generic per-checkbox tooltip ("Optional column: X") doesn't say so.
+- No change to `SAVE DATA` — it remains decimated by design; `LabCaptureWindow` is the tool for
+  full-rate, short-transient captures like a settling window.
 
 ### v1.27 — 2026-07-24
 
