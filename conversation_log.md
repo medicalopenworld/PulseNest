@@ -17071,3 +17071,39 @@ seleccionable; con SAVE DATA la columna existe pero no tenía suficiente resoluc
 **Pendiente:** con esto Alex ya puede volver a intentar la captura para confirmar si el fix v0.79
 dejó `OT_LED1` plano durante el settling, o si el pulso en `FW_PPG` es solo la decaída esperada
 del filtro paso-banda (τ≈0.32s, muy por encima de la ventana de settling).
+
+---
+
+## Sesión 2026-08-22 (cont.) — Carrera cruzada de hilos al armar el settling ($SET manual)
+
+**Sospecha de Alex:** "Cuando cambio RF1, alguna vez me parece que el valor de FW_OT_LED1 que se
+congela se ha calculado con la RF1 nueva en vez de con la RF1 anterior."
+
+**Diagnóstico confirmado leyendo el código (no solo hipótesis):** distinto del bug de v0.79. Los
+seis setters que arman el settling (`setTIAGainLED1/2()`, `setLED1/2Current()`, `setAmbDac()`,
+`setStage2Gain()`/`setStage2GainLED1/2()`, `setStage2En1/2()`) mutaban el parámetro de circuito
+en vivo y *después* armaban `_switched_rc_settling_countdown` — protegido solo por `_spi_mutex`,
+nunca por `_state_mutex` (el lock de `_process_sample()`). Un `$SET` manual llega desde
+`Cmd_Task`, un hilo FreeRTOS distinto del de `_task_body()`. Si `_task_body()` ejecutaba
+`_process_sample()` justo en el hueco entre mutar y armar, `_should_freeze_input()` veía el
+countdown todavía a 0 → recalculaba en fresco → combinaba el código ADC crudo VIEJO (leído
+momentos antes) con el parámetro YA NUEVO → ese valor erróneo se guardaba en
+`_last_valid_analog_state` y era lo que quedaba congelado durante toda la ventana. El camino de
+HGAC nunca estuvo expuesto (muta y arma secuencialmente, en un solo hilo, bajo `_state_mutex`).
+
+**Fix (v0.80):** invertir el orden — armar el countdown *antes* de mutar el parámetro, en los
+seis setters. Verificado que es seguro: `_compute_switched_rc_settling_samples()` solo depende de
+`_afe_sample_rate_hz` (nunca del parámetro que cambia), así que el reordenado no cambia el valor
+armado, solo cierra el hueco. Se descartó proteger con `_state_mutex` dentro de los setters:
+`_hgac_change_rf()` ya anida una llamada a setter bajo un `_state_mutex` propio del llamante, y
+que `Cmd_Task` tomara `_spi_mutex` y luego `_state_mutex` invertiría el orden de locks → deadlock
+real. No hay test automático nuevo (la suite nativa es monohilo, no reproduce el intercalado); el
+fix se apoya en el argumento de orden documentado en `incunest_afe4490_spec.md` §5.8.4.
+
+**Verificación:** `pio test -e native` 63/64 (falla preexistente `test_biquad`, no relacionado);
+build ESP32-S3 (`incunest_V16`) SUCCESS.
+
+**Commit:** `cfb9cb9` en `incunest_afe4490`, pusheado a GitHub. Librería v0.79→v0.80.
+
+**Pendiente:** flashear y verificar en placa real si Alex quiere confirmar en captura (es una
+ventana de carrera estrecha y poco frecuente — "alguna vez" — difícil de reproducir a demanda).
