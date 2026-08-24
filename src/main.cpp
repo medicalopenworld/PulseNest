@@ -175,7 +175,9 @@ static void udp_send_line(const char* buf) {
 // M3 = full AFE4490Data — all production fields (default)
 // M4 = M3 + AFE4490DebugData analog signals (V_TIA, I_PD for all 4 channels,
 //      OT_LED1/OT_LED2, CH_MASKS validity masks — lib v0.35)
-//      + HGAC_RF1/HGAC_RF2 (Phase 1: RF-only descent — lib v0.37; HGAC_ALARM removed v0.50)
+//      + RF1/RF2 (current RF per domain, string — lib v0.37, renamed from HGAC_RF1/RF2 in
+//        v0.81: it's just the live config value, not something HGAC exclusively computes;
+//        HGAC_ALARM removed v0.50)
 enum class IncunestFrameMode { M1, M2, M3, M4 };
 volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M3;
 
@@ -290,7 +292,9 @@ void Incunest_Task(void *pvParameters) {
                 } else {  // M4
                     // $M4 = M3 + V_TIA_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (scientific notation)
                     //     + OT_LED1/OT_LED2 [A/A] + CH_MASKS (validity masks, lib v0.35)
-                    //     + HGAC_RF1/HGAC_RF2 (Phase 1: RF-only descent, lib v0.37; HGAC_ALARM removed v0.50).
+                    //     + RF1/RF2 (current RF per domain, string, lib v0.37; renamed from
+                    //       HGAC_RF1/RF2 in v0.81 — it's the live config value regardless of
+                    //       who set it, manual $SET or HGAC; HGAC_ALARM removed v0.50).
                     // CH_MASKS = 4 nibbles packed as %04X:
                     //   bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg, [11:8]=tia_over_fs, [15:12]=tia_over_lin
                     //   within each nibble, bit = channel per AFE4490Ch: LED1=0, ALED1=1, LED2=2, ALED2=3
@@ -330,7 +334,7 @@ void Incunest_Task(void *pvParameters) {
                         dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2,
                         dbg.analog.ot_led1,     dbg.analog.ot_led2,
                         ch_masks,
-                        afeRFToStr(dbg.hgac_rf_led1), afeRFToStr(dbg.hgac_rf_led2));
+                        afeRFToStr(dbg.rf_led1), afeRFToStr(dbg.rf_led2));
                     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
                     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
                     if (!g_wifi_ready) Serial_print_locked(buf);

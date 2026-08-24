@@ -6387,9 +6387,18 @@ class DiagnosticsWindow(QtWidgets.QMainWindow):
 
 
 class _WheelBlockFilter(QtCore.QObject):
-    """Event filter that blocks mouse-wheel events on a widget unless it has focus."""
+    """Event filter that blocks mouse-wheel events on a widget unless it has focus.
+
+    With always=True the wheel is blocked unconditionally. That is for controls which actuate on
+    the chip the moment their value changes (no Set button): there, even a focused scroll would
+    walk the item list firing one $SET per step, each with its own hardware settling window.
+    """
+    def __init__(self, parent=None, always=False):
+        super().__init__(parent)
+        self._always = always
+
     def eventFilter(self, obj, event):
-        if event.type() == QtCore.QEvent.Wheel and not obj.hasFocus():
+        if event.type() == QtCore.QEvent.Wheel and (self._always or not obj.hasFocus()):
             event.ignore()
             return True
         return super().eventFilter(obj, event)
@@ -6929,18 +6938,11 @@ class HWConfigWindow(QtWidgets.QMainWindow):
 
     def _send_set(self, key: str, value: str):
         mm = self.main_monitor
-        if mm is None or not mm._is_cmd_ready():
+        if mm is None or not mm.send_set(key, value):
             self._warn_not_connected()
             return
-        payload = f"$SET,{key},{value}"
-        chk = 0
-        for c in payload[1:]:
-            chk ^= ord(c)
-        cmd = f"{payload}*{chk:02X}\r\n"
-        mm._cfg_notify_lab_capture = False  # $CFG confirmation from $SET must not go to LabCapture notes
-        mm.send_cmd(cmd.encode())
-        mm.log(f"→ {cmd.strip()}")
-        self._statusbar.showMessage(f"Sent: {cmd.strip()}  — waiting for $CFG confirmation…")
+        self._statusbar.showMessage(
+            f"Sent: $SET,{key},{value}  — waiting for $CFG confirmation…")
         self._cfg_timer.start(3000)
 
     def _on_read_cfg(self):
@@ -9745,7 +9747,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         ("RSQI",      "FW_RSQI",      20,  False),
         ("DiagCode",  "FW_DiagCode",  21,  False),
         ("ProbeState","FW_ProbeState",22,  False),
-        # $M4-only fields (indices 23-33, see main.cpp's $M4 frame comment and
+        # $M4-only fields (indices 23-35, see main.cpp's $M4 frame comment and
         # incunest_afe4490_spec.md). Reading these while in $M1/$M2/$M3 mode writes "-1"
         # (index out of range for that frame, per _write_lab_capture_row's fallback) — the
         # generic "Optional column" tooltip doesn't say so explicitly; noted here for maintainers.
@@ -9760,7 +9762,25 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         ("OT_LED1",     "FW_OT_LED1",     31, False),
         ("OT_LED2",     "FW_OT_LED2",     32, False),
         ("CH_MASKS",    "FW_CH_MASKS",    33, False),
+        # RF1/RF2 (indices 34-35): actual RF in use per sample, sent by main.cpp since lib
+        # v0.37 but missing from this list until now — added to let RF changes be correlated
+        # with PPG/SpO2/HR transients. It's the live config value regardless of who set it
+        # (manual $SET or HGAC) — named RF1_OHM/RF2_OHM here, not RF1/RF2, because unlike
+        # every other capture column the wire value is a display string ("500K", via
+        # afeRFToStr()), not a plain number, so it can't be read by a time-series tool as-is.
+        # _write_lab_capture_row() converts it to ohms (_RF_STR_TO_OHM) before writing the row.
+        ("RF1_OHM",    "FW_RF1_OHM",    34, False),
+        ("RF2_OHM",    "FW_RF2_OHM",    35, False),
     ]
+
+    # RF1/RF2 wire values ("500K", ...) -> ohms, for the RF1_OHM/RF2_OHM CSV columns above.
+    # Mirrors incunest_afe4490.h's AFE4490RF enum / afeRFToStr() exactly (7 fixed values) —
+    # a closed lookup table, not a generic "K"/"M" suffix parser, so an unexpected string (firmware
+    # mismatch, corrupted frame) falls through to "-1" instead of silently misparsing.
+    _RF_STR_TO_OHM = {
+        "10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
+        "250K": 250e3, "500K": 500e3, "1M": 1e6,
+    }
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -10376,6 +10396,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._stats_ch_masks_or = 0       # OR of CH_MASKS over the current stats window
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
         self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA/V_ADC)
+        # Quick HW controls (SIGNAL STATS header). _hgac_enabled starts True because
+        # _auto_enable_hgac() enables HGAC on every firmware start; corrected by any $LCFG frame.
+        self._hgac_enabled  = True
+        self._quick_rf_shown = None       # last (rf1, rf2) pushed into the combos
         # HGAC actuation thresholds driving the V_TIA gauge. Seeded with the library defaults
         # and replaced by the live values from every $LCFG frame — they are runtime-tunable
         # ($SET hgac_*, LIB CONFIG window), so hardcoding them here would silently go stale.
@@ -10869,6 +10893,72 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "How often the Signal Stats table recalculates and resets its running statistics "
             "(Last / Mean / Max-Min / Min / Max). Range: 1–60 s.",
             src="PPGMonitor/stats_interval"))
+        # ── Quick HW controls: HGAC master enable + RF1/RF2 ───────────────────
+        # Both a live mirror (HGAC reports the RF actually in use per sample, $M4 fields 34/35)
+        # and direct actuation: picking a value sends $SET immediately, with no Set button.
+        # Three details make that safe:
+        #   - the signal is `activated`, NOT `currentIndexChanged`. `activated` fires only on
+        #     user interaction, so mirroring an HGAC-driven change back into the combo cannot
+        #     feed back as a command ($SET -> new RF -> new $M4 -> $SET -> ...).
+        #   - the wheel is blocked unconditionally: with no Set button an accidental scroll
+        #     would fire one $SET per item stepped over.
+        #   - the RF combos are disabled while HGAC is enabled. HGAC is RF-only and actuates on
+        #     APPLIED||SATURATING, so it would revert a manual value within ~200 ms; switching
+        #     HGAC to OFF here is what actually hands RF over to the user.
+        self._quick_wheel_filter = _WheelBlockFilter(self, always=True)
+        _quick_lbl_css      = "color: #CCCCCC; font-size: 22px;"
+        self._QUICK_CSS_ON  = ("background-color: #2A2A2A; color: #88FF88; padding: 2px; "
+                               "font-size: 22px;")
+        self._QUICK_CSS_OFF = ("background-color: #232323; color: #777777; padding: 2px; "
+                               "font-size: 22px;")
+
+        _lbl_hgac = QtWidgets.QLabel("HGAC:")
+        _lbl_hgac.setStyleSheet(_quick_lbl_css)
+        self.combo_quick_hgac = QtWidgets.QComboBox()
+        self.combo_quick_hgac.addItems(["OFF", "ON"])
+        self.combo_quick_hgac.setCurrentIndex(1)   # matches _auto_enable_hgac() on firmware start
+        self.combo_quick_hgac.setStyleSheet(self._QUICK_CSS_ON)
+        self.combo_quick_hgac.setFixedWidth(90)
+        self.combo_quick_hgac.installEventFilter(self._quick_wheel_filter)
+        self.combo_quick_hgac.activated.connect(self._on_quick_hgac_activated)
+        self.combo_quick_hgac.setToolTip(_make_tooltip(
+            "HGAC master enable",
+            "Turns the hardware gain auto-control loop on or off on the chip. Applies "
+            "immediately, no Set button: sends $SET,hgac_enable,<0|1>. While ON, HGAC owns RF "
+            "and the RF1/RF2 combos are read-only mirrors of what the loop is using; switch to "
+            "OFF to set RF by hand. The firmware boots with HGAC disabled, but PulseNest "
+            "re-enables it on every firmware start, so this returns to ON after a reset.",
+            src="AFE4490Config::hgac_enable"))
+        stats_header.addWidget(_lbl_hgac)
+        stats_header.addWidget(self.combo_quick_hgac)
+
+        self.combo_quick_rf = {}
+        for _n, _cfgkey, _setkey, _led in (("1", "tia1", "tiagain1", "IR"),
+                                           ("2", "tia2", "tiagain2", "RED")):
+            _lbl = QtWidgets.QLabel(f"RF{_n}:")
+            _lbl.setStyleSheet(_quick_lbl_css)
+            _cmb = QtWidgets.QComboBox()
+            _cmb.addItems(HWConfigWindow.TIA_GAINS)
+            _cmb.setStyleSheet(self._QUICK_CSS_ON)
+            _cmb.setFixedWidth(105)
+            _cmb.installEventFilter(self._quick_wheel_filter)
+            _cmb.activated.connect(
+                lambda _i, k=_setkey, c=_cmb: self._on_quick_rf_activated(k, c))
+            _extra = ("Only active when ENSEPGAIN=ON; with ENSEPGAIN=OFF the chip ignores "
+                      "tiagain1 and uses RF2 for both channels, so this combo is greyed out. "
+                      if _n == "1" else "")
+            _cmb.setToolTip(_make_tooltip(
+                f"LED{_n} ({_led}) TIA feedback resistance (RF{_n})",
+                f"Live RF in use for the {_led} channel, as reported by the firmware in $M4 field "
+                f"{33 + int(_n)} (RF{_n}) every sample. {_extra}"
+                f"Editable only while HGAC is OFF: picking a value applies it immediately, no Set "
+                f"button (sends $SET,{_setkey},<value>). In frame modes $M1-$M3 those fields are "
+                f"absent, so the value shown is the last one confirmed by $CFG.",
+                src=f"AFE4490Config::afe_tia_rf_led{_n}"))
+            stats_header.addWidget(_lbl)
+            stats_header.addWidget(_cmb)
+            self.combo_quick_rf[_setkey] = _cmb
+
         stats_header.addWidget(stats_interval_lbl)
         stats_header.addWidget(self.spin_stats_interval)
         stats_vbox.addLayout(stats_header)
@@ -11060,6 +11150,82 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.send_cmd(b'$CFG?\n')
         return True
 
+    def _on_quick_hgac_activated(self, idx: int):
+        """HGAC combo in the SIGNAL STATS header. Applies immediately, no Set button.
+        Confirmation arrives as an updated $LCFG frame, which is also what refreshes
+        LIB CONFIG if it happens to be open — hence suppress_cfg_note=False."""
+        if not self.send_set("hgac_enable", str(idx), suppress_cfg_note=False):
+            self.log("HGAC enable not sent - no command channel (connect serial or UDP)")
+            self._sync_quick_hgac_combo()      # revert the combo to the real state
+            return
+        self._hgac_enabled = bool(idx)
+        self._apply_quick_rf_enabled()
+
+    def _on_quick_rf_activated(self, key: str, combo):
+        """RF1/RF2 combo in the SIGNAL STATS header. Applies immediately, no Set button."""
+        if not self.send_set(key, combo.currentText()):
+            self.log(f"{key} not sent - no command channel (connect serial or UDP)")
+
+    def _sync_quick_hgac_combo(self):
+        """Push the cached hgac_enable state into the header combo. setCurrentIndex does not
+        emit `activated`, so this cannot bounce back as a $SET."""
+        if not hasattr(self, 'combo_quick_hgac'):
+            return
+        self.combo_quick_hgac.setCurrentIndex(1 if self._hgac_enabled else 0)
+        self._apply_quick_rf_enabled()
+
+    def _apply_quick_rf_enabled(self):
+        """RF combos are editable only while HGAC is off (HGAC owns RF when enabled), and RF1 is
+        additionally greyed out when ENSEPGAIN=0 — the chip then ignores tiagain1 and drives both
+        channels from tiagain2, so editing RF1 would silently do nothing."""
+        if not hasattr(self, 'combo_quick_rf'):
+            return
+        _ensep = str(self._last_cfg.get('ensepgain', '1')).strip().lower()
+        _ensep_on = _ensep not in ('0', 'off', 'false', 'no')
+        for _key, _cmb in self.combo_quick_rf.items():
+            _on = (not self._hgac_enabled) and (_ensep_on or _key == 'tiagain2')
+            if _cmb.isEnabled() != _on:
+                _cmb.setEnabled(_on)
+            _cmb.setStyleSheet(self._QUICK_CSS_ON if _on else self._QUICK_CSS_OFF)
+
+    def _sync_quick_hw_controls(self):
+        """Mirror the live RF in use into the header combos. Called from the render tick (200 ms),
+        never from the 20 ms drain path. Source is _last_hgac_rf, tracked in the drain path from
+        $M4 fields 34/35, seeded from $CFG so $M1-$M3 still show something meaningful."""
+        if not hasattr(self, 'combo_quick_rf'):
+            return
+        _rf = getattr(self, '_last_hgac_rf', None)
+        if _rf is None or _rf == self._quick_rf_shown:
+            return
+        self._quick_rf_shown = _rf
+        for _key, _val in (('tiagain1', _rf[0]), ('tiagain2', _rf[1])):
+            _cmb = self.combo_quick_rf[_key]
+            _i = _cmb.findText(_val)
+            if _i >= 0 and _i != _cmb.currentIndex():
+                _cmb.setCurrentIndex(_i)
+
+    def send_set(self, key: str, value: str, log_prefix: str = "→",
+                 suppress_cfg_note: bool = True) -> bool:
+        """Build and send a $SET,key,value*XX command. Returns False when no command channel is
+        available, leaving the caller to decide how to warn. Single source of truth for the $SET
+        payload and its XOR checksum, shared by HWConfigWindow._send_set() and the quick HW
+        controls in the SIGNAL STATS header.
+
+        suppress_cfg_note: keep the $CFG frame confirming this $SET out of the LabCapture notes
+        (default, matching HWConfigWindow). Pass False for keys confirmed by $LCFG instead, so
+        the flag is not left cleared for an unrelated later $CFG."""
+        if not self._is_cmd_ready():
+            return False
+        payload = f"$SET,{key},{value}"
+        chk = 0
+        for c in payload[1:]:
+            chk ^= ord(c)
+        if suppress_cfg_note:
+            self._cfg_notify_lab_capture = False
+        self.send_cmd(f"{payload}*{chk:02X}\r\n".encode())
+        self.log(f"{log_prefix} {payload}")
+        return True
+
     def _auto_enable_hgac(self):
         """Bench convenience: enable HGAC after each firmware start (the ESP32 boots with the
         library default hgac_enable=false). The library default stays OFF — safe for the IncuNest
@@ -11073,6 +11239,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             chk ^= ord(c)
         self.send_cmd(f"{payload}*{chk:02X}\r\n".encode())
         self.log("→ auto-enable HGAC ($SET,hgac_enable,1)")
+        self._hgac_enabled = True
+        self._sync_quick_hgac_combo()
 
     def _is_cmd_ready(self):
         """True if a command channel is available: serial open, or UDP active with known ESP32 IP."""
@@ -11122,6 +11290,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', True):
             self._cfg_listener(text)
         self._last_cfg = kv
+        # Seed the quick RF combos from $CFG: in frame modes $M1-$M3 the per-sample RF1/RF2
+        # fields are absent, so this is the only source. $M4 refines it every sample.
+        if 'tia1' in kv and 'tia2' in kv and getattr(self, '_last_hgac_rf', None) is None:
+            self._last_hgac_rf = (kv['tia1'].strip(), kv['tia2'].strip())
+        self._apply_quick_rf_enabled()     # ENSEPGAIN may have changed
         if self.hw_config_window is not None:
             self.hw_config_window.update_from_cfg(kv)
         if self.pilab_window is not None:
@@ -11137,6 +11310,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 kv[k] = v
         self.log(f"[LCFG] rsqm_ot_thr={kv.get('rsqm_ot_thr','?')}"
                  f"  probe_min_s={kv.get('rsqm_probe_state_min_s','?')}")
+        # hgac_enable drives the header HGAC combo and the editability of the RF combos
+        if 'hgac_enable' in kv:
+            self._hgac_enabled = kv['hgac_enable'].strip() in ("1", "1.0", "true", "True")
+            self._sync_quick_hgac_combo()
         # Cache the HGAC actuation thresholds: they drive the V_TIA gauge in SIGNAL STATS and
         # the text of its tooltip. Runtime-tunable, so reading them here is what keeps the
         # gauge from drifting away from the values actually in force.
@@ -11580,9 +11757,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
         for csv_name, m1_idx in self._lab_capture_col_spec:
             if is_m2:
                 mapped = _M2_MAP.get(m1_idx, -1)
-                row_vals.append(parts[mapped] if 0 <= mapped < n else "-1")
+                val = parts[mapped] if 0 <= mapped < n else "-1"
             else:
-                row_vals.append(parts[m1_idx] if m1_idx < n else "-1")
+                val = parts[m1_idx] if m1_idx < n else "-1"
+            # RF1/RF2 arrive as a display string ("500K"), not a plain number like every
+            # other column — convert to ohms so time-series tools (this CSV's whole purpose)
+            # can read it. Unknown/out-of-range values (incl. our own "-1" fallback above, and
+            # firmware's "?" for an invalid enum) fall through unconverted to "-1".
+            if csv_name in ("FW_RF1_OHM", "FW_RF2_OHM"):
+                val = str(LabCaptureWindow._RF_STR_TO_OHM.get(val, -1))
+            row_vals.append(val)
 
         self._lab_capture_file.write(",".join(row_vals) + "\n")
         self._lab_capture_count += 1
@@ -12402,19 +12586,23 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             except (ValueError, IndexError):
                                 pass
 
-                    # Auto-refresh HW CONFIG when HGAC changes RF. $M4 fields 34/35 = HGAC_RF1/RF2
+                    # Auto-refresh HW CONFIG when HGAC changes RF. $M4 fields 34/35 = RF1/RF2
                     # (strings, e.g. "100K"); field 35 carries the trailing *XX checksum. HGAC
                     # actuates on the chip, so mirror the new RF into the HW CONFIG combos via a
                     # $CFG? — coalesced (one request 300 ms after the last change) so a burst of
                     # guard step-downs doesn't spam $CFG?.
-                    if _is_active and self.hw_config_window is not None:
+                    # Tracked unconditionally (not only when HW CONFIG is open): the quick RF
+                    # combos in the SIGNAL STATS header mirror this, and the whole point of
+                    # those is not having to open HW CONFIG to see the RF in use.
+                    if _is_active:
                         _prf = line[1:].split(',')
                         if len(_prf) >= 36 and _prf[0] == 'M4':
                             _cur_rf = (_prf[34].split('*')[0], _prf[35].split('*')[0])
                             if _cur_rf != getattr(self, '_last_hgac_rf', None):
                                 _prev_rf = getattr(self, '_last_hgac_rf', None)
                                 self._last_hgac_rf = _cur_rf
-                                if _prev_rf is not None:   # skip the first frame (no change yet)
+                                # HW CONFIG mirror: only worth a $CFG? when that window is open
+                                if _prev_rf is not None and self.hw_config_window is not None:
                                     if not hasattr(self, '_hgac_rf_cfg_timer'):
                                         self._hgac_rf_cfg_timer = QtCore.QTimer(self)
                                         self._hgac_rf_cfg_timer.setSingleShot(True)
@@ -12722,6 +12910,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._py_timing['render_interval'].append((_t0_render - self._last_render_t) * 1000)
         self._last_render_t = _t0_render
         try:
+            self._sync_quick_hw_controls()
             # ProbeState cell col-0: update background on every render tick (200 ms)
             _ps = int(self.data_probe_state[-1]) if self.data_probe_state else -1
             if _ps == 2:

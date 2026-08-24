@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.28
+# pulsenest_lab — Specification v1.30
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -116,7 +116,7 @@ Frame mode is selected with the `$MODE,Mx` command (no checksum — see §4.3):
 | `$M1` | `$M1,<SmpCnt>,<Ts_us>,<PPG_DISP>*XX` — minimal | |
 | `$M2` | `$M2,<SmpCnt>,<Ts_us>,<PPG_DISP>,<SpO2>,<SpO2_SQI>,<HR3>,<HR3_SQI>,<RSQI>,<DiagCode>,<ProbeState>*XX` | |
 | `$M3` | Full `AFE4490Data` (22 fields, table below) | |
-| `$M4` | M3 + analog debug: `V_TIA`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS` | ✔ |
+| `$M4` | M3 + analog debug: `V_TIA`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS`, `RF1`, `RF2` | ✔ |
 
 #### $M3 — Full data frame
 
@@ -154,12 +154,14 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 #### $M4 — Debug frame (default)
 
 `$M4` = the 22 `$M3` fields followed by 11 analog debug fields from
-`AFE4490DebugData::analog` (`AFE4490AnalogState`, lib ≥ v0.35):
+`AFE4490DebugData::analog` (`AFE4490AnalogState`, lib ≥ v0.35), plus 2 RF fields
+(lib ≥ v0.37) — 13 fields total:
 
 ```
 ...,<V_TIA_LED1>,<V_TIA_LED2>,<V_TIA_ALED1>,<V_TIA_ALED2>,
     <I_PD_LED1>,<I_PD_LED2>,<I_PD_ALED1>,<I_PD_ALED2>,
-    <OT_LED1>,<OT_LED2>,<CH_MASKS>*XX
+    <OT_LED1>,<OT_LED2>,<CH_MASKS>,
+    <RF1>,<RF2>*XX
 ```
 
 | Field | Format | Description |
@@ -168,6 +170,7 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 | `I_PD_*` | `%.4e` | Photodiode current per channel [A] |
 | `OT_LED1`, `OT_LED2` | `%.4e` | Optical transmittance `(I_PD_LEDx − I_PD_ALEDx) / I_LEDx` [A/A], firmware-computed in `_compute_analog_state()` |
 | `CH_MASKS` | `%04X` hex | Validity masks packed in 4 nibbles: bits[3:0]=`adc_sat_pos`, [7:4]=`adc_sat_neg`, [11:8]=`tia_over_fs`, [15:12]=`tia_over_lin`. Within each nibble, bit = channel per `AFE4490Ch`: LED1=0, ALED1=1, LED2=2, ALED2=3. `0000` = all channels CLEAN |
+| `RF1`, `RF2` | string | Actual TIA feedback resistor in use for LED1/LED2 at this sample (e.g. `"500K"`, via `afeRFToStr()`) — the live config value, whoever set it (manual `$SET` or HGAC Phase 1 descent), so it is not a static config value. Renamed from `HGAC_RF1`/`HGAC_RF2` in lib v0.81/spec v1.29 — the old name wrongly implied HGAC always computed it |
 
 The script requires ≥ 34 fields to accept the `$M4` analog block (frames from
 firmware older than lib v0.35+`CH_MASKS` are parsed as `$M3` with zeroed analog data).
@@ -535,6 +538,50 @@ Named: `data_ppgdisp`, `data_hr1`, `data_hr2`, `data_hr3`, `data_spo2`, `data_sp
 
 ### 6.3 SIGNAL STATS table
 
+**Header row** (`stats_header`, left to right): the `SIGNAL STATS` title, a stretch, the quick
+HW controls (§6.3.1), then `Update interval:` + `spin_stats_interval`.
+
+#### 6.3.1 Quick HW controls — HGAC / RF1 / RF2
+
+Three combo boxes in the SIGNAL STATS header. They are both a **live mirror** of the hardware
+state and **direct actuation**: selecting a value sends `$SET` immediately, with **no Set button**.
+The purpose is not having to open HW CONFIG to see or change the RF in use.
+
+| Control | Widget | Items | `$SET` key | Mirror source |
+|---------|--------|-------|-----------|---------------|
+| `HGAC:` | `combo_quick_hgac` | `OFF`, `ON` (index = value) | `hgac_enable` | `hgac_enable` in `$LCFG` |
+| `RF1:` | `combo_quick_rf["tiagain1"]` | `TIA_GAINS` (`10K`…`1M`) | `tiagain1` | `$M4` field 34, seeded from `$CFG` `tia1` |
+| `RF2:` | `combo_quick_rf["tiagain2"]` | `TIA_GAINS` (`10K`…`1M`) | `tiagain2` | `$M4` field 35, seeded from `$CFG` `tia2` |
+
+**Required behaviour** — each item exists to prevent a specific failure:
+
+1. **Signal is `activated`, never `currentIndexChanged`.** `activated` fires only on user
+   interaction. Mirroring an HGAC-driven RF change into the combo must not feed back as a
+   command, or `$SET → new RF → new $M4 → $SET` loops forever. `setCurrentIndex()` from the
+   mirror path is therefore silent by construction.
+2. **Mouse wheel blocked unconditionally** (`_WheelBlockFilter(always=True)`). With no Set
+   button, one accidental scroll would step through the item list firing a `$SET` per step,
+   each triggering its own hardware settling window.
+3. **RF combos are disabled while HGAC is enabled.** HGAC v1 is RF-only and actuates whenever
+   ProbeState is `APPLIED` or `SATURATING`, so it reverts any manual RF within ~200 ms.
+   Switching `HGAC:` to `OFF` is what hands RF over to the user. Disabled combos are styled
+   `_QUICK_CSS_OFF` (grey) instead of `_QUICK_CSS_ON` (green = firmware value, §10).
+4. **RF1 additionally disabled when `ENSEPGAIN=0`** (read from the cached `$CFG`): the chip
+   then ignores `tiagain1` and drives both channels from `tiagain2`, so editing RF1 would
+   silently do nothing. Re-evaluated on every `$CFG` frame.
+5. **Mirror runs in the render tick (200 ms), never in the 20 ms drain.** `_last_hgac_rf` is
+   tracked in `_process_frames_tick()` (a `split` and a tuple compare); `_sync_quick_hw_controls()`
+   pushes it into the combos from `_refresh_plots_tick()`, per §6 drain/render separation.
+6. **In `$M1`–`$M3` the mirror has no source** (fields 34-35 are absent), so the combos show the
+   last value confirmed by `$CFG` (`tia1`/`tia2`), which is also the seed on the first frame.
+
+`_last_hgac_rf` is tracked regardless of whether HW CONFIG is open. The coalesced `$CFG?`
+refresh that mirrors an HGAC RF change into HW CONFIG's own combos still only fires when that
+window exists.
+
+**Methods** (all on `PPGMonitor`): `_on_quick_hgac_activated()`, `_on_quick_rf_activated()`,
+`_sync_quick_hgac_combo()`, `_apply_quick_rf_enabled()`, `_sync_quick_hw_controls()`.
+
 Located in the right panel. Rows = 30 signals (`_STATS_SIGNALS`) + a separator row after
 the 4 raw ADC rows (`tbl_row = sig_idx if sig_idx < 4 else sig_idx + 1`). Columns:
 
@@ -665,6 +712,7 @@ Stats are accumulated over `spin_stats_interval` seconds (default 1 s, user-conf
 | Lab Capture | Open `LabCaptureWindow` |
 | Decim spin | Decimation ratio (default 10): 1 in N M1 frames are processed |
 | Stats interval | Stats table update interval in seconds (default 1) |
+| HGAC / RF1 / RF2 | Quick HW controls, see §6.3.1 — apply on selection, no Set button |
 | UDP WiFi button | Toggle UDP receiver on/off; switches active transport |
 | UDP port spin | UDP listen port (default 5005) |
 | Subwindow buttons | Toggle-open/close each secondary window |
@@ -934,7 +982,15 @@ Purpose: controlled capture with metadata for lab sessions.
 - Pre-notes text area (written as `#`-comment lines at start of CSV)
 - Post-notes text area (written as `#`-comment lines at end of CSV)
 - Column selection checkboxes (subset of M1 fields, plus $M4-only fields added 2026-08-22:
-  V_TIA_LED1/2/ALED1/2, I_PD_LED1/2/ALED1/2, OT_LED1/2, CH_MASKS — read "-1" outside $M4 mode)
+  V_TIA_LED1/2/ALED1/2, I_PD_LED1/2/ALED1/2, OT_LED1/2, CH_MASKS, and RF1_OHM/RF2_OHM added
+  2026-08-24 — all read "-1" outside $M4 mode)
+- `RF1_OHM`/`RF2_OHM` are the one exception to "write the wire field verbatim": the frame's
+  `RF1`/`RF2` (§4.2) carry a display string (`"500K"`), which a time-series/plotting tool
+  can't read as a number. `_write_lab_capture_row()` converts it to ohms via `_RF_STR_TO_OHM`
+  (a closed lookup mirroring `AFE4490RF`/`afeRFToStr()`, not a generic suffix parser) before
+  writing the row — unrecognized strings (including our own "-1" fallback, or firmware's "?"
+  for an invalid enum) fall through to "-1". Hence the `_OHM` suffix in the CSV column name,
+  unlike the frame field itself
 - Mode: continuous / timed (N samples)
 - Progress bar (timed mode)
 - [START] / [STOP]
@@ -1220,6 +1276,60 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.30 — 2026-08-24
+
+**Quick HW controls in the SIGNAL STATS header: `HGAC`, `RF1`, `RF2` — see §6.3.1.** Alex wanted
+the two RF values visible without opening HW CONFIG, and editable without a Set button. Two
+findings shaped the result:
+
+- The value was already tracked (`_last_hgac_rf`, from `$M4` fields 34-35) but **only while HW
+  CONFIG was open** — the tracking block was inside `if self.hw_config_window is not None`, so
+  the data was only followed when the window you wanted to avoid opening was open. Now tracked
+  unconditionally; the coalesced `$CFG?` mirror into HW CONFIG's combos stays conditional.
+- **A pair of RF combos alone would have been unusable.** `_auto_enable_hgac()` sends
+  `$SET,hgac_enable,1` on every firmware start, and HGAC v1 is RF-only actuating on
+  `APPLIED||SATURATING`, so any manual RF would revert within ~200 ms. Hence the third control:
+  the `HGAC:` combo is what hands RF over to the user, and the RF combos grey out while HGAC
+  owns them.
+
+- New `PPGMonitor.send_set(key, value, log_prefix, suppress_cfg_note)`: single source of truth
+  for the `$SET` payload + XOR checksum, previously duplicated in `HWConfigWindow._send_set()`,
+  `LIBConfigWindow._send_set()` and `_auto_enable_hgac()`. `HWConfigWindow._send_set()` now
+  delegates to it; `LIBConfigWindow._send_set()` deliberately left alone (different
+  "not connected" message, confirms via `$LCFG`, and does not clear `_cfg_notify_lab_capture`).
+  `suppress_cfg_note=False` exists for `$LCFG`-confirmed keys so the flag is not left cleared
+  for an unrelated later `$CFG`.
+- `_WheelBlockFilter` gained `always=False`; the quick controls use `always=True`.
+- `$CFG` handler seeds `_last_hgac_rf` from `tia1`/`tia2` when unset, and re-evaluates the
+  `ENSEPGAIN` gating of RF1. `$LCFG` handler caches `hgac_enable` into `_hgac_enabled`.
+
+### v1.29 — 2026-08-24
+
+**`LabCaptureWindow` gains `RF1_OHM`/`RF2_OHM` — the `_COLS` list still stopped at
+`CH_MASKS` (index 33) even though `main.cpp`'s `$M4` frame has carried the actual
+per-sample RF (indices 34-35, string, e.g. `"500K"`) since lib v0.37.** Found while
+deciding which columns to keep for a multi-subject capture database: without a per-sample
+RF value there is no way to correlate a PPG/SpO2/HR transient with an RF change, and
+`V_TIA`/`I_PD` alone can't be used to reconstruct it (`RF = V_TIA / I_PD` needs both, and
+only `V_TIA_LED1/2` was being kept).
+
+- `_COLS` gained `RF1_OHM`, `RF2_OHM` (indices 34-35, `FW_RF1_OHM`/`FW_RF2_OHM`). Optional,
+  checked by default, same "-1" fallback outside `$M4` mode as the other `$M4`-only columns.
+- §4.2 `$M4` frame table extended to document all 13 analog/RF fields (was documented as
+  11, missing the 2 RF fields that were already being sent).
+- **Caught before use (same session, Alex):** the first version of this change wrote the
+  wire string (`"500K"`) straight to the CSV, like every other column does — but unlike
+  every other column, that value is not a plain number, so no time-series/plotting tool
+  can read it, which defeats the whole point of adding it. `_write_lab_capture_row()` now
+  converts it to ohms via `_RF_STR_TO_OHM` before writing the row (see §7.13).
+- **Also caught before use (Alex): the frame field itself was named `HGAC_RF1`/`HGAC_RF2`,
+  wrongly implying HGAC always computes the value** — it's just the live RF config, which
+  a manual `$SET` can set too. Renamed end-to-end: `incunest_afe4490.h`'s
+  `AFE4490DebugData::hgac_rf_led1/led2` → `rf_led1/led2` (lib v0.81), `main.cpp`'s frame
+  comments, and this CSV column (`HGAC_RF1/RF2` → `RF1_OHM/RF2_OHM`, keeping the `_OHM`
+  suffix from the point above). The `$M4` wire field itself is now documented as `RF1`/`RF2`
+  (§4.2) — same rationale, no HGAC implication.
 
 ### v1.28 — 2026-08-22
 

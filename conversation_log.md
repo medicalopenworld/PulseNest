@@ -17139,3 +17139,259 @@ se ha medido el efecto en captura real todavía.
 
 **Memoria creada:** `project_spo2_ema_rf_change_bias_task.md` (enlazada a
 `project_pi_stability_task` y `reference_rf_tolerance_ot_dc_shift`), indexada en `MEMORY.md`.
+
+---
+
+## Sesión 2026-08-23/24 — Feedback de IncuNest, base de datos multi-sujeto, columnas RF en CAPTURE LAB
+
+**Feedback de un compañero de IncuNest (v0.53.0 vs master v0.80, 27 versiones de diferencia):**
+cuatro hallazgos reportados vía WhatsApp. Triaje: (1) `spo2_sqi` sin cota superior en el PI de
+entrada — **confirmado vivo en v0.80** (`incunest_afe4490.cpp:2192`), guardado como tarea
+pendiente `project_spo2_pi_upper_bound_task` (Alex decide dejarlo para priorizar más adelante,
+no tocar código hoy); (2) `ppg_disp` int32_t crudo vs spec float — **obsoleto**, resuelto desde
+v0.69; (3) falta indicador de validez de onda — ya trackeado en `project_ppg_disp_norm_task`;
+(4) HGAC tarda ~5s en converger al saturar — observación válida, ya trackeada en
+`project_hgac_setpoint_band_tuning_task`. Ninguno de los tres últimos requería acción.
+
+**Primeras capturas con personas distintas de Alex** (hasta ahora solo se medía a sí mismo).
+Decisiones sobre `LabCaptureWindow`:
+- Duración recomendada: ~2 min por captura (18s de warmup fijo de SpO2 + margen para varios
+  ciclos respiratorios y una media de HR robusta; homogéneo entre sujetos para servir de test de
+  regresión futuro).
+- De las 33 columnas de CAPTURE LAB: desmarcar `V_TIA_ALED1/2` e `I_PD_LED1/2/ALED1/2` (6 de 8
+  candidatas a desmarcar), pero mantener `V_TIA_LED1/2` (canal pulsátil, sí interesante entre
+  sujetos con distinta piel/perfusión).
+
+**Hallazgo al preguntar cómo saber la RF usada sin esas columnas:** ni siquiera con
+`V_TIA_LED1/2` se puede despejar RF sin `I_PD` (`RF = V_TIA / I_PD`). Pero es innecesario: el
+firmware ya manda la RF real por muestra (`HGAC_RF1`/`HGAC_RF2`, string tipo `"500K"`, índices
+34-35 del frame `$M4`, desde lib v0.37) — solo que `LabCaptureWindow._COLS` se había quedado en
+el índice 33 y nunca los incorporó como columnas capturables. Utilidad concreta para añadirlas
+ahora: son el dato que falta para poder verificar empíricamente `project_spo2_ema_rf_change_bias_task`
+(sesgo transitorio PI/R tras cambio de RF) y para distinguir en `project_spo2_pi_upper_bound_task`
+si el PI imposible coincide con un cambio de RF de HGAC o es puro escalón de DC.
+
+**Cambio de código (`pulsenest_lab.py`, `pulsenest_lab_spec.md` v1.28→v1.29):** añadidas
+`HGAC_RF1`/`HGAC_RF2` a `_COLS` (índices 34-35, opcionales, marcadas por defecto). Spec
+actualizada: tabla `$M4` extendida a 13 campos analógicos/HGAC (antes documentaba solo 11,
+desactualizada desde que `main.cpp` ya mandaba las 2 RF), §7.13 y changelog v1.29.
+`project_capture_lab_missing_rf_columns_task` marcada RESUELTA.
+
+**Feedback de proceso (dos memorias nuevas):**
+- `feedback_announce_unprompted_work`: avisar ANTES de empezar (con una frase breve, no un
+  párrafo) cuando una acción viene de un hook/regla y no del prompt de Alex; y acotar el esfuerzo
+  a un único pase best-effort en housekeeping no pedido, nunca iterar para cumplir un número
+  exacto (surgió tras dedicar ~7 min a compactar `MEMORY.md` por un hook de tamaño, sin avisar).
+- `feedback_no_gatear_anglicism`: no usar "gatear" como calco de "to gate" (en español significa
+  andar a gatas); usar "condicionar por"/"filtrar por"/"bloquear salvo que se cumpla X".
+
+---
+
+## Sesión 2026-08-24 — Documentación de fabricantes PPG sobre neonatos y cuantificación del freno térmico de ILED
+
+**Petición de Alex:** buscar en internet documentación oficial de los fabricantes de sistemas PPG,
+los apartados de los manuales que hagan referencia a medidas en neonatos ("tómate el tiempo que
+haga falta"). Después, generar un PDF del resultado conservando los enlaces.
+
+**Método:** 14 documentos descargados y convertidos a texto (`pdftotext -layout`) de 7 fabricantes:
+Masimo (RD SET DFU LAB-9028A, Rad-57 OM LAB-9204A, RD SET Blue eIFU LAB-9521A, rainbow SET
+IntelliVue Module LAB-8486D), Medtronic/Nellcor (PM-1000N Service Manual, guía de sensores),
+Philips (IntelliVue MP40-90 IFU + white paper FAST SpO2), Mindray (BeneVision N Series OM),
+Nihon Kohden (IFU de sondas TL-271T/274T, TL-260T, TL-220T), GE (protocolo U-TruSignal SpO2
+Testing in Neonates) y Nonin (OEM III Module Specification, Xpod OM).
+
+### Hallazgos principales
+
+- **Todos los fabricantes declaran ±3 % A_rms en neonatos frente a ±2 % en adultos**, y Masimo,
+  Mindray y Philips/Nellcor **explicitan que ese punto extra es un margen añadido a mano por la
+  hemoglobina fetal, no un resultado medido** (Masimo, nota 5: *"validated on adult volunteers and
+  1 % was added to account for the properties of fetal hemoglobin"*).
+- Solo **Mindray, Masimo y Medtronic** publican validación clínica en neonatos reales
+  (Mindray 518B: 97 neonatos/200 pares → A_rms 2.38 %; 520N: 122/200 → 2.88 %, edad gestacional
+  22 semanas a término; Nellcor MAX-N: 42 neonatos de 750-4100 g → 2.5 %; Masimo: 16 NICU de
+  0.5-4.25 kg → 2.9 %). **Nihon Kohden y Nonin extrapolan de hipoxia inducida en adultos.**
+- **TI / Analog Devices / Maxim no publican NADA específico de neonatos** — hallazgo negativo
+  relevante: ni el datasheet del AFE4490 ni las notas de aplicación de SpO2 mencionan la población
+  neonatal, la HbF ni límites de irradiancia sobre piel de prematuro. La responsabilidad recae
+  íntegra en el fabricante del equipo.
+- **Sitio de medida: pie o mano, nunca dedo** (Masimo: cara lateral del pie alineada con el 4.º
+  dedo; Nihon Kohden: empeine y planta). Rotación: inspección cada 2-3 h, cambio cada 4 h.
+- **El protocolo de GE documenta que el Anexo EE de ISO 80601-2-61 no es aplicable literalmente a
+  neonatos** y la desviación aceptada: la norma pide ≥200 pares en 5 mesetas de 70-100 %, pero en
+  neonatos la SaO2 se agrupa en torno al 90 % → *"a minimum of 50 data pairs is considered
+  adequate"*. Es el precedente a citar si algún día se valida IncuNest clínicamente.
+- Laguna: **Dräger** rechaza descarga automatizada (timeout limpio, 3 intentos). Falta el IfU del
+  Infinity M540 (el Babylog VN500 es un ventilador, no mide SpO2 — irrelevante aquí). Sin sorpresas
+  esperadas: el M540 usa el módulo Masimo SET ya cubierto.
+
+**Entregable:** `docs/ppg_neonatal_manufacturer_references.pdf` (6 páginas A4) generado con Chrome
+headless `--print-to-pdf` desde `docs/ppg_neonatal_manufacturer_references.html`. Los 15 enlaces
+son hipervínculos reales (anotaciones `/URI` embebidas, verificado con `pdftohtml`), no texto
+plano. El HTML se conserva para regenerar.
+
+### Pregunta de Alex: ¿cómo afectan los 50 mA de ILED al techo de <15 mW óptico / 52.5 mW de Nellcor?
+
+**Verificaciones hechas antes de responder** (no asumidas):
+- **Duty cycle real: 25 % por LED, CONFIRMADO** en `_apply_timing_regs()`
+  (`incunest_afe4490.cpp:1565`, comentario literal `// LED drive windows (25% duty cycle)`);
+  LED1 `t9=q → t10=2q−1`, LED2 `t3=3q → t4=prp`, nunca simultáneos. A 500 Hz: 500 µs ON por LED,
+  **12.5 mA medios**. Esto cierra el pendiente (a) de
+  `project_led_current_increase_50ma_task` ("calcular el duty REAL desde los registros, no
+  asumir 25 %") — el 25 % asumido era correcto.
+- **ISO 80601-2-61:2026, Anexo BB "Skin temperature at the pulse oximeter probe"** (leído del PDF
+  local, págs. 88-89 del PDF = 76-77 impresas).
+
+**Conclusión — el criterio normativo no es potencia, es temperatura de piel:**
+- Límite **41 °C para lactantes (hasta 1 año)**; 42 °C/8 h y 43 °C/4 h para pacientes mayores.
+- La **temperatura de piel de ensayo es 35 °C** (adopción de la guía FDA), porque *"forced
+  convective temperature… can routinely reach 35 °C (e.g. incubator, radiant warmer)"*.
+  → **Presupuesto térmico = 41 − 35 = 6 °C** de subida en la interfaz sonda/piel.
+  ⚠️ Esto **corrige** un dato erróneo que arrastraba la memoria de corriente LED, que asumía
+  incubadora a 37 °C y solo 4 °C de colchón.
+- Cita clave: *"Heat generated by the light-emitting diodes of a pulse oximeter probe primarily
+  dissipates through the skin of the patient, not to the surrounding air"* → por eso se especifica
+  temperatura de piel y no de aire.
+
+**Dónde caemos con 50 mA:** con los V_F del datasheet Medle (RED 1.85 V, IR 1.3 V @20 mA, que
+subestiman a 50 mA) y 12.5 mA medios: RED ≈ 23 mW + IR ≈ 16 mW ≈ **39 mW** (rango realista
+39-45 mW) = **74-86 % del techo de 52.5 mW de Nellcor**. Cumplimos, **sin margen** para subir duty,
+corriente o añadir un tercer emisor. En óptica: media estimada 9-10 mW (pasa el "<15 mW" de
+Nellcor **si es media, no si es pico** — Nellcor no lo especifica); frente al único dato explícito
+de la industria, **1.2 mW máximo medio @910 nm de Nonin, estaríamos 4-5× por encima**. Factor que
+el benchmark en mW no captura: la sonda neonatal disipa en un área mucho menor que una de adulto,
+así que a igual mW nuestra **densidad de potencia (mW/mm²)** —que es lo que fija el ΔT— es peor.
+
+**Consecuencias de diseño registradas** (5 puntos, en la memoria):
+1. Falta el dato crítico: eficiencia radiante y V_F de la sonda Medle **a 50 mA** (el datasheet
+   solo caracteriza la óptica a 20 mA) → sin eso, las cifras ópticas son ±50 %.
+2. **Lo único defendible es medir el ΔT, no calcularlo:** termopar en la interfaz sonda/piel (o
+   phantom), piel de partida a 35 °C por norma, ≥4 h continuas a 50 mA, criterio ΔT < 6 °C con
+   margen. Es el ensayo que convierte los 50 mA de "preliminar" a "validado".
+3. **50 mA debe ser techo DURO, no un valor al que el HGAC pueda subir** — el settling ya se arma
+   en cambios de ILED, luego el lazo puede moverlo; falta un clamp explícito documentado como
+   límite térmico, distinto del rango del DAC (150 mA de LED_RANGE).
+4. **Si hay que recortar, recortar duty antes que corriente:** el calor escala con el duty, la
+   amplitud de señal con la corriente de pico. Coste: ventana de integración más corta.
+5. La alternativa de bajar ILED y compensar con RF cuesta SNR directamente — justo lo que se
+   buscaba al subir 20→50 mA en v0.47.
+
+**Memorias:** sección nueva "Presupuesto térmico y benchmark de fabricantes" en
+`project_led_current_increase_50ma_task.md` (+ corrección del colchón 4→6 °C y cierre del
+pendiente del duty); nueva `reference_ppg_neonatal_manufacturer_docs.md` con los hallazgos
+transversales, la tabla de validaciones clínicas y las cifras reutilizables (umbrales de baja
+perfusión de la industria: Nellcor 0.03-1.5 % de modulación IR, Masimo PI < 0.25, Philips
+"idealmente PI > 1.0"). `MEMORY.md` actualizado.
+
+**Sin cambios de código en esta sesión.** No se ha creado fichero de tarea propio para el ensayo
+de ΔT (vive como punto 2 dentro de la memoria de corriente LED).
+
+### Cambio de código de la misma sesión — controles rápidos HGAC/RF1/RF2 en la ventana principal (pulsenest_lab v1.30)
+
+**Petición de Alex:** ver con facilidad RF1/RF2 sin abrir HW CONFIG, por ejemplo a la izquierda de
+"Update interval". Tras la primera propuesta (dos etiquetas de solo lectura) Alex precisó que
+quería **dos controles independientes tipo combobox, modificables sin tecla "Set"**.
+
+**Dos hallazgos que cambiaron el diseño** (ambos verificados en el código antes de proponer):
+
+1. **El valor ya se rastreaba, pero solo con HW CONFIG abierta.** El bloque que mantiene
+   `_last_hgac_rf` (campos 34/35 del `$M4`) estaba dentro de
+   `if _is_active and self.hw_config_window is not None:` — o sea, el dato solo se seguía si
+   estaba abierta justo la ventana que se quería evitar abrir. Ahora se rastrea siempre; el
+   `$CFG?` coalescido que espeja el cambio en los combos de HW CONFIG sigue siendo condicional.
+2. **Dos combos de RF a secas habrían sido inservibles.** `_auto_enable_hgac()`
+   (`pulsenest_lab.py`) envía `$SET,hgac_enable,1` en **cada arranque de firmware** (la librería
+   arranca en `false`), y HGAC v1 es RF-only actuando con `APPLIED||SATURATING` → cualquier RF
+   manual revertiría en ~200 ms. De ahí el **tercer control**: el combo `HGAC:` es lo que cede el
+   mando al usuario, y los combos de RF se atenúan mientras HGAC los posee.
+
+**Decisión de Alex** (vía AskUserQuestion): toggle HGAC en la misma fila, y alcance acotado a
+RF1/RF2 (se descartó añadir ILED o una fila de estado HW completa).
+
+**Resultado — cabecera de SIGNAL STATS:**
+`SIGNAL STATS   HGAC [ON ▾]  RF1 [100K ▾]  RF2 [500K ▾]   Update interval: [1 s]`
+
+**Tres detalles que evitan fallos concretos** (documentados en spec §6.3.1):
+- **Señal `activated`, NO `currentIndexChanged`:** `activated` solo se emite por interacción
+  humana, así que espejar un cambio de RF hecho por HGAC no puede realimentar como comando
+  (`$SET → nueva RF → nuevo $M4 → $SET → …`). El `setCurrentIndex()` del espejo es silencioso por
+  construcción.
+- **Rueda del ratón bloqueada sin condiciones:** `_WheelBlockFilter` ampliado con `always=False`
+  (los controles nuevos usan `always=True`). Sin botón Set, un scroll accidental recorrería la
+  lista disparando un `$SET` por paso, cada uno con su ventana de settling de hardware.
+- **Espejo en el render tick (200 ms), nunca en el drenaje de 20 ms:** `_last_hgac_rf` se sigue en
+  `_process_frames_tick()` (un `split` y una comparación de tupla); `_sync_quick_hw_controls()` lo
+  vuelca a los combos desde `_refresh_plots_tick()`, respetando la separación drain/render.
+
+**Reglas de habilitación:** RF editables solo con HGAC en OFF; RF1 además atenuado si
+`ENSEPGAIN=0` (el chip ignora `tiagain1` y usa `tiagain2` para ambos canales → editarlo no haría
+nada), reevaluado en cada `$CFG`. Verde = valor de firmware, gris = no editable.
+
+**Modos `$M1`-`$M3`:** los campos 34/35 no existen, así que el handler de `$CFG` **siembra**
+`_last_hgac_rf` desde `tia1`/`tia2` — antes los combos se habrían quedado en `10K`, engañoso.
+
+**Refactor de propina:** nuevo `PPGMonitor.send_set(key, value, log_prefix, suppress_cfg_note)`
+como única fuente de verdad del payload `$SET` + checksum XOR, que estaba duplicado en tres
+sitios (`HWConfigWindow._send_set`, `LIBConfigWindow._send_set`, `_auto_enable_hgac`).
+`HWConfigWindow._send_set()` delega ahora en él. **`LIBConfigWindow._send_set()` se dejó
+deliberadamente intacto:** mensaje distinto de "no conectado", confirma por `$LCFG` y no toca
+`_cfg_notify_lab_capture` — unificarlo habría cambiado comportamiento sin necesidad. El parámetro
+`suppress_cfg_note=False` existe para las claves confirmadas por `$LCFG`, de modo que el flag no
+quede limpiado para un `$CFG` posterior no relacionado.
+
+**Ficheros:** `pulsenest_lab.py` (+184/−15), `pulsenest_lab_spec.md` → **v1.30** (nueva §6.3.1 con
+tabla de controles y 6 reglas de comportamiento, fila añadida a la tabla de controles de §6,
+changelog; el título estaba desactualizado en v1.28 y se corrigió). `py_compile` OK, CRLF
+preservados. Sin commitear.
+
+**Nota de proceso:** las ediciones por heredoc de `bash` corrompen los escapes tipo `
+` al
+llegar a Python por stdin (`sys.stdin.encoding` = cp1252); los parches con literales que
+contienen backslashes deben escribirse a un fichero `.py` y ejecutarse, no pasarse por heredoc.
+
+
+---
+
+## Sesión 2026-08-24 (cont.) — Fix: HGAC_RF1/RF2 no eran numéricos en el CSV
+
+Alex detectó que la columna `HGAC_RF1`/`HGAC_RF2` añadida en la sesión anterior escribía el
+string de display del frame (`"500K"`) tal cual al CSV — a diferencia de las otras 33 columnas,
+que son todas numéricas — inutilizando la columna para cualquier herramienta de series
+temporales/plotting, que era justo el objetivo de añadirla.
+
+**Fix (`pulsenest_lab.py`):** nueva tabla cerrada `LabCaptureWindow._RF_STR_TO_OHM` (los 7
+valores exactos de `AFE4490RF`/`afeRFToStr()` — no un parseo genérico de sufijos "K"/"M", para
+evitar fallos silenciosos ante un string inesperado). `_write_lab_capture_row()` convierte
+`HGAC_RF1`/`HGAC_RF2` a ohmios antes de escribir la fila; valores no reconocidos (incluido el
+propio fallback "-1" y el "?" del firmware para un enum inválido) caen a "-1".
+
+**Spec (`pulsenest_lab_spec.md`):** corregida la misma entrada v1.29 (aún sin commitear, no se
+abrió v1.30) — nota en §7.13 sobre la excepción "no es paso directo del wire" y el motivo.
+
+**Memoria:** `project_capture_lab_missing_rf_columns_task.md` ampliada con la corrección.
+
+---
+
+## Sesión 2026-08-24 (cont.) — Rename HGAC_RF1/RF2 → RF1(_OHM)/RF2(_OHM), lib v0.81
+
+Alex señaló que `HGAC_RF1`/`HGAC_RF2` es un nombre engañoso: sugiere "la RF que calculó HGAC"
+cuando en realidad es solo el valor de configuración vigente (idéntico a `_afe_tia_rf_led1/2`),
+lo ponga quien lo ponga — un `$SET` manual también lo cambia, no solo HGAC.
+
+**Rename completo de punta a punta (ambos repos), decisión de Alex tras plantear alcance parcial
+vs completo:**
+- **`incunest_afe4490` (librería, otro repo):** `AFE4490DebugData::hgac_rf_led1/hgac_rf_led2` →
+  `rf_led1`/`rf_led2` (`incunest_afe4490.h`/`.cpp`). Comentario nuevo explicando por qué sin
+  prefijo `hgac_`. **Lib v0.80→v0.81** (`incunest_afe4490.h` + `library.json`). Spec actualizada
+  (§3d, §5.8.5, changelog v0.81) — el nombre antiguo se conserva solo en entradas históricas del
+  changelog (v0.37), sin reescribir historia. Tests nativos: 63/64 OK (único fallo, preexistente
+  y no relacionado: `test_biquad`).
+- **`main.cpp` (PulseNest):** `dbg.hgac_rf_led1/2` → `dbg.rf_led1/2`; comentarios del frame `$M4`
+  actualizados (`HGAC_RF1/RF2` → `RF1/RF2`). Firmware `incunest_V16` compila OK tras el rename
+  (no flasheado a HW todavía — build local verificado, sin desplegar).
+- **`pulsenest_lab.py`/`pulsenest_lab_spec.md`:** columna CSV `HGAC_RF1/RF2` → `RF1_OHM/RF2_OHM`
+  (conserva el sufijo `_OHM` de la corrección anterior de la misma sesión). Tooltip de
+  `HWConfigWindow` y comentarios de auto-refresh actualizados. Spec v1.29 (aún sin commitear)
+  corregida con el rename en el mismo bloque de changelog, sin abrir v1.30.
+
+**Memoria:** `project_capture_lab_missing_rf_columns_task.md` ampliada con esta segunda
+corrección.
