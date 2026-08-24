@@ -1,0 +1,12 @@
+# Normalize line endings to LF in the repository for all text files, regardless of a
+# contributor's local core.autocrlf. Added 2026-08-24: a mixed CRLF/LF history had inflated
+# an unrelated conversation_log.md commit to a whole-file diff (~34k lines changed) instead
+# of the ~250 actually added — see conversation_log.md, session 2026-08-24.
+* text=auto eol=lf
+
+# Known binary formats in this repo — never line-ending-normalize or diff as text.
+*.pdf  binary
+*.jpeg binary
+*.jpg  binary
+*.png  binary
+*.ods  binary
