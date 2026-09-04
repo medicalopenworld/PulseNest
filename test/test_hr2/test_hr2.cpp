@@ -78,6 +78,24 @@ void test_hr2_120bpm() {
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 120.0f, afe.test_hr2());
 }
 
+// ── Test 3b: 40 BPM — lower bound of the configured HR range ─────────────────
+// Regression guard for the lag sweep bound. max_lag used to be a hardcoded 137 samples;
+// it is now derived from _hr_min_bpm (40 BPM default) plus the same 3 BPM guard band that
+// min_lag uses, which at 50 Hz gives max_lag = 60/37*50 = 81 lags — and the peak search
+// skips the endpoints, so the usable range ends at lag 80.
+//
+// 40 BPM = 0.667 Hz → lag 75, i.e. only 5 lags of margin. If the derivation is ever
+// tightened (smaller guard band, higher hr_min, shorter buffer), the slowest accepted heart
+// rate silently stops being reachable and this test is what catches it. 0.667 Hz also sits
+// near the 0.5 Hz bandpass corner, so this doubles as a check that the filter still passes
+// enough of the fundamental at the bottom of the range.
+void test_hr2_40bpm_lower_bound() {
+    INCUNEST_AFE4490 afe;
+    feed_hr2_sine(afe, 40.0f / 60.0f, 500.0f, HR2_BUF_RAW + 1000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 40.0f, afe.test_hr2());
+}
+
 // ── Test 4: flat signal → hr2_valid false ────────────────────────────────────
 // A constant DC signal has zero AC energy after the bandpass filter.
 // The autocorrelation check (acorr0 < hr2_ot_energy_eps) must reject it.
@@ -140,6 +158,7 @@ int main() {
     RUN_TEST(test_hr2_not_valid_until_buffer_full);
     RUN_TEST(test_hr2_60bpm);
     RUN_TEST(test_hr2_120bpm);
+    RUN_TEST(test_hr2_40bpm_lower_bound);
     RUN_TEST(test_hr2_flat_signal_invalid);
     RUN_TEST(test_hr2_60bpm_noisy);
     RUN_TEST(test_hr2_120bpm_noisy);
