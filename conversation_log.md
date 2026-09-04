@@ -17985,3 +17985,97 @@ periodicidad"). Restaurado, pasa.
 
 Enum `AFE4490SampleRate`: ahora es puramente aditivo, porque la dependencia difícil (HR2/HR3 vs PRF)
 ya está resuelta y con test que la fija.
+
+---
+
+## Sesión 2026-09-04 (cont.) — v0.84: una cadena de decimación por señal filtrada
+
+### Cómo empezó: una pregunta de Alex y un error mío
+
+Alex preguntó qué opinaba de desglosar `_decim_factor` en uno para HR2 y otro para HR3, recordando
+que HR2 va a incluir dos variantes más (MPM y YIN).
+
+Respondí que el eje era equivocado —MPM y YIN comparten búfer con HR2_ACF, así que no añaden un
+decimador, añaden consumidores— y eso era correcto. Pero cerré con que *"hoy las dos cadenas deben
+correr a la misma tasa, porque la fija la más exigente (HR3)"*. **Alex lo rebatió: si se aplican a
+dos señales filtradas de forma distinta, no hay ningún ahorro por compartir tasa.** Tenía razón:
+era un razonamiento **circular** — "la tasa la impone la cadena más exigente" solo se sostiene si la
+tasa es única, que era justo lo que estaba en cuestión.
+
+Las dos cadenas no comparten **nada**: filtro propio (BP 0,5–5 vs LP 15 Hz), contador de fase
+propio, búfer propio. Ni una convolución, ni un búfer, ni un ciclo de CPU.
+
+### Lo que quedó en pie tras quitar el error
+
+- **El desglose es técnicamente libre:** bajar la cadena del pulso no toca a HR3 (su LP de 15 Hz,
+  su Nyquist de 25 Hz, su FFT de 512 y su bin de 0,098 Hz siguen idénticos).
+- **El 50 Hz se parte en dos justificaciones** que había fundido sin darme cuenta: las cuatro
+  razones de §5.3.1 valen para la cadena **armónica**; de la del **pulso** solo vale la del factor
+  entero, porque su BP corta en 5 Hz y a 25 Hz aún tendría Nyquist en 12,5 Hz (2,5× de margen, el
+  mismo que hoy tiene HR3 sobre sus 15 Hz).
+- **Ahorro disponible en la cadena del pulso a 25 Hz:** 200 muestras en vez de 400, ~36 lags en vez
+  de 71, `O(N·lags)` de 28.400 a 7.200 (**÷3,9**), **×3 cuando entren MPM y YIN**, y la mitad de RAM
+  en `_hr2_buf` + `_hr2_seg`.
+- **Lo que lo frena:** la resolución de lag (4,8 vs 2,4 BPM a 120 BPM antes de interpolar). La ACF lo
+  tolera; MPM (NSDF) y YIN (CMND) localizan un extremo agudo cuya nitidez **es** su ventaja sobre la
+  ACF. Y es un confusor: una campaña que compara tres estimadores de lag no puede mover la tasa de
+  la cadena a la vez, o mide la cadena en vez de los estimadores. **Se decide con el experimento
+  offline** (`tools/offline_runner` reproduce capturas ya grabadas a ambas tasas, sin hardware).
+
+### Cambios (lib v0.84, publicada `5051508`)
+
+- `struct Decimator {factor, phase, rate_hz; configure(); step(); reset();}` instanciada dos veces:
+  `_pulse_band_decim` (BP → HR2_ACF, +MPM, +YIN) y `_harmonic_band_decim` (LP → HR3). Cada una
+  deriva su factor de **su propio** objetivo. Ambas a 50 Hz → **cero cambio de comportamiento**.
+- Eliminados `_hr2_decim_counter` y `_hr3_decim_counter` (la fase vive dentro del `Decimator`).
+- **§5.3.1 reescrita** separando las dos cadenas, con la tabla de tasas, el ahorro disponible, lo
+  que lo frena y cómo resolverlo.
+- Nuevo `test_decim_chains_derive_independently`: 500 y 1000 Hz por cadena, más un caso **fuera de
+  rejilla (700 Hz)** donde el factor redondea a 14 y la tasa lograda es 50,02 Hz — comprueba que la
+  cadena reporta lo que produce, no el objetivo nominal.
+
+### v0.83 cerrada antes (publicada `5cf407e` + `ff664f7`)
+
+Incluyó, a petición de Alex, el **diccionario de acrónimos**: §5.5 expande `ACF` (*autocorrelation
+function*), `NSDF`, `MPM` (*McLeod Pitch Method*), `CMND`, `YIN` (no es acrónimo: de Cheveigné y
+Kawahara 2002, por el yin-yang, dualidad correlación↔diferencia) y `HPS`. Misma tabla en la memoria
+`project_nomenclature_dictionary`.
+
+Corrección de un dato que di mal: afirmé que `ACF` aparecía 14 veces sin expandir en la spec, pero
+`grep -c "ACF"` contaba `setTIACF`/`TIACF` por subcadena — eran **3**.
+
+### Verificación
+
+**66/67 tests** y firmware V16 compila (el 67.º es `test_biquad`, roto de antes). Checklist de
+versionado completo en v0.83 y v0.84.
+
+### Pendiente
+
+Enum `AFE4490SampleRate` (objetivo original de A+B, ahora puramente aditivo) y el experimento
+offline de la tasa de la cadena del pulso.
+
+### v0.84b — las cadenas se renombran por su consumidor (2026-09-04)
+
+Alex preguntó por qué elegí `_pulse_band_decim` / `_harmonic_band_decim`. Al justificarlo apareció
+un **defecto real**: el contraste es falso. La "banda del pulso" (BP 0,5–5 Hz) también pasa
+armónicos —a 60 BPM llega hasta el 5.º— y la "banda armónica" (LP 15 Hz) incluye el fundamental.
+Describían una separación que no existe. Defecto menor añadido: son asimétricos (uno nombra
+contenido, el otro una propiedad espectral).
+
+También corregí un argumento que había dado antes: dije que `_hr2_decim` sería falso porque lo
+usarían tres algoritmos. Es más débil de lo que sostuve — los tres se llaman `HR2_ACF`, `HR2_MPM`,
+`HR2_YIN`, así que el prefijo `hr2` **sí** es cierto. El riesgo real es otro: que un día la use un
+estimador que no sea `HR2_*`.
+
+Descartada de entrada la opción más objetiva (`_decim_5hz` / `_decim_15hz`): `setHR2Filter()` y
+`setHR3Filter()` son API pública y configurable en runtime, así que el nombre quedaría desfasado.
+
+**Elección de Alex: `_hr2_decim` / `_hr3_decim`** (lo más corto y rastreable). Aplicado con sus
+constantes objetivo y accesores de test. **Riesgo asumido y registrado en §5.3.1:** si algún día
+una cadena alimenta a un no-`HR2_*`, el rename honesto sería por lo que cada una **preserva** —la de
+HR2 garantiza el fundamental en [30, 300] BPM; la de HR3, hasta el 3.er armónico de 260 BPM, que su
+HPS multiplica.
+
+Publicada como **v0.84b** (`b0c3fac`) — la política reserva el sufijo `b` para ajustes sin
+funcionalidad nueva. `library.json` va a `0.84.1`: ninguna `b` anterior lo tocó, y es la traducción
+semver correcta. **66/67 tests** y firmware V16 compila.

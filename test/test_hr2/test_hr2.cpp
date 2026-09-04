@@ -124,22 +124,22 @@ void test_hr2_decimated_rate_invariant_to_sample_rate() {
 // track the AFE rate, which is what makes it safe to lower one of them later.
 void test_decim_chains_derive_independently() {
     INCUNEST_AFE4490 afe;
-    TEST_ASSERT_EQUAL_UINT16(10, afe.test_pulse_decim_factor());
-    TEST_ASSERT_EQUAL_UINT16(10, afe.test_harmonic_decim_factor());
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_pulse_decim_rate_hz());
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_harmonic_decim_rate_hz());
+    TEST_ASSERT_EQUAL_UINT16(10, afe.test_hr2_decim_factor());
+    TEST_ASSERT_EQUAL_UINT16(10, afe.test_hr3_decim_factor());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_hr2_decim_rate_hz());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_hr3_decim_rate_hz());
 
     afe.setSampleRate(1000);
-    TEST_ASSERT_EQUAL_UINT16(20, afe.test_pulse_decim_factor());
-    TEST_ASSERT_EQUAL_UINT16(20, afe.test_harmonic_decim_factor());
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_pulse_decim_rate_hz());
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_harmonic_decim_rate_hz());
+    TEST_ASSERT_EQUAL_UINT16(20, afe.test_hr2_decim_factor());
+    TEST_ASSERT_EQUAL_UINT16(20, afe.test_hr3_decim_factor());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_hr2_decim_rate_hz());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_hr3_decim_rate_hz());
 
     // A rate outside the validated grid must degrade honestly: the factor rounds and the
     // achieved rate is reported as what it really is, never as the nominal target.
     afe.setSampleRate(700);
-    TEST_ASSERT_EQUAL_UINT16(14, afe.test_pulse_decim_factor());
-    TEST_ASSERT_FLOAT_WITHIN(0.2f, 50.02f, afe.test_pulse_decim_rate_hz());
+    TEST_ASSERT_EQUAL_UINT16(14, afe.test_hr2_decim_factor());
+    TEST_ASSERT_FLOAT_WITHIN(0.2f, 50.02f, afe.test_hr2_decim_rate_hz());
 }
 
 // ── Test 4: flat signal → hr2_valid false ────────────────────────────────────
