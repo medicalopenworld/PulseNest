@@ -18139,3 +18139,83 @@ retiró ese caso documentando que ya no es alcanzable por diseño. La rama de re
 
 **A+B completo:** catálogo cerrado (A) + 500 Hz como valor declarado del producto (B), con el banco
 conservando el eje de caracterización. **71/72 tests** y firmware V16 compila.
+
+
+## Sesión 2026-09-04 (cont.) — pulsenest_lab v1.32: dos espejos que no espejaban (RF1/RF2 y frame mode)
+
+Alex reportó que al cambiar HGAC de RF, el valor nuevo aparecía en HW CONFIG pero **no** en los
+combos RF1/RF2 de la cabecera de SIGNAL STATS. Comprobado: cierto, y con una condición precisa —
+**solo en frame modes `$M1`–`$M3`**.
+
+### Bug 1 — `$CFG` tratado como semilla y no como fuente
+
+`_on_cfg_frame_received()` escribía `_last_hgac_rf` solo `if ... is None`. En `$M4` eso era
+invisible (los campos 34/35 lo refrescan cada muestra), pero en `$M1`–`$M3` esos campos **no
+existen** y `$CFG` es la *única* fuente: los combos de la cabecera se quedaban congelados en el
+primer valor leído mientras HW CONFIG, alimentado sin condiciones por `update_from_cfg()`, seguía
+todos los cambios. Exactamente la asimetría reportada. Fuera el `is None`; reaplicar en cada `$CFG`
+es idempotente en `$M4`.
+
+Segundo detalle del mismo espejo: `_quick_rf_shown` se marcaba **antes** de comprobar que
+`findText()` hubiera encontrado el valor, así que un string desconocido (desajuste
+firmware/script) quedaba registrado como mostrado y no se reintentaba nunca. Ahora solo avanza si
+ambos combos mostraron el valor.
+
+### Bug 2 — el frame mode del script era una suposición, nunca una medida
+
+Alex sospechaba además que "al resetear la placa arranca en `$M3` pero en el script aparece `$M4`".
+Confirmado, y el problema de fondo es más amplio: el script mostraba `frame_mode` (del .ini,
+default `$M4`) mientras el ESP32 **siempre arranca en `$M3`** (`main.cpp`
+`g_incunest_frame_mode`), y los cuatro mecanismos que debían reconciliarlos podían fallar en
+silencio:
+
+- El handler del banner hacía `self.frame_mode = "M4"` **hardcodeado**, 22 líneas antes de que el
+  bloque *"Restore saved frame mode"* leyera `self.frame_mode`. O sea: el "restaurar el modo
+  guardado" nunca restauraba nada — siempre mandaba `$M4` y sobrescribía el ajuste del usuario.
+- `_send_frame_cmd()` hacía `return` sin log si no había canal de comandos, dejando el combo
+  anunciando un modo que nadie le había pedido al firmware.
+- `$MODE` no lleva checksum y su confirmación `# Frame mode: ...` solo se logueaba, nunca se
+  verificaba: un datagrama perdido = divergencia permanente.
+- Si el banner `# incunest_afe4490 started` no caía en la cola del transporte **activo**
+  (`_is_active`), se saltaba la secuencia post-reset **completa** — `$MODE`, `$CFG?` y el
+  re-enable de HGAC — sin una línea en el log.
+- Y aun en el camino feliz quedaba una ventana de ≥500 ms + RTT por reset. Una Lab Capture
+  iniciada ahí registra `-1` en todas las columnas `$M4` (fallback de `_write_lab_capture_row()`).
+
+### Decisión: la verdad ya venía en el cable
+
+El campo 0 de cada frame dice el modo en vigor, y el *parsing* de datos ya se guiaba por él
+(`lib_id`) — solo la UI vivía de la suposición. Así que:
+
+1. `_frame_mode_live` se traquea en el drain **antes** del checksum y **antes** de la diezmado (un
+   slice de 2 caracteres): traquearlo después lo dejaría sin alimentar justo cuando el enlace está
+   degradado, que es cuando importa.
+2. El combo **espeja** `_frame_mode_live` (misma filosofía que los combos RF de §6.3.1); solo cae
+   a `frame_mode` hasta el primer frame.
+3. Al elegir un modo, el combo se queda donde lo puso el usuario: el siguiente render tick lo
+   confirma o lo devuelve a la realidad. Corregirlo en línea parpadearía viejo → nuevo en cada
+   cambio correcto.
+4. Un desajuste que persiste >1 s reenvía `$MODE`, máximo 5 veces, logueando cada intento. El 1 s
+   es holgadamente mayor que los 500 ms del restore post-reset, así que el transitorio normal de
+   arranque no dispara reenvíos. Acotado a propósito: si 5 no bastan, el problema es el canal o el
+   firmware, y el combo sigue diciendo la verdad.
+
+Esto cierra los cinco huecos de golpe, sea cual sea el mensaje perdido. También: fuera el `"M4"`
+hardcodeado (el modo guardado se restaura de verdad), log explícito cuando no hay canal, y la
+cabecera del CSV de grabación se elige por el modo **vivo** (una cabecera `$M4` sobre filas `$M3`
+etiqueta mal todas las columnas).
+
+**Verificación:** 24 asserts offline sobre `_sync_frame_mode_live()` / `_send_frame_cmd()` (stub sin
+Qt ni hardware): sin frames no manda nada, el combo muestra `$M3` cuando el firmware manda `$M3`,
+reenvío tras el tiempo muerto, tope exacto de 5, reset del presupuesto al recuperarse, aviso una
+sola vez sin canal, y la regla de sniffing distinguiendo `$M4,...` de `$MODE,M4` / `$TIMING` /
+`$M5`. Pendiente de validar en la placa.
+
+**Cabo suelto documentado, no arreglado:** `_post_reset_cfg_pending` (se pone en `_reset_esp32()`,
+se limpia en el banner, **no lo lee nadie**) sigue siendo código muerto. Era el fallback previsto
+para el banner perdido; el reenvío de `$MODE` ya cubre el modo, pero `$CFG?` y el re-enable de HGAC
+siguen sin red.
+
+Spec → **v1.32**: §4.2 separa "arranque del firmware" (`$M3`) de "default de pulsenest_lab"
+(`$M4`) — conflación que era la raíz conceptual del bug; §6.3.1 puntos 6-7 (RF); §6.5.1 nueva
+(combo de frame mode como espejo).

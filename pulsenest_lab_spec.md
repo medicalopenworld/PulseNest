@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.31
+# pulsenest_lab — Specification v1.32
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -111,12 +111,19 @@ Frames with bad checksum are silently discarded.
 
 Frame mode is selected with the `$MODE,Mx` command (no checksum — see §4.3):
 
-| Mode | Content | Default |
-|------|---------|---------|
-| `$M1` | `$M1,<SmpCnt>,<Ts_us>,<PPG_DISP>*XX` — minimal | |
-| `$M2` | `$M2,<SmpCnt>,<Ts_us>,<PPG_DISP>,<SpO2>,<SpO2_SQI>,<HR3>,<HR3_SQI>,<RSQI>,<DiagCode>,<ProbeState>*XX` | |
-| `$M3` | Full `AFE4490Data` (22 fields, table below) | |
-| `$M4` | M3 + analog debug: `V_TIA`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS`, `RF1`, `RF2` | ✔ |
+| Mode | Content | Firmware boot | pulsenest_lab default |
+|------|---------|---------------|-----------------------|
+| `$M1` | `$M1,<SmpCnt>,<Ts_us>,<PPG_DISP>*XX` — minimal | | |
+| `$M2` | `$M2,<SmpCnt>,<Ts_us>,<PPG_DISP>,<SpO2>,<SpO2_SQI>,<HR3>,<HR3_SQI>,<RSQI>,<DiagCode>,<ProbeState>*XX` | | |
+| `$M3` | Full `AFE4490Data` (22 fields, table below) | ✔ | |
+| `$M4` | M3 + analog debug: `V_TIA`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS`, `RF1`, `RF2` | | ✔ |
+
+**The two defaults differ, and that matters.** The ESP32 always boots in `$M3`
+(`main.cpp` `g_incunest_frame_mode`); `$M4` is what pulsenest_lab *requests* (saved in the .ini).
+`$MODE` carries no checksum, is not acknowledged, and the post-reset restore depends on a single
+`# incunest_afe4490 started` banner arriving on the active transport — so the requested mode is
+never evidence of the mode in force. **Field 0 of every data frame is the only ground truth**, and
+the script must treat it as such: see §6.5.1.
 
 #### $M3 — Full data frame
 
@@ -560,8 +567,8 @@ The purpose is not having to open HW CONFIG to see or change the RF in use.
 | Control | Widget | Items | `$SET` key | Mirror source |
 |---------|--------|-------|-----------|---------------|
 | `HGAC:` | `combo_quick_hgac` | `OFF`, `ON` (index = value) | `hgac_enable` | `hgac_enable` in `$LCFG` |
-| `RF1:` | `combo_quick_rf["tiagain1"]` | `TIA_GAINS` (`10K`…`1M`) | `tiagain1` | `$M4` field 34, seeded from `$CFG` `tia1` |
-| `RF2:` | `combo_quick_rf["tiagain2"]` | `TIA_GAINS` (`10K`…`1M`) | `tiagain2` | `$M4` field 35, seeded from `$CFG` `tia2` |
+| `RF1:` | `combo_quick_rf["tiagain1"]` | `TIA_GAINS` (`10K`…`1M`) | `tiagain1` | `$M4` field 34, **and every** `$CFG` `tia1` |
+| `RF2:` | `combo_quick_rf["tiagain2"]` | `TIA_GAINS` (`10K`…`1M`) | `tiagain2` | `$M4` field 35, **and every** `$CFG` `tia2` |
 
 **Required behaviour** — each item exists to prevent a specific failure:
 
@@ -582,8 +589,17 @@ The purpose is not having to open HW CONFIG to see or change the RF in use.
 5. **Mirror runs in the render tick (200 ms), never in the 20 ms drain.** `_last_hgac_rf` is
    tracked in `_process_frames_tick()` (a `split` and a tuple compare); `_sync_quick_hw_controls()`
    pushes it into the combos from `_refresh_plots_tick()`, per §6 drain/render separation.
-6. **In `$M1`–`$M3` the mirror has no source** (fields 34-35 are absent), so the combos show the
-   last value confirmed by `$CFG` (`tia1`/`tia2`), which is also the seed on the first frame.
+6. **In `$M1`–`$M3` the per-sample mirror has no source** (fields 34-35 are absent), so `$CFG`
+   (`tia1`/`tia2`) is the *only* source and **every** `$CFG` frame must re-apply it — not just
+   the first. Treating `$CFG` as a one-shot seed (`if _last_hgac_rf is None`) is a known bug:
+   it froze the header combos at the first value while HW CONFIG, fed unconditionally by
+   `update_from_cfg()`, tracked every change — the RF appeared to update in HW CONFIG but not
+   in the main window. Re-applying on every `$CFG` is idempotent in `$M4`: the next sample
+   overwrites `_last_hgac_rf` from fields 34/35 with the same value.
+7. **`_quick_rf_shown` is only advanced once both combos actually show the value.** If
+   `findText()` fails (unknown RF string: firmware/script mismatch, corrupted frame) the marker
+   is left untouched so the next render tick retries, instead of recording a value that was
+   never displayed.
 
 `_last_hgac_rf` is tracked regardless of whether HW CONFIG is open. The coalesced `$CFG?`
 refresh that mirrors an HGAC RF change into HW CONFIG's own combos still only fires when that
@@ -723,9 +739,55 @@ Stats are accumulated over `spin_stats_interval` seconds (default 1 s, user-conf
 | Decim spin | Decimation ratio (default 10): 1 in N M1 frames are processed |
 | Stats interval | Stats table update interval in seconds (default 1) |
 | HGAC / RF1 / RF2 | Quick HW controls, see §6.3.1 — apply on selection, no Set button |
+| Frame mode combo | `$M1`–`$M4`; mirrors the mode in force and requests a change, see §6.5.1 |
 | UDP WiFi button | Toggle UDP receiver on/off; switches active transport |
 | UDP port spin | UDP listen port (default 5005) |
 | Subwindow buttons | Toggle-open/close each secondary window |
+
+#### 6.5.1 Frame mode combo — mirror, not a setting
+
+`frame_mode_combo` (sidebar) is a **live mirror of the mode the firmware is actually sending**,
+and secondarily a request for a change. Same philosophy as the quick RF combos (§6.3.1): what the
+hardware is doing is the only thing worth displaying.
+
+| Attribute | Meaning |
+|-----------|---------|
+| `frame_mode` | Mode **requested** of the firmware. Persisted (`PPGMonitor/frame_mode`). Not evidence of anything. |
+| `_frame_mode_live` | Mode **in force**, read from field 0 of every data frame in the drain path. `None` until the first frame. Ground truth. |
+| `_frame_mode_shown` | Last live value pushed into the combo (change detection). |
+| `_frame_mode_mism_since` | `perf_counter()` of the first render tick of the current mismatch. |
+| `_frame_mode_retries` | `$MODE` re-sends spent on the current mismatch (max `_FRAME_MODE_MAX_RETRIES`). |
+
+**Required behaviour:**
+
+1. **The wire is tracked before checksum validation and before decimation**
+   (`_process_frames_tick()`, a 2-char slice: `line[1:3] in _FRAME_MODES and line[3:4] == ','`).
+   Tracking after decimation would starve the mirror at high decimation ratios; tracking after the
+   checksum check would lose it exactly when the link is degraded, which is when it matters.
+2. **The combo displays `_frame_mode_live`**, falling back to `frame_mode` only until the first
+   data frame arrives (`_update_frame_button()`).
+3. **A user selection sends `$MODE` and leaves the combo where the user put it.**
+   `_send_frame_cmd()` does not correct the combo inline — the next render tick re-asserts the
+   live value, so a change that took shows the new mode and one that did not snaps back to the
+   real one. Correcting it inline would flicker old → new on every successful change.
+4. **A mismatch that persists `_FRAME_MODE_MISM_S` (1 s) re-sends `$MODE`**, up to
+   `_FRAME_MODE_MAX_RETRIES` (5), one per mismatch episode-tick, logging each attempt
+   (`_sync_frame_mode_live()`, render tick). 1 s is comfortably longer than the 500 ms post-reset
+   restore delay, so the normal boot transient (firmware in `$M3` until the restore lands) never
+   triggers a re-send.
+5. **Bounded, then quiet.** After 5 failed re-sends the script stops and keeps showing the live
+   mode. Hammering a dead channel helps nobody, and the display is still honest.
+6. **`_send_frame_cmd()` logs when there is no command channel** instead of returning silently —
+   a silent return left the combo advertising a mode the firmware had never been told about.
+7. **The live mode chooses the CSV header** of a live recording (`toggle_save()`), not the
+   requested one: an `$M4` header over `$M3` rows mislabels every column.
+
+**Methods:** `_update_frame_button()`, `_on_frame_mode_combo_changed()`, `_send_frame_cmd()`,
+`_sync_frame_mode_live()`.
+
+**Known gap:** the reconciliation runs in the render tick, which early-returns while the display
+is frozen (`_render_pending`), so a mismatch is not corrected while FREEZE DISPLAY is on. Same
+limitation as the §6.3.1 mirrors.
 
 ### 6.6 Throttle rates
 
@@ -1287,6 +1349,48 @@ pyqtgraph context menus from being too narrow to read.
 
 ## 12. Changelog
 
+### v1.32 — 2026-09-04
+
+**Fix: quick RF1/RF2 combos in the SIGNAL STATS header froze in frame modes `$M1`–`$M3`.**
+`_on_cfg_frame_received()` only wrote `_last_hgac_rf` when it was still `None`, so `$CFG` acted
+as a one-shot seed. In `$M4` that was invisible (fields 34/35 refresh it every sample), but in
+`$M1`–`$M3` — where those fields do not exist — `$CFG` is the only source, so the header combos
+stayed at the first value read while HW CONFIG (fed unconditionally by `update_from_cfg()`)
+followed every RF change, whether from HGAC or a manual `$SET`. The `is None` gate is gone; see
+§6.3.1 points 6 and 7.
+
+Also in `_sync_quick_hw_controls()`: `_quick_rf_shown` is now advanced only when both combos
+actually displayed the value, so a `findText()` miss is retried on the next render tick instead
+of being recorded as shown.
+
+**Fix: the sidebar frame mode was an assumption, never a measurement — new §6.5.1.** Reported as
+"the board boots in `$M3` but the script says `$M4`". The script displayed `frame_mode` (from the
+.ini, default `$M4`) while the ESP32 always boots in `$M3`, and every mechanism meant to reconcile
+the two could fail silently:
+
+- `_on_cfg_frame_received`'s sibling banner handler hardcoded `self.frame_mode = "M4"` **before**
+  the block 22 lines below read `self.frame_mode` to "restore the saved frame mode" — so the
+  restore always sent `$M4` and overwrote the saved setting, whatever the user had picked.
+- `_send_frame_cmd()` returned silently when `_is_cmd_ready()` was false, leaving the combo
+  advertising a mode never requested of anyone.
+- `$MODE` has no checksum and its `# Frame mode: ...` confirmation was only logged, never checked:
+  one lost datagram meant permanent divergence.
+- If the `# incunest_afe4490 started` banner did not reach the **active** transport's queue
+  (`_is_active`), the entire post-reset sequence was skipped — `$MODE`, `$CFG?` *and* the HGAC
+  re-enable — with nothing in the log.
+- Even on the happy path there was a ≥500 ms + RTT window per reset with the firmware in `$M3`
+  and the UI claiming `$M4`. A Lab Capture started in that window silently records `-1` in every
+  `$M4` column (`_write_lab_capture_row()`'s fallback for absent fields).
+
+Now field 0 of every data frame is tracked as `_frame_mode_live`, the combo mirrors it, and a
+mismatch persisting >1 s re-sends `$MODE` (max 5, logged) — which closes all of the above at once,
+whichever message was lost. The hardcoded `"M4"` is gone, so the saved mode is genuinely restored.
+Data parsing was never affected: it has always been driven by field 0 (`lib_id`).
+
+Not done: `_post_reset_cfg_pending` (set on `_reset_esp32()`, cleared on the banner, **never
+read**) is still dead code — it was the intended fallback for the missed-banner case, now covered
+by the `$MODE` retry, but `$CFG?` and the HGAC re-enable still have no fallback of their own.
+
 ### v1.31 — 2026-08-26
 
 **`SpO2LocalCalc` had drifted from the firmware it exists to replicate — found while tabulating
@@ -1341,6 +1445,7 @@ findings shaped the result:
 - `_WheelBlockFilter` gained `always=False`; the quick controls use `always=True`.
 - `$CFG` handler seeds `_last_hgac_rf` from `tia1`/`tia2` when unset, and re-evaluates the
   `ENSEPGAIN` gating of RF1. `$LCFG` handler caches `hgac_enable` into `_hgac_enabled`.
+  (The "when unset" part was a bug — fixed in v1.32, see §6.3.1 point 6.)
 
 ### v1.29 — 2026-08-24
 

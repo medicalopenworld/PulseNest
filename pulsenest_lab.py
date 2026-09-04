@@ -10273,7 +10273,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.is_paused = False
         self.last_time = None
         _s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        # frame_mode = mode *requested* of the firmware (persisted). It is NOT evidence of what
+        # the firmware is actually sending: the ESP32 always boots in $M3 (main.cpp
+        # g_incunest_frame_mode) and only leaves it when a $MODE command gets through, which is
+        # fire-and-forget (no checksum, no ACK checked). _frame_mode_live is the ground truth,
+        # read from field 0 of every data frame in the drain path; the sidebar combo displays
+        # that, and a persistent mismatch re-sends $MODE (see _sync_frame_mode_live).
         self.frame_mode = _s.value("PPGMonitor/frame_mode", "M4")
+        self._frame_mode_live = None        # observed on the wire ("M1".."M4"), None until 1st frame
+        self._frame_mode_shown = None       # last live value pushed into the combo
+        self._frame_mode_mism_since = None  # perf_counter() of the first tick of a mismatch
+        self._frame_mode_retries = 0        # $MODE re-sends spent on the current mismatch
         
         self.is_saving = False
         self._sub_mismatch_count = 0   # LED2_SUB / LED1_SUB integrity check counter
@@ -10608,7 +10618,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "$M1 PPG MODE: minimal frame (SmpCnt, Ts_us, PPG_DISP). Lowest bandwidth.\n"
             "$M2 BASIC MODE: PPG + SpO2 + HR3 + quality flags. Use over serial.\n"
             "$M3 FULL MODE: all AFE4490Data fields (default). Use over UDP.\n"
-            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels. Use over UDP for analog analysis.",
+            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels. Use over UDP for analog analysis.\n"
+            "\n"
+            "Shows the mode the firmware is actually sending, read from field 0 of every frame - "
+            "not the mode requested. Picking a value sends $MODE and the combo follows once the "
+            "frames confirm it; if they do not, $MODE is re-sent (up to 5 times) and the log "
+            "reports the mismatch. The ESP32 always boots in $M3, so this returns to the saved "
+            "mode a moment after each reset.",
             src="$MODE,M{1-4}"))
         self.frame_mode_combo.currentIndexChanged.connect(self._on_frame_mode_combo_changed)
         self.sidebar_layout.addWidget(self.frame_mode_combo)
@@ -11140,8 +11156,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     _FRAME_MODES = ["M1", "M2", "M3", "M4"]
 
+    # Mismatch between requested and live frame mode: how long it must persist before the first
+    # $MODE re-send, and how many re-sends to spend before giving up (leaving the combo showing
+    # the truth). 1 s >> the 500 ms post-reset restore delay, so the normal boot transient --
+    # firmware in $M3 until the restore lands -- never triggers a re-send.
+    _FRAME_MODE_MISM_S      = 1.0
+    _FRAME_MODE_MAX_RETRIES = 5
+
     def _update_frame_button(self):
-        idx = self._FRAME_MODES.index(self.frame_mode) if self.frame_mode in self._FRAME_MODES else 2
+        """Show the frame mode in force on the wire (_frame_mode_live), falling back to the
+        requested one until the first data frame arrives. Deliberately a mirror, like the quick
+        RF combos (section 6.3.1): what the firmware is sending is the only thing worth
+        displaying."""
+        _mode = self._frame_mode_live or self.frame_mode
+        idx = self._FRAME_MODES.index(_mode) if _mode in self._FRAME_MODES else 2
         self.frame_mode_combo.blockSignals(True)
         self.frame_mode_combo.setCurrentIndex(idx)
         self.frame_mode_combo.blockSignals(False)
@@ -11151,12 +11179,65 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._send_frame_cmd(mode)
 
     def _send_frame_cmd(self, mode):
-        if not self._is_cmd_ready():
-            return
-        self.send_cmd(f"$MODE,{mode}\n".encode())
+        """Request `mode` of the firmware and persist it as the requested mode. The combo follows
+        _frame_mode_live, so it moves once the frames prove the change took, not before."""
         self.frame_mode = mode
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("PPGMonitor/frame_mode", mode)
-        self._update_frame_button()
+        self._frame_mode_mism_since = None   # restart the mismatch clock for the new target
+        self._frame_mode_retries    = 0
+        self._frame_mode_shown      = None   # force the next render tick to re-assert the truth
+        if not self._is_cmd_ready():
+            # Was a silent return: the combo then showed a mode the firmware had never been told
+            # about, with nothing in the log to explain it.
+            self.log(f"[FRAME] ${mode} not sent - no command channel (connect serial or UDP)")
+            self._update_frame_button()   # snap straight back: nothing was requested of anyone
+            return
+        self.send_cmd(f"$MODE,{mode}\n".encode())
+        self.log(f"-> $MODE,{mode}")
+        # The combo is left showing the user's pick, not corrected here: the next render tick
+        # (<=200 ms) re-asserts _frame_mode_live, so a change that took shows the new mode and one
+        # that did not snaps back to the real one. Correcting it here instead would flicker
+        # old -> new on every successful change.
+
+    def _sync_frame_mode_live(self):
+        """Reconcile requested vs live frame mode. Called from the render tick (200 ms).
+
+        $MODE is fire-and-forget (no checksum, no ACK checked) and the whole post-reset restore
+        hangs off a single '# incunest_afe4490 started' banner reaching the queue of the *active*
+        transport. Any of those going missing used to leave the UI claiming $M4 while the
+        firmware sat in its boot default $M3 -- silently, and permanently. Re-sending on a
+        persistent mismatch closes all of those holes at once, whichever message was lost.
+
+        Bounded on purpose: if 5 re-sends do not take, the channel or the firmware is the problem
+        and hammering it helps nobody -- the combo then keeps showing the live mode, which is
+        still the honest answer."""
+        _live = self._frame_mode_live
+        if _live is None:
+            return                                  # no frames yet: nothing to reconcile against
+        if _live != self._frame_mode_shown:
+            self._frame_mode_shown = _live
+            self._update_frame_button()
+        if _live == self.frame_mode:
+            self._frame_mode_mism_since = None
+            self._frame_mode_retries    = 0
+            return
+        _now = time.perf_counter()
+        if self._frame_mode_mism_since is None:
+            self._frame_mode_mism_since = _now
+            return
+        if _now - self._frame_mode_mism_since < self._FRAME_MODE_MISM_S:
+            return
+        if self._frame_mode_retries >= self._FRAME_MODE_MAX_RETRIES:
+            return
+        self._frame_mode_retries   += 1
+        self._frame_mode_mism_since = _now
+        _n = self._frame_mode_retries
+        self.log(f"[FRAME] mismatch: firmware sending ${_live}, requested ${self.frame_mode}"
+                 f" - re-sending $MODE ({_n}/{self._FRAME_MODE_MAX_RETRIES})")
+        if self._is_cmd_ready():
+            self.send_cmd(f"$MODE,{self.frame_mode}\n".encode())
+        elif _n == 1:
+            self.log("[FRAME] no command channel - cannot correct the mode")
 
     def request_chip_config(self, notify_lab_capture=True):
         """Send $CFG? to ESP32. Response arrives asynchronously via _on_cfg_frame_received().
@@ -11210,18 +11291,24 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _sync_quick_hw_controls(self):
         """Mirror the live RF in use into the header combos. Called from the render tick (200 ms),
         never from the 20 ms drain path. Source is _last_hgac_rf, tracked in the drain path from
-        $M4 fields 34/35, seeded from $CFG so $M1-$M3 still show something meaningful."""
+        $M4 fields 34/35 and refreshed on every $CFG frame - the latter is the only source in
+        frame modes $M1-$M3, where fields 34/35 are absent."""
         if not hasattr(self, 'combo_quick_rf'):
             return
         _rf = getattr(self, '_last_hgac_rf', None)
         if _rf is None or _rf == self._quick_rf_shown:
             return
-        self._quick_rf_shown = _rf
+        _all_shown = True
         for _key, _val in (('tiagain1', _rf[0]), ('tiagain2', _rf[1])):
             _cmb = self.combo_quick_rf[_key]
             _i = _cmb.findText(_val)
-            if _i >= 0 and _i != _cmb.currentIndex():
+            if _i < 0:
+                _all_shown = False       # unknown string (firmware mismatch): retry next tick
+                continue
+            if _i != _cmb.currentIndex():
                 _cmb.setCurrentIndex(_i)
+        if _all_shown:
+            self._quick_rf_shown = _rf
 
     def send_set(self, key: str, value: str, log_prefix: str = "→",
                  suppress_cfg_note: bool = True) -> bool:
@@ -11309,9 +11396,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', True):
             self._cfg_listener(text)
         self._last_cfg = kv
-        # Seed the quick RF combos from $CFG: in frame modes $M1-$M3 the per-sample RF1/RF2
-        # fields are absent, so this is the only source. $M4 refines it every sample.
-        if 'tia1' in kv and 'tia2' in kv and getattr(self, '_last_hgac_rf', None) is None:
+        # Feed the quick RF combos from $CFG. NOT a one-shot seed: in frame modes $M1-$M3 the
+        # per-sample RF1/RF2 fields are absent, so $CFG is the *only* source of the live RF, and
+        # gating this on `_last_hgac_rf is None` left the SIGNAL STATS header frozen at the first
+        # value while HW CONFIG (fed by update_from_cfg() below, unconditionally) tracked every
+        # change - the asymmetry this fixes. Re-applying it on every $CFG is idempotent in $M4:
+        # the next sample overwrites it from fields 34/35 with the same value.
+        if 'tia1' in kv and 'tia2' in kv:
             self._last_hgac_rf = (kv['tia1'].strip(), kv['tia2'].strip())
         self._apply_quick_rf_enabled()     # ENSEPGAIN may have changed
         if self.hw_config_window is not None:
@@ -11837,11 +11928,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 filename = os.path.join(CAPTURES_DIR, f"ppg_data_stream_{now_str}.csv")
                 try:
                     self.save_file = open(filename, "w", encoding="cp1252", errors="replace")
-                    if self.frame_mode == "M1":
+                    # Live mode, not the requested one: right after a reset the firmware is still
+                    # in its boot default $M3 while $M4 may already be requested, and the header
+                    # has to describe the rows that will actually be written.
+                    _fm_hdr = self._frame_mode_live or self.frame_mode
+                    if _fm_hdr == "M1":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP\n")
-                    elif self.frame_mode in ("M1", "M2"):
+                    elif _fm_hdr in ("M1", "M2"):
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
-                    elif self.frame_mode == "M4":
+                    elif _fm_hdr == "M4":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS\n")
                     else:  # M3 (default)
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
@@ -12485,8 +12580,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         if _src_com_win is not None:
                             _src_com_win.append_line(line)
                         if 'incunest' in line.lower() and 'frame' not in line.lower() and _is_active:
-                            self.frame_mode = "M4"
-                            self._update_frame_button()
+                            # No `self.frame_mode = "M4"` here: it ran *before* the "restore the
+                            # saved frame mode" block below read self.frame_mode, so the restore
+                            # always sent $M4 and overwrote the saved setting, whatever the user
+                            # had picked. The combo needs no touching either -- it mirrors
+                            # _frame_mode_live, which the frames themselves keep current.
                             import re as _re
                             _vm = _re.search(r'incunest_afe4490\s+(v\S+)', line)
                             if _vm:
@@ -12542,6 +12640,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     if not line.startswith('$'):
                         continue
+
+                    # Frame mode actually in force, straight off the wire (field 0). Tracked here
+                    # -- before checksum validation and before decimation -- so it is never
+                    # starved: it is the only evidence of what the firmware is really sending,
+                    # while self.frame_mode is merely what was asked for. Cost: a 2-char slice.
+                    if _is_active and line[1:3] in self._FRAME_MODES and line[3:4] == ',':
+                        self._frame_mode_live = line[1:3]
 
                     # Verify and strip NMEA-style XOR checksum (*XX) if present.
                     # $M1/$M2 data frames always carry *XX; reject them if missing or malformed.
@@ -12930,6 +13035,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._last_render_t = _t0_render
         try:
             self._sync_quick_hw_controls()
+            self._sync_frame_mode_live()
             # ProbeState cell col-0: update background on every render tick (200 ms)
             _ps = int(self.data_probe_state[-1]) if self.data_probe_state else -1
             if _ps == 2:
