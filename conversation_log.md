@@ -18319,3 +18319,276 @@ de los +384 B que acabamos de gastar.
 neonatos**, cuya muesca dicrótica es más marcada y más cercana al pico — justo la condición que
 decide si hay doble conteo. Y en fototerapia ambos brazos detectan mal (CV 12–33 %): ahí la
 comparación es de "menos malo".
+
+## Sesión 2026-09-04 (cont.) — Consulta: de dónde salen las constantes (5000, 50 µs, 15 Hz, 50 Hz) y el coste en dB de las palancas térmicas
+
+Sesión **de solo consulta**, declarada así por Alex: ningún cambio de código ni de spec. Lo único
+que se escribió fue la memoria `project_led_current_increase_50ma_task` (dos añadidos, al final).
+Queda aquí porque varias de las respuestas son rationale que no estaba escrito en ningún sitio.
+
+### El `5000u` de `setAdcAverages()` y el 50 µs del que sale
+
+`numav_max = 5000/PRF − 1` no es número mágico: 5000 = 0,25 / 50 µs. Sale de la Ec. 5 del
+datasheet (§8.4.1, p. 44), `NUMAV+1 = (0,25 × PRP)/50 µs − 1`, donde el 0,25 es la fracción del PRP
+que ocupa la fase de conversión y el **50 µs es el tiempo de una conversión del ADC del AFE4490**,
+fijo y no configurable: *"Each ADC conversion takes 50 µs"* (§8.4.1, p. 43), repetido en §8.4.1.1 y
+§8.4.1.2. TI valida los números con dos ejemplos en esa misma página — 8 promedios a 625 Hz y 4 a
+1250 Hz — que cuadran exactamente con `floor(5000/PRF)`.
+
+⚠️ **Errata de extracción del PDF, no del datasheet:** al pasar la Ec. 5 a texto sale "50 ms"
+porque el carácter µ está mal codificado. El texto corrido de §8.4.1 dice µs sin ambigüedad y los
+ejemplos numéricos solo cuadran con 50 µs.
+
+### `decim_factor` vs `_afe_sample_rate_hz` vs `_decim_sample_rate_hz`: cuál debe ser configurable
+
+Alex preguntó dos veces, primero factor vs PRF y luego factor vs tasa decimada. Conclusiones:
+
+1. **PRF es la palanca con significado físico** (antialiasing, NUMAV, SNR, carga SPI); el factor es
+   software puro. La arquitectura de v0.83 ya lo resolvió en ese sentido.
+2. **`_decim_sample_rate_hz` NO puede ser configurable en absoluto.** Es una *salida*: vale
+   `PRF / entero`. Un setter sobre ella miente en cuanto se pida algo que no divida al PRF (pedir
+   60 Hz con PRF 500 → factor 8 → 62,5 Hz reales), y entonces los lags de `_hr2_compute()` y el
+   `bin_res` de HR3 se calcularían con un valor falso → sesgo sistemático del 4 %. Por eso el
+   código mantiene dos campos: el objetivo (`decim_target_rate_hz`) y el logrado.
+3. **Tampoco conviene hacer configurable `decim_target_rate_hz`**, y la razón es de fondo: su
+   dominio útil tiene **un solo elemento**. Los 50 Hz están acotados por arriba y por abajo por las
+   razones 2-4 ya escritas en la spec §5.4b, que dejan una ventana de ~30-90 Hz, y dentro de ella
+   la razón 1 (GCD de la rejilla PRF) selecciona 50 exacto. Un parámetro con un único valor
+   admisible no es parámetro: es constante, y `static constexpr` es donde debe estar.
+
+### Aportación de Alex: el factor de diezmado no tiene que ser entero
+
+Objeción suya, a título informativo: con una etapa de interpolación y filtrado previa (resampler
+racional L/M, banco polifásico) la razón puede ser fraccionaria; 500→50 Hz es solo el caso L=1.
+
+**Correcta, y acota bien qué grado de libertad libera.** De las cuatro razones que justifican los
+50 Hz, solo la primera (GCD de la rejilla PRF = exigencia de factor entero) es aritmética y la
+disuelve un L/M. Las otras tres son restricciones sobre la tasa *en sí* — el corner de 15 Hz de
+HR3, la no-estacionariedad fisiológica con ventanas de 16-20 s, y los buffers de longitud fija
+acortándose en tiempo — e ignoran el método de remuestreo. Luego **un L/M no ampliaría la elección
+de la tasa decimada, sino la de PRF**, que dejaría de tener que ser múltiplo de 50 y podría
+elegirse solo por criterios de hardware (antialiasing, NUMAV, ruido).
+
+Contrapartidas en este proyecto: un filtro más en la cadena de 500 Hz, retardo de grupo añadido
+(inocuo para el sesgo de HR, que mide periodos; suma latencia), y más estado con transitorios que
+compensar en cada cambio de ganancia (frente abierto de O8.3). Y un atajo ya cobrado: como
+`_decim_sample_rate_hz` guarda la tasa efectiva y las fórmulas la usan, un factor no entero hoy
+**no produce sesgo**, produce una ventana de duración distinta (625 Hz → factor 13 → 48,08 Hz →
+ventanas un 4 % más largas). El resampler se cobra el día en que ese estiramiento importe, o el día
+en que PRF haya que decidirlo por el AFE.
+
+### ¿Por qué no diezmar a 30 Hz, si HR3 filtra a 15 Hz?
+
+Porque la regla no es `fs_dec > 2·fc` sino, con un filtro real de 2º orden, `fs_dec ≈ 3-4·fc`.
+Los 50 Hz dan 3,33×; 30 Hz darían 2,0×, el límite teórico, que en la práctica es nada:
+
+| | Se pliega sobre la banda 0,6-4,4 Hz | Atenuación ahí | Se pliega sobre 13 Hz (3er armónico) | Atenuación |
+|---|---|---|---|---|
+| fs_dec = 50 Hz | 45,6-49,4 Hz | −19 a −21 dB | 37 Hz | −15,8 dB |
+| fs_dec = 30 Hz | 25,6-29,4 Hz | −10 a −12 dB | **17 Hz** | **−4,2 dB** |
+
+El golpe serio es la última columna: a 30 Hz el ruido de 17 Hz cae sobre el bin del tercer armónico
+casi sin atenuar (−4,2 dB, frente a −1,9 dB del armónico legítimo), o sea contaminación ~1:1 en el
+bin del que depende la inmunidad al error de octava del HPS. El peor sitio posible para perder SNR.
+
+Ventajas que sí tendría 30 Hz, y por qué no compensan: bin de 3,5 BPM en vez de 5,9 (pero es
+**resolución ilusoria** — exige que el HR sea constante los 17,1 s que dura la ventana de 512
+muestras a 30 Hz, justo lo que la razón 3 descarta en un neonato); ventana HR2 de 13,3 s = 8,9
+ciclos a 40 BPM; ~40 % menos de FFT. Y ningún PRF de la rejilla da factor entero (500/30 = 16,67).
+
+**Orden correcto si algún día interesa:** primero el paso bajo a 4º orden, después bajar la tasa.
+Con 4º orden a 15 Hz la banda de 25,6-29,4 Hz caería a ≈ −19 dB, recuperando el margen que hoy
+tienen los 50 Hz. Al revés es quedarse sin antialiasing.
+
+### Por qué HR3 filtra a 15 Hz — y por qué NO filtra por abajo
+
+**El 15 Hz no es antialiasing genérico**, es lo que el HPS necesita conservar. `HPS[k] =
+P[k]·P[2k]·P[3k]`: si el filtro se come el tercer armónico, el producto se hunde y el algoritmo
+pierde la propiedad por la que se eligió. Con `hr_max_bpm` = 260 BPM → 4,33 Hz de fundamental →
+**3er armónico en 13 Hz**, y el LP a 15 Hz deja 1,15× de margen. La restricción está además
+codificada en el bucle de búsqueda: `if (search_max > nyquist/3)`. El antialiasing del diezmado es
+el **uso secundario** del mismo filtro — y de ahí que sea flojo (−9,4 dB en Nyquist con 2º orden):
+es un filtro elegido para preservar 13 Hz, no para proteger un Nyquist de 25 Hz.
+
+**Y no filtra por abajo porque tiene tres mecanismos mejores**, los tres ya en su sitio:
+resta de media exacta y sin fase en `_hr3_linearize()`; el corte inferior implementado como
+restricción del dominio de búsqueda (`search_min`, rectangular perfecto y de coste cero); y el
+propio HPS, que hunde por construcción la deriva porque no tiene estructura armónica.
+
+**La asimetría con HR2 no es descuido:** HR2 sí usa paso banda real 0,5-5 Hz porque en el dominio
+del retardo la deriva **no se puede excluir a posteriori** — contamina todos los lags y desplaza el
+pico. En el dominio de la frecuencia queda confinada en bins bajos que se descartan por índice.
+Cada algoritmo filtra donde su dominio se lo permite. Y HR2 no prescinde de la media cero: la
+necesita para normalizar la ACF con `acorr0 = Σx²` (con media ≠ 0 el término N·m² aplanaría todos
+los lags); simplemente la obtiene gratis del paso banda en vez de calcularla.
+
+**Matiz a no perder:** restar la media quita el término constante, no la deriva. El vagabundeo lento
+sigue ahí tras la resta y lo que lo neutraliza en HR3 es `search_min`.
+
+### Cabo suelto detectado: el `f_low` fantasma de HR3
+
+`setHR3Filter(f_low_hz = 0.4f, f_high_hz = 15.0f)` llama a `init_lp(f_high_hz, ...)` y **descarta
+`f_low_hz` sin aviso**; `init_lp()` no asigna `f_low`, que queda en 0.0f, así que
+`cfg.hr3_f_low_hz` reporta siempre 0.0. La firma anuncia un default de 0,4 Hz que no existe.
+Alcance verificado: nadie llama a `setHR3Filter()` ni lee `hr3_f_low_hz` fuera de la librería —
+`$CFG` (main.cpp:442) emite `hr2_f_low`, `hr2_f_high`, `hr3_f_high`, **no** `hr3_f_low`. Cambio
+interno, sin impacto en el protocolo ni en `pulsenest_lab.py`.
+
+Además la spec (línea 2251) describe esa fila como *"BP filter cutoffs… Removes DC/baseline
+drift"*, y **es incorrecto**: no hay corte inferior y el DC lo quita la resta de media.
+
+Se preparó el prompt para la sesión que sí toca código. Alex objetó —con razón— que era
+desproporcionado: casi todo se redescubre con dos greps. Lo único que la instrucción corta no cubre
+es el riesgo de que la otra sesión, al ver un miembro llamado `_hr2_bpf`/`_hr3_bpf` con un campo
+`f_low` en la config, concluya el bug contrario y convierta el paso bajo en paso banda. Versión
+final acordada: *"Elimina f_low de setHR3Filter() y hr3_f_low_hz de la config: init_lp() lo
+descarta y siempre reporta 0.0. El paso bajo puro es intencional — no lo conviertas en paso banda.
+Actualiza la spec y bump a v0.84."* **Pendiente de aplicar en la otra sesión.**
+
+### `_hr2_buf` vs `_hr2_seg`, y de dónde viene "seg"
+
+Son las dos caras del reparto Task A / Task B: `_hr2_buf` es el buffer **circular vivo** (escribe
+Task A cada muestra decimada), `_hr2_seg` es una **instantánea lineal congelada** que `_hr2_linearize()`
+copia bajo `_state_mutex` en orden cronológico antes de señalizar. Hacen falta las dos por dos
+razones independientes: aislamiento (la ACF barre 137 lags sobre 400 muestras y no puede bloquear a
+Task A, que atiende el DRDY cada 2 ms) y orden cronológico (`_hr2_seg[i] * _hr2_seg[i+lag]` exige
+desplazamiento lineal; sobre el anillo la costura introduciría un salto que la ACF leería como
+periodicidad).
+
+"seg" = **segment**, terminología estándar de procesado (el segmento de análisis frente al flujo).
+No está justificado en ningún sitio: la spec solo lo menciona al contar RAM (línea 1056).
+
+**Propuesta de renombrado, a criterio de Alex:** `_hr2_snapshot` por encima de `_hr2_linbuf` (su
+sugerencia), con el criterio de *qué error previene cada nombre*. Ignorar que el array es lineal
+lleva, como peor caso, a un módulo innecesario: inocuo. Ignorar que es una instantánea congelada
+lleva a leer `_hr2_buf` desde Task B creyéndolos equivalentes, o a escribir en la instantánea desde
+Task A: condición de carrera silenciosa. Pista de que la inmutabilidad es la propiedad estructural:
+existe un flag dedicado a defenderla (`_hr2_computing`, *"prevents Task A from overwriting"*), y
+nada equivalente protege la linealidad. Coste: `_hr2_linearize()` pasaría a `_hr2_take_snapshot()`
+(dos identificadores en vez de uno). Alcance: 4 en el `.h`, ~6 en el `.cpp`, 1 en la spec; ningún
+test. **No decidido.**
+
+### Tesis de Alex sobre ILED alto y duty bajo — cuantificada
+
+Alex planteó: ILED alto (50 mA) casi siempre interesa, porque sería raro que provocara una
+saturación de TIA no corregible bajando RF; y ante sobrecalentamiento conviene **recortar el duty
+antes que bajar ILED**. Coincide con lo ya decidido (punto 4 de la memoria de los 50 mA y adenda del
+4-sep), así que lo que se aportó fue el número que faltaba:
+
+**A igual alivio térmico** (la potencia media es `I_LED × duty`, luego recortar cualquiera de los
+dos ×½ da el mismo ΔT):
+- **corriente ×½ → −6 dB de SNR** (÷2): fotocorriente y `v_tia` caen ×2, el ruido de la cadena no
+  se mueve.
+- **duty ×½ → −3/−4 dB** (÷1,41…1,58): la amplitud de pico no cambia; se pierde promediado porque
+  la ventana Rx se acorta y `NUMAV` cae con ella (a 500 Hz, 10 → ~4 conversiones) → ruido ×√(10/4).
+
+Formalmente, en régimen dominado por el ruido de la **cadena**, `SNR ∝ I·√t`: la corriente entra
+lineal y el tiempo en raíz. ⚠️ Condición **no medida**: si dominara el shot noise sería
+`SNR ∝ √(I·t)` y ambas palancas empatarían a −3 dB. Con fotocorrientes de nA a través de un pie de
+prematuro el régimen debería ser el primero, pero es inferencia — confirmable midiendo el suelo de
+ruido con y sin LED.
+
+**Refuerzo de la primera premisa de Alex** que conviene tener presente: bajar ILED es un actuador
+antisaturación casi inútil en RF mínimo (Δv ≈ 0,1 V al pasar de 50 a 10 mA, análisis del 4-ago).
+Si se satura ahí, el grueso es **ambiente**, que no escala con ILED. Luego ILED no compite con RF
+como remedio de saturación, y la única saturación que RF no arregla tampoco la arregla ILED.
+
+### Segunda aportación de Alex: el margen térmico compra dos cosas
+
+*"Reducir el sobrecalentamiento no sólo protege al bebé sino que reduce la deriva de la longitud de
+onda del LED."* Correcto y relevante, porque la calibración R→SpO2 (`_spo2_a`/`_spo2_b`) está atada
+a λ: cada °C ahorrado es también exactitud metrológica, no solo seguridad. Hay que separar dos
+derivas — la **media** (temperatura de unión en régimen, fijada por la potencia media, la reducen
+por igual duty y corriente) y la **intra-pulso** (auto-calentamiento durante los 500 µs de ON a
+50 mA: λ se mueve mientras se integra la muestra). Un pulso más corto da menos tiempo al
+calentamiento, así que **el duty bajo gana también aquí**, mientras la corriente de pico alta lo
+empeora: es el único eje donde ILED alto tiene un coste propio.
+
+Sin cuantificar y sin datos: el datasheet Medle caracteriza la óptica solo a 20 mA y no da `dλ/dT`
+ni Rth de unión. Los ~0,1-0,3 nm/°C típicos de LEDs IR son órdenes de magnitud genéricos, **no de
+esta sonda**, y quedan anotados como tales para que nadie los cite como cifra.
+
+### Memorias actualizadas
+
+- `project_led_current_increase_50ma_task` — punto 4 ampliado con el cálculo −6 dB / −3-4 dB, la
+  ley `I·√t`, la condición del shot noise y las equivalencias (×4 más promediado tras −6 dB; PI
+  detectable 0,3 % → 0,6 %). **Punto 5 nuevo** con la doble cara del margen térmico (seguridad +
+  deriva de λ) y las dos derivas separadas; el antiguo 5 pasa a 6. `updated` → 2026-09-04.
+- `MEMORY.md` — línea índice con ambos datos.
+
+### Pendientes que salieron y NO se abordaron
+
+1. Eliminar el `f_low` fantasma de HR3 + corregir la fila 2251 de la spec (prompt listo).
+2. Renombrar `_hr2_seg` → `_hr2_snapshot` (+ `_hr2_take_snapshot()`). Sin decidir.
+3. Paso bajo de HR3 a 4º orden: cierra el punto débil de −9,4 dB y es **prerrequisito** de
+   cualquier tasa decimada por debajo de 50 Hz.
+4. Resampler racional L/M para desacoplar PRF de la tasa decimada. Solo relevante cuando PRF deba
+   decidirse por criterios de hardware.
+5. Añadir `dλ/dT`, `λ(I_F)` y Rth de unión a la caracterización pendiente de la sonda Medle
+   (filas #4/#6 de `project_probe_dependent_specs`): deciden si la deriva intra-pulso es
+   despreciable o si es lo que topa ILED por debajo de 50 mA.
+
+---
+
+## Sesión 2026-09-04 (cont.) — Estudio de estrategias para el detector de HR1
+
+Alex pidió abordar el cambio de filtro a biquad **y** estudiar todas las estrategias posibles para
+el fallo del detector (validación de forma, derivada, otras de logs/memorias/internet).
+
+### Nota metodológica: el filtro depende del detector
+
+El filtro y el detector **no son independientes**: un detector por derivada exige corte más bajo
+(la derivada amplifica ruido de alta frecuencia) y uno por plantilla **sí** valora la fase lineal
+del MA (deformar el pulso desalinea la plantilla). Por eso el estudio fue primero.
+
+### Fuentes consultadas
+
+`project_hr1_improvements_task` (ya tenía dos opciones propias: `y × dy` retrasada y template
+matching) + búsqueda de literatura: Elgendi (TERMA, PLOS One 2013 y Biosensors 2016), Zong (SSF),
+variantes de derivada (Billauer, Li, FDPPG), Hilbert/envolvente (WEPD), y métodos de umbral
+adaptativo.
+
+### Hallazgo que matiza el análisis del filtro
+
+**El estado del arte usa medias móviles, pero en otro papel.** TERMA se basa en *dos* MAs (~111 ms
+para el pico, ~667 ms para el latido) como generadoras de bloques de interés sobre la señal
+cuadrada, no como suavizado previo a un umbral. El MA no es mala herramienta: estaba en el papel
+equivocado. Eso mantiene válido el cambio a biquad bajo TERMA, SSF y las variantes de derivada.
+
+### Recomendación
+
+**TERMA**, con **SSF** como alternativa más simple. Motivos: coste O(1) (dos medias incrementales,
+como la que ya hay); la validación externa más sólida de las candidatas (99,89 % sensibilidad /
+99,84 % PPV sobre 5.071 latidos, y obtenida en señales **con estrés térmico**, régimen de mala
+calidad comparable al nuestro); y ataca la causa — la ventana de ~667 ms fija el umbral según el
+**nivel local del latido** en vez de contra un máximo global decayente que la interferencia infla.
+La regla publicada `2·W1 ≤ W2 ≤ 8·W1` es justo lo que separa el pico sistólico de la muesca.
+
+Más dos complementos casi gratis: **verificación cruzada con HR2** (un HR1 duplicado es exactamente
+lo que discrepa del periodo de la autocorrelación; **específico de esta librería**, no está en la
+literatura porque ningún detector publicado tiene un segundo estimador al lado) y **refractario
+adaptativo** (los 0,185 s fijos dejan la muesca sin protección en bradicardia, que es donde la
+medición muestra el fallo).
+
+### Registrado en `incunest_afe4490_design.md` §5 (`e4baf7a`), con columna de fuente
+
+A petición de Alex, con trazabilidad del origen de cada dato. Se eligió el design doc y no la spec
+porque su §1 lo define como el sitio de *"process / rationale / trade-offs / discarded options"*, va
+versionado con la spec y la spec sigue siendo el contrato normativo.
+
+- **§5.1** — origen del MA: seis hallazgos, cada uno citado a la línea del log, distinguiendo lo
+  que dice el log de lo que es inferencia.
+- **§5.2** — la medición: cada cifra etiquetada como *own measurement*, *standard DSP result* o
+  *ISO 80601-2-61*, incluidas las dos correcciones de método sin las cuales no discriminaba.
+- **§5.3** — catálogo de diez estrategias con su fuente: las publicadas con cita, las tres propias
+  marcadas como *own idea*, y la verificación cruzada con HR2 señalada como específica nuestra.
+
+Puntero añadido desde spec §5.5 para que la revisión se encuentre desde el documento normativo sin
+duplicarla. Sin bump de versión: solo rationale.
+
+### Pendiente de decisión de Alex
+
+Al sustituir el MA, `hr1_ma_cutoff_hz` y `setHR1MaCutoffHz()` dejan de ser literales (llevan "ma").
+Propuesta: `hr1_lp_cutoff_hz` / `setHR1LpCutoffHz()`, simétrico con `setHR2Filter`/`setHR3Filter`.
+El setter es API pública. Y sigue abierta la elección del detector (TERMA vs SSF vs comparación
+offline previa).
