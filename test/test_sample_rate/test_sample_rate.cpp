@@ -162,6 +162,25 @@ void test_same_rate_is_a_no_op() {
                                      "a no-change call must not arm settling");
 }
 
+// HR1's moving average must actually cut where it is configured to, at EVERY catalogue rate.
+// Until v0.86b hr1_ma_max_len was 64, so 800-1600 Hz ran clamped with an effective cutoff of
+// 6.2-12.5 Hz instead of 5 Hz — silently. A too-wide filter lets the dicrotic notch reach the
+// threshold detector, which double-counts and reports a doubled HR; the 0.185 s refractory
+// mitigates that unevenly, and least of all in bradycardia, where the notch falls outside it.
+void test_hr1_ma_not_clamped_across_catalogue() {
+    INCUNEST_AFE4490 afe;
+    for (uint8_t i = 0; i < INCUNEST_AFE4490::sampleRateCount(); i++) {
+        const uint16_t hz = kAFE_SAMPLE_RATE_HZ[i];
+        afe.setSampleRate((AFE4490SampleRate)i);
+        const uint32_t want = (uint32_t)((hz / (2.0f * 5.0f)) + 0.5f);   // default 5 Hz cutoff
+        char msg[112];
+        snprintf(msg, sizeof(msg),
+                 "%u Hz: HR1 MA clamped -> effective cutoff %.1f Hz instead of 5 Hz",
+                 hz, hz / (2.0f * (float)afe.test_hr1_ma_len()));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, afe.test_hr1_ma_len(), msg);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_catalogue_is_not_empty);
@@ -171,5 +190,6 @@ int main() {
     RUN_TEST(test_chains_hold_50hz_across_catalogue);
     RUN_TEST(test_rate_change_tears_down_old_state);
     RUN_TEST(test_same_rate_is_a_no_op);
+    RUN_TEST(test_hr1_ma_not_clamped_across_catalogue);
     return UNITY_END();
 }
