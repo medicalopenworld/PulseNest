@@ -225,16 +225,25 @@ SIG_MAX_S          = 60    # PPGSignalsWindow internal accumulator: 60 s @ SPO2_
 
 
 class SpO2LocalCalc:
-    """Replicates firmware _update_spo2() in Python for independent verification.
+    """Replicates firmware _spo2_update() in Python for independent verification (SPO2LAB).
 
-    Constants must match incunest_afe4490.cpp:
-      dc_iir_tau_s=1.6, ac_ema_tau_s=1.0, spo2_min_dc=1000,
-      warmup_s=5, spo2_a=104, spo2_b=17, spo2_min=70, spo2_max=100.
+    Constants mirror the defaults namespace in incunest_afe4490.cpp. Keep this table in step
+    with it — SPO2LAB compares R_loc against R_fw, so any drift here shows up as a fake
+    firmware-vs-local discrepancy:
+
+      _DC_IIR_TAU_S <- spo2_ema_mean_tau_s  (2.0 s)
+      _AC_EMA_TAU_S <- spo2_ema_var_tau_s   (6.0 s, ISO 80601-2-61:2026 Annex JJ.2 d) >= 6 s)
+      _WARMUP_S     <- spo2_warmup_s        (18.0 s = 3 x tau_var)
+      SPO2_A/B      <- spo2_a_default / spo2_b_default
+      _SPO2_MIN/MAX <- spo2_min / spo2_max
     """
-    _DC_IIR_TAU_S = 1.6
-    _AC_EMA_TAU_S = 1.0
+    _DC_IIR_TAU_S = 2.0
+    _AC_EMA_TAU_S = 6.0
+    # No firmware counterpart: the firmware dropped its own DC gate when probe presence was
+    # delegated to RSQM (lib v0.42). Kept here only as a divide-by-small guard for offline
+    # replay of captures that predate that change.
     _SPO2_MIN_DC  = 1000.0
-    _WARMUP_S     = 5.0
+    _WARMUP_S     = 18.0
     SPO2_A        = 114.9208
     SPO2_B        =  30.5547
     _SPO2_MIN     = 70.0
@@ -267,6 +276,16 @@ class SpO2LocalCalc:
         """Process one sample. Returns dict with intermediates, or None during warmup."""
         if fs != self._fs:
             self._recalc_params(fs)
+
+        # Seed on the first sample (mean = x, AC^2 = 0) instead of ramping up from zero.
+        # Mirrors EmaChannel::update() since lib v0.55: ramping from 0 leaves d = x - mean ~ x
+        # for the first ~3*tau, which spuriously inflates the AC^2 estimate (and therefore PI
+        # and R) exactly during warmup. Without this, R_loc cannot be compared with R_fw.
+        if self._sample_count == 0:
+            self._dc_ir, self._dc_red = float(ir), float(red)
+            self._ac2_ir = self._ac2_red = 0.0
+            self._sample_count = 1
+            return None
 
         self._dc_ir  = self._dc_alpha * self._dc_ir  + (1 - self._dc_alpha) * ir
         self._dc_red = self._dc_alpha * self._dc_red + (1 - self._dc_alpha) * red

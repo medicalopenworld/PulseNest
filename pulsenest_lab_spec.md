@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.30
+# pulsenest_lab — Specification v1.31
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -368,16 +368,26 @@ Replicates `INCUNEST_AFE4490::_spo2_update()`.
 
 | Name | Value | Description |
 |------|-------|-------------|
-| `_DC_IIR_TAU_S` | 1.6 s | DC IIR time constant |
-| `_AC_EMA_TAU_S` | 1.0 s | AC² EMA time constant |
-| `_SPO2_MIN_DC` | 1000 | Minimum DC level to report SpO2 |
-| `_WARMUP_S` | 5.0 s | Warmup before reporting |
+| `_DC_IIR_TAU_S` | 2.0 s | DC IIR time constant — mirrors `spo2_ema_mean_tau_s` |
+| `_AC_EMA_TAU_S` | 6.0 s | AC² EMA time constant — mirrors `spo2_ema_var_tau_s`; ≥ 6 s is mandated by ISO 80601-2-61:2026 Annex JJ.2 d) |
+| `_SPO2_MIN_DC` | 1000 | Minimum DC level to report SpO2. **No firmware counterpart** — the firmware dropped its own DC gate when probe presence moved to RSQM (lib v0.42); kept as a divide-by-small guard for offline replay of older captures |
+| `_WARMUP_S` | 18.0 s | Warmup before reporting — mirrors `spo2_warmup_s` (= 3 × τ_var) |
 | `SPO2_A` | 114.9208 | Calibration coefficient (SpO2 = A − B·R) |
 | `SPO2_B` | 30.5547 | Calibration coefficient |
 | `_SPO2_MIN` | 70.0 % | Valid SpO2 range lower bound |
 | `_SPO2_MAX` | 100.0 % | Valid SpO2 range upper bound |
 
-**Algorithm:** IIR DC filter → AC extraction → EMA of AC² → R = (RMS_AC_red/DC_red) / (RMS_AC_ir/DC_ir) → SpO2 = A − B·R.
+**Algorithm:** seed on first sample → IIR DC filter → AC extraction → EMA of AC² → R = (RMS_AC_red/DC_red) / (RMS_AC_ir/DC_ir) → SpO2 = A − B·R.
+
+**Seeding (required for comparability):** the first sample sets `dc = x` and `ac2 = 0` and
+returns `None`, mirroring `EmaChannel::update()` since lib v0.55. Ramping the DC up from zero
+would leave `d = x − mean ≈ x` for the first ~3τ, inflating the AC² estimate — and therefore PI
+and R — precisely during warmup. SPO2LAB exists to compare `R_loc` against `R_fw`, so an
+algorithmic difference here reads as a firmware discrepancy that is not there.
+
+**Note:** these constants are a mirror of the `defaults` namespace in `incunest_afe4490.cpp`.
+Any drift produces a fake firmware-vs-local discrepancy in SPO2LAB, so they must be re-checked
+whenever the library changes its SpO2 defaults.
 
 `update(ir, red, fs)` returns a dict with `dc_ir`, `dc_red`, `rms_ac_ir`, `rms_ac_red`, `R`, `spo2`, `spo2_valid`, or `None` during warmup/invalid.
 
@@ -1276,6 +1286,34 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.31 — 2026-08-26
+
+**`SpO2LocalCalc` had drifted from the firmware it exists to replicate — found while tabulating
+every EMA time constant in the library.** SPO2LAB compares `R_loc` against `R_fw` to derive the
+calibration coefficients, so each of these made that comparison invalid:
+
+| Constant | Was | Now | Firmware source |
+|----------|-----|-----|-----------------|
+| `_DC_IIR_TAU_S` | 1.6 s | **2.0 s** | `spo2_ema_mean_tau_s` |
+| `_AC_EMA_TAU_S` | 1.0 s | **6.0 s** | `spo2_ema_var_tau_s` |
+| `_WARMUP_S` | 5.0 s | **18.0 s** | `spo2_warmup_s` |
+
+- **Seeding added** (`dc = x`, `ac2 = 0` on the first sample): the firmware has done this since
+  lib v0.55 to remove a warmup bias that inflates AC² — the Python replica still ramped from
+  zero. This was an algorithmic difference, not just a constant.
+- Class docstring rewritten: it claimed `spo2_a=104, spo2_b=17` while the code already had
+  114.9208 / 30.5547, and named `_update_spo2()` (renamed `_spo2_update()` in the library).
+- `_SPO2_MIN_DC` documented as having **no firmware counterpart** (the DC gate moved to RSQM in
+  lib v0.42); kept deliberately as a divide-by-small guard for replaying older captures.
+
+Library side (`incunest_afe4490.h`): the SpO2 state comment still documented `τ_mean` as 1.6 s and
+`τ_var` as 1.0 s — corrected to 2.0 s / 6.0 s, with the ISO 80601-2-61:2026 Annex JJ.2 d)
+justification for the 6 s minimum added inline. Comment-only, no behaviour change, so no library
+version bump; `incunest_afe4490_spec.md` already documented the correct values.
+
+**Impact:** calibration points captured in SPO2LAB before this change are not comparable with new
+ones — the local R was computed with a 1.0 s AC window instead of 6.0 s.
 
 ### v1.30 — 2026-08-24
 
