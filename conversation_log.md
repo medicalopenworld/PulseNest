@@ -18592,3 +18592,65 @@ Al sustituir el MA, `hr1_ma_cutoff_hz` y `setHR1MaCutoffHz()` dejan de ser liter
 Propuesta: `hr1_lp_cutoff_hz` / `setHR1LpCutoffHz()`, simétrico con `setHR2Filter`/`setHR3Filter`.
 El setter es API pública. Y sigue abierta la elección del detector (TERMA vs SSF vs comparación
 offline previa).
+
+---
+
+## Sesión 2026-09-04 (cont.) — Documento de rationale: nombre, estado y frontera con la spec
+
+### Rename `incunest_afe4490_design.md` → `incunest_afe4490_design_rationale.md` (`6e3160d`)
+
+Propuesta de Alex. De acuerdo, por tres razones: (1) el título del documento ya decía *"Design
+Rationale"*, así que el nombre del fichero contradecía lo que el fichero declara ser; (2)
+`design.md` **invita al error contrario** — sugiere que contiene *el diseño*, el QUÉ, que es
+exactamente lo que no tiene (eso es la spec), así que quien busca el diseño abre el fichero
+equivocado y, peor, quien documenta puede meter contenido normativo donde no va; (3) deja el par
+explícito en los nombres y no solo en un párrafo.
+
+**Iba a proponer `_rationale.md`** (más corto y más simétrico con `_spec.md`) **y me retracté:**
+*design rationale* es terminología establecida en el dominio regulatorio — el expediente de diseño
+de ISO 13485 y el Design History File de la FDA esperan ese concepto con ese nombre. En un
+dispositivo médico, coincidir con el término que busca un auditor vale más que ahorrar una palabra.
+
+`git mv` conserva la historia (git lo registra como `R`). Actualizadas 3 referencias en el repo
+(2 en la spec + 1 autorreferencia) y 9 en 4 memorias. **Las 4 del `conversation_log.md` se dejaron
+a propósito:** es un registro append-only y esas líneas documentan el nombre que el fichero tenía
+entonces; reescribirlas falsearía el histórico.
+
+### "PRELIMINARY" fuera del título (`063487f`)
+
+Alex preguntó si quitarlo. **No del todo, pero sí del título.** La condición que el propio documento
+se puso sigue sin cumplirse — *"it will be consolidated at the HGAC v1 freeze"*, y `hgac_enable`
+sigue `false` por defecto con las fases 2-7 pendientes —, así que la advertencia se queda. Pero un
+título que se lee como borrador desechable desincentiva justo lo que el documento necesita: que se
+use y se mantenga.
+
+Ahora el estado vive en su bloque y **dice algo útil**: la condición pendiente con su evidencia, y
+una **tabla de madurez por sección** (§2 HGAC la más completa · §3 solo resumen · §4 base clínica,
+la más crítica · §5 completa y con fuentes). De paso se corrigió que el bloque estaba **fechado el
+2026-08-04**, anterior a la §5 añadida hoy.
+
+### La parte de fondo: §1 reescrita — la frontera real con la spec
+
+Al revisar la etiqueta detecté una inconsistencia **creada en esta misma sesión**: la §1 prometía
+una separación estricta (rationale aquí, normativo en la spec), pero yo había metido en la **spec**
+análisis que según esa regla iban al rationale — **§5.3.1** (las cuatro razones del 50 Hz con su
+tabla), **§7.3** (antialiasing, Figura 54, los −9,4 dB) y **§7.4** (por qué el catálogo es cerrado,
+reserva térmica, los dos no-criterios).
+
+Opciones consideradas: (1) redefinir la frontera, (2) mover esos análisis al rationale dejando
+punteros, (3) esperar a la congelación de HGAC v1. **Alex eligió la 1.**
+
+Regla nueva: la **spec lleva justificación corta inline, junto a la constante que explica** —tiene
+que poder regenerar el código *con criterio*, y arrancar los motivos dejaría números mágicos
+huérfanos—; el **rationale lleva los análisis largos, las alternativas descartadas, la base clínica
+y las decisiones revertidas**. Ejemplo que fija la línea: spec §5.3.1 justifica los 50 Hz donde se
+definen; §5 del rationale guarda el catálogo de diez estrategias de detector, opciones en su mayoría
+no implementadas que no tienen sitio en un documento normativo.
+
+Queda anotado en el propio documento que ese párrafo se añadió hoy y por qué, para que la próxima
+vez que alguien vea rationale en la spec sepa que es deliberado y no un descuido.
+
+### Pendiente de decisión de Alex (sin cambios)
+
+Rename de `hr1_ma_cutoff_hz` → `hr1_lp_cutoff_hz` (API pública) y elección del detector: TERMA
+directo o comparación offline TERMA/SSF/actual primero.
