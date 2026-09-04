@@ -41,12 +41,26 @@ has not been triaged yet.
 - la línea incunest_afe440.h:1127 induce a confusión (uint32_t       _rsqm_probe_state_min_samples { 100 }; )	
 - Segun claude:  2. El filtro de 500 Hz post-stage2 (~1.6 ms de 5τ) y el acoplamiento CF↔RF en _hgac_change_rf() — ¿se recalcula C_F de forma atómica junto con el
   paso de RF, o queda una ventana desincronizada? Quedó fuera del alcance de hoy.
-- tia_settle_min depende de PRF (y otras también)
 - Apunta como tarea pendiente: estudiar la posibilidad de anular STAGE2 ya que no la
   usamos (ventajas e inconvenientes)
+- whatsapp de Pablo del 14-ago
+- La trama $M4 a veces no se envía por defecto (se envía la $M3)
+- _spo2_update() resetea constantemente ¿Merece la pena cambiar el código para que resetee sólo cuando es necesario? (ventajas y desventajas/inconvenientes/riesgos)
+- Estudiar si la señal DC podría ser utilizada para alguno de los dos siguientes usos:
+	1. El Anexo AA de la norma ISO explica que un %mod teóricamente aceptable puede ser clínicamente inútil si el nivel de DC es extremadamente bajo
+	2. Detección de Desequilibrio por Pigmentación (Melanina) o Tejido Grueso. Si el DC del Rojo es excesivamente bajo en comparación con el del Infrarrojo debido a una piel oscura, el sistema sabrá que la señal roja es altamente vulnerable al ruido del detector
+
 ## Done / promoted
 
 - [x] EMA de RSQM como código muerto tras SIGNAL_WEAK → RESUELTO v0.57 (eliminados EMA + `ready` + τ; ver conversation_log 2026-08-07)
+- [x] `tia_settle_min` depende de PRF (y otras también) → PROMOVIDO a tarea de análisis 2026-08-22.
+      Analizado: el suelo fijo en tiempo es la forma correcta (TI §8.3.1.3: el margen es para
+      LED+cable, no depende de PRF); lo que no tiene base física es el 10 %, que además es el que
+      gobierna por debajo de ~2,4 kHz. Hallazgo mayor de paso: `setSampleRate` acepta hasta 5000 Hz
+      pero desde ~2500 Hz los registros ALED se **invierten** (`ambient_margin` = 400 counts fijo,
+      sin guard) y desde 2000 Hz la ventana de ambiente ya baja del mínimo de 50 µs de TI.
+      Pendiente: decidir el techo de PRF soportado. Ver memoria
+      `project_prf_range_settle_windows_task` y conversation_log 2026-08-22.
 
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->

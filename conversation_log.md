@@ -17343,7 +17343,8 @@ tabla de controles y 6 reglas de comportamiento, fila añadida a la tabla de con
 changelog; el título estaba desactualizado en v1.28 y se corrigió). `py_compile` OK, CRLF
 preservados. Sin commitear.
 
-**Nota de proceso:** las ediciones por heredoc de `bash` corrompen los escapes tipo `
+**Nota de proceso:** las ediciones por heredoc de `bash` corrompen los escapes tipo `
+
 ` al
 llegar a Python por stdin (`sys.stdin.encoding` = cp1252); los parches con literales que
 contienen backslashes deben escribirse a un fichero `.py` y ejecutarse, no pasarse por heredoc.
@@ -17395,3 +17396,451 @@ vs completo:**
 
 **Memoria:** `project_capture_lab_missing_rf_columns_task.md` ampliada con esta segunda
 corrección.
+
+---
+
+## Sesión 2026-08-24 (cont.) — Flash OTA v0.81 (rf_led1/2) a la 16.A
+
+Confirmado OTA a la 16.A (`192.168.137.167`, MAC `10:51:DB:50:48:F8` verificada en ARP — la
+IP cambió respecto a la sesión anterior, DHCP) con el firmware que incorpora el rename
+`hgac_rf_led1/2`→`rf_led1/2` (lib v0.81). Build `incunest_V16` limpio antes de flashear.
+Respuesta `OK` (HTTP 200).
+
+---
+
+## Sesión 2026-08-26 — Auditoría de constantes de tiempo (τ) de los EMAs y resincronización de SpO2LocalCalc
+
+**Punto de partida:** Alex preguntó cuánto espera HGAC para cambiar RF si se supera HIGH1, y
+después pidió una tabla con los τ de todos los EMAs. La tabla destapó dos documentaciones
+desincronizadas y un espejo Python realmente roto.
+
+### Respuesta a la pregunta de HGAC (sin cambios de código)
+
+**No hay espera deliberada:** `_hgac_update()` se llama desde `_process_sample()`
+(`incunest_afe4490.cpp:1949`), o sea cada muestra a 500 Hz, y `_hgac_track()` (`:1404`) baja RF un
+escalón en la misma muestra en que `slow.mean >= hgac_v_tia_high1`. Sin histéresis temporal.
+- El retardo observable es el del filtro: `hgac_ema_slow_tau_s` = **2.0 s**. Ante un escalón
+  V0→V1 el cruce de HIGH1 (0.75 V) ocurre en `t = -τ·ln((V1-HIGH1)/(V1-V0))` → ≈3.6 s para
+  V1=0.80 V, ≈2.0 s para 0.90 V, ≈1.4 s para 1.00 V.
+- **Entre escalones consecutivos sí hay cooldown: 6 s.** `_hgac_change_rf()` (`:1364`) hace
+  `reset()` de las 3 EMAs del dominio (obligatorio: un cambio de ganancia escala v_tia por k y las
+  medidas previas dejan de valer), y el warm-up de 3τ = 6 s mantiene `valid()==false` mientras
+  tanto. El gate `RSQM_DIAG_SWITCHED_RC_SETTLING` añade ~8-9 muestras (≈17 ms), despreciable.
+- El guard HIGH2 (0.9 V, EMA rápida τ=0.1 s, warm-up 0.3 s) tiene prioridad y hace `return` antes
+  de evaluar HIGH1 → ante escalones grandes responde en décimas de segundo.
+- **Esto explica el feedback de IncuNest** de la sesión del 2026-08-23 ("HGAC tarda ~5 s en
+  converger al saturar"): no es lentitud del lazo, es el cooldown de diseño de 6 s por escalón.
+  Refuerza [[project_filter_state_compensation_task]] (O8.3): compensar los estados EMA por el
+  factor k en vez de resetearlos eliminaría casi todo ese tiempo muerto.
+
+### Tabla de EMAs (auditoría completa, lib v0.80)
+
+Hay **exactamente 8 instancias** de `EmaChannel`: 2 de SpO2 (τ_mean 2.0 s / τ_var 6.0 s, warm-up
+externo `spo2_warmup_s`=18 s) y 6 de HGAC (fast 0.1 s, slow 2.0 s, ambient 2.0 s, todas con
+warm-up 3τ y el mismo τ para mean y var porque solo usan `mean`). Único filtro exponencial fuera
+de `EmaChannel`: `hr1_dc_tau_s` = 1.6 s.
+
+**Hallazgo:** **RSQM ya NO usa ningún EMA** — no existe `rsqm_ema_*` en la librería;
+`_rsqm_update()` usa criterios instantáneos sobre `i_pd`/OT más debounce
+(`rsqm_probe_state_min_s`). La memoria `project_ema_tau_config` afirmaba "RSQM τ=2s/4s":
+marcado como obsoleto.
+
+### Cambios de código
+
+Dos sitios arrastraban el par histórico **1.6 s / 1.0 s**:
+
+**1. `incunest_afe4490.h` (repo librería) — comentario del bloque "SpO2 state".** Documentaba
+`τ_mean` como 1.6 s y `τ_var` como 1.0 s cuando los valores reales son 2.0 y 6.0
+(`incunest_afe4490.cpp:35` y `:42`). Corregido, más la justificación añadida inline de que el 6 s
+no es una elección libre: **ISO 80601-2-61:2026 Anexo JJ.2 d)** exige ≥6 s de promediado para el
+patrón de transferencia de SpO2. Solo comentario → **sin bump de versión de librería**, y
+`incunest_afe4490_spec.md` ya documentaba los valores correctos (§ de parámetros SpO2).
+
+**2. `SpO2LocalCalc` (`pulsenest_lab.py`) — desincronizado en el CÓDIGO, no solo en comentarios.**
+Se instancia en un único sitio, `SpO2LabWindow` (`:1266`), sin argumentos — y SPO2LAB existe
+precisamente para comparar `R_loc` contra `R_fw` y derivar los coeficientes de calibración, así
+que la desviación invalidaba la comparación para la que existe la clase.
+
+| Constante | Estaba | Ahora | Origen firmware |
+|---|---|---|---|
+| `_DC_IIR_TAU_S` | 1.6 s | **2.0 s** | `spo2_ema_mean_tau_s` |
+| `_AC_EMA_TAU_S` | 1.0 s | **6.0 s** | `spo2_ema_var_tau_s` |
+| `_WARMUP_S` | 5.0 s | **18.0 s** | `spo2_warmup_s` |
+
+Dos hallazgos adicionales no previstos:
+- **Faltaba el seeding de la primera muestra.** La librería lo hace desde v0.55 (`mean=x`,
+  `var=0`) para eliminar un sesgo de arranque; la réplica Python seguía rampando desde cero, lo
+  que infla AC² durante ~3τ y por tanto PI y R. Era una **diferencia algorítmica**, no de
+  constantes. Implementado replicando `EmaChannel::update()`.
+- **El docstring se contradecía a sí mismo:** decía `spo2_a=104, spo2_b=17` mientras el código ya
+  tenía 114.9208 / 30.5547 (que sí coinciden con el firmware), y nombraba `_update_spo2()`,
+  renombrado a `_spo2_update()` en la librería. Reescrito como tabla de correspondencia explícita.
+
+`_SPO2_MIN_DC = 1000` **no tocado**: sin contrapartida en firmware (el gate de DC pasó a RSQM en
+lib v0.42), pero útil como guarda anti-división para reproducir capturas antiguas. Documentado
+como tal en vez de eliminarlo; queda como decisión abierta de Alex si prefiere quitarlo.
+
+**⚠️ Impacto operativo:** los puntos de calibración tomados en SPO2LAB antes de este cambio **no
+son comparables** con los nuevos — el R local se calculaba con ventana de AC de 1.0 s en lugar de
+6.0 s y con el sesgo de arranque. Habría que rehacerlos.
+
+**Ficheros:** `lib/incunest_afe4490/incunest_afe4490.h` (+4/−2, solo comentario),
+`pulsenest_lab.py` (+26/−7), `pulsenest_lab_spec.md` → **v1.31** (tabla de constantes §5.1,
+sección de seeding, changelog con tabla de deltas e impacto). Memoria `project_ema_tau_config`
+reescrita con la tabla completa de los 8 EMAs y la corrección sobre RSQM. `py_compile` OK.
+Sin commitear.
+
+**Lección registrada:** `SpO2TestCalc` sí estaba sincronizado (constantes `FW_*` con comentario
+citando la ISO) pero `SpO2LocalCalc` no. Al cambiar defaults de SpO2 en la librería hay que
+revisar **ambos** espejos Python.
+
+
+## Sesión 2026-09-02 — Nuevos estimadores de HR (MPM/YIN) y fix del bound de lag de HR2 (lib v0.82)
+
+**Punto de partida:** Alex pidió un resumen de los dos últimos meses, luego cómo se calcula el SQI
+de SpO2/HR1/HR2/HR3, y de ahí salió la propuesta de añadir dos algoritmos más: **MPM** (McLeod
+Pitch Method) y **YIN**.
+
+### Tarea registrada: MPM y YIN
+
+Creada la memoria `project_hr4_hr5_mpm_yin_task`. Puntos de diseño cerrados en la sesión:
+
+- **Nomenclatura (decisión de Alex):** NO son HR4/HR5. Comparten pipeline y búffer con HR2, y un
+  número plano ocultaría que **sus errores están correlacionados** — relevante si algún día se
+  fusionan estimaciones ponderando por SQI. Convención: el número identifica el *pipeline*, el
+  sufijo el *estimador* → `HR1` / `HR2_ACF` / `HR2_MPM` / `HR2_YIN` / `HR3`. Alternativa corta
+  `HR2B`/`HR2C` como plan B si aprieta el tamaño de la trama `$M4`.
+- **Los tres estimadores de lag salen de un único barrido.** Con `r(tau)` y `m(tau)`:
+  ACF = `r*N/(r(0)*(N-tau))`, NSDF = `2r/m`, y la función diferencia de YIN = `m - 2r`. El coste
+  marginal de MPM+YIN son tres post-procesados, no tres barridos.
+- **Comparten búffer sin tocar la sincronización:** un snapshot `_hr2_seg`, un semáforo, un flag.
+  Descartadas tres tareas compartiendo el snapshot (obligaría a refcount/barrera).
+- **Verdad de referencia:** Alex aportó que **hay un simulador PPG MS100**. Resuelve el problema
+  central de la campaña (HR conocido sobre señal analógica real atravesando el AFE). Anotado
+  explícitamente lo que el MS100 **no** grada: morfología de pie de prematuro, PI real bajo,
+  artefacto de movimiento y luz ambiente — esas filas siguen necesitando capturas reales.
+- **Criterio de poda fijado antes de la campaña:** se conserva un estimador solo si gana en un eje
+  que ningún otro cubre. Hipótesis: ACF/MPM/YIN muy redundantes → sobrevive uno.
+
+### Cambio de código: `hr2_acorr_max_lag` (lib v0.81 → v0.82)
+
+Detectado al analizar el barrido de PRF de la campaña MS100. `hr2_acorr_max_lag = 137` estaba
+fijo **en muestras**, comentado como "22 BPM at 50 Hz" — heredado de v0.11, cuando el rango de HR
+era [25, 300] BPM. El rango pasó luego a [40, 260] y el límite de lag nunca se revisó. Además,
+al ser fijo en muestras mientras `fs2 = PRF/hr2_decim_factor` no lo es, codificaba una suposición
+de 50 Hz silenciosa.
+
+- **Ahora se deriva**, simétrico con el `min_lag` que ya existía:
+  `max_lag = 60/(hr_min_bpm-3)*fs2`, con tope por almacenamiento y por `hr2_buf_len/2-1`
+  (límite de ruido del normalizador insesgado `N/(N-tau)`, que diverge con tau → N).
+- **Renombrado `hr2_acorr_max_lag` → `hr2_acorr_lag_cap`**: el valor es capacidad del array de
+  scratch, no política de búsqueda. El nombre viejo se leía como política y por eso el desfase
+  pasó años desapercibido. Añadido `static_assert` para el límite `buf_len/2` y un guard
+  explícito cuando quedan menos de 3 lags.
+- **Sin cambio de salida a 500 Hz**, y conviene ser preciso en esto: los picos más allá del bound
+  viejo los rechazaba igualmente el check `hr >= hr_min_bpm`, así que el resultado era idéntico.
+  Lo que sí cambia es el coste: el barrido baja de 127 a 71 lags, ~39 % menos trabajo en el bucle
+  O(N·lags). Importa porque Task B hará **tres** post-procesados sobre ese barrido con MPM/YIN.
+- **Residual documentado, no resuelto:** `hr2_decim_factor` (10) y `hr2_buf_len` (400) siguen
+  fijos, así que por encima de ~845 Hz el cap muerde para 40 BPM y por encima de ~1200 Hz la
+  ventana `400/fs2` es demasiado corta para resolver 40 BPM. El arreglo real es un
+  `hr2_decim_factor` adaptativo que mantenga fs2 ~ 50 Hz, simétrico en HR3. Fuera de alcance
+  mientras 500 Hz sea la única tasa, pero **prerrequisito si la campaña MS100 barre PRF**.
+- HR3 no tenía el problema: `search_min`/`search_max` ya se derivan de `_hr_min_bpm`/`_hr_max_bpm`.
+
+**Ficheros:** `incunest_afe4490.h` / `.cpp` (repo librería, v0.82), `incunest_afe4490_spec.md`
+(§5.3 con la derivación y la limitación a tasas altas, §12 tabla de tuning, changelog v0.82),
+`test/test_hr2/test_hr2.cpp` (nuevo `test_hr2_40bpm_lower_bound`, que fija el borde inferior del
+rango — 40 BPM cae en lag 75 con solo 5 lags de margen).
+
+**Verificación:** `pio test -e native -f test_hr2` → 8/8 PASSED. Suite nativa completa → 64/65;
+el único fallo es `test_biquad`, **preexistente y ajeno a este cambio** (llama a
+`test_recalc_biquad`/`test_biquad_process`, que ya no existen en la clase — test con API
+obsoleta, pendiente de arreglar). `pio run -e incunest_V16` → SUCCESS. Sin commitear, sin
+flashear.
+
+## Sesión 2026-09-03 — Análisis sin código: SQI, procedencia de hr_max_bpm, resolución de lag y PRF
+
+Sesión de análisis. **Ningún cambio de código.** La librería sigue en v0.82 sin commitear.
+
+### Documentado: cómo se calcula cada SQI
+
+Los cuatro son [0..1] pero no comparten fórmula. Gate común: `probe_state != PROBE_APPLIED` o valor
+fuera de rango → SQI = 0 y medida a NaN.
+
+| Algoritmo | Métrica | Fórmula | Ref. |
+|---|---|---|---|
+| SpO2 | perfusión | `clamp01((PI − 0.5) / (2.0 − 0.5))` | `.cpp:2192` |
+| HR1 | regularidad del ritmo | `clamp01(1 − CV/0.15)` sobre 5 intervalos RR | `.cpp:2284` |
+| HR2 | periodicidad | valor del pico de la ACF normalizada insesgada | `.cpp:2385` |
+| HR3 | prominencia espectral | SNR local del HPS en 2 bins, normalizado al suelo de ruido | `.cpp:2547` |
+
+El de SpO2 es el más débil: mide amplitud pulsátil del IR, no calidad del cálculo de SpO2 — un
+artefacto de movimiento con mucha amplitud puntúa alto.
+
+### Procedencia de `hr_max_bpm = 260`: NO HAY rationale registrado
+
+Traza completa: `40–240` → `30–250` (v0.9) → `25–300` (v0.11) → **`40–260`** (2026-05-02b). La
+entrada de esa sesión dice solo *"Decisión del usuario: cambiar el límite superior de 300 a 260"*,
+sin justificación. `hr_min_bpm = 40` sí tiene traza (2026-05-27p).
+
+⚠️ **La spec afirma que el rango "deriva de criterios neonatales ISO"** (`spec:2315`) y **eso no lo
+sostiene nada de lo escrito**. Parece glosa a posteriori. ISO 80601-2-61 no prescribe un rango:
+obliga al fabricante a declarar el suyo y verificar exactitud sobre él. **Pendiente:** verificar
+§201.12 y corregir o respaldar la afirmación de la spec.
+
+De paso: el **Anexo EE (p. 106–114)** de la ISO trata de simuladores y functional testers — lectura
+obligada antes de la campaña MS100.
+
+### Hallazgo: la resolución de HR2 se degrada como HR² y 260 bpm está en el borde
+
+El diezmado ×10 **no** causa aliasing (el BPF corta a 5 Hz, fs2/2 = 25 Hz). El problema es la
+resolución en BPM por cuanto de lag: `dHR/dlag = HR²/(60·fs2)`.
+
+| HR | lag | 1 lag equivale a |
+|---|---|---|
+| 40 bpm | 75 | ~0.5 bpm |
+| 60 bpm | 50 | ~1.2 bpm |
+| 260 bpm | 11.5 | **~22 bpm** |
+
+Y peor: `min_lag = 11`, pero el bucle de búsqueda excluye los extremos (`for i=1; i<n_lags-1`), así
+que el lag más pequeño examinado es **12 → 250 bpm**. Los 260 solo se alcanzan si la interpolación
+parabólica tira medio cuanto a la izquierda. **El tope declarado del rango no es alcanzable de
+forma robusta por HR2.**
+
+**Complementariedad HR2/HR3 (aprovechable para la poda):** la resolución de HR3 es uniforme en
+frecuencia (`bin_res` = 50/512 = 0.098 Hz ≈ 5.9 bpm por bin, igual a 40 que a 260 bpm). O sea, a HR
+alta HR3 es estructuralmente mejor y a HR baja al revés — argumento concreto para conservar un
+método de lag *y* uno de frecuencia, y predicción falsable por la campaña MS100.
+**MPM y YIN heredan la limitación entera** (es del dominio de lag). Lo único prometedor: la
+interpolación de YIN sobre `d'` se comporta mejor con pocas muestras por periodo — hipótesis
+concreta de dónde podría ganar.
+
+### ❌ CORRECCIÓN: la PRF NO es una palanca térmica
+
+Afirmé que bajar PRF reduce el calentamiento del LED. **Falso.** `_apply_timing_regs()` deriva las
+ventanas de encendido de `q = phase/4` — **un cuarto del periodo, sea cual sea el periodo**. El duty
+es 25 % a cualquier PRF por construcción, así que `P_media = I_F · V_F · 0.25` es invariante.
+Bajar PRF a la mitad duplica la duración de cada pulso: misma energía, misma temperatura de piel.
+
+**Palancas térmicas reales:** (1) `I_F`, la dominante, ya movida 20→50 mA; (2) el **duty**, que el
+AFE4490 sí permite programar (`LEDxLEDSTC`/`LEDxLEDENDC` son independientes de la ventana de
+muestreo) pero **la librería no expone** — y no es gratis, porque la ventana Rx debe caber dentro de
+la de encendido, así que recorta tiempo de integración.
+
+**Lo que sí compra bajar PRF es SNR, no térmica:** `numav_max = 5000/hz − 1`. A 500 Hz el techo son
+10 promediados (usamos 8); a ≤312 Hz se llega al tope de hardware de 16. ~1.26× en ruido, y satura
+ahí.
+
+### Análisis: ¿por qué la tasa de muestreo es configurable en runtime?
+
+Alcance real: 21 referencias a `_afe_sample_rate_hz`, `_recalc_rate_params()` llamado desde 10
+sitios, y **un único llamante de `setSampleRate()`**: `$SET sr` desde el script. Existe para el
+banco, no para el producto.
+
+**A favor:** es la razón de ser de PulseNest (barrer PRF sin reflashear); y obligó a expresar las
+constantes en segundos, no en muestras — `_recalc_rate_params()` re-deriva τ, warmups, refractario,
+MA y **los tres biquads**, y `EmaChannel::init()` recalcula α sin resetear estado.
+
+**En contra:** (1) la abstracción está a medias — `hr2/hr3_decim_factor`, `hr2/hr3_buf_len` y
+`_hr2/_hr3_update_interval` siguen fijos en muestras, así que cambiar PRF altera en silencio fs2, la
+ventana en segundos y la resolución; (2) `setSampleRate` acepta `[63, 5000]` validando solo el
+rango, no la física — más de un tercio de su rango declarado es zona rota (ALED invertidos > ~2500
+Hz, ventana de ambiente bajo el mínimo de TI > ~2000 Hz); (3) explosión combinatoria de validación;
+(4) acoplamientos ocultos (clampa `_afe_adc_averages`; `_hr1_ma_len` satura).
+
+**Conclusión: hoy tenemos lo peor de tres opciones coherentes.** (1) Terminar la abstracción —
+diezmado adaptativo fs2 ≈ 50 Hz, intervalos en segundos, rechazar fuera de lo validado.
+(2) Congelar en el producto — una PRF validada, setter tras modo servicio. (3) Dos ramas: configurable
+en banco, congelada en producto. Recomendación: **1 + 2**, y el punto 1 es el mismo trabajo que
+resolvería el residual de `hr2_acorr_lag_cap`.
+
+### Decisiones pendientes de Alex
+
+1. ¿Promover `hr_min_bpm` y la tasa nominal al header para derivar `hr2_acorr_lag_cap` por expresión?
+   (Obstáculo: hoy viven en el namespace anónimo del `.cpp`; promoverlos los mete en la superficie
+   pública. Alternativa recomendada: `namespace defaults {}`, que además elimina el modo de fallo de
+   escribir `hr_max_bpm` en vez de `_hr_max_bpm` — un guion bajo, cero ayuda del compilador.)
+2. Modelo de configurabilidad de la PRF (opciones 1/2/3 arriba).
+3. ¿Anotar el hallazgo de resolución de lag en la tarea de MPM/YIN?
+4. ¿Verificar §201.12 de la ISO para respaldar o corregir el rango de HR de la spec?
+
+### Higiene del entorno (`/doctor`)
+
+Instalación sana. Hallazgos: modo de permisos en `bypassPermissions` con 6 reglas de ejecución
+arbitraria en el allow-list; Claude Code 2.1.229 vs 2.1.259 (`autoUpdates: false`); 4 entradas
+duplicadas del mismo proyecto en `~/.claude.json` por variantes de mayúsculas en la ruta; hooks que
+se ejecutan sin clave `hooks` localizable en la cascada de configuración. **Nada aplicado.**
+Coste de contexto real medido con `/context`: MCP diferido **33.5k** (Gmail ~24k, Calendar ~9k),
+`MEMORY.md` **9.3k**, `CLAUDE.md` del proyecto 1.7k.
+
+---
+
+## Sesión 2026-09-04 — Antialiasing del AFE4490: resuelto (Fig. 54) y su corolario sobre la PRF
+
+### Punto de partida
+
+Alex pidió rehacer el análisis de alternativas de la frecuencia de muestreo y, tras verlo, ordenó
+**resolver primero el antialiasing**, que figuraba como prerrequisito abierto.
+
+### Hallazgo central: el corner que actúa no es 500 Hz
+
+La cadena Rx es TIA → cancelación de ambiente + Stage 2 → filtro LP (500/1000 Hz, `FLTRCNRSEL`) →
+sample-and-hold sobre CLEDx → ADC SAR de 22 bits (datasheet §8.3.1.1 / §8.3.1.3). El filtro **sí**
+precede al muestreador y es el **único** antialiasing de la cadena. Pero cada fase solo sigue la
+salida del filtro durante su ventana Rx y retiene el resto del PRP: ese duty-cycling estira τ por
+1/D, de modo que **`f_c,eff ≈ f_c,nominal × D`**.
+
+Es exactamente lo que documenta la **Figura 54 "Filter Response vs Duty Cycle" (p.26)** — la figura
+que Alex había anotado sin resolver: −3 dB a ≈ 80 Hz con duty 25 % y ≈ 16 Hz con duty 5 %. El ratio
+5:1 coincide con el ratio de duties, lo que confirma la proporcionalidad; el valor absoluto es
+~0,65× del ingenuo `500 × 0,25 = 125 Hz`. Segunda evidencia independiente en §7.5 (pass-band 2–10 Hz:
+0,004 dB @25 % vs 0,041 dB @10 %).
+
+A PRF 500 Hz, con ventana LED de 449,5 µs (D = 22,5 %) y ambiente de 399,5 µs (D = 20 %):
+`f_c,eff` ≈ 70–110 Hz frente a Nyquist 250 Hz → **margen 2,3–3,6×**. La premisa de la tarea ("el
+filtro está en 500 Hz, por encima de Nyquist") era falsa.
+
+### Respuestas
+
+1. No hay aliasing de señal (PPG < 20 Hz, atenuación < 0,1 dB).
+2. Ruido de banda ancha plegado: ~24 % de la potencia, pero tras el BP digital 0,5–5 Hz aporta
+   ≈ +15 % de densidad en banda (+0,6 dB potencia, +7 % RMS). Despreciable.
+3. **No subir `FLTRCNRSEL` a 1 kHz**: duplicaría `f_c,eff` hasta ~Nyquist. `kAFE_FLTRCNRSEL = 0`
+   confirmado. Su único beneficio sería el holdoff de diagnóstico (16 ms vs 28 ms).
+4. NUMAV no ayuda contra el aliasing: el ADC convierte el valor ya retenido en CLEDx.
+
+### Riesgo residual (único no medido)
+
+Interferencia determinista cerca de `k·500 Hz`: se pliega a la banda del pulso atenuada solo por un
+polo de 1er orden (−14 dB a 500 Hz). **La resta de ambiente no la cancela** — las fases LED y
+ambiente se muestrean a ¼ de periodo (500 µs = 90° a 500 Hz). Fuentes reales en incubadora: drivers
+PWM de fototerapia LED y calefactores conmutados. Pendiente de banco.
+
+### Corolario sobre la PRF: la ventana defendible es 500–2000 Hz
+
+`f_c,eff` **no escala con la PRF** → el margen antialiasing es `PRF/(2·f_c,eff)` y crece linealmente
+con la PRF. A 250 Hz Nyquist caería sobre `f_c,eff` (sin margen). Por tanto **500 Hz es el suelo**, y
+bajar la PRF para ganar promediado ADC (×1,26 como mucho, saturando a ≤312 Hz por NUMAV ≤ 15) es mal
+negocio. Con el techo ~2000 Hz que ya fijaban las ventanas de muestreo, el intervalo queda cerrado
+por ambos extremos: el guard de `setSampleRate()` debe acotar **por los dos lados**, no solo por
+arriba. 500 Hz pasa de valor heredado a mínimo justificado.
+
+### Cambios aplicados
+
+- `incunest_afe4490_spec.md`: **nueva §7.3 "Anti-aliasing — the effective Rx bandwidth is the
+  duty-cycled corner, not 500 Hz"** (análisis completo, tabla de márgenes, 6 consecuencias, el
+  pendiente de banco).
+- `incunest_afe4490_spec.md` §7.2: **corregida una afirmación errónea** — decía que, por preceder el
+  filtro al S&H, "no queda ruido fuera de banda que pueda aliasear". Falso: un polo de 1er orden deja
+  ruido que se pliega. La conclusión sobre CF no cambia.
+- **Sin cambio de código.**
+
+---
+
+## Sesión 2026-09-04 (cont.) — Elección de la PRF: rejilla de candidatas y la reserva térmica del duty
+
+### Encargo
+
+Alex pidió, antes de decidir el modelo de configurabilidad, un análisis de pros/contras y
+coste/beneficio de PRF superiores e inferiores, sugiriendo restringir a valores discretos
+(p. ej. múltiplos de 50).
+
+### La rejilla se cierra sola
+
+Tres condiciones aritméticas, todas verificables sin hardware: (1) **`q` entero** — si la PRF no
+divide 10⁶, la PRF real no es la pedida (550→550,1 · 750→750,2 · 1500→1501,5 Hz) y **todos los τ y α
+se calculan con la nominal**; (2) **múltiplo de 50** — la restricción que propuso Alex resulta ser la
+correcta, porque mantiene `fs2 = 50 Hz` exacto con decimación entera y deja HR2/HR3 intactos;
+(3) **ventanas ≥ 50 µs**, cuyo límite lo pone la ventana de AMBIENTE → techo real **~1660 Hz** (más
+bajo que los ~2000 Hz estimados antes, que no separaban ambas ventanas en el punto crítico).
+
+**Candidatas: 500, 800, 1000, 1250, 1600 Hz.**
+
+Subir la PRF compra margen contra el riesgo residual de la sesión anterior (`f_c,eff` no se mueve —
+73–112 Hz, duty 22,5 % constante — así que el interferente crítico a `f ≈ PRF` cae +6 dB por octava)
+y mejor rechazo de ambiente dinámico (−10,1 dB a 100 Hz @500 Hz vs −18,0 dB @1250 Hz). Cuesta CPU y
+transporte linealmente (×2 a 1000 Hz) y estrecha la ventana de ambiente.
+
+### Objeción de Alex y lo que destapa
+
+Alex objetó que **`5000/PRF` entero no es criterio relevante**, porque en el futuro puede hacer falta
+recortar la ventana de conversión y de encendido del LED para evitar sobrecalentamiento con
+corrientes altas. **Correcto en ambos frentes:**
+
+1. El criterio vale **0,18 dB** (`sqrt(20000/19200)` = 2 % de ruido) y depende de que la ventana de
+   conversión siga siendo el 25 % del PRP. Degradado a desempate de tercer orden; **800 y 1600 Hz
+   dejan de estar penalizados**. Lo que sí es estructural es el desplome por debajo de ~312 Hz
+   (cap `NUMAV ≤ 15`): 250 Hz → 16000 conv/s → +0,97 dB.
+2. Su escenario destapa un argumento nuevo y más fuerte: **la PRF acota la palanca térmica**. El
+   suelo del duty es fijo en tiempo (12,5 µs de settling LED+cable + 50 µs de ventana Rx mínima de
+   TI = 62,5 µs), así que el duty mínimo alcanzable escala con la PRF: 500 Hz → 3,1 % (reserva 8×) ·
+   1000 Hz → 6,3 % (4×) · 1600 Hz → 10,0 % (2,5×). Para 100 mA a igual temperatura haría falta duty
+   12,5 %: cómodo a 500 Hz, imposible a 1600 Hz. Esto **matiza** (no anula) la conclusión previa de
+   que "la PRF no es palanca térmica": lo es a duty fijo, pero la PRF determina cuánto se puede
+   recortar el duty.
+
+Recortar el duty es casi gratis en señal (`f_c,eff = 500 × D` → ~36–56 Hz a duty 12,5 %, aún muy por
+encima de la banda PPG y **mejorando** el margen antialiasing), pero **hay que recortar también la
+ventana de ambiente** aunque la térmica no lo exija, o las fases LED y AMB quedan con anchos de banda
+distintos y la resta deja residuo de ruido de alta frecuencia del canal ambiente.
+
+### Mito adicional verificado
+
+**El SNR del ADC no depende de la PRF:** conversiones/s = `4·num·PRF ≈ 20000`, constante. Lo que el
+hardware deja de promediar al subir la PRF lo promedia el filtrado digital. El "×1,26 por bajar la
+PRF" de análisis previos es ilusorio — y por debajo de 312 Hz bajar la PRF **pierde** capacidad de
+conversión.
+
+### Conclusión
+
+**Mantener 500 Hz**, ahora por dos razones independientes: menor coste de CPU y máxima reserva
+térmica (8×). **1000 Hz como escalón de reserva** si la campaña de banco encuentra interferencia
+plegada real. Todo por debajo de 500 Hz descartado (margen alias 1,1–1,7× a 250 Hz). Prerrequisito
+para cualquier subida: medir el timing real de `_process_sample()`, y hacer adaptativa la decimación
+de HR2/HR3 antes.
+
+**Implicación para el modelo de configurabilidad:** la API debería ser un **enum cerrado** de PRF
+validadas `{500, 800, 1000, 1250, 1600}`, no un `uint16_t` con rango. Resuelve de golpe el guard por
+los dos lados, la exactitud de `q`, la decimación adaptativa (tabla de 5 entradas) y el barrido de la
+campaña MS100 — abarata mucho la opción A.
+
+### Cambios aplicados
+
+- `incunest_afe4490_spec.md`: **nueva §7.4 "Choosing the PRF — the validated grid"** (rejilla,
+  tablas de márgenes y de reserva térmica, los dos no-criterios registrados para no re-derivarlos).
+- Memorias: nueva `project_prf_grid_selection_task`; adenda sobre el duty en
+  `project_led_current_increase_50ma_task`; enum en `project_sample_rate_configurability_task`.
+- **Sin cambio de código.**
+
+### Medición del timing de `_process_sample()` — BLOQUEADA por falta de hardware (2026-09-04)
+
+Alex pidió medir el timing real. **No se pudo:** la 16.A no está accesible por ninguna vía —
+sin puerto COM USB (solo los 10 puertos Bluetooth del portátil), sin la MAC `10:51:DB:50:48:F8` en
+la caché ARP, y con el Mobile Hotspot `192.168.137.x` (red de trabajo de la placa) caído; las IPs
+del PC eran `192.168.1.140` + APIPA. Tampoco había instancia de `pulsenest_lab.py` corriendo.
+
+**Además el WiFi no bastaría:** `_emit_timing()` usa `Serial.printf`, así que `$TIMING` sale
+**solo por serial**. Hace falta el cable USB, no la red.
+
+**Verificado de paso:** `_ts_cycle` (`incunest_afe4490.cpp:1862-1899`) mide exactamente lo que
+interesa — las 6 transacciones SPI + `_process_sample()` completo bajo `_state_mutex`, es decir todo
+lo que debe caber en `1/PRF`. `cycle_max` es la métrica que decide. `INCUNEST_TIMING_STATS=1` ya está
+activo en `platformio.ini:41` y el firmware emite cada 2500 muestras (5 s a 500 Hz), así que **no hay
+que recompilar ni flashear**: basta conectar el USB.
+
+**Preparado:** script de captura en el scratchpad de la sesión (`measure_timing.py`) — autodetecta el
+puerto descartando los Bluetooth, verifica el checksum XOR, tabula las 15 métricas de varias tramas y
+emite el veredicto contra la rejilla {500, 800, 1000, 1250, 1600} Hz. Umbral: `cycle_max` < 60 % del
+presupuesto = OK, < 90 % = ajustado, ≥ 90 % = no cabe.
+
+**Referencia de contraste:** última medida 2026-04-10 con la librería en v0.14 — `cycle_max = 640 µs`
+(32 % de los 2000 µs) y Task A al 19,5 % de CPU. Desde entonces se han añadido HGAC (6 EMAs), RSQM,
+el detector de estado de sonda, `ppg_disp` y el settling switched-RC. Pregunta a responder: si
+`cycle_max` se queda por debajo de ~600 µs, 1000 Hz es viable con margen.
+
+**Herramienta conservada:** `tools/measure_timing.py` (movido desde el scratchpad a petición de Alex).
+Autodetecta el puerto descartando los Bluetooth, verifica el checksum XOR, tabula las 15 métricas de
+varias tramas `$TIMING` y puntúa `cycle_max` contra el presupuesto de cada PRF de la rejilla de
+§7.4 (<60 % OK · <90 % ajustado · ≥90 % no cabe). Docstring con requisitos, la referencia de v0.14
+(640 µs) y el recordatorio de que `$TIMING` sale por serial, nunca por UDP. Sin commit.
