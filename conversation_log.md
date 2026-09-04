@@ -17844,3 +17844,144 @@ Autodetecta el puerto descartando los Bluetooth, verifica el checksum XOR, tabul
 varias tramas `$TIMING` y puntúa `cycle_max` contra el presupuesto de cada PRF de la rejilla de
 §7.4 (<60 % OK · <90 % ajustado · ≥90 % no cabe). Docstring con requisitos, la referencia de v0.14
 (640 µs) y el recordatorio de que `$TIMING` sale por serial, nunca por UDP. Sin commit.
+
+---
+
+## Sesión 2026-09-04 (cont.) — A+B fase 0: nomenclatura de las dos tasas de muestreo
+
+### Origen
+
+Alex aprobó A+B (enum cerrado de PRF validadas) y, antes de empezar, preguntó si
+`_afe_sample_rate_hz` y `fs2` deberían tener nomenclatura parecida.
+
+### Respuesta y corrección de Alex
+
+Sí: `fs2` no tenía dominio, ni unidad, y su `2` sugería "de HR2" cuando en realidad es la tasa
+decimada que comparten HR2 **y** HR3. Propuse `_hr_sample_rate_hz` y **Alex objetó con razón**: ese
+nombre implicaría que todo el dominio HR usa esa tasa, cuando **HR1 corre a la tasa completa**
+(verificado: `_hr1_ma_len`, `_hr1_refractory_samples` y `_hr1_dc_alpha` derivan de la del AFE).
+
+El error de mi propuesta fue nombrar la tasa **por el algoritmo que la consume**. Criterio corregido:
+nombrarla **por la etapa de la cadena de señal**, para que no envejezca cuando lleguen HR4/HR5.
+
+**Elección de Alex: `_decim_sample_rate_hz`** — simetría máxima con `_afe_sample_rate_hz` (misma
+magnitud, mismo sufijo, solo cambia el cualificador). Es una **excepción consciente** a la regla de
+prefijo de dominio, a cambio de que el par se lea como "antes/después de decimar".
+
+### Hallazgos de paso
+
+1. **HR3 ya llamaba `fs_dec`** a lo que HR2 llamaba `fs2`: dos nombres para el mismo valor en el
+   mismo fichero, cada uno recalculado por su lado.
+2. **`fs` significaba dos cosas distintas** en el mismo `.cpp`: *full scale* en mA (`:495`, `:1646`,
+   y `tia_axis::FS_V`) y *sample rate* en Hz (`_recalc_rate_params`). Ámbitos disjuntos, sin bug,
+   pero es la clase de ambigüedad que acaba produciendo uno.
+3. **`hr3_decim_factor` estaba declarado dos veces:** en el namespace anónimo del `.cpp` y como
+   miembro estático del `.h`. Dentro de la clase ganaba el del `.h`, así que el del `.cpp` era
+   código muerto **que parecía configurable** — trampa latente.
+
+### Cambios aplicados (sin cambio funcional)
+
+| Antes | Ahora |
+|---|---|
+| `fs2` / `fs_dec`, locales y duplicados | `_decim_sample_rate_hz`, miembro derivado en `_recalc_rate_params()` |
+| `hr2_decim_factor` + `hr3_decim_factor` (ambos 10) | `decim_factor` único (la invariante de 50 Hz los ata) |
+| `hr3_decim_factor` duplicado en el `.cpp` | eliminado |
+| `fs` (full scale, mA) | `full_scale_mA` |
+| `fs` (sample rate, Hz) — `_recalc_rate_params`, biquads, `EmaChannel::init` | `sample_rate_hz` |
+
+El identificador `fs` ya no existe como variable; solo permanece en comentarios de fórmulas
+(`α = 1 − exp(−1/(τ·fs))`), donde es notación matemática y no ambigua.
+
+### Verificación
+
+- **64/65 tests nativos pasan**, incluidos `test_hr2` (con el de 40 BPM) y `test_hr3`.
+- **`test_biquad` ERRORED, pero ya estaba roto antes:** invoca `test_biquad_process()` y
+  `test_recalc_biquad()`, que **no existen tampoco en HEAD** (verificado con `git cat-file`). Test
+  huérfano de un refactor previo — hallazgo, no regresión. Ver `project_unit_tests_task`.
+- **Firmware V16 compila** (flash 30,1 %).
+
+### Pendiente
+
+Spec (§5.3/§5.4: 9 menciones de `fs2` y las de `decim_factor`) — se hará junto a las fases 1-4 para
+no tocar dos veces las mismas secciones. Fases siguientes: enum `AFE4490SampleRate` + tabla de 5
+entradas, decimación adaptativa, `setSampleRate` por enum, spec y tests.
+
+---
+
+## Sesión 2026-09-04 (cont.) — v0.83: la tasa decimada pasa a ser el invariante
+
+### Propuesta de Alex
+
+Tras aprobar `_decim_factor`, Alex propuso **invertir la dependencia**: en vez de derivar la tasa
+decimada de un factor constante, derivar el factor de una tasa objetivo fija — *"si alguien cambia
+`_afe_sample_rate_hz` probablemente quiera mantener `_decim_sample_rate_hz` fijo, ya que algunos
+algoritmos HR son sensibles a ese valor"*. Correcto, y con más alcance del que planteaba.
+
+### Por qué es más que nomenclatura
+
+Cuatro constantes están calibradas contra los 50 Hz: `hr2_buf_len` (400 = 8 s), `hr3_buf_len`
+(512 = 10,24 s → 0,098 Hz/bin), los `hrX_update_interval` (25 = 0,5 s) y `hr2_acorr_lag_cap`
+(137 = 22 BPM). Con el factor fijo, cambiar la PRF **movía las cuatro a la vez y en silencio**.
+Con la tasa como invariante, ninguna se entera.
+
+**Consecuencia: la fase 2 del plan desaparece.** No hay que hacer adaptativos los intervalos ni las
+ventanas — se elimina la dependencia en vez de gestionarla.
+
+### Nomenclatura
+
+Alex propuso `_decim_sample_rate_factor`; argumenté `_decim_factor` — "sample rate factor" se lee
+como algo que *multiplica* la tasa cuando aquí *divide*, y *decimation factor* (la M de ↓M) es el
+término canónico en DSP. Aceptado.
+
+### Por qué 50 Hz — nunca se había justificado
+
+La spec documentaba el *qué* (factor 10 → 50 Hz) pero **en ningún sitio el porqué**: era herencia de
+dividir 500 entre un 10 redondo. Evaluado a posteriori resulta ser el único valor viable:
+
+1. **Es el mcd de la rejilla** {500, 800, 1000, 1250, 1600} — la tasa decimada más alta con factor
+   **entero** en toda PRF admisible (10, 16, 20, 25, 32). Las únicas alternativas son sus divisores.
+2. **Por debajo se hunde el antialiasing:** HR3 filtra paso-bajo a 15 Hz (2.º orden), así que a
+   25 Hz el Nyquist (12,5 Hz) cae **bajo el propio corte del filtro** → −1,7 dB, ninguna protección.
+3. **Por debajo las ventanas chocan con la fisiología:** 16 s (HR2) y 20,5 s (HR3) a 25 Hz, y una
+   bradicardia neonatal transitoria dura segundos — el HR cambia dentro de la ventana y emborrona
+   el pico.
+4. **Por encima los búferes fijos se acortan en tiempo:** a 125 Hz la ventana de HR2 son 3,2 s, solo
+   2,1 ciclos a 40 BPM, y el bin de HR3 se degrada a 0,24 Hz (14,6 BPM/bin).
+
+**Punto débil registrado:** −9,4 dB de atenuación antialias en Nyquist es flojo para un diezmado
+×10. Inocuo para el HR (apenas hay PPG sobre 25 Hz) pero el ruido plegado sube el suelo espectral y
+eso se paga en `hr3_sqi`. La palanca sería un LP de 4.º orden antes de diezmar, **no** otra tasa.
+
+### El test que no valía
+
+Escribí el test de invariancia con 60 BPM a 1000 Hz y **pasaba también con el código viejo** — inútil.
+El caso discriminante es **40 BPM a 1000 Hz**: con factor fijo la tasa decimada se iba a 100 Hz y el
+lag necesario (150) desbordaba `hr2_acorr_lag_cap` (137). Verificado revirtiendo temporalmente a
+factor fijo: **falla con `sqi = 0`**, el modo de fallo exacto (bradicardia real leída como "sin
+periodicidad"). Restaurado, pasa.
+
+### Cambios (lib v0.83)
+
+- `decim_target_rate_hz = 50.0f` (contrato) + `_decim_factor` derivado + `_decim_sample_rate_hz`
+  como tasa **realmente lograda** (no alias del objetivo, por si algún día entra una PRF no
+  múltiplo de 50).
+- **Spec §5.3.1 nueva** con todo el rationale, la tabla 25/40/50/100 Hz y el punto débil.
+  Actualizadas §5.3, §5.4, §7.4 y la tabla de parámetros; la "Known limitation at non-default
+  sample rates" pasa de limitación a comportamiento resuelto.
+- Nuevo `test_hr2_decimated_rate_invariant_to_sample_rate`.
+
+### Dos correcciones al paso
+
+- El comentario del `.h` decía que HR3 filtra a **10 Hz**; el default real es **15 Hz**
+  (`.cpp:351`). No es cosmético: ese 15 Hz es justo lo que hace inviable bajar a 25 Hz.
+- La cabecera del `.cpp` seguía en **v0.80** — el checklist de versionado se saltó en v0.81 y v0.82.
+  Ahora las cuatro cabeceras, el `#define`, la spec y `library.json` están en v0.83.
+
+### Verificación
+
+**65/66 tests** (el 66.º es `test_biquad`, roto de antes) y **firmware V16 compila**. Sin commit.
+
+### Siguiente
+
+Enum `AFE4490SampleRate`: ahora es puramente aditivo, porque la dependencia difícil (HR2/HR3 vs PRF)
+ya está resuelta y con test que la fija.

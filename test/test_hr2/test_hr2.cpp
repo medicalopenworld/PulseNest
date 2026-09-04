@@ -96,6 +96,26 @@ void test_hr2_40bpm_lower_bound() {
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 40.0f, afe.test_hr2());
 }
 
+// ── Test 3c: the decimated rate is invariant to the AFE sample rate ──────────
+// Pins the v0.83 inversion: _decim_factor is DERIVED from decim_target_rate_hz (50 Hz), so
+// raising the AFE rate changes the factor and leaves the decimated rate — and with it the
+// meaning of hr2_buf_len (8 s), the update interval (0.5 s) and hr2_acorr_lag_cap (22 BPM).
+//
+// 40 BPM at 1000 Hz is the case that DISCRIMINATES. With the old fixed factor of 10 the
+// decimated rate would have doubled to 100 Hz, so 40 BPM would need lag = 60/40*100 = 150,
+// beyond hr2_acorr_lag_cap (137): the sweep would stop short and real bradycardia would be
+// reported as "no periodicity" (sqi = 0). A 60 BPM check would NOT catch this — its lag
+// stays inside the cap either way. With the derived factor (20 at 1000 Hz) the decimated
+// rate stays at 50 Hz and the lag is 75, comfortably inside.
+void test_hr2_decimated_rate_invariant_to_sample_rate() {
+    INCUNEST_AFE4490 afe;
+    afe.setSampleRate(1000);
+    // Same ~10 s of signal as the 500 Hz tests, at twice the raw rate.
+    feed_hr2_sine(afe, 40.0f / 60.0f, 1000.0f, HR2_BUF_RAW * 2 + 2000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 40.0f, afe.test_hr2());
+}
+
 // ── Test 4: flat signal → hr2_valid false ────────────────────────────────────
 // A constant DC signal has zero AC energy after the bandpass filter.
 // The autocorrelation check (acorr0 < hr2_ot_energy_eps) must reject it.
@@ -159,6 +179,7 @@ int main() {
     RUN_TEST(test_hr2_60bpm);
     RUN_TEST(test_hr2_120bpm);
     RUN_TEST(test_hr2_40bpm_lower_bound);
+    RUN_TEST(test_hr2_decimated_rate_invariant_to_sample_rate);
     RUN_TEST(test_hr2_flat_signal_invalid);
     RUN_TEST(test_hr2_60bpm_noisy);
     RUN_TEST(test_hr2_120bpm_noisy);
