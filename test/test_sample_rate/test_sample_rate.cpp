@@ -111,6 +111,57 @@ void test_chains_hold_50hz_across_catalogue() {
     }
 }
 
+// A rate change must tear down everything accumulated at the previous rate. Recalculating
+// coefficients is not enough: biquad state, EMA state, the decimated buffers and the decimation
+// phase all belong to the old rate, and the chip's four sampling windows have just been
+// rewritten (which is why settling must be armed).
+void test_rate_change_tears_down_old_state() {
+    INCUNEST_AFE4490 afe;
+
+    // Fill HR2's and HR3's buffers at 500 Hz.
+    for (int i = 0; i < 6000; i++) {
+        float x = 1.4e-5f + 7.0e-6f * sinf(2.0f * (float)M_PI * 1.0f * i / 500.0f);
+        afe.test_feed_hr2(x, ProbeState::PROBE_APPLIED);
+        afe.test_feed_hr3(x, ProbeState::PROBE_APPLIED);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(afe.test_hr2_buf_count() > 0, "HR2 buffer should have filled");
+    TEST_ASSERT_TRUE_MESSAGE(afe.test_hr3_buf_count() > 0, "HR3 buffer should have filled");
+
+    afe.setSampleRate(AFE4490SampleRate::HZ_1000);
+
+    // Buffers emptied: an 8 s window must not mix samples decimated at two different rates.
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, afe.test_hr2_buf_count(),
+                                     "HR2 buffer must be emptied on a rate change");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, afe.test_hr3_buf_count(),
+                                     "HR3 buffer must be emptied on a rate change");
+    // Decimation phase restarted for the new factor.
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, afe.test_hr2_decim_phase(),
+                                     "decimation phase must restart");
+    // Settling armed: the four sampling windows were just rewritten (datasheet 7.7 t5).
+    TEST_ASSERT_TRUE_MESSAGE(afe.test_settling_countdown() > 0,
+                             "switched-RC settling must be armed on a rate change");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(afe.test_compute_switched_rc_settling_samples(),
+                                     afe.test_settling_countdown(),
+                                     "countdown must equal the computed settle length");
+}
+
+// Setting the same rate must not pay the teardown: it would drop a full analysis window and
+// re-arm settling for nothing.
+void test_same_rate_is_a_no_op() {
+    INCUNEST_AFE4490 afe;
+    for (int i = 0; i < 6000; i++) {
+        float x = 1.4e-5f + 7.0e-6f * sinf(2.0f * (float)M_PI * 1.0f * i / 500.0f);
+        afe.test_feed_hr2(x, ProbeState::PROBE_APPLIED);
+    }
+    const uint32_t before = afe.test_hr2_buf_count();
+    TEST_ASSERT_TRUE(before > 0);
+    afe.setSampleRate(AFE4490SampleRate::HZ_500);           // already 500 Hz
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(before, afe.test_hr2_buf_count(),
+                                     "a no-change call must not empty the buffer");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, afe.test_settling_countdown(),
+                                     "a no-change call must not arm settling");
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_catalogue_is_not_empty);
@@ -118,5 +169,7 @@ int main() {
     RUN_TEST(test_numeric_form_accepts_only_catalogue_values);
     RUN_TEST(test_rejected_rate_leaves_configuration_untouched);
     RUN_TEST(test_chains_hold_50hz_across_catalogue);
+    RUN_TEST(test_rate_change_tears_down_old_state);
+    RUN_TEST(test_same_rate_is_a_no_op);
     return UNITY_END();
 }
