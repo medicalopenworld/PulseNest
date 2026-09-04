@@ -116,6 +116,32 @@ void test_hr2_decimated_rate_invariant_to_sample_rate() {
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 40.0f, afe.test_hr2());
 }
 
+// ── Test 3d: the two decimation chains derive independently ─────────────────
+// The pulse chain (BP 0.5-5 Hz → HR2 and its future MPM/YIN variants) and the harmonic chain
+// (LP 15 Hz → HR3) share no filter, no buffer and no phase counter, so nothing forces them to
+// run at one rate. Each derives its factor from its OWN target (v0.84). Both targets are 50 Hz
+// today, so the factors match — this test pins that they are computed per chain and that both
+// track the AFE rate, which is what makes it safe to lower one of them later.
+void test_decim_chains_derive_independently() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_EQUAL_UINT16(10, afe.test_pulse_decim_factor());
+    TEST_ASSERT_EQUAL_UINT16(10, afe.test_harmonic_decim_factor());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_pulse_decim_rate_hz());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_harmonic_decim_rate_hz());
+
+    afe.setSampleRate(1000);
+    TEST_ASSERT_EQUAL_UINT16(20, afe.test_pulse_decim_factor());
+    TEST_ASSERT_EQUAL_UINT16(20, afe.test_harmonic_decim_factor());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_pulse_decim_rate_hz());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_harmonic_decim_rate_hz());
+
+    // A rate outside the validated grid must degrade honestly: the factor rounds and the
+    // achieved rate is reported as what it really is, never as the nominal target.
+    afe.setSampleRate(700);
+    TEST_ASSERT_EQUAL_UINT16(14, afe.test_pulse_decim_factor());
+    TEST_ASSERT_FLOAT_WITHIN(0.2f, 50.02f, afe.test_pulse_decim_rate_hz());
+}
+
 // ── Test 4: flat signal → hr2_valid false ────────────────────────────────────
 // A constant DC signal has zero AC energy after the bandpass filter.
 // The autocorrelation check (acorr0 < hr2_ot_energy_eps) must reject it.
@@ -180,6 +206,7 @@ int main() {
     RUN_TEST(test_hr2_120bpm);
     RUN_TEST(test_hr2_40bpm_lower_bound);
     RUN_TEST(test_hr2_decimated_rate_invariant_to_sample_rate);
+    RUN_TEST(test_decim_chains_derive_independently);
     RUN_TEST(test_hr2_flat_signal_invalid);
     RUN_TEST(test_hr2_60bpm_noisy);
     RUN_TEST(test_hr2_120bpm_noisy);
