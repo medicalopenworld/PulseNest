@@ -181,6 +181,101 @@ void test_hr1_ma_not_clamped_across_catalogue() {
     }
 }
 
+// Every parameter whose meaning is a DURATION must keep that duration across the whole catalogue.
+//
+// This is the net the rate-dependency audit was missing. Auditing by hand found two live defects
+// (HR1's running-max decay written as a bare 0.9999 per-sample literal, and ts_emit_interval fixed
+// at 2500 samples) and two latent ones (the HR2/HR3 recompute periods, immune to the AFE rate only
+// because the decimated rate is the invariant). A third would have to be found by hand again -
+// unless a test sweeps the catalogue and checks the seconds.
+//
+// The pattern to watch for: anything expressed in SAMPLES or as a PER-SAMPLE factor is a duration
+// in disguise, and silently changes meaning when the rate changes.
+//
+// TWO RULES this test had to learn the hard way (the first version passed with both defects
+// deliberately reintroduced):
+//   * OBSERVE THE EFFECT, not the coefficient. Reading a derived alpha cannot tell a derived
+//     parameter from a hardcoded literal the code uses instead of it - the coefficient stays
+//     correct and simply goes unused. Hence the decay is measured on _hr1_running_max itself.
+//   * EXERCISE THE SETTER with a non-default value. Checking only defaults cannot distinguish a
+//     derived parameter from a constant equal to that default.
+void test_time_parameters_hold_across_catalogue() {
+    INCUNEST_AFE4490 afe;
+    for (uint8_t i = 0; i < INCUNEST_AFE4490::sampleRateCount(); i++) {
+        const uint16_t hz = kAFE_SAMPLE_RATE_HZ[i];
+        const float fs = (float)hz;
+        afe.setSampleRate((AFE4490SampleRate)i);
+        char msg[128];
+
+        // --- Sample counts derived from the AFE rate: samples / fs must equal the seconds asked.
+        snprintf(msg, sizeof(msg), "%u Hz: SpO2 warmup drifted from 18 s", hz);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, 18.0f,
+            (float)afe.test_spo2_warmup_samples() / fs, msg);
+
+        snprintf(msg, sizeof(msg), "%u Hz: HR1 refractory drifted from 0.185 s", hz);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.005f, 0.185f,
+            (float)afe.test_hr1_refractory_samples() / fs, msg);
+
+        snprintf(msg, sizeof(msg), "%u Hz: RSQM probe debounce drifted", hz);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f, 0.2f,
+            (float)afe.test_rsqm_probe_min_samples() / fs, msg);
+
+        snprintf(msg, sizeof(msg), "%u Hz: HR1 DC tau drifted from 1.6 s", hz);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, 1.6f,
+            -1.0f / (logf(afe.test_hr1_dc_alpha()) * fs), msg);
+
+        // --- Recompute periods: exercised with 1.0 s, NOT the 0.5 s default, so a constant equal
+        // to the default cannot pass. They live in decimated samples, hence the chain rate.
+        afe.setHR2UpdateIntervalS(1.0f);
+        afe.setHR3UpdateIntervalS(1.0f);
+        snprintf(msg, sizeof(msg), "%u Hz: HR2 recompute period is not the 1.0 s requested", hz);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f, 1.0f,
+            (float)afe.test_hr2_update_interval() / afe.test_hr2_decim_rate_hz(), msg);
+        snprintf(msg, sizeof(msg), "%u Hz: HR3 recompute period is not the 1.0 s requested", hz);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f, 1.0f,
+            (float)afe.test_hr3_update_interval() / afe.test_hr3_decim_rate_hz(), msg);
+        afe.setHR2UpdateIntervalS(0.5f);
+        afe.setHR3UpdateIntervalS(0.5f);
+    }
+}
+
+// The running-max decay, measured on the running max itself rather than on its coefficient.
+//
+// Feed one large sample to charge the tracker, then silence for a fixed number of SECONDS, and
+// check what fraction survives. The decay is exponential with tau = 20 s, so after t seconds the
+// tracker must hold exp(-t/20) of the peak - the same fraction at every rate. The 0.9999
+// per-sample literal this replaces held exp(-t/20) at 500 Hz but exp(-t/6.25) at 1600 Hz.
+void test_hr1_running_max_decay_is_time_based() {
+    static const float T_S = 10.0f;                 // long enough to decay measurably
+    const float expected = expf(-T_S / 20.0f);      // hr1_max_decay_tau_s = 20 s
+
+    for (uint8_t i = 0; i < INCUNEST_AFE4490::sampleRateCount(); i++) {
+        const uint16_t hz = kAFE_SAMPLE_RATE_HZ[i];
+        INCUNEST_AFE4490 afe;
+        afe.setSampleRate((AFE4490SampleRate)i);
+
+        // _hr1_update() removes DC and NEGATES (peaks up for conventional PPG polarity), so the
+        // input has to go BELOW the DC estimate to produce a positive peak. And the moving average
+        // must fill before the peak reaches full amplitude, hence 2x its length.
+        const uint32_t charge = 2u * afe.test_hr1_ma_len();
+        for (uint32_t k = 0; k < charge; k++)
+            afe.test_feed_hr1(-1.0e-4f, ProbeState::PROBE_APPLIED);
+        const float peak = afe.test_hr1_running_max();
+        TEST_ASSERT_TRUE_MESSAGE(peak > 0.0f, "running max did not charge");
+
+        const uint32_t n = (uint32_t)(T_S * (float)hz);
+        for (uint32_t k = 0; k < n; k++)
+            afe.test_feed_hr1(0.0f, ProbeState::PROBE_APPLIED);
+
+        const float frac = afe.test_hr1_running_max() / peak;
+        char msg[136];
+        snprintf(msg, sizeof(msg),
+                 "%u Hz: after %.0f s the running max holds %.3f of the peak, expected %.3f "
+                 "(decay is per-sample, not per-second)", hz, T_S, frac, expected);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, expected, frac, msg);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_catalogue_is_not_empty);
@@ -191,5 +286,7 @@ int main() {
     RUN_TEST(test_rate_change_tears_down_old_state);
     RUN_TEST(test_same_rate_is_a_no_op);
     RUN_TEST(test_hr1_ma_not_clamped_across_catalogue);
+    RUN_TEST(test_time_parameters_hold_across_catalogue);
+    RUN_TEST(test_hr1_running_max_decay_is_time_based);
     return UNITY_END();
 }
