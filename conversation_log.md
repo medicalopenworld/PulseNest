@@ -18079,3 +18079,63 @@ HPS multiplica.
 Publicada como **v0.84b** (`b0c3fac`) — la política reserva el sufijo `b` para ajustes sin
 funcionalidad nueva. `library.json` va a `0.84.1`: ninguna `b` anterior lo tocó, y es la traducción
 semver correcta. **66/67 tests** y firmware V16 compila.
+
+---
+
+## Sesión 2026-09-04 (cont.) — v0.84c (snapshot) y v0.85 (enum de PRF): A+B completo
+
+### v0.84c — nombrar la instantánea por lo que es (`5e470ef`)
+
+Propuesta de Alex: `_hr2_seg` → `_hr2_snapshot` y `_hr2_linearize()` → `_hr2_take_snapshot()`.
+**Dato que la refuerza:** el propio código ya usaba la palabra — `incunest_afe4490.cpp` tenía una
+línea que decía *"the already-linearized `_hr2_seg` snapshot"*. El concepto correcto estaba en los
+comentarios; faltaba que el identificador lo dijera. Y `linearize` nombraba el **mecanismo**
+(recorrer un circular) en vez del **propósito**: la copia existe para que Task B vea una ventana
+coherente mientras Task A sigue escribiendo `_hr2_buf` — el aislamiento que protege
+`_hr2_computing`. El comentario del miembro solo mencionaba *"avoids stack pressure"*, la razón
+menos importante; ahora enumera las dos en orden real.
+
+A petición de Alex se renombró también el de HR3, pero **no** a `_hr3_take_snapshot`: hace más que
+copiar (instantánea + resta de media + Hann → `_hr3_fft`), así que quedó
+**`_hr3_prepare_fft_input()`**. Los nombres gemelos anteriores (`_hr2_linearize`/`_hr3_linearize`)
+sugerían equivalencia donde no la había; la asimetría nueva es honesta.
+
+### v0.85 — `AFE4490SampleRate` (`4f3cbc7` + `b576a00`)
+
+```cpp
+enum class AFE4490SampleRate : uint8_t { HZ_500, HZ_800, HZ_1000, HZ_1250, HZ_1600 };
+void setSampleRate(AFE4490SampleRate rate);   // forma primaria
+void setSampleRate(uint16_t hz);              // banco / $SET sr: solo valores del catálogo
+static constexpr uint8_t sampleRateCount();  static constexpr uint16_t sampleRateHz(...);
+static bool isValidSampleRateHz(uint16_t hz, AFE4490SampleRate* out = nullptr);
+```
+
+Alex pidió tenerlo en cuenta para tres escenarios, y los tres quedan cubiertos:
+
+- **Ampliar el catálogo:** una entrada en el enum + una en `kAFE_SAMPLE_RATE_HZ[]`.
+- **Pasar a rango** (si llega `FractionalDecimator`): la política vive en **un solo predicado**,
+  `isValidSampleRateHz()`. Solo desaparecería la condición `hz % 50`, la única que excluye una PRF
+  por lo demás válida: **625 Hz** (q exacto, 100 % de uso del ADC, ventanas correctas). **Ninguna
+  firma pública cambia** — por eso se conservó el overload numérico en lugar de borrarlo.
+- **Certificación:** el beneficio principal, y es el que se materializó en un test.
+
+**`test_sample_rate` (nuevo)** recorre el catálogo completo asertando por entrada: `q` exacto,
+factor de decimación entero, ambas ventanas ≥ 50 µs de TI, par de timer de ambiente **no
+invertido** y `NUMAV_max ≥ 1`. Más: solo pasan valores del catálogo (entre los rechazados, 3000 y
+5000 Hz —antes legales y dañinos—, 250 Hz por margen alias y 625 Hz por factor fraccionario), un
+rechazo **deja la configuración intacta** en vez de caer a un default, y ambas cadenas mantienen
+50 Hz en las cinco tasas. Es la tabla que un informe de validación tendría que presentar.
+
+**Defecto vivo que cierra:** `setSampleRate()` aceptaba 63–5000 Hz validando solo los límites
+numéricos; por encima de ~2487 Hz una llamada legal escribía **pares de timer invertidos**
+(`ALEDxSTC` > `ALEDxENDC`) en el chip, en silencio.
+
+**Efecto secundario resuelto:** `test_hr2` empezó a fallar porque su caso fuera de rejilla usaba
+700 Hz, que ahora se rechaza. El fallo era **correcto** (la API hace lo que debe), así que se
+retiró ese caso documentando que ya no es alcanzable por diseño. La rama de redondeo de
+`Decimator::configure()` se conserva como código defensivo y como gancho del futuro decimador.
+
+### Estado
+
+**A+B completo:** catálogo cerrado (A) + 500 Hz como valor declarado del producto (B), con el banco
+conservando el eje de caracterización. **71/72 tests** y firmware V16 compila.
