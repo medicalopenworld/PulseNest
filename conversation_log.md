@@ -18219,3 +18219,103 @@ siguen sin red.
 Spec → **v1.32**: §4.2 separa "arranque del firmware" (`$M3`) de "default de pulsenest_lab"
 (`$M4`) — conflación que era la raíz conceptual del bug; §6.3.1 puntos 6-7 (RF); §6.5.1 nueva
 (combo de frame mode como espejo).
+
+---
+
+## Sesión 2026-09-04 (cont.) — Auditoría de setSampleRate (v0.86/v0.86b) y por qué HR1 usa moving average
+
+### Pregunta de Alex: "¿hemos comprobado que todo se actualiza al cambiar el sample rate?"
+
+**No, y la auditoría encontró cinco huecos.** Ninguno lo introdujo el enum, pero el enum los
+agravaba: esas tasas ahora están **declaradas como validadas**.
+
+**Cuatro de sincronización (arreglados, v0.86 `12f64cb`):** `setSampleRate()` recalculaba constantes
+pero dejaba en juego (1) el estado de los biquads —`init_bp`/`init_lp` avisan explícitamente de que
+no resetean `_v1`/`_v2`—, (2) el estado de las EMAs (`init()` recalcula α pero conserva mean/var),
+(3) los búferes de HR2/HR3 con muestras decimadas a la tasa anterior, y (4) la fase de decimación a
+medio ciclo. Y **no armaba el settling de HW**, aunque un cambio de PRF reescribe las cuatro
+ventanas de muestreo vía `_apply_timing_regs()` — cambio de cadena de señal en el sentido del t₅.
+
+Dos decisiones que salieron al implementarlo:
+- **No-op si la tasa no cambia:** una llamada redundante tiraría 8 s de ventana y rearmaría settling.
+- **`_reset_algorithms()` desarma el settling** (su última línea pone el countdown a 0), así que
+  "armar antes de mutar" (v0.80) no valía aquí. Solución: sostener `_state_mutex` toda la mutación
+  → la secuencia es atómica frente a `_process_sample()` y se puede armar **después** del reset.
+  Eso obligó a **definir el orden de bloqueo del proyecto: `_spi_mutex` → `_state_mutex`**
+  (verificado que nadie anida hoy; `getConfig()` y `_task_body()` los toman secuencialmente).
+
+**El quinto (arreglado aparte, v0.86b `8856c55`):** `hr1_ma_max_len` = 64 cubría solo hasta 640 Hz,
+así que **cuatro de las cinco tasas del catálogo** corrían con el filtro de HR1 recortado (corte
+efectivo 6,2 / 7,8 / 9,8 / 12,5 Hz en vez de 5) **y en silencio**. Subido a 160 (peor caso del
+catálogo al corte por defecto): **+384 B medidos** (RAM 60.444 → 60.828 B), sin coste de CPU (la
+media es incremental) ni de latencia (el retardo se mantiene ~50 ms a cualquier PRF). Y `logE` al
+recortar, porque `setHR1MaCutoffHz()` es pública y sin validar: 2 Hz a 1600 Hz pediría 400 muestras.
+
+Ambos tests verificados por reversión: sin el teardown, el búfer de HR2 queda con 400 muestras en
+vez de 0; con el tope de vuelta en 64, HR1 usa 64 en vez de 80 a 800 Hz.
+
+### Corrección de nomenclatura pedida por Alex: "taps" → "samples"
+
+Alex preguntó por qué escribí "taps" en el `logE`. **Elección inconsistente por contaminación de
+contexto** (veníamos del FIR polyphase, donde sí es correcto): aquí no hay taps —es un acumulador
+circular, no una estructura FIR con coeficientes—, choca con `_hr1_ma_len`/`hr1_ma_max_len`, y el
+proyecto tiene regla explícita (`feedback_naming_adc_code_samples`: muestras = `samples`).
+Sustituido en las 11 apariciones de librería, spec y tests. Se mantiene en la memoria del resampler
+polyphase, donde sí hay coeficientes.
+
+### Por qué HR1 usa moving average — investigación del log (sospecha de Alex confirmada)
+
+Alex sospechaba herencia de hardware limitado. **Es herencia, pero por otro motivo, y está datado:**
+
+- **log:276-277** — el MA entra en la librería con esta justificación literal: *"Moving average: ring
+  buffer de 8 muestras (simple, no necesita f_low/f_high)"*. En el mismo bloque, el estado del
+  biquad: *"coeficientes hardcodeados (mismos que Protocentral)"* + *"TODO: cálculo dinámico de
+  coeficientes biquad a partir de sample_rate"*. **La premisa real: el biquad no sabía calcular sus
+  coeficientes**; solo servía a 500 Hz / 0,5–20 Hz. El MA era el único filtro que seguía a la tasa.
+- **log:745-755** — cuando HR1 recibió filtro propio, la decisión que se tomaba **no era "MA o
+  biquad"**: era desacoplar HR1 del filtro de visualización (cambiar `f_high` para ver la señal
+  alteraba el HR). El filtro que se le puso fue un MA, justificado por *"se adapta automáticamente
+  si cambia `_sample_rate_hz`"* — la única ventaja que el MA tenía entonces, y que era una
+  limitación temporal del biquad.
+- **log:430** — *"**(v0.6)** Coeficientes biquad dinámicos: `_recalc_biquad()` implementa la
+  transformada bilineal… `setFilter()` completamente funcional para cualquier fs/f_low/f_high"*.
+  **La premisa caducó en v0.6** y nadie revisó HR1 en las ~80 versiones siguientes.
+- **log:5644** — una revisión posterior inventarió los filtros y **anotó la asimetría sin actuar**:
+  HR1 con MA *"sin biquad"*, HR2 y HR3 con biquads Butterworth.
+
+Ni el log ni el código mencionan nunca los dos argumentos que **sí** justificarían un MA hoy (fase
+lineal, coste O(1)): son ventajas reales pero accidentales, no el motivo de la elección.
+
+### Experimento MA vs biquad — `tools/hr1_filter_experiment.py` (nuevo)
+
+Sobre capturas ya grabadas, sin tocar la librería. Ambos brazos comparten la resta de DC y el
+detector, así que la diferencia es atribuible al filtro. El biquad se implementa con **la misma
+álgebra que `BiquadFilter::init_lp()`**, así que es lo que se enviaría.
+
+**Dos correcciones de método durante el camino** (ambas cambiaron el resultado):
+1. El `running_max` arranca en 0 y tarda segundos en converger → añadido warmup de 5 s. (De paso
+   confirmó que la detección era correcta: 17 latidos en los 15 s analizados a 65,7 BPM cuadra.)
+2. **Comparar la SD de RR de cada brazo era comparar ruido con ruido:** una SD de 25–29 ms en dedo
+   adulto en reposo es **HRV fisiológica**, idéntica en ambos brazos, y tapa el efecto del filtro.
+   La medida correcta es **emparejar los latidos** (mismo evento cardiaco visto por dos filtros):
+   la media del desplazamiento es el retardo de grupo diferencial (sistemático, no toca el RR) y su
+   SD es el **jitter diferencial**, que es lo que llega al HR.
+
+**Resultados.** Señal limpia (4 capturas, 3 sujetos): retardo diferencial −0,9 a −2,4 ms y **jitter
+diferencial SD 1,0–3,7 ms**, con el mismo número de latidos en ambos brazos. A 60 BPM eso es
+**~0,2 BPM** de ruido, frente a 1,5 BPM de HRV real y a los ±3 BPM que exige la ISO: un orden de
+magnitud por debajo de lo relevante. **El argumento de la fase lineal no se sostiene cuantitativamente.**
+
+Con interferencia (fototerapia, verdad conocida = 60 BPM) el MA es **peor**: en
+`PHOTOTHERAPY_500HZ` el MA da **75,5 BPM (+26 %)** y el biquad **66,1 (+10 %)** — el biquad se
+equivoca menos de la mitad y detecta 3 latidos menos, que eran falsos. Coherente con la teoría: el
+primer lóbulo lateral del MA está a −13 dB y deja pasar interferencia que cruza el umbral.
+
+**Beneficio colateral no previsto:** un biquad no tiene longitud dependiente de la tasa, así que
+sustituir el MA eliminaría de raíz la saturación de `hr1_ma_max_len` y **devolvería 640 B**, en vez
+de los +384 B que acabamos de gastar.
+
+**Lo que NO concluye:** que se cambie producción. Las capturas son de adultos y simulador, **no de
+neonatos**, cuya muesca dicrótica es más marcada y más cercana al pico — justo la condición que
+decide si hay doble conteo. Y en fototerapia ambos brazos detectan mal (CV 12–33 %): ahí la
+comparación es de "menos malo".
