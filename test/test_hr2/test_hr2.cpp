@@ -135,11 +135,18 @@ void test_decim_chains_derive_independently() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_hr2_decim_rate_hz());
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_hr3_decim_rate_hz());
 
-    // A rate outside the validated grid must degrade honestly: the factor rounds and the
-    // achieved rate is reported as what it really is, never as the nominal target.
-    afe.setSampleRate(700);
-    TEST_ASSERT_EQUAL_UINT16(14, afe.test_hr2_decim_factor());
-    TEST_ASSERT_FLOAT_WITHIN(0.2f, 50.02f, afe.test_hr2_decim_rate_hz());
+    // Top of the catalogue, where the factors are largest.
+    afe.setSampleRate(AFE4490SampleRate::HZ_1600);
+    TEST_ASSERT_EQUAL_UINT16(32, afe.test_hr2_decim_factor());
+    TEST_ASSERT_EQUAL_UINT16(32, afe.test_hr3_decim_factor());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_hr2_decim_rate_hz());
+
+    // NOTE (v0.85): the off-grid case this test used to cover (700 Hz -> factor 14, achieved
+    // rate 50.02 Hz) is no longer reachable through the API — AFE4490SampleRate makes an
+    // unvalidated rate inexpressible, and the numeric form rejects it. The rounding branch in
+    // Decimator::configure() is kept deliberately: it is defensive, and it is what a future
+    // FractionalDecimator would build on. Rejection itself is covered by
+    // test_sample_rate::test_rejected_rate_leaves_configuration_untouched.
 }
 
 // ── Test 4: flat signal → hr2_valid false ────────────────────────────────────
