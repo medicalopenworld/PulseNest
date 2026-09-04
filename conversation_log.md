@@ -18654,3 +18654,83 @@ vez que alguien vea rationale en la spec sepa que es deliberado y no un descuido
 
 Rename de `hr1_ma_cutoff_hz` → `hr1_lp_cutoff_hz` (API pública) y elección del detector: TERMA
 directo o comparación offline TERMA/SSF/actual primero.
+
+---
+
+## Sesión 2026-09-04 (cont.) — v0.87: auditoría de dependencias de la tasa de muestreo
+
+### Origen
+
+Alex preguntó si era correcto que `setHR2UpdateInterval()` no estuviera en segundos, y añadió:
+*"me preocupa encontrar más dependencias del sampling rate del AFE sin resolver"*. La preocupación
+estaba justificada.
+
+### Respuesta a la pregunta: no era correcto
+
+Eran **los dos únicos setters de tiempo en muestras** de la API (los otros ocho usan la convención
+`…S(float s)` con conversión interna). Rompían la convención, filtraban un detalle interno —para
+pedir "cada medio segundo" hay que saber que la cadena corre a 50 Hz— y la spec documentaba en
+segundos lo que la API pedía en muestras. Inmunes a la PRF **solo por accidente**: porque en v0.83
+hicimos que la tasa decimada fuera el invariante.
+
+### La auditoría: dos defectos vivos + uno latente
+
+Cuatro frentes barridos (parámetros en muestras · coeficientes por muestra · namespace de defaults ·
+todo lo que toca `_afe_sample_rate_hz`). Tabla completa con fuentes en **rationale §6**.
+
+- **`_hr1_running_max *= 0.9999f`** — el grave. Literal **por muestra**: τ = 10.000 muestras, o sea
+  **20 s a 500 Hz pero 6,25 s a 1600 Hz**. El umbral de detección de HR1 se relajaba 3,2× más
+  rápido en las tasas altas → falsos positivos. Ahora `hr1_max_decay_tau_s = 20 s`, que reproduce
+  `0.9999` **exactamente** a 500 Hz (comportamiento idéntico en el punto declarado) + setter.
+- **`ts_emit_interval = 2500`** muestras — su propio comentario confesaba *"5 s at 500 Hz"*, o sea
+  1,56 s a 1600. Ahora derivado de `ts_emit_period_s`.
+- **`hr2/hr3_update_interval`** — latente, arreglado a segundos.
+- Verificados **correctos**: `_diag_holdoff_samples`, los 5 derivados de `_recalc_rate_params()`,
+  `_compute_switched_rc_settling_samples()`, los buf_len (inmunes por el invariante) y los
+  adimensionales (`hr1_sqi_cv_max`, `hr2_min_corr`, `hr_min/max_bpm`…).
+
+### Renames agrupados (los 3 que Alex pidió juntar)
+
+`hr1_ma_cutoff_hz` → `hr1_lp_cutoff_hz` (+ setter), y los dos update intervals a `…IntervalS(float)`.
+Todos *breaking*, **cero llamantes externos** (verificado en `src/`, tests y script). **El cambio
+MA→biquad NO va en v0.87**: sigue esperando la decisión del detector.
+
+### Lo importante es la red, no los arreglos (punto 5)
+
+Y ahí **mi primer test no valía**: pasaba con los dos defectos reintroducidos. Dos reglas, ambas
+registradas en rationale §6 porque son fáciles de repetir:
+
+1. **Observar el efecto, no el coeficiente.** Leer el `alpha` derivado no distingue un parámetro
+   derivado de un literal usado *en su lugar*: el coeficiente sigue correcto y simplemente no se
+   usa. El decaimiento se mide ahora sobre `_hr1_running_max` (cargar, esperar N segundos,
+   comprobar que sobrevive `exp(−t/τ)`).
+2. **Ejercitar el setter con un valor distinto del default.** Comprobar solo el default no
+   distingue un parámetro derivado de una constante igual a ese default: `_hr2_update_interval = 25`
+   pasa "25/50 Hz = 0,5 s" porque 25 *es* el default. El test pide 1,0 s.
+
+Verificado que discriminan: con los defectos puestos, el periodo lee 0,5 s en vez de 1,0 y el
+decaimiento retiene 0,449 en vez de 0,607 a 800 Hz. **El fallo salta en 800 Hz, nunca en 500** —
+`0.9999` es exacto a la tasa por defecto, que es por lo que sobrevivió tanto.
+
+Detalle de implementación del test: cargar el `running_max` exigió cuidado porque `_hr1_update()`
+quita el DC y **niega** (picos arriba), así que la entrada debe ir *por debajo* del DC estimado, y
+el MA debe llenarse primero (de ahí 2× su longitud).
+
+### Hueco de cobertura descubierto de la peor manera
+
+`_emit_tasks()` y la telemetría `$TIMING` viven tras `INCUNEST_TIMING_STATS` **y** fuera de
+`INCUNEST_OFFLINE`, así que `pio test -e native` **nunca los compila**. El rename de
+`ts_emit_interval` rompió el build del firmware mientras los 77 tests pasaban. Quien toque ese
+bloque necesita `pio run -e incunest_V16`.
+
+### Tres hallazgos en el script, anotados SIN tocarlo
+
+`pulsenest_lab.py` se está editando en otra sesión, así que no se modificó: (1) un tooltip cita
+`hr1_ma_cutoff_hz`, ya renombrado; (2) dice *"MA max len: Firmware default: 64"*, desactualizado
+desde v0.86b (ahora 160); (3) expone el decaimiento como **factor por muestra 0.9999**, que en
+v0.87 pasa a ser τ en segundos.
+
+### Verificación
+
+**76/77 tests** · firmware V16 compila · RAM 60.828 → 60.844 B (+16 B, los dos floats nuevos).
+Publicado: `18716d1` (lib) y `267c503` (PulseNest).
