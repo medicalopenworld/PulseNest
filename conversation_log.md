@@ -18989,7 +18989,7 @@ en el sentido que importa — hay exactamente un sitio donde corregir cada hecho
 solo lo que no está escrito en ninguna parte de la captura, así que no puede duplicar nada.
 
 El nombre del fichero queda degradado a etiqueta humana. **La prueba llegó al construir el índice:**
-las cuatro capturas `ALEX_CUESTA_57_RF100K/RF250k_20260823_*` llevan **todas** `TIA=250K` en la
+las cuatro capturas `SUBJ01_A57_RF100K/RF250k_20260823_*` llevan **todas** `TIA=250K` en la
 cabecera. Primera lectura (ERRÓNEA, corregida más abajo): "los nombres mienten".
 
 ### `tools/build_capture_index.py` (nuevo)
@@ -19237,3 +19237,56 @@ se va al techo**. Con HGAC congelado, una saturación no se corrige sola y conta
 entero. Procedimiento resultante: dejar la ganancia asentada en un punto válido y verificarlo en
 SIGNAL STATS ANTES de marcar la casilla y capturar. Una captura recortada no sirve ni para
 regresión, porque no contiene señal.
+
+---
+
+## Sesión 2026-09-05 (cont.) — Detectores de HR1, 2ª pasada: CONCLUYENTE (y contradice mi recomendación)
+
+### Qué cambió respecto a la 1ª pasada
+
+Dos defectos míos corregidos + una adición, y sobre todo **capturas nuevas de Alex**: 11 registros
+MS100 de 60 s cubriendo 40, 55, 60, 80, 100, 120, 140, 180, 220 y 250 BPM — el rango declarado
+completo, con verdad conocida.
+
+1. **TERMA con offset local** (media móvil de 3 s) en vez de la media global de toda la captura.
+2. **SSF con su propio umbral adaptativo** (nivel local × factor), en vez del `running_max` de
+   τ=20 s de HR1, que no forma parte del método de Zong.
+3. **SQI de HR1 incluido** (CV de 5 intervalos ≤ 0,15): era la mitad de la cadena que faltaba.
+
+### Resultado: los tres aciertan en TODO el rango
+
+| Verdad | current | SSF | TERMA |
+|---|---|---|---|
+| 40 BPM | +0,1 | 0,0 | 0,0 |
+| 55–220 | ≤ +0,1 | ≤ 0,1 | ≤ 0,1 |
+| 250 | −0,2 | **falla** | −0,2 |
+
+**No hay caso para cambiar el detector.** El actual acierta desde bradicardia de 40 hasta
+taquicardia de 250, error ≤ 0,2 BPM. **Esto contradice mi recomendación previa de TERMA**, que se
+apoyaba en su validación publicada (99,89 % sobre señales con estrés térmico) y no en datos propios.
+
+### Diferencias reales, menores
+
+- **SSF coloca los latidos con más precisión temporal**: CV 0,02–0,36 % frente a 0,11–0,98 % del
+  actual (5–10× menor). Importa para HRV, no para el HR publicado.
+- **SSF tiene techo a 250 BPM**: su ventana de 128 ms es comparable al periodo (240 ms) y la suma de
+  pendientes se satura. Límite del método con esos parámetros, y cae justo en el extremo del rango
+  declarado.
+- **TERMA no aporta nada** sobre el actual en ningún punto.
+
+### Donde sí queda problema: disponibilidad, no exactitud
+
+En fototerapia el SQI rescata a los tres (todos publican 60,0 BPM) pero conservando solo el
+**32–48 %** de los intervalos. El monitor acierta cuando habla, y calla la mitad del tiempo. Ese es
+el problema que merece trabajo, y **no se arregla cambiando el detector**.
+
+Sigue faltando lo único que puede cambiar esta conclusión: **morfología neonatal**, que ningún
+simulador reproduce y que es lo que pone a prueba el doble conteo.
+
+### Nota sobre las capturas
+
+Alex renombró el set con la convención (`SUBJ01_A57_…`, `MS100_98SPO2_100HR_…`) y creó
+`tools/capture_set.py`, que selecciona capturas desde el manifiesto en vez de listas fijas — lo que
+además **sacó nombres y edades de sujetos de un repositorio público**, que mis `DEFAULTS` llevaban
+dentro. El parser de verdad del experimento se adaptó para el formato `NNNHR` del MS100, porque
+`truth_hr_bpm` sigue vacío en `truth.csv` para esa serie.

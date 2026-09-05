@@ -237,17 +237,13 @@ def run(path):
         print(f"    -> biquad detects {abs(dbeats)} {'more' if dbeats > 0 else 'fewer'} beats")
 
 
-DEFAULTS = [
-    "captures/ALEX_CUESTA_57_RF100K_20260823_184201.csv",
-    "captures/ALEX_CUESTA_57_RF250k_20260823_184045.csv",
-    "captures/IKER_CUESTA_19_AL_REVES_20260823_180835.csv",
-    "captures/LEO_CUESTA_15_20260823_175947.csv",
-    "captures/PHOTOTHERAPY_ONOFF_60BPM_90SPO2_20260618_180045.csv",
-    "captures/PHOTOTHERAPY_500HZ_SIMUL_60BPM_96SPO2_20260624_083336.csv",
-]
+# Shared with hr1_detector_experiment.py through the capture manifest instead of being
+# duplicated here — and without subject names, which this list used to carry into a public
+# repository. See tools/capture_set.py.
+from capture_set import hr1_experiment_captures
 
 if __name__ == "__main__":
-    paths = sys.argv[1:] or [p for p in DEFAULTS if os.path.exists(p)]
+    paths = sys.argv[1:] or hr1_experiment_captures()
     if not paths:
         sys.exit("No captures found. Pass paths explicitly.")
     print(f"HR1 filter comparison — moving average vs 2nd-order Butterworth, cutoff "

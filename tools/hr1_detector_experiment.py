@@ -53,6 +53,16 @@ WARMUP_S = 5.0
 # 667/111 = 6.0 sits inside it. Tuned for adult PPG, which is what these captures are.
 TERMA_W1_S, TERMA_W2_S, TERMA_BETA = 0.111, 0.667, 0.02
 SSF_WINDOW_S = 0.128           # Zong's slope-sum window
+SSF_LEVEL_WINDOW_S = 3.0       # local level for SSF's own threshold (~3 beats at 60 BPM)
+SSF_THRESH_FACTOR  = 2.0       # threshold = factor x local SSF level
+TERMA_LEVEL_WINDOW_S = 3.0     # window for TERMA's offset mean (was the whole capture)
+
+# HR1's own quality gate, applied downstream of every detector below. The firmware reports a
+# steady 60.0 BPM where all three detectors show CV 12-33 %, which means the published HR is not
+# the raw detector output: hr1_sqi_cv_max discards stretches whose 5-interval CV is too high.
+# Comparing detectors without it measures half the chain.
+HR1_SQI_CV_MAX = 0.15
+HR1_SQI_N_INTERVALS = 5
 
 
 # ── shared preprocessing ─────────────────────────────────────────────────────
@@ -123,18 +133,45 @@ def detect_current(ppg, fs=FS_HZ):
 
 
 # ── detector 2: SSF (Zong) ───────────────────────────────────────────────────
-def detect_ssf(ppg, fs=FS_HZ):
-    """Slope sum: at each sample, the sum of positive slopes over the preceding window. Same
-    decision rule as CURRENT so the comparison isolates the enhancement, not the criterion."""
+def slope_sum(ppg, fs=FS_HZ):
+    """Sum of positive slopes over the preceding window: amplifies the systolic upstroke and
+    flattens everything else."""
     dy = np.diff(ppg, prepend=ppg[0])
     pos = np.maximum(dy, 0.0)
     w = max(1, int(SSF_WINDOW_S * fs))
     c = np.concatenate(([0.0], np.cumsum(pos)))
-    ssf = np.empty_like(ppg)
+    out = np.empty_like(ppg)
     for i in range(len(ppg)):
-        lo = max(0, i - w + 1)
-        ssf[i] = c[i + 1] - c[lo]
-    return detect_current(ssf, fs)
+        out[i] = c[i + 1] - c[max(0, i - w + 1)]
+    return out
+
+
+def detect_ssf(ppg, fs=FS_HZ):
+    """SSF with its OWN adaptive threshold.
+
+    First pass used HR1's running max (tau = 20 s) to isolate the enhancement. That was the wrong
+    call: with 20 s of memory a loud stretch leaves the threshold inflated for half a minute, and
+    on PHOTOTHERAPY_ONOFF - where the lamp switches and the amplitude steps - SSF stopped detecting
+    entirely. Zong's threshold is short-memory and tracks the local level, which is half of what
+    the method is; wrapping it in someone else's criterion measured the wrapper, not the method."""
+    ssf = slope_sum(ppg, fs)
+    # Local level: mean of SSF over a few beats, so the threshold follows amplitude steps.
+    level = moving_avg(ssf, SSF_LEVEL_WINDOW_S * fs)
+    thr = SSF_THRESH_FACTOR * level
+    cands, above = [], False
+    for i, v in enumerate(ssf):
+        if v > thr[i] and not above:
+            above = True
+            cands.append(i)
+        elif v <= thr[i]:
+            above = False
+    # The SSF peak sits on the upstroke; report the signal maximum just after it.
+    w = int(0.15 * fs)
+    peaks = []
+    for i in cands:
+        seg = ppg[i:min(len(ppg), i + w)]
+        peaks.append(i + int(np.argmax(seg)) if len(seg) else i)
+    return apply_refractory(peaks, fs)
 
 
 # ── detector 3: TERMA (Elgendi) ──────────────────────────────────────────────
@@ -145,7 +182,12 @@ def detect_terma(ppg, fs=FS_HZ):
     sq = clipped * clipped
     ma_peak = moving_avg(sq, TERMA_W1_S * fs)
     ma_beat = moving_avg(sq, TERMA_W2_S * fs)
-    thr = ma_beat + TERMA_BETA * float(np.mean(sq))   # offset threshold
+    # Offset from a LOCAL mean, not the mean of the whole capture. The first pass used a global
+    # mean; on PHOTOTHERAPY_ONOFF, where the lamp switches and the amplitude changes completely
+    # between stretches, no stretch resembles that global figure and the detector found 99 beats
+    # where ~89 fit. Elgendi computes the offset over the local window.
+    local_mean = moving_avg(sq, TERMA_LEVEL_WINDOW_S * fs)
+    thr = ma_beat + TERMA_BETA * local_mean
 
     w1 = int(TERMA_W1_S * fs)
     cands, start = [], None
@@ -165,6 +207,22 @@ def detect_terma(ppg, fs=FS_HZ):
         if len(seg):
             cands.append(start + int(np.argmax(seg)))
     return apply_refractory(cands, fs)
+
+
+# ── HR1's quality gate ───────────────────────────────────────────────────────
+def sqi_accepted(beats, fs=FS_HZ):
+    """Mirror of HR1's SQI: over a sliding window of 5 intervals, accept the rate only while the
+    coefficient of variation stays under hr1_sqi_cv_max. Returns the accepted intervals in ms."""
+    if len(beats) < HR1_SQI_N_INTERVALS + 1:
+        return np.array([])
+    rr = np.diff(beats) / fs * 1000.0
+    good = []
+    for i in range(HR1_SQI_N_INTERVALS - 1, len(rr)):
+        win = rr[i - HR1_SQI_N_INTERVALS + 1:i + 1]
+        m = float(np.mean(win))
+        if m > 0 and float(np.std(win, ddof=1)) / m <= HR1_SQI_CV_MAX:
+            good.append(rr[i])
+    return np.array(good)
 
 
 # ── metrics ──────────────────────────────────────────────────────────────────
@@ -213,8 +271,13 @@ def truth_bpm(path):
     """Simulator captures name their rate: ..._60BPM_... . Finger captures have no ground truth."""
     name = os.path.basename(path).upper()
     for tok in name.replace("-", "_").split("_"):
+        # Two conventions in the wild: the older PHOTOTHERAPY files say 60BPM, the MS100 series
+        # says 100HR. Neither is authoritative - CAPTURE_SET_SPEC 2.5 makes truth.csv the record -
+        # but truth_hr_bpm is still blank for the MS100 series, so the filename is what there is.
         if tok.endswith("BPM") and tok[:-3].isdigit():
             return float(tok[:-3])
+        if tok.endswith("HR") and tok[:-2].isdigit():
+            return float(tok[:-2])
     return None
 
 
@@ -227,29 +290,35 @@ def run(path):
     print(f"\n  {os.path.basename(path)}   ({len(sig)/FS_HZ:.0f} s"
           + (f", true rate {truth:.0f} BPM" if truth else "")
           + (f", firmware HR1 {fw:.1f} BPM" if fw else "") + ")")
-    print(f"    {'detector':<9} {'beats':>6} {'BPM':>7} {'err':>8} {'RR SD':>8} {'CV':>7} {'rej':>4}")
+    print(f"    {'detector':<9} {'beats':>6} {'BPM':>7} {'err':>8} {'RR SD':>8} {'CV':>7} {'rej':>4}"
+          f" | {'BPM_sqi':>7} {'err':>8} {'kept':>5}")
     for name, fn in (("current", detect_current), ("SSF", detect_ssf), ("TERMA", detect_terma)):
-        st = stats(fn(ppg))
+        beats = fn(ppg)
+        st = stats(beats)
         if not st:
             print(f"    {name:<9} {'--- too few beats ---':>40}")
             continue
         err = f"{st['bpm']-truth:+7.1f}" if truth else "      -"
+        # With HR1's SQI gate: what the firmware would actually publish.
+        good = sqi_accepted(beats)
+        if len(good) >= 2:
+            bpm_q = 60000.0 / float(np.mean(good))
+            err_q = f"{bpm_q-truth:+7.1f}" if truth else "      -"
+            frac = 100.0 * len(good) / max(1, len(beats) - 1)
+        else:
+            bpm_q, err_q, frac = float('nan'), "      -", 0.0
         print(f"    {name:<9} {st['n']:>6} {st['bpm']:>7.1f} {err:>8} "
-              f"{st['sd']:>7.1f}ms {st['cv']:>6.2f}% {st['rejected']:>4}")
+              f"{st['sd']:>7.1f}ms {st['cv']:>6.2f}% {st['rejected']:>4} "
+              f"| {bpm_q:>7.1f} {err_q:>8} {frac:>5.0f}%")
 
 
-DEFAULTS = [
-    "captures/PHOTOTHERAPY_500HZ_SIMUL_60BPM_96SPO2_20260624_083336.csv",
-    "captures/PHOTOTHERAPY_ONOFF_60BPM_90SPO2_20260618_180045.csv",
-    "captures/PHOTOTHERAPY_400HZ_SIMUL_60BPM_96SPO2_20260624_083632.csv",
-    "captures/ALEX_CUESTA_57_RF100K_20260823_184201.csv",
-    "captures/ALEX_CUESTA_57_RF250k_20260823_184045.csv",
-    "captures/IKER_CUESTA_19_AL_REVES_20260823_180835.csv",
-    "captures/LEO_CUESTA_15_20260823_175947.csv",
-]
+# The default working set comes from the capture manifest, not from a list of paths written
+# here: the same list used to be duplicated in hr1_filter_experiment.py, and it carried
+# subject names and ages into a public repository. See tools/capture_set.py.
+from capture_set import hr1_experiment_captures
 
 if __name__ == "__main__":
-    paths = sys.argv[1:] or [p for p in DEFAULTS if os.path.exists(p)]
+    paths = sys.argv[1:] or hr1_experiment_captures()
     if not paths:
         sys.exit("No captures found.")
     print("HR1 detector comparison — current threshold vs SSF (Zong) vs TERMA (Elgendi)")
