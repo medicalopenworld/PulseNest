@@ -12,6 +12,29 @@ is missing. The 108 CSVs currently in `captures/` were recorded ad hoc and only 
 
 ---
 
+## 0. One term this document leans on: **double-counting**
+
+Counting two beats where there is one. A cardiac pulse is not a single bump: it has a **systolic
+peak**, and on the way down a **dicrotic notch** (the aortic valve closing) followed by a smaller
+diastolic wave. When the detector is too permissive — filter too wide, threshold too low,
+refractory too short — that secondary wave also crosses the threshold and is counted as a beat, so
+the reported rate doubles: a neonate at 70 BPM reads 140.
+
+Why it is the failure mode this whole set is built around:
+
+* **It can mask bradycardia**, the event that most needs detecting in a neonate. A real 60 BPM
+  bradycardia counted twice shows as a comfortable 120 BPM and no alarm fires.
+* **The refractory protects unevenly.** HR1's 0.185 s covers up to 263 BPM, but the notch arrives
+  at a roughly fixed delay after the systolic peak (~150–250 ms): the slower the rhythm, the more
+  easily it falls *outside* the refractory. The guard is weakest exactly in bradycardia.
+* **Neonatal morphology makes it worse** — the notch is sharper and closer to the peak than in an
+  adult — and every measurement so far has been on adults and a simulator. Hence §3.1.
+
+The opposite failure, missing beats, matters too (it fakes a bradycardia), but it is easier to spot:
+it shows up as intervals outside the accepted range, while a doubled rate looks perfectly plausible.
+
+---
+
 ## 1. Why this exists — what the 2026-09-04/05 experiments could not answer
 
 Every requirement below comes from a limit hit while comparing filters and detectors offline:
