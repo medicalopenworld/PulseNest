@@ -18894,3 +18894,29 @@ simulador → **capturas primero, sensibilidad después**. Encadena con `CAPTURE
 Llegó un aviso del Stop con el árbol limpio y el log ya commiteado. Ejecutado a mano, el hook
 devuelve `exit 0` y el estado del repo no justifica el aviso: lo más probable es que
 correspondiera a un `Stop` anterior al arreglo (corre con `asyncRewake`). No se tocó nada.
+
+---
+
+## Sesión 2026-09-05 (cont.) — v0.88: los dos literales enterrados pasan a ser parámetros
+
+Alex pidió candidatos de nombres y eligió `hr1_threshold_fraction` y `hr_guard_band_bpm`.
+
+**`0.6f` → `hr1_threshold_fraction`** — configurable (`setHR1ThresholdFraction()`) y expuesto en
+`AFE4490Config`. Es el valor que más determina si un latido se cuenta y no tenía nombre, no estaba
+en la config ni en la spec, y no se podía barrer sin recompilar: bloqueaba justo el estudio de
+sensibilidad que más necesita. El setter rechaza fuera de (0, 1] — en 0 cruza todo y por encima de 1
+no cruza nada, así que ambos extremos **silencian** HR1 en vez de degradarlo.
+Nombre elegido por coherencia con `tia_settle_fraction`, que ya existía para el mismo concepto.
+
+**`3.0f` → `hr_guard_band_bpm`** — una constante sustituye el mismo literal en **4 sitios** (barrido
+de lags de HR2 y de bins de HR3). Se queda como constante interna: nada sugiere que un llamante deba
+ajustarlo. Nombre elegido porque "guard band" ya era el término en comentarios y spec.
+
+**Corrección de un dato mío:** el tercer "literal enterrado" que reporté, `ambdac_val * 0.2f`, es
+**solo un comentario** —la fórmula de reconstrucción de `v_tia`— y está derivado en la línea
+siguiente (`0.2 V/step = 2 × Ri × 1 µA`). No hay código con ese literal y no procede acción alguna.
+No debería haber entrado en la misma lista que los otros dos, que sí estaban en expresiones
+ejecutables.
+
+Sin cambio de comportamiento (ambos conservan su valor). **76/77 tests** · firmware V16 compila ·
+RAM 60.844 → 60.852 B (+8 B, el float nuevo).
