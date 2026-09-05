@@ -9806,6 +9806,17 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self.main_monitor = main_monitor
         self.setWindowTitle("Lab Capture")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 28px;")
+
+        # Deferred-start state (see _begin_capture). Set before _setup_ui() so a signal that
+        # fires during construction cannot find them missing.
+        self._pending_capture  = None   # capture args waiting for the $CFG reply
+        self._pending_stop     = False  # a stop is waiting for the closing $CFG reply
+        self._capture_open_cfg = None   # config read when the capture started, to compare at the end
+        self._hgac_restore_to  = None   # hgac_enable value to put back on stop, None = leave alone
+        self._cfg_timeout = QtCore.QTimer(self)
+        self._cfg_timeout.setSingleShot(True)
+        self._cfg_timeout.timeout.connect(self._on_cfg_timeout)
+
         self._setup_ui()
         self._load_settings()
         self.main_monitor._cfg_listener = self._on_cfg_received
@@ -9821,6 +9832,18 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         _GRP = ("QGroupBox { color: #FFAA44; font-weight: bold; font-size: 28px; "
                 "border: 1px solid #555; margin-top: 8px; } "
                 "QGroupBox::title { subcontrol-origin: margin; left: 8px; }")
+
+        # Capture-option checkboxes. Amber rather than the green of the column checkboxes:
+        # these change what the hardware does during the capture, the column ones only pick
+        # which fields are written.
+        _CHK_OPT = (
+            "QCheckBox { font-size:26px; color:#997744; background:#2A1E0E; "
+            "border:1px solid #5A4A2A; border-radius:3px; padding:3px 10px; }"
+            "QCheckBox::indicator { width:20px; height:20px; border:2px solid #7A6A3A; "
+            "background:#2A1E0E; border-radius:2px; }"
+            "QCheckBox::indicator:checked { background:#5A4A1A; border-color:#EECC55; "
+            "image: url(check_white.svg); }"
+            "QCheckBox:checked { color:#FFFFFF; background:#6A5A2A; border-color:#CCAA44; }")
 
         # ── Output ─────────────────────────────────────────────────────────
         grp_out = QtWidgets.QGroupBox("Output")
@@ -9906,6 +9929,47 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         row_cont.addWidget(self._btn_stop)
         vbox_cap.addLayout(row_cont)
 
+        # ── Capture options ────────────────────────────────────────────────
+        # Both options exist because a capture is only usable later if what produced it is
+        # recorded automatically. See captures/CAPTURE_SET_SPEC.md §2.3.
+        row_opts = QtWidgets.QVBoxLayout()
+
+        self._chk_auto_cfg = _FullClickCheckBox("Read chip config automatically")
+        self._chk_auto_cfg.setStyleSheet(_CHK_OPT)
+        self._chk_auto_cfg.setToolTip(_make_tooltip(
+            "Read chip config automatically",
+            "Sends $CFG? immediately BEFORE the capture starts and writes the reply into the "
+            "file header, then sends it again when the capture stops and writes the reply as a "
+            "post-note.\n\n"
+            "Why: pressing 'Read chip config' by hand pastes a snapshot that then goes stale — "
+            "change RF or ILED without pressing it again and the header confidently states the "
+            "previous configuration. Verified case: four captures on 2026-08-23 all carry "
+            "TIA=250K in their header while the signal amplitude proves two were taken at 100K.\n\n"
+            "Reading it again at the end catches a configuration that changed DURING the capture "
+            "(HGAC moving RF, or a manual $SET). If both readings differ, the file says so.\n\n"
+            "The capture is aborted if the reply does not arrive: for a verification set, no "
+            "capture is better than a capture of unknown provenance.",
+            src="LabCaptureWindow._chk_auto_cfg"))
+        row_opts.addWidget(self._chk_auto_cfg)
+
+        self._chk_disable_hgac = _FullClickCheckBox("Disable HGAC during capture")
+        self._chk_disable_hgac.setStyleSheet(_CHK_OPT)
+        self._chk_disable_hgac.setToolTip(_make_tooltip(
+            "Disable HGAC during capture",
+            "Sends $SET,hgac_enable,0 before starting and restores the previous value on stop.\n\n"
+            "Why: HGAC changes RF mid-capture, which injects gain-change transients into the "
+            "signal — and PI/R carry a known bias after an RF change while the EMAs settle. For "
+            "characterisation captures the analog chain must stay frozen, otherwise it is "
+            "impossible to tell the algorithm's behaviour from its reaction to a gain change.\n\n"
+            "Leave it OFF for the RF-sweep captures of spec §3.5 H1, where observing the HGAC "
+            "transient IS the purpose.\n\n"
+            "The forced state is recorded in the header, so a capture without HGAC is never "
+            "confused with one where HGAC simply did not act.",
+            src="LabCaptureWindow._chk_disable_hgac"))
+        row_opts.addWidget(self._chk_disable_hgac)
+
+        vbox_cap.addLayout(row_opts)
+
         # Progress + status
         self._progress = QtWidgets.QProgressBar()
         self._progress.setValue(0)
@@ -9983,6 +10047,49 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
                 cb.stateChanged.connect(self._save_settings)
             self._checks[label] = cb
             grid_cols.addWidget(cb, i // 8, i % 8)
+
+        # ── Column profiles ────────────────────────────────────────────────
+        # Two presets instead of ticking 30 boxes by hand. The split is by whether a column
+        # can be recovered later: raw channels and the per-sample config cannot, everything
+        # else is recomputable offline from them. Measured on a real capture, the algorithm
+        # outputs alone are 45 % of the file size and they expire with every algorithm change.
+        row_prof = QtWidgets.QHBoxLayout()
+        lbl_prof = QtWidgets.QLabel("Profile:")
+        lbl_prof.setStyleSheet("font-size:26px; color:#AAAAAA;")
+        row_prof.addWidget(lbl_prof)
+
+        btn_data = QtWidgets.QPushButton("Data (raw only)")
+        btn_data.setStyleSheet("font-size:24px; padding:4px 14px; background:#2A3D5A; color:#AACCFF;")
+        btn_data.clicked.connect(lambda: self._apply_col_profile("data"))
+        btn_data.setToolTip(_make_tooltip(
+            "Data profile",
+            "Keeps only what cannot be reconstructed later: sample indices, the four raw "
+            "channels (LED1/LED2/ALED1/ALED2), the per-sample RF1_OHM/RF2_OHM, and LED1_SUB/"
+            "LED2_SUB (derivable, but mandatory columns and the offline runner's input).\n\n"
+            "Everything else — PPG, SpO2, R, PI, HR1/HR2/HR3, SQIs, V_TIA, I_PD, OT — is "
+            "recomputable offline from those, so storing it duplicates data that will be stale "
+            "as soon as the algorithms change.\n\n"
+            "10 columns of 35, about 36 % of the current file size: ~2.7 MB per 90 s instead of "
+            "~7.5 MB. Use this for the bulk of the capture set.",
+            src="LabCaptureWindow._apply_col_profile"))
+        row_prof.addWidget(btn_data)
+
+        btn_witness = QtWidgets.QPushButton("Witness (everything)")
+        btn_witness.setStyleSheet("font-size:24px; padding:4px 14px; background:#3D2A5A; color:#CCAAFF;")
+        btn_witness.clicked.connect(lambda: self._apply_col_profile("witness"))
+        btn_witness.setToolTip(_make_tooltip(
+            "Witness profile",
+            "Every column, including the firmware's own algorithm outputs.\n\n"
+            "Its purpose is not the data but the CROSS-CHECK: it is the only way to verify that "
+            "the offline runner reproduces what the firmware actually computed. Without at least "
+            "one such capture per session, algorithms get developed against a chain nobody has "
+            "confirmed matches the board.\n\n"
+            "One per session is enough. ~7.5 MB per 90 s.",
+            src="LabCaptureWindow._apply_col_profile"))
+        row_prof.addWidget(btn_witness)
+        row_prof.addStretch()
+        grid_cols.addLayout(row_prof, (len(self._COLS) // 8) + 1, 0, 1, 8)
+
         outer.addWidget(grp_cols)
 
         # ── Post-capture notes ─────────────────────────────────────────────
@@ -10022,6 +10129,14 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             s.value("LabCaptureWindow/filename_prefix", "lab_capture", type=str))
         self._spin_samples.setValue(
             s.value("LabCaptureWindow/spin_samples", 5000, type=int))
+        # Default ON: a capture with an automatically recorded configuration is the only kind
+        # that is useful later. Opting out is deliberate, not the default.
+        self._chk_auto_cfg.setChecked(
+            s.value("LabCaptureWindow/auto_read_cfg", True, type=bool))
+        # Default OFF: freezing HGAC is right for characterisation but wrong for the RF-sweep
+        # captures, so it stays an explicit choice.
+        self._chk_disable_hgac.setChecked(
+            s.value("LabCaptureWindow/disable_hgac", False, type=bool))
         for label, _, _, mandatory in self._COLS:
             if not mandatory:
                 key = f"LabCaptureWindow/check_{label.replace(' ', '_')}"
@@ -10035,10 +10150,41 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         s.setValue("LabCaptureWindow/output_dir",      self._edit_dir.text())
         s.setValue("LabCaptureWindow/filename_prefix", self._edit_prefix.text())
         s.setValue("LabCaptureWindow/spin_samples",    self._spin_samples.value())
+        s.setValue("LabCaptureWindow/auto_read_cfg",   self._chk_auto_cfg.isChecked())
+        s.setValue("LabCaptureWindow/disable_hgac",    self._chk_disable_hgac.isChecked())
         for label, _, _, mandatory in self._COLS:
             if not mandatory:
                 key = f"LabCaptureWindow/check_{label.replace(' ', '_')}"
                 s.setValue(key, self._checks[label].isChecked())
+
+    # ── Column profiles ───────────────────────────────────────────────────────
+    # Columns that cannot be reconstructed from anything else in the file. Everything not
+    # listed here is derivable offline: V_TIA/I_PD/OT come from the raw channels plus the
+    # configuration, and every FW_* algorithm output is what the offline runner recomputes.
+    # See captures/CAPTURE_SET_SPEC.md §2 and the size table there.
+    #
+    # LED1_SUB/LED2_SUB are derivable too (LED1 - ALED1) but are flagged mandatory in _COLS,
+    # so they ride along regardless — they are the channel the offline runner consumes, and
+    # unticking them would break it. That puts the profile at 10 columns of 35, ~36 % of the
+    # file size, rather than the 28 % the raw channels alone would cost.
+    _PROFILE_DATA_COLS = {
+        "SmpCnt", "Ts_us",                       # indices — no way back without them
+        "LED2 (RED)", "LED1 (IR)", "ALED2", "ALED1",   # the raw material
+        "RF1_OHM", "RF2_OHM",                    # the only automatic record of the analog config
+    }
+
+    def _apply_col_profile(self, profile: str):
+        """Tick the checkboxes for a named profile. Mandatory columns are always on anyway."""
+        for label, _, _, mandatory in self._COLS:
+            if mandatory:
+                continue
+            self._checks[label].setChecked(
+                True if profile == "witness" else label in self._PROFILE_DATA_COLS)
+        self._save_settings()
+        n = sum(1 for lbl in self._checks if self._checks[lbl].isChecked())
+        self._lbl_status.setText(f"Profile '{profile}' applied — {n} columns")
+        self._lbl_status.setStyleSheet(
+            "QLabel { font-size:28px; color:#AACCFF; font-weight:bold; }")
 
     # ── Chip config readback ──────────────────────────────────────────────────
     def _on_read_cfg(self):
@@ -10046,8 +10192,34 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             self._lbl_status.setText("Not connected — cannot read chip config")
 
     def _on_cfg_received(self, text):
+        """$CFG reply. Three possible destinations depending on what asked for it."""
+        # 1. Automatic pre-capture read: the reply IS the header, so start the capture now.
+        if self._pending_capture is not None:
+            self._cfg_timeout.stop()
+            pending, self._pending_capture = self._pending_capture, None
+            self._start_capture_now(pending, cfg_text=text)
+            return
+        # 2. Automatic post-capture read: compare against the opening one and close the file.
+        if self._pending_stop:
+            self._cfg_timeout.stop()
+            self._pending_stop = False
+            same = (self._capture_open_cfg is not None
+                    and self._strip_timestamp(text) == self._strip_timestamp(self._capture_open_cfg))
+            note = ("Chip config at capture END — identical to the opening one"
+                    if same else
+                    "Chip config at capture END — DIFFERS from the opening one; "
+                    "the configuration changed during the capture")
+            self._finish_stop(note + "\n" + text)
+            return
+        # 3. Manual button press: append to the notes field, as before.
         existing = self._pre_notes.toPlainText().strip()
         self._pre_notes.setPlainText((existing + "\n\n" + text if existing else text).strip())
+
+    @staticmethod
+    def _strip_timestamp(cfg_text: str) -> str:
+        """Config text minus its first line (which carries the read timestamp), so two reads of
+        an unchanged chip compare equal."""
+        return "\n".join(cfg_text.splitlines()[1:]).strip()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _browse_dir(self):
@@ -10080,32 +10252,126 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._edit_dir.setEnabled(not is_capturing)
         self._edit_prefix.setEnabled(not is_capturing)
         self._spin_samples.setEnabled(not is_capturing)
+        # Locked mid-capture: both describe what the hardware was doing while the file was
+        # being written, so toggling them would make the header a lie.
+        self._chk_auto_cfg.setEnabled(not is_capturing)
+        self._chk_disable_hgac.setEnabled(not is_capturing)
 
     # ── Capture triggers ──────────────────────────────────────────────────────
+    # Starting a capture is a small state machine because reading the chip config is
+    # asynchronous ($CFG? goes out, the reply arrives on the data stream some milliseconds
+    # later). The sequence is: freeze HGAC if asked -> request config -> on reply, open the
+    # file with that config as the header. If the reply never comes the capture is ABORTED,
+    # not started without provenance: for a verification set, no capture beats an
+    # unattributable one.
+    _CFG_TIMEOUT_MS = 2500
+
     def _on_capture_timed(self):
-        if self.main_monitor is None:
-            return
-        self.main_monitor.start_lab_capture(
-            target=self._spin_samples.value(),
-            col_spec=self._active_col_spec(),
-            filepath=self._make_filepath(),
-            pre_notes=self._pre_notes.toPlainText(),
-        )
+        self._begin_capture(target=self._spin_samples.value())
 
     def _on_capture_cont(self):
+        self._begin_capture(target=0)
+
+    def _begin_capture(self, target: int):
         if self.main_monitor is None:
             return
-        self.main_monitor.start_lab_capture(
-            target=0,
+        pending = dict(
+            target=target,
             col_spec=self._active_col_spec(),
             filepath=self._make_filepath(),
-            pre_notes=self._pre_notes.toPlainText(),
         )
 
+        # HGAC first: it must already be frozen when the config is read, or the header would
+        # record a state that is about to change.
+        self._hgac_restore_to = None
+        if self._chk_disable_hgac.isChecked():
+            previous = getattr(self.main_monitor, "_hgac_enabled", None)
+            if not self.main_monitor.send_set("hgac_enable", "0", suppress_cfg_note=False):
+                self._lbl_status.setText("No command channel — cannot disable HGAC")
+                self._lbl_status.setStyleSheet(
+                    "QLabel { font-size:28px; color:#FF6666; font-weight:bold; }")
+                return
+            self.main_monitor._hgac_enabled = False
+            self.main_monitor._sync_quick_hgac_combo()
+            # Only restore what was actually on; restoring a state we never knew would be a guess.
+            self._hgac_restore_to = 1 if previous else None
+            pending["hgac_note"] = (
+                "HGAC forced OFF by Lab Capture for the duration of this capture"
+                + ("" if previous else " (it was already off)"))
+
+        if not self._chk_auto_cfg.isChecked():
+            self._start_capture_now(pending, cfg_text=None)
+            return
+
+        if not self.main_monitor.request_chip_config():
+            self._restore_hgac()
+            self._lbl_status.setText("Not connected — capture aborted (auto config is on)")
+            self._lbl_status.setStyleSheet(
+                "QLabel { font-size:28px; color:#FF6666; font-weight:bold; }")
+            return
+        self._pending_capture = pending
+        self._lbl_status.setText("Reading chip config…")
+        self._cfg_timeout.start(self._CFG_TIMEOUT_MS)
+
+    def _start_capture_now(self, pending: dict, cfg_text):
+        """Open the file. Header = auto-read config (if any) + HGAC note + the user's notes."""
+        blocks = []
+        if cfg_text:
+            blocks.append("Chip config at capture START (read automatically)\n" + cfg_text)
+        if pending.get("hgac_note"):
+            blocks.append(pending["hgac_note"])
+        manual = self._pre_notes.toPlainText().strip()
+        if manual:
+            blocks.append(manual)
+        self._capture_open_cfg = cfg_text
+        self.main_monitor.start_lab_capture(
+            target=pending["target"],
+            col_spec=pending["col_spec"],
+            filepath=pending["filepath"],
+            pre_notes="\n\n".join(blocks),
+        )
+
+    def _on_cfg_timeout(self):
+        """No $CFG reply in time."""
+        if self._pending_capture is not None:
+            self._pending_capture = None
+            self._restore_hgac()
+            self._lbl_status.setText("No $CFG reply — capture ABORTED (uncheck auto config to force)")
+            self._lbl_status.setStyleSheet(
+                "QLabel { font-size:28px; color:#FF6666; font-weight:bold; }")
+        elif self._pending_stop:
+            # The capture already happened; losing the closing read must not lose the file.
+            self._pending_stop = False
+            self._finish_stop("Chip config at capture END — NOT READ (no $CFG reply)")
+
     def _on_stop(self):
-        if self.main_monitor is not None:
-            self.main_monitor.stop_lab_capture(
-                post_notes=self._post_notes.toPlainText())
+        if self.main_monitor is None or not self.main_monitor.is_lab_capturing:
+            return
+        if self._chk_auto_cfg.isChecked() and self.main_monitor.request_chip_config():
+            self._pending_stop = True
+            self._cfg_timeout.start(self._CFG_TIMEOUT_MS)
+            return
+        self._finish_stop(None)
+
+    def _finish_stop(self, closing_note):
+        """Close the capture, appending the closing config note if there is one, then undo
+        whatever the capture options changed on the hardware."""
+        notes = self._post_notes.toPlainText()
+        if closing_note:
+            notes = (notes + "\n\n" + closing_note) if notes.strip() else closing_note
+        self.main_monitor.stop_lab_capture(post_notes=notes)
+        self._restore_hgac()
+
+    def _restore_hgac(self):
+        """Put HGAC back the way it was. Called on every exit path, including aborts."""
+        if self._hgac_restore_to is None:
+            return
+        value, self._hgac_restore_to = self._hgac_restore_to, None
+        if self.main_monitor.send_set("hgac_enable", str(value), suppress_cfg_note=False):
+            self.main_monitor._hgac_enabled = bool(value)
+            self.main_monitor._sync_quick_hgac_combo()
+        else:
+            self.main_monitor.log("WARNING: could not restore hgac_enable — it is still OFF")
 
     # ── Callbacks from PPGMonitor ─────────────────────────────────────────────
     def on_capture_started(self, filepath: str, target: int):
@@ -10138,9 +10404,17 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
 
     # ── Close ─────────────────────────────────────────────────────────────────
     def closeEvent(self, event):
+        # Closing mid-capture skips the deferred closing $CFG read: the file must be closed
+        # now, and waiting for a reply that arrives after the window is gone is not an option.
+        self._cfg_timeout.stop()
+        self._pending_capture = None
+        self._pending_stop    = False
         if self.main_monitor is not None and self.main_monitor.is_lab_capturing:
             self.main_monitor.stop_lab_capture(
                 post_notes=self._post_notes.toPlainText())
+        # Always, even if no capture was running: an aborted start may have left HGAC off.
+        if self.main_monitor is not None:
+            self._restore_hgac()
         self._save_settings()
         if self.main_monitor is not None:
             self.main_monitor.btn_lab_capture.setChecked(False)
@@ -11391,7 +11665,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  AMBDAC: {kv.get('ambdac','?')} µA\n"
             f"  PPG channel: {kv.get('ch','?')}   Filter: BW [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
             f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
-            f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}"
+            f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}\n"
+            # Provenance. Emitted by the firmware since 2026-09-05; '?' means the board is
+            # running an older build. Without it the FW_* columns of a capture cannot be
+            # attributed to a firmware version once the algorithms change.
+            f"  Firmware: PulseNest v{kv.get('fw','?')}   "
+            f"incunest_afe4490 v{kv.get('lib','?')}   build {kv.get('build','?')}"
         )
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', True):
             self._cfg_listener(text)

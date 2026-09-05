@@ -242,11 +242,24 @@ All emitted by the firmware asynchronously.
 ```
 $CFG,led1=<v>,led2=<v>,range=<v>,tia1=<v>,cf1=<v>,stg21=<v>,stage2en1=<v>,
      tia2=<v>,cf2=<v>,stg22=<v>,stage2en2=<v>,ambdac=<v>,sr=<v>,numav=<v>,
-     ensepgain=<v>*XX
+     ensepgain=<v>,...,board=<v>,mac=<v>,fw=<v>,lib=<v>,build=<v>*XX
 ```
 
 Emitted at startup, after `$SET`, and in response to `$CFG?`. Parsed by
 `_on_cfg_frame_received()` → populates `_last_cfg` dict and updates `HWConfigWindow`.
+
+**Provenance fields (firmware change, 2026-09-05):** `fw` = PulseNest firmware version
+(`PULSENEST_FW_VERSION`, promoted from a literal inside the startup banner), `lib` =
+`INCUNEST_AFE4490_VERSION`, `build` = the short git hash that `scripts/pre_build_hash.py` already
+injected as `INCUNEST_GIT_HASH`. All three existed but reached only the serial startup banner,
+never a capture. They matter because the `FW_*` columns of a CSV become uninterpretable as soon as
+the algorithms change, and the version alone does not identify a build — during development most
+builds are uncommitted work on top of the same version number, which is what the hash pins down.
+
+The firmware-side buffer was raised 600 → 720 bytes at the same time, **with an explicit truncation
+guard**: `snprintf` was already truncating silently at the limit and the checksum was appended
+afterwards regardless, so an over-long frame would have arrived as well-formed but incomplete. It
+now emits `$ERR,CFG,frame truncated` instead.
 
 #### $LCFG — Library/algorithm parameter report
 
@@ -1066,8 +1079,67 @@ Purpose: controlled capture with metadata for lab sessions.
 - Mode: continuous / timed (N samples)
 - Progress bar (timed mode)
 - [START] / [STOP]
+- **Column profiles** (added 2026-09-05): two preset buttons that tick the checkboxes.
+  *Data (raw only)* keeps the 10 columns that cannot be reconstructed later — `SmpCnt`, `Ts_us`,
+  the four raw channels, `RF1_OHM`/`RF2_OHM`, plus `LED1_SUB`/`LED2_SUB` (derivable, but flagged
+  mandatory since they are the offline runner's input). ~36 % of the file size: ~2.7 MB per 90 s
+  against ~7.5 MB. *Witness (everything)* keeps all 35 columns; its purpose is not the data but
+  the cross-check — it is the only way to verify that the offline runner reproduces what the
+  firmware computed, so one per session suffices.
+- **Read chip config automatically** checkbox (default ON, added 2026-09-05) — see below.
+- **Disable HGAC during capture** checkbox (default OFF, added 2026-09-05) — see below.
 
 **Output file:** `lab_capture_*.csv` in `CAPTURES_DIR`. All state persisted in .ini.
+
+**Automatic configuration recording (2026-09-05).** The `#` header used to be whatever the
+operator had left in the "Pre-capture notes" box, filled by pressing *Read chip config*, which
+pastes a snapshot of that instant. The text persists between captures, so changing RF, ILED or PRF
+without pressing the button again leaves a header confidently stating the *previous*
+configuration. Verified case: the four `ALEX_CUESTA_57_RF100K/RF250k_20260823_*` captures all carry
+`TIA=250K` in the header while the mean `LED1` amplitude (357 k/369 k against 932 k/914 k, ratio
+2,54 ≈ 250 k/100 k) proves two were taken at 100 kΩ. **The header was the least reliable record in
+the file, precisely because it looked like the most reliable one.**
+
+With the checkbox on, `_begin_capture()` becomes a small state machine, because `$CFG?` is
+answered asynchronously:
+
+1. If *Disable HGAC* is also on, `$SET,hgac_enable,0` goes out **first** — otherwise the header
+   would record a state about to change.
+2. `$CFG?` is sent and `_pending_capture` holds the capture arguments. A 2.5 s `QTimer` guards it.
+3. The reply reaches `_on_cfg_received()`, which starts the capture with that text as the header.
+4. On STOP, `$CFG?` is sent again; the reply is compared against the opening one (ignoring its
+   timestamp line) and written as a post-note saying whether the configuration **changed during
+   the capture** — which is exactly what HGAC moving RF would do, and is invisible today.
+
+Failure handling is deliberately asymmetric: **a missing reply at the start aborts the capture**
+(for a verification set, no capture beats one of unknown provenance), while a missing reply at the
+end still closes the file, noting `NOT READ` — the recorded samples must not be lost over a
+metadata read. `_restore_hgac()` runs on every exit path: normal stop, timeout, abort, and
+`closeEvent`.
+
+Both checkboxes are disabled while capturing: they describe what the hardware was doing while the
+file was written, so toggling them mid-capture would make the header a lie.
+
+The header text itself is built by `_on_cfg_frame_received()` from the `$CFG` key-values, and its
+last line reports provenance: `Firmware: PulseNest v<fw>   incunest_afe4490 v<lib>   build <hash>`.
+A `?` in any of the three means the board runs a build older than 2026-09-05. Note that adding a
+field to the frame is not enough on its own — the formatter drops anything it does not name, which
+is exactly how the first flashed capture came out without its version line.
+
+⚠️ **Freezing HGAC removes the only thing that corrects saturation.** With the checkbox on, nothing
+lowers RF when the TIA hits the rail, and the whole file is clipped: the first test capture after
+the OTA showed `LED1` and `LED2` pinned at 2 096 921 (21-bit full scale is 2 097 151) for every
+sample, with RF=100K and ILED 49.8 mA. Settle the gain at a valid operating point and check it in
+SIGNAL STATS **before** ticking the box. A clipped capture is not even usable for regression, since
+it contains no signal.
+
+**HGAC freeze.** HGAC changes RF mid-capture, injecting gain-change transients into the signal, and
+PI/R carry a known bias while the EMAs settle afterwards. For characterisation captures the analog
+chain must stay frozen or the algorithm's behaviour cannot be told apart from its reaction to a
+gain change. Default OFF because for the RF-sweep captures of `CAPTURE_SET_SPEC.md` §3.5 H1,
+observing that transient *is* the purpose. The forced state is written into the header, so a
+capture without HGAC is never confused with one where HGAC merely did not act. Only a state known
+to have been on is restored — restoring one that was never read would be a guess.
 
 **Row filter (mandatory).** `_write_lab_capture_row()` writes a row **only** for data frames —
 `$M1`, `$M2`, `$M3`, `$M4`. Any other line arriving on the stream (`$CFG` replies, `$ERR`, …) is
@@ -1268,6 +1340,8 @@ All CSV files include a `#`-prefixed header comment with timestamp and relevant 
 | `PythonTimingWindow/geometry` | bytes | |
 | `LabCaptureWindow/geometry` | bytes | |
 | `LabCaptureWindow/*` | mixed | Output dir, prefix, pre/post notes, column selection |
+| `LabCaptureWindow/auto_read_cfg` | bool | Read chip config automatically. **Default `true`** |
+| `LabCaptureWindow/disable_hgac` | bool | Freeze HGAC during capture. Default `false` |
 | `PILabWindow/geometry` | bytes | |
 
 Settings are saved on window close and restored on startup.

@@ -24,6 +24,15 @@
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
 
+// ── Firmware version ──────────────────────────────────────────────────────────
+// Was a bare "v0.9" literal inside the startup banner, reachable only over serial and
+// therefore absent from every capture. Promoted to a macro so it can also travel in the
+// $CFG frame: a capture whose FW_* columns cannot be attributed to a firmware version is
+// uninterpretable once the algorithms change. INCUNEST_GIT_HASH is injected by
+// scripts/pre_build_hash.py and identifies the exact build, which the version alone does
+// not — during development most builds are uncommitted work on top of the same version.
+#define PULSENEST_FW_VERSION "0.9"
+
 // ── Pin definitions ───────────────────────────────────────────────────────────
 // Defined in platformio.ini build_flags per board environment (incunest_V15 / incunest_V16).
 // Required: AFE4490_CS_PIN, AFE4490_DRDY_PIN, AFE4490_PWDN_PIN,
@@ -414,7 +423,10 @@ static void send_cfg_frame() {
     AFE4490Config cfg = afe.getConfig();
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char buf[600];
+    // 720: the frame is ~560 chars today and the fw/lib/build fields added ~45 more. Sized with
+    // margin because a truncated frame would still get a valid checksum appended below and reach
+    // the host as a well-formed but incomplete $CFG.
+    char buf[720];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$CFG,sr=%u,numav=%u,led1=%.2f,led2=%.2f,range=%u"
         ",ensepgain=%d"
@@ -424,7 +436,11 @@ static void send_cfg_frame() {
         ",ch=%s"
         ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
         ",spo2a=%.4f,spo2b=%.4f"
-        ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X",
+        ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X"
+        // Provenance: which firmware produced this capture. Without it the FW_* columns of a
+        // CSV become uninterpretable as soon as the algorithms change — see
+        // captures/CAPTURE_SET_SPEC.md §2.3.
+        ",fw=%s,lib=%s,build=%s",
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_sep_tia_en ? 1 : 0,
@@ -442,7 +458,13 @@ static void send_cfg_frame() {
         cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,
         cfg.spo2_a, cfg.spo2_b,
         BOARD_VERSION,
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        PULSENEST_FW_VERSION, INCUNEST_AFE4490_VERSION, INCUNEST_GIT_HASH);
+    if (n < 0 || n >= (int)sizeof(buf) - 6) {
+        // Fail loudly rather than emit a truncated frame the host would accept as valid.
+        Serial_printf("$ERR,CFG,frame truncated (%d bytes)\r\n", n);
+        return;
+    }
     uint8_t chk = frame_xor_chk(buf + 1, n - 1);
     snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
     Serial_print_locked(buf);
@@ -953,7 +975,7 @@ void setup() {
     vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
 
     // Startup banner
-    Serial.printf("# PulseNest v0.9 | incunest_afe4490 v" INCUNEST_AFE4490_VERSION
+    Serial.printf("# PulseNest v" PULSENEST_FW_VERSION " | incunest_afe4490 v" INCUNEST_AFE4490_VERSION
                   "+sha." INCUNEST_GIT_HASH
                   " | build: " __DATE__ " " __TIME__
                   " | Board: %s — Medical Open World\n", BOARD_VERSION);

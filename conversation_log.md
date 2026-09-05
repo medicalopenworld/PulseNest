@@ -19107,3 +19107,133 @@ La cabecera es el registro **menos** fiable de la captura precisamente porque pa
   extender el registro por muestra a ILED, RG, AMBDAC y PRF. Capturar el set entero con cabeceras
   pegadas a mano reproduciría, sobre datos nuevos, exactamente el problema que inutiliza a los 93
   actuales.
+
+## Sesión 2026-09-05 (cont.) — Lab Capture: config automática, congelar HGAC, perfiles de columnas y procedencia de firmware
+
+Alex va a capturar con el MS100 y plantea cinco cuestiones. Se implementan cuatro (autoriza tocar
+firmware para la quinta). Contexto: [[project_regression_test_captures_task]] y
+`captures/CAPTURE_SET_SPEC.md`.
+
+### 1. Criterio de tamaño de captura (analizado, no implementado)
+
+El "≥65 s" de la spec trataba a los tres algoritmos por igual, y no lo son: **la unidad estadística
+de HR1 es el latido; la de HR2/HR3 es la ventana**, y las ventanas solapadas no son independientes.
+
+- HR1 a 60 BPM en 60 s → 60 estimaciones → incertidumbre de la desviación típica ≈ 1/√(2(N−1)) ≈ **9 %**.
+- HR3 tiene ventana de 10,24 s → 60 s contienen **6 ventanas independientes** → ≈ **32 %**. Que se
+  recalcule cada 0,5 s no añade información.
+
+Luego hay **dos suelos según el objetivo**: 65 s bastan para el **sesgo**; para la **dispersión**
+hacen falta 4-5 min (~25 ventanas HR3 → ~15 %). Recomendación: 65-90 s para el barrido (R2, R3, S1,
+H1, H2) y **una "ancla" de 5 min** en 40 BPM, fototerapia y el punto nominal.
+
+**Y hay techo, no solo suelo:** en capturas largas a 50 mA la unión del LED se calienta y λ deriva
+*durante* la captura, sesgando el SpO2 (ver [[project_led_current_increase_50ma_task]] §5). A 65 s es
+despreciable; a 15 min no se sabe, porque no está caracterizado. Las anclas de 5 min son el
+compromiso mientras falte ese dato.
+
+### 2. Qué canales guardar — medido, no estimado
+
+Sobre una captura real: **166 bytes/muestra → 7,5 MB por cada 90 s**.
+
+| Grupo | Cols | % fichero | ¿Recuperable? |
+|---|---|---|---|
+| Índices (`SmpCnt`, `Ts_us`) | 2 | 11,5 % | **No** |
+| Crudos (`LED1/2`, `ALED1/2`) | 4 | 15,2 % | **No** |
+| `RF1_OHM`/`RF2_OHM` | 2 | ~1 % | **No** |
+| `LED1_SUB`/`LED2_SUB` | 2 | 8,4 % | Sí (`LED1−ALED1`) |
+| Estado analógico | 11 | 19,9 % | Sí |
+| **Salidas de algoritmo** | 14 | **45,0 %** | Sí (offline_runner) |
+
+Alex tiene razón en que las salidas de algoritmo caducan, **pero no deben desaparecer del todo**:
+son la única forma de verificar que el `offline_runner` reproduce al firmware. Sin ninguna, se
+desarrollarían algoritmos contra una cadena que nadie ha comprobado que coincida con la placa.
+
+→ **Dos perfiles**: *Data* (lo irrecuperable, para el grueso del set) y *Witness* (todo, una por
+sesión, como contraste). Al validar apareció que `LED1_SUB`/`LED2_SUB` son `mandatory` en `_COLS`
+(son la entrada del offline_runner), así que *Data* queda en **10 de 35 columnas, ~36 %, ~2,7 MB
+por 90 s** — no el 28 %/2,1 MB que yo había anunciado antes de comprobarlo. Tooltips corregidos.
+
+### 3-4. Los dos checkboxes (propuesta de Alex)
+
+**"Read chip config automatically"** (default **ON**). Sustituye al botón manual como fuente de la
+cabecera. Como `$CFG?` se responde de forma asíncrona, `_begin_capture()` pasa a ser una pequeña
+máquina de estados con `QTimer` de 2,5 s:
+
+1. Si además está *Disable HGAC*, `$SET,hgac_enable,0` sale **primero** — si no, la cabecera
+   registraría un estado a punto de cambiar.
+2. Se manda `$CFG?` y `_pending_capture` guarda los argumentos.
+3. La respuesta llega a `_on_cfg_received()`, que abre el fichero con ese texto como cabecera.
+4. Al STOP se vuelve a pedir `$CFG?` y se **compara con la lectura de apertura** (ignorando la línea
+   de timestamp): la post-nota dice si la configuración **cambió durante la captura**, que es
+   exactamente lo que haría HGAC moviendo RF y hoy es invisible. Mejora propuesta por mí sobre la
+   idea original de Alex, que solo pedía la lectura inicial.
+
+**Asimetría deliberada en los fallos:** sin respuesta al inicio, la captura **se aborta** (para un
+set de verificación, ninguna captura es mejor que una inatribuible); sin respuesta al final, el
+fichero **se cierra igual** con la nota `NOT READ` — perder las muestras ya grabadas por una lectura
+de metadatos sería peor.
+
+**"Disable HGAC during capture"** (default **OFF**). `$SET,hgac_enable,0` y restauración en *todas*
+las salidas: stop, timeout, aborto y `closeEvent`. Solo restaura un estado que constaba activo —
+restaurar uno que nunca se leyó sería adivinar. Queda anotado en la cabecera, así que una captura
+sin HGAC no se confunde con una donde HGAC no llegó a actuar. Default OFF porque en las capturas de
+§3.5 H1 el transitorio de HGAC *es* el objetivo. Ambos checkboxes se bloquean durante la captura.
+
+### 5. Procedencia del firmware — cambio en `src/main.cpp`
+
+`$CFG` **no llevaba versión**. Las tres piezas ya existían (`INCUNEST_AFE4490_VERSION`,
+`INCUNEST_GIT_HASH` inyectado por `scripts/pre_build_hash.py`, y un literal `"v0.9"`) pero solo
+llegaban al banner de arranque por serie, que no se guarda en ninguna captura.
+
+- Literal `"v0.9"` → macro `PULSENEST_FW_VERSION`.
+- `$CFG` emite ahora `fw=%s,lib=%s,build=%s`. El hash importa: la versión sola no identifica un
+  build, porque en desarrollo casi todos son trabajo sin commitear sobre el mismo número.
+- **Hallazgo colateral:** `char buf[600]` con `snprintf(buf, sizeof(buf)-6, ...)` y el checksum
+  añadido después **sin comprobar truncamiento**. Una trama demasiado larga habría llegado al host
+  bien formada pero incompleta. Ahora 720 bytes + guarda explícita que emite
+  `$ERR,CFG,frame truncated`.
+
+Compilado OK (incunest_V16, 30,2 % de flash). **Pendiente de flashear** para que `$CFG` traiga las
+versiones.
+
+### Ficheros tocados
+
+`src/main.cpp`, `pulsenest_lab.py` (+298 líneas), `pulsenest_lab_spec.md` (§7.13 reescrito con la
+máquina de estados y el porqué; §4.5 `$CFG` con los campos de procedencia; tabla de claves .ini).
+
+### Antes de capturar
+
+1. Flashear (OTA) para tener `fw`/`lib`/`build` en la cabecera.
+2. Subir muestras **10 000 → ≥32 500** (65 s). Ese 10 000 es la causa de que las 93 capturas
+   existentes duren 20 s.
+3. **Vaciar el campo de notas**: hoy acumula dos bloques de config del 23 y 24 de agosto.
+4. Cambiar el prefijo `kk` por el nombre de `CAPTURE_SET_SPEC.md` §2.4.
+5. Una captura de prueba de 65 s → `python tools/build_capture_index.py --check` antes de la tanda.
+
+### Apéndice — primer flash OTA y dos correcciones inmediatas
+
+**OTA a la 16.A.** ARP: única entrada en el rango del hotspot, `192.168.137.43` con MAC
+`10-51-db-50-48-f8` = IncuNest 16.A. La IP había cambiado respecto a la .92 registrada en
+[[feedback_ota_flash]]; identificación por MAC como manda el procedimiento. `POST /update` →
+`"OK"`, 831 354 bytes en 10,9 s, reinicio y placa online en ~2 s. El `"OK"` es concluyente: el
+handler responde `FAIL` si `Update.hasError()`, comprobado después de `Update.end(true)`.
+
+**Bug propio: la versión no aparecía en la cabecera.** El firmware SÍ emitía `fw`/`lib`/`build` en
+`$CFG`, pero la cabecera legible la compone el script en `_on_cfg_frame_received()` con una
+plantilla fija que no los recogía — llegaban y se descartaban al formatear. Añadida la línea
+`Firmware: PulseNest v<fw>   incunest_afe4490 v<lib>   build <hash>`; un `?` en cualquier campo
+delata una placa con build anterior. Lección: añadir un campo al frame no basta, hay que seguirlo
+hasta el consumidor.
+
+**La primera captura de prueba salió SATURADA.** `LED1` y `LED2` valían ambos 2 096 921 constante
+en todas las muestras — a 230 cuentas del techo de 21 bits (2 097 151), o sea recorte duro. Los
+canales de ambiente (~580 k y ~480 k) sí variaban, luego lo que satura es la fase de LED.
+Configuración: RF=100K con ILED 49,8 mA.
+
+⚠️ **Efecto secundario de la casilla "Disable HGAC" que conviene tener presente:** congelar la
+cadena analógica es lo correcto para caracterizar, pero **elimina a quien bajaría RF cuando el TIA
+se va al techo**. Con HGAC congelado, una saturación no se corrige sola y contamina el fichero
+entero. Procedimiento resultante: dejar la ganancia asentada en un punto válido y verificarlo en
+SIGNAL STATS ANTES de marcar la casilla y capturar. Una captura recortada no sirve ni para
+regresión, porque no contiene señal.
