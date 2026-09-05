@@ -18852,3 +18852,45 @@ Dos hallazgos al escribirlo:
 
 No se tocó `pulsenest_lab_spec.md` (pertenece al script, en edición en otra sesión) ni
 `OLD_incunest_afe4490_spec.md` (histórico).
+
+---
+
+## Sesión 2026-09-05 (cont.) — Inventario de parámetros y candidatos a estudio de sensibilidad
+
+Alex pidió buscar en profundidad los parámetros que condicionan los algoritmos, con vistas a
+estudios de sensibilidad. Inventario completo en la memoria
+`project_parameter_sensitivity_task`; resumen:
+
+De ~45 parámetros configurables más las constantes internas, **~15 condicionan de verdad un
+resultado** y **7 no tienen procedencia documentada**: `spo2_a`/`spo2_b`, `spo2_ema_mean_tau_s`,
+`hr2_min_corr`, `hr3_snr_local_w`, `rsqm_ot_thr` ("calibración empírica pendiente") y la banda de
+HGAC (`high1`/`low1`, "a ojo").
+
+### Hallazgo: tres literales enterrados en las expresiones de decisión
+
+1. **`float threshold = 0.6f * _hr1_running_max;`** (`:2355`) — el parámetro que más determina si
+   un latido se cuenta **no es un parámetro**: sin nombre, fuera de `AFE4490Config`, no barrible sin
+   recompilar y ausente de la spec. Mismo patrón que el `0.9999` corregido en v0.87.
+2. **El guard band de ±3 BPM aparece 4 veces** como literal (`:2454`, `:2467`, `:2589`, `:2590`) en
+   HR2 y HR3 → cambiar uno y olvidar otro los desincroniza en silencio.
+3. `ambdac_val * 0.2f` (`:123`), documentado en comentario pero tampoco constante.
+
+### Prioridad propuesta
+
+1. `spo2_a`/`spo2_b` — la calibración clínica principal, sin procedencia escrita. Requiere las
+   capturas T1 `S1` del set.
+2. El trío del detector de HR1 (`0.6` + refractario + corte del LP), que interactúan; ya hay arnés.
+   **Precondición: convertir el `0.6` en parámetro.**
+3. `rsqm_ot_thr` — no degrada la medida: la suprime o la inventa.
+4. Banda de HGAC.
+
+### Restricción de método
+
+Un estudio de sensibilidad **necesita verdad conocida**, y hoy solo la tienen las capturas de
+simulador → **capturas primero, sensibilidad después**. Encadena con `CAPTURE_SET_SPEC.md`.
+
+### Nota sobre el hook
+
+Llegó un aviso del Stop con el árbol limpio y el log ya commiteado. Ejecutado a mano, el hook
+devuelve `exit 0` y el estado del repo no justifica el aviso: lo más probable es que
+correspondiera a un `Stop` anterior al arreglo (corre con `asyncRewake`). No se tocó nada.
