@@ -19376,3 +19376,47 @@ Compilado OK: `incunest_afe4490 git hash: c103ebe`, `PulseNest git hash: ff75bb3
 La otra sesión commiteó en `ff75bb3` el trabajo de anonimización (`capture_set.py`, los dos scripts,
 `truth.csv` con códigos) junto con su segunda pasada del experimento HR1. Dos sesiones tocando el
 mismo repo: conviene mirar `git log` antes de commitear.
+
+---
+
+## Sesión 2026-09-06 — El SQI revierte las dos conclusiones anteriores (filtro y detector)
+
+Alex preguntó si HR1 seguía usando moving average. **Sí**: v0.87 solo renombró el parámetro
+(`hr1_lp_cutoff_hz`), el filtro nunca se cambió. Y antes de tocarlo se midió lo que faltaba.
+
+### Qué es la puerta SQI (explicado a petición de Alex)
+
+HR1 no publica el ritmo de cada latido detectado: sobre una ventana de **5 intervalos** calcula su
+coeficiente de variación y, mientras supere `hr1_sqi_cv_max` = 0,15, marca el valor inválido. **No
+repara la detección: descarta el tramo que la contiene**, y lo paga en disponibilidad. Por eso "los
+tres detectores convergen a 60,0": sus errores venían de latidos falsos esporádicos que vuelven
+irregular la ventana → CV alto → tramo descartado; lo que sobrevive es donde el detector acertó.
+
+### La medición
+
+| Captura (verdad 60) | MA crudo | biquad crudo | MA con SQI | biquad con SQI | conserva MA | conserva biquad |
+|---|---|---|---|---|---|---|
+| 500HZ | 75,5 (+15,5) | 66,1 (+6,1) | **60,4** | **60,3** | 24 % | **45 %** |
+| ONOFF | 62,2 | 62,6 | **60,0** | **60,2** | **56 %** | 48 % |
+| 400HZ | 59,8 | 59,9 | 60,0 | 60,0 | 70 % | 70 % |
+
+En crudo la diferencia llegaba a 15,5 BPM; con la puerta, ambos publican 60,0–60,4. La
+disponibilidad no da ganador: uno a uno y un empate.
+
+### Consecuencia: **dos conclusiones revertidas**
+
+- **Filtro:** §5.2 del rationale decía "no sobrevive ningún argumento para conservar el MA". Marcada
+  como **superada**; lo que queda a favor del biquad es estructural, no de resultado.
+- **Detector:** ya revertida ayer con las capturas MS100.
+
+Ambas se apoyaban en diferencias de 3 a 15 BPM **en crudo** que la puerta elimina por completo.
+
+**Lección de método:** medir un eslabón aislado produce recomendaciones falsas cuando aguas abajo
+hay una puerta de calidad que absorbe justo ese tipo de error. Dos veces en dos días, y habría
+llevado a dos cambios en un dispositivo médico sin mejora visible para el paciente.
+
+### Lo que sí queda como problema
+
+**Disponibilidad**: 24–70 % de intervalos sobreviven bajo fototerapia. Pertenece al criterio del
+propio SQI (`hr1_sqi_cv_max` = 0,15, uno de los parámetros sin procedencia del inventario), no al
+filtro ni al detector. Registrado en rationale **§5.4** (nueva).

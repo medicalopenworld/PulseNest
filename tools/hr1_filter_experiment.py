@@ -125,6 +125,38 @@ def detect_beats(ppg, fs=FS_HZ, warmup_s=DETECTOR_WARMUP_S):
     return np.array(beats)
 
 
+# HR1's quality gate: over a sliding window of 5 intervals, the rate is published only while
+# their coefficient of variation stays under hr1_sqi_cv_max. It does not fix a bad detection - it
+# discards the stretch containing it, at the cost of availability.
+HR1_SQI_CV_MAX = 0.15
+HR1_SQI_N_INTERVALS = 5
+
+
+def sqi_accepted(beats, fs=FS_HZ):
+    """Intervals (ms) that survive HR1's SQI gate."""
+    if len(beats) < HR1_SQI_N_INTERVALS + 1:
+        return np.array([])
+    rr = np.diff(beats) / fs * 1000.0
+    good = []
+    for i in range(HR1_SQI_N_INTERVALS - 1, len(rr)):
+        win = rr[i - HR1_SQI_N_INTERVALS + 1:i + 1]
+        m = float(np.mean(win))
+        if m > 0 and float(np.std(win, ddof=1)) / m <= HR1_SQI_CV_MAX:
+            good.append(rr[i])
+    return np.array(good)
+
+
+def truth_bpm(path):
+    """Known rate from the filename: 60BPM (older captures) or 100HR (MS100 series)."""
+    name = os.path.basename(path).upper().replace("-", "_")
+    for tok in name.split("_"):
+        if tok.endswith("BPM") and tok[:-3].isdigit():
+            return float(tok[:-3])
+        if tok.endswith("HR") and tok[:-2].isdigit():
+            return float(tok[:-2])
+    return None
+
+
 def rr_stats(beats, fs=FS_HZ):
     """RR intervals in ms, plus the jitter figures. Only intervals inside the accepted HR
     range count — an interval outside it is a detection failure, not jitter."""
@@ -212,8 +244,8 @@ def run(path):
     ma, n_ma = moving_average(base)
     bq = biquad_lp(base)
 
-    s_ma = rr_stats(detect_beats(ma))
-    s_bq = rr_stats(detect_beats(bq))
+    b_ma, b_bq = detect_beats(ma), detect_beats(bq)
+    s_ma, s_bq = rr_stats(b_ma), rr_stats(b_bq)
     dur = len(sig) / FS_HZ
     analysed = max(0.0, dur - DETECTOR_WARMUP_S)
     print(f"\n  {os.path.basename(path)}")
@@ -222,13 +254,22 @@ def run(path):
     if not s_ma or not s_bq:
         print("    not enough beats detected to compare")
         return
-    print(f"    {'':<8} {'beats':>6} {'BPM':>7} {'RR SD':>8} {'CV':>7} {'maxdev':>8} {'RR out':>7}")
-    for name, st in (("MA", s_ma), ("biquad", s_bq)):
-        print(f"    {name:<8} {st['n_beats']:>6} {st['bpm']:>7.1f} "
-              f"{st['sd_ms']:>7.1f}ms {st['cv_pct']:>6.2f}% {st['max_dev_ms']:>7.1f}ms "
-              f"{st['n_out_of_range']:>7}")
+    truth = truth_bpm(path)
+    print(f"    {'':<8} {'beats':>6} {'BPM':>7} {'err':>7} {'CV':>7} | {'BPM_sqi':>7} {'err':>7} {'kept':>5}")
+    for name, st, beats in (("MA", s_ma, b_ma), ("biquad", s_bq, b_bq)):
+        err = f"{st['bpm']-truth:+6.1f}" if truth else "     -"
+        good = sqi_accepted(beats)
+        if len(good) >= 2:
+            bpm_q = 60000.0 / float(np.mean(good))
+            err_q = f"{bpm_q-truth:+6.1f}" if truth else "     -"
+            kept = 100.0 * len(good) / max(1, len(beats) - 1)
+            gated = f"{bpm_q:>7.1f} {err_q:>7} {kept:>4.0f}%"
+        else:
+            gated = f"{'--':>7} {'--':>7} {0:>4.0f}%"
+        print(f"    {name:<8} {st['n_beats']:>6} {st['bpm']:>7.1f} {err:>7} "
+              f"{st['cv_pct']:>6.2f}% | {gated}")
     dbeats = s_bq['n_beats'] - s_ma['n_beats']
-    ps = paired_shift(detect_beats(ma), detect_beats(bq))
+    ps = paired_shift(b_ma, b_bq)
     if ps:
         print(f"    paired on {ps['n']} beats: group delay {ps['mean_ms']:+.1f} ms "
               f"(systematic, does not affect RR), differential jitter SD {ps['sd_ms']:.1f} ms, "
