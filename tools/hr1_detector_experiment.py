@@ -40,6 +40,9 @@ import numpy as np
 FS_HZ            = 500.0
 HR1_DC_TAU_S     = 1.6
 HR1_LP_CUTOFF_HZ = 5.0
+# Refractory period: blind window after an accepted beat, during which further threshold
+# crossings are ignored, so the dicrotic notch is not counted as a second beat. Fixed here,
+# which under-protects bradycardia — see incunest_afe4490.cpp for the full reasoning.
 HR1_REFRACTORY_S = 0.185
 HR1_THRESH_FRAC  = 0.6
 HR1_MAX_DECAY_TAU_S = 20.0     # v0.87: was a 0.9999 per-sample literal

@@ -33,6 +33,26 @@ Why it is the failure mode this whole set is built around:
 The opposite failure, missing beats, matters too (it fakes a bradycardia), but it is easier to spot:
 it shows up as intervals outside the accepted range, while a doubled rate looks perfectly plausible.
 
+**The guard that exists today: the refractory period.** After accepting a beat, HR1 ignores any
+further threshold crossing for `hr1_refractory_s` = 0.185 s — a blind window, named after the
+cardiac refractory period, during which the myocardium cannot be re-excited. If the notch crosses
+the threshold inside that window it is discarded and no double count happens.
+
+It is a partial guard, and the numbers say where it fails:
+
+| | Value | |
+|---|---|---|
+| Refractory | 0.185 s | allows beats up to 60/0.185 = **324 BPM** |
+| Binding limit | 228 ms | the interval at `hr_max_bpm` + 3 = 263 BPM; a longer refractory would reject legitimate beats |
+| Unused margin | 43 ms | between the two |
+
+The notch does **not** arrive at a fixed delay: it sits at roughly a third of systole, so ~150 ms at
+200 BPM but **250–350 ms at 60 BPM**. So the fixed window guards well in tachycardia — where
+double-counting is least likely anyway — and poorly in **bradycardia**, the event that most needs
+detecting. Spending the 43 ms of margin would not reach 250–350 ms either: no fixed value covers
+both ends of the range. That is why §3.2 asks for bradycardia captures, and why an adaptive
+refractory (proportional to the estimated RR interval) is on the detector strategy list.
+
 ---
 
 ## 1. Why this exists — what the 2026-09-04/05 experiments could not answer
