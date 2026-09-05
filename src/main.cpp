@@ -440,7 +440,7 @@ static void send_cfg_frame() {
         // Provenance: which firmware produced this capture. Without it the FW_* columns of a
         // CSV become uninterpretable as soon as the algorithms change — see
         // captures/CAPTURE_SET_SPEC.md §2.3.
-        ",fw=%s,lib=%s,build=%s",
+        ",fw=%s,lib=%s,build=%s,libsha=%s",
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_sep_tia_en ? 1 : 0,
@@ -459,7 +459,11 @@ static void send_cfg_frame() {
         cfg.spo2_a, cfg.spo2_b,
         BOARD_VERSION,
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-        PULSENEST_FW_VERSION, INCUNEST_AFE4490_VERSION, INCUNEST_GIT_HASH);
+        // build = this project's commit, libsha = the library's. Two repositories, two
+        // hashes: a change in main.cpp does not move the library's hash and vice versa, so
+        // one alone cannot identify the firmware that produced a capture.
+        PULSENEST_FW_VERSION, INCUNEST_AFE4490_VERSION,
+        PULSENEST_GIT_HASH, INCUNEST_GIT_HASH);
     if (n < 0 || n >= (int)sizeof(buf) - 6) {
         // Fail loudly rather than emit a truncated frame the host would accept as valid.
         Serial_printf("$ERR,CFG,frame truncated (%d bytes)\r\n", n);
@@ -975,7 +979,8 @@ void setup() {
     vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
 
     // Startup banner
-    Serial.printf("# PulseNest v" PULSENEST_FW_VERSION " | incunest_afe4490 v" INCUNEST_AFE4490_VERSION
+    Serial.printf("# PulseNest v" PULSENEST_FW_VERSION "+sha." PULSENEST_GIT_HASH
+                  " | incunest_afe4490 v" INCUNEST_AFE4490_VERSION
                   "+sha." INCUNEST_GIT_HASH
                   " | build: " __DATE__ " " __TIME__
                   " | Board: %s — Medical Open World\n", BOARD_VERSION);

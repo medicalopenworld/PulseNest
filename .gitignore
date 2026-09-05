@@ -41,10 +41,21 @@ captures/*
 !captures/CAPTURE_SET_SPEC.md
 # truth.csv is AUTHORED (tier, ground truth, notes) — hand-written, small, and the only
 # part of the capture set that cannot be regenerated. It must be versioned.
+# Safe to commit only because capture filenames are coded (SUBJnn), never names: its
+# 'file' column would otherwise publish the whole subject list in a single place.
 !captures/truth.csv
 # index.csv is DERIVED from the capture headers by tools/build_capture_index.py.
 # Deliberately NOT versioned: it is a cache, and committing it would create a second
 # source of truth for data that already lives in each capture's '#' header.
+#
+# SUBJECT_CODES.txt maps SUBJnn back to a person. It has NO exception here and must never
+# get one — it is the one file that would undo the anonymisation of everything else.
+#
+# Capture data: no capture of a HUMAN SUBJECT is ever committed, coded name or not — it is
+# health data. Simulator (MS100) captures contain nobody's data and MAY be committed one by
+# one, with an explicit exception below, when a regression test depends on them: a test
+# whose inputs live on a single machine is not reproducible. Nothing enters by accident.
+#   e.g.  !captures/T1_SIM_STEADY_60BPM_96SPO2_20260905_101500.csv
 
 # Offline runner — build y ficheros generados
 tools/offline_runner/build/

@@ -19290,3 +19290,89 @@ Alex renombró el set con la convención (`SUBJ01_A57_…`, `MS100_98SPO2_100HR_
 además **sacó nombres y edades de sujetos de un repositorio público**, que mis `DEFAULTS` llevaban
 dentro. El parser de verdad del experimento se adaptó para el formato `NNNHR` del MS100, porque
 `truth_hr_bpm` sigue vacío en `truth.csv` para esa serie.
+
+## Sesión 2026-09-06 — Anonimización del set de capturas y arreglo del hash de build
+
+### Política de datos personales (propuesta de Alex, tres puntos)
+
+Alex propone: (1) los CSV con nombres no se suben nunca a git, quizás ninguno; (2) `truth.csv`
+tampoco; (3) las tools no deberían llevar nombres de fichero. Acuerdo en los tres, con dos matices:
+
+**Sobre (1):** la regla correcta no es "ningún CSV" sino "ningún CSV de **sujeto humano**". Una
+captura del MS100 no contiene datos de nadie, y son justo las que necesita un test de regresión
+reproducible — sin ellas versionadas, la suite corre en una sola máquina y desaparece con el disco.
+`.gitignore` mantiene `captures/*` y admite excepciones **fichero a fichero** para capturas de
+simulador; nada entra por descuido.
+
+**Sobre (2):** discrepancia razonada. `truth.csv` es **lo único irreproducible** del set: `index.csv`
+se regenera con un comando y las capturas se pueden volver a grabar, pero qué era cada captura solo
+existe ahí. Y no contiene datos personales *propios* — los hereda de la columna `file`. **El
+problema no era `truth.csv`, era cómo se llamaban las capturas.** Con códigos, se versiona sin
+objeción.
+
+### Ejecutado
+
+1. **24 ficheros renombrados**, 7 sujetos → `SUBJ01…SUBJ07`, asignación alfabética determinista
+   (re-ejecutar da lo mismo). Se conserva la edad, técnicamente relevante y no identificativa:
+   `ALEX_CUESTA_57_RF100K_…` → `SUBJ01_A57_RF100K_…`. El script aborta si un destino ya existe.
+2. **`captures/SUBJECT_CODES.txt`** con la tabla código→persona, fuera del repo. En `.gitignore`
+   queda escrito que **nunca** debe tener excepción: es el único fichero que desharía el anonimato
+   de todo lo demás.
+3. **`tools/capture_set.py`** (nuevo): `select(tier=…, condition=…, min_duration_s=…,
+   requires_config=…)` sobre el manifiesto, y la lista de trabajo de HR1 en **un solo sitio** en vez
+   de duplicada en dos scripts. Ambos experimentos la importan. Cuando `truth.csv` esté anotado, esa
+   lista fija se sustituye por `select(tier="T1", condition="I1")` y los nombres desaparecen del
+   código por completo.
+4. Índice regenerado: 107 capturas; las 24 renombradas **conservan su fila** en `truth.csv` (el
+   script migra la columna `file` con el mismo mapa, así que las anotaciones no quedan huérfanas).
+5. `.gitignore` con la política escrita y un ejemplo comentado de excepción.
+
+Verificado: `git ls-files | xargs grep _CUESTA_` no devuelve nada. Habían quedado **dos ocurrencias
+que introduje yo** al documentar el caso del RF en el log y en la spec; también sustituidas.
+
+⚠️ **Pendiente de decisión:** `cd99912` ya está en GitHub con los nombres. Borrarlos en un commit
+nuevo no los elimina — el commit anterior sigue accesible por su hash. Reescribir historial
+(`filter-repo` + `push --force`) es viable pero hay que coordinarlo con la otra sesión.
+
+### Las 11 capturas del MS100 (grabadas por Alex durante la sesión) — correctas
+
+40, 55, 55, 60, 80, 100, 120, 140, 180, 220, 250 BPM a 98 % SpO2. Todas con 60,0 s / 30 000
+muestras, cabecera automática, y **`RF1_OHM` por muestra (50 000) coincidiendo con la cabecera
+(50K)** — primera vez que las dos fuentes concuerdan, porque ya nadie las escribe a mano. Sin
+saturación: LED1 634k–679k, LED2 722k–751k, lejos del techo de 2 097 151. Bajar a RF=50K fue el
+ajuste correcto tras la captura recortada de la tarde.
+
+Dos apuntes menores: 60,0 s deja 55 s útiles tras el warmup (36 latidos a 40 BPM, por debajo de los
+60 de §2.1 — vale para sesgo, no para dispersión); y `98SPO2_40HR` invierte el orden de §2.4 y usa
+`HR` donde la convención dice `BPM`.
+
+### Arreglo del hash de build
+
+Las capturas salían con `build unknown`. Causa: `pre_build_hash.py` buscaba la librería solo en
+`.pio/libdeps/<env>/incunest_afe4490`, ruta que **no existe** cuando la librería entra por el
+symlink `lib/incunest_afe4490` (el montaje local habitual) → `git rev-parse` fallaba y caía al
+fallback.
+
+Reescrito, y ampliado a lo que hacía falta de verdad: **el firmware se construye desde DOS
+repositorios**, y un cambio en `main.cpp` no mueve el hash de la librería ni al revés, así que un
+solo hash no identifica el build. Ahora inyecta dos macros y `$CFG` emite dos campos:
+
+| Campo | Repo | Macro |
+|---|---|---|
+| `build` | PulseNest | `PULSENEST_GIT_HASH` |
+| `libsha` | `incunest_afe4490` | `INCUNEST_GIT_HASH` |
+
+Con sufijo **`-dirty`** cuando el árbol tiene cambios sin commitear — el caso normal en desarrollo,
+y callarlo sería engañoso porque ese build no corresponde a ningún commit.
+
+Tropiezo por el camino: PlatformIO hace `exec()` del script **sin definir `__file__`**
+(`NameError`); la raíz del proyecto se toma de `env["PROJECT_DIR"]`.
+
+Compilado OK: `incunest_afe4490 git hash: c103ebe`, `PulseNest git hash: ff75bb3-dirty`.
+**Pendiente de flashear** para que las capturas lo recojan.
+
+### Nota de coordinación
+
+La otra sesión commiteó en `ff75bb3` el trabajo de anonimización (`capture_set.py`, los dos scripts,
+`truth.csv` con códigos) junto con su segunda pasada del experimento HR1. Dos sesiones tocando el
+mismo repo: conviene mirar `git log` antes de commitear.

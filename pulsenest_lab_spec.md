@@ -242,19 +242,35 @@ All emitted by the firmware asynchronously.
 ```
 $CFG,led1=<v>,led2=<v>,range=<v>,tia1=<v>,cf1=<v>,stg21=<v>,stage2en1=<v>,
      tia2=<v>,cf2=<v>,stg22=<v>,stage2en2=<v>,ambdac=<v>,sr=<v>,numav=<v>,
-     ensepgain=<v>,...,board=<v>,mac=<v>,fw=<v>,lib=<v>,build=<v>*XX
+     ensepgain=<v>,...,board=<v>,mac=<v>,fw=<v>,lib=<v>,build=<v>,libsha=<v>*XX
 ```
 
 Emitted at startup, after `$SET`, and in response to `$CFG?`. Parsed by
 `_on_cfg_frame_received()` → populates `_last_cfg` dict and updates `HWConfigWindow`.
 
-**Provenance fields (firmware change, 2026-09-05):** `fw` = PulseNest firmware version
+**Provenance fields (firmware change, 2026-09-05/06).** `fw` = PulseNest firmware version
 (`PULSENEST_FW_VERSION`, promoted from a literal inside the startup banner), `lib` =
-`INCUNEST_AFE4490_VERSION`, `build` = the short git hash that `scripts/pre_build_hash.py` already
-injected as `INCUNEST_GIT_HASH`. All three existed but reached only the serial startup banner,
-never a capture. They matter because the `FW_*` columns of a CSV become uninterpretable as soon as
-the algorithms change, and the version alone does not identify a build — during development most
-builds are uncommitted work on top of the same version number, which is what the hash pins down.
+`INCUNEST_AFE4490_VERSION`, and **two** git hashes, because the firmware is built from two
+repositories and a change in one does not move the other's hash:
+
+| Field | Repository | Macro |
+|---|---|---|
+| `build` | this project (`src/main.cpp` and everything around it) | `PULSENEST_GIT_HASH` |
+| `libsha` | `incunest_afe4490` | `INCUNEST_GIT_HASH` |
+
+They matter because the `FW_*` columns of a CSV become uninterpretable as soon as the algorithms
+change, and a version number alone does not identify a build — during development most builds are
+uncommitted work on top of the same version, which is what the hash pins down. A **`-dirty`
+suffix** marks a working tree with uncommitted changes, i.e. a build that matches no commit and
+cannot be reproduced from the hash alone. That is the normal case while developing, so staying
+silent about it would be misleading.
+
+`scripts/pre_build_hash.py` produces both. It previously looked for the library only under
+`.pio/libdeps/<env>/incunest_afe4490`, a path that does not exist when the library is consumed
+through the `lib/` symlink (the usual local setup), so the hash silently fell back to `unknown` —
+which is exactly what the first captures after the OTA recorded. It now tries `lib/` first, then
+libdeps, and takes the project root from `env["PROJECT_DIR"]` because PlatformIO `exec()`s the
+script without setting `__file__`.
 
 The firmware-side buffer was raised 600 → 720 bytes at the same time, **with an explicit truncation
 guard**: `snprintf` was already truncating silently at the limit and the checksum was appended
@@ -1095,7 +1111,7 @@ Purpose: controlled capture with metadata for lab sessions.
 operator had left in the "Pre-capture notes" box, filled by pressing *Read chip config*, which
 pastes a snapshot of that instant. The text persists between captures, so changing RF, ILED or PRF
 without pressing the button again leaves a header confidently stating the *previous*
-configuration. Verified case: the four `ALEX_CUESTA_57_RF100K/RF250k_20260823_*` captures all carry
+configuration. Verified case: the four `SUBJ01_A57_RF100K/RF250k_20260823_*` captures all carry
 `TIA=250K` in the header while the mean `LED1` amplitude (357 k/369 k against 932 k/914 k, ratio
 2,54 ≈ 250 k/100 k) proves two were taken at 100 kΩ. **The header was the least reliable record in
 the file, precisely because it looked like the most reliable one.**
