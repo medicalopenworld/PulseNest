@@ -18920,3 +18920,190 @@ ejecutables.
 
 Sin cambio de comportamiento (ambos conservan su valor). **76/77 tests** · firmware V16 compila ·
 RAM 60.844 → 60.852 B (+8 B, el float nuevo).
+
+## Sesión 2026-09-05 (cont.) — Revisión de CAPTURE_SET_SPEC y construcción del índice de capturas
+
+Alex trae una spec del set de capturas generada en otra sesión (la que está desarrollando los
+nuevos HR1/HR2/HR3) y la entrega para revisar y modificar. Objetivo declarado: tener una base de
+datos de capturas que sirva para test/verificación/validación **automatizada** de HR y SpO2.
+
+### Lo que se verificó de la spec original y estaba bien
+
+`hr1_refractory_s` = 0,185 s (`incunest_afe4490.cpp:97`), los 324 BPM que cubre, los 228 ms del
+límite vinculante a `hr_max_bpm`+3 = 263 BPM, los 43 ms de margen sin usar, y el recuento de 108
+CSVs. El análisis de §0 sobre por qué una refractariedad fija protege bien en taquicardia y mal en
+bradicardia —justo el evento que más importa detectar— es correcto y es lo mejor del documento.
+
+### Correcciones aplicadas
+
+**1. Datos personales en un repo público (nuevo §2.7).** Los CSV no se versionan
+(`.gitignore:40` → `captures/*`), pero los **nombres sí**: `tools/hr1_detector_experiment.py:245-248`
+y `tools/hr1_filter_experiment.py:241-244` listan rutas con nombre completo + edad, tres de ellas de
+menores. Basta para identificar a una persona y vincularla a una medición fisiológica. La spec
+original desactivaba su propia regla alegando que renombrar sería caro porque los nombres están
+también en `conversation_log.md` — **verificado: cero ocurrencias ahí**. El arreglo son ocho líneas
+en dos ficheros.
+
+**2. Calibrar SpO2 con simulador es metodológicamente inválido (§4, §3.4).** Un simulador óptico no
+reproduce la relación física R↔SaO₂: emite una R que mapea al SpO2 objetivo mediante la tabla de
+calibración de un fabricante concreto. Ajustar `spo2_a`/`spo2_b` contra él calibra el equipo contra
+el simulador, y el error queda invisible porque después ambos coinciden. Añadido **tier T0**
+(estudio de desaturación controlada contra CO-oximetría arterial), que es lo que exige
+ISO 80601-2-61; T1 queda para verificación funcional y regresión. S1 extendido a 75 % y 70 %, porque
+la exactitud se declara sobre 70-100 % y parar en 80 % deja el fondo del rango sin medir.
+
+**3. Criterios de aceptación (nuevo §2.6).** Tal como estaba, el set permitía *comparar* algoritmos
+pero no *verificar*: nada declaraba qué resultado es aceptable. Añadida tabla de tolerancias
+(±3 BPM o ±3 %, A_rms ≤ 4 %, sensibilidad/PPV).
+
+**4. Verdad a nivel de latido vía ECG simultáneo (§2.2, §2.6).** Un detector puede acertar la tasa
+media perdiendo latidos e inventando otros a partes iguales; puntuar un *detector* exige la posición
+de cada latido. Un ECG grabado en paralelo convierte capturas humanas de T3 en T2 con verdad latido
+a latido — la única vía práctica para los dos bloques donde el simulador no ayuda: morfología
+neonatal (§3.1) y artefacto de movimiento (I4/I5). Merece resolverse **antes** de capturar N1-N3.
+
+**5. Correcciones menores.** I3 apuntaba a la frecuencia equivocada: a PRF 500 Hz el Nyquist es
+250 Hz, así que el ripple de 100/120 Hz no se pliega; el interferente peligroso es el que cae en
+f ≈ PRF (5º armónico de 100 Hz). I4/I5 suben a 120 s porque el `running_max` decae con
+`hr1_running_max_tau_s` = 20 s (`incunest_afe4490.cpp:74`) y un solo artefacto grande envenena el
+umbral durante ~20 s — documentado en §0 como el segundo guardián de HR1. N1-N3 pasa a T2
+obligatorio con advertencia: es un estudio con sujetos vulnerables que necesita comité ético y
+consentimiento, y una captura de neonato que no permita calcular error gastaría ese coste para nada.
+
+### La objeción de Alex que cambió el diseño: duplicación de información
+
+Ante la propuesta de un `manifest.csv` único, Alex objetó que la misma información acabaría en tres
+sitios (nombre / cabecera `#` / manifiesto). **Correcto, y la objeción produjo una arquitectura
+mejor:** dos ficheros con reglas opuestas, separados por *quién sabe el dato*, unidos por `file`.
+
+| | `captures/index.csv` | `captures/truth.csv` |
+|---|---|---|
+| Origen | la cabecera `#` y el propio fichero | una persona |
+| Producción | regenerado desde cero en cada ejecución | editado a mano |
+| Editar a mano | nunca (se sobrescribe) | siempre |
+| En git | no (es caché) | **sí** (irreproducible) |
+
+`index.csv` es una **caché consultable**, como el índice de una base de datos: si discrepa de la
+cabecera, manda la cabecera y se reconstruye. Nada en él es autoritativo, luego no hay duplicación
+en el sentido que importa — hay exactamente un sitio donde corregir cada hecho. `truth.csv` contiene
+solo lo que no está escrito en ninguna parte de la captura, así que no puede duplicar nada.
+
+El nombre del fichero queda degradado a etiqueta humana. **La prueba llegó al construir el índice:**
+las cuatro capturas `ALEX_CUESTA_57_RF100K/RF250k_20260823_*` llevan **todas** `TIA=250K` en la
+cabecera. Primera lectura (ERRÓNEA, corregida más abajo): "los nombres mienten".
+
+### `tools/build_capture_index.py` (nuevo)
+
+Genera ambos ficheros. Modo `--check` que no escribe nada y verifica: hashes cambiados, ficheros
+nuevos o desaparecidos, y contradicciones nombre↔cabecera. Detalles de implementación que importan:
+
+- La cabecera **no es UTF-8 puro** (`pulsenest_lab.py` emite algún byte cp1252: guion largo, signo
+  micro). Decodificar con `errors="replace"` metía U+FFFD en el índice → se intenta UTF-8 y se cae a
+  cp1252, que es lo que esos bytes son.
+- Al encontrar una captura nueva añade una fila **vacía** a `truth.csv`. Nunca infiere una verdad
+  desde el nombre: los indicios van a `name_hint`, que ningún test lee. Un valor inventado que
+  parece dato es peor que un hueco.
+- Las filas ya rellenadas de `truth.csv` se conservan intactas al regenerar.
+- Campo explícito `has_config_header` en vez de inferirlo de un `prf_hz` vacío.
+
+`.gitignore` actualizado: `!captures/truth.csv` (versionado), `index.csv` deliberadamente fuera con
+el motivo escrito al lado.
+
+### Lo que el primer índice reveló — el set actual no sirve para lo que se pretende
+
+Medido sobre los 108 CSVs, no estimado:
+
+| Hallazgo | Cifra |
+|---|---|
+| Ficheros con cabecera pero **sin filas de datos** | 15 (`labcap_diag_finger_2026-04-21*`) |
+| Capturas con datos reales | 93 |
+| **Sin cabecera de configuración** | **46 de 93 (49 %)** — no replayables (§2.3) |
+| Duración ≥ 65 s | **1 de 93** (mediana 20,0 s) |
+| Replayables **y** ≥ 65 s a la vez | **0** |
+| Nombre que contradice la cabecera | 2 |
+| Con estado analógico (`$M4`) | 16 de 93 |
+
+Lectura honesta, escrita en §5.1: la colección es un archivo útil de **morfología de onda** y nada
+más. No puede sostener verificación, calibración ni regresión, y renombrar no lo arregla — las
+capturas son demasiado cortas y la mitad no registra con qué configuración se tomaron. Entre las 46
+sin cabecera están las de fototerapia y las de sujetos que consumen los experimentos de HR1: los
+experimentos de estos días compararon filtros sobre entradas cuya configuración no consta.
+
+### ⚠️ Aviso registrado en §2.7
+
+`truth.csv` se versiona y su columna `file` lista todos los nombres de captura. Commitearlo **antes**
+del renombrado a códigos `SUBJ01…` publicaría la lista íntegra de nombres y edades en un solo
+fichero — peor que las ocho líneas dispersas de hoy. **Renombrar primero, commitear después.**
+
+### Estado
+
+Nada commiteado. Sin confirmar: `.gitignore`, `captures/CAPTURE_SET_SPEC.md`, `captures/truth.csv`,
+`tools/build_capture_index.py`. `captures/index.csv` generado y correctamente ignorado.
+
+### Pendientes que deja esta sesión
+
+1. **Renombrado a `SUBJ01…`** — CSVs locales + ocho líneas en dos scripts + regenerar índice.
+   Desbloquea poder versionar `truth.csv`. Es el primer paso.
+2. Rellenar `truth.csv` a mano (93 filas, todas vacías).
+3. Declarar las tolerancias de §2.6 (queda por fijar el *T* del tiempo de asentamiento tras
+   transición; no puede ser menor que las ventanas de 8 s de HR2 / 10,24 s de HR3).
+4. Borrar o archivar los 15 ficheros sin datos.
+5. Decidir dónde vive el núcleo curado del set (§6): LFS, release o repo aparte, con `sha256`.
+6. Resolver la adquisición de ECG simultáneo antes de la campaña neonatal.
+
+### Corrección en la misma sesión — quién miente es la cabecera, no el nombre
+
+Alex objeta: *"estoy casi seguro de que el nombre tiene la información correcta y que el header es
+el incorrecto/desactualizado. Lo digo porque puse más atención en poner el nombre de fichero
+correcto que en actualizar las Pre-capture notes de la ventana Lab Capture"*. **Tenía razón**, y la
+objeción destapa un problema mayor que el que yo creía haber encontrado.
+
+**El código lo confirma.** La cabecera `#` NO es un registro automático: es el campo de texto libre
+"Pre-capture notes" (`pulsenest_lab.py:9943`), que se rellena pulsando el botón "Read chip config"
+(`:9932`). Ese botón manda `$CFG?` y **pega una instantánea del instante**. El texto persiste entre
+capturas y es editable, así que cambiar RF/ILED/PRF sin volver a pulsarlo deja una cabecera que
+afirma con total aplomo la configuración *anterior*. Encaja con la evidencia: las cuatro capturas
+tienen cabecera **idéntica** (250K, CF=35p), que es justo lo que produce un snapshot pulsado una vez.
+
+**Zanjado con los datos, no con inferencias.** El TIA escala la señal linealmente con RF:
+
+| Fichero | LED1 medio |
+|---|---|
+| `..._RF100K_...184139` | 357 259 |
+| `..._RF100K_...184201` | 369 230 |
+| `..._RF250k_...184022` | 931 797 |
+| `..._RF250k_...184045` | 914 442 |
+
+Razón entre grupos = **2,54 ≈ 2,5 = 250 k/100 k**. Los nombres son correctos; las cabeceras de las
+dos capturas `RF100K` están desactualizadas.
+
+**La jerarquía real de fiabilidad**, que es la inversa de lo que yo había asumido:
+
+| Fuente | Naturaleza | Fiabilidad |
+|---|---|---|
+| Columnas `RF1_OHM`/`RF2_OHM` por muestra | automática, del firmware (lib ≥ v0.37, añadidas a Lab Capture en v0.86) | **la buena** |
+| La propia señal (amplitud, `V_TIA/(2·RF)`) | objetiva, indirecta | alta |
+| Nombre del fichero | manual, pero con atención | media |
+| Cabecera `#` | manual, snapshot pegado a mano | **la peor** |
+
+La cabecera es el registro **menos** fiable de la captura precisamente porque parece el más fiable.
+
+### Consecuencias aplicadas
+
+- **Spec §2.3 reescrito**: la configuración debe registrarse **automáticamente y por muestra**, no
+  en la cabecera. La cabecera queda para lo que fue diseñada: notas humanas (sujeto, condiciones,
+  operador). Añadida la jerarquía de fuentes explícita.
+- **Spec §2.5 corregido**: donde decía "los nombres mienten" ahora está el análisis con los datos y
+  la conclusión correcta, más la lección: cuando dos registros manuales discrepan, **arbitra la
+  señal**.
+- **`build_capture_index.py`**: nuevo campo `rf_led1/2_from_data` que extrae los valores distintos
+  de `RF1_OHM`/`RF2_OHM` (lista `|`-separada, así que un cambio de RF a mitad de captura se ve —
+  `kk_20260824_153041.csv` registra siete valores en un solo fichero, algo que ninguna cabecera
+  puede expresar). El check pasa de `NAME LIES` a `MISMATCH`: informa de la contradicción y cita el
+  RF por muestra si existe, pero **no declara ganador**.
+- **§5.1 ampliado con la cifra que de verdad importa**: solo **2 de 93** capturas tienen registro
+  automático de configuración. Las otras 91 tienen, como mucho, una afirmación escrita a mano.
+- **Nuevo prerrequisito antes de capturar nada de §3**: activar `RF1_OHM`/`RF2_OHM` en Lab Capture y
+  extender el registro por muestra a ILED, RG, AMBDAC y PRF. Capturar el set entero con cabeceras
+  pegadas a mano reproduciría, sobre datos nuevos, exactamente el problema que inutiliza a los 93
+  actuales.

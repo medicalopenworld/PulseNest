@@ -1,0 +1,94 @@
+file,tier,condition,subject_code,truth_hr_bpm,truth_spo2_pct,truth_beats,usable_from_s,consent,notes,name_hint
+ALEX_CUESTA_57_20260821_223615.csv,,,,,,,,,,
+ALEX_CUESTA_57_20260821_223639.csv,,,,,,,,,,
+ALEX_CUESTA_57_RF100K_20260823_184139.csv,,,,,,,,,,
+ALEX_CUESTA_57_RF100K_20260823_184201.csv,,,,,,,,,,
+ALEX_CUESTA_57_RF250k_20260823_184022.csv,,,,,,,,,,
+ALEX_CUESTA_57_RF250k_20260823_184045.csv,,,,,,,,,,
+ANNA_CUESTA_19_20260804_234415.csv,,,,,,,,,,
+ANNA_CUESTA_19_20260804_234444.csv,,,,,,,,,,
+FERNANDO_CUESTA_53_20260821_222705.csv,,,,,,,,,,
+FERNANDO_CUESTA_53_20260821_222728.csv,,,,,,,,,,
+IKER_CUESTA_19_20260823_180500.csv,,,,,,,,,,
+IKER_CUESTA_19_20260823_180542.csv,,,,,,,,,,
+IKER_CUESTA_19_20260823_180701.csv,,,,,,,,,,
+IKER_CUESTA_19_20260823_180721.csv,,,,,,,,,,
+IKER_CUESTA_19_AL_REVES_20260823_180835.csv,,,,,,,,,,
+IKER_CUESTA_19_ARRIBA_20260823_180923.csv,,,,,,,,,,
+IKER_CUESTA_19_ARRIBA_AL_REVES_20260823_181005.csv,,,,,,,,,,
+IKER_CUESTA_19_ARRIBA_AL_REVES_20260823_181028.csv,,,,,,,,,,
+JORGE_CUESTA_17_20260805_171626.csv,,,,,,,,,,
+JORGE_CUESTA_17_20260805_171649.csv,,,,,,,,,,
+LEO_CUESTA_15_20260823_175912.csv,,,,,,,,,,
+LEO_CUESTA_15_20260823_175947.csv,,,,,,,,,,
+MARKEL_CUESTA_17_20260810_005759.csv,,,,,,,,,,
+MARKEL_CUESTA_17_20260810_005823.csv,,,,,,,,,,
+PHOTOTHERAPY_10000HZ_SIMUL_60BPM_96SPO2_20260624_082717.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_1000HZ_SIMUL_60BPM_96SPO2_20260625_233304.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_20000HZ_SIMUL_60BPM_96SPO2_20260624_082332.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_2000HZ_SIMUL_60BPM_96SPO2_20260625_231622.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_400HZ_SIMUL_60BPM_96SPO2_20260620_233424.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_400HZ_SIMUL_60BPM_96SPO2_20260624_083632.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_50000HZ_SIMUL_60BPM_96SPO2_20260621_001453.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_50000HZ_SIMUL_60BPM_96SPO2_20260624_081825.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_5000HZ_SIMUL_60BPM_96SPO2_20260624_083125.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_500HZ_SIMUL_60BPM_96SPO2_20260624_083336.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_50HZ_SIMUL_60BPM_96SPO2_20260624_083954.csv,,,,,,,,,,bpm=60; spo2=96; looks like simulator; phototherapy
+PHOTOTHERAPY_ONOFF_60BPM_90SPO2_20260618_175921.csv,,,,,,,,,,bpm=60; spo2=90; phototherapy
+PHOTOTHERAPY_ONOFF_60BPM_90SPO2_20260618_180045.csv,,,,,,,,,,bpm=60; spo2=90; phototherapy
+TEST1_20260612_132900.csv,,,,,,,,,,
+TEST2_SIMUL_60BPM_M3_20260612_140001.csv,,,,,,,,,,bpm=60; looks like simulator
+TEST2_SIMUL_60BPM_M4_20260612_135932.csv,,,,,,,,,,bpm=60; looks like simulator
+TEST3_SIMUL_60BPM_M4_20260612_152341.csv,,,,,,,,,,bpm=60; looks like simulator
+TEST_SIMUL_60BPM_20260612_132938 - Copy.csv,,,,,,,,,,bpm=60; looks like simulator
+TEST_SIMUL_60BPM_20260612_132938.csv,,,,,,,,,,bpm=60; looks like simulator
+TEST_SIMUL_60BPM_M3_20260612_135310.csv,,,,,,,,,,bpm=60; looks like simulator
+afe_sweep_test_2026-06-04.csv,,,,,,,,,,
+afe_sweep_test_2026-06-05.csv,,,,,,,,,,
+afe_sweep_test_2026-06-06.csv,,,,,,,,,,
+afe_sweep_test_2026-06-06_EXTREME_SWEEP.csv,,,,,,,,,,
+afe_sweep_test_2026-06-06_NORMAL_SWEEP.csv,,,,,,,,,,
+afe_sweep_test_2026-06-06_OLD.csv,,,,,,,,,,
+afe_sweep_test_2026-06-06_kk.csv,,,,,,,,,,
+afe_sweep_test_2026-06-09.csv,,,,,,,,,,
+afe_sweep_test_2026-06-09_KK.csv,,,,,,,,,,
+afe_sweep_test_2026-07-09_PROBE_NOT_APPLIED.csv,,,,,,,,,,
+afe_sweep_test_kk.csv,,,,,,,,,,
+batch_summary.csv,,,,,,,,,,
+hr1test_20260413_224623.csv,,,,,,,,,,
+hr1test_20260414_005721.csv,,,,,,,,,,
+kk - Copy.csv,,,,,,,,,,
+kk.csv,,,,,,,,,,
+kk1.csv,,,,,,,,,,
+kk2.csv,,,,,,,,,,
+kk3.csv,,,,,,,,,,
+kk4.csv,,,,,,,,,,
+kk_20260824_152937.csv,,,,,,,,,,
+kk_20260824_153041.csv,,,,,,,,,,
+kk_good.csv,,,,,,,,,,
+labcap_BASELINE_20260610_002407.csv,,,,,,,,,,
+labcap_BASELINE_20260610_002424.csv,,,,,,,,,,
+labcap_diag_finger_20260417_185614.csv,,,,,,,,,,
+labcap_diag_finger_20260417_221857.csv,,,,,,,,,,
+labcap_diag_finger_20260417_234346.csv,,,,,,,,,,
+labcap_diag_nofinger_20260417_185522.csv,,,,,,,,,,
+labcap_diag_unplugged_20260417_185329.csv,,,,,,,,,,
+labcap_diag_unplugged_20260417_185345.csv,,,,,,,,,,
+labcap_diag_unplugged_20260417_185424.csv,,,,,,,,,,
+ppg_data_snap_20260415_212708.csv,,,,,,,,,,
+ppg_data_snap_20260419_125527.csv,,,,,,,,,,
+ppg_data_snap_20260419_155939.csv,,,,,,,,,,
+ppg_data_snap_20260421_004540.csv,,,,,,,,,,
+ppg_data_snap_20260423_090153.csv,,,,,,,,,,
+ppg_data_snap_20260518_224755.csv,,,,,,,,,,
+ppg_data_stream_20260415_210628.csv,,,,,,,,,,
+ppg_data_stream_20260415_212658.csv,,,,,,,,,,
+ppg_data_stream_20260415_220551.csv,,,,,,,,,,
+ppg_data_stream_20260417_234839.csv,,,,,,,,,,
+ppg_data_stream_20260417_234943.csv,,,,,,,,,,
+ppg_spo2_98_hr_60_MS100_20260412_015146.csv,,,,,,,,,,
+ppg_spo2_98_hr_60_MS100_20260412_015146_result.csv,,,,,,,,,,
+ppg_spo2_98_hr_60_MS100_20260412_015203.csv,,,,,,,,,,
+ppg_spo2_98_hr_60_MS100_20260412_015203_result.csv,,,,,,,,,,
+ppg_spo2_98_hr_60_MS100_20260414_191435.csv,,,,,,,,,,
+ppg_spo2_98_hr_60_MS100_20260414_191444.csv,,,,,,,,,,

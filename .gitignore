@@ -39,6 +39,12 @@ ppg_data_stream_*.csv
 # ficheros dentro de un directorio excluido.
 captures/*
 !captures/CAPTURE_SET_SPEC.md
+# truth.csv is AUTHORED (tier, ground truth, notes) — hand-written, small, and the only
+# part of the capture set that cannot be regenerated. It must be versioned.
+!captures/truth.csv
+# index.csv is DERIVED from the capture headers by tools/build_capture_index.py.
+# Deliberately NOT versioned: it is a cache, and committing it would create a second
+# source of truth for data that already lives in each capture's '#' header.
 
 # Offline runner — build y ficheros generados
 tools/offline_runner/build/
