@@ -18734,3 +18734,68 @@ v0.87 pasa a ser τ en segundos.
 
 **76/77 tests** · firmware V16 compila · RAM 60.828 → 60.844 B (+16 B, los dos floats nuevos).
 Publicado: `18716d1` (lib) y `267c503` (PulseNest).
+
+---
+
+## Sesión 2026-09-05 — Comparación de detectores de HR1 (1ª pasada: NO concluyente) y arreglo de hooks
+
+### Arreglo de los hooks (petición de Alex: "arregla ambos")
+
+El recordatorio de `conversation_log.md` fallaba **en las dos direcciones**: disparaba con los `.py`
+de un solo uso del scratchpad (5 veces en la sesión anterior) y **callaba** cuando el código se
+tocaba vía Bash (`python`, `sed -i`, heredocs), porque el matcher era `Edit|Write`.
+
+**Arreglo de fondo:** `stop_check.sh` ya no se fía de qué herramienta se usó — **le pregunta a
+git qué quedó tocado**. Misma lección que los tests de v0.87: observar el efecto, no el
+intermediario. `code_changed_flag.sh` queda como pista y excluye el scratchpad.
+
+**Tercer falso negativo, detectado por Alex:** mi primera versión callaba si `conversation_log.md`
+también estaba modificado ("el registro está en marcha"). Trivial de provocar: escribir la entrada
+del log y seguir tocando código dejaba el hook mudo el resto de la sesión. Lo que importa es el
+**orden**, no el estado: ahora compara marcas de tiempo — avisa si el código es **más nuevo** que
+el log. Probado en 5 escenarios (incluido `exit 2` real, que es lo que hace llegar el aviso).
+Copias de seguridad en `~/.claude/hooks/*.sh.bak`.
+
+### Comparación de detectores — `tools/hr1_detector_experiment.py` (nuevo)
+
+Los tres candidatos sobre el **mismo** preprocesado (resta de DC + LP Butterworth 5 Hz) y el mismo
+refractario, para que la diferencia sea atribuible a la regla de decisión:
+**current** (umbral 0,6 × running_max decayente) · **SSF** (Zong: suma de pendientes positivas en
+ventana de 128 ms) · **TERMA** (Elgendi: dos medias móviles de 111 ms y 667 ms sobre la señal
+cuadrada, con bloques de interés).
+
+### Resultado: NO concluyente, y conviene decirlo
+
+| Captura (verdad 60 BPM) | current | SSF | TERMA |
+|---|---|---|---|
+| PHOTOTHERAPY_500HZ | +6,1 | **+0,1** (CV 0,42 %) | +12,0 |
+| PHOTOTHERAPY_ONOFF | +2,6 | **falla** (pocos latidos) | +7,6 (99 latidos en 89 s) |
+| PHOTOTHERAPY_400HZ | **−0,1** | +7,0 | +2,5 |
+
+Cada detector gana en una captura y falla en otra: eso es ruido de implementación, no un ranking.
+**Único dato consistente:** en señal limpia los tres empatan (±0,3 BPM entre sí y con el firmware),
+con TERMA algo mejor en dispersión (CV 1,51 % vs 2,81 % del actual en `ALEX_RF100K`).
+
+### Dos defectos MÍOS que lo explican
+
+1. **TERMA con umbral de media global.** El offset `beta × mean(sq)` se calcula sobre toda la
+   captura; en `ONOFF` (fototerapia encendiéndose y apagándose) ningún tramo se parece a esa media
+   → 99 latidos donde caben ~89. Elgendi lo calcula sobre la **ventana local**.
+2. **SSF con un umbral que no es suyo.** Le puse el `running_max` de τ = 20 s de HR1 para aislar el
+   realce; con 20 s de memoria, un tramo de amplitud alta deja el umbral inflado medio minuto → en
+   `ONOFF` deja de detectar. Zong usa umbral adaptativo por bloques, de memoria corta.
+
+En ambos casos metí algoritmos publicados dentro de una decisión de umbral **que no forma parte de
+ellos** — justo lo que la comparación pretendía evaluar.
+
+### Observación de método para la 2ª pasada
+
+Las capturas de fototerapia son el caso duro y **los tres detectores lo hacen mal** (CV 12–30 %),
+mientras el firmware reporta 60,0 BPM estables. Eso sugiere que el firmware hace algo más que el
+detector puro: probablemente el **SQI de HR1** (`hr1_sqi_cv_max`, CV de 5 intervalos) descarta los
+latidos malos antes de publicar. Si es así, la comparación justa debe incluir ese filtro posterior.
+
+### Pendiente
+
+2ª pasada con TERMA de offset local, SSF con su propio umbral adaptativo, y el SQI incluido en la
+comparación.
