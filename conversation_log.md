@@ -18799,3 +18799,56 @@ latidos malos antes de publicar. Si es así, la comparación justa debe incluir 
 
 2ª pasada con TERMA de offset local, SSF con su propio umbral adaptativo, y el SQI incluido en la
 comparación.
+
+---
+
+## Sesión 2026-09-05 (cont.) — Spec del set de capturas y glosario de términos poco intuitivos
+
+### `captures/CAPTURE_SET_SPEC.md` (nuevo, `fbb878b`)
+
+Alex preguntó si diseñar la colección de capturas en otra sesión. Respuesta: separar por
+**naturaleza, no por sesión** — el *diseño* aquí (los requisitos salen de los límites que hemos
+topado estos dos días y sería laborioso reconstruirlos), la *ejecución* en otra (trabajo largo con
+hardware que solo necesita el documento delante).
+
+Contenido: §1 justifica cada requisito con el límite que lo produjo · §2 requisitos por captura
+(≥ 65 s = 5 s de warmup + ≥ 60 s útiles; tres niveles de verdad T1/T2/T3 marcados en el nombre;
+columnas y cabecera; convención de nombres) · §3 los cinco bloques a capturar (neonatal, rango de
+ritmo, interferencia, SpO2, barrido HW) · §4 **para qué sirve cada nivel** —comparar algoritmos vale
+con cualquiera, **calibrar sobre T3 no**— · §5 estado (qué hay / qué falta).
+
+Decisiones que conviene recordar:
+- **El bloque neonatal (N1–N3) es lo que bloquea hoy**: todo lo medido es de adultos y simulador.
+- **No se renombran las capturas existentes**: sus nombres están en los scripts y en este log.
+- `.gitignore`: `captures/` pasa a `captures/*` + excepción, porque **git no permite reincluir un
+  fichero dentro de un directorio excluido**. Los CSV siguen fuera; la spec se versiona.
+
+### Glosario: dos términos que se usaban sin definir
+
+Alex preguntó qué significaban, y tenía razón en que no eran deducibles del contexto.
+
+**`double-counting`** (`8c55ee0`) — contar dos latidos donde hay uno: la muesca dicrótica cruza el
+umbral y el ritmo reportado se duplica. Lo importante que faltaba: **es la dirección peligrosa**,
+porque un ritmo duplicado *parece plausible* y puede **enmascarar una bradicardia** (60 BPM contados
+doble = 120 BPM, sin alarma), mientras que perder latidos se delata solo (intervalos fuera de rango).
+
+**`refractory period`** (`5e58bf9` + `2f69091`) — ventana ciega tras aceptar un latido, durante la
+que se ignora cualquier cruce de umbral; nombre tomado del periodo refractario del miocardio.
+Definición canónica junto a la constante en el `.cpp`; glosas cortas en el `.h`, en la spec (primer
+uso y tabla de parámetros), en `CAPTURE_SET_SPEC.md` §0 y en los dos scripts de `tools/`.
+
+Dos hallazgos al escribirlo:
+
+1. **El comentario original era ambiguo, casi al revés.** *"covers 263 BPM guard band"* se lee como
+   "protege hasta 263 BPM", y significa lo contrario: que 0,185 s **no estorba** a 263 BPM, porque
+   ahí los latidos van a 228 ms y un refractario mayor rechazaría latidos legítimos. 0,185 s permite
+   hasta 324 BPM → **43 ms de margen sin usar**.
+2. **El argumento del refractario adaptativo pasa de intuición a número.** La muesca no llega a
+   retardo fijo: está a ~1/3 de la sístole, o sea ~150 ms a 200 BPM pero **250–350 ms a 60 BPM**.
+   El refractario fijo protege la taquicardia —donde el doble conteo es menos probable— y deja
+   expuesta la **bradicardia**. Gastar los 43 ms sobrantes tampoco llegaría: **ningún valor fijo
+   cubre las dos puntas**. Eso justifica pedir capturas de bradicardia (§3.2) y el refractario
+   proporcional al RR estimado del catálogo de estrategias.
+
+No se tocó `pulsenest_lab_spec.md` (pertenece al script, en edición en otra sesión) ni
+`OLD_incunest_afe4490_spec.md` (histórico).
