@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.32
+# pulsenest_lab — Specification v1.40
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -461,9 +461,76 @@ warmup.
 `DC LED1/LED2` and `RMS AC LED1/LED2` are displayed in ppm (×1e6) in SpO2TestWindow's plots
 and value table, consistent with `OT_LED1`/`OT_LED2` in SIGNAL STATS.
 
-### 5.3 HR1TestCalc
+### 5.3 HR1 variants — `HR1Variant` framework
 
-Replicates `INCUNEST_AFE4490::_hr1_update()`.
+**v1.33.** HR1 is the algorithm under active redesign, so its implementations are organised as a
+family of variants sharing one base class. The base owns everything downstream of the peak
+decision; a variant owns only how a sample becomes that decision. Two variants therefore differ
+in exactly what they are meant to differ in, which is what makes a comparison between them
+honest.
+
+`HR1Param` / `HR1Curve` (namedtuples) let a variant declare its tunable parameters and its
+diagnostic curves. HR1LAB builds its controls and its plots from those declarations, so adding a
+variant costs one subclass plus one line in the `HR1_VARIANTS` registry — no UI code.
+
+**Owned by `HR1Variant` (shared, never redefined by a variant):**
+
+| Element | Detail |
+|---|---|
+| Probe gating | While `probe_state != PROBE_APPLIED`: `reset()` every sample, `hr_bpm`/`hr_sqi` → `nan`/`0` |
+| Gap detection | `sample_counter` continuity; runs regardless of `probe_state` |
+| Refractory veto | Variant reports the raw decision; the base vetoes it. `_refractory_samples(fs)` is overridable, for an RR-adaptive refractory |
+| RR → HR → SQI | Buffer of `FW_RR_BUF_LEN` intervals, `HR = fs·60/mean(RR)`, `SQI = clamp(1 − CV/0.15, 0, 1)`, forced to 0 outside [`FW_HR_MIN_BPM`, `FW_HR_MAX_BPM`] |
+| Peak marker | Display value forced to 0 for `FW_PEAK_MARKER_N` samples after a peak |
+| Availability | `availability` ∈ [0,1]: fraction of the last `AVAILABILITY_WIN_S` (30 s) with `SQI > 0`. The metric that decides between variants — under interference the published HR stays accurate while the SQI gate discards most intervals |
+
+**Implemented by a variant:** `_init_variant()`, `_reset_variant()`, `_recalc_variant(fs)` and
+`_detect(sample, fs) -> (peak_raw, display_value)`, where `peak_raw` ignores the refractory
+period and `display_value` is the waveform to plot.
+
+#### 5.3.2 `HR1BiquadCalc` — the BPF variant
+
+**v1.35.** Replaces SPEC's IIR DC remover + moving average with a single 2nd-order Butterworth
+bandpass, ported from the library's `BiquadFilter::init_bp()` (same bilinear algebra, same DF-II
+transposed structure, same steady-state precharge) so the bench measures what the firmware would
+run. Verified against `scipy.signal.butter(1, [f_lo, f_hi], 'band')`: coefficients agree to 1e-17
+and the -3 dB points land exactly on the requested corners.
+
+Parameters: `bpf_low_hz` (default 0.5 Hz) and `bpf_high_hz` (default 5.0 Hz) replace
+`dc_iir_tau_s`, `ma_cutoff_hz` and `ma_max_len`. Detector parameters (`running_max_decay`,
+`threshold_factor`, `refractory_s`) are unchanged from SPEC, so any difference between the two
+rows can only come from the filtering. The defaults isolate one variable: the low corner moves to
+the 0.5 Hz the library already uses for `ppg_disp`, while the high corner stays where SPEC's
+moving average already sits (-3 dB at ~4.4 Hz).
+
+`_recalc_variant()` clamps the corners (`low < high`, both below 0.45·fs) — an inverted pair
+yields a negative bandwidth and a silent NaN.
+
+#### 5.3.0 Running-max decay — owned by the base
+
+**v1.38.** The decay of the running maximum moved from a per-sample factor
+(`running_max_decay = 0.9999`) to `max_decay_tau_s` in seconds, resyncing with the library's
+`hr1_max_decay_tau_s` / `setHR1MaxDecayTauS()` (lib v0.87). A per-sample factor is not a
+communicable quantity: 0.9999 is 20 s at 500 Hz but 6.25 s at 1600 Hz.
+
+`max_decay_beats` (default 0 = the fixed tau above, i.e. firmware behaviour) makes the memory a
+number of beats instead: `tau = N x RR`, so the threshold falls by the same fraction on every beat
+at any rate. The lower bound on this parameter is proportional to RR — the threshold must not
+collapse between beats — so expressed in seconds it differs 6x across the declared 40-300 BPM
+range, which no single fixed value can satisfy.
+
+`_update_decay_alpha()` lives in `HR1Variant` and recomputes the factor only on a rate change or a
+new RR interval, never per sample. Both SPEC and BPF consume `self._decay_alpha_v`.
+
+Verified: at 500 Hz with defaults, output is identical sample-by-sample to the pre-change
+implementation at 45/60/140/250 BPM. (The library's spec says 20 s reproduces 0.9999 "exactly";
+it does so to 5e-9 — the exact value is 19.999 s — with no effect on any detection.)
+
+#### 5.3.1 `HR1TestCalc` — the SPEC variant
+
+Replicates `INCUNEST_AFE4490::_hr1_update()`. **Frozen by definition:** it tracks the library and
+never explores. New ideas go in a sibling `HR1Variant` subclass, never here — HR1TEST's value as
+a verification window depends on this variant not drifting from the firmware.
 
 **Algorithm:** IIR DC removal → moving average LP filter (cutoff 5 Hz) → threshold-based peak detection (threshold = 0.6 × running max) → refractory period 185 ms → RR intervals buffer (5 intervals) → HR = 60 / mean(RR).
 
@@ -1066,7 +1133,9 @@ Layout: left (FFT spectrum with HPS peak line) + right (2 stacked: LP signal + H
 
 No parameter editing — purely observational.
 
-### 7.12 HRLabWindow — "HR2LAB"
+### 7.12 HR2LabWindow — "HR2LAB"
+
+**v1.36:** renamed from `HRLabWindow` — the class, `btn_hrlab`, `toggle_hrlab`, `_open_hrlab_default`, the `plot_hrlab` timing slot and the `hrlab_open` / `HRLabWindow` settings keys all lacked the "2" the window has shown since HR3LAB appeared. Existing `.ini` keys were migrated in place, so saved geometry and open-state survive.
 
 Purpose: interactive filter chain visualization for HR algorithm development.
 
@@ -1299,6 +1368,47 @@ This allows the same `_build_combos()` / `_apply_combo()` logic to treat `value(
 
 ---
 
+### 7.19 HR1LabWindow — "HR1LAB"
+
+**v1.34.** Bench for exploring HR1 peak-detection variants. Sidebar button in ANALYSIS, above
+HR2LAB. Requires frame mode `$M4` (runs on `OT_LED1`).
+
+Every variant in `HR1_VARIANTS` gets one collapsible row and is fed **the same sample in the same
+call** (`feed_sample()`), so comparing them live is rigorous: they see an identical signal. The
+window is for **exploration, not validation** — provoke a failure by hand (move the finger, change
+ambient light, switch the phototherapy lamp on) and watch which variant breaks and why. Deciding
+between the survivors is a separate batch run over the capture set with known truth, and is not
+part of this window.
+
+**Row (`HR1LabRow`)** — built entirely from the variant's declarations, so a new variant needs no
+UI code:
+
+| Zone | Content |
+|---|---|
+| Header | Collapse arrow, variant `NAME`, `run` checkbox, live `HR` / `SQI` / `AVAIL` |
+| Left | Plot of the curves declared in `DIAG_CURVES`, detection markers scattered on `diag_display`, event marks as dashed vertical lines. X axis in seconds before now (5 s window) |
+| Detection marker | **v1.40:** bright yellow, size 20, white outline — it marks where the signal crosses the threshold and a beat is declared, the single most important event in the plot |
+| Threshold while refractory | **v1.40:** a curve declared with `dim_refr=True` is drawn twice from one array, split by NaN with `connect='finite'`: solid in its own colour where detection is live, dark dashed (35 % brightness) where the refractory period is vetoing it. The base records that state per sample in `diag_refractory`. One array and one time axis, so the two halves cannot disagree |
+| Right | One spin box per `HR1Param` (int or float by `decimals`), plus RESET TO DEFAULTS |
+
+Changing a parameter resets that variant's state — the old state was produced by different
+coefficients. Unchecking `run` freezes a variant without removing its row; re-checking it restarts
+it, so no time discontinuity enters the RR buffer. A collapsed row keeps running: only its display
+is hidden, and the freed height goes to the expanded rows.
+
+**Window controls:**
+
+| Control | Effect |
+|---|---|
+| Context bar | `PROBE` (probe state), `OT_LED1` (the signal every variant consumes), `PI` (from the main window) — what you are physically doing to the signal |
+| PAUSE / CONTINUE (key `P`) | **v1.39.** Freezes the feed: traces, metrics and the save buffer stop where they are, so the frozen view can be studied and saved. CONTINUE starts a fresh recording — variants, marks and buffer cleared — because resuming into the old state would splice two moments of signal into one RR interval and one timeline |
+| MARK (key `M`) | Stamps a dashed line across every trace at the current instant, so a failure can be tied to the action that caused it. The mark points at the newest buffered sample, so marking and pausing immediately still keeps it |
+| SAVE LAST 30s | Writes `captures/hr1lab_<timestamp>.csv` — `t_s,ot_led1,probe_state,mark`. Saves the **signal**, not the variant outputs, so the same stretch can be replayed later through any variant. While paused it writes the buffer as it stood at PAUSE: nothing has entered it since |
+| RESET ALL | Clears every variant's state and drops the marks; parameters are kept |
+
+Fed at 500 Hz from the serial path, next to the HR1TEST mirror; redrawn at 10 Hz
+(`_HR1LAB_REFRESH_EVERY`), timed as `plot_hr1lab` in PYTHON TIMING.
+
 ## 8. File outputs
 
 All files are saved to `CAPTURES_DIR` (`captures/` subdirectory). The directory is created
@@ -1334,6 +1444,24 @@ All CSV files include a `#`-prefixed header comment with timestamp and relevant 
 | `PPGMonitor/combo_port` | str | Last selected COM port |
 | `PPGMonitor/stats_highlighted` | str | Highlighted cells (`row,col;row,col`) |
 | `PPGMonitor/*_open` | bool | Whether each subwindow was open on exit |
+
+**v1.37 — file layout follows the sidebar.** QSettings writes sections and keys in its own
+internal order, unrelated to the UI. `PPGMonitor._reorder_settings_file()` runs as the last step
+of `closeEvent` — after every subwindow has written its geometry — and rewrites the file so that:
+
+- `[PPGMonitor]` comes first, then one section per window **in sidebar-button order**; sections
+  with no button (`TimingWindow`, `AFECharTestWindow`) are kept at the end.
+- Inside `[PPGMonitor]`, the general settings come first, then the `*_open` keys in sidebar-button
+  order, then any `*_open` key not in the table (`timing_open`, `afe_char_open`).
+
+The order is declared once in `PPGMonitor._INI_BUTTON_ORDER` as `(open-state key, section)` pairs,
+which must be kept in sync with the `addWidget()` sequence that builds the sidebar. Anything absent
+from that tuple is still written — it just lands at the end, so a forgotten entry degrades the
+layout and never loses a setting.
+
+The pass only moves lines: no value is added, changed or removed, and keys whose value QSettings
+wrapped across lines stay attached to their continuation lines. It is cosmetic by design and
+swallows any parsing surprise, leaving the file exactly as QSettings wrote it.
 | `PPGPlotsWindow/geometry` | bytes | |
 | `PPGPlotsWindow/check_ir_raw` … `check_red_sub` | bool | Curve visibility (IR-first) |
 | `PPGSignalsWindow/geometry` | bytes | |
@@ -1346,7 +1474,8 @@ All CSV files include a `#`-prefixed header comment with timestamp and relevant 
 | `HR2TestWindow/geometry` | bytes | |
 | `HR3TestWindow/geometry` | bytes | |
 | `HR3LabWindow/geometry` | bytes | |
-| `HRLabWindow/geometry` | bytes | |
+| `HR2LabWindow/geometry` | bytes | |
+| `HR1LabWindow/geometry` | bytes | |
 | `SerialComWindow/geometry` | bytes | |
 | `UdpComWindow/geometry` | bytes | |
 | `HWConfigWindow/geometry` | bytes | |

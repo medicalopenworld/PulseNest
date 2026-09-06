@@ -19420,3 +19420,519 @@ llevado a dos cambios en un dispositivo médico sin mejora visible para el pacie
 **Disponibilidad**: 24–70 % de intervalos sobreviven bajo fototerapia. Pertenece al criterio del
 propio SQI (`hr1_sqi_cv_max` = 0,15, uno de los parámetros sin procedencia del inventario), no al
 filtro ni al detector. Registrado en rationale **§5.4** (nueva).
+
+
+---
+
+## Sesión 2026-09-06 (tarde) — Criterios del umbral de HR1 y arranque de HR1LAB
+
+### Punto de partida
+
+Alex pide criterios para elegir el **factor de decaimiento** del umbral de detección de picos de
+HR1, y a continuación amplía el foco al **factor 0.6** ("quizás debería ser 1.0, es decir,
+eliminarlo").
+
+### Análisis del umbral `thr(t) = k · M · e^(−t/τ)`
+
+**τ actual (0.9999 por muestra) = 20 s a 500 Hz**, y como es *por muestra*, cambia solo con la PRF:
+a 1600 Hz pasa a 6,25 s. `dc_iir_tau_s` sí está en segundos; este no.
+
+**Sobre `k = 0.6`.** Cumple tres funciones, no una: margen de amplitud latido a latido, punto de
+disparo en el flanco (gobierna el jitter) y rechazo de la dicrota. **`k = 1.0` rompe el detector**
+por cuatro vías: (a) se pierde por construcción todo latido menor que el anterior — la modulación
+respiratoria es del 10–20 %; (b) el jitter diverge, `Δt = δ·2T_r/(π·√(1−k²))`, singular en k=1;
+(c) la detección pasaría a depender de una igualdad exacta en coma flotante; (d) el margen no
+desaparece, se traslada a τ y se vuelve **dependiente de la HR**. El 0.6 sobrevive el análisis:
+está centrado en su ventana (0.4–0.7) y en la zona plana de jitter.
+
+**Separación de responsabilidades:** `k` es el parámetro de **detección**; `τ` es el parámetro de
+**recuperación** — con `τ = ∞` y `k = 0.6` el detector funciona, solo falla al recuperarse de un
+cambio de escala de amplitud.
+
+### Cuatro preguntas de Alex, y dos correcciones a lo que yo había afirmado
+
+1. **¿Dispara en el flanco o en el máximo?** En el flanco (`_last_peak_idx = _sample_idx` en la
+   muestra del cruce). La nomenclatura (`diag_peak_mask`, `peak_detected`) engaña.
+2. **¿También el script?** Sí, pero **después**: se experimenta en el script, se decide, se porta a
+   la librería, se actualiza la spec §5.2 y se resincronizan las constantes `FW_*`.
+3. **Trazados mejores que la exponencial.** La exponencial mezcla dos ejes (altura y tiempo).
+   Separarlos da: umbral plano + *search-back* (Pan-Tompkins), rampa referida al ciclo, histéresis
+   real. Y **la dicrota ya la cubre el refractorio** en rango neonatal.
+4. **Umbral adaptativo con AC/DC.** Verificado que `PICalc` estima AC por RMS vía EMA de x², sin
+   usar los picos detectados → **no hay lazo de realimentación**. `AC_rms` es la referencia robusta
+   que `running_max` estima mal.
+
+**Corrección 1 — "el máximo es el peor punto posible" era falso, y el filtro es el motivo.**
+`σ_flanco/σ_max = ω / (ω_n·√(1−k²))`. Con T_r=0,12 s y el MA a 5 Hz: **0,90 — empate**. El punto de
+cruce está en B ≈ 4,5 Hz y el MA está en 5,0: estamos justo en la frontera. Lo único sólido a favor
+del flanco es el **modo de fallo** (el argmax puede saltar al pico dicrótico: error de ~0,2·RR, no
+de milisegundos).
+
+**Corrección 2 — la atenuación del MA a 250–300 bpm es irrelevante**: el umbral es relativo y la
+atenuación se cancela. Las MS100 hasta 250 bpm ya lo demuestran.
+
+### Hallazgo: `FW_HR_MAX_BPM = 300` es inalcanzable
+
+`0.2 s × 300 bpm = 100 % del ciclo`. El refractorio impone un techo absoluto de exactamente
+300 bpm, sin margen; a 250 bpm ya consume el 83 %. **El refractorio debe ser adaptativo**
+(`0.5·RR_est`, acotado a [0,10, 0,30] s). Las capturas llegan a 250, así que ese extremo no está
+probado.
+
+**Y a taquicardia extrema se invierte la comparación flanco/máximo**: con el pulso reducido a una
+sinusoide de 5 Hz, `T_r ≈ 50 ms` y la razón pasa a 2,17 → el detector de **máximo es 2× mejor**.
+Flanco a HR baja, máximo a HR alta.
+
+### Principio rector de seguridad
+
+Perder latidos → HR baja → alarma de bradicardia falsa (**molesto**). Inventar latidos (contar la
+dicrota) → HR sube → **enmascara una bradicardia real** (**peligroso**), y la bradicardia por apnea
+del prematuro es la razón de ser del monitor. Por tanto **especificidad sobre sensibilidad**: ante
+duda, mejor perder un latido que inventarlo. Empuja `k` al extremo alto de su ventana.
+
+### Biquad: Alex propone sustituir el MA, y se mantiene el "no"
+
+Ya decidido esta misma mañana con la puerta SQI incluida: ambos publican dentro de 0,4 BPM entre sí
+y de la verdad, y la disponibilidad no da ganador. Si se cambia, que sea dentro del rediseño de
+HR1, nunca como cambio suelto que obligue a revalidar un algoritmo de medida sin ganancia medible.
+
+### HR1LAB — y una corrección de encuadre por mi parte
+
+Alex propone una ventana HR1LAB con una fila por algoritmo, controles en vivo, para probar ideas
+**manualmente y visualmente** (mover el dedo, cambiar la luz, encender la fototerapia).
+
+Yo había propuesto anteponer un motor batch sobre el set de capturas. **Alex corrige: eso es
+validación, no exploración.** Y tenía razón — mi objeción de que "el tiempo real no decide nada"
+era errónea: si las N variantes consumen **la misma muestra en el mismo instante**, la comparación
+entre ellas es rigurosamente justa. Y para *provocar* el fallo y ver por qué se cae una variante,
+el vivo es **superior** al batch. El batch se mueve al final, cuando sobrevivan una o dos
+candidatas, y no forma parte de HR1LAB.
+
+**Propósito de HR1TEST/HR2TEST/HR3TEST** (pregunta de Alex): verificación post-implementación —
+espejo Python independiente comparado contra el firmware muestra a muestra. Su valor depende de no
+desviarse del algoritmo de la librería, así que no sirven para explorar variantes.
+
+**Decisiones:** 3 filas colapsables; el conjunto de variantes **no se congela** — lo que importa es
+que añadir una idea cueste una clase y una línea.
+
+### Fase 1 ejecutada — framework `HR1Variant`
+
+`HR1TestCalc` pasa a ser la variante **SPEC**, subclase de `HR1Variant`. La base se queda con todo
+lo que va después de la decisión de pico (veto refractario, RR→HR→SQI, marcador, gaps, probe
+gating) más la métrica de **disponibilidad** (% de los últimos 30 s con SQI>0), para que ninguna
+variante pueda definirla a su manera. `HR1Param`/`HR1Curve` permiten que HR1LAB genere controles y
+gráficas por declaración.
+
+**Verificado por ejecución, no por lectura del diff:** un comparador extrae las clases de la
+versión anterior y de la nueva y las ejecuta en un espacio de nombres mínimo (sin PyQt, sin
+arrancar la app). 8 configuraciones — 45/60/90/120/150/200/250 bpm, fs 500 y 1000 Hz, parámetros
+no-default, transiciones de `probe_state` y huecos de contador. **Salidas y los 6 buffers de
+diagnóstico idénticos muestra a muestra en todos los casos**, API y constantes intactas.
+
+**Observación de paso:** en el test, tras cada `reset()` por `probe_state` se pierden ~7 s de
+latidos — el transitorio del filtro DC (τ=1,6 s ≈ 4–5τ). Es coste real de disponibilidad al
+reaplicar la sonda, y es justo el tipo de cosa que HR1LAB debe hacer visible.
+
+### Pendiente
+
+Fase 2 (la ventana: 3 filas colapsables, marcador de evento, guardar los últimos N segundos) y
+Fase 3 (tooltips, persistencia).
+
+
+## Sesión 2026-09-06 (tarde, cont.) — Fase 2: la ventana HR1LAB
+
+### Lo construido
+
+`HR1LabWindow` + `HR1LabRow`, botón HR1LAB en ANALYSIS encima de HR2LAB. Una fila colapsable por
+variante registrada; todas reciben **la misma muestra en la misma llamada** (`feed_sample()`), que
+es lo que hace justa la comparación en vivo.
+
+La fila se genera **entera desde las declaraciones de la variante**: los controles desde `PARAMS`
+(spin entero o decimal según `decimals`, con tooltip y `src`), las curvas desde `DIAG_CURVES`. Una
+variante nueva no necesita una sola línea de código de interfaz.
+
+Añadido a la base `HR1Variant` un buffer `diag_display` (la onda sin el marcador de pico) para
+poder dibujar los picos **encima de la onda** — que es justo lo que hay que mirar en la discusión
+flanco vs máximo. Re-verificada la equivalencia con la versión anterior tras el cambio: sigue
+idéntica.
+
+**Lo que se añadió pensando en el uso manual real:**
+- **MARK** (tecla `M`): línea discontinua en todas las trazas en el instante en que actúas sobre la
+  señal, para poder atar el fallo a lo que lo causó.
+- **SAVE LAST 30s**: vuelca la **señal cruda** con las marcas a `captures/hr1lab_*.csv`. Guarda la
+  señal y no las salidas, así el mismo tramo se puede reproducir después por cualquier variante —
+  es lo que convierte un hallazgo casual en material reutilizable.
+- **Barra de contexto**: PROBE / OT_LED1 / PI, para saber qué está pasando físicamente.
+- **AVAIL por fila**: % de los últimos 30 s con SQI>0. La métrica que de verdad separa variantes,
+  visible en vivo sin necesidad de batch.
+- Cambiar un parámetro resetea esa variante (el estado anterior venía de otros coeficientes);
+  re-habilitar una variante congelada la reinicia, para no meter una discontinuidad temporal en el
+  buffer RR.
+
+### Verificación
+
+Test offscreen (`QT_QPA_PLATFORM=offscreen`) que construye la ventana, la alimenta con 40 s de PPG
+sintético a 500 Hz y ejercita todo: **HR 120,0 BPM sobre verdad 120, SQI 1,00, AVAIL 98 %**,
+10 picos dibujados en la ventana de 5 s (correcto a 2 Hz), 1 marca visible y 2 en el CSV,
+colapsar/expandir, cambio de parámetro, reset a defaults, deshabilitar y guardar.
+
+Dos asserts del test no probaban nada en la primera pasada (la marca caía fuera de la ventana de
+5 s y `_sample_idx` valía 0 en ambos lados de la comprobación). Corregidos antes de dar nada por
+verificado.
+
+### Pendiente
+
+Fase 3 (persistencia de parámetros entre sesiones) y, sobre todo, **las variantes**: V1 (umbral
+`AC_rms` + reescalado por DC + refractorio adaptativo), V2 (detector de máximo) y V3 (SSF). El
+framework está listo para que cada una cueste una clase y una línea en `HR1_VARIANTS`.
+
+**Nota de mantenimiento:** la numeración de §7 en `pulsenest_lab_spec.md` tiene duplicados previos
+(dos 7.12 y dos 7.18). HR1LAB se documentó como **§7.19** para no añadir un tercero.
+
+
+## Sesión 2026-09-06 (tarde, cont.) — Variante BPF: la hipótesis del filtro lento
+
+### La hipótesis de Alex
+
+"El filtro inicial de HR1 es muy lento quitando la componente DC y por eso el threshold no
+funciona bien." Origen: la comparación de filtrados entre `ppg_disp` y SPEC — el paso alto de
+`ppg_disp` está en **0,5 Hz** (biquad BP 0,5–20 Hz, `incunest_afe4490.cpp:381`) y el de SPEC en
+**0,0995 Hz** (τ=1,6 s). Cinco veces más bajo: SPEC deja pasar deriva de línea de base que el
+display elimina.
+
+### Implementado: `HR1BiquadCalc` (variante BPF), segunda fila de HR1LAB
+
+**SPEC no se toca** — está congelada y `HR1TestWindow` usa esa misma clase; modificarla rompería
+HR1TEST y eliminaría la referencia contra la que comparar. La variante nueva corre en paralelo
+sobre **la misma muestra**, que es lo que hace medible la hipótesis.
+
+Biquad **portado de `BiquadFilter::init_bp()`** (misma álgebra bilineal, misma estructura DF-II
+transpuesta, misma precarga a estado estacionario), para que el banco mida lo que ejecutaría el
+firmware. Verificado contra `scipy.signal.butter`: coeficientes iguales a **1e-17** y −3 dB
+exactamente en 0,500 y 5,000 Hz.
+
+Spinboxes: `bpf_low_hz` / `bpf_high_hz` sustituyen a `dc_iir_tau_s`, `ma_cutoff_hz` y
+`ma_max_len`. Los del detector (decay, threshold, refractory) se mantienen idénticos a SPEC, así
+que **cualquier diferencia entre las dos filas solo puede venir del filtrado**.
+
+### Barrido: la hipótesis se confirma en dirección, pero está incompleta
+
+Señal sintética, 140 BPM, deriva de 0,4 % a 0,25 Hz (33 % de la amplitud del pulso):
+
+| variante | BP low | τ_max | HR | AVAIL |
+|---|---|---|---|---|
+| SPEC | (τ 1,6 s) | 20 s | 77,7 | **0 %** |
+| SPEC | (τ 1,6 s) | 2 s | 140,3 | 34 % |
+| BPF | 0,5 Hz | 20 s | 117,1 | 55 % |
+| BPF | 0,5 Hz | 2 s | 139,0 | **100 %** |
+| BPF | 1,0 Hz | 20 s | 138,9 | 86 % |
+| BPF | 1,5 Hz | 20 s | 139,3 | 100 % |
+
+Sin deriva ambas dan 100 % y aciertan: **la deriva es el mecanismo**, como sospechaba Alex. Y BPF
+gana a SPEC en toda condición con deriva.
+
+**Pero el filtro solo no basta:** con el corner de 0,5 Hz que iguala a `ppg_disp` y τ=20 s, la
+disponibilidad se queda en **55 %**. Los dos factores están **acoplados y son parcialmente
+sustituibles**: la deriva que el filtro deja pasar infla el `running_max`, y con τ=20 s el umbral
+inflado persiste medio minuto. Combinación que llega al 100 %: **0,5 Hz + τ corto**.
+
+**Límite duro al corner, por seguridad:** 1,5 Hz = 90 BPM. Subir el paso alto por encima de ~1 Hz
+ataca la fundamental de la bradicardia neonatal — el evento clínico que justifica el monitor. Los
+100 % de la fila de 1,5 Hz son un artefacto de tener la verdad a 140 BPM; a 60 BPM ese filtro
+sería peligroso. **0,5 Hz es el techo defendible**, y encaja con lo que la librería ya eligió para
+`ppg_disp`.
+
+Esto reconecta con el análisis del umbral del principio de la sesión: τ=20 s es demasiado largo
+(ventana 5–7 s), y el reescalado por DC sería mejor que cualquier τ.
+
+⚠️ **Señal sintética: indicación, no validación.** La comparación válida es en vivo, con Alex
+generando la deriva real.
+
+
+## Sesión 2026-09-06 (tarde, cont.) — HR2LAB recupera su "2"
+
+Alex, leyendo `pulsenest_lab.ini`, no encontró `hr2lab_open` ni `[HR2LabWindow]` y preguntó si
+existían sin el "2". Correcto: la ventana que se **muestra** como "HR2LAB" se llamaba internamente
+`HRLabWindow`. Herencia — era la única ventana de HR (HRLAB) y al aparecer HR3LAB se renombró solo
+el título visible. HR3LAB nació con número, y HR1LAB también, así que la anomalía era solo esa.
+
+Renombrada toda la cadena: la clase, `hrlab_window`, `btn_hrlab`, `toggle_hrlab`,
+`_open_hrlab_default`, la ranura de timing `plot_hrlab` y las claves `hrlab_open` /
+`[HRLabWindow]`. 7 referencias a la clase y 43 identificadores.
+
+Dos cuidados que el cambio pedía:
+- **Detener el script antes de editar.** Tenía el código viejo en memoria y al cerrarse habría
+  reescrito las claves antiguas en el `.ini`, deshaciendo la migración.
+- **Migrar el `.ini` en vez de dejar que se recreara**, para no perder la geometría ni el estado
+  de apertura guardados.
+
+Y la alineación por columnas del fichero: cada identificador creció un carácter, así que hubo que
+recuperar los ocho bloques alineados a mano. De paso salió que la línea `hr1lab_open` que yo había
+escrito en la Fase 2 estaba un espacio corta.
+
+Detalle de método: el inventario previo lo hice con `grep -c`, que cuenta **líneas**, no
+ocurrencias — 37 líneas frente a 43 ocurrencias reales. El assert del script de renombrado lo
+detectó antes de tocar nada.
+
+
+## Sesión 2026-09-06 (tarde, cont.) — `pulsenest_lab.ini` en orden de botones
+
+Petición de Alex: que el contenido del `.ini` siga el orden de los botones de la ventana principal.
+
+QSettings escribe en su propio orden interno — nada que ver con la interfaz, y no es configurable
+(el fichero tenía `[HR3TestWindow]` primero y `[PPGMonitor]` segundo). Así que la solución es
+post-procesar el fichero: `_reorder_settings_file()` como **último paso del `closeEvent`**, después
+de que todas las subventanas hayan escrito su geometría — ese detalle importa, porque cada
+subventana escribe en su propio `closeEvent` y `_save_settings()` corre al principio.
+
+El orden se declara una sola vez en `_INI_BUTTON_ORDER`, como pares (clave `*_open`, sección).
+Ordena las secciones y, dentro de `[PPGMonitor]`, deja primero los ajustes generales y luego las
+claves `*_open` en orden de botón. Lo que no esté en la tupla se escribe igual, al final: un olvido
+degrada la presentación, nunca pierde un ajuste.
+
+Cuidados de diseño, porque esto es puramente cosmético y no debe poder romper los settings:
+- **Solo mueve líneas.** Verificado sobre una copia del `.ini` real: 25 secciones y **222 pares
+  clave=valor idénticos** antes y después.
+- **Agrupa cada clave con sus líneas de continuación** (QSettings parte los valores largos con `\`
+  al final), para que reordenar no separe nunca un valor de su clave.
+- **Se traga cualquier sorpresa de parseo** y deja el fichero tal como lo escribió QSettings.
+- Las secciones sin botón (`TimingWindow`, `AFECharTestWindow` — restos de ventanas antiguas) y las
+  claves huérfanas (`timing_open`, `afe_char_open`) van al final, no se descartan.
+
+Aplicado también una vez al `.ini` real, con copia de seguridad y comparación de los 222 pares
+antes de aceptar el resultado, para no tener que esperar al siguiente cierre.
+
+**Dos errores propios en el camino:** usé `io.open()` cuando `io` no está importado en el script
+—habría dado `NameError` al cerrar—, y lo intenté arreglar con un heredoc, que es exactamente lo
+que la regla del proyecto prohíbe para parches Python; falló por el escapado. Corregido con
+fichero `.py` y `open()`, como el resto del fichero.
+
+
+## Sesión 2026-09-06 (tarde, cont.) — Paso 0 y barrido del decay
+
+### Punto de partida
+
+Alex, tras probar SPEC y BPF en vivo: "su limitación principal es el Max decay, hay que bajarlo,
+pero de forma razonada y justificada".
+
+Verificado en la librería antes de proponer nada: **el 20 s no tiene procedencia propia**. La spec
+de `incunest_afe4490` (v0.87) dice que `hr1_max_decay_tau_s` = 20 s *"reproduces 0.9999 exactly at
+500 Hz, so default behaviour is unchanged"* — es el literal heredado convertido a segundos por
+compatibilidad. No hay nada que refutar, solo un hueco que llenar.
+
+### Paso 0 — el parámetro pasa a ser una magnitud
+
+`running_max_decay` (factor por muestra) → `max_decay_tau_s` (segundos), resincronizando con la
+librería, que ya lo hizo en v0.87 mientras el script seguía con el factor. Un factor por muestra no
+es comunicable: 0,9999 son 20 s a 500 Hz y 6,25 s a 1600.
+
+Añadido `max_decay_beats` (0 = τ fijo, comportamiento del firmware; >0 → `τ = N·RR`). Motivo: la
+cota inferior de este parámetro es proporcional a RR, así que **en segundos difiere 6× entre los
+extremos del rango declarado** — el τ=2 s que iba bien a 140 BPM son 4,7 latidos allí pero 1,3 a
+40 BPM. En latidos la cota es un solo número (~2,5).
+
+El cálculo vive en la base (`_update_decay_alpha`) y se recalcula solo al cambiar la tasa o al
+detectar un latido, nunca por muestra.
+
+**Verificado:** a 500 Hz con defaults, salida idéntica muestra a muestra a la implementación
+anterior en 45/60/140/250 BPM; a 1000 Hz difiere, que es justo la dependencia de la PRF que el
+cambio corrige; y el modo en latidos mantiene N=5 constante (τ efectivo 7,5 s a 40 BPM y 1,18 s a
+250). De paso: el 20 s reproduce 0,9999 con 5e-9 de diferencia, no "exactly" como dice la spec de
+la librería — el valor exacto sería 19,999 s. Sin efecto en ninguna detección.
+
+### El barrido: hecho, y **no puede elegir el valor**
+
+`tools/hr1_decay_sweep.py` sobre las 11 capturas MS100 (40–250 BPM, verdad conocida), métrica
+`good` = fracción de muestras con SQI>0 **y** |HR−verdad| ≤ 3 BPM, warm-up de 10 s descartado.
+
+| | 55–250 BPM | 40 BPM |
+|---|---|---|
+| SPEC, τ de 1 a 20 s | 96–100 % | 18–36 % |
+| BPF, τ de 1 a 20 s | 100 % | 21–33 % |
+| N de 2 a 13 latidos | igual | igual |
+
+**El decay no discrimina en absoluto.** De 55 a 250 BPM todas las configuraciones empatan, y en la
+de 40 BPM la dispersión no es monótona (BPF: τ=8 s da 33 %, τ=13 s da 24 %, τ=1 s da 25 %) — es
+ruido sobre ~33 latidos, no una señal.
+
+**El motivo es el material, no el parámetro.** El MS100 es un simulador: señal limpia, sin deriva
+de línea de base. τ gobierna la **recuperación ante cambios de amplitud**, y una grabación sin
+cambios de amplitud no puede separar un τ de otro. Es la lección de método del proyecto otra vez,
+en versión nueva: **medir un parámetro sobre material que no contiene el fenómeno que ese parámetro
+gobierna produce un no-resultado convincente**.
+
+### Hallazgo separado: la captura de 40 BPM no está limitada por τ
+
+`good == avail` en todas las configuraciones, y el HR publicado es **40,0 exacto** (mediana, p5 y
+p95): cuando habla, acierta perfectamente. Solo publica el ~27 % del tiempo porque a ritmo bajo un
+latido perdido envenena el buffer de 5 intervalos RR, y 5 latidos a 40 BPM son **7,5 s de
+silencio**. Eso pertenece a `hr1_sqi_cv_max` y a la longitud del buffer, no al decay.
+
+### Lo que hace falta para decidir
+
+Una captura con **verdad conocida Y el fenómeno presente**: grabar el MS100 (que fija el ritmo
+verdadero) mientras se perturba deliberadamente la sonda, para que la deriva y los escalones de
+amplitud estén en la señal. Nombrada con `_<N>HR_`, el barrido ya la recoge — se generalizó el
+filtro de ficheros para no exigir el prefijo `MS100_`.
+
+
+## Sesión 2026-09-06 (tarde, cont.) — PAUSE/CONTINUE en HR1LAB
+
+Petición de Alex: un botón PAUSE/CONTINUE, y que un SAVE posterior guarde lo que había **al pulsar
+PAUSE**, no al pulsar SAVE ("pero si es complicado olvídalo").
+
+No era complicado, y la razón es que la forma correcta de pausar ya da la propiedad pedida gratis:
+si PAUSE congela `feed_sample()`, el buffer deja de moverse y SAVE escribe exactamente lo que había
+al pausar, sin ninguna lógica adicional. Congelar solo el dibujo habría exigido un segundo buffer y
+habría dado justo lo contrario.
+
+Pausar detiene dos cosas y nada más: la alimentación y el redibujo. Lo segundo deja la vista
+intacta —incluidos zoom y desplazamiento— para poder estudiarla.
+
+**CONTINUE empieza una grabación nueva** (variantes, marcas y buffer a cero). Reanudar sobre el
+estado viejo empalmaría dos momentos de señal en un mismo intervalo RR y en una misma línea de
+tiempo: el intervalo sería falso y el CSV mostraría como contiguo lo que no lo es. Está en el
+tooltip para que no sorprenda.
+
+### El test destapó un fallo real en MARK
+
+Al comprobar el flujo completo (marcar → pausar → guardar), el CSV salía **sin la marca**.
+`add_mark()` registraba `_n_fed`, que es el índice que tomará la **siguiente** muestra — una que,
+si se pausa acto seguido, no llega nunca. En vivo no se notaba porque seguían entrando muestras y
+la marca acababa dentro del buffer; pero el flujo que Alex pedía es precisamente el que lo rompía.
+Corregido a `_n_fed - 1`, la muestra más reciente ya almacenada.
+
+Verificado con dos tramos deliberadamente distintos (DC 0,62 antes de la pausa, DC 0,30 después):
+tras pausar y alimentar 40 s más, el contador no se mueve, la variante no se mueve, y el CSV
+contiene 15000 filas con mediana 0,619 y rango [0,607, 0,621] — solo el tramo anterior, con su
+marca. CONTINUE deja todo a cero y vuelve a medir.
+
+
+## Sesión 2026-09-06 (tarde, cont.) — Legibilidad de la gráfica de HR1LAB
+
+Petición de Alex: el punto de detección más grande y llamativo (amarillo), y el umbral mucho más
+oscuro o discontinuo durante los períodos refractarios.
+
+**Marcador de detección:** de 11 px rojo a **20 px amarillo brillante (#FFFF00) con borde blanco**.
+Es el evento más importante del gráfico — dónde la señal cruza el umbral y se declara un latido — y
+ahora se lee de un vistazo.
+
+**Umbral en refractario:** hacía falta un dato que no se guardaba, así que la base ahora registra
+`diag_refractory` (1 mientras el veto refractario está activo). La curva se dibuja **dos veces
+desde un mismo array**, partida por NaN con `connect='finite'`: sólida en su color donde la
+detección está viva, y **oscura discontinua (35 % de brillo, #594D17)** donde el refractario la está
+vetando. Un solo array y un solo eje temporal, así que las dos mitades no pueden discrepar.
+
+Se hizo declarativo, no a medida: `HR1Curve` gana un campo `dim_refr` con valor por defecto `False`,
+de modo que las declaraciones existentes siguen valiendo y cualquier variante futura puede marcar
+sus propias curvas para el mismo tratamiento.
+
+**Verificado:** el refractario ocupa el 40 % del tiempo a 120 BPM, que es exactamente 0,2 s / RR
+0,5 s; y las dos curvas **particionan** las muestras sin solape (0) ni huecos (0). Equivalencia de
+SPEC intacta.
+
+Nota: `verify_equivalence.py` quedó obsoleto con el paso 0 — comprueba `FW_RUNNING_MAX_DECAY`, que
+ya no existe. El verificador vigente es `verify_decay_tau.py`.
+
+
+## Sesión 2026-09-06 (tarde, cont.) — Protocolo de captura para decidir el decay
+
+Alex va a grabar las capturas con el MS100 y perturbaciones, y pregunta nombre, duración, SpO2 y HR.
+
+Consultado `captures/CAPTURE_SET_SPEC.md` antes de responder — y resultó que **el barrido no seguía
+la convención del propio proyecto**: §2.4 fija el token de ritmo terminado en `BPM`
+(`T1_SIM_PHOTOTHERAPY_60BPM_96SPO2_...`), mientras `hr1_decay_sweep.py` buscaba `_<N>HR_`, que es
+como se nombraron las MS100 ad hoc. Corregido: `TRUTH_RE` acepta ambos.
+
+### Lo acordado
+
+| | |
+|---|---|
+| Nombre (prefijo en Lab Capture) | `T1_SIM_PROBEPERT_140BPM_98SPO2` — T1 porque el simulador da verdad; `PROBEPERT` como condición nueva |
+| Duración | **150 s**. El mínimo lo fija la spec: ≥120 s para artefacto (§3.3, I4/I5), por la recuperación de 20 s del running max |
+| Ritmos | **60, 140 y 220 BPM** |
+| SpO2 | 98 % — irrelevante para HR1 (solo usa `OT_LED1`), pero consistente con las MS100 existentes |
+
+**Por qué NO 40 BPM:** la verdad cae exactamente en `FW_HR_MIN_BPM = 40`, así que cualquier latido
+perdido tumba el HR fuera de rango y fuerza `SQI = 0`. Ese confusor del SQI —no el decay— es lo que
+explica el 18–36 % de la captura de 40 BPM del barrido anterior. Con 60 BPM se mide τ limpio.
+
+### Protocolo cronometrado
+
+0–20 s basal · 20 s apretar la sonda 3 s · 50 s aflojar parcialmente 3 s (el caso que define el
+tiempo de ceguera) · 80 s golpe seco único (artefacto que infla el running max) · 110–120 s deriva
+lenta · 120–150 s basal, donde se ve si el umbral vuelve o se queda alto.
+
+**Dos cosas que invalidarían la captura:** despegar la sonda (si `probe_state` sale de `APPLIED` el
+barrido descarta esas muestras y las variantes se resetean, justo el tramo de recuperación que se
+busca — perturbar por presión, nunca por separación); y omitir las columnas `RF1_OHM`/`RF2_OHM`, que
+§2.3 exige para cualquier captura del set.
+
+### Una entrada que el set no contempla
+
+Las capturas de artefacto de la spec (I4/I5) son T2/T3 porque asume que el artefacto de movimiento
+exige sujeto humano. Con el MS100 perturbado se obtiene **T1 con perturbación** — verdad conocida y
+fenómeno presente a la vez —, estrictamente mejor para medir recuperación. Pendiente de añadirla a
+`CAPTURE_SET_SPEC.md` como I7 cuando el protocolo se demuestre en la práctica.
+
+
+---
+
+## Sesión 2026-09-07 — Umbral OT para tejido fino: análisis y lib v0.89
+
+Alex reporta que el MS100 da OT por encima del umbral (100 ppm) y a veces se clasifica como
+`NOT_APPLIED`: el mismo problema que con dedos muy pequeños. Pide análisis profundo de si subir
+`rsqm_ot_thr`.
+
+### El margen real no es el que asume el código
+
+Medidos: APPLIED (adulto) ≈14 ppm, aire ≈800 ppm, umbral 100 ppm ≈ media geométrica de ambos.
+Margen total **×57**. Pero el comentario del código dice que OT separa *"tissue (1e-4) from no
+tissue (≈1)"*, o sea asume **10⁴**. La diferencia es geométrica: el fotodiodo capta una fracción
+pequeña del ángulo sólido, así que sin tejido OT no es 1. **El diseño se apoyó en un margen que no
+existe**, y está centrado en la población equivocada (adulto, no neonato).
+
+### Revisión del criterio "el falso APPLIED es el peor error"
+
+El falso APPLIED **tiene red de seguridad aguas abajo** (sin pulso → CV disparado → `hr1_sqi=0`);
+el falso NOT_APPLIED **no tiene ninguna**: el reset es incondicional y deja al paciente sin
+monitorización. Hoy el modo de fallo desprotegido es el que se sufre.
+
+### Aplicada la salida (a): `||` → `&&` — librería v0.89
+
+En tejido, RED (660 nm) se absorbe mucho más que IR (940 nm) → `ot_led1 > ot_led2` **siempre** →
+el OR **lo decidía solo el IR** y el canal RED nunca votaba. En aire no hay absorción diferencial,
+ambos canales están altos y el AND sigue detectando el aire. **Margen ganado en tejido fino, ninguno
+cedido en aire**, y además exige que dos canales independientes coincidan.
+
+Coste documentado en la spec sin adornos: un canal permanentemente bajo (LED débil, PD tapado)
+ahora fuerza APPLIED. Lo limitan —sin eliminarlo— la rama de saturación-solo-LED (v0.61) y el
+chequeo de los cuatro `i_pd` de DISCONNECTED. Un canal degradado pero no muerto no está cubierto.
+
+**No se tocó ningún umbral**: `rsqm_ot_thr` sigue en 1.0e-4.
+
+### Por qué NO se subió el umbral: mi propia estimación no podía decidir
+
+Alex preguntó con qué certeza podía predecir los 5–10 mm de camino óptico y cómo lo había medido.
+Respuesta honesta: **no lo medí**, y el dato no es una medida. `reference_preterm_foot_dimensions`
+dice explícitamente que el grosor dorso-plantar **no aparece publicado** y que los 5–10 mm son una
+*estimación de ingeniería*. Con `μ_eff` (0,3 /mm, literatura genérica) y `d` inciertos, el producto
+`μ_eff·d` va de 1,0 a 5,0 → **factor ~55 de incertidumbre** en OT: la predicción del prematuro
+abarca de 8 a 460 ppm y **cae a ambos lados del umbral de 100**. Con un margen disponible de ×3
+entre prematuro y aire, esa barra de error es más ancha que la decisión.
+
+Y un matiz de la propia spec que refuerza lo anterior: **OT no es la transmitancia del tejido**,
+sino la razón electro-óptica completa (eficiencia LED × tejido × responsividad PD × geometría).
+
+La geometría, además, es **dorso-plantar** (empeine↔planta): la sonda Medle es de brida sobre el
+pie del prematuro, no un clip entre dedos —los dedos son demasiado pequeños para un clip, y por eso
+las sondas neonatales comerciales se especifican por peso (<3 kg) y no por talla.
+
+Sirve para explicar el mecanismo; no para fijar un valor.
+
+### Estado de los datos
+
+**No hay ninguna captura con bebé ni con prematuro** (Alex), coherente con `CAPTURE_SET_SPEC.md`
+§3.1. El umbral seguirá sin calibrar hasta que las haya; el MS100 no sustituye.
+
+Las tres salidas —(a) AND, (b) histéresis, (c) pulsatilidad como segundo eje— y la metodología de
+medida quedan registradas en `project_probe_applied_ot_thr_task`.

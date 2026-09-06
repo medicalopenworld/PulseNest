@@ -694,11 +694,290 @@ class SpO2TestCalc:
         }
 
 
-class HR1TestCalc:
-    """HR1 algorithm mirror for HR1TEST window.
+# ── HR1 variant framework (shared by HR1TEST and HR1LAB) ──────────────────────
+
+HR1Param = namedtuple('HR1Param', 'attr label lo hi default decimals step unit tooltip')
+HR1Curve = namedtuple('HR1Curve', 'key label color dim_refr', defaults=(False,))
+
+
+class HR1Variant:
+    """Base class for every HR1 peak-detection variant compared in HR1LAB.
+
+    A variant owns only what makes it different: how an incoming sample becomes a peak
+    decision. Everything downstream of that decision — refractory gating, RR buffer, HR,
+    SQI and the availability metric — lives here and is shared by all variants, so a
+    comparison between two variants differs exactly in what it is meant to differ in.
+
+    To add a variant:
+      1. Subclass and set NAME / DESCRIPTION / PARAMS / DIAG_CURVES.
+      2. Implement _recalc_variant(fs), _reset_variant() and _detect(sample, fs).
+      3. Register the class in HR1_VARIANTS.
+
+    Contract of _detect(sample, fs) -> (peak_raw, display_value):
+      peak_raw      : True when the variant declares a beat, ignoring the refractory
+                      period — the base applies it, do not gate on it here.
+      display_value : the waveform this variant wants plotted (its filtered signal).
+    Diagnostic curves declared in DIAG_CURVES are written by the variant into
+    self.diag[key]; the base owns diag_hr1_ppg and diag_peak_mask.
+
+    Availability (fraction of recent time with a valid reading) is the metric that
+    matters for HR1: under interference the published HR stays accurate but the SQI gate
+    discards most intervals. It is computed here so no variant can define it its own way.
+    """
+
+    NAME        = "base"
+    DESCRIPTION = ""
+    PARAMS      = ()      # tuple of HR1Param — drives the HR1LAB controls
+    DIAG_CURVES = ()      # tuple of HR1Curve — drives the HR1LAB plots
+
+    # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
+    PROBE_DISCONNECTED = 0
+    PROBE_NOT_APPLIED  = 1
+    PROBE_APPLIED      = 2
+    PROBE_SATURATING   = 3
+
+    # Shared post-detection constants — must match incunest_afe4490_spec.md §5.2
+    FW_RR_BUF_LEN    = 5
+    FW_HR_MIN_BPM    = 40.0
+    FW_HR_MAX_BPM    = 300.0
+    FW_SQI_CV_MAX    = 0.15
+    FW_PEAK_MARKER_N = 10
+
+    DIAG_BUF_LEN        = 2500    # diagnostic rolling buffer: 5 s at 500 Hz
+    AVAILABILITY_WIN_S  = 30.0    # window for the availability metric
+
+    # Running-max decay, shared by every variant that keeps a decaying peak reference.
+    # Mirrors the library's hr1_max_decay_tau_s (v0.87). The 20 s default has no rationale
+    # of its own: the library's spec states it "reproduces 0.9999 exactly at 500 Hz, so
+    # default behaviour is unchanged" — it is the inherited per-sample literal in seconds.
+    FW_MAX_DECAY_TAU_S = 20.0
+    FW_MAX_DECAY_BEATS = 0.0
+
+    def __init__(self):
+        for p in self.PARAMS:
+            setattr(self, p.attr, p.default)
+        # Shared internal state
+        self._fs              = 0.0
+        self._refractory_n    = 0
+        self._refractory_ctr  = 0
+        self._rr_buf          = []     # last FW_RR_BUF_LEN RR intervals (samples)
+        self._last_peak_idx   = -1
+        self._sample_idx      = 0
+        self._peak_marker_ctr = 0
+        self._hr_bpm          = 0.0
+        self._hr_sqi          = 0.0
+        self._decay_alpha_v   = 1.0
+        # Diagnostic buffers owned by the base
+        self.diag_hr1_ppg   = deque(maxlen=self.DIAG_BUF_LEN)
+        self.diag_peak_mask = deque(maxlen=self.DIAG_BUF_LEN)   # 1.0 on peak sample
+        self.diag_display   = deque(maxlen=self.DIAG_BUF_LEN)   # display waveform, no marker
+        self.diag_refractory = deque(maxlen=self.DIAG_BUF_LEN)  # 1.0 while blanked
+        # Diagnostic buffers declared by the variant
+        self.diag = {c.key: deque(maxlen=self.DIAG_BUF_LEN) for c in self.DIAG_CURVES}
+        # Availability
+        self._avail_buf = deque()
+        self._avail_n   = 0
+        # Outputs
+        self.hr_bpm      = 0.0
+        self.hr_sqi      = 0.0
+        self.rr_buf_copy = []
+        # Gap detection (data_sample_counter continuity — pre-decimation)
+        self._last_counter = None
+        self._nominal_step = None
+        self.gap_count     = 0
+        self._init_variant()
+
+    # ── Hooks for subclasses ─────────────────────────────────────────────────
+    def _init_variant(self):
+        """Allocate variant-specific state. Called once from __init__."""
+
+    def _reset_variant(self):
+        """Clear variant-specific state. Called from reset()."""
+
+    def _recalc_variant(self, fs):
+        """Recompute variant-specific coefficients for a new sample rate."""
+
+    def _detect(self, sample, fs):
+        """Return (peak_raw, display_value). See class docstring for the contract."""
+        raise NotImplementedError
+
+    def _refractory_samples(self, fs):
+        """Refractory length in samples. Override for an RR-adaptive refractory."""
+        return self._refractory_n
+
+    def _update_decay_alpha(self, fs):
+        """Per-sample decay factor of the running maximum.
+
+        Recomputed only when it can change — a rate change or a new RR interval — never per
+        sample, mirroring what the firmware would do.
+
+        `max_decay_beats > 0` measures the memory in beats instead of seconds: the threshold
+        then falls by the same fraction on every beat at any heart rate, which no fixed tau
+        can do. The lower bound on this parameter is proportional to RR (the threshold must
+        not collapse between beats), so in seconds it differs 6x across the declared
+        40-300 BPM range: 2 s is 4.7 beats at 140 BPM but only 1.3 beats at 40.
+        """
+        tau = self.max_decay_tau_s
+        if self.max_decay_beats > 0 and self._rr_buf:
+            rr_s = (sum(self._rr_buf) / float(len(self._rr_buf))) / fs
+            tau  = self.max_decay_beats * rr_s
+        tau = max(tau, 1.0 / fs)
+        self._decay_alpha_v = float(np.exp(-1.0 / (tau * fs)))
+
+    # ── Shared machinery ─────────────────────────────────────────────────────
+    def reset(self):
+        """Reset all filter state. Preserves user parameters."""
+        self._fs              = 0.0
+        self._refractory_ctr  = 0
+        self._rr_buf          = []
+        self._last_peak_idx   = -1
+        self._sample_idx      = 0
+        self._peak_marker_ctr = 0
+        self._hr_bpm          = 0.0
+        self._hr_sqi          = 0.0
+        self.hr_bpm           = 0.0
+        self.hr_sqi           = 0.0
+        self.rr_buf_copy      = []
+        self.diag_hr1_ppg.clear()
+        self.diag_peak_mask.clear()
+        self.diag_display.clear()
+        self.diag_refractory.clear()
+        for buf in self.diag.values():
+            buf.clear()
+        self._avail_buf.clear()
+        self._avail_n = 0
+        self._reset_variant()
+
+    def reset_to_defaults(self):
+        for p in self.PARAMS:
+            setattr(self, p.attr, p.default)
+        self.reset()
+
+    @property
+    def using_defaults(self):
+        return all(getattr(self, p.attr) == p.default for p in self.PARAMS)
+
+    @property
+    def availability(self):
+        """Fraction [0..1] of the last AVAILABILITY_WIN_S with a valid reading (SQI > 0)."""
+        if not self._avail_buf:
+            return 0.0
+        return self._avail_n / len(self._avail_buf)
+
+    def _recalc_params(self, fs):
+        self._fs              = fs
+        self._refractory_n    = int(self.refractory_s * fs)
+        self._refractory_ctr  = 0
+        self._rr_buf          = []
+        self._last_peak_idx   = -1
+        self._sample_idx      = 0
+        self._peak_marker_ctr = 0
+        self._hr_bpm          = 0.0
+        self._hr_sqi          = 0.0
+        self._update_decay_alpha(fs)
+        self._recalc_variant(fs)
+
+    def _track_gap(self, sample_counter):
+        if sample_counter is None:
+            return
+        if self._last_counter is not None:
+            step = sample_counter - self._last_counter
+            if self._nominal_step is None:
+                self._nominal_step = step
+            elif step > self._nominal_step:
+                self.gap_count += step - self._nominal_step
+        self._last_counter = sample_counter
+
+    def _note_availability(self, fs, valid):
+        maxlen = max(1, int(self.AVAILABILITY_WIN_S * fs))
+        self._avail_buf.append(1 if valid else 0)
+        self._avail_n += 1 if valid else 0
+        while len(self._avail_buf) > maxlen:
+            self._avail_n -= self._avail_buf.popleft()
+
+    def _on_peak(self, fs):
+        """Shared post-detection chain: RR buffer → HR → SQI. Identical for all variants."""
+        if self._last_peak_idx >= 0:
+            rr = self._sample_idx - self._last_peak_idx
+            self._rr_buf.append(rr)
+            if len(self._rr_buf) > self.FW_RR_BUF_LEN:
+                self._rr_buf.pop(0)
+            if len(self._rr_buf) == self.FW_RR_BUF_LEN:
+                rr_arr  = np.array(self._rr_buf, dtype=float)
+                mean_rr = np.mean(rr_arr)
+                std_rr  = np.std(rr_arr)
+                hr_bpm  = (fs * 60.0 / mean_rr) if mean_rr > 0 else 0.0
+                cv      = (std_rr / mean_rr) if mean_rr > 0 else 1.0
+                sqi     = float(np.clip(1.0 - cv / self.FW_SQI_CV_MAX, 0.0, 1.0))
+                if hr_bpm < self.FW_HR_MIN_BPM or hr_bpm > self.FW_HR_MAX_BPM:
+                    sqi = 0.0
+                self._hr_bpm     = hr_bpm
+                self._hr_sqi     = sqi
+                self.hr_bpm      = hr_bpm
+                self.hr_sqi      = sqi
+                self.rr_buf_copy = list(self._rr_buf)
+            self._update_decay_alpha(fs)   # only an RR change can move it
+        self._last_peak_idx   = self._sample_idx
+        self._refractory_ctr  = self._refractory_samples(fs)
+        self._peak_marker_ctr = self.FW_PEAK_MARKER_N
+
+    def update(self, sample, fs, probe_state, sample_counter=None):
+        """Process one sample at full firmware rate.
+
+        Parameters
+        ----------
+        sample         : float — OT_LED1 [A/A], gain-invariant optical transmittance
+        fs             : float — sample rate (Hz)
+        probe_state    : int — RSQM's ProbeState (0/1/2), consumed only, never computed here
+        sample_counter : int | None — data_sample_counter from the frame (gap detection)
+        """
+        # Gap detection runs regardless of probe_state (frame continuity, not presence).
+        self._track_gap(sample_counter)
+
+        if probe_state != self.PROBE_APPLIED:
+            # Reset every sample while not applied (idempotent) — mirrors the library.
+            self.reset()
+            self.hr_bpm = float('nan')
+            self.hr_sqi = 0.0
+            return
+
+        if fs != self._fs:
+            self._recalc_params(fs)
+
+        peak_raw, display = self._detect(sample, fs)
+
+        # Refractory gating is shared: a variant reports the raw decision, the base vetoes it.
+        peak_detected = False
+        in_refractory = self._refractory_ctr > 0
+        if self._refractory_ctr > 0:
+            self._refractory_ctr -= 1
+        elif peak_raw:
+            peak_detected = True
+            self._on_peak(fs)
+
+        # Peak marker: display value forced to 0 for FW_PEAK_MARKER_N samples after a peak
+        if self._peak_marker_ctr > 0:
+            hr1_ppg = 0.0
+            self._peak_marker_ctr -= 1
+        else:
+            hr1_ppg = display
+
+        self.diag_hr1_ppg.append(hr1_ppg)
+        self.diag_peak_mask.append(1.0 if peak_detected else 0.0)
+        self.diag_display.append(display)
+        self.diag_refractory.append(1.0 if in_refractory else 0.0)
+        self._note_availability(fs, self.hr_sqi > 0.0)
+
+        self._sample_idx += 1
+
+
+class HR1TestCalc(HR1Variant):
+    """HR1 algorithm mirror for the HR1TEST window — the SPEC variant.
 
     Independent reimplementation of firmware _update_hr1() from incunest_afe4490_spec.md §5.2.
     Purpose: post-implementation verification — compare against firmware output to detect bugs.
+    This variant is frozen by definition: it must track the library, never explore. New ideas
+    go in a sibling HR1Variant subclass, never here.
 
     EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
     input is OT_LED1 [A/A], not the raw ambient-corrected LED1_SUB used before this migration.
@@ -722,117 +1001,75 @@ class HR1TestCalc:
     PPGMonitor feeds this calc at full 500 Hz (before decimation).
     """
 
-    # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
-    PROBE_DISCONNECTED = 0
-    PROBE_NOT_APPLIED  = 1
-    PROBE_APPLIED      = 2
-    PROBE_SATURATING   = 3
+    NAME        = "SPEC"
+    DESCRIPTION = "Firmware algorithm as specified in incunest_afe4490_spec.md §5.2"
 
     # Firmware defaults — must match incunest_afe4490_spec.md §5.2
     FW_DC_IIR_TAU_S      = 1.6
     FW_MA_CUTOFF_HZ      = 5.0
     FW_MA_MAX_LEN        = 64
-    FW_RUNNING_MAX_DECAY = 0.9999
     FW_THRESHOLD_FACTOR  = 0.6
     FW_REFRACTORY_S      = 0.2
-    FW_RR_BUF_LEN        = 5
-    FW_HR_MIN_BPM        = 40.0
-    FW_HR_MAX_BPM        = 300.0
-    FW_PEAK_MARKER_N     = 10
 
-    DIAG_BUF_LEN = 2500   # diagnostic rolling buffer: 5 s at 500 Hz
+    PARAMS = (
+        HR1Param('dc_iir_tau_s',      'DC IIR tau',    0.1,  20.0,  FW_DC_IIR_TAU_S,      1, 0.1,    's',
+                 "Time constant of the IIR DC remover. Longer keeps more low-frequency content."),
+        HR1Param('ma_cutoff_hz',      'MA cutoff',     0.5,  50.0,  FW_MA_CUTOFF_HZ,      1, 0.5,    'Hz',
+                 "Nominal cutoff of the moving-average low-pass. Sets its length: fs/(2*fc)."),
+        HR1Param('ma_max_len',        'MA max len',    1,    256,   FW_MA_MAX_LEN,        0, 1,      'samples',
+                 "Upper bound on the moving-average length, so a high sample rate cannot grow it without limit."),
+        HR1Param('max_decay_tau_s',   'Max decay tau',   0.2,  60.0,
+                 HR1Variant.FW_MAX_DECAY_TAU_S,   1, 0.5, 's',
+                 "Time constant of the running maximum's exponential decay. Sets how long an "
+                 "old peak keeps raising the threshold. It is a RECOVERY parameter: with a "
+                 "step drop in amplitude to a fraction g, detection resumes only after "
+                 "tau*ln(0.6/g) — 13.9 s at the 20 s default. The library default has no "
+                 "rationale of its own; it is the inherited 0.9999 per-sample literal."),
+        HR1Param('max_decay_beats',   'Max decay beats', 0.0,  20.0,
+                 HR1Variant.FW_MAX_DECAY_BEATS,   1, 0.5, 'beats',
+                 "0 = use the fixed tau above (firmware behaviour). Above 0, the decay time "
+                 "becomes N x the measured RR, so the threshold falls by the same fraction "
+                 "every beat regardless of heart rate. The lower bound is ~2.5 beats: below "
+                 "that the threshold collapses between beats and noise crosses it."),
+        HR1Param('threshold_factor',  'Threshold',     0.1,  1.0,   FW_THRESHOLD_FACTOR,  2, 0.05,   '',
+                 "Detection threshold as a fraction of the running maximum."),
+        HR1Param('refractory_s',      'Refractory',    0.05, 2.0,   FW_REFRACTORY_S,      3, 0.005,  's',
+                 "Blanking period after a detected peak, to reject the dicrotic notch."),
+    )
 
-    def __init__(self):
-        # User-adjustable parameters
-        self.dc_iir_tau_s      = self.FW_DC_IIR_TAU_S
-        self.ma_cutoff_hz      = self.FW_MA_CUTOFF_HZ
-        self.ma_max_len        = self.FW_MA_MAX_LEN
-        self.running_max_decay = self.FW_RUNNING_MAX_DECAY
-        self.threshold_factor  = self.FW_THRESHOLD_FACTOR
-        self.refractory_s      = self.FW_REFRACTORY_S
-        # Internal filter state
-        self._fs               = 0.0
-        self._dc_alpha         = 0.0
-        self._dc_est           = 0.0
-        self._ma_len           = 1
-        self._ma_buf           = np.zeros(self.FW_MA_MAX_LEN)
-        self._ma_idx           = 0
-        self._ma_sum           = 0.0
-        self._ma_count         = 0
-        self._running_max      = 0.0
-        self._above_thresh     = False
-        self._refractory_n     = 0
-        self._refractory_ctr   = 0
-        self._rr_buf           = []          # list of last FW_RR_BUF_LEN RR intervals (samples)
-        self._last_peak_idx    = -1
-        self._sample_idx       = 0
-        self._peak_marker_ctr  = 0
-        self._hr_bpm           = 0.0
-        self._hr_sqi           = 0.0
-        # Diagnostic rolling buffers (exposed for HR1TestWindow)
-        self.diag_dc_removed  = deque(maxlen=self.DIAG_BUF_LEN)
-        self.diag_ma_filtered = deque(maxlen=self.DIAG_BUF_LEN)
-        self.diag_running_max = deque(maxlen=self.DIAG_BUF_LEN)
-        self.diag_threshold   = deque(maxlen=self.DIAG_BUF_LEN)
-        self.diag_hr1_ppg     = deque(maxlen=self.DIAG_BUF_LEN)
-        self.diag_peak_mask   = deque(maxlen=self.DIAG_BUF_LEN)  # 1.0 on peak sample, 0 elsewhere
-        self.hr_bpm           = 0.0
-        self.hr_sqi           = 0.0
-        self.rr_buf_copy      = []   # copy of _rr_buf, updated on each peak
-        # Gap detection (data_sample_counter continuity — Punto C, pre-decimation)
-        self._last_counter = None
-        self._nominal_step = None
-        self.gap_count     = 0
+    DIAG_CURVES = (
+        HR1Curve('dc_removed',  'DC removed',  '#8888FF'),
+        HR1Curve('ma_filtered', 'MA filtered', '#44FF88'),
+        HR1Curve('running_max', 'Running max', '#FF8844'),
+        HR1Curve('threshold',   'Threshold',   '#FFDD44', True),
+    )
 
-    def reset(self):
-        """Reset all filter state. Preserves user parameters."""
-        self._fs             = 0.0
-        self._dc_est         = 0.0
-        self._ma_buf[:]      = 0.0
-        self._ma_idx         = 0
-        self._ma_sum         = 0.0
-        self._ma_count       = 0
-        self._running_max    = 0.0
-        self._above_thresh   = False
-        self._refractory_ctr = 0
-        self._rr_buf         = []
-        self._last_peak_idx  = -1
-        self._sample_idx     = 0
-        self._peak_marker_ctr = 0
-        self._hr_bpm         = 0.0
-        self._hr_sqi         = 0.0
-        self.hr_bpm          = 0.0
-        self.hr_sqi          = 0.0
-        self.rr_buf_copy     = []
-        self.diag_dc_removed.clear()
-        self.diag_ma_filtered.clear()
-        self.diag_running_max.clear()
-        self.diag_threshold.clear()
-        self.diag_hr1_ppg.clear()
-        self.diag_peak_mask.clear()
+    def _init_variant(self):
+        self._dc_alpha     = 0.0
+        self._dc_est       = 0.0
+        self._ma_len       = 1
+        self._ma_buf       = np.zeros(self.FW_MA_MAX_LEN)
+        self._ma_idx       = 0
+        self._ma_sum       = 0.0
+        self._ma_count     = 0
+        self._running_max  = 0.0
+        self._above_thresh = False
+        # Legacy aliases: HR1TestWindow reads these attributes directly.
+        self.diag_dc_removed  = self.diag['dc_removed']
+        self.diag_ma_filtered = self.diag['ma_filtered']
+        self.diag_running_max = self.diag['running_max']
+        self.diag_threshold   = self.diag['threshold']
 
-    def reset_to_defaults(self):
-        self.dc_iir_tau_s      = self.FW_DC_IIR_TAU_S
-        self.ma_cutoff_hz      = self.FW_MA_CUTOFF_HZ
-        self.ma_max_len        = self.FW_MA_MAX_LEN
-        self.running_max_decay = self.FW_RUNNING_MAX_DECAY
-        self.threshold_factor  = self.FW_THRESHOLD_FACTOR
-        self.refractory_s      = self.FW_REFRACTORY_S
-        self.reset()
+    def _reset_variant(self):
+        self._dc_est       = 0.0
+        self._ma_buf[:]    = 0.0
+        self._ma_idx       = 0
+        self._ma_sum       = 0.0
+        self._ma_count     = 0
+        self._running_max  = 0.0
+        self._above_thresh = False
 
-    @property
-    def using_defaults(self):
-        return (
-            self.dc_iir_tau_s      == self.FW_DC_IIR_TAU_S      and
-            self.ma_cutoff_hz      == self.FW_MA_CUTOFF_HZ       and
-            self.ma_max_len        == self.FW_MA_MAX_LEN          and
-            self.running_max_decay == self.FW_RUNNING_MAX_DECAY   and
-            self.threshold_factor  == self.FW_THRESHOLD_FACTOR    and
-            self.refractory_s      == self.FW_REFRACTORY_S
-        )
-
-    def _recalc_params(self, fs):
-        self._fs           = fs
+    def _recalc_variant(self, fs):
         self._dc_alpha     = float(np.exp(-1.0 / (self.dc_iir_tau_s * fs)))
         raw_len            = int(round(fs / (2.0 * self.ma_cutoff_hz)))
         self._ma_len       = max(1, min(raw_len, self.ma_max_len))
@@ -840,51 +1077,14 @@ class HR1TestCalc:
         self._ma_idx       = 0
         self._ma_sum       = 0.0
         self._ma_count     = 0
-        self._refractory_n = int(self.refractory_s * fs)
         self._dc_est       = 0.0
         self._running_max  = 0.0
         self._above_thresh = False
-        self._refractory_ctr = 0
-        self._rr_buf       = []
-        self._last_peak_idx = -1
-        self._sample_idx   = 0
-        self._peak_marker_ctr = 0
-        self._hr_bpm       = 0.0
-        self._hr_sqi       = 0.0
 
-    def update(self, ot_led1, fs, probe_state, sample_counter=None):
-        """Process one sample at full firmware rate.
-
-        Parameters
-        ----------
-        ot_led1        : float — OT_LED1 [A/A], gain-invariant optical transmittance
-        fs             : float — sample rate (Hz)
-        probe_state    : int — RSQM's ProbeState (0/1/2), consumed only — see class docstring
-        sample_counter : int | None — data_sample_counter from serial frame (for gap detection)
-        """
-        # Gap detection runs regardless of probe_state (frame continuity, not presence).
-        if sample_counter is not None:
-            if self._last_counter is not None:
-                step = sample_counter - self._last_counter
-                if self._nominal_step is None:
-                    self._nominal_step = step
-                elif step > self._nominal_step:
-                    self.gap_count += step - self._nominal_step
-            self._last_counter = sample_counter
-
-        if probe_state != self.PROBE_APPLIED:
-            # Reset every sample while not applied (idempotent) — mirrors lib v0.41.
-            self.reset()
-            self.hr_bpm = float('nan')
-            self.hr_sqi = 0.0
-            return
-
-        if fs != self._fs:
-            self._recalc_params(fs)
-
+    def _detect(self, sample, fs):
         # 1. IIR DC removal
-        self._dc_est = self._dc_alpha * self._dc_est + (1.0 - self._dc_alpha) * ot_led1
-        dc_removed   = ot_led1 - self._dc_est
+        self._dc_est = self._dc_alpha * self._dc_est + (1.0 - self._dc_alpha) * sample
+        dc_removed   = sample - self._dc_est
 
         # 2. Negate for conventional PPG polarity (peaks up)
         dc_removed = -dc_removed
@@ -898,63 +1098,183 @@ class HR1TestCalc:
             self._ma_count += 1
         ma_out = self._ma_sum / self._ma_count
 
-        # 4. Running maximum with exponential decay
-        self._running_max *= self.running_max_decay
+        # 4. Running maximum with exponential decay (shared alpha, see _update_decay_alpha)
+        self._running_max *= self._decay_alpha_v
         if ma_out > self._running_max:
             self._running_max = ma_out
 
         threshold = self.threshold_factor * self._running_max
 
-        # 5. Peak detection: rising edge through threshold, with refractory period
-        peak_detected = False
-        if self._refractory_ctr > 0:
-            self._refractory_ctr -= 1
-        else:
-            if ma_out >= threshold > 0 and not self._above_thresh:
-                # Rising edge detected
-                peak_detected = True
-                if self._last_peak_idx >= 0:
-                    rr = self._sample_idx - self._last_peak_idx
-                    self._rr_buf.append(rr)
-                    if len(self._rr_buf) > self.FW_RR_BUF_LEN:
-                        self._rr_buf.pop(0)
-                    # Compute HR and SQI
-                    if len(self._rr_buf) == self.FW_RR_BUF_LEN:
-                        rr_arr = np.array(self._rr_buf, dtype=float)
-                        mean_rr = np.mean(rr_arr)
-                        std_rr  = np.std(rr_arr)
-                        hr_bpm  = (fs * 60.0 / mean_rr) if mean_rr > 0 else 0.0
-                        cv      = (std_rr / mean_rr) if mean_rr > 0 else 1.0
-                        sqi     = float(np.clip(1.0 - cv / 0.15, 0.0, 1.0))
-                        if hr_bpm < self.FW_HR_MIN_BPM or hr_bpm > self.FW_HR_MAX_BPM:
-                            sqi = 0.0
-                        self._hr_bpm = hr_bpm
-                        self._hr_sqi = sqi
-                        self.hr_bpm  = hr_bpm
-                        self.hr_sqi  = sqi
-                        self.rr_buf_copy = list(self._rr_buf)
-                self._last_peak_idx  = self._sample_idx
-                self._refractory_ctr = self._refractory_n
-                self._peak_marker_ctr = self.FW_PEAK_MARKER_N
-
+        # 5. Rising edge through the threshold (the base applies the refractory veto)
+        peak_raw = (ma_out >= threshold > 0) and not self._above_thresh
         self._above_thresh = (ma_out >= threshold > 0)
 
-        # 6. Peak marker: hr1_ppg = 0 for FW_PEAK_MARKER_N samples after peak
-        if self._peak_marker_ctr > 0:
-            hr1_ppg = 0.0
-            self._peak_marker_ctr -= 1
-        else:
-            hr1_ppg = ma_out
+        self.diag['dc_removed'].append(dc_removed)
+        self.diag['ma_filtered'].append(ma_out)
+        self.diag['running_max'].append(self._running_max)
+        self.diag['threshold'].append(threshold)
+        return peak_raw, ma_out
 
-        # Update diagnostic buffers
-        self.diag_dc_removed.append(dc_removed)
-        self.diag_ma_filtered.append(ma_out)
-        self.diag_running_max.append(self._running_max)
-        self.diag_threshold.append(threshold)
-        self.diag_hr1_ppg.append(hr1_ppg)
-        self.diag_peak_mask.append(1.0 if peak_detected else 0.0)
 
-        self._sample_idx += 1
+class _Biquad:
+    """Port of the library's INCUNEST_AFE4490::BiquadFilter (incunest_afe4490.h/.cpp).
+
+    Same bilinear-transform algebra and the same DF-II transposed structure, so what this
+    bench measures is what the firmware would run. Python works in float64 where the
+    firmware uses float32; the difference is far below anything this bench resolves.
+
+    process() precharges to steady state on the first sample after reset(), which is why a
+    biquad has none of the long start-up transient of a slow one-pole DC remover.
+    """
+
+    def __init__(self):
+        self._b0 = self._b1 = self._b2 = 0.0
+        self._a1 = self._a2 = 0.0
+        self._v1 = self._v2 = 0.0
+        self._needs_precharge = True
+
+    def init_bp(self, f_low_hz, f_high_hz, fs):
+        """2nd-order Butterworth bandpass. Mirrors BiquadFilter::init_bp()."""
+        k     = 2.0 * fs
+        o_low = k * math.tan(math.pi * f_low_hz / fs)
+        o_hi  = k * math.tan(math.pi * f_high_hz / fs)
+        o0sq  = o_low * o_hi
+        bw    = o_hi - o_low
+        d     = k * k + bw * k + o0sq
+        self._b0 =  bw * k / d
+        self._b1 =  0.0
+        self._b2 = -bw * k / d
+        self._a1 =  2.0 * (o0sq - k * k) / d
+        self._a2 =  (k * k - bw * k + o0sq) / d
+
+    def reset(self):
+        self._v1 = self._v2 = 0.0
+        self._needs_precharge = True
+
+    def process(self, x):
+        if self._needs_precharge:
+            denom = 1.0 + self._a1 + self._a2
+            y_ss  = (x * (self._b0 + self._b1 + self._b2) / denom) if denom != 0.0 else 0.0
+            self._v1 = y_ss - self._b0 * x
+            self._v2 = self._b2 * x - self._a2 * y_ss
+            self._needs_precharge = False
+        y = self._b0 * x + self._v1
+        self._v1 = self._b1 * x - self._a1 * y + self._v2
+        self._v2 = self._b2 * x - self._a2 * y
+        return y
+
+
+class HR1BiquadCalc(HR1Variant):
+    """BPF variant — one biquad bandpass in place of SPEC's IIR DC remover + moving average.
+
+    Hypothesis under test (Alex, 2026-09-06): SPEC's front end is the main reason HR1 loses
+    intervals. Its DC remover is a one-pole high-pass with τ=1.6 s, i.e. a corner at
+    0.0995 Hz — five times lower than the 0.5 Hz the library already uses for ppg_disp. It
+    therefore passes baseline wander that inflates running_max (raising the threshold and
+    dropping beats) and shifts the waveform (bringing the dicrotic notch toward the
+    threshold). Either way the RR series turns irregular, which is exactly what the SQI gate
+    punishes — so the loss shows up as availability, not as an error in the published HR.
+
+    A bandpass replaces both of SPEC's filters at once, and adds two properties the pair
+    cannot have: monotonic skirts instead of the moving average's −13 dB sidelobes, and
+    steady-state precharge instead of a start-up transient that costs ~7 s of beats after
+    every probe reapplication.
+
+    Defaults deliberately isolate one variable: the low corner moves to 0.5 Hz (the
+    hypothesis), while the high corner stays at 5 Hz — where SPEC's moving average already
+    sits (−3 dB at ≈4.4 Hz). Raise bpf_high_hz to 20 Hz to also match ppg_disp's bandwidth,
+    but do it as a second, separate step.
+
+    Detector, refractory and SQI are untouched and shared with SPEC through HR1Variant, so a
+    difference between the two rows can only come from the filtering.
+    """
+
+    NAME        = "BPF"
+    DESCRIPTION = ("Biquad bandpass (library BiquadFilter::init_bp) replacing SPEC's "
+                   "IIR DC remover + moving average")
+
+    FW_BPF_LOW_HZ  = 0.5
+    FW_BPF_HIGH_HZ = 5.0
+
+    PARAMS = (
+        HR1Param('bpf_low_hz',        'BP low',     0.05, 5.0,   FW_BPF_LOW_HZ,  2, 0.05,   'Hz',
+                 "Lower cutoff of the bandpass — replaces SPEC's DC IIR tau. SPEC's 1.6 s "
+                 "corresponds to 0.0995 Hz; ppg_disp uses 0.5 Hz. Raising it removes baseline "
+                 "wander, which is what destabilises the running maximum and the threshold."),
+        HR1Param('bpf_high_hz',       'BP high',    1.0,  50.0,  FW_BPF_HIGH_HZ, 1, 0.5,    'Hz',
+                 "Upper cutoff of the bandpass — replaces SPEC's MA cutoff and MA max len. "
+                 "5 Hz matches where SPEC's moving average already sits (-3 dB at 4.4 Hz); "
+                 "20 Hz matches ppg_disp and keeps the systolic upstroke sharp."),
+        HR1Param('max_decay_tau_s',   'Max decay tau',   0.2,  60.0,
+                 HR1Variant.FW_MAX_DECAY_TAU_S,   1, 0.5, 's',
+                 "Time constant of the running maximum's exponential decay. Sets how long an "
+                 "old peak keeps raising the threshold. It is a RECOVERY parameter: with a "
+                 "step drop in amplitude to a fraction g, detection resumes only after "
+                 "tau*ln(0.6/g) — 13.9 s at the 20 s default. The library default has no "
+                 "rationale of its own; it is the inherited 0.9999 per-sample literal."),
+        HR1Param('max_decay_beats',   'Max decay beats', 0.0,  20.0,
+                 HR1Variant.FW_MAX_DECAY_BEATS,   1, 0.5, 'beats',
+                 "0 = use the fixed tau above (firmware behaviour). Above 0, the decay time "
+                 "becomes N x the measured RR, so the threshold falls by the same fraction "
+                 "every beat regardless of heart rate. The lower bound is ~2.5 beats: below "
+                 "that the threshold collapses between beats and noise crosses it."),
+        HR1Param('threshold_factor',  'Threshold',  0.1,  1.0,
+                 HR1TestCalc.FW_THRESHOLD_FACTOR,  2, 0.05, '',
+                 "Detection threshold as a fraction of the running maximum. Unchanged from SPEC."),
+        HR1Param('refractory_s',      'Refractory', 0.05, 2.0,
+                 HR1TestCalc.FW_REFRACTORY_S,      3, 0.005, 's',
+                 "Blanking period after a detected peak. Unchanged from SPEC. Note it caps the "
+                 "detectable rate at 1/refractory: 0.2 s means exactly 300 BPM, with no margin."),
+    )
+
+    DIAG_CURVES = (
+        HR1Curve('bp_filtered', 'BP filtered', '#44FF88'),
+        HR1Curve('running_max', 'Running max', '#FF8844'),
+        HR1Curve('threshold',   'Threshold',   '#FFDD44', True),
+    )
+
+    def _init_variant(self):
+        self._bpf          = _Biquad()
+        self._running_max  = 0.0
+        self._above_thresh = False
+
+    def _reset_variant(self):
+        self._bpf.reset()
+        self._running_max  = 0.0
+        self._above_thresh = False
+
+    def _recalc_variant(self, fs):
+        # Guard the user-facing range: a low >= high gives a negative bandwidth and a silent
+        # NaN, and a corner at or above Nyquist blows up the tangent.
+        lo = max(0.01, min(self.bpf_low_hz, 0.45 * fs))
+        hi = max(lo * 1.05, min(self.bpf_high_hz, 0.45 * fs))
+        self._bpf.init_bp(lo, hi, fs)
+        self._bpf.reset()
+        self._running_max  = 0.0
+        self._above_thresh = False
+
+    def _detect(self, sample, fs):
+        # Bandpass, then negate for conventional PPG polarity (AFE raw falls on systole).
+        # The bandpass removes DC, so SPEC's separate DC-removal stage is gone.
+        bp_out = -self._bpf.process(sample)
+
+        self._running_max *= self._decay_alpha_v
+        if bp_out > self._running_max:
+            self._running_max = bp_out
+
+        threshold = self.threshold_factor * self._running_max
+
+        peak_raw = (bp_out >= threshold > 0) and not self._above_thresh
+        self._above_thresh = (bp_out >= threshold > 0)
+
+        self.diag['bp_filtered'].append(bp_out)
+        self.diag['running_max'].append(self._running_max)
+        self.diag['threshold'].append(threshold)
+        return peak_raw, bp_out
+
+
+# Registry consumed by HR1LAB. Adding a variant = one subclass + one line here.
+HR1_VARIANTS = (HR1TestCalc, HR1BiquadCalc)
 
 
 class HR2TestCalc:
@@ -2702,7 +3022,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         self._spin_dc_tau    = _dspin(0.1, 20.0,  HR1TestCalc.FW_DC_IIR_TAU_S,      1, 0.1, " s")
         self._spin_ma_cut    = _dspin(0.5, 50.0,  HR1TestCalc.FW_MA_CUTOFF_HZ,       1, 0.5, " Hz")
         self._spin_ma_max    = _ispin(1,   256,   HR1TestCalc.FW_MA_MAX_LEN)
-        self._spin_decay     = _dspin(0.99, 1.0,  HR1TestCalc.FW_RUNNING_MAX_DECAY,  6, 0.0001)
+        self._spin_decay     = _dspin(0.2, 60.0,  HR1TestCalc.FW_MAX_DECAY_TAU_S,    1, 0.5, " s")
         self._spin_thr       = _dspin(0.1,  1.0,  HR1TestCalc.FW_THRESHOLD_FACTOR,   2, 0.05)
         self._spin_refr      = _dspin(0.05, 2.0,  HR1TestCalc.FW_REFRACTORY_S,       3, 0.005, " s")
 
@@ -2717,10 +3037,11 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         self._spin_ma_max.setToolTip(_make_tooltip("MA max len",
             "Maximum moving average window length [samples]. Firmware default: 64.",
             src="hr1_ma_max_len"))
-        self._spin_decay.setToolTip(_make_tooltip("Running max decay",
-            "Per-sample exponential decay factor for the running maximum. "
-            "Firmware default: 0.9999. Values < 1 make the tracker forget old peaks.",
-            src="hr1_running_max_decay"))
+        self._spin_decay.setToolTip(_make_tooltip("Running max decay tau",
+            "Time constant of the running maximum's exponential decay [s]. "
+            "Firmware default: 20 s (lib v0.87 — reproduces the former 0.9999 per-sample "
+            "factor exactly at 500 Hz). Shorter tau forgets old peaks faster.",
+            src="hr1_max_decay_tau_s"))
         self._spin_thr.setToolTip(_make_tooltip("Threshold factor",
             "Rising-edge threshold = factor × running_max. Firmware default: 0.6.",
             src="hr1_threshold_factor"))
@@ -2734,7 +3055,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         form.addRow(_lbl("DC τ"),          self._spin_dc_tau)
         form.addRow(_lbl("MA cutoff"),     self._spin_ma_cut)
         form.addRow(_lbl("MA max len"),    self._spin_ma_max)
-        form.addRow(_lbl("Max decay"),     self._spin_decay)
+        form.addRow(_lbl("Max decay τ"),   self._spin_decay)
         form.addRow(_lbl("Threshold"),     self._spin_thr)
         form.addRow(_lbl("Refractory"),    self._spin_refr)
         right_vbox.addWidget(grp_params)
@@ -2818,7 +3139,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         calc.dc_iir_tau_s      = self._spin_dc_tau.value()
         calc.ma_cutoff_hz      = self._spin_ma_cut.value()
         calc.ma_max_len        = self._spin_ma_max.value()
-        calc.running_max_decay = self._spin_decay.value()
+        calc.max_decay_tau_s   = self._spin_decay.value()
         calc.threshold_factor  = self._spin_thr.value()
         calc.refractory_s      = self._spin_refr.value()
         calc.reset()
@@ -2834,7 +3155,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             (self._spin_dc_tau, 'FW_DC_IIR_TAU_S'),
             (self._spin_ma_cut, 'FW_MA_CUTOFF_HZ'),
             (self._spin_ma_max, 'FW_MA_MAX_LEN'),
-            (self._spin_decay,  'FW_RUNNING_MAX_DECAY'),
+            (self._spin_decay,  'FW_MAX_DECAY_TAU_S'),
             (self._spin_thr,    'FW_THRESHOLD_FACTOR'),
             (self._spin_refr,   'FW_REFRACTORY_S'),
         ]:
@@ -2951,7 +3272,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         self._offline_calc.dc_iir_tau_s      = self._spin_dc_tau.value()
         self._offline_calc.ma_cutoff_hz      = self._spin_ma_cut.value()
         self._offline_calc.ma_max_len        = self._spin_ma_max.value()
-        self._offline_calc.running_max_decay = self._spin_decay.value()
+        self._offline_calc.max_decay_tau_s   = self._spin_decay.value()
         self._offline_calc.threshold_factor  = self._spin_thr.value()
         self._offline_calc.refractory_s      = self._spin_refr.value()
         self._offline_calc.reset()
@@ -3028,7 +3349,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# HR1TEST export — {datetime.datetime.now()}\n")
                 f.write(f"# dc_tau={calc.dc_iir_tau_s:.1f}s, ma_cut={calc.ma_cutoff_hz:.1f}Hz, "
-                        f"decay={calc.running_max_decay:.4f}, thr={calc.threshold_factor:.2f}, "
+                        f"decay_tau={calc.max_decay_tau_s:.1f}s, thr={calc.threshold_factor:.2f}, "
                         f"refr={calc.refractory_s:.3f}s\n")
                 f.write(f"# defaults={'YES' if calc.using_defaults else 'NO'}\n")
                 f.write("t_s,hr1_fw,hr1_py,hr1_delta,sqi_fw,sqi_py\n")
@@ -5766,11 +6087,12 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("plot_ppgplots", "[_py_timing['plot_ppgplots']]  PPGPLOTS  |  PPGPlotsWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
         ("plot_signals",  "[_py_timing['plot_signals']]   SIGNALS   |  PPGSignalsWindow.update_plots()",  _PLOTS_TICK_BUDGET_MS),
         ("plot_results",  "[_py_timing['plot_results']]   RESULTS   |  AlgoResultsWindow.update_plots()", _PLOTS_TICK_BUDGET_MS),
-        ("plot_hrlab",    "[_py_timing['plot_hrlab']]     HR2LAB    |  HRLabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr2lab",   "[_py_timing['plot_hr2lab']]    HR2LAB    |  HR2LabWindow.update_plots()",      _PLOTS_TICK_BUDGET_MS),
         ("plot_spo2lab",  "[_py_timing['plot_spo2lab']]   SPO2LAB   |  SpO2LabWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
         ("plot_hr3lab",   "[_py_timing['plot_hr3lab']]    HR3LAB    |  HR3LabWindow.update_plots()",      _PLOTS_TICK_BUDGET_MS),
         ("plot_spo2test", "[_py_timing['plot_spo2test']]  SPO2TEST  |  SpO2TestWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
         ("plot_hr1test",  "[_py_timing['plot_hr1test']]   HR1TEST * |  HR1TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_hr1lab",   "[_py_timing['plot_hr1lab']]    HR1LAB    |  HR1LabWindow.update_plots()",      _PLOTS_TICK_BUDGET_MS),
         ("plot_hr2test",  "[_py_timing['plot_hr2test']]   HR2TEST   |  HR2TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
         ("plot_hr3test",  "[_py_timing['plot_hr3test']]   HR3TEST   |  HR3TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
     ]
@@ -7491,6 +7813,512 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
+class HR1LabRow(QtWidgets.QFrame):
+    """One collapsible variant row inside HR1LAB.
+
+    Header : collapse arrow, variant name, enable box, live HR / SQI / availability.
+    Body   : signal plot on the left, parameter controls on the right.
+
+    The controls are generated from the variant's PARAMS declaration and the plot curves
+    from its DIAG_CURVES, so a new variant needs no UI code of its own.
+    """
+
+    _PLOT_BG    = '#121212'
+    _LBL_S      = "color: #CCCCCC; font-size: 18px;"
+    _SPIN_S     = "background-color: #2A2A2A; color: #FFDD44; padding: 3px; font-size: 18px;"
+    _GROUP_S    = ("QGroupBox { color: #AAAAAA; font-weight: bold; font-size: 16px; "
+                   "border: 1px solid #444; border-radius: 4px; margin-top: 8px; } "
+                   "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }")
+
+    def __init__(self, variant, on_toggle):
+        super().__init__()
+        self.calc       = variant
+        self._on_toggle = on_toggle
+        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.setStyleSheet("QFrame { border: 1px solid #333; border-radius: 4px; }")
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(4, 2, 4, 4)
+        root.setSpacing(2)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        header = QtWidgets.QWidget()
+        header.setStyleSheet("border: none;")
+        hb = QtWidgets.QHBoxLayout(header)
+        hb.setContentsMargins(2, 0, 2, 0)
+
+        self._btn_collapse = QtWidgets.QToolButton()
+        self._btn_collapse.setArrowType(QtCore.Qt.DownArrow)
+        self._btn_collapse.setCheckable(True)
+        self._btn_collapse.setChecked(True)
+        self._btn_collapse.setStyleSheet("QToolButton { border: none; color: #FFDD44; }")
+        self._btn_collapse.clicked.connect(self._toggle_body)
+        self._btn_collapse.setToolTip(_make_tooltip(
+            "Collapse / expand",
+            "Hide this variant's plot and controls to give the remaining rows more height. "
+            "A collapsed variant keeps running — only its display is hidden.",
+            src="HR1LabRow._toggle_body"))
+        hb.addWidget(self._btn_collapse)
+
+        name = QtWidgets.QLabel(variant.NAME)
+        name.setStyleSheet("color: #FFDD44; font-weight: 800; font-size: 20px; border: none;")
+        name.setToolTip(_make_tooltip(variant.NAME, variant.DESCRIPTION or "HR1 variant",
+                                      src=type(variant).__name__))
+        hb.addWidget(name)
+
+        self._chk_enable = QtWidgets.QCheckBox("run")
+        self._chk_enable.setChecked(True)
+        self._chk_enable.setStyleSheet("color: #CCCCCC; font-size: 16px; border: none;")
+        self._chk_enable.toggled.connect(self._on_enable_toggled)
+        self._chk_enable.setToolTip(_make_tooltip(
+            "Run this variant",
+            "Feed samples to this variant. Unchecking it freezes the variant and stops "
+            "consuming CPU, without removing the row.",
+            src="HR1LabRow.enabled"))
+        hb.addWidget(self._chk_enable)
+
+        hb.addStretch(1)
+
+        self._lbl_hr    = QtWidgets.QLabel("HR --")
+        self._lbl_sqi   = QtWidgets.QLabel("SQI --")
+        self._lbl_avail = QtWidgets.QLabel("AVAIL --")
+        for w, col in ((self._lbl_hr, '#44FF88'), (self._lbl_sqi, '#8888FF'),
+                       (self._lbl_avail, '#FF8844')):
+            w.setStyleSheet("color: %s; font-weight: bold; font-size: 20px; border: none;" % col)
+            hb.addWidget(w)
+        self._lbl_hr.setToolTip(_make_tooltip(
+            "HR", "Heart rate published by this variant [BPM].", src="HR1Variant.hr_bpm"))
+        self._lbl_sqi.setToolTip(_make_tooltip(
+            "SQI", "Signal Quality Index of this variant: clamp(1 - CV/0.15, 0, 1) over the "
+                   "last 5 RR intervals.", src="HR1Variant.hr_sqi"))
+        self._lbl_avail.setToolTip(_make_tooltip(
+            "AVAIL — availability",
+            "Fraction of the last 30 s in which this variant published a valid reading "
+            "(SQI > 0). This is the metric that separates variants: under interference the "
+            "published HR stays accurate while most intervals are discarded.",
+            src="HR1Variant.availability"))
+        root.addWidget(header)
+
+        # ── Body ──────────────────────────────────────────────────────────────
+        self._body = QtWidgets.QWidget()
+        self._body.setStyleSheet("border: none;")
+        bb = QtWidgets.QHBoxLayout(self._body)
+        bb.setContentsMargins(0, 0, 0, 0)
+
+        self.plot = pg.PlotWidget()
+        self.plot.setBackground(self._PLOT_BG)
+        self.plot.showGrid(x=True, y=True, alpha=0.2)
+        self.plot.setLabel('bottom', 'time before now', units='s')
+        self.plot.addLegend(offset=(-10, 10))
+        self.plot.setMouseEnabled(x=False, y=True)
+        bb.addWidget(self.plot, 1)
+
+        self._curves, self._dim_curves = {}, {}
+        for c in variant.DIAG_CURVES:
+            if c.dim_refr:
+                # Drawn twice: the live threshold, and a dim dashed twin for the samples
+                # where the refractory period is vetoing detection. Splitting them by NaN
+                # keeps one array and one time axis, so the two can never disagree.
+                self._dim_curves[c.key] = self.plot.plot(
+                    pen=pg.mkPen(self._dim(c.color), width=1,
+                                 style=QtCore.Qt.DashLine))
+            self._curves[c.key] = self.plot.plot(pen=pg.mkPen(c.color, width=2), name=c.label)
+        # Detection marker: where the signal crosses the threshold and a beat is declared.
+        self._peaks = pg.ScatterPlotItem(size=20, brush=pg.mkBrush('#FFFF00'),
+                                         pen=pg.mkPen('#FFFFFF', width=2), symbol='o')
+        self.plot.addItem(self._peaks)
+        self._mark_lines = []
+
+        bb.addWidget(self._build_controls(variant), 0)
+        root.addWidget(self._body, 1)
+
+    @staticmethod
+    def _dim(color, factor=0.35):
+        """Darken a #RRGGBB colour, for the refractory twin of a curve."""
+        c = color.lstrip('#')
+        return '#%02X%02X%02X' % tuple(int(int(c[i:i + 2], 16) * factor) for i in (0, 2, 4))
+
+    # ── Controls generated from the variant declaration ───────────────────────
+    def _build_controls(self, variant):
+        panel = QtWidgets.QWidget()
+        panel.setFixedWidth(300)
+        vb = QtWidgets.QVBoxLayout(panel)
+        vb.setContentsMargins(0, 0, 0, 0)
+
+        grp = QtWidgets.QGroupBox("Parameters")
+        grp.setStyleSheet(self._GROUP_S)
+        form = QtWidgets.QFormLayout(grp)
+        form.setSpacing(4)
+
+        self._spins = {}
+        for p in variant.PARAMS:
+            if p.decimals == 0:
+                w = QtWidgets.QSpinBox()
+                w.setRange(int(p.lo), int(p.hi))
+                w.setSingleStep(int(p.step) or 1)
+                w.setValue(int(p.default))
+            else:
+                w = QtWidgets.QDoubleSpinBox()
+                w.setRange(p.lo, p.hi)
+                w.setDecimals(p.decimals)
+                w.setSingleStep(p.step)
+                w.setValue(p.default)
+            if p.unit:
+                w.setSuffix(" " + p.unit)
+            w.setStyleSheet(self._SPIN_S)
+            w.setToolTip(_make_tooltip(p.label, p.tooltip, src="hr1_" + p.attr))
+            w.valueChanged.connect(self._apply_params)
+            self._spins[p.attr] = w
+            lbl = QtWidgets.QLabel(p.label)
+            lbl.setStyleSheet(self._LBL_S)
+            form.addRow(lbl, w)
+        vb.addWidget(grp)
+
+        btn = QtWidgets.QPushButton("RESET TO DEFAULTS")
+        btn.setStyleSheet(ACTION_BUTTON_STYLE)
+        btn.clicked.connect(self._reset_defaults)
+        btn.setToolTip(_make_tooltip(
+            "RESET TO DEFAULTS",
+            "Restore this variant's parameters to their declared defaults and clear its state.",
+            src="HR1Variant.reset_to_defaults"))
+        vb.addWidget(btn)
+        vb.addStretch(1)
+        return panel
+
+    def _apply_params(self):
+        """Push spin values into the variant. Changing a parameter resets its filter state,
+        because the old state was produced by different coefficients."""
+        for attr, w in self._spins.items():
+            setattr(self.calc, attr, w.value())
+        self.calc.reset()
+
+    def _reset_defaults(self):
+        self.calc.reset_to_defaults()
+        for p in self.calc.PARAMS:
+            w = self._spins[p.attr]
+            w.blockSignals(True)
+            w.setValue(int(p.default) if p.decimals == 0 else p.default)
+            w.blockSignals(False)
+        self.calc.reset()
+
+    def _on_enable_toggled(self, on):
+        """Restart on re-enable: the state left behind belongs to a different stretch of
+        signal, and resuming from it would put a time discontinuity inside the RR buffer."""
+        if on:
+            self.calc.reset()
+
+    def _toggle_body(self):
+        expanded = self._btn_collapse.isChecked()
+        self._btn_collapse.setArrowType(QtCore.Qt.DownArrow if expanded
+                                        else QtCore.Qt.RightArrow)
+        self._body.setVisible(expanded)
+        self._on_toggle()
+
+    # ── State ────────────────────────────────────────────────────────────────
+    @property
+    def enabled(self):
+        return self._chk_enable.isChecked()
+
+    @property
+    def expanded(self):
+        return self._btn_collapse.isChecked()
+
+    def redraw(self, fs, n_fed, marks):
+        """Redraw plot and header metrics. Cheap enough for the 10 Hz refresh."""
+        hr = self.calc.hr_bpm
+        self._lbl_hr.setText("HR --" if (hr is None or hr != hr or hr <= 0)
+                             else "HR %.1f" % hr)
+        self._lbl_sqi.setText("SQI %.2f" % self.calc.hr_sqi)
+        self._lbl_avail.setText("AVAIL %3.0f%%" % (100.0 * self.calc.availability))
+
+        if not self.expanded:
+            return
+
+        disp = np.array(self.calc.diag_display, dtype=float)
+        n = len(disp)
+        if n == 0:
+            for c in list(self._curves.values()) + list(self._dim_curves.values()):
+                c.setData([], [])
+            self._peaks.setData([], [])
+            return
+
+        # x axis: seconds before now, so the newest sample sits at 0
+        t = (np.arange(n) - n) / fs
+        refr = np.array(self.calc.diag_refractory, dtype=float)
+        for key, curve in self._curves.items():
+            y = np.array(self.calc.diag[key], dtype=float)
+            tx = t[-len(y):] if len(y) <= n else t
+            y  = y[-n:] if len(y) > n else y
+            if key in self._dim_curves and len(refr) == len(y):
+                blanked = refr > 0
+                curve.setData(tx, np.where(blanked, np.nan, y), connect='finite')
+                self._dim_curves[key].setData(tx, np.where(blanked, y, np.nan),
+                                              connect='finite')
+            else:
+                curve.setData(tx, y)
+
+        mask = np.array(self.calc.diag_peak_mask, dtype=float)
+        idx = np.flatnonzero(mask[-n:] > 0) if len(mask) else np.array([], dtype=int)
+        self._peaks.setData(t[idx], disp[idx])
+
+        # Event marks, positioned relative to the newest sample
+        for ln in self._mark_lines:
+            self.plot.removeItem(ln)
+        self._mark_lines = []
+        span = n / fs
+        for m in marks:
+            dt = (m - n_fed) / fs
+            if -span <= dt <= 0.0:
+                ln = pg.InfiniteLine(pos=dt, angle=90,
+                                     pen=pg.mkPen('#FF44FF', width=2,
+                                                  style=QtCore.Qt.DashLine))
+                self.plot.addItem(ln)
+                self._mark_lines.append(ln)
+
+
+class HR1LabWindow(QtWidgets.QMainWindow):
+    """HR1LAB — bench for exploring HR1 peak-detection variants.
+
+    Every variant in HR1_VARIANTS gets a collapsible row and is fed the *same sample at the
+    same instant*, so comparing them live is rigorous: they see an identical signal. That is
+    what makes this a bench rather than a viewer — provoke a failure by hand (move the
+    finger, change ambient light, switch the phototherapy lamp on) and watch which variant
+    breaks and why, in its own trace.
+
+    This window explores; it does not validate. Deciding between the survivors is a separate
+    batch run over the capture set with known truth, and it is not part of HR1LAB.
+
+    MARK stamps a dashed line across every trace, so a failure can be tied to the action
+    that caused it. SAVE writes the last SAVE_WINDOW_S of raw signal, with the marks, so a
+    chance finding can be replayed later through any variant.
+
+    HR1LAB requires $M4: it runs on OT_LED1, which no other frame mode carries.
+    """
+
+    SAVE_WINDOW_S = 30.0     # rolling raw buffer kept for SAVE
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle("HR1LAB")
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
+        self.statusBar().showMessage(_MOUSE_HINT)
+
+        self._fs      = 500.0
+        self._n_fed   = 0
+        self._marks   = []
+        self._raw     = deque(maxlen=int(self.SAVE_WINDOW_S * 500))
+        self._last_ot = float('nan')
+        self._last_ps = -1
+        self._paused  = False
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root = QtWidgets.QVBoxLayout(central)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(4)
+
+        # ── Context bar: what you are physically doing to the signal ──────────
+        bar = QtWidgets.QWidget()
+        hb = QtWidgets.QHBoxLayout(bar)
+        hb.setContentsMargins(2, 0, 2, 0)
+
+        self._lbl_state = QtWidgets.QLabel("PROBE --")
+        self._lbl_ot    = QtWidgets.QLabel("OT_LED1 --")
+        self._lbl_pi    = QtWidgets.QLabel("PI --")
+        for w, col in ((self._lbl_state, '#FFDD44'), (self._lbl_ot, '#44FF88'),
+                       (self._lbl_pi, '#8888FF')):
+            w.setStyleSheet("color: %s; font-weight: bold; font-size: 20px;" % col)
+            hb.addWidget(w)
+        self._lbl_state.setToolTip(_make_tooltip(
+            "PROBE — probe state",
+            "RSQM's probe classification. Every variant is frozen and reset while this is "
+            "not APPLIED, so nothing is measured until the probe is on the patient.",
+            src="ProbeState"))
+        self._lbl_ot.setToolTip(_make_tooltip(
+            "OT_LED1 — optical transmittance",
+            "The signal all variants consume [A/A]. Gain-invariant, so it does not jump when "
+            "HGAC changes gain. Its slow component is the optical DC.",
+            src="AFE4490Data::ot_led1"))
+        self._lbl_pi.setToolTip(_make_tooltip(
+            "PI — perfusion index",
+            "AC/DC ratio [%] from the main window. Context for what you are doing to the "
+            "probe: it falls when perfusion or optical coupling drops.",
+            src="PPGMonitor.data_pi"))
+        hb.addStretch(1)
+
+        self._btn_pause = QtWidgets.QPushButton("PAUSE")
+        self._btn_pause.setCheckable(True)
+        self._btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_pause.setShortcut("P")
+        self._btn_pause.clicked.connect(self._toggle_pause)
+        self._btn_pause.setToolTip(_make_tooltip(
+            "PAUSE / CONTINUE  (shortcut: P)",
+            "Freeze the feed to study what just happened. Every trace, every metric and the "
+            "save buffer stop where they are, so SAVE writes what is on screen rather than "
+            "what arrived while you were reading it.\n\n"
+            "CONTINUE starts a fresh recording: variants, marks and the save buffer are "
+            "cleared. Resuming into the old state would splice two moments of signal into "
+            "one RR interval and one timeline, which would be a lie in both.",
+            src="HR1LabWindow._toggle_pause"))
+        hb.addWidget(self._btn_pause)
+
+        self._btn_mark = QtWidgets.QPushButton("MARK")
+        self._btn_mark.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_mark.setShortcut("M")
+        self._btn_mark.clicked.connect(self.add_mark)
+        self._btn_mark.setToolTip(_make_tooltip(
+            "MARK  (shortcut: M)",
+            "Stamp a dashed line at the current instant across every trace. Use it the moment "
+            "you act on the signal — move the finger, switch the lamp on — so a failure can "
+            "be tied to what caused it.",
+            src="HR1LabWindow.add_mark"))
+        hb.addWidget(self._btn_mark)
+
+        self._btn_save = QtWidgets.QPushButton("SAVE LAST %ds" % int(self.SAVE_WINDOW_S))
+        self._btn_save.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_save.clicked.connect(self.save_window)
+        self._btn_save.setToolTip(_make_tooltip(
+            "SAVE LAST %ds" % int(self.SAVE_WINDOW_S),
+            "Write the last %d s of raw OT_LED1, probe state and event marks to a CSV in the "
+            "captures folder. Saves the signal, not the variant outputs, so the same stretch "
+            "can be replayed later through any variant.\n\n"
+            "While paused this writes the buffer as it was when you pressed PAUSE — nothing "
+            "has entered it since." % int(self.SAVE_WINDOW_S),
+            src="HR1LabWindow.save_window"))
+        hb.addWidget(self._btn_save)
+
+        self._btn_reset = QtWidgets.QPushButton("RESET ALL")
+        self._btn_reset.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_reset.clicked.connect(self.reset_all)
+        self._btn_reset.setToolTip(_make_tooltip(
+            "RESET ALL",
+            "Clear the state of every variant and drop the event marks. Parameters are kept.",
+            src="HR1LabWindow.reset_all"))
+        hb.addWidget(self._btn_reset)
+        root.addWidget(bar)
+
+        # ── One row per registered variant ────────────────────────────────────
+        self._rows_box = QtWidgets.QVBoxLayout()
+        self._rows_box.setSpacing(4)
+        self.rows = []
+        for cls in HR1_VARIANTS:
+            row = HR1LabRow(cls(), self._relayout)
+            self.rows.append(row)
+            self._rows_box.addWidget(row)
+        self._rows_box.addStretch(0)
+        root.addLayout(self._rows_box, 1)
+        self._relayout()
+
+        self.resize(1600, 950)
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
+            "HR1LabWindow/geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+
+    # ── Layout ───────────────────────────────────────────────────────────────
+    def _relayout(self):
+        """Give the height to expanded rows only, so collapsing one enlarges the rest."""
+        for i, row in enumerate(self.rows):
+            self._rows_box.setStretch(i, 1 if row.expanded else 0)
+        self._rows_box.setStretch(len(self.rows), 0 if any(r.expanded for r in self.rows) else 1)
+
+    # ── Data path ────────────────────────────────────────────────────────────
+    def feed_sample(self, ot_led1, fs, probe_state, sample_counter=None):
+        """Feed one full-rate sample to every enabled variant.
+
+        All variants receive the same sample in the same call, which is what makes a live
+        comparison between them fair. While paused nothing enters here, which is what lets
+        SAVE write the frozen buffer.
+        """
+        if self._paused:
+            return
+        self._fs      = fs
+        self._last_ot = ot_led1
+        self._last_ps = probe_state
+        self._raw.append((self._n_fed, ot_led1, probe_state))
+        for row in self.rows:
+            if row.enabled:
+                row.calc.update(ot_led1, fs, probe_state, sample_counter)
+        self._n_fed += 1
+
+    def _toggle_pause(self):
+        self._paused = self._btn_pause.isChecked()
+        if self._paused:
+            # One last redraw so the frozen view is the newest data, not the previous tick.
+            for row in self.rows:
+                row.redraw(self._fs, self._n_fed, self._marks)
+            self._btn_pause.setText("CONTINUE")
+            self.statusBar().showMessage(
+                "PAUSED — %.0f s buffered; SAVE writes this, not what arrives next"
+                % (len(self._raw) / self._fs if self._fs else 0.0))
+        else:
+            # Resuming means a new recording: splicing two moments of signal would create
+            # one false RR interval and one false timeline in the saved CSV.
+            self._n_fed = 0
+            self._raw.clear()
+            self.reset_all()
+            self._btn_pause.setText("PAUSE")
+            self.statusBar().showMessage(_MOUSE_HINT)
+
+    def add_mark(self):
+        # The newest sample already buffered — _n_fed is the index the next one will take,
+        # and pausing right after a mark would leave that index forever out of the buffer.
+        self._marks.append(max(0, self._n_fed - 1))
+        # keep only marks still inside the save buffer
+        oldest = self._n_fed - self._raw.maxlen
+        self._marks = [m for m in self._marks if m >= oldest]
+        self.statusBar().showMessage("Mark %d stamped" % len(self._marks), 2000)
+
+    def reset_all(self):
+        for row in self.rows:
+            row.calc.reset()
+        self._marks = []
+        self.statusBar().showMessage("All variants reset", 2000)
+
+    def save_window(self):
+        if not self._raw:
+            self.statusBar().showMessage("Nothing to save yet", 3000)
+            return
+        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(CAPTURES_DIR, "hr1lab_%s.csv" % now)
+        marks = set(self._marks)
+        try:
+            os.makedirs(CAPTURES_DIR, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write("# HR1LAB raw capture — fs=%.1f Hz, %d marks\n" % (self._fs, len(marks)))
+                f.write("t_s,ot_led1,probe_state,mark\n")
+                n0 = self._raw[0][0]
+                for n, ot, ps in self._raw:
+                    f.write("%.6f,%.9g,%d,%d\n"
+                            % ((n - n0) / self._fs, ot, ps, 1 if n in marks else 0))
+            self.statusBar().showMessage("Saved %s (%d samples)" % (path, len(self._raw)), 6000)
+        except OSError as e:
+            self.statusBar().showMessage("Save failed: %s" % e, 8000)
+
+    # ── Refresh ──────────────────────────────────────────────────────────────
+    def update_plots(self, data_pi=None):
+        if self._paused:
+            return          # leave the frozen view alone, including zoom and pan
+        ps_name = {0: "DISCONNECTED", 1: "NOT APPLIED", 2: "APPLIED", 3: "SATURATING"}
+        self._lbl_state.setText("PROBE %s" % ps_name.get(self._last_ps, "--"))
+        self._lbl_ot.setText("OT_LED1 --" if self._last_ot != self._last_ot
+                             else "OT_LED1 %.6g" % self._last_ot)
+        if data_pi is not None and len(data_pi):
+            self._lbl_pi.setText("PI %.2f %%" % data_pi[-1])
+        for row in self.rows:
+            row.redraw(self._fs, self._n_fed, self._marks)
+
+    def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
+            "HR1LabWindow/geometry", self.saveGeometry())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_hr1lab.setChecked(False)
+            self.main_monitor.hr1lab_window = None
+        super().closeEvent(event)
+
+
 class HR3LabWindow(QtWidgets.QMainWindow):
     """Diagnostic window for the HR3 (FFT-based) algorithm.
 
@@ -7654,7 +8482,7 @@ class _ResizableGraphicsLayout(pg.GraphicsLayoutWidget):
             self.ci.setGeometry(QtCore.QRectF(0, 0, w, h))
 
 
-class HRLabWindow(QtWidgets.QMainWindow):
+class HR2LabWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
@@ -7745,7 +8573,7 @@ class HRLabWindow(QtWidgets.QMainWindow):
         self._incunest_ba_cached  = None   # cached (b, a) coefficients — recomputed only when fs changes
 
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        geom = s.value("HRLabWindow/geometry")
+        geom = s.value("HR2LabWindow/geometry")
         if geom:
             self.restoreGeometry(geom)
         else:
@@ -7915,10 +8743,10 @@ class HRLabWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        s.setValue("HRLabWindow/geometry", self.saveGeometry())
+        s.setValue("HR2LabWindow/geometry", self.saveGeometry())
         if self.main_monitor is not None:
-            self.main_monitor.btn_hrlab.setChecked(False)
-            self.main_monitor.hrlab_window = None
+            self.main_monitor.btn_hr2lab.setChecked(False)
+            self.main_monitor.hr2lab_window = None
         event.accept()
 
 
@@ -10581,12 +11409,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.results_window   = None
         self.serialcom_window = None
         self.udpcom_window    = None
-        self.hrlab_window     = None
+        self.hr2lab_window    = None
         self.spo2lab_window   = None
         self.hr3lab_window    = None
         self.spo2test_window  = None
         self.hr1test_window   = None
         self.hr1test_calc     = HR1TestCalc()
+        self.hr1lab_window    = None
         self.hr2test_window   = None
         self.hr3test_window   = None
         self.hr3test_calc     = HR3TestCalc()
@@ -10603,6 +11432,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._SUBWIN_REFRESH_EVERY    = 2   # 10 Hz — SpO2/HR3 change slowly
         self._SPOST_REFRESH_EVERY     = 2   # 10 Hz
         self._HR1TEST_REFRESH_EVERY   = 2   # 10 Hz
+        self._HR1LAB_REFRESH_EVERY    = 2   # 10 Hz
         self._HR2TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._HR3TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._PILAB_REFRESH_EVERY     = 2   # 10 Hz
@@ -10611,11 +11441,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._signals_refresh_counter  = 0
         self._signals2_refresh_counter = 0
         self._results_refresh_counter  = 0
-        self._hrlab_refresh_counter    = 0
+        self._hr2lab_refresh_counter   = 0
         self._spo2lab_refresh_counter  = 0
         self._hr3lab_refresh_counter   = 0
         self._spo2test_refresh_counter = 0
         self._hr1test_refresh_counter  = 0
+        self._hr1lab_refresh_counter   = 0
         self._hr2test_refresh_counter  = 0
         self._hr3test_refresh_counter  = 0
         self._pilab_refresh_counter    = 0
@@ -10627,9 +11458,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _pt_keys = [
             'drain', 'drain_interval', 'render', 'render_interval',
             'algo_spo2lab', 'algo_spo2test', 'algo_hr2test',
-            'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hrlab',
+            'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hr2lab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
-            'plot_hr1test', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
+            'plot_hr1test', 'plot_hr1lab', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
         ]
         self._py_timing = {k: deque(maxlen=50) for k in _pt_keys}
         self._last_drain_t  = None   # for drain_interval measurement
@@ -10986,16 +11817,28 @@ class PPGMonitor(QtWidgets.QMainWindow):
         label_analysis.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
         self.sidebar_layout.addWidget(label_analysis)
 
-        self.btn_hrlab = QtWidgets.QPushButton("HR2LAB")
-        self.btn_hrlab.setCheckable(True)
-        self.btn_hrlab.setStyleSheet(ACTION_BUTTON_STYLE)
-        self.btn_hrlab.clicked.connect(self.toggle_hrlab)
-        self.btn_hrlab.setToolTip(_make_tooltip(
+        self.btn_hr1lab = QtWidgets.QPushButton("HR1LAB")
+        self.btn_hr1lab.setCheckable(True)
+        self.btn_hr1lab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_hr1lab.clicked.connect(self.toggle_hr1lab)
+        self.btn_hr1lab.setToolTip(_make_tooltip(
+            "HR1LAB",
+            "Show or hide the HR1 variant bench. Runs every registered HR1 variant on the "
+            "same samples at once, one collapsible row each, so they can be compared live "
+            "while you provoke a failure by hand. Requires frame mode $M4.",
+            src="HR1LabWindow"))
+        self.sidebar_layout.addWidget(self.btn_hr1lab)
+
+        self.btn_hr2lab = QtWidgets.QPushButton("HR2LAB")
+        self.btn_hr2lab.setCheckable(True)
+        self.btn_hr2lab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_hr2lab.clicked.connect(self.toggle_hr2lab)
+        self.btn_hr2lab.setToolTip(_make_tooltip(
             "HR2LAB",
             "Show or hide the HR2 diagnostic window. "
             "Displays the normalised autocorrelation (HR2) used to detect the dominant pulse period.",
-            src="HRLabWindow"))
-        self.sidebar_layout.addWidget(self.btn_hrlab)
+            src="HR2LabWindow"))
+        self.sidebar_layout.addWidget(self.btn_hr2lab)
 
         self.btn_hr3lab = QtWidgets.QPushButton("HR3LAB")
         self.btn_hr3lab.setCheckable(True)
@@ -11773,20 +12616,31 @@ class PPGMonitor(QtWidgets.QMainWindow):
         else:
             self.log("Not connected — cannot reset ESP32")
 
-    def _open_hrlab_default(self):
-        self.btn_hrlab.setChecked(True)
-        self.toggle_hrlab()
+    def _open_hr2lab_default(self):
+        self.btn_hr2lab.setChecked(True)
+        self.toggle_hr2lab()
 
-    def toggle_hrlab(self):
-        if self.btn_hrlab.isChecked():
-            self.hrlab_window = HRLabWindow(None)
-            self.hrlab_window.main_monitor = self
-            self.hrlab_window.show()
+    def toggle_hr1lab(self):
+        if self.btn_hr1lab.isChecked():
+            self.hr1lab_window = HR1LabWindow(None)
+            self.hr1lab_window.main_monitor = self
+            self.hr1lab_window.show()
         else:
-            if self.hrlab_window is not None:
-                self.hrlab_window.main_monitor = None  # prevent recursive callback
-                self.hrlab_window.close()
-                self.hrlab_window = None
+            if self.hr1lab_window is not None:
+                self.hr1lab_window.main_monitor = None  # prevent recursive callback
+                self.hr1lab_window.close()
+                self.hr1lab_window = None
+
+    def toggle_hr2lab(self):
+        if self.btn_hr2lab.isChecked():
+            self.hr2lab_window = HR2LabWindow(None)
+            self.hr2lab_window.main_monitor = self
+            self.hr2lab_window.show()
+        else:
+            if self.hr2lab_window is not None:
+                self.hr2lab_window.main_monitor = None  # prevent recursive callback
+                self.hr2lab_window.close()
+                self.hr2lab_window = None
 
     def _open_ppgplots_default(self):
         self.btn_ppgplots.setChecked(True)
@@ -11918,6 +12772,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.spo2test_window.main_monitor = None
                 self.spo2test_window.close()
                 self.spo2test_window = None
+
+    def _open_hr1lab_default(self):
+        self.btn_hr1lab.setChecked(True)
+        self.toggle_hr1lab()
 
     def _open_hr1test_default(self):
         self.btn_hr1test.setChecked(True)
@@ -12247,11 +13105,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/signals2_open",  self.signals2_window  is not None)
         s.setValue("PPGMonitor/results_open",   self.results_window   is not None)
         s.setValue("PPGMonitor/serialcom_open", self.serialcom_window is not None)
-        s.setValue("PPGMonitor/hrlab_open",     self.hrlab_window     is not None)
+        s.setValue("PPGMonitor/hr2lab_open",    self.hr2lab_window    is not None)
         s.setValue("PPGMonitor/spo2lab_open",   self.spo2lab_window   is not None)
         s.setValue("PPGMonitor/hr3lab_open",    self.hr3lab_window    is not None)
         s.setValue("PPGMonitor/spo2test_open",  self.spo2test_window  is not None)
         s.setValue("PPGMonitor/hr1test_open",  self.hr1test_window  is not None)
+        s.setValue("PPGMonitor/hr1lab_open",    self.hr1lab_window    is not None)
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
         s.setValue("PPGMonitor/pilab_open",    self.pilab_window    is not None)
@@ -12269,11 +13128,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.results_window   is not None: s.setValue("AlgoResultsWindow/geometry", self.results_window.saveGeometry())
         if self.serialcom_window is not None: s.setValue("SerialComWindow/geometry",   self.serialcom_window.saveGeometry())
         if self.udpcom_window    is not None: s.setValue("UdpComWindow/geometry",     self.udpcom_window.saveGeometry())
-        if self.hrlab_window     is not None: s.setValue("HRLabWindow/geometry",      self.hrlab_window.saveGeometry())
+        if self.hr2lab_window    is not None: s.setValue("HR2LabWindow/geometry",     self.hr2lab_window.saveGeometry())
         if self.spo2lab_window   is not None: s.setValue("SpO2LabWindow/geometry",    self.spo2lab_window.saveGeometry())
         if self.hr3lab_window    is not None: s.setValue("HR3LabWindow/geometry",     self.hr3lab_window.saveGeometry())
         if self.spo2test_window  is not None: s.setValue("SpO2TestWindow/geometry",   self.spo2test_window.saveGeometry())
         if self.hr1test_window   is not None: s.setValue("HR1TestWindow/geometry",    self.hr1test_window.saveGeometry())
+        if self.hr1lab_window    is not None: s.setValue("HR1LabWindow/geometry",     self.hr1lab_window.saveGeometry())
         if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
         if self.esp32_timing_window  is not None: s.setValue("Esp32TimingWindow/geometry",   self.esp32_timing_window.saveGeometry())
@@ -12980,12 +13840,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # HR1TEST mirror: 500 Hz (before decimation) — must match firmware _update_hr1()
                     # EXPERIMENT (OT-domain input): needs OT_LED1 (parts[31]), only in $M4 — $M1
                     # never carries it, so this now requires frame mode $M4.
-                    if _is_active and self.hr1test_window is not None:
+                    if _is_active and (self.hr1test_window is not None
+                                       or self.hr1lab_window is not None):
                         _p500 = line[1:].split(',')
                         if len(_p500) >= 32 and _p500[0] == 'M4':
                             try:
-                                self.hr1test_calc.update(float(_p500[31]), 500.0,
-                                                          int(float(_p500[22])), int(_p500[1]))
+                                _ot500 = float(_p500[31])
+                                _ps500 = int(float(_p500[22]))
+                                _sc500 = int(_p500[1])
+                                if self.hr1test_window is not None:
+                                    self.hr1test_calc.update(_ot500, 500.0, _ps500, _sc500)
+                                # HR1LAB: every variant gets the same sample in the same call,
+                                # which is what makes a live comparison between them fair.
+                                if self.hr1lab_window is not None:
+                                    self.hr1lab_window.feed_sample(_ot500, 500.0, _ps500, _sc500)
                             except (ValueError, IndexError):
                                 pass
 
@@ -13375,12 +14243,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi)
                 self._py_timing['plot_results'].append((time.perf_counter() - _t0p) * 1000)
 
-            self._hrlab_refresh_counter += 1
-            if self.hrlab_window is not None and self._hrlab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
-                self._hrlab_refresh_counter = 0
+            self._hr2lab_refresh_counter += 1
+            if self.hr2lab_window is not None and self._hr2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
+                self._hr2lab_refresh_counter = 0
                 _t0p = time.perf_counter()
-                self.hrlab_window.update_plots(self.data_ppgdisp, self.data_timestamp_us, self.data_sample_counter)
-                self._py_timing['plot_hrlab'].append((time.perf_counter() - _t0p) * 1000)
+                self.hr2lab_window.update_plots(self.data_ppgdisp, self.data_timestamp_us, self.data_sample_counter)
+                self._py_timing['plot_hr2lab'].append((time.perf_counter() - _t0p) * 1000)
 
             self._spo2lab_refresh_counter += 1
             if self.spo2lab_window is not None and self._spo2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
@@ -13413,6 +14281,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.data_timestamp_us, self.data_sample_counter)
                 self._py_timing['plot_hr1test'].append((time.perf_counter() - _t0p) * 1000)
 
+            self._hr1lab_refresh_counter += 1
+            if self.hr1lab_window is not None and self._hr1lab_refresh_counter >= self._HR1LAB_REFRESH_EVERY:
+                self._hr1lab_refresh_counter = 0
+                _t0p = time.perf_counter()
+                self.hr1lab_window.update_plots(self.data_pi)
+                self._py_timing['plot_hr1lab'].append((time.perf_counter() - _t0p) * 1000)
+
             self._hr2test_refresh_counter += 1
             if self.hr2test_window is not None and self._hr2test_refresh_counter >= self._HR2TEST_REFRESH_EVERY:
                 self._hr2test_refresh_counter = 0
@@ -13444,7 +14319,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if self.ppgplots_window  is None: self._py_timing['plot_ppgplots'].clear()
                 if self.signals_window   is None: self._py_timing['plot_signals'].clear()
                 if self.results_window   is None: self._py_timing['plot_results'].clear()
-                if self.hrlab_window     is None: self._py_timing['plot_hrlab'].clear()
+                if self.hr2lab_window    is None: self._py_timing['plot_hr2lab'].clear()
                 if self.spo2lab_window   is None:
                     self._py_timing['plot_spo2lab'].clear()
                     self._py_timing['algo_spo2lab'].clear()
@@ -13453,6 +14328,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self._py_timing['plot_spo2test'].clear()
                     self._py_timing['algo_spo2test'].clear()
                 if self.hr1test_window   is None: self._py_timing['plot_hr1test'].clear()
+                if self.hr1lab_window    is None: self._py_timing['plot_hr1lab'].clear()
                 if self.hr2test_window   is None:
                     self._py_timing['plot_hr2test'].clear()
                     self._py_timing['algo_hr2test'].clear()
@@ -13501,14 +14377,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_serialcom_default)
         if s.value("PPGMonitor/hr3lab_open",    True,  type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr3lab_default)
-        if s.value("PPGMonitor/hrlab_open",     False, type=bool):
-            QtCore.QTimer.singleShot(0, self._open_hrlab_default)
+        if s.value("PPGMonitor/hr2lab_open",    False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_hr2lab_default)
         if s.value("PPGMonitor/spo2lab_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_spo2lab_default)
         if s.value("PPGMonitor/spo2test_open",  False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_spo2test_default)
         if s.value("PPGMonitor/hr1test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr1test_default)
+        if s.value("PPGMonitor/hr1lab_open",    False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_hr1lab_default)
         if s.value("PPGMonitor/hr2test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr2test_default)
         if s.value("PPGMonitor/hr3test_open",   False, type=bool):
@@ -13544,6 +14422,121 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.save_file_chk = None
         print(f"[save-chk] DONE: {self._chk_filename}")
         QtCore.QTimer.singleShot(0, QtWidgets.QApplication.instance().quit)
+
+
+    # Sidebar button order. Drives the layout of pulsenest_lab.ini (see
+    # _reorder_settings_file) so the file reads top-to-bottom like the sidebar instead of in
+    # QSettings' internal write order. Each entry is (open-state key, settings section);
+    # either side may be None — a button whose window persists no open-state, or a window
+    # with no button. Keep in sync with the addWidget() sequence that builds the sidebar;
+    # anything missing from this tuple still gets written, it just lands at the end.
+    _INI_BUTTON_ORDER = (
+        ("labcapture_open",    "LabCaptureWindow"),
+        ("ppgplots_open",      "PPGPlotsWindow"),
+        ("signals_open",       "PPGSignalsWindow"),
+        ("signals2_open",      "PPGSignals2Window"),
+        ("results_open",       "AlgoResultsWindow"),
+        ("serialcom_open",     "SerialComWindow"),
+        (None,                 "UdpComWindow"),
+        ("hr1lab_open",        "HR1LabWindow"),
+        ("hr2lab_open",        "HR2LabWindow"),
+        ("hr3lab_open",        "HR3LabWindow"),
+        ("spo2lab_open",       "SpO2LabWindow"),
+        ("pilab_open",         "PILabWindow"),
+        ("spo2test_open",      "SpO2TestWindow"),
+        ("hr1test_open",       "HR1TestWindow"),
+        ("hr2test_open",       "HR2TestWindow"),
+        ("hr3test_open",       "HR3TestWindow"),
+        ("esp32_timing_open",  "Esp32TimingWindow"),
+        ("python_timing_open", "PythonTimingWindow"),
+        ("hw_config_open",     "HWConfigWindow"),
+        ("lib_config_open",    "LIBConfigWindow"),
+        ("diagnostics_open",   "DiagnosticsWindow"),
+        ("afe_sweep_open",     "AFESweepTestWindow"),
+    )
+
+    def _reorder_settings_file(self):
+        """Rewrite the .ini so its sections and open-state keys read in sidebar order.
+
+        QSettings writes in its own internal order, which bears no relation to the UI and
+        makes the file awkward to check against the sidebar. This runs last in closeEvent —
+        after every subwindow has written its geometry — and only moves lines: no value is
+        added, changed or removed, and unknown sections and keys are preserved at the end.
+
+        Purely cosmetic, so it never raises: any parsing surprise leaves the file exactly as
+        QSettings wrote it.
+        """
+        try:
+            QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).sync()
+            with open(SETTINGS_FILE, encoding="utf-8") as f:
+                raw = f.read()
+        except (OSError, UnicodeDecodeError):
+            return
+
+        try:
+            # Split into sections, keeping each section's lines verbatim.
+            preamble, order, blocks = [], [], {}
+            current = None
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    current = stripped[1:-1]
+                    if current not in blocks:
+                        blocks[current] = []
+                        order.append(current)
+                elif current is None:
+                    preamble.append(line)
+                else:
+                    blocks[current].append(line)
+
+            if "PPGMonitor" not in blocks:
+                return
+
+            # Group each key with its continuation lines (QSettings wraps long values with
+            # a trailing backslash), so reordering can never split a value from its key.
+            entries, pending = [], []
+            for line in blocks["PPGMonitor"]:
+                if pending and pending[-1].rstrip().endswith("\\"):
+                    pending.append(line)
+                    continue
+                if pending:
+                    entries.append(pending)
+                pending = [line]
+            if pending:
+                entries.append(pending)
+
+            key_rank = {k: i for i, (k, _) in enumerate(self._INI_BUTTON_ORDER)
+                        if k is not None}
+            plain, opens, unknown_opens = [], [], []
+            for entry in entries:
+                key = entry[0].split("=", 1)[0].strip()
+                if not key.endswith("_open"):
+                    plain.append(entry)
+                elif key in key_rank:
+                    opens.append((key_rank[key], entry))
+                else:
+                    unknown_opens.append(entry)
+            opens.sort(key=lambda pair: pair[0])
+            blocks["PPGMonitor"] = ([ln for e in plain for ln in e]
+                                    + [ln for _, e in opens for ln in e]
+                                    + [ln for e in unknown_opens for ln in e])
+
+            wanted = ["PPGMonitor"] + [sec for _, sec in self._INI_BUTTON_ORDER
+                                       if sec is not None]
+            new_order = ([sec for sec in wanted if sec in blocks]
+                         + [sec for sec in order if sec not in wanted])
+
+            out = list(preamble)
+            for sec in new_order:
+                if out and out[-1].strip():
+                    out.append("")
+                out.append("[%s]" % sec)
+                out.extend(ln for ln in blocks[sec] if ln.strip())
+
+            with open(SETTINGS_FILE, "w", encoding="utf-8", newline="\n") as f:
+                f.write("\n".join(out) + "\n")
+        except Exception:
+            return   # cosmetic only — never let it break shutdown
 
     def closeEvent(self, event):
         self._save_settings()
@@ -13583,9 +14576,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.udpcom_window is not None:
             self.udpcom_window.main_monitor = None
             self.udpcom_window.close()
-        if self.hrlab_window is not None:
-            self.hrlab_window.main_monitor = None
-            self.hrlab_window.close()
+        if self.hr2lab_window is not None:
+            self.hr2lab_window.main_monitor = None
+            self.hr2lab_window.close()
         if self.spo2lab_window is not None:
             self.spo2lab_window.main_monitor = None
             self.spo2lab_window.close()
@@ -13622,6 +14615,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.lab_capture_window is not None:
             self.lab_capture_window.main_monitor = None
             self.lab_capture_window.close()
+        # Last: every subwindow has now written its geometry, so the file is complete.
+        self._reorder_settings_file()
         event.accept()
         QtWidgets.QApplication.quit()
 
