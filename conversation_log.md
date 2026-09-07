@@ -20178,3 +20178,24 @@ patrón".
    empata: el simulador limpio no contiene el fenómeno que τ gobierna.
 4. **Sin capturas neonatales**, el umbral OT sigue sin calibrar (`CAPTURE_SET_SPEC.md` §3.1).
 5. **Push pendiente en los dos repos** — nunca se ha pedido, los commits están solo en local.
+
+
+### Cierre del 2026-09-07 — push y prioridades
+
+Ambos repos subidos a `medicalopenworld`:
+- `incunest_afe4490`: `96ed18b..1def14d` (v0.89 + corrección del rationale)
+- `PulseNest`: `a8b969a..a4d430b` (framework de variantes, HR1LAB, BPF, decay τ, OT MONITOR)
+
+**Decisión de Alex: el hilo del umbral OT se posterga por no prioritario.** Se aparcan el
+experimento del patrón de calibración y las medidas de caracterización de sondas. Nada queda a
+medias: el AND (v0.89) está flasheado y documentado, y el OT MONITOR queda operativo para cuando se
+retome — lo pendiente era medida de banco, no código.
+
+Se retoma el **rediseño de HR1**. Siguiente paso concreto: las capturas MS100 con perturbación
+(`MS100_PROBEPERT_98SPO2_<N>HR`, 150 s, 60/140/220 BPM, todas las columnas), sin las cuales el
+barrido del decay empata. Después, las variantes V1 (umbral `AC_rms` + reescalado por DC +
+refractorio adaptativo), V2 (detector de máximo) y V3 (SSF), y la Fase 3 de HR1LAB.
+
+Sigue abierto, y conviene no perderlo de vista: **`FW_HR_MAX_BPM = 300` es inalcanzable** con
+`FW_REFRACTORY_S = 0.2` (el refractorio consume el 100 % del ciclo a 300 BPM), lo que pide un
+refractorio adaptativo — el framework ya tiene el punto de extensión (`_refractory_samples()`).
