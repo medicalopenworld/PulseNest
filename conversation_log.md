@@ -19936,3 +19936,245 @@ Sirve para explicar el mecanismo; no para fijar un valor.
 
 Las tres salidas —(a) AND, (b) histéresis, (c) pulsatilidad como segundo eje— y la metodología de
 medida quedan registradas en `project_probe_applied_ot_thr_task`.
+
+
+## Sesión 2026-09-07 (cont.) — La medida refuta mi premisa, el cambio sobrevive
+
+Tras flashear v0.89, Alex mide en el MS100 con sonda aplicada: **`OT_LED1` (IR) = 91 ppm,
+`OT_LED2` (RED) = 112 ppm**.
+
+**Mi predicción era la contraria.** Justifiqué el AND diciendo que en tejido el RED (660 nm) se
+absorbe mucho más que el IR (940 nm), luego `ot_led1 > ot_led2` "siempre", y que por tanto el OR lo
+decidía solo el IR. Sale al revés. Razoné como si OT fuera transmitancia de tejido después de haber
+citado yo mismo la advertencia de la spec de que es la **razón electro-óptica completa** (eficiencia
+del LED × tejido × responsividad del PD × geometría). Y el "tejido" del MS100 es plástico:
+reproduce la razón R que produce un SpO2 de 98 %, no la transmitancia de cada longitud de onda.
+
+**El cambio se sostiene, la justificación no.** El AND nunca dependió de qué canal fuera mayor: lo
+que hace es exigir que **dos canales independientes coincidan** antes de declarar ausencia, en vez
+de dejar que decida el que lea más alto. Y en aire ningún canal está atenuado por tejido, así que
+ambos siguen altos. Corregidos el comentario del código, §5.6.2 de la spec y la fila v0.89 del
+historial, dejando constancia de la afirmación refutada en vez de borrarla: una spec de dispositivo
+médico no puede conservar un rationale falso, y tampoco fingir que nunca lo tuvo.
+
+**El hallazgo que importa más que mi error: el margen es de 9 ppm.** Ambos canales están dentro del
+12 % del umbral de 100 ppm, y el AND funciona en el MS100 solo porque el IR queda justo por debajo.
+Es una configuración que funciona hoy, no una robusta — y es evidencia directa, ya no estimada, de
+que `rsqm_ot_thr` necesita calibración empírica. Con 91 y 112 ppm medidos, cualquier deriva de
+colocación devuelve el problema.
+
+Lo que falta para cerrar: medir ambos canales **en aire** con la misma sonda y ganancia. Eso da el
+margen real tejido↔aire, que es lo único que permite fijar el umbral en vez de tantearlo.
+
+Nota: solo cambiaron comentarios y documentación, así que el binario flasheado sigue siendo válido;
+no hace falta re-flashear.
+
+
+## Sesión 2026-09-07 (cont.) — OT MONITOR en LIB CONFIG, y el ratio como hallazgo
+
+Alex aporta dos datos decisivos: `OT_LED2 > OT_LED1` ocurre **también con su dedo y también con la
+sonda al aire**, y por tanto es una característica del conjunto LED+fotodiodo, no del camino
+óptico. Razonamiento correcto y un control experimental limpio: en aire no hay tejido que absorba
+diferencialmente, así que cualquier diferencia entre canales es instrumental.
+
+### Consecuencia que no había visto: el AND equivale a subir el umbral un 23-35 %
+
+Con `OR` el criterio efectivo era `max(OT1, OT2) > thr`; con `AND` es `min(OT1, OT2) > thr`. Como
+`k2 > k1` de forma sistemática, el mínimo es **siempre el IR**: antes mandaba siempre el RED, ahora
+manda siempre el IR. No he hecho que dos canales se pongan de acuerdo, he cambiado cuál decide — y
+como el que decide ahora lee un 23-35 % más bajo, **el efecto práctico es el de haber subido el
+umbral en ese factor**, que es justo lo que dije que no haría sin datos. Lo hice implícitamente,
+con un factor decidido por la asimetría del hardware en vez de elegido.
+
+### Los números de Alex, juntos
+
+| Condición | OT_LED1 (IR) | OT_LED2 (RED) | ratio RED/IR |
+|---|---|---|---|
+| Dedo apretado | 60 | 81 | **1,350** |
+| MS100 | 91 | 112 | **1,231** |
+| Aire, LED-PD separados | 600 | 810 | **1,350** |
+
+Dos lecturas:
+
+1. **El ratio es idéntico (1,350) en dedo apretado y en aire**, con el OT absoluto variando ×10.
+   Eso fija `k2/k1 = 1,350` como constante del sistema con una solidez notable — y **descarta el
+   ratio como discriminante tejido/aire**, que era una idea que yo había propuesto.
+2. **El MS100 se desvía a 1,231**: su plástico atenúa el RED relativamente más que el IR, que es lo
+   que hace la hemoglobina. Y el dedo apretado NO se desvía. Hipótesis: apretar produce isquemia
+   local, y sin sangre en el camino desaparece la absorción diferencial y el ratio vuelve al valor
+   del sistema. **Falsable con una medida:** el ratio con el dedo relajado. Si se desvía de 1,350,
+   el ratio DC es un indicador de tejido **perfundido**, no solo de tejido — y sería invariante a
+   la geometría, que es precisamente lo que arruina el OT absoluto.
+
+3. Y un tercer dato incómodo: con el dedo apretado se obtiene 60/81, **más bajo que el MS100**, y
+   separando LED y fotodiodo sin dedo se obtiene 600/810. La presión y la geometría mueven OT en un
+   factor 10, mucho más que la diferencia entre "hay dedo" y "no hay dedo". Falta el dato que de
+   verdad acota el umbral: **sonda cerrada sobre sí misma, sin dedo**, que es la condición
+   NOT_APPLIED operativa (los 600/810 son con separación forzada, no una geometría de uso).
+
+### Implementado: OT MONITOR en LIB CONFIG (spec §7.17.1, v1.41)
+
+`OT_LED1`/`OT_LED2` en ppm, con min/max de cada canal **y del ratio**, RESET por condición, y una
+línea de veredicto que dice qué decidiría el AND del firmware ahora mismo y con cuánto margen.
+
+Defecto propio encontrado al probarlo: `current_ot_thr()` leía 0 antes del primer `$LCFG`, lo que
+habría hecho que el veredicto dijera NOT_APPLIED para cualquier OT. Corregido con caída al default
+de la librería.
+
+Verificado con los tres puntos de Alex: el veredicto conmuta en el canal **menor** (IR 99 → APPLIED
+con margen +1; IR 101 → NOT_APPLIED con −1), y con IR 150 / RED 60 sigue diciendo APPLIED, que es
+el comportamiento del AND con el orden invertido.
+
+
+## Sesión 2026-09-07 (cont.) — Dos sondas iguales, k2/k1 distinto: la normalización deja de ser opcional
+
+Alex prueba otra sonda **del mismo tipo, modelo y fabricante**: en aire da **827/592**, es decir
+ratio RED/IR = **0,716** frente a **1,350** de la primera. **El orden de los canales se invierte.**
+
+### Lo que eso rompe
+
+`k2/k1` no es una constante del sistema: varía entre **ejemplares** del mismo modelo, en un factor
+1,9. Consecuencias:
+
+- **El AND de v0.89 no tiene comportamiento predecible por diseño.** El criterio efectivo es
+  `min(OT1, OT2) > thr`, así que **qué canal decide depende del ejemplar**: el IR en la sonda A, el
+  RED en la sonda B. El umbral efectivo queda multiplicado por un factor que pone cada unidad.
+- **Explica por qué este umbral nunca se ha podido calibrar.** Se intentó dos veces (8,5e-5 →
+  1,0e-4) y siguió fallando. No es que esté mal ajustado: **no es calibrable como constante
+  global**, porque el valor que discrimina depende de un factor que cambia con cada sonda.
+- La salida (b), histéresis, hereda el mismo problema: dos umbrales fijos son igual de dependientes
+  del ejemplar que uno.
+
+Con las dos sondas medidas el AND sigue funcionando en aire (el mínimo de B es 592 ppm, muy por
+encima de 100), así que no hay urgencia en deshacerlo — pero su comportamiento se conoce por medida,
+no por diseño, y eso no se sostiene en un dispositivo médico.
+
+### La normalización pasa de idea elegante a requisito
+
+`OT_norm = OT / OT_aire` divide fuera `k_ch` y con ello la variabilidad **entre canales y entre
+ejemplares a la vez**. El umbral pasa a ser un enunciado físico —"hay tejido si atenúa al menos N
+veces respecto al aire"— válido para cualquier sonda, y `OR` y `AND` vuelven a ser casi equivalentes
+porque ambos canales normalizados miden lo mismo.
+
+De dónde sacar `OT_aire` sin añadir un paso manual en la UCIN: **ya existe un detector de aire
+independiente de OT** —la rama de v0.61, que reconoce sonda-al-aire porque satura la fase LED con
+las fases ambiente limpias—. Cuando *ese* criterio dice aire, se puede tomar OT como referencia. El
+detector independiente calibra al dependiente, sin procedimiento clínico y sin sonda con memoria
+(que es como lo resuelven Masimo y Nellcor, identificando la sonda en el conector). Quedaría por
+resolver el arranque en frío con la sonda ya colocada: caer al umbral absoluto hasta ver aire.
+
+### Implementado: SET AIR REF y OT_norm (spec §7.17.1, v1.42)
+
+Botón que guarda el OT actual de ambos canales como referencia de esa sonda, y dos filas nuevas con
+`OT_norm` ∈ [0,1]. No se persiste entre sesiones a propósito —una referencia caducada de otra sonda
+sería peor que ninguna— y `RESET min/max` no la borra: la referencia caracteriza la sonda, los
+extremos caracterizan la condición. `OT_norm > 1` avisa de que la referencia no era aire.
+
+Verificado con los datos reales de las dos sondas: con la referencia de A (600/810), el dedo
+apretado da `norm 0,100/0,100`; con la de B (827/592) e igual atenuación, `0,100/0,100`. **El OT
+crudo difiere (60/81 vs 83/59) y el normalizado coincide**, que es exactamente la propiedad que un
+umbral necesita.
+
+
+## Sesión 2026-09-07 (cierre) — El patrón de calibración: qué hay que caracterizar exactamente
+
+### La objeción de Alex al divisor de OT_norm
+
+`OT_aire` **no es una referencia metrológica**: depende de la distancia LED-fotodiodo, que varía con
+la rigidez del material, el desgaste, si la hebilla de la brida está cerrada o no. Un divisor que
+depende del estado del montaje no sirve. Yo había dicho "toma la referencia en la geometría de uso";
+su punto es más fuerte: **la geometría de uso no es reproducible**.
+
+Su propuesta: un **patrón de transferencia** — el mismo artefacto sólido para calibrar todas las
+sondas siempre igual. Tiene tres sondas del tipo de interés y puede conseguir más.
+
+### Mi inconsistencia, señalada por Alex
+
+Critiqué el vidrio por "no dispersar como el tejido"… cuando **el aire tampoco dispersa**, y el aire
+era justo la referencia que yo mismo había propuesto. La objeción, tal como la formulé, invalidaba
+mi propia propuesta.
+
+### La reformulación correcta del objetivo (Alex)
+
+> "Creo que lo que buscamos es caracterizar el rendimiento del led + sensibilidad del fotodiodo."
+
+Exacto, y simplifica el problema:
+
+```
+k_ch = η_LED · R_PD · G(geometría, medio)
+```
+
+`η_LED` (binning del LED) y `R_PD` (tolerancia del fotodiodo) son **propiedades del componente,
+independientes del medio**, y son lo que varía entre ejemplares. Por tanto:
+
+**El patrón NO necesita parecerse al dedo.** Si lo que se mide es `η_LED · R_PD`, cualquier medio
+sirve mientras `G` sea idéntico en todas las medidas: el requisito es **repetibilidad, no fidelidad
+al tejido**. El miedo a que la dispersión del teflón no se parezca a la del dedo es infundado para
+este objetivo. Lo único que el patrón aporta sobre el aire —y es lo único que se le pide— es **fijar
+mecánicamente la distancia**.
+
+### Por qué un difusor sigue siendo preferible, con otro argumento
+
+No por fidelidad, sino por **varianza de la medida**: con medio transparente el fotodiodo recibe el
+haz directo y la lectura es muy sensible a la alineación angular; un difusor reparte la luz y la
+hace tolerante a pequeños desalineamientos. Argumento sobre dispersión de las repeticiones, no
+sobre representatividad — y falsable con el control de abajo.
+
+### El control que disuelve la duda del material
+
+Medir con **dos patrones distintos** (el vidrio que ya tiene y un teflón cuando lo consiga) y
+comparar los cocientes `k_A/k_B`, `k_A/k_C` entre las tres sondas:
+
+- Cocientes **coinciden** con ambos patrones → se está midiendo la propiedad del componente, el
+  patrón es irrelevante, se usa el más cómodo.
+- Cocientes **difieren** → el patrón mete su propia geometría en la medida y hay que elegirlo con
+  cuidado.
+
+Convierte la duda en un dato en vez de en un argumento.
+
+### El experimento que decide el diseño
+
+Por sonda, con el patrón, **repetir la colocación 5 veces** (quitar y poner entre medidas). Separa
+dos varianzas hoy confundidas:
+
+| Resultado | Qué implica |
+|---|---|
+| Varianza **entre** sondas ≫ **dentro** | Calibrar por sonda es necesario y funciona: hay algo estable que corregir |
+| Comparables | Calibrar por sonda no aporta — el ruido de colocación se come la corrección → ir directo a la salida (c), pulsatilidad |
+
+Requisitos del patrón: espesor representativo (5–10 mm; cortar 4/8/12 mm da además la curva OT vs
+camino óptico), **tope mecánico** para que asiente igual siempre, y estabilidad espectral (nada que
+amarillee). Material: PTFE blanco es la recomendación; Delrin/POM blanco o PMMA opalino sirven.
+
+### Matiz sobre qué es OT_norm con patrón
+
+Con referencia de aire era aproximadamente la transmitancia del camino óptico. Con patrón sólido es
+**transmitancia relativa al patrón**: no una magnitud física absoluta, sino una lectura comparable
+entre sondas — que es lo que un umbral único necesita. El 1,000 ya no significa "aire" sino "como el
+patrón".
+
+---
+
+## Estado al cerrar la sesión del 2026-09-07
+
+**Hecho y verificado**
+- Librería **v0.89** (OR→AND en la presencia por OT), compilada, commiteada y **flasheada** en la
+  16.A (192.168.137.90, MAC verificada por ARP). Rationale corregido tras la refutación de la
+  premisa espectral.
+- Script: framework `HR1Variant`, **HR1LAB** (3 filas colapsables, PAUSE/MARK/SAVE, marcador de
+  detección amarillo, umbral atenuado en refractario), variante **BPF**, decay como τ en segundos +
+  modo en latidos, **OT MONITOR** con SET AIR REF y OT_norm. Spec del script en **v1.42**.
+- `tools/hr1_decay_sweep.py`.
+
+**Pendiente, por orden de lo que desbloquea más**
+1. **Experimento del patrón** (3 sondas × 5 repeticiones × 2 patrones). Decide si la normalización
+   por sonda es viable o hay que ir a la pulsatilidad. Ofrecido: modo de captura de calibración en
+   el OT MONITOR (sonda + patrón + espesor → media de N s a CSV).
+2. **Medidas que siguen faltando:** sonda cerrada sobre sí misma sin dedo (la condición
+   NOT_APPLIED operativa), ratio con dedo **relajado** (¿la isquemia explica que el dedo apretado no
+   desvíe el ratio?), y la sonda B con dedo.
+3. **Capturas MS100 con perturbación** para el barrido del decay — protocolo ya acordado
+   (`MS100_PROBEPERT_98SPO2_<N>HR`, 150 s, 60/140/220 BPM, todas las columnas). Sin ellas el barrido
+   empata: el simulador limpio no contiene el fenómeno que τ gobierna.
+4. **Sin capturas neonatales**, el umbral OT sigue sin calibrar (`CAPTURE_SET_SPEC.md` §3.1).
+5. **Push pendiente en los dos repos** — nunca se ha pedido, los commits están solo en local.

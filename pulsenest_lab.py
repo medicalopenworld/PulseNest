@@ -7676,12 +7676,201 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         for p in self._HGAC_PARAMS:
             self._add_param_row(hgac_form, p)
         vbox.addWidget(hgac_grp)
+
+        vbox.addWidget(self._build_ot_monitor())
         vbox.addStretch()
 
         self._statusbar = QtWidgets.QStatusBar()
         self._statusbar.setStyleSheet("font-size:20px; color:#AAAAAA;")
         self.setStatusBar(self._statusbar)
         self._statusbar.showMessage("Not connected — click 'Read from chip' after connecting")
+
+    def _build_ot_monitor(self):
+        """Live OT readout, in ppm, with the running min/max of each channel and of their
+        ratio.
+
+        Exists to calibrate `rsqm_ot_thr` by measurement instead of by trial. Two findings
+        made it necessary (2026-09-07):
+
+        * `ot_led2` (RED) > `ot_led1` (IR) with the MS100, with a finger and **in air**. Air
+          has no tissue to absorb differentially, so the ordering is a property of the
+          hardware — LED efficiency x PD responsivity x geometry — not of the optical path.
+          OT therefore carries a per-channel scale factor `k_ch`, and a single threshold
+          shared by both channels applies a different criterion to each.
+        * Since `k2 > k1` systematically, the v0.89 AND (`min(OT1, OT2) > thr`) is always
+          decided by IR, exactly as the previous OR was always decided by RED. The ratio
+          column is what tells whether `k2/k1` really is constant: if it holds across air,
+          finger and simulator it is instrumental, and OT can be normalised by its air value
+          into a real tissue transmittance, which would make the threshold independent of
+          channel and of probe.
+
+        The AND verdict line shows what the firmware would decide right now, with the margin
+        to the threshold, so the operating point is visible while the condition is changed.
+        """
+        grp = QtWidgets.QGroupBox("OT MONITOR — live, for threshold calibration")
+        grp.setStyleSheet(self._GRP_SS)
+        grid = QtWidgets.QGridLayout(grp)
+        grid.setSpacing(4)
+
+        hdr_ss = "font-size:20px; color:#AACCFF; font-weight:bold;"
+        val_ss = "font-size:24px; color:#E0E0E0; font-family:Consolas,monospace;"
+        for col, text in enumerate(("", "now", "min", "max")):
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(hdr_ss)
+            lbl.setAlignment(QtCore.Qt.AlignRight if col else QtCore.Qt.AlignLeft)
+            grid.addWidget(lbl, 0, col)
+
+        self._ot_cells = {}
+        rows = (("ot1",   "OT_LED1 (IR)  ppm", '#44FF88'),
+                ("ot2",   "OT_LED2 (RED) ppm", '#FF8844'),
+                ("ratio", "ratio RED/IR",      '#FFDD44'),
+                ("norm1", "OT_norm IR",        '#88FFCC'),
+                ("norm2", "OT_norm RED",       '#FFCC88'))
+        for r, (key, label, colour) in enumerate(rows, start=1):
+            lbl = QtWidgets.QLabel(label)
+            lbl.setStyleSheet("font-size:22px; color:%s;" % colour)
+            grid.addWidget(lbl, r, 0)
+            for c, which in enumerate(("now", "min", "max"), start=1):
+                cell = QtWidgets.QLabel("--")
+                cell.setStyleSheet(val_ss)
+                cell.setAlignment(QtCore.Qt.AlignRight)
+                grid.addWidget(cell, r, c)
+                self._ot_cells[(key, which)] = cell
+
+        self._ot_airref_lbl = QtWidgets.QLabel("air ref: not set")
+        self._ot_airref_lbl.setStyleSheet("font-size:20px; color:#888888;")
+        grid.addWidget(self._ot_airref_lbl, 6, 0, 1, 2)
+
+        btn_air = QtWidgets.QPushButton("SET AIR REF")
+        btn_air.setStyleSheet("font-size:20px; padding:2px 10px; "
+                              "background-color:#1E2E4A; color:#88CCFF;")
+        btn_air.clicked.connect(self._set_air_ref)
+        btn_air.setToolTip(_make_tooltip(
+            "SET AIR REF",
+            "Store the current OT of both channels as this probe's air reference, and show "
+            "OT_norm = OT / OT_air below.\n\n"
+            "Why it matters: OT carries a per-channel scale factor k (LED efficiency x PD "
+            "responsivity x geometry) that varies not only between probe models but between "
+            "units of the SAME model — measured 1.350 on one and 0.716 on another, with the "
+            "channel order inverted. Dividing by the air value removes k, so OT_norm is a real "
+            "tissue transmittance in [0, 1], comparable across probes and across channels.\n\n"
+            "Take it with the probe open in air, on the probe you are about to use. It is not "
+            "saved between sessions on purpose: a stale reference from another probe would be "
+            "worse than none. OT_norm above 1 means the reference was not really air.",
+            src="LIBConfigWindow._set_air_ref"))
+        grid.addWidget(btn_air, 6, 2)
+
+        self._ot_verdict = QtWidgets.QLabel("probe --")
+        self._ot_verdict.setStyleSheet("font-size:22px; color:#CCCCCC;")
+        grid.addWidget(self._ot_verdict, 7, 0, 1, 3)
+
+        btn = QtWidgets.QPushButton("RESET min/max")
+        btn.setStyleSheet("font-size:20px; padding:2px 10px; "
+                          "background-color:#1E3A1E; color:#88FF88;")
+        btn.clicked.connect(self._reset_ot_stats)
+        btn.setToolTip(_make_tooltip(
+            "RESET min/max",
+            "Clear the running extremes and start a fresh measurement. Press it before each "
+            "condition — air, probe closed on itself, finger, simulator — so the min/max "
+            "columns describe that condition alone. The air reference is NOT cleared: it "
+            "belongs to the probe, not to the condition.",
+            src="LIBConfigWindow._reset_ot_stats"))
+        grid.addWidget(btn, 7, 3)
+
+        grp.setToolTip(_make_tooltip(
+            "OT MONITOR",
+            "OT = (I_PD_LED - I_PD_ALED) / I_LED, shown in ppm (A/A x1e6); rsqm_ot_thr = 100 ppm "
+            "by default. It is the whole electro-optical ratio (LED efficiency x tissue x PD "
+            "responsivity x geometry), NOT tissue transmittance — which is why the two channels "
+            "differ even in air, and why the ratio column matters.\n\n"
+            "Requires frame mode $M4: no other frame carries OT.",
+            src="AFE4490Data::ot_led1 / ot_led2"))
+
+        self._ot_air_ref = {"ot1": None, "ot2": None}
+        self._ot_last    = {"ot1": None, "ot2": None}
+        self._reset_ot_stats()
+        return grp
+
+    def current_ot_thr(self):
+        """rsqm_ot_thr as the window currently shows it [A/A].
+
+        Read from the spin rather than kept as state: the spin is what the last $LCFG filled
+        in, and what the user edits before pressing Set, so the verdict line tracks the value
+        being considered — including one typed but not yet sent.
+        """
+        LIB_DEFAULT = 1.0e-4          # incunest_afe4490.h rsqm_ot_thr
+        spin  = self._spins.get("rsqm_ot_thr")
+        scale = self._scales.get("rsqm_ot_thr", 1.0)
+        if spin is None:
+            return LIB_DEFAULT
+        value = spin.value() / scale if scale else spin.value()
+        # Before the first $LCFG the spin still reads 0, which would make the verdict line
+        # claim NOT_APPLIED for every possible OT. Fall back to the library default instead.
+        return value if value > 0.0 else LIB_DEFAULT
+
+    def _reset_ot_stats(self):
+        # The air reference is deliberately not touched here: it characterises the probe,
+        # while the extremes characterise the condition being measured.
+        self._ot_stats = {k: [None, None]
+                          for k in ("ot1", "ot2", "ratio", "norm1", "norm2")}   # [min, max]
+
+    def _set_air_ref(self):
+        """Store the current OT of both channels as this probe's air reference."""
+        if self._ot_last["ot1"] is None or self._ot_last["ot2"] is None:
+            self._statusbar.showMessage("No OT yet — needs frame mode $M4", 5000)
+            return
+        self._ot_air_ref = dict(self._ot_last)
+        self._ot_stats["norm1"] = [None, None]
+        self._ot_stats["norm2"] = [None, None]
+        self._ot_airref_lbl.setText("air ref: IR %.0f  RED %.0f ppm  (ratio %.3f)"
+                                    % (self._ot_air_ref["ot1"], self._ot_air_ref["ot2"],
+                                       self._ot_air_ref["ot2"] / self._ot_air_ref["ot1"]
+                                       if self._ot_air_ref["ot1"] else float('nan')))
+        self._ot_airref_lbl.setStyleSheet("font-size:20px; color:#88CCFF;")
+        self._statusbar.showMessage("Air reference stored for this probe", 4000)
+
+    def update_ot(self, data_ot_led1, data_ot_led2, data_probe_state, thr_a_a):
+        """Refresh the OT monitor. Fed from PPGMonitor's drain at the subwindow rate."""
+        if not data_ot_led1 or not data_ot_led2:
+            return
+        ot1 = float(data_ot_led1[-1]) * 1e6      # ppm
+        ot2 = float(data_ot_led2[-1]) * 1e6
+        ratio = (ot2 / ot1) if ot1 > 0.0 else float('nan')
+        if ot1 > 0.0 and ot2 > 0.0:
+            self._ot_last = {"ot1": ot1, "ot2": ot2}
+
+        # OT_norm divides out the per-channel scale factor k, which varies between probe
+        # units of the same model — so this, not raw OT, is what compares across probes.
+        ref1, ref2 = self._ot_air_ref["ot1"], self._ot_air_ref["ot2"]
+        norm1 = (ot1 / ref1) if ref1 else float('nan')
+        norm2 = (ot2 / ref2) if ref2 else float('nan')
+
+        for key, value, fmt in (("ot1", ot1, "%.0f"), ("ot2", ot2, "%.0f"),
+                                ("ratio", ratio, "%.3f"),
+                                ("norm1", norm1, "%.3f"), ("norm2", norm2, "%.3f")):
+            if value == value and value > 0.0:     # skip NaN and the $M1-$M3 zero fill
+                lo, hi = self._ot_stats[key]
+                self._ot_stats[key] = [value if lo is None else min(lo, value),
+                                       value if hi is None else max(hi, value)]
+            lo, hi = self._ot_stats[key]
+            self._ot_cells[(key, "now")].setText(
+                fmt % value if value == value else "--")
+            self._ot_cells[(key, "min")].setText(fmt % lo if lo is not None else "--")
+            self._ot_cells[(key, "max")].setText(fmt % hi if hi is not None else "--")
+
+        # What the firmware's AND would decide right now, and by how much.
+        thr_ppm = float(thr_a_a) * 1e6
+        deciding = min(ot1, ot2)                  # AND is decided by the lower channel
+        applied  = deciding <= thr_ppm
+        margin   = thr_ppm - deciding
+        state    = int(data_probe_state[-1]) if data_probe_state else -1
+        names    = {0: "DISCONNECTED", 1: "NOT_APPLIED", 2: "APPLIED", 3: "SATURATING"}
+        self._ot_verdict.setText(
+            "AND → %s   (min channel %.0f vs thr %.0f ppm, margin %+.0f)   ·   firmware: %s"
+            % ("APPLIED" if applied else "NOT_APPLIED", deciding, thr_ppm, margin,
+               names.get(state, "--")))
+        self._ot_verdict.setStyleSheet(
+            "font-size:22px; color:%s;" % ('#88FF88' if applied else '#FF8844'))
 
     def _add_param_row(self, form, p):
         """Build one spinbox + Set button row from a _PARAMS/_HGAC_PARAMS tuple."""
@@ -14149,6 +14338,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.data_spo2, self.data_spo2_r, self.data_spo2_sqi,
                         self.data_timestamp_us, self.data_sample_counter)
                     self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
+                if self.lib_config_window is not None:
+                    self.lib_config_window.update_ot(
+                        self.data_ot2_led1, self.data_ot2_led2, self.data_probe_state,
+                        self.lib_config_window.current_ot_thr())
                 if self.hr2test_window is not None:
                     _t0a = time.perf_counter()
                     self.hr2test_window.update_algorithms(

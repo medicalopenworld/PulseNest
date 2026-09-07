@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.40
+# pulsenest_lab — Specification v1.42
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1300,6 +1300,42 @@ Purpose: view and change RSQM / HGAC library parameters in real time via `$SET`/
 - Status bar: shows last command sent and confirmation status
 
 Controls are marked **dirty** (red text) when edited but not yet confirmed by firmware, and **clean** after a matching `$LCFG` arrives.
+
+#### 7.17.1 OT MONITOR (inside LIB CONFIG)
+
+**v1.41.** Live readout of `OT_LED1`/`OT_LED2` in **ppm** (A/A x1e6), with the running min/max of
+each channel and of their ratio, a RESET button per measurement condition, and a verdict line
+showing what the firmware's v0.89 AND would decide right now plus the margin to `rsqm_ot_thr`.
+
+Exists to calibrate `rsqm_ot_thr` by measurement rather than by trial. Two findings made it
+necessary:
+
+* `ot_led2` (RED) > `ot_led1` (IR) with the MS100, with a finger **and in air**. Air has no tissue
+  to absorb differentially, so the ordering is a property of the hardware (LED efficiency x PD
+  responsivity x geometry), not of the optical path. OT therefore carries a per-channel scale
+  factor and a single shared threshold applies a different criterion to each channel.
+* Because that factor is systematic, the v0.89 AND (`min(OT1, OT2) > thr`) is always decided by IR,
+  just as the previous OR was always decided by RED.
+
+**v1.42 — air reference and `OT_norm`.** `k2/k1` turned out to vary between **units of the same
+probe model**: 1.350 on one, 0.716 on another, with the channel order inverted. So it is not a
+system constant and no single `rsqm_ot_thr` can hold across probes — which is why raising the
+threshold has twice failed to stick.
+
+**SET AIR REF** stores the current OT of both channels as that probe's air value, and two extra
+rows show `OT_norm = OT / OT_air` ∈ [0, 1] — a real tissue transmittance, with the per-channel and
+per-unit scale factor divided out. Two probes with different raw OT collapse onto the same
+`OT_norm` for the same attenuation, which is the property a threshold needs.
+
+The reference is deliberately **not persisted**: a stale one from another probe would be worse than
+none. `RESET min/max` does not clear it either — the reference characterises the probe, the extremes
+characterise the condition. `OT_norm > 1` means the stored reference was not really air.
+
+`current_ot_thr()` reads the threshold from the `rsqm_ot_thr` spin, so the verdict tracks a value
+typed but not yet sent; before the first `$LCFG` the spin reads 0, and it falls back to the library
+default (1.0e-4) rather than claiming NOT_APPLIED for every possible OT.
+
+Fed from the drain at the subwindow rate. Requires `$M4`: no other frame carries OT.
 
 ### 7.18 DiagnosticsWindow — "DIAGNOSTICS"
 
