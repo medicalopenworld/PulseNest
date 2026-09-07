@@ -199,10 +199,10 @@ void test_hr2_not_applied_resets() {
     feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW / 2);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
 
-    // PROBE_NOT_APPLIED gets the same treatment as PROBE_DISCONNECTED.
+    // PROBE_OT_HIGH gets the same treatment as PROBE_DISCONNECTED.
     feed_hr2_sine(afe, 1.0f, 500.0f, HR2_BUF_RAW + 1000);
     TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
-    feed_hr2_sine(afe, 1.0f, 500.0f, 1000, ProbeState::PROBE_NOT_APPLIED);
+    feed_hr2_sine(afe, 1.0f, 500.0f, 1000, ProbeState::PROBE_OT_HIGH);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
 }
 

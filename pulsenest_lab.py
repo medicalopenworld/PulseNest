@@ -535,10 +535,11 @@ class SpO2TestCalc:
     """
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
-    PROBE_DISCONNECTED = 0
-    PROBE_NOT_APPLIED  = 1
-    PROBE_APPLIED      = 2
-    PROBE_SATURATING   = 3
+    PROBE_DISCONNECTED        = 0
+    PROBE_OT_HIGH             = 1   # lib v0.90: was PROBE_NOT_APPLIED's OT route (value kept)
+    PROBE_APPLIED             = 2
+    PROBE_AMB_SATURATING      = 3   # lib v0.90: was PROBE_SATURATING
+    PROBE_ONLY_LED_SATURATING = 4   # lib v0.90: split out of PROBE_NOT_APPLIED
 
     # Firmware defaults — must match incunest_afe4490_spec.md §5.1 and incunest_afe4490.cpp constants
     FW_DC_IIR_TAU_S = 2.0    # spo2_ema_mean_tau_s (EmaChannel τ_mean)
@@ -616,7 +617,7 @@ class SpO2TestCalc:
         Parameters
         ----------
         ot_ir, ot_red : float — OT_LED1/OT_LED2 [A/A], gain-invariant optical transmittance
-        probe_state   : int — RSQM's ProbeState (0=DISCONNECTED, 1=NOT_APPLIED, 2=APPLIED),
+        probe_state   : int — RSQM's ProbeState (0=DISCONNECTED, 1=OT_HIGH, 2=APPLIED, 3=AMB_SATURATING, 4=ONLY_LED_SATURATING),
                         consumed only — this class never classifies presence itself.
         fs            : float — sample rate (Hz)
 
@@ -731,10 +732,11 @@ class HR1Variant:
     DIAG_CURVES = ()      # tuple of HR1Curve — drives the HR1LAB plots
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
-    PROBE_DISCONNECTED = 0
-    PROBE_NOT_APPLIED  = 1
-    PROBE_APPLIED      = 2
-    PROBE_SATURATING   = 3
+    PROBE_DISCONNECTED        = 0
+    PROBE_OT_HIGH             = 1   # lib v0.90: was PROBE_NOT_APPLIED's OT route (value kept)
+    PROBE_APPLIED             = 2
+    PROBE_AMB_SATURATING      = 3   # lib v0.90: was PROBE_SATURATING
+    PROBE_ONLY_LED_SATURATING = 4   # lib v0.90: split out of PROBE_NOT_APPLIED
 
     # Shared post-detection constants — must match incunest_afe4490_spec.md §5.2
     FW_RR_BUF_LEN    = 5
@@ -1308,10 +1310,11 @@ class HR2TestCalc:
     """
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
-    PROBE_DISCONNECTED = 0
-    PROBE_NOT_APPLIED  = 1
-    PROBE_APPLIED      = 2
-    PROBE_SATURATING   = 3
+    PROBE_DISCONNECTED        = 0
+    PROBE_OT_HIGH             = 1   # lib v0.90: was PROBE_NOT_APPLIED's OT route (value kept)
+    PROBE_APPLIED             = 2
+    PROBE_AMB_SATURATING      = 3   # lib v0.90: was PROBE_SATURATING
+    PROBE_ONLY_LED_SATURATING = 4   # lib v0.90: split out of PROBE_NOT_APPLIED
 
     FW_FS            = 50.0
     FW_BPF_LOW_HZ    = 0.5
@@ -4193,10 +4196,11 @@ class HR3TestCalc:
     """
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
-    PROBE_DISCONNECTED = 0
-    PROBE_NOT_APPLIED  = 1
-    PROBE_APPLIED      = 2
-    PROBE_SATURATING   = 3
+    PROBE_DISCONNECTED        = 0
+    PROBE_OT_HIGH             = 1   # lib v0.90: was PROBE_NOT_APPLIED's OT route (value kept)
+    PROBE_APPLIED             = 2
+    PROBE_AMB_SATURATING      = 3   # lib v0.90: was PROBE_SATURATING
+    PROBE_ONLY_LED_SATURATING = 4   # lib v0.90: split out of PROBE_NOT_APPLIED
 
     FW_FS            = 50.0
     FW_BP_LOW_HZ     = 0.4
@@ -7548,10 +7552,10 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
     # scale_for_display: multiply stored value by this to display (e.g. 1e9 for nA→nA label)
     _PARAMS = [
         # key                         label                        tooltip                                                       dec  min     max        suffix     scale
-        ("rsqm_ot_thr",               "OT threshold",              "Optical Transmittance threshold separating PROBE_NOT_APPLIED\n"
+        ("rsqm_ot_thr",               "OT threshold",              "Optical Transmittance threshold separating PROBE_OT_HIGH\n"
                                                                     "(OT > thr) from PROBE_APPLIED (OT ≤ thr) — only checked when\n"
                                                                     "the channel is CH_VALID_RANGE; an invalid/saturated channel is\n"
-                                                                    "PROBE_SATURATING instead, regardless of this threshold.\n"
+                                                                    "PROBE_AMB_SATURATING / PROBE_ONLY_LED_SATURATING instead (by phase), regardless of this threshold.\n"
                                                                     "Default 1.0e-4 (widened 2026-07-19 from 8.5e-5: CONTEC MS100\n"
                                                                     "simulator is very sensitive to probe placement).\n"
                                                                     "Still needs empirical calibration with a real probe.",         6,   0.0,    0.01,      " A/A",    1.0),
@@ -7864,10 +7868,11 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         applied  = deciding <= thr_ppm
         margin   = thr_ppm - deciding
         state    = int(data_probe_state[-1]) if data_probe_state else -1
-        names    = {0: "DISCONNECTED", 1: "NOT_APPLIED", 2: "APPLIED", 3: "SATURATING"}
+        names    = {0: "DISCONNECTED", 1: "OT_HIGH", 2: "APPLIED", 3: "AMB_SATURATING",
+                    4: "ONLY_LED_SATURATING"}
         self._ot_verdict.setText(
             "AND → %s   (min channel %.0f vs thr %.0f ppm, margin %+.0f)   ·   firmware: %s"
-            % ("APPLIED" if applied else "NOT_APPLIED", deciding, thr_ppm, margin,
+            % ("APPLIED" if applied else "OT_HIGH", deciding, thr_ppm, margin,
                names.get(state, "--")))
         self._ot_verdict.setStyleSheet(
             "font-size:22px; color:%s;" % ('#88FF88' if applied else '#FF8844'))
@@ -8490,7 +8495,8 @@ class HR1LabWindow(QtWidgets.QMainWindow):
     def update_plots(self, data_pi=None):
         if self._paused:
             return          # leave the frozen view alone, including zoom and pan
-        ps_name = {0: "DISCONNECTED", 1: "NOT APPLIED", 2: "APPLIED", 3: "SATURATING"}
+        ps_name = {0: "DISCONNECTED", 1: "OT HIGH", 2: "APPLIED", 3: "AMB SATURATING",
+                   4: "ONLY LED SATURATING"}
         self._lbl_state.setText("PROBE %s" % ps_name.get(self._last_ps, "--"))
         self._lbl_ot.setText("OT_LED1 --" if self._last_ot != self._last_ot
                              else "OT_LED1 %.6g" % self._last_ot)
@@ -9890,9 +9896,10 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
     # ProbeState enum values (must match incunest_afe4490.h)
     _PROBE_STATES = [
         (0, "PROBE_DISCONNECTED"),
-        (1, "PROBE_NOT_APPLIED"),
+        (1, "PROBE_OT_HIGH"),
         (2, "PROBE_APPLIED"),
-        (3, "PROBE_SATURATING"),
+        (3, "PROBE_AMB_SATURATING"),
+        (4, "PROBE_ONLY_LED_SATURATING"),
     ]
 
     _CSV_HEADER = [
@@ -10104,8 +10111,9 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
             "Written as the first CSV column (probe_state_expected). "
             "The second CSV column (probe_state_check) is OK if every sample in the combo "
             "matches this value, NOT OK otherwise. "
-            "Values: 0=PROBE_DISCONNECTED, 1=PROBE_NOT_APPLIED, 2=PROBE_APPLIED, "
-            "3=PROBE_SATURATING (enum ProbeState in incunest_afe4490.h)."))
+            "Values: 0=PROBE_DISCONNECTED, 1=PROBE_OT_HIGH, 2=PROBE_APPLIED, "
+            "3=PROBE_AMB_SATURATING, 4=PROBE_ONLY_LED_SATURATING (enum ProbeState in "
+            "incunest_afe4490.h, lib v0.90)."))
 
         fl.addRow("Test label:", self._edit_label)
         fl.addRow("Expected probe_state:", self._combo_probe_state)
@@ -11688,19 +11696,23 @@ class PPGMonitor(QtWidgets.QMainWindow):
              "  · |I_PD_LED1 [µA]|, |I_PD_LED2 [µA]|, |I_PD_ALED1 [µA]|, |I_PD_ALED2 [µA]| < 0.15 µA\n"
              "  · |LED1_SUB|, |LED2_SUB| < 5000 ADC\n"
              "  Note: both criteria are redundant by design — the led_sub guard prevents false positives when AMBDAC raises i_pd even without probe connected.\n\n"
-             "3 — SATURATING (checked before NOT_APPLIED/APPLIED, since 2026-07-24)\n"
-             "Not DISCONNECTED AND either LED1 or LED2's own channel or its ambient (ALED) channel\n"
-             "is not CH_VALID_RANGE (ADC railed or beyond TIA linearity — see CH_MASKS). The OT ratio is\n"
-             "not trustworthy under saturation, so it is not even checked in this case. Does NOT\n"
-             "imply a patient is present — an unapplied probe under strong/flickering light (e.g.\n"
-             "phototherapy) can saturate too. HGAC treats this like APPLIED (acts to clear it);\n"
-             "SpO2/HR1/HR2/HR3/RSQI treat it like any other non-APPLIED state (invalid/reset).\n\n"
-             "1 — NOT_APPLIED (no finger)\n"
-             "Not DISCONNECTED, not SATURATING (both channels CH_VALID_RANGE), AND at least one channel\n"
-             "OT > 1.0×10⁻⁴ (rsqm_ot_thr, OR logic)  →  rows OT_LED1, OT_LED2\n"
+             "3 — AMB_SATURATING (lib v0.90 name; was SATURATING)\n"
+             "Positive saturation (ADC railed or beyond TIA full scale — see CH_MASKS) where an AMBIENT\n"
+             "(ALED) phase also clips, and therefore the LED phase too. The saturating light is external\n"
+             "(lamp/phototherapy). OT is not consulted under saturation. Does NOT imply a patient is\n"
+             "present. HGAC treats this like APPLIED (acts to clear it); SpO2/HR1/HR2/HR3/RSQI treat it\n"
+             "like any other non-APPLIED state (invalid/reset).\n\n"
+             "4 — ONLY_LED_SATURATING (new in lib v0.90; was folded into NOT_APPLIED)\n"
+             "Positive saturation where ONLY the LED phase clips and the ambient phase is clean: the\n"
+             "LED's own light reaches the photodiode with nothing attenuating it. Read as probe in air —\n"
+             "but thin tissue at high RF gives the same signature (open check). Absent everywhere\n"
+             "(isProbeAbsent): HGAC gated off, algorithms reset.\n\n"
+             "1 — OT_HIGH (lib v0.90 name; was NOT_APPLIED's OT route)\n"
+             "Not DISCONNECTED, not saturated, AND <b>both</b> channels OT > 1.0×10⁻⁴\n"
+             "(rsqm_ot_thr, AND logic since lib v0.89)  →  rows OT_LED1, OT_LED2\n"
              "  OT = (I_PD_LEDx − I_PD_ALEDx) / I_LEDx  [A/A, dimensionless]\n\n"
              "2 — APPLIED (finger on sensor)\n"
-             "Not DISCONNECTED, not SATURATING, AND <b>OT ≤ 1.0×10⁻⁴ on both channels</b>\n"
+             "Not DISCONNECTED, not saturated, AND OT ≤ 1.0×10⁻⁴ on at least one channel\n"
              "(rsqm_ot_thr, runtime-configurable via $LCFG).",
              "AFE4490Data::probe_state"),
             # AFE4490DebugData analog signals — only populated in $M4 frame mode
@@ -13600,9 +13612,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _STATS_SQI_THRESHOLD = 0.9
     # ProbeState column-0 background colors
     _PROBE_APPLIED_BG       = QtGui.QColor("#00A000")  # green  — APPLIED (2)
-    _PROBE_NOT_APPLIED_BG   = QtGui.QColor("#7A6400")  # amber  — NOT_APPLIED (1)
+    _PROBE_OT_HIGH_BG       = QtGui.QColor("#7A6400")  # amber  — OT_HIGH (1), lib v0.90 (was NOT_APPLIED)
     _PROBE_DISCONNECTED_BG  = QtGui.QColor("#7A0000")  # red    — DISCONNECTED (0)
-    _PROBE_SATURATING_BG    = QtGui.QColor("#0050A0")  # blue — SATURATING (3): external light saturating (ambient phase also clips)
+    _PROBE_AMB_SATURATING_BG = QtGui.QColor("#0050A0")  # blue   — AMB_SATURATING (3): external light (ambient phase clips)
+    _PROBE_ONLY_LED_SAT_BG   = QtGui.QColor("#5A3A00")  # brown  — ONLY_LED_SATURATING (4): LED light reaches PD directly
     # V_TIA / V_ADC cell background colors
     _VTG_GREEN   = QtGui.QColor("#0F3A0F")  # optimal
     _VTG_YELLOW  = QtGui.QColor("#3A2D00")  # caution
@@ -14381,9 +14394,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if _ps == 2:
                 _ps_bg = self._PROBE_APPLIED_BG
             elif _ps == 3:
-                _ps_bg = self._PROBE_SATURATING_BG
+                _ps_bg = self._PROBE_AMB_SATURATING_BG
+            elif _ps == 4:
+                _ps_bg = self._PROBE_ONLY_LED_SAT_BG
             elif _ps == 1:
-                _ps_bg = self._PROBE_NOT_APPLIED_BG
+                _ps_bg = self._PROBE_OT_HIGH_BG
             elif _ps == 0:
                 _ps_bg = self._PROBE_DISCONNECTED_BG
             else:

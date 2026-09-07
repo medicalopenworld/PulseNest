@@ -20199,3 +20199,172 @@ refractorio adaptativo), V2 (detector de máximo) y V3 (SSF), y la Fase 3 de HR1
 Sigue abierto, y conviene no perderlo de vista: **`FW_HR_MAX_BPM = 300` es inalcanzable** con
 `FW_REFRACTORY_S = 0.2` (el refractorio consume el 100 % del ciclo a 300 BPM), lo que pide un
 refractorio adaptativo — el framework ya tiene el punto de extensión (`_refractory_samples()`).
+
+
+---
+
+## Sesión 2026-09-08 (mañana) — HGAC y ProbeState, prioridades, y una cadena de bloqueo
+
+### HGAC: en qué estados actúa
+
+Gate G0 (`incunest_afe4490.cpp:1543-1563`, axioma A6, spec §5.8): actúa en **APPLIED y
+SATURATING**; inhibido en **NOT_APPLIED y DISCONNECTED**, y además mientras
+`RSQM_DIAG_SWITCHED_RC_SETTLING`. Al cerrarse el gate se resetean las seis EMAs. SATURATING no es
+idle a propósito (desde 2026-07-24), para que un evento de guarda no voltee a NOT_APPLIED y bloquee
+el step-down.
+
+**Trampa latente documentada en el propio código:** los idle se listan explícitamente, no como
+`!(APPLIED||SATURATING)`. Un ProbeState nuevo **no quedaría inhibido**. Revisar la lista al añadir
+estados.
+
+**Efecto derivado del AND de v0.89 no escrito en su spec:** tejido fino que antes era NOT_APPLIED
+ahora es APPLIED → HGAC actúa donde antes estaba inhibido. Deseable, pero conviene documentarlo.
+
+### Prioridades: para qué eran las tareas pospuestas
+
+- **Tarea 1 (experimento del patrón):** decide entre normalizar OT por sonda o ir a la
+  pulsatilidad. Retorno moderado —la normalización deja intacta la varianza de colocación, que es
+  la dominante (factor 10 por presión)— y es la más costosa. **Posponerla está bien justificado.**
+- **Tarea 2 (tres medidas de 30 s):** la de la **sonda B con dedo** no es caracterización sino
+  **verificación de un cambio ya flasheado** cuyo canal decisor depende del ejemplar y que solo se
+  validó con uno. Recomendé hacerla aunque se aparque el resto. Las otras dos (sonda cerrada sin
+  dedo; ratio con dedo relajado, para la hipótesis de la isquemia) tienen alto valor pero no
+  verifican nada en producción.
+
+### Precedencia SATURATING vs NOT_APPLIED
+
+No es una prioridad entre estados: **la saturación desactiva por completo el criterio OT**
+(`incunest_afe4490.cpp:1427-1445`). Bajo `anyPositiveSaturation()` decide qué fase clipa: ambiente
+también → SATURATING; solo LED → NOT_APPLIED (*"assumed air"*). Hasta v0.60 cualquier saturación
+daba SATURATING con prioridad absoluta; v0.61 lo partió por fases porque era un bug (HGAC bajaba RF
+al suelo al quitar el dedo).
+
+### Cadena de bloqueo detectada (hipótesis, sin verificar en HW)
+
+Tejido fino = más luz = más probable saturar solo la fase LED con ambiente limpio:
+
+```
+tejido fino + RF alto → satura solo LED → NOT_APPLIED → HGAC inhibido (G0)
+              → nadie baja RF → la saturación persiste → sigue NOT_APPLIED
+```
+
+Simétrico al bug que v0.61 arregló: entonces HGAC actuaba cuando no debía; aquí no actúa cuando
+debería. Es una **segunda vía de falso NOT_APPLIED con tejido fino que el AND de ayer no cubre**,
+porque en esa rama OT no participa. La limitación está admitida en la spec como caso "raro" — pero
+"tejido tan grande que satura" no es raro en la población objetivo. Salida natural si se confirma:
+no descartar OT del todo en esa rama (un OT muy por debajo del umbral sigue indicando tejido).
+
+### Propuesta de Alex: `PROBE_SATURATING` → `PROBE_AMB_SATURATING`
+
+A favor, y por un motivo más fuerte que la precisión: el nombre actual es **engañoso en la
+dirección peligrosa** (sugiere "hay saturación" cuando significa "satura el ambiente"), y es un
+nombre heredado: exacto hasta v0.60, desactualizado desde v0.61 — el mismo patrón que `HRLabWindow`
+sin el "2". `AMB` es vocabulario existente (ALED, AMBDAC) y describe **lo medido**, no la causa
+inferida; mejor que `EXT_LIGHT`. **El nombre bueno expone el hueco:** la saturación solo-LED no
+tiene estado propio y se asimila a un estado de *presencia* por una suposición. Alcance medido:
+**46 ocurrencias en 6 ficheros**, dos repos, cero consumidores en motherBoard; el valor numérico no
+cambia, así que las capturas históricas siguen válidas.
+
+**Orden acordado:** verificar la cadena primero (decide si el rename viene solo o con un
+`PROBE_LED_SATURATING`, que obligaría a revisar G0), y hacerlo todo en una sola versión de la
+librería.
+
+### Herramienta: `tools/probe_state_saturation_check.py`
+
+Lee una captura de Lab Capture, decodifica `CH_MASKS` por muestra (`%04X`: bits[3:0] adc_sat_pos,
+[11:8] tia_over_fs; en cada nibble bit0=LED1, bit1=ALED1, bit2=LED2, bit3=ALED2), imprime la línea
+de tiempo comprimida (estado, RF1, qué fase satura, OT) y dictamina **BLOQUEO** si hay saturación
+solo-LED + NOT_APPLIED + RF constante ≥ 5 s. Probada sobre una MS100 existente (sin saturación:
+"la cadena no se ejercitó", como debe).
+
+Protocolo pedido a Alex: HGAC enabled; captura `SATCHECK_FINGER` (dedo relajado, 10 s, RF1/RF2 →
+1M de golpe, 30 s quieto, RF → 100K, 10 s) y control `SATCHECK_AIR` (sonda cerrada sin dedo, mismo
+guion), todas las columnas. Pendiente de resultado.
+
+
+## Sesión 2026-09-08 (cont.) — Librería v0.90: ProbeState renombrado y desglosado
+
+### La observación de Alex que precipitó el orden
+
+Subiendo RF1 y RF2 **secuencialmente** a 1M se quedan ahí; subiéndolas **a la vez**, HGAC baja RF2 al
+instante. Es la cadena de bloqueo en directo (secuencial: satura solo LED → NOT_APPLIED → HGAC
+inhibido → RF fijo; simultáneo: la fase ambiente clipa un instante → SATURATING → HGAC actúa). Y es
+imposible razonar sobre ello mirando el estado, porque `NOT_APPLIED` escondía dos situaciones
+físicas distintas. Decisión: **renombrar primero, verificar después.**
+
+### Análisis previo de la propuesta (sin tocar código), y lo que decidió Alex
+
+- **Cambio 1** `PROBE_SATURATING → PROBE_AMB_SATURATING`: sí. El "se sobreentiende que también
+  saturan las fases LED" tiene base física: en el dominio crudo del ADC, fase LED = ambiente + LED,
+  así que ambiente saturado ⇒ LED saturado (AMBDAC=0).
+- **Cambio 2** desglosar `NOT_APPLIED`: compra observabilidad, nombra lo medido en vez de la
+  inferencia ("sonda al aire"), y —lo de peso— permite que G0 trate las dos causas de forma distinta,
+  hoy imposible sin romper v0.61. **No compra** la resolución de la ambigüedad: aire y tejido fino
+  son indistinguibles por la fase que satura, y dejar actuar a HGAC en el caso solo-LED
+  reintroduciría el bug de v0.61. Es la fontanería del arreglo, no el arreglo.
+- **Riesgos:** (1) el antirrebote cuenta peticiones idénticas consecutivas; con dos estados de
+  ausencia, la alternancia cerca del borde podría impedir que ninguno se comprometa y dejar el estado
+  en APPLIED con el dedo fuera — **Alex duda que ocurra; queda apuntado como chequeo a realizar**, en
+  el código y en la spec. (2) consumidores con lista explícita (G0, diag task) — resuelto con helper.
+  (3) `PROBE_OVER_OT_THR` nombraba el mecanismo → **`PROBE_OT_HIGH`** (decisión de Alex). (4) valores
+  en el frame/CSV: `OT_HIGH` hereda el 1 (la causa habitual en capturas históricas), el nuevo es 4.
+- **Helper:** `isProbeAbsent()` en vez de `(A||B)` repetido o `!= APPLIED` (que no sirve para G0,
+  que debe dejar pasar `AMB_SATURATING`). Un único punto de verdad para "no hay paciente".
+- **motherBoard** (`SPO2.cpp`, `CommTask.cpp`) usa solo `==`/`!= PROBE_APPLIED` en 9 sitios →
+  inmune a ambos cambios. Es lo que hace el cambio asumible.
+
+### Aplicado — lib v0.90, sin cambio de comportamiento
+
+```
+PROBE_DISCONNECTED        = 0
+PROBE_OT_HIGH             = 1   (era la ruta OT de NOT_APPLIED)
+PROBE_APPLIED             = 2
+PROBE_AMB_SATURATING      = 3   (era SATURATING)
+PROBE_ONLY_LED_SATURATING = 4   (nuevo; antes dentro de NOT_APPLIED)
+isProbeAbsent(s) = DISCONNECTED || OT_HIGH || ONLY_LED_SATURATING
+```
+
+Librería: enum con valores explícitos, helper, escalera RSQM, G0 y diag task vía `isProbeAbsent()`,
+comentario del chequeo en `_rsqm_request_probe_state`, spec §5.6.2/§5.7/§5.8 y tabla de firmas HW
+(fila nueva para `OT_HIGH` y `AMB_SATURATING`; la antigua "NOT_APPLIED: led saturados, ambiente bajo"
+era en realidad la firma de `ONLY_LED_SATURATING`), historial v0.90. Las filas de historial
+anteriores y el párrafo *History* de §5.6.2 conservan los nombres de su época. La pseudo-escalera de
+la spec aún decía `OR` — corregida a `AND` (v0.89) de paso.
+
+PulseNest: constantes de las 4 clases espejo, veredicto del OT MONITOR, barra de HR1LAB, combo del
+AFE SWEEP TEST, tooltip y colores de SIGNAL STATS (marrón nuevo para 4), 5 ficheros de test,
+`tools/probe_state_saturation_check.py`, spec v1.43 (§4.2 tabla del frame, §7.16.1 nueva).
+
+### Verificación
+
+- Tests nativos: **hr1, hr2, hr3, spo2, hgac, sample_rate, tia_cf, hello PASSED**; `test_biquad`
+  ERRORED = fallo preexistente ajeno (ya documentado en la spec del script).
+- Build `incunest_V16`: SUCCESS (Flash 830 909 B, +68 B respecto a v0.89).
+- Script: `py_compile` OK; tests offscreen de OT MONITOR y HR1LAB pasan con los nombres nuevos (el
+  veredicto ya dice `OT_HIGH`); el analizador compila y corre sobre una MS100.
+- Residuos de nombres viejos en código: ninguno (comprobado por grep, excluyendo los comentarios que
+  explican el renombrado).
+
+**No flasheado ni commiteado**: la placa sigue en v0.89. Pendiente de la orden de Alex.
+
+
+### Vocabulario: "Gate G0" → "HGAC gate", "axioma A6" → su nombre (2026-09-08)
+
+Alex: "No me gusta nada en absoluto tener que recordar qué es G0". Razón de peso: **G0 es la única
+puerta** — la numeración prometía otras que nunca existieron— y encima **la puerta ya tuvo nombre en
+el código**: hasta v0.44 era `_hgac_gate_ok()`; al inlinearla en `_hgac_update()` el nombre se perdió
+y quedó la etiqueta del diseño. Otro resto de una etapa anterior, como `HRLabWindow` o el MA.
+
+Opciones valoradas: *HGAC gate* (elegida: corta, inequívoca, recupera el nombre histórico), *HGAC
+actuation gate* (más precisa, estorba en comentarios), *presence gate* (omite el cierre por
+reasentamiento RC: engañosa), *enable gate* (colisiona con `hgac_enable`, comprobado una línea
+antes), *hold-off* (sugiere algo temporal).
+
+Aplicado, documentación únicamente —G0/A6 nunca fueron identificadores—: `.h`, `.cpp`, texto vivo
+de la spec (6 menciones), `tools/probe_state_saturation_check.py` y 7 memorias. Las etiquetas viejas
+quedan **una vez cada una, entre paréntesis, en las definiciones** (§5.8 de la spec y el comentario
+de `_hgac_update()`), para que los documentos anteriores sigan siendo rastreables. Las filas de
+historial de la spec y la memoria de histórico congelado conservan su vocabulario. Incluido en la
+fila v0.90 de la spec, aún sin commitear.
+
+Nota posterior: tras la entrada anterior se corrigio una linea mas del docstring de `tools/probe_state_saturation_check.py` que aun decia `NOT_APPLIED` (ahora "an absent state"). Solo documentacion; `py_compile` OK. Residuo unico y deliberado en la herramienta: la nota historica "until v0.89 the absent state below was PROBE_NOT_APPLIED".

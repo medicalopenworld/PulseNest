@@ -11,7 +11,7 @@
 // a FIXED ADC code (not a photocurrent), so v_tia does NOT fall when RF steps — this lets a
 // sustained stimulus walk RF to a rail, which is what the guard/leveling tests rely on.
 
-// Saturating: midpoint between tia_axis::FS_V (opens PROBE_SATURATING) and adc::FSR (the ADC
+// Saturating: midpoint between tia_axis::FS_V (opens PROBE_AMB_SATURATING) and adc::FSR (the ADC
 // rail) — guaranteed above HIGH2 too (tia_axis's own static_assert orders HIGH2_V < FS_V), and
 // below the rail (no clipping). Derived from named constants, not a bare magic code, so it can't
 // silently drift out of the intended zone if those move (see weak_code_below_low1 below, and

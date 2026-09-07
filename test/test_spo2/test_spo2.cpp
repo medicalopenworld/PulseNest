@@ -10,7 +10,7 @@
 // (spo2_div_eps). See _spo2_update() rationale in incunest_afe4490.cpp.
 //
 // Output contract: sqi==0.0f always implies pi==spo2==spo2_r==NaN (never a stale value),
-// unified across warmup, PROBE_DISCONNECTED/PROBE_NOT_APPLIED, and the division-safety guard.
+// unified across warmup, PROBE_DISCONNECTED/PROBE_OT_HIGH, and the division-safety guard.
 //
 // (SPO2_A/SPO2_B calibration coefficients and WARMUP_SAMPLES were removed 2026-08-19: both were
 // dead code — hardcoded duplicates of incunest_afe4490.cpp's spo2_a_default/spo2_b_default and
@@ -85,9 +85,9 @@ void test_spo2_not_applied_resets() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 
-    // PROBE_NOT_APPLIED gets the same treatment as PROBE_DISCONNECTED (both non-APPLIED).
+    // PROBE_OT_HIGH gets the same treatment as PROBE_DISCONNECTED (both non-APPLIED).
     for (int i = 0; i < 1000; i++)
-        afe.test_feed_spo2(OT_DC, OT_DC, ProbeState::PROBE_NOT_APPLIED);
+        afe.test_feed_spo2(OT_DC, OT_DC, ProbeState::PROBE_OT_HIGH);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_ir_ema_mean());
 }

@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.42
+# pulsenest_lab — Specification v1.43
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -156,7 +156,7 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 | `HR3_SQI` | float | HR3 SQI [0–1] |
 | `RSQI` | uint8 | Raw Signal Quality Index: 0=invalid, 1=valid |
 | `DiagCode` | uint32 | Diagnostic bitmask (AFE hardware faults + RSQM flags) |
-| `ProbeState` | int | 0=DISCONNECTED, 1=NOT_APPLIED, 2=APPLIED |
+| `ProbeState` | int | 0=DISCONNECTED, 1=OT_HIGH, 2=APPLIED, 3=AMB_SATURATING, 4=ONLY_LED_SATURATING (lib v0.90 names; until v0.89: 1=NOT_APPLIED, 3=SATURATING — same values, so old CSVs still read) |
 
 #### $M4 — Debug frame (default)
 
@@ -436,7 +436,7 @@ All constants are exposed as instance attributes overridable at runtime from the
 `update(ot_ir, ot_red, probe_state, fs)` — input is `OT_LED1`/`OT_LED2` [A/A] (gain-invariant
 optical transmittance), not the raw ambient-corrected `LED1_SUB`/`LED2_SUB` used before this
 migration, plus `probe_state` (RSQM's `ProbeState` ordinal — 0/1/2 for
-DISCONNECTED/NOT_APPLIED/APPLIED, read from the already-parsed `ProbeState` column/field).
+DISCONNECTED/OT_HIGH/APPLIED/AMB_SATURATING/ONLY_LED_SATURATING, read from the already-parsed `ProbeState` column/field).
 `OT_LED1`/`OT_LED2` only travel in the `$M4` frame — SpO2TestWindow requires `$M4` (live) or
 a CSV captured in `$M4`; it shows a status-bar warning and stops feeding the calc otherwise.
 
@@ -448,7 +448,7 @@ DC floor, mirroring firmware v0.40) — both mostly duplicated RSQM's own
 disconnected/not-applied classification with a weaker, uncalibrated criterion (a
 transmittance probe with no finger shows HIGH OT, not low i_pd/DC).
 
-While `probe_state != PROBE_APPLIED` (2) — covering both NOT_APPLIED and DISCONNECTED
+While `probe_state != PROBE_APPLIED` (2) — covering every absent state (OT_HIGH, ONLY_LED_SATURATING, DISCONNECTED) and AMB_SATURATING
 identically: internal state (`_dc_ir`/`_dc_red`/`_ac2_ir`/`_ac2_red`/`_sample_count`) is reset
 every sample (idempotent, no stored "previous probe_state" needed — mirrors lib v0.41), and
 `pi`/`spo2`/`spo2_r` are `nan`. What remains inside the class is only a purely numerical
@@ -544,7 +544,7 @@ instead of `$M1` (which never carries `OT_LED1`); shows a status-bar warning and
 the calc when frame mode is not `$M4`.
 
 **v1.24: `probe_state` (mirrors lib v0.42):** `update(ot_led1, fs, probe_state, sample_counter=None)`
-— `probe_state` (RSQM's classification, `PROBE_DISCONNECTED`/`NOT_APPLIED`/`APPLIED` = 0/1/2
+— `probe_state` (RSQM's classification, `PROBE_DISCONNECTED`/`OT_HIGH`/`APPLIED`/`AMB_SATURATING`/`ONLY_LED_SATURATING` = 0/1/2/3/4
 class constants) consumed, never computed here. While `probe_state != PROBE_APPLIED`:
 `reset()` runs every sample (idempotent), `hr_bpm`/`hr_sqi` forced to `nan`/`0`. Gap detection
 (via `sample_counter`) still runs regardless of `probe_state` — it tracks frame continuity, not
@@ -676,7 +676,7 @@ The purpose is not having to open HW CONFIG to see or change the RF in use.
    button, one accidental scroll would step through the item list firing a `$SET` per step,
    each triggering its own hardware settling window.
 3. **RF combos are disabled while HGAC is enabled.** HGAC v1 is RF-only and actuates whenever
-   ProbeState is `APPLIED` or `SATURATING`, so it reverts any manual RF within ~200 ms.
+   ProbeState is `APPLIED` or `AMB_SATURATING`, so it reverts any manual RF within ~200 ms.
    Switching `HGAC:` to `OFF` is what hands RF over to the user. Disabled combos are styled
    `_QUICK_CSS_OFF` (grey) instead of `_QUICK_CSS_ON` (green = firmware value, §10).
 4. **RF1 additionally disabled when `ENSEPGAIN=0`** (read from the cached `$CFG`): the chip
@@ -1280,7 +1280,7 @@ and **clean** (no border) after a matching `$CFG` confirms the change.
 Purpose: view and change RSQM / HGAC library parameters in real time via `$SET`/`$LCFG` protocol.
 
 **Contents (RSQM group):**
-- OT threshold (`rsqm_ot_thr`) — NOT_APPLIED vs APPLIED boundary [A/A]
+- OT threshold (`rsqm_ot_thr`) — OT_HIGH vs APPLIED boundary [A/A]
 - DISCONNECTED LED_sub threshold (`rsqm_disconn_led_sub_thr`) [ADC counts]
 - DISCONNECTED I_PD threshold (`rsqm_disconn_i_pd_thr`) [nA displayed, A stored]
 - Probe debounce (`rsqm_probe_state_min_s`) [s] — converted to samples from `fs` internally
@@ -1300,6 +1300,16 @@ Purpose: view and change RSQM / HGAC library parameters in real time via `$SET`/
 - Status bar: shows last command sent and confirmation status
 
 Controls are marked **dirty** (red text) when edited but not yet confirmed by firmware, and **clean** after a matching `$LCFG` arrives.
+
+#### 7.16.1 ProbeState names (lib v0.90)
+
+**v1.43.** The script mirrors the library's ProbeState rename/split: `PROBE_SATURATING` →
+`PROBE_AMB_SATURATING` (3), and `PROBE_NOT_APPLIED` split into `PROBE_OT_HIGH` (1, value kept) and
+`PROBE_ONLY_LED_SATURATING` (4, new). Updated everywhere the value is named: the ordinal constants of
+`SpO2TestCalc`/`HR1Variant`/`HR2TestCalc`/`HR3TestCalc`, the OT MONITOR verdict, the HR1LAB context
+bar, the AFE SWEEP TEST expected-state combo, the SIGNAL STATS tooltip and cell colours (new brown
+for 4), and `tools/probe_state_saturation_check.py`. Old captures keep their meaning: values 1 and 3
+did not change.
 
 #### 7.17.1 OT MONITOR (inside LIB CONFIG)
 
@@ -1333,7 +1343,7 @@ characterise the condition. `OT_norm > 1` means the stored reference was not rea
 
 `current_ot_thr()` reads the threshold from the `rsqm_ot_thr` spin, so the verdict tracks a value
 typed but not yet sent; before the first `$LCFG` the spin reads 0, and it falls back to the library
-default (1.0e-4) rather than claiming NOT_APPLIED for every possible OT.
+default (1.0e-4) rather than claiming OT_HIGH for every possible OT.
 
 Fed from the drain at the subwindow rate. Requires `$M4`: no other frame carries OT.
 
@@ -1686,7 +1696,7 @@ findings shaped the result:
   unconditionally; the coalesced `$CFG?` mirror into HW CONFIG's combos stays conditional.
 - **A pair of RF combos alone would have been unusable.** `_auto_enable_hgac()` sends
   `$SET,hgac_enable,1` on every firmware start, and HGAC v1 is RF-only actuating on
-  `APPLIED||SATURATING`, so any manual RF would revert within ~200 ms. Hence the third control:
+  `APPLIED||AMB_SATURATING`, so any manual RF would revert within ~200 ms. Hence the third control:
   the `HGAC:` combo is what hands RF over to the user, and the RF combos grey out while HGAC
   owns them.
 
