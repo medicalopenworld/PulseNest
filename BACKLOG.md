@@ -49,6 +49,19 @@ has not been triaged yet.
 - Estudiar si la señal DC podría ser utilizada para alguno de los dos siguientes usos:
 	1. El Anexo AA de la norma ISO explica que un %mod teóricamente aceptable puede ser clínicamente inútil si el nivel de DC es extremadamente bajo
 	2. Detección de Desequilibrio por Pigmentación (Melanina) o Tejido Grueso. Si el DC del Rojo es excesivamente bajo en comparación con el del Infrarrojo debido a una piel oscura, el sistema sabrá que la señal roja es altamente vulnerable al ruido del detector
+- Analizar por qué setHR2UpdateInterval recibe omo parámetro un número de muestras en vez de un intervalo de tiempo. Parece que la librería no se autoconfigura con los cambios del sampling rate del AFE.
+-HR1current: cómo se ha calculado el factor de decaimiento del máximo/umbral (parece que decae demasiado lengo)
+-HR1SSF(Zong): falla a 250 BPM un latido dura 240 ms) la ventana fija de 128 ms (que convoluciona la derivada) no se adapta a valores de HR altos
+-HR1TERMA: utiliza dos ventanas de promediado móviles de 0.111 y 0.667 que probablemente no sean adecuadas para HR altas 
+- Analizar la posibilidad de que los algoritmos sean adaptativos (sus parámetros) en función de la estimación de HR prevista teniendo en cuenta los resultados previos:
+	1. Del propio algoritmo
+	2. Del conjunto de todos los algoritmos HR1,HR2,HR3 (sobre todo si coinciden entre ellos)
+	3. Una tarea inicial es hacer una lista de los parámetros candidatos a ser adaptativos
+	4. Claude comenta que en tecnología médica hay algún principio de independencia entre medidas, pero no sé si aplica en este caso porque siempre estamos hablando de HR
+- Utilizar las señales ALED (por ejemplo su varianza) como de detector de MAs (movement artifacts) para un tratamiento similar al de sensores inerciales/acelerometros que se utiliza en el tratamiento de medidas PPG en wearables
+- Creo que habría que subir rsqm_ot_thr (OT threshold para detectar PROBE_APPLIED) porque los dedos pueden llegar a ser muy finos. El inconveniente no sería con sondas tipo brida o pinza, sino con sondas abiertas donde el led y el fotodiodo no quedan enfrentados al quitar el dedo (por ejemplo las desechables)
+- Creo que _diag_task_body() también debería incluir PROBE_AMB_SATURATING (quizás todavía se llame PROBE_SATURATING) o mejor aún que sea distinta a PROBE_APPLIED.
+
 
 ## Done / promoted
 

@@ -19314,7 +19314,7 @@ objeción.
 
 1. **24 ficheros renombrados**, 7 sujetos → `SUBJ01…SUBJ07`, asignación alfabética determinista
    (re-ejecutar da lo mismo). Se conserva la edad, técnicamente relevante y no identificativa:
-   `ALEX_CUESTA_57_RF100K_…` → `SUBJ01_A57_RF100K_…`. El script aborta si un destino ya existe.
+   `<NOMBRE>_<APELLIDO>_57_RF100K_…` → `SUBJ01_A57_RF100K_…`. El script aborta si un destino ya existe.
 2. **`captures/SUBJECT_CODES.txt`** con la tabla código→persona, fuera del repo. En `.gitignore`
    queda escrito que **nunca** debe tener excepción: es el único fichero que desharía el anonimato
    de todo lo demás.
@@ -20483,3 +20483,137 @@ modificado ANTES del commit de código sigue siendo más antiguo y sigue dispara
 
 Lección para el diseño de hooks bloqueantes: **nunca condicionar la salida a una acción que el
 modelo no puede realizar sin permiso** (aquí, un commit); si no, el bucle no tiene fin.
+
+
+## Sesión 2026-09-08 (tarde) — Barrido τ × k sobre las capturas perturbadas: el decay tiene número
+
+### Material
+Cinco capturas `MS100_PROBEPERT_98SPO2_<N>HR` (60/140/180/220/250 BPM, 60 s, 500 Hz, todas las
+columnas), protocolo de Alex: apretones sobre la carcasa del sensor a ~20/30/40/50 s (1/2/3/4
+apretones; el recuento identifica el evento). Alex descartó mis perturbaciones (desplazar/rotar/papel)
+por difíciles; las suyas son mejores: atacan el mecanismo exacto (artefacto que infla el
+`running_max`, criterio C3), se autoetiquetan y dejan 10 s entre eventos — τ ≤ 3 s recupera, τ = 20 s
+no llega, que es lo que queríamos ver.
+
+### Métricas (`tools/hr1_probepert_sweep.py`)
+- `good %`: muestras con SQI > 0 **y** |HR − verdad| ≤ 3 BPM, tras 10 s de warm-up.
+- `rec`: **duración del apagón** por evento — desde el apretón hasta la primera lectura correcta
+  *después del primer tramo malo*. La primera versión medía "primera muestra buena tras el evento" y
+  daba 0,3 s en todo: encontraba la lectura **anterior**, que sigue publicándose unos latidos hasta
+  que el buffer RR se contamina. Corregida antes de reportar.
+
+### Resultados (peor caso sobre las 5 capturas)
+
+| variante | τ | k | peor good | peor rec | comentario |
+|---|---|---|---|---|---|
+| SPEC | 0,5 s | 0,6 | 49 % | 8,3 s | **colapso a 60 BPM**: umbral efectivo 0,6·e^(−2) = 8 % del pico → doble conteo |
+| SPEC | **1–3 s** | **0,6** | **76–78 %** | **3,6 s** | zona plana: 76-78 / 85-87 / 80 / 84 / 83 % en 60/140/180/220/250 |
+| SPEC | 20 s | 0,6 | 53 % | 6,0 s | el valor de fábrica: 53-54 % a 220/250 |
+| SPEC | 1 s | 1,0 | 78 % | 3,7 s | igual que k=0,6 a τ ≤ 1 |
+| SPEC | 1,5–3 s | 1,0 | 68 % | 5,3 s | peor a 60 BPM: k=1 alarga la recuperación 0,51·τ por evento |
+| SPEC | 20 s | 1,0 | 18 % | 9,5 s | catastrófico |
+| BPF | 0,5–1 s | 0,6 | 53 % | 7,5 s | 88-89 % a 140, pero 53 % a 60 BPM con cualquier τ |
+| BPF | 2–3 s | 0,6 | 52–54 % | 7,6 s | se degrada con τ (140 BPM: 89 → 80 %) |
+| BPF | 20 s | 0,6 | 22 % | 9,5 s | |
+
+### Lo que dicen
+
+1. **τ = 20 s es malo con evidencia propia, no sintética**: 53 % de disponibilidad correcta a 220–250
+   BPM frente a 84 % con τ = 1–3 s. La observación de Alex en el banco ("con 1 s funciona mejor")
+   queda medida.
+2. **Zona plana de τ entre 1 y 3 s** (SPEC, k = 0,6): 76–78 % en el peor caso, sin variación
+   apreciable. El 1 s de Alex está dentro; 1,5–2 s es igual de bueno y más lejos del borde de 0,5 s,
+   donde a 60 BPM colapsa (49 %).
+3. **`k` no sobra, pero por una razón distinta de la que predije.** El material sigue sin tener
+   variabilidad de amplitud entre apretones (amplitud estable → el papel principal de k no se
+   ejercita, y k = 1 no pierde latidos aquí). Lo que sí mide: k = 1 **alarga la recuperación tras
+   cada artefacto en 0,51·τ** (el máximo inflado debe caer hasta la amplitud, no hasta 0,6×), y a
+   60 BPM con τ ≥ 1,5 s eso cuesta 10 puntos (68 vs 78 %). Con τ = 20 s, k = 1 es catastrófico
+   (18 %). k = 0,6 se mantiene.
+4. **`Max decay beats` sobra** para este rango: la zona plana 1–3 s cubre 60–250 BPM sin necesidad
+   de escalar con RR. Se retira de la lista de candidatos al firmware; queda como control de
+   exploración.
+5. **BPF pierde frente a SPEC en este material**, al revés que en la prueba sintética de deriva.
+   Solo compite a τ ≤ 1 s, y a 60 BPM se queda en 53 % con cualquier τ. Hipótesis: un apretón es
+   un escalón/impulso y el biquad paso banda de 2.º orden (esquina 0,5 Hz) **resuena** ~2 s tras
+   él, alargando el artefacto; la deriva lenta de la prueba sintética no lo excita. Distinto
+   fenómeno, distinto ganador. No cambia la conclusión de `project_hr1_filter_type_task` (no
+   cambiar el filtro) — la refuerza.
+6. **El suelo de recuperación es del SQI, no de τ**: con τ óptimo el apagón dura 3,2–3,6 s a
+   cualquier HR, que es el rellenado del buffer de 5 RR (y 5 s a 60 BPM, de ahí que esa columna no
+   pase del 78 %: 4 eventos × 5 s = 20 de 50 s). La siguiente palanca de disponibilidad es
+   `hr1_sqi_cv_max` / la longitud del buffer, no el decaimiento. Coherente con la conclusión de la
+   semana pasada: el problema real es la disponibilidad y pertenece al criterio del SQI.
+
+### Recomendación para la librería
+`hr1_max_decay_tau_s`: **de 20 s a 1,5 s** (centro de la zona plana, ×3 de margen frente al colapso
+de 0,5 s a 60 BPM), `hr1_threshold_fraction` **se mantiene en 0,6**. Justificación medible: el valor
+más conservador que cumple en todo el rango 60–250 BPM con el fenómeno presente y verdad conocida —
+el criterio de elección acordado. Pendiente antes de tocar el firmware: la morfología neonatal a HR
+baja (dicrota más marcada) es lo único que podría mover el borde inferior; no hay capturas.
+
+Herramienta: `tools/hr1_probepert_sweep.py` (promovida desde el scratchpad).
+
+
+### Corrección al punto 5 (BPF frente a SPEC con apretones) — medido, no supuesto
+
+Alex no entendía el punto 5, con razón: estaba escrito como hipótesis ("el biquad resuena") y un
+Butterworth no resuena. Medido con `press_timeline.py` (latidos detectados por segundo alrededor
+de cada apretón, τ=1,5 s, k=0,6):
+
+**60 BPM, 1 apretón a ~21 s.** SPEC: 1 latido/s en todo momento, `good` 100 % — el apretón ni
+añade ni quita latidos. BPF: en el segundo del apretón cuenta **2 latidos** (uno falso) → un
+intervalo RR malo → CV > 0,15 → `SQI = 0` durante los **5 latidos siguientes** (22–27 s) → 6 s
+perdidos por **una sola detección espuria**. A 60 BPM el buffer de 5 RR tarda 5 s en purgarse.
+
+**Por qué BPF genera el latido falso y SPEC no.** El transitorio del apretón en la señal filtrada
+es **~2× mayor en BPF** (mediana del segundo: 2,41 vs 0,62 u.a. a 60 BPM; 4,0 vs 2,0 a 140). El
+paso banda tiene un paso alto en 0,5 Hz que **deriva el escalón** del apretón y lo convierte en un
+pulso bipolar grande — uno de cuyos lóbulos es siempre positivo y parece un latido. La cadena de
+SPEC (MA de 100 ms + DC IIR con τ=1,6 s) apenas reacciona al escalón: el MA lo promedia y el
+removedor de DC es demasiado lento para seguirlo.
+
+**Por qué es independiente de τ.** La pérdida no viene del `running_max`: viene de una detección
+espuria y del purgado del buffer de 5 RR. Por eso BPF a 60 BPM se queda en ~53 % con cualquier τ.
+
+**Por qué con deriva sintética BPF ganaba y aquí pierde.** Mismo filtro, perturbaciones en extremos
+opuestos del espectro: la deriva es **lenta** (0,25 Hz) y el paso alto en 0,5 Hz la elimina
+mientras el de SPEC (0,1 Hz) la deja pasar; el apretón es un **escalón rápido** y el paso alto
+deja pasar su flanco. No hay contradicción entre las dos pruebas; miden cosas distintas.
+
+**A 140 BPM, 1 apretón:** ninguna de las dos pierde nada (2 latidos/s, 100 %), aunque el
+transitorio de BPF también es el doble: a esa frecuencia el refractario y el ritmo más rápido
+absorben el flanco sin detección extra. Con 4 apretones (51–55 s) las dos se degradan; BPF algo
+menos (24–54 % frente a 0 % de SPEC durante 3 s).
+
+**La lección que importa más que el ganador:** un único latido espurio cuesta **5 latidos de
+silencio** por el diseño del SQI (CV de 5 intervalos, umbral 0,15). A 60 BPM son 5 s por evento.
+Esa amplificación ×5 es la palanca de disponibilidad que queda por tocar: `hr1_sqi_cv_max`,
+longitud del buffer, o rechazo de un intervalo atípico (mediana en vez de CV) antes de castigar
+los cinco.
+
+### Hipotesis de Alex: la recuperacion la limita el retorno a cero (DC), no el tau del maximo (2026-09-08)
+
+Alex, visualmente: BPF se recupera muchisimo mas rapido que SPEC. Su mecanismo: el umbral decae hacia CERO, no hacia el suelo del pulso; si tras una perturbacion la senal no vuelve a oscilar alrededor de cero, el cruce no puede producirse aunque el umbral ya haya bajado. SPEC quita la DC con tau=1.6 s -> ciego ~1.6*ln(dDC/A) s. Medido (`sweep_dc_return.py`, max tau fijo, perdidos/extra sobre 4 apretones):
+
+| config | good% 60/140/180/220/250 | perdidos/extra 60 | 140 | 220 | 250 |
+|---|---|---|---|---|---|
+| SPEC dc 1.6 s (fabrica) | 78/87/80/84/83 | 2/0 | 4/0 | 8/0 | 8/0 |
+| SPEC dc 0.8 s | 54/88/79/83/80 | 0/4 | 3/0 | 7/0 | 8/0 |
+| SPEC dc 0.4 s | 53/88/80/80/74 | 0/5 | 1/0 | 6/0 | 8/0 |
+| SPEC dc 0.2 s | 52/82/79/71/71 | 0/5 | 6/0 | 22/0 | 27/0 |
+| BPF low 0.5 Hz | 53/89/81/81/83 | 0/5 | 1/0 | 6/0 | 7/0 |
+
+1. La hipotesis es correcta y se ve como **latidos perdidos**: SPEC 1.6 s pierde 2-8 latidos por 4 apretones y nunca anade ninguno (ceguera por desplazamiento). 2. Acelerar el retorno a cero reduce los perdidos a 140-220 (4->1 a 140), pero **compra el otro fallo**: a 60 BPM aparecen 4-5 latidos extra (pico derivativo del escalon) que el SQI castiga x5 -> good 78->53. 3. **BPF 0.5 Hz == SPEC dc 0.4 s** fila por fila: no es el tipo de filtro, es la frecuencia de esquina (0.5 Hz ~ tau 0.32 s). 4. dc 0.2 s empeora en alta HR (22-27 perdidos): el pico del apreton pasa entero al running_max. 5. Reconciliacion: el ojo ve la forma de onda volver a cero (cierto, y evita perdidos); la metrica ve el latido falso multiplicado por el buffer de 5 RR. Ambos reales. Ademas los apretones del MS100 son impulsivos; las perturbaciones del dedo son sostenidas, donde la ceguera de 1.6 s es mucho mayor -> la metrica subestima la ventaja del retorno rapido en el banco real.
+
+**Conclusion de diseno:** la ruta correcta es retorno rapido a cero (esquina ~0.5 Hz, sea BPF o DC IIR corto) **mas una guarda contra el latido derivativo unico**: blanking de deteccion mientras |dALED| es grande (el testigo de movimiento de Alex, ya en las capturas), o un SQI que tolere un atipico. Sin la guarda, el retorno rapido pierde a 60 BPM por el castigo x5 del SQI. Siguiente experimento offline con estas mismas capturas: DC rapido + blanking por ALED.
+
+## Sesion 2026-09-08 (tarde) - Experimento: PulseNest en la placa 17.A
+
+Alex quiere probar el firmware PulseNest en la 17.A (192.168.137.253, hostname IncuNest-317), que corria IncuNest motherBoard. Verificaciones previas: (1) MAC de .253 = 10-20-ba-14-75-60 = 17.A (la pantalla IncuNest_Display-317 esta en .167 con 98-88-e0-11-cc-64; el sufijo -317 del hostname coincidia con la pantalla y habia que despejarlo; la 16.A se ha movido a .127). (2) Entorno de compilacion `incunest_V17` (DRDY pin 17), no V16. (3) Binario de motherBoard V17 existe para volver atras (1 502 752 B). (4) motherBoard expone el OTA clasico de Arduino (`/` login JS -> `/serverIndex` -> `POST /update`) protegido con **HTTP Basic** (`wifiServer.authenticate`, Wifi_OTA.cpp:624); credenciales compiladas de Credentials_public.h (`incunest`/`changeme`; no hay Credentials.h privado). Sin `-u` el POST da 401. Campo multipart `update`.
+
+Flash: `curl -u incunest:changeme -F update=@.pio/build/incunest_V17/firmware.bin http://192.168.137.253/update` -> OK, HTTP 200, 831 482 B en 9.4 s. Rearranque confirmado: la raiz de .253 es ahora "PulseNest OTA" (misma MAC). **La 17.A corre PulseNest V17 (lib v0.90); la 16.A sigue con PulseNest V16 (lib v0.90).**
+
+Vuelta atras (PulseNest no pide auth): `curl -F update=@C:/PRJ/MOW/IncuNest/Firmware/motherBoard/.pio/build/IncuNest_V17/firmware.bin http://192.168.137.253/update`, verificando antes la MAC por ARP.
+
+Aviso: con dos placas emitiendo frames PulseNest al hotspot, el script recibe datos mezclados (precedente 2026-06-11). Durante el experimento, apagar o desconectar la 16.A, o decidir que placa escucha el script.
