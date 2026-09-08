@@ -20368,3 +20368,118 @@ historial de la spec y la memoria de histórico congelado conservan su vocabular
 fila v0.90 de la spec, aún sin commitear.
 
 Nota posterior: tras la entrada anterior se corrigio una linea mas del docstring de `tools/probe_state_saturation_check.py` que aun decia `NOT_APPLIED` (ahora "an absent state"). Solo documentacion; `py_compile` OK. Residuo unico y deliberado en la herramienta: la nota historica "until v0.89 the absent state below was PROBE_NOT_APPLIED".
+
+### Commit y flash de la v0.90 (2026-09-08)
+
+Libreria `ac25ea2` (v0.90: ProbeState renombrado/desglosado, isProbeAbsent, vocabulario HGAC gate). PulseNest `06f9486` (espejo v0.90, analizador, spec v1.43). Sin push. Flash OTA a la 16.A: la IP habia cambiado de nuevo (.90 -> .18) y el primer POST devolvio vacio por entrada ARP caducada, sin error visible con `-s`; tras `ping` + reenvio con `-sS`: respuesta `OK`, HTTP 200, 831 498 B, placa de vuelta con HTTP 200. MAC 10:51:db:50:48:f8 verificada antes de enviar. **La 16.A corre v0.90.** Leccion operativa: verificar reachability con codigo HTTP visible antes del POST, no solo la entrada ARP.
+Push (2026-09-08): `incunest_afe4490` 1def14d..ac25ea2 y `PulseNest` 8e595bc..06f9486, ambos master -> master en medicalopenworld.
+
+## Sesión 2026-09-08 (cont.) — Origen del rango 40–260 BPM y el requisito OMS-UNICEF de 30–240
+
+Sesión de consulta (sin cambios de código). Alex pregunta, a raíz de un documento de UNICEF, por qué
+`hr_max_bpm` = 260. Búsqueda en log, spec y design_rationale.
+
+### Lo que dice el historial: no hay rationale
+
+| Fecha | Rango | Motivo registrado |
+|---|---|---|
+| inicio | 40–240 | — |
+| 2026-03-31 (sesión 35) | 30–250 | "rango HR extendido", sin razón para el techo |
+| — | 25–300 | mencionado de pasada |
+| 2026-05-02b | 40–260 | *"Decisión del usuario: cambiar el límite superior de HR de 300 a 260 BPM"* |
+
+Eso es literalmente todo (`conversation_log.md:5650`). Sin fuente, sin cálculo, sin referencia
+clínica. El resto del proyecto propaga el número: los 15 Hz del LP de HR3 se eligieron *después* para
+preservar el 3er armónico de 260 BPM (13 Hz), y el guard band de ±3 cuelga de ahí.
+
+### ⚠️ Afirmación de la spec sin respaldo
+
+`incunest_afe4490_spec.md:2680` dice: *"HR bounds [40–260 BPM] are derived from ISO neonatal
+criteria."* **No se ha encontrado respaldo.** ISO 80601-2-61:2026 §201.12 solo exige documentar
+*"e) the displayed ranges of pulse rate"* — obliga a **declarar** el rango, no lo impone. Buscado en
+§201.12 completa: ningún par de números que fije un rango de PR. Es una racionalización posterior y
+hay que corregirla: en un dispositivo médico, atribuir un origen normativo falso es peor que admitir
+una elección de ingeniería. **Pendiente de corregir en la spec.**
+
+### El documento: OMS-UNICEF 2019, no solo UNICEF
+
+*Technical specifications and guidance for oxygen therapy devices*, WHO Medical Device Technical
+Series, OMS + UNICEF, 2019, ISBN 978-92-4-151691-4. Capítulo 6 *Pulse oximetry*, tres categorías:
+
+| § | Tipo | Neonatos | PR |
+|---|---|---|---|
+| 6.3 | Fingertip | **"not appropriate for use in neonates"** | to include 30–240 |
+| 6.4 | Handheld | sí, NICU | to include 30–240 |
+| 6.5 | Tabletop (continuo, NICU) | sí | 30–240 |
+
+**IncuNest es un 6.5** (estacionario, monitorización continua en NICU), y la 6.4 añade: *"These
+specifications could also apply for the SpO2 feature of a multiparameter device"* — exactamente el
+SpO2 dentro de una incubadora. Aplican las dos categorías más exigentes.
+
+**Requisitos 6.5 (Anexo 1, tabla A1.11):** SpO2 rango ⊇ 70–100 %, exactitud ±2 % ideal / ±3 % todas
+las condiciones; **PR rango 30–240 bpm, resolución ≤1 bpm, exactitud ±3 bpm; actualización del dato
+válido ≤10 s**; baja perfusión y corrección de artefactos de movimiento/luz *"as per ISO 80601-2-61,
+test method must be described"*; alarmas de SpO2 y PR alta/baja con umbral de usuario; sondas
+neonatales reutilizables.
+
+### Consecuencias — el cambio útil es solo el suelo
+
+- **Techo 260:** "to include 30–240" es cobertura mínima → 260 **cumple**. Bajarlo a 240 solo
+  ganaría margen para alargar la refractariedad de HR1 (límite vinculante 228 → 247 ms), que se
+  consigue igual con refractariedad adaptativa; y **enmascararía la TSV neonatal** (250–300 BPM)
+  mostrando "---" en pleno evento. **Mantener.**
+- **Suelo 40 → 30: necesario, y por razón clínica antes que de compra.** Hoy una bradicardia a
+  35 BPM se declara inválida — salta la alarma de señal, no la de bradicardia. Agujero de seguridad
+  independiente de la OMS.
+
+**Coste del suelo a 30, algoritmo por algoritmo (verificado en código):**
+
+- **HR2 — el problema real.** `setHR2Filter(f_low = 0.5)`: el paso banda está sintonizado para
+  40 BPM (0,67 Hz, margen 1,33×). **30 BPM = 0,5 Hz = el corner exacto, −3 dB** sobre la
+  fundamental; el guard band de 27 BPM (0,45 Hz) ya por debajo. Bajar `f_low` a ≈0,35 Hz, a costa
+  de más deriva en la ACF (que HR2 no puede excluir a posteriori). Lag máx 81 → 111 (cap 137, cabe);
+  ventana de 8 s = 4 ciclos.
+- **HR3 — se acerca a la deriva.** `search_min` al bin 5 (0,49 Hz); los bins 1–3 son deriva y la
+  fuga de Hann los alcanza. Sin paso alto, ese mecanismo se debilita. **Y el ±3 bpm de la OMS es
+  crítico aquí:** el bin son 5,86 BPM → error de cuantización solo ±2,9 BPM, justo en el límite
+  antes de sumar nada más; la interpolación parabólica lo mitiga, pero HR3 será el flojo a 30 BPM.
+- **HR1:** 5 intervalos = **10 s** de latencia a 30 BPM; un latido perdido envenena 10 s. DC
+  τ=1,6 s (fc≈0,1 Hz) → −0,2 dB a 0,5 Hz, OK.
+- **Solape respiratorio:** respiración neonatal 30–60 rpm = **0,5–1 Hz = 30–60 BPM**. La
+  modulación respiratoria del PPG cae en la misma banda que el pulso en toda la zona de
+  bradicardia. Argumento para un SQI más conservador < 40 y para validar con respiración simulada,
+  que el MS100 no hace.
+- **"≤10 s" — requisito nuevo en el radar.** Como cadencia, HR2/HR3 cumplen (0,5 s). Como tiempo
+  hasta dato válido, a 30 BPM estamos en el borde (HR1 10 s, HR3 10,24 s). Fijar la interpretación
+  antes de que la fije un evaluador.
+
+### Pendientes que deja
+
+1. Tarea: suelo a 30 BPM con validación (f_low HR2, deriva HR3, latencia HR1, test `test_hr2`
+   fijado a 40 en `1abf7ce`).
+2. Corregir `incunest_afe4490_spec.md:2680`: la fuente del rango 30–240 es OMS-UNICEF 2019 §6.5;
+   la ISO queda para exactitud y métodos de ensayo.
+3. Campaña MS100: añadir 30 y 35 BPM (hoy el mínimo capturado es 40).
+4. `CAPTURE_SET_SPEC.md` §2.6: el ±3 bpm ya tiene fuente citable.
+5. El PDF queda en `docs/` ignorado por git (doc de terceros, como la ISO) y registrado en
+   `docs/third_party_references.md`.
+
+### Apéndice — bucle del Stop hook y su arreglo
+
+Tras la consulta anterior, la sesión entró en un bucle de ~80 despertares vacíos. Causa, leída en
+`~/.claude/hooks/stop_check.sh`: su condición 2 ("commits de hoy con código pero ninguno toca
+`conversation_log.md`") se evalúa también sobre `lib/incunest_afe4490`, donde la otra sesión
+commiteó hoy `6eb7dfa` (`incunest_afe4490.h`). El log no tenía commit de hoy, así que el hook
+devolvía exit 2 en cada parada; el modelo no puede commitear sin orden; cada despertar producía una
+línea vacía y una nueva parada. **Detenerse era exactamente lo que lo disparaba.**
+
+**Arreglo en el hook (autorizado por Alex, "adelante"):** la condición 2 miraba solo el historial
+de git, así que un log ya escrito pero sin commitear contaba como no escrito. Ahora aplica la misma
+regla de ORDEN que la condición 1 ya usaba para código sin commitear: si el `conversation_log.md`
+del árbol de trabajo es más reciente que el commit de código más nuevo del día, la entrada existe y
+no se debe recordatorio. No es "un log sucio lo silencia" (rechazado en el propio script): un log
+modificado ANTES del commit de código sigue siendo más antiguo y sigue disparando. Verificado:
+`bash -n` OK y exit 0 contra el estado actual.
+
+Lección para el diseño de hooks bloqueantes: **nunca condicionar la salida a una acción que el
+modelo no puede realizar sin permiso** (aquí, un commit); si no, el bucle no tiene fin.

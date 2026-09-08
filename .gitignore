@@ -73,3 +73,6 @@ tia_linearity_sweep_*.png
 docs/masimo_whitepapers/
 docs/slaa655.pdf
 docs/ISO_80601-2-61-2026.pdf
+# WHO-UNICEF oxygen therapy device specifications (2019). CC BY-NC-SA, freely downloadable
+# from WHO IRIS — kept out of the repo because linking is enough (see third_party_references.md).
+docs/19061_WHO-UNICEF*.pdf
