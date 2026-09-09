@@ -20743,3 +20743,117 @@ Resultado, y contradice lo que dije:
 4. **El 0 en vivo es real.** Reproduciendo cada placa por separado los dos algoritmos coinciden (0 huecos, 0 rechazos; y 5 muestras / 1 evento con el datagrama quitado). Eso es lo que separa "enlace limpio" de "codigo nuevo que no mira": el enlace esta limpio de verdad en esos 20 s, con sonda ausente, front-end asentado y 2 clientes en el hotspot.
 
 Conclusion: la ceguera es un fallo peor que la falsa alarma para un banco de dispositivo medico (creerias que el transporte va bien mientras pierde datagramas), asi que el caso de F1 es mas fuerte que el argumento que yo habia dado, pero por otro motivo. Corregidas la spec (§4.8 con la tabla de los dos modos de fallo y el changelog v1.44) y la memoria. Alcance del 0: 20 s, sin cambios de ganancia, radio tranquila; la ventana de plausibilidad sigue ocultando un reinicio de contador y una perdida de mas de 10 s.
+
+## Sesion 2026-09-09 (tarde/noche) - F1+F2 commiteadas y F3 completa (script v1.46)
+
+Alex pide commit y luego F3.
+
+**Commit `fb9f1b7`** como linea base antes de F3: F1+F2, spec §4.8, log, BACKLOG y las tres herramientas nuevas. Ficheros explicitos; los cuatro documentos de terceros de `docs/` quedan fuera.
+
+**F3 en tres etapas, cada una verificada antes de la siguiente.**
+
+*Etapa 1, extraer `LabCaptureWriter`.* Clase de nivel de modulo con header, filas, notas y contadores; `format_row()` es la parte pura; `is_lab_capturing` pasa a propiedad de solo lectura sobre `_lab_capture`. Equivalencia demostrada, no supuesta: se copio el cuerpo de la implementacion anterior tal cual desde el commit `fb9f1b7` y se comparo con la nueva sobre 54 frames (40 `$M4` reales de la placa mas sinteticos `$M3`, `$M2`, `$M1`, no-datos, sin checksum, truncados y RF invalidos) por 2 juegos de columnas: identico.
+
+*Defecto encontrado por esa prueba y arreglado.* Una captura de N muestras escribia N+5: el auto-stop va diferido con `singleShot(0)` y el drain acaba de escribir los frames ya encolados. Medido 605 filas para objetivo 600, tres veces con la version de antes del refactor y tres con la de despues, luego era un defecto preexistente y no una regresion. `write_row()` es ahora autolimitada: la cuenta es exacta (600, 600 y 1000 verificados) y la captura continua con target 0 sigue sin limite. Ademas es lo que hace posible el caso multiplaca, donde N escritores no pueden depender del stop de un solo llamador.
+
+*Etapa 2, enrutado.* `UdpBoard.capture_q` acotada a 25 000 frames (50 s); el hilo lector mete cada frame de datos con la marca de llegada del datagrama y nunca bloquea, con el desbordamiento contado y visible. `_drain_multi_capture()` la vacia al principio de cada tick, antes de los algoritmos, de modo que todos los escritores corren en el hilo principal y ninguno necesita lock. Consecuencia buscada: la placa ACTIVE no es especial, una PRESENT se graba igual y un cambio de fuente a mitad de captura no la afecta.
+
+*Checksum, decision tomada.* Alex no contesto la pregunta al dar el adelante, asi que se aplica lo que Claude habia recomendado: validar. `frame_xor_ok()` de nivel de modulo valida cada frame de la ruta multiplaca, porque la validacion inline del drain solo cubre la cola de la activa. Frame con checksum ausente, mal formado o incorrecto: contado por placa y no escrito. En un CSV que alimenta el set de regresion, una fila ausente es mejor que una sin validar.
+
+*`HOST_T_US`* (D6) es la primera columna de todo CSV multiplaca: `perf_counter()` en microsegundos, monotono y de origen arbitrario, luego alinea placas dentro de una sesion y no significa nada entre sesiones. La resolucion es el datagrama, no la muestra: medido 180 marcas distintas en 900 filas, exactamente una por datagrama de cinco frames.
+
+*Modo de frame.* Las placas arrancan en `$M3` y solo a la activa se le pide `$M4`, asi que al arrancar la captura se envia el modo pedido a cada placa seleccionada con `send_cmd_to_ip()`. Sin eso, las 13 columnas analogicas de las placas nunca preguntadas se escribirian como -1: un CSV bien formado de datos ausentes.
+
+*Etapa 3, `MultiCaptureWindow`* y boton de barra lateral. Tabla de placas (casilla, placa, MAC, IP, estado con los colores del selector, filas escritas y descartes en rojo), muestras por placa con equivalente en segundos etiquetado como nominal, prefijo de fichero, notas pre y post que van a todos los CSV, START y STOP. Los nombres son prefijo, placa, cola de MAC y sello de tiempo, porque los CSV de una tirada solo sirven juntos y una captura cuya placa no se puede identificar es inutil. Cerrar la ventana para la captura en curso en vez de abandonar ficheros a medias. Tooltips en todos los controles y parent None como el resto de subventanas.
+
+**Verificacion.** `tools/udp_multiboard_test.py` pasa a 8 fases y 67 de 67: la fase 8 graba las dos placas simuladas a la vez y comprueba 1000 filas exactas por CSV, `HOST_T_US` presente y monotono con una marca por datagrama, `$MODE` recibido por las dos placas, notas en los dos ficheros, nombres con la cola de cada MAC, y que la placa que corrompe un frame de cada veinte deja huecos en su `FW_SmpCnt` mientras la otra no tiene ninguno. En vivo con la 16.A: 500 y 900 filas exactas, columnas analogicas pobladas, sin desbordamiento de cola, y el cierre durante una captura continua la para volcando las notas.
+
+**La 17.A volvio a caerse** a mitad de las pruebas, por lo que la captura multiplaca en vivo solo se pudo probar con una placa real; con dos, solo con simuladas. Diagnostico: COM23 seguia presente con su MAC, luego alimentada pero fuera de la red. El matiz es que el USB-Serial-JTAG enumera mientras haya alimentacion, incluso con el firmware caido, asi que COM23 no prueba que el firmware corra. Cayo una vez con 12 V y otra por USB, luego la alimentacion no es el discriminante. Lo que zanjaria la causa sale por UART0, que ahora no esta cableado. Propuesta anotada: un env con `-DARDUINO_USB_CDC_ON_BOOT=1` daria alimentacion y consola por el mismo cable, pero mueve `Serial` de UART0 al USB CDC y romperia la ruta serie actual, asi que tendria que ser un env aparte.
+
+F3 queda sin commitear: Alex pidio commit de F1+F2 y luego F3, no un segundo commit. Siguiente: F4a, extraer el formateador de frames al repo de la libreria.
+
+**Coletilla sobre el fichero de ajustes.** Al terminar F3 se detecto que el `.ini` habia crecido: los `closeEvent` de cada subventana construyen su propio `QSettings` y esquivan el `_save_settings` parcheado, de modo que la fase 8 del test dejo `prefix=TEST`, `samples=1000` y una geometria de `MultiCaptureWindow` en el fichero real. El "ini intacto" que se habia comprobado antes solo cubria el autosave de 10 s. Corregido: el test redirige ahora `P.SETTINGS_FILE` a un temporal antes de instanciar, lo que cubre `_save_settings`, `_restore_settings` y todos los `closeEvent`, y ademas hace el test determinista al arrancar sin geometria ni preferencia guardadas. Verificado: 67/67 con el `.ini` intacto en fecha y tamano. La seccion `[MultiCaptureWindow]` se dejo con los valores por defecto de la ventana (32500 muestras, prefijo MULTI). Balance de lo perdido hoy en el `.ini`, que no esta en git: geometria de la ventana principal, flags `*_open` de que subventanas se abren al arrancar, `combo_port` y los flags `serial_connected`/`udp_connected`. Sobrevivieron las geometrias de las subventanas que los tests nunca abrieron. Regla de memoria reforzada.
+
+## Sesion 2026-09-10 - Tarea apuntada: modem sleep del WiFi (WIFI_PS_NONE)
+
+Alex pide apuntar como tarea comprobar que el ESP32 configura `esp_wifi_set_ps(WIFI_PS_NONE)` para optimizar el rendimiento WiFi/UDP. Comprobado en el momento, con resultado accionable:
+
+- **PulseNest NO lo configura.** Ni `esp_wifi_set_ps` ni `WiFi.setSleep` aparecen en `src/`, en `include/` ni en la libreria `incunest_afe4490`. Corre con el defecto del nucleo Arduino en modo estacion: `WIFI_PS_MIN_MODEM`, es decir modem sleep entre beacons DTIM.
+- **motherBoard SI lo hace**, y por el motivo que nos toca: `Wifi_OTA.cpp:453`, `WiFi.setSleep(WIFI_PS_NONE)`, con el comentario "Mobile hotspots often drop power-saving clients. Disable modem sleep." La leccion estaba aprendida en el firmware hermano y PulseNest nunca la recibio.
+- Efecto esperado por rutas: la subida (ESP32 a PC, 100 datagramas/s) apenas deberia cambiar porque la radio ya esta ocupada transmitiendo; lo que deberia mejorar es la **bajada**, la recepcion de comandos en :5006, que con modem sleep solo se escucha alrededor de los beacons. Candidato a agravar el problema conocido de los `$SET` en rafaga, hoy atribuido al ciclo de 50 ms de `Cmd_Task` y a los 6 huecos de la cola UDP de lwIP.
+- Candidato **sin confirmar** a explicar las dos caidas de la 17.A del hotspot del 2026-09-09 (alimentada pero fuera de la red, una con 12 V y otra por USB). El comentario de motherBoard apunta justo a eso. Anotado como hipotesis a descartar o confirmar, no como causa.
+- Tarea completa en `BACKLOG.md` con el sitio de la llamada (`src/main.cpp` tras `WiFi.mode(WIFI_STA)`, linea ~1010) y como medir antes y despues: latencia de ida y vuelta de un `$CFG?`, supervivencia de `$SET` en rafaga y estabilidad de asociacion en sesion larga, con los contadores `# NET` por placa de la spec §4.8.
+
+Sin cambios de codigo: la tarea queda apuntada, no aplicada.
+
+## Sesion 2026-09-10 - WIFI_PS_NONE aplicado y medido: el argumento de velocidad no se sostiene
+
+Alex da el adelante para aplicar el cambio y medirlo con las dos placas. Aplicado `WiFi.setSleep(WIFI_PS_NONE)` en `src/main.cpp` tras `WiFi.mode(WIFI_STA)`, compilado y flasheado por OTA en la 16.A y en la 17.A (MAC verificada antes de cada envio; las dos corren ahora `fb9f1b7-dirty`). Herramienta nueva `tools/udp_cmd_latency.py`: mide la ida y vuelta de un `$CFG?`, es decir la ruta de BAJADA PC a ESP32, que es la que el stream no ejercita, con los sondeos espaciados 0,37 s para no caer siempre en la misma fase del ciclo de beacons.
+
+**Diseno del experimento.** Medida de referencia con las dos placas sin el cambio; despues se flasheo **solo la 16.A**, dejando la 17.A como control; y al final se resolvio una ambiguedad reflasheando la 17.A sin el cambio.
+
+| Placa y estado | p50 |
+|---|---|
+| 16.A sin el cambio | 19 ms |
+| 16.A con el cambio (tres tiradas) | 22, 17 y 16 ms |
+| 17.A sin el cambio, tras horas encendida y una reasociacion propia (tres tiradas) | 47, 46 y 44 ms |
+| 17.A recien reiniciada, CON el cambio | 15 ms |
+| 17.A recien reiniciada, SIN el cambio | 21 ms |
+
+**Conclusiones.**
+
+1. **`WIFI_PS_NONE` no mejora la latencia de comandos.** La 16.A no se movio de su banda de 16 a 22 ms. Coherente con lo que ya se anticipo al ver la referencia: una placa que transmite un datagrama cada 10 ms casi nunca duerme de verdad, y el suelo de latencia lo pone el ciclo de 50 ms de `Cmd_Task`. Los escalones de 100 ms que se predijeron por cuantizacion de beacons no aparecieron nunca.
+2. **La trampa, y el hallazgo que sale de ella.** La 17.A paso de 45 a 15 ms justo tras flashearla, lo que parecia la prueba del cambio. No lo era: flashear tambien reinicia y reasocia. Reflasheada **sin** el cambio siguio dando 21 ms, luego los 45 ms eran una **asociacion degradada**: esa placa llevaba horas encendida y se habia reasociado sola tras caerse del hotspot. **Una placa con muchas horas de asociacion arrastra ~2,5 veces la latencia de comandos, y reiniciarla lo cura.** Regla practica para el banco: si los comandos van lentos, reiniciar la placa antes de investigar. Sin el reflasheo de control se habria escrito una conclusion falsa, igual que con los huecos del detector.
+3. **El cambio se queda, pero por estabilidad de asociacion, no por velocidad.** Alinea PulseNest con motherBoard, cuyo comentario dice literalmente que los hotspots moviles expulsan a los clientes con ahorro de energia, y quita una variable de las caidas de la 17.A. No esta demostrado en ningun sentido: hace falta una sesion larga.
+4. La 17.A tiene ademas peor cola que la 16.A, con picos de 204 y 237 ms en varios estados. Enlace peor, independiente de este ajuste.
+
+El comentario en `src/main.cpp` se reescribio para llevar el resultado controlado y la advertencia sobre la trampa, no la prediccion inicial. Tarea movida a la seccion Done del `BACKLOG.md` con los numeros. Pendiente si interesa: repetir la medida con el stream parado, que es donde el modem sleep si deberia aparecer.
+
+Nota de red: las IPs cambiaron dos veces mas hoy (16.A .165, 17.A .102, y antes .46 y .102), cuarto juego del dia.
+
+## Sesion 2026-09-10 (cont.) - La medida con el stream parado: modem sleep cuesta 4,7x en reposo
+
+Alex da el adelante a la medida pendiente. El firmware no tiene comando para parar el flujo (los cuatro modos `$M1`-`$M4` emiten todos), asi que se anadio una compuerta de compilacion en el unico punto de encolado de datos, `udp_send()`: `#ifdef PULSENEST_NO_DATA_STREAM` devuelve sin encolar. Las respuestas a comandos no se ven afectadas porque salen por `udp_send_line()`/`g_resp_udp`, que es otra ruta, y eso es justo lo que permite medir la latencia con la radio en reposo. La compuerta queda en el fuente, inerte por defecto y marcada como solo banco.
+
+A/B en la misma placa (16.A) y la misma sesion, las dos veces recien flasheada y reasociada, con la 17.A emitiendo de fondo en los dos casos:
+
+| 16.A en reposo | min | p50 | p90 | max | media |
+|---|---|---|---|---|---|
+| modem sleep DESACTIVADO (`WIFI_PS_NONE`) | 5,7 | **55,3** | 59,5 | 62,6 | 37,6 ms |
+| modem sleep ACTIVO (defecto Arduino) | 9,4 | **259,3** | 270,3 | 272,9 | 233,3 ms |
+
+Con modem sleep activo la masa cae entre 200 y 280 ms, que es el ciclo DTIM del punto de acceso; sin el, nada pasa de 63 ms. **4,7x en la mediana, 6x en la media.**
+
+**Conclusion completa, corrigiendo la de esta manana.** No es que el argumento de rendimiento no se sostenga: es que **depende por completo de si la placa esta emitiendo**. Emitiendo 100 datagramas/s la llamada no cuesta nada medible (16.A: 19 ms sin ella, 16-22 ms con ella) porque la radio transmite cada 10 ms y casi nunca duerme de verdad, y el suelo lo pone el ciclo de 50 ms de `Cmd_Task`. Con la radio en reposo la penalizacion es de unos 200 ms por comando.
+
+**Consecuencia directa para F4b:** cualquier placa con el stream apagado paga esos ~250 ms, y ese es exactamente el caso de motherBoard cuando el stream PulseNest sea activable a demanda. motherBoard ya desactiva el modem sleep, asi que no hereda el problema; ahora se sabe por que esa linea importa y que se perderia al tocarla.
+
+El comentario de `src/main.cpp` se reescribio otra vez para llevar los dos regimenes, la advertencia metodologica de la asociacion degradada y la consecuencia para motherBoard. Entrada del `BACKLOG.md` reescrita (no ampliada, porque la conclusion cambio). Las dos placas quedan con el firmware normal, emitiendo a 100 datagramas/s, ambas con `build=fb9f1b7-dirty`.
+
+Balance del dia en cuanto a metodo: tres veces se estuvo a punto de escribir una conclusion falsa y las tres la salvo una medida de control. Los huecos fantasma del detector (era ceguera, no falsas alarmas), los 45 ms de la 17.A (era la asociacion, no el ajuste) y el "no sirve para nada" del modem sleep (solo cierto emitiendo).
+
+## Sesion 2026-09-10 - Revision visual de MULTI CAPTURE: tamanos de fuente
+
+Alex lanza el script y reporta que muchos textos de MULTI CAPTURE se ven muy pequenos, y pide igualarlos a los de las cabeceras de la tabla. Medido en vez de adivinado, instanciando la ventana offscreen y consultando `QFontMetrics(widget.font()).height()`: la cabecera renderiza a **17 px**, que es el defecto de la aplicacion (12 pt) porque el selector `QHeaderView::section` no llevaba `font-size`; el cuerpo que yo habia escrito estaba a **13, 14 y 15 px**. Es decir, lo pequeno no era la cabecera sino todo lo que yo habia puesto explicito.
+
+Corregido: la ventana declara `font-size: 17px` en su propia hoja de estilo y todo lo hereda; tabla, cabecera, spin de muestras, campo de prefijo, cajas de notas, etiquetas y linea de estado quedan las diez a 17 px verificados. El boton START se queda en 20 px porque viene de `ACTION_BUTTON_STYLE`, el estilo compartido de los botones de la aplicacion. Al crecer la fuente hubo que subir el alto de las cajas de notas de 70 a 92 px y el ancho del prefijo de 220 a 260.
+
+**Y el arreglo fue AL REVES de lo pedido.** Alex, tras verlo: "siguen siendo muy pequenos y los headers han encogido". Causa del error: **las metricas de fuente medidas con `QT_QPA_PLATFORM=offscreen` no valen** — no hay motor de fuentes real, la familia sale como sustituto y `QFontMetrics` no corresponde a nada de lo que se ve. Con esos numeros falsos sustitui el tamano de las cabeceras, que estaba en el defecto de la aplicacion (12 **pt**, escala con el DPI), por 17 **px** fijos; en un monitor escalado 17 px fijos son mas pequenos que 12 pt, luego el cuerpo siguio pequeno y las cabeceras encogieron.
+
+**Correccion definitiva:** quitar TODOS los `font-size` de la ventana y dejar que todo herede el defecto de la aplicacion, que es exactamente lo que tenian las cabeceras. Los altos y anchos que dependian de la fuente pasan a derivarse de `fontMetrics()` (`lineSpacing()` para las cajas de notas, `horizontalAdvance()` para el prefijo) en vez de constantes en px. El combo SOURCE de la barra lateral sube de 15 a 18 px para igualar a su vecino `combo_port`, porque la barra lateral si usa px de forma consistente y es la excepcion documentada.
+
+Convencion reescrita en la spec §10 y en la memoria (`feedback_font_sizes`): no fijar `font-size` en px para texto de cuerpo, heredar el defecto, derivar tamanos de `fontMetrics()`, y **la apariencia se verifica en pantalla preguntando a Alex, nunca offscreen**. Offscreen sirve para logica, ficheros y protocolo, no para aspecto. Cuarto error de metodo del dia, y el unico que no salvo una medida de control sino el usuario.
+
+## Sesion 2026-09-10 - Los cierres espontaneos del script: evidencia capturada
+
+Alex, al pedir que se relanzara el script: "de vez en cuando se apaga espontaneamente". Revisado `faulthandler.log`, que se anadio en julio precisamente para esto, y **ha funcionado**: contiene **24 excepciones fatales**, todas `Windows fatal exception: access violation`, es decir segfault nativo que mata el proceso al instante sin traza Python y, con `pythonw`, en silencio total.
+
+Clasificadas por la pila del hilo que casca: **14 en `pyqtgraph/graphicsItems/AxisItem.py:681 in paint`**, 1 en `GraphicsView.py:137 in paintEvent`, y 9 sin pila por escritura truncada. Los marcos `_udp_reader` que aparecen son el otro hilo, contexto, no el que casca.
+
+**No es de SIGNALS2 y no es nuevo.** La linea del marco `<module>` es `app.exec_()`, que crece con el fichero, y va de 12884 a 15793 entre los distintos bloques: los cierres llevan ocurriendo a lo largo de muchas versiones del script, incluida la actual. La tarea deberia renombrarse: es el crash de pintado de pyqtgraph, no el de SIGNALS2.
+
+**Pista fuerte.** `AxisItem.py:681` es `self.picture.play(p)`, reproducir un `QPicture` cacheado, y justo encima el propio codigo de pyqtgraph 0.13.7 lleva el comentario de sus autores `## Sometimes we get a segfault here ???`. El script arranca con `pg.setConfigOptions(antialias=True, useOpenGL=True)`, justo las dos opciones implicadas; `useOpenGL` esta documentado por pyqtgraph como experimental y fuente de crashes.
+
+Experimento propuesto y no ejecutado, porque cambia el rendimiento de todas las graficas y lo decide Alex: `useOpenGL=False` y una sesion larga de uso. Si los cierres desaparecen, causa localizada; el coste posible es rasterizacion mas lenta, medible con PYTHON TIMING. Segundo candidato: `Inf`/`NaN` llegando a un eje, que conecta con la tarea de las guardas de division (OT_LED1/2).
+
+Anotado en la memoria de la tarea. Sin cambios de codigo.

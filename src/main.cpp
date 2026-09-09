@@ -119,6 +119,14 @@ static QueueHandle_t g_udp_data_queue = nullptr;
 // Returns immediately — sendto() happens in UDP_Task, not here.
 // Drops silently if queue full (USB-CDC is the fallback).
 static inline void udp_send(const char* buf) {
+#ifdef PULSENEST_NO_DATA_STREAM
+    // Bench experiment only (build with -DPULSENEST_NO_DATA_STREAM): suppress the data stream
+    // so the station's radio is genuinely idle. Command replies are unaffected - they go out
+    // through udp_send_line()/g_resp_udp, not through this queue - which is what makes it
+    // possible to measure command latency on an idle station. Never ship this flag.
+    (void)buf;
+    return;
+#endif
     if (!g_wifi_ready || g_udp_sock < 0 || g_udp_data_queue == nullptr) return;
     char frame[UDP_QUEUE_FRAME_SIZE];
     strlcpy(frame, buf, sizeof(frame));
@@ -1008,6 +1016,35 @@ void setup() {
 
     // WiFi + UDP init (STA mode — tries each network in WIFI_NETWORKS[] order, always from index 0)
     WiFi.mode(WIFI_STA);
+    // Disable WiFi modem sleep. The Arduino core defaults a station to WIFI_PS_MIN_MODEM, which
+    // lets the radio sleep between the access point's DTIM beacons. Whether that costs anything
+    // depends entirely on whether the board is streaming, and both regimes were measured on
+    // 2026-09-10 with tools/udp_cmd_latency.py ($CFG? round trip, i.e. the downlink path):
+    //
+    //   Streaming 100 datagrams/s (normal operation): modem sleep costs nothing measurable.
+    //     16.A p50 19 ms without this call, 16-22 ms with it. A board transmitting every 10 ms
+    //     is almost never actually asleep, and the floor is Cmd_Task's 50 ms poll.
+    //
+    //   Idle radio (built with -DPULSENEST_NO_DATA_STREAM, same board, same session):
+    //     modem sleep ON  -> p50 259 ms, mean 233, mass at 200-280 ms (the AP's DTIM cycle)
+    //     modem sleep OFF -> p50  55 ms, mean  38, nothing above 63 ms
+    //     A 4.7x median penalty. THIS is what the call buys, and it matters for any board
+    //     whose stream is off - which is exactly motherBoard's case once the PulseNest stream
+    //     becomes activable on demand (it already disables modem sleep, Wifi_OTA.cpp).
+    //
+    //   Methodological warning. 17.A first measured 44-47 ms across three streaming runs and
+    //   dropped to 15 ms right after being flashed with this call. That looked like proof and
+    //   was not: flashing also reboots and re-associates. Reflashed WITHOUT the call it still
+    //   measured 21 ms, so the 45 ms had been a degraded association - that board had been up
+    //   for hours and had re-associated by itself after dropping off the hotspot. A long-lived
+    //   station can carry ~2.5x the command latency, and a reboot cures it.
+    //
+    // Second reason, not proven: motherBoard's comment says mobile hotspots drop power-saving
+    // clients, and 17.A dropped off the Windows hotspot twice on 2026-09-09 while still
+    // powered. This removes that variable; judging it needs a long session.
+    // Set after mode() so it applies to every WiFi.begin() attempt in the retry loop below.
+    // WiFi.setSleep(wifi_ps_type_t) resolves to the enum overload, i.e. esp_wifi_set_ps().
+    WiFi.setSleep(WIFI_PS_NONE);
     {
         for (int i = 0; i < WIFI_NETWORK_COUNT && !g_wifi_ready; i++) {
             Serial.printf("# WiFi trying [%d/%d] %s", i + 1, WIFI_NETWORK_COUNT,

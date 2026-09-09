@@ -64,7 +64,16 @@ has not been triaged yet.
 - Creo que pequeños movimientos de la sonda bajan el SQI de HR3 de forma innecesaria (pero no estoy seguro)
 
 
+
 ## Done / promoted
+
+- [x] **`esp_wifi_set_ps(WIFI_PS_NONE)`** → APLICADO y MEDIDO 2026-09-10. PulseNest no lo configuraba (defecto Arduino `WIFI_PS_MIN_MODEM`); motherBoard sí, con el comentario *"Mobile hotspots often drop power-saving clients"*. Añadido `WiFi.setSleep(WIFI_PS_NONE)` en `src/main.cpp` tras `WiFi.mode(WIFI_STA)`, flasheado en 16.A y 17.A. **El efecto depende por completo de si la placa está emitiendo**, y se midieron los dos regímenes con `tools/udp_cmd_latency.py` (ida y vuelta de `$CFG?`, ruta de bajada):
+	- **Emitiendo 100 datagramas/s, operación normal: no cuesta nada medible.** 16.A p50 19 ms sin el cambio, 16-22 ms con él. Una placa que transmite cada 10 ms casi nunca duerme de verdad y el suelo lo pone el ciclo de 50 ms de `Cmd_Task`.
+	- **Radio en reposo** (build con `-DPULSENEST_NO_DATA_STREAM`, misma placa y sesión): modem sleep activo p50 **259 ms**, media 233, con la masa entre 200 y 280 ms, que es el ciclo DTIM del punto de acceso; desactivado p50 **55 ms**, media 38, nada por encima de 63 ms. **Penalización de 4,7× en la mediana.** Eso es lo que compra la llamada.
+	- **Consecuencia para F4b:** cualquier placa con el stream apagado paga esos ~250 ms por comando, que es justo el caso de motherBoard cuando el stream PulseNest sea activable a demanda. motherBoard ya lo desactiva; ahora sabemos por qué importa.
+	- **Advertencia metodológica:** la 17.A medía 44-47 ms en tres tiradas emitiendo y bajó a 15 ms justo tras flashearla con el cambio. Parecía la prueba y no lo era: flashear también reinicia y reasocia. Reflasheada **sin** el cambio siguió dando 21 ms, luego los 45 ms eran una **asociación degradada** (llevaba horas encendida y se había reasociado sola tras caerse del hotspot). **Una placa con muchas horas de asociación arrastra ~2,5× de latencia de comandos; reiniciarla lo cura.**
+	- Segunda razón, no demostrada: estabilidad de asociación. Quita una variable de las caídas de la 17.A del 2026-09-09; juzgarlo pide una sesión larga.
+	- Queda en el fuente la compuerta `#ifdef PULSENEST_NO_DATA_STREAM` (inerte por defecto, solo banco) que hizo posible medir el caso en reposo.
 
 - [x] EMA de RSQM como código muerto tras SIGNAL_WEAK → RESUELTO v0.57 (eliminados EMA + `ready` + τ; ver conversation_log 2026-08-07)
 - [x] `tia_settle_min` depende de PRF (y otras también) → PROMOVIDO a tarea de análisis 2026-08-22.
