@@ -58,9 +58,10 @@ has not been triaged yet.
 	2. Del conjunto de todos los algoritmos HR1,HR2,HR3 (sobre todo si coinciden entre ellos)
 	3. Una tarea inicial es hacer una lista de los parámetros candidatos a ser adaptativos
 	4. Claude comenta que en tecnología médica hay algún principio de independencia entre medidas, pero no sé si aplica en este caso porque siempre estamos hablando de HR
-- Utilizar las señales ALED (por ejemplo su varianza) como de detector de MAs (movement artifacts) para un tratamiento similar al de sensores inerciales/acelerometros que se utiliza en el tratamiento de medidas PPG en wearables
+- Utilizar las señales ambientales ALED (por ejemplo su varianza) como de detector de MAs (movement artifacts) para un tratamiento similar al de sensores inerciales/acelerometros que se utiliza en el tratamiento de medidas PPG en wearables
 - Creo que habría que subir rsqm_ot_thr (OT threshold para detectar PROBE_APPLIED) porque los dedos pueden llegar a ser muy finos. El inconveniente no sería con sondas tipo brida o pinza, sino con sondas abiertas donde el led y el fotodiodo no quedan enfrentados al quitar el dedo (por ejemplo las desechables)
 - Creo que _diag_task_body() también debería incluir PROBE_AMB_SATURATING (quizás todavía se llame PROBE_SATURATING) o mejor aún que sea distinta a PROBE_APPLIED.
+- Creo que pequeños movimientos de la sonda bajan el SQI de HR3 de forma innecesaria (pero no estoy seguro)
 
 
 ## Done / promoted

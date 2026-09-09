@@ -20617,3 +20617,129 @@ Flash: `curl -u incunest:changeme -F update=@.pio/build/incunest_V17/firmware.bi
 Vuelta atras (PulseNest no pide auth): `curl -F update=@C:/PRJ/MOW/IncuNest/Firmware/motherBoard/.pio/build/IncuNest_V17/firmware.bin http://192.168.137.253/update`, verificando antes la MAC por ARP.
 
 Aviso: con dos placas emitiendo frames PulseNest al hotspot, el script recibe datos mezclados (precedente 2026-06-11). Durante el experimento, apagar o desconectar la 16.A, o decidir que placa escucha el script.
+
+## Sesion 2026-09-08 (noche) - Plan: recepcion UDP de varias placas en pulsenest_lab.py
+
+Alex propone cuatro fases: (1) metodo de seleccion, (2) selector de placa en la ventana principal, (3) ventana de captura de varias placas a la vez, (4) que el firmware IncuNest emita opcionalmente frames PulseNest activandolo desde su pagina web. Claude revisa el codigo y propone un plan. Sin cambios de codigo en esta sesion.
+
+Hallazgos sobre el estado actual:
+- `_udp_reader` abre UN socket en :5005 y vuelca todo en `_udp_queue`. Si cambia la IP de origen solo lo loguea y sobreescribe `_esp32_ip`: con dos placas los frames se entremezclan, el detector de huecos se dispara y los comandos van a la ultima placa que hablo (precedente 2026-06-11; hoy mismo 16.A y 17.A emiten PulseNest).
+- La identidad estable ya existe: la respuesta `$CFG` lleva `mac=` y `board=`. El banner de arranque solo lleva `Board: V16`, sin MAC.
+- El puerto destino y la IP del PC estan compilados en `wifi_config.h` e iguales en todas las placas. Seleccionar por puerto exigiria configurar cada placa; la IP de origen viene gratis en cada datagrama.
+- Todo `PPGMonitor` es estado de UNA placa (67 deques, replicas de algoritmos, subventanas con mas de 30 referencias a `main_monitor`). La captura de laboratorio escribe los campos del hilo tal cual, sin algoritmos: grabar varias placas no necesita varias tuberias.
+- motherBoard: `SPO2_Task` ya hace `afe.getData` cada 1 ms con hooks por muestra (`drivePushSample`, `ppgSnapshotFeed`). WebServer en :80 con `/config` GET/POST, `/get_config` JSON, NVS (`NS_CFG`) y HTTP Basic. El formateador de `$M1..$M4` + checksum vive solo en `main.cpp` de PulseNest.
+
+Decisiones propuestas por Claude, pendientes de Alex:
+- D1. Demultiplexar por IP de origen; identidad estable por MAC pidiendo `$CFG?` a cada IP nueva. Opcional: latido `# ID,mac=..,board=..,fw=..` a 1 Hz en el firmware.
+- D2. Modelo "una placa activa alimenta la tuberia existente; las demas solo se enrutan a captura y a una tabla de presencia". No N tuberias completas.
+- D3. El selector unifica la fuente de datos: SERIAL (COMx) + cada placa UDP descubierta, sustituyendo a `_active_transport`.
+- D4. Si la placa activa deja de emitir, marcar LOST; nunca cambiar de placa automaticamente.
+- D5. Extraer `_write_lab_capture_row` + estado de captura a una clase `LabCaptureWriter`; la captura actual pasa a ser una instancia, la multi-captura N instancias.
+- D6. Columna opcional `HOST_T_US` (tiempo de llegada del datagrama en el PC) para alinear placas; resolucion ~10 ms por el batching de 5 frames.
+- D7. Formateador de frames compartido en el repo de la libreria (`incunest_afe4490_frames.*`), consumido por PulseNest y por motherBoard.
+- D8. motherBoard: solo emision + respuesta a `$CFG?`; no acepta `$SET`/`$MODE` salvo flag explicito de laboratorio (dispositivo clinico).
+- D9. Medir el coste en motherBoard (PID, alarmas, MQTT) antes de dejar el stream activable en produccion.
+
+Plan de fases propuesto: F1 demux + registro de placas en el hilo lector (cambio invisible), probado con 16.A y 17.A emitiendo a la vez; F2 selector en la barra lateral; F3 `LabCaptureWriter` + ventana MULTI CAPTURE; F4a extraer el formateador y que PulseNest lo use primero; F4b motherBoard: tarea de stream, NVS, pagina web, `$CFG?`, medida de timing.
+
+Alex aprueba las nueve decisiones y el orden de fases. No se empieza hasta que termine el trabajo sobre algoritmos HR que lleva en otra sesion. Preguntas de Alex: (1) como saben las placas la IP del PC: tabla compilada en wifi_config.h por SSID; en el hotspot Windows el PC es siempre 192.168.137.1, en los routers hay que reservar la IP del portatil; cambiar de PC o de red obliga a recompilar y reflashear todas las placas. Candidata D10 para mas adelante: descubrimiento por broadcast `$HELLO` en :5006. (2) y (3) capacidad y limite: UDP no tiene conexiones, un socket recibe de cualquier numero de emisores; la carga por placa es ~100 datagramas/s y ~1 Mbit/s. Limites en orden: hotspot Windows 8 clientes (duro), aire 2,4 GHz del orden de 10 placas, hilo principal del script 5-8 placas capturadas a la vez salvo mover checksum y escritura fuera del hilo de Qt. Disco y NIC no limitan.
+
+Segunda ronda de preguntas de Alex: (1) la pantalla Display_HMI consume plaza en el hotspot porque se conecta por WiFi STA para ThingsBoard MQTT, OTA via ThingsBoard, servidor web :80 y mDNS (el 2026-09-08 estaba en .167); cada IncuNest completa son dos clientes. (2) El ESP32-S3 como estacion usa el canal del punto de acceso; el limite no es del ESP32 sino del medio compartido: todas las estaciones del AP y las redes vecinas en canales solapados comparten el tiempo de aire de UN canal de 2,4 GHz (solo 3 canales sin solape: 1, 6 y 11). (3) Las cuentas: 500 x 260 x 8 = 1,04 Mbit/s; el "~1 Mbit/s" era un redondeo a la baja; contando el format string el $M4 mide hoy ~280 bytes -> ~1,1 Mbit/s utiles y ~1,2 Mbit/s en el aire por placa. (4) Se empaquetan 5 frames porque 5 x 288 = 1440 <= 1472 (MTU 1500 - 20 IP - 8 UDP); 6 fragmentarian. El batching no es por caudal sino por tasa de paquetes: 500 pkt/s desbordaban el TX de lwIP (2026-06-10) y cada paquete cuesta ~150-180 us de aire fijos; con lotes de 5 una placa ocupa ~3-6 % del aire en vez de ~10 %.
+
+Hallazgo lateral: el $M4 real esta a ~5 bytes del hueco de 288 de la cola UDP y puede superarlo en el peor caso; strlcpy trunca en silencio y el frame truncado se pega al siguiente -> BAD CHK doble. Ademas UDP_Task descarta el frame que no cabe en el batch en vez de arrastrarlo. Anotado como tarea pendiente (project_m4_frame_slot_truncation_task): medir longitud maxima real y subir el hueco a 320 con empaquetado por bytes.
+
+Tercera ronda de preguntas de Alex: (1) el static_assert del MTU es de compilacion: si falla no hay binario; nunca ha saltado (5x256 desde 2026-06-10, 5x288 desde 2026-07-10, ambos <= 1472); no protege el hueco por frame. (2) Correccion de Claude: el hotspot admite 8 clientes y el portatil no cuenta porque es el punto de acceso; 4 unidades completas, u 8 placas sin pantalla, o 7 si queda una pantalla conectada como hoy. (3) Observabilidad actual: GAP B/UDP en el log principal y acumulado en PYTHON TIMING ("Ingestion"); BAD CHK y los "# ERR UDP sendto failed" del firmware solo en UDP COM; Punto A mide solo la cola serie; no se cuentan datagramas/s, frames por datagrama, longitud maxima ni descartes de la cola UDP del ESP32; el GAP B no ve los frames rechazados por checksum porque el contador se lee antes de validar. Firma util: huecos multiplos de 5 = datagrama perdido en el aire; 1-4 = descarte en la cola del ESP32. La fase 1 debe incluir contadores de red por placa. (4) Aclaracion caudal frente a tiempo de aire: 1,17 Mbit/s es una media de produccion; la radio emite a rafagas de 26-72 Mbit/s, asi que esos bits ocupan 16-45 ms por segundo, mas ~17 ms de sobrecarga fija de 100 paquetes = 3-6 % del aire.
+
+Cuarta ronda: (1) el tiempo emitiendo datos sale de dividir los 1,17 Mbit por segundo de una placa entre la velocidad fisica de la radio: 72 Mbit/s (MCS7, 20 MHz, la maxima del ESP32-S3 en un canal de 20 MHz) da 16 ms; 26 Mbit/s (MCS3, enlace mediocre) da 45 ms. (2) Fuente del limite de 8 clientes: verificado en el propio portatil via la API WinRT NetworkOperatorTetheringManager (MaxClientCount=8, hotspot in3wifi encendido en 2,4 GHz, 2 clientes conectados en ese momento) y documentacion de Microsoft (soporte y Q&A: 8 por diseno, no configurable).
+
+Quinta ronda: el limite de 8 es de Windows, no del hardware. Lo impone el componente Mobile Hotspot (MaxClientCount lo devuelve el gestor de tethering del SO, es 8 en cualquier PC con Windows 10/11 y Microsoft lo llama "por diseno"). El adaptador del portatil es un Intel Wi-Fi 6E AX211; en este mismo equipo la red hospedada antigua de Windows declara un maximo de 100 clientes (aunque el driver ya no la soporta), y software de terceros con el mismo adaptador supera los 8. Para mas de 8 placas: router de laboratorio, con el limite del aire (~10 placas) aun vigente.
+
+## Sesion 2026-09-09 (manana) - Estado de firmware de las placas; 16.A reflasheada
+
+Contexto: la sesion anterior de Alex se cerro bruscamente. Plan de esta sesion: seguir con HR1/HR2 en HR1LAB y arrancar la recepcion UDP multiplaca (plan de anoche: sin fichero de spec propio; vive en la entrada del log del 2026-09-08 noche y en la memoria `project_multiboard_udp_task`; `pulsenest_lab_spec.md` aun sin seccion).
+
+Comprobacion de versiones por red (utilidad Python en el scratchpad: bind :5005, `$CFG?` a :5006 de cada emisor, parseo de `fw=,lib=,build=,libsha=,mac=,board=`). La pagina OTA no muestra version y el banner serie solo se ve por USB; el `$CFG` es la unica fuente fiable.
+
+| Placa | IP hoy | fw | build | lib | libsha | Lectura |
+|---|---|---|---|---|---|---|
+| 16.A V16 (antes) | .142 | 0.9 | `8e595bc-dirty` (07-09 03:10) | 0.88 (macro desfasada) | `1def14d-dirty` (= v0.89 + sin commit) | NO llevaba la v0.90; el OTA del 08 no llego (precedente del POST vacio por ARP caducado) |
+| 17.A V17 | .16 | 0.9 | `a548823-dirty` (= HEAD `dd944bb`, el chore solo commiteo tools/log/backlog) | 0.90 | `6eb7dfa` | Al dia |
+| 16.A V16 (despues) | .142 | 0.9 | `dd944bb-dirty` (sucio solo por log/backlog) | 0.90 | `6eb7dfa` | Reflasheada ~10:30, HTTP 200, 831 482 B en 9,2 s; verificado por `$CFG?` tras el rearranque |
+
+Tercer ESP32 en el hotspot (.82, MAC 10:51:DB:50:7F:AC): Alex lo identifica como la **15.A IN3ATOR** (primera tarjeta, feb-mar 2026, posiblemente rota). Asociada al hotspot pero sin HTTP :80 ni frames. Alex la apaga. Inventario completo anotado en la memoria de hardware (15.A, 16.A, 17.A, pantalla).
+
+Pregunta de Alex: ¿V16 y V17 tienen builds distintos? Si, pero en PulseNest los dos envs son identicos salvo `-DBOARD_VERSION` (ambos `AFE4490_DRDY_PIN=17`; solo la V15 usa el 45). La regla "cada placa con su env" se mantiene por la procedencia del `$CFG` (`board=`), no por los pines. La explicacion del incidente 2026-06-12 ("pin mapping incorrecto para V17") no se sostiene; causa real sin determinar. Memorias corregidas.
+
+Ambas placas emiten ~100 datagramas/s y ~0,56 Mbit/s cada una en `$M3` (arranque). Pendiente decidir si promover la utilidad a `tools/`.
+
+## Sesion 2026-09-09 (manana, cont.) - Hilo B, F1: recepcion UDP multiplaca en pulsenest_lab.py
+
+Decisiones de Alex: (1) empezar por el hilo B, fase F1; (2) la especificacion de la funcionalidad vive como seccion nueva de `pulsenest_lab_spec.md` (no fichero propio); (3) la utilidad de consulta de versiones queda pendiente de aclaracion (F1 registra las placas por MAC).
+
+Implementado (script v1.44, spec §4.8 nueva, §4.1/§4.7/§7.5 y changelog):
+- Clase `UdpBoard` + registro `PPGMonitor._udp_boards` (ip → placa) bajo `_udp_boards_lock`; `udp_boards_snapshot()` para el hilo principal.
+- `_udp_reader` demultiplexa por IP de origen. La primera placa que habla es la activa (`_esp32_ip`) y solo sus lineas entran en `_udp_queue`. Las demas se registran, se les pide `$CFG?` desde el propio hilo lector (socket dedicado, reintentos a 3 s, maximo 3), se parsea su identidad (mac/board/fw/lib/build/libsha) en el lector y se descartan (contador `dropped`). Su `$CFG` nunca llega a `_on_cfg_frame_received`: HW CONFIG, LIB CONFIG, combos RF y notas de LabCapture no pueden contaminarse con otra placa.
+- Nunca se cambia de placa automaticamente: 2 s sin datos → LOST (log), el vinculo se mantiene. Seguimiento por MAC: si una placa "nueva" trae la MAC de la activa (reinicio con otra IP DHCP) el vinculo migra a la IP nueva; se pierden solo los ≤3 datagramas anteriores a su `$CFG`.
+- Deteccion de huecos por placa (cada una su `last_cnt`): con dos placas ya no hay huecos fantasma. Clasificacion: multiplo de 5 = datagrama perdido en el aire; resto = descarte en la cola UDP del ESP32. `_gaps_B` (PYTHON TIMING) solo cuenta la activa.
+- Contadores por placa: datagramas, bytes, frames, otras lineas, lotes parciales, longitud maxima de frame, gaps aire/cola, bad_chk (activa, desde el drain), descartadas, peticiones `$CFG?`. Linea `# NET` cada 10 s por placa en UDP COM (generada por el host, via `_sig_udpcom_line`, no pasa por la cola).
+- Identidad de la activa: `_on_udp_active` programa `request_chip_config(notify_lab_capture=False)` a 300 ms, por el camino normal.
+- Constantes nuevas: `UDP_BATCH_SIZE=5`, `UDP_LOST_TIMEOUT_S=2`, `UDP_NET_SUMMARY_S=10`, `UDP_CFG_RETRY_S=3`, `UDP_CFG_MAX_REQUESTS=3`.
+
+Verificacion:
+- Live con la 16.A (la 17.A estaba apagada/offline: sin ping ni HTTP): 100,5 datagramas/s, 4,99 frames/datagrama, 1068 kbit/s en `$M4`, frame maximo 265 B, 0 huecos, 0 bad_chk, 12 505 frames en 25 s, nada descartado, un solo `$CFG` en el hilo principal.
+- `tools/udp_multiboard_test.py` (nuevo, placas simuladas en 127.0.0.1/.2/.3 con plantilla `$M4` real, puertos 15005/15006): 21 checks OK — A activa, B presente e identificada por consulta `$CFG?`, B descartada al 100 %, sin huecos cruzados, A LOST sin cambio, A vuelve desde otra IP con la misma MAC y el vinculo la sigue.
+- Pendiente: repetir la prueba live con 16.A y 17.A emitiendo a la vez (la linea `# NET` debe mostrar ACTIVE y PRESENT).
+
+Hallazgos laterales: (a) el manejador de crashes abria `crash.log` con cp1252 y fallaba con la flecha "→" de los mensajes de log, perdiendo la traza: ahora UTF-8. (b) El frame `$M4` mide 265 B en esta condicion frente al hueco de 288 del firmware; `maxlen` en `# NET` permite medir el peor caso real (anotado en la tarea de truncado del slot). (c) Lecciones del arnes offscreen: `os._exit()` no vacia stdout cuando va a una tuberia (flush antes); el excepthook del script silencia las excepciones en consola (mirar `crash.log`).
+
+Siguiente: F2 (selector de fuente en la barra lateral, LOST visible) o el experimento offline de HR1 (DC rapido + blanking por ALED), a eleccion de Alex.
+
+## Sesion 2026-09-09 (manana, cont.) - Decision 3 y regla de terminologia
+
+Alex aprueba promover la utilidad de consulta de versiones al repo y fija una regla: **no usar la palabra "sonda"** (ni "probe" en codigo) para nada que no sea el sensor PPG, porque es un termino fundamental de las mediciones PPG con otro significado (`probe_state`, sonda aplicada/ausente). Aplicado: la utilidad se llama `tools/udp_fw_versions.py` (no `probe_...`); en `_udp_reader` el socket de identidad pasa de `probe` a `id_query`; spec §4.8, test y log reescritos con "query"/"consulta"/"utilidad". Regla guardada en memoria (`feedback_no_sonda_probe_term`). La spec §4.8 menciona la utilidad ("Bench utility").
+
+Cierre del renombrado: el primer `sed` dejo `probe.sendto(...)` sin renombrar en `_udp_reader` (la variable ya era `id_query`), lo que habria dado `NameError` al aparecer una segunda placa; corregido y verificado con `tools/udp_multiboard_test.py` (21/21). `tools/udp_fw_versions.py` probada contra el banco: 16.A lib 0.90 build `dd944bb-dirty`; 17.A sigue sin responder.
+
+## Sesion 2026-09-09 (tarde) - Hilo B, F2: selector de fuente de datos (script v1.45)
+
+Alex: adelante con F2; le preocupa que la 17.A "siga sin responder". Aclaracion: Claude no toco la 17.A en toda la sesion (el unico OTA fue a la 16.A, MAC verificada). A primera hora emitia y respondia `$CFG?`; dejo de emitir antes de la prueba de F1 y desde entonces no responde a ping ni a HTTP. Las entradas ARP del hotspot son permanentes y no indican presencia. Conclusion: apagada o fuera del WiFi; revisar alimentacion/LED.
+
+Implementado (spec §4.8 "F2 — Source selector", §4.1 tabla de estados del boton, §6.1, changelog v1.45):
+- Combo SOURCE bajo el boton UDP con `SERIAL COMx` y una entrada por placa registrada (`<board> <MAC-tail> <IP-tail> · ACTIVE/PRESENT/LOST`, colores azul/gris/rojo), reconstruido a 1 Hz desde el registro de F1 solo cuando cambia su contenido.
+- Elegir una placa (`_select_udp_source`) mueve el vinculo activo bajo el lock, descarta las lineas de la placa anterior aun en cola, refresca HW CONFIG con `$CFG?` a 300 ms y pinta el boton ON (o LOST si la placa elegida esta muda; se puede elegir una placa LOST y esperar). Elegir SERIAL (`_select_serial_source`) alimenta la tuberia desde el COM y deja el boton UDP en LISTEN; las lineas de la placa activa siguen llegando a UDP COM, como antes de v1.44. Los buffers de algoritmos no se resetean al cambiar (misma discontinuidad que una reconexion).
+- La eleccion se recuerda por MAC (`PPGMonitor/udp_preferred_mac`). Al arrancar, la primera placa que habla sigue siendo la activa provisional; cuando la preferida se identifica y el usuario no ha elegido nada a mano en la sesion, `_udp_auto_promote()` la promueve (mismo metodo que el seguimiento por DHCP de v1.44). Una placa LOST nunca se sustituye por otra distinta.
+- El boton UDP gana el estado LOST en rojo, reflejo de la placa activa; `_set_udp_button()` pinta OFF/LISTEN/ON/LOST y sustituye los tres bloques de estilo repetidos.
+- Test `tools/udp_multiboard_test.py` ampliado a 7 fases, 39 checks OK: elegir B (B activa, A' descartada, preferencia guardada, `$CFG` de B en la tuberia), elegir SERIAL (transporte serie, boton LISTEN, B sigue en UDP COM), placa activa muda (boton LOST, nadie la sustituye), conexion nueva con B preferida (A' habla primero, B promovida al identificarse, el combo la sigue).
+
+Incidente y leccion: `PPGMonitor.__init__` arranca `_autosave_settings_timer` (10 s) que escribe `pulsenest_lab.ini`. Los tests offscreen de hoy (F1 y F2, 25-40 s cada uno) lo dispararon: la geometria de la ventana principal, el splitter y los flags de subventanas abiertas quedaron sobrescritos por la instancia offscreen, y la MAC de la placa simulada B quedo como preferida (16 checks fallaron en la siguiente ejecucion hasta entenderlo). El `.ini` no esta en git: la geometria previa no se puede recuperar; el script abrira con el tamano por defecto una vez y volvera a guardar al cerrar. Clave `udp_preferred_mac` limpiada a mano. Correccion: el test anula `PPGMonitor._save_settings` a nivel de clase antes de instanciar (anularlo en la instancia no basta: el timer enlazo el metodo en `__init__`) y comprueba que el mtime del `.ini` no cambia. Regla guardada en memoria (`feedback_offscreen_tests_settings_autosave`).
+
+Siguiente: F3 (`LabCaptureWriter` + ventana MULTI CAPTURE) o el experimento offline de HR1; y probar el selector con las dos placas reales cuando la 17.A vuelva.
+
+## Sesion 2026-09-09 (tarde) - La 17.A vuelve por USB: COM23, y prueba en vivo de F1+F2 con dos placas
+
+Alex quita la alimentacion de 12 V y el resto de conexiones de la 17.A y la alimenta por el conector USB rotulado **"AIR SENSOR"** contra un puerto USB del portatil. Aparece **COM23**, que no esperaba. Explicacion verificada:
+
+- Ese conector va al **USB nativo del ESP32-S3**, no a un conversor aparte: VID:PID `303A:1001` (USB-Serial-JTAG de Espressif) y **numero de serie USB = `10:20:BA:14:75:60`**, la MAC de la 17.A. El periferico USB del chip enumera por hardware, con firmware o sin el; de ahi que el puerto apareciera sin haber hecho nada.
+- **Hallazgo util:** el nucleo Arduino-ESP32 pone la MAC como numero de serie USB, asi que `serial.tools.list_ports` permite **atribuir un COM a una placa concreta sin abrirlo** — el equivalente serie de la verificacion por ARP antes de un OTA, y mas fiable.
+- **COM23 no lleva la consola del firmware.** El board json trae `-DARDUINO_USB_MODE=1` y no se define `ARDUINO_USB_CDC_ON_BOOT`, luego `Serial` = `Serial0` = UART0 (pines fisicos). Verificado: 3 s leyendo COM23 a 921600 con DTR/RTS desactivados → **0 bytes**, y la placa siguio emitiendo por UDP (no se reinicio, mismo build). Ni banner, ni frames, ni respuesta a `$CFG?`. Con las conexiones quitadas la 17.A no tiene consola serie: solo UDP.
+- Deberia servir para **flashear por USB** (`--upload-port COM23`) y para JTAG integrado, como alternativa al OTA; no probado todavia. Al abrir el puerto hay que poner `dtr=False`/`rts=False` antes de `open()`: en el USB-Serial-JTAG esas lineas controlan EN y GPIO0 y pyserial las activa por defecto.
+- Alimentada por el USB del portatil la placa emite con normalidad (1,07 Mbit/s, 0 huecos). Ahora comparte masa con el PC.
+
+Al reconectarse, la 17.A tomo **IP .46** y la 16.A esta en **.87**: tercer juego de IPs del dia. Ademas las entradas de `Get-NetNeighbor` del hotspot salen como `Permanent` y **no indican presencia** (la .16 seguia listada horas despues). Para saber si una placa vive: `tools/udp_fw_versions.py` o ping.
+
+**Prueba en vivo de F1+F2 con las dos placas reales (12/12), el caso que motivo F1:** 2 placas registradas, una ACTIVE y otra PRESENT, ambas identificadas por MAC; solo el `$CFG` de la activa llego a la tuberia; la PRESENT descartada al 100 %; **0 huecos en ambas** (aire y cola) — desaparecen los huecos fantasma del lector de fuente unica; combo SOURCE = `['SERIAL —', 'UDP V17 75:60 .46 · ACTIVE', 'UDP V16 48:F8 .87 · PRESENT']`; cambio de fuente a la 16.A con estados invertidos, su `$CFG` en la tuberia y boton ON; `maxlen` 264 (V17) y 265 (V16). La 17.A arranco en `$M3` y el script renegocio `$M4`. Spec §4.8 actualizada con esta verificacion.
+
+Comprobado tambien que el arreglo de aislamiento del `.ini` funciona: 12 s de instancia offscreen (con tick del autosave de 10 s dentro) y el fichero no cambia de tamano ni de fecha.
+
+## Sesion 2026-09-09 (tarde) - Pregunta de Alex: ¿por que ahora no hay huecos y antes si?
+
+Pregunta certera. Mi frase "antes de F1, dos placas a la vez disparaban el detector de huecos sin parar" **no estaba medida**: venia del precedente 2026-06-11 anotado en el log. Medido ahora con una herramienta nueva, `tools/udp_gap_algo_compare.py`: se graba la secuencia de llegada real de las dos placas (20 015 frames en 4 007 datagramas, 20 s) y se pasa **la misma secuencia** por el detector viejo (contador compartido) y por el nuevo (uno por placa), asi que la unica variable es el algoritmo.
+
+Resultado, y contradice lo que dije:
+
+1. **Hoy el detector viejo tampoco habria dado huecos.** Reporta 0, pero no porque el enlace este limpio: **rechaza 3 880 deltas por implausibles**, el 19,4 % del total. Los frames viajan en tandas de 5 por placa, luego uno de cada cinco deltas cruza frontera de placa y no significa nada para un contador compartido.
+2. **Lo que hace el contador compartido depende de la distancia entre los contadores**, frente a su ventana `0 < gap <= 5000`. Si las dos placas arrancaron con menos de 10 s de diferencia, los deltas de frontera caen dentro de la ventana y se cuentan como huecos **falsos**: eso es lo de junio. Si estan lejos (hoy 2 141 455 muestras, 4 283 s, el caso normal) se rechazan y el detector **se queda ciego**.
+3. **La ceguera demostrada:** quitando de la grabacion **un datagrama entero** de la placa activa (5 frames seguidos), el detector por placa acusa 5 muestras perdidas en el aire y el compartido **no acusa nada**. Una perdida de datagrama cae exactamente en la frontera de tanda, donde el compartido compara contra el contador de la otra placa.
+4. **El 0 en vivo es real.** Reproduciendo cada placa por separado los dos algoritmos coinciden (0 huecos, 0 rechazos; y 5 muestras / 1 evento con el datagrama quitado). Eso es lo que separa "enlace limpio" de "codigo nuevo que no mira": el enlace esta limpio de verdad en esos 20 s, con sonda ausente, front-end asentado y 2 clientes en el hotspot.
+
+Conclusion: la ceguera es un fallo peor que la falsa alarma para un banco de dispositivo medico (creerias que el transporte va bien mientras pierde datagramas), asi que el caso de F1 es mas fuerte que el argumento que yo habia dado, pero por otro motivo. Corregidas la spec (§4.8 con la tabla de los dos modos de fallo y el changelog v1.44) y la memoria. Alcance del 0: 20 s, sin cambios de ganancia, radio tranquila; la ventana de plausibilidad sigue ocultando un reinicio de contador y una perdida de mas de 10 s.

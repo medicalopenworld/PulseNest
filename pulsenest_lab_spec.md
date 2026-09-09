@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.43
+# pulsenest_lab — Specification v1.45
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -96,12 +96,21 @@ This prevents the app from appearing frozen when WiFi is not reachable but USB i
 | `btn_udp` state | `_active_transport` |
 |---|---|
 | OFF | `"serial"` |
-| LISTEN (UDP thread running, no datagrams yet) | `"serial"` |
-| ON (first datagram received) | `"udp"` |
+| LISTEN (UDP thread running; no datagrams yet, **or the user picked SERIAL as source**) | `"serial"` |
+| ON (the active board feeds the pipeline) | `"udp"` |
+| LOST (v1.45: the active board has been silent for `UDP_LOST_TIMEOUT_S`; not replaced) | `"udp"` |
+
+The four states are painted by `_set_udp_button(state)`. Since v1.45 the **SOURCE** combo under the
+button (§4.8, F2) is where the user picks what feeds the pipeline: `SERIAL COMx` or any board seen on
+the UDP port. The buttons only start and stop the transports.
 
 Each transport has its own reader thread: `_serial_reader` and `_udp_reader`.
 Both threads enqueue raw bytes into `_serial_queue` or `_udp_queue`. The processing loop
 in `_process_frames_tick()` drains the **active** queue only.
+
+Several boards may stream to the data port at the same time. `_udp_reader` demultiplexes
+them by source IP and forwards the **active board** only — see §4.8. Commands (`send_cmd`)
+always go to the active board's IP on `UDP_CMD_PORT`.
 
 ### 4.2 Data frames ($M1–$M4)
 
@@ -367,7 +376,8 @@ ESP32 SERIAL (921600 baud)          ESP32 UDP WiFi (port 5005)
       ▼                                        ▼
 _serial_reader thread                   _udp_reader thread
   readline() loop                         recvfrom() loop
-  → _serial_queue (Queue)                 → _udp_queue (Queue)
+  → _serial_queue (Queue)                 demux by source IP, board registry (§4.8)
+                                          → _udp_queue (Queue) — active board only
       │                                        │
       └──────────────┬─────────────────────────┘
                      ▼  active transport only
@@ -388,6 +398,162 @@ Two separate timers decouple data ingestion from rendering:
 
 `_reader_thread` / `_udp_reader` run in daemon threads. They only read bytes and enqueue lines
 — no parsing, no UI calls. This ensures no frames are dropped during slow rendering.
+
+### 4.8 Multi-board UDP reception (v1.44)
+
+Several boards can stream to the same data port at once — the bench with 16.A and 17.A, and
+later IncuNest units emitting PulseNest frames. Before v1.44 `_udp_reader` had one implicit
+source: a change of source IP was only logged and `_esp32_ip` overwritten, so two boards
+interleaved their frames in the pipeline, the gap detector fired continuously and commands went
+to whichever board had spoken last (precedent 2026-06-11). Design decisions D1–D9 are recorded in
+`conversation_log.md`, session 2026-09-08 (night); this section is what v1.44 implements (phase F1:
+reception only, no UI).
+
+**Principles**
+
+1. **Demultiplex by source IP, identify by MAC.** Every datagram is attributed to its source IP.
+   The stable identity is the `mac=` field of the board's `$CFG` frame (§4.4), together with
+   `board=`, `fw=`, `lib=`, `build=`, `libsha=`.
+2. **One active board feeds the pipeline.** The first source to speak becomes the active board
+   (`_esp32_ip`). Only its lines enter `_udp_queue`; everything downstream (§4.7) is unchanged.
+   Other boards are registered, identified, counted and **dropped in the reader thread** — no line
+   of theirs reaches `_process_frames_tick()`, so HW CONFIG, LIB CONFIG, the quick RF combos and
+   the LabCapture notes can never be fed by another board's `$CFG`/`$LCFG`.
+3. **Never switch automatically.** A board silent for `UDP_LOST_TIMEOUT_S` (2 s) is flagged
+   **LOST** and logged once; the active binding stays. Changing the active board is a user
+   decision (phase F2 selector). A LOST board that speaks again is logged as back.
+4. **Follow the MAC across a DHCP change.** A non-active board whose `$CFG` carries the active
+   board's MAC is the same hardware after a reboot into a new lease: the active binding moves to
+   the new IP, the stale entry is removed, and data and commands follow the hardware. The frames
+   that arrived before its `$CFG` reply (typically ≤ 3 datagrams, ≈ 30 ms) are dropped — negligible
+   against the reboot itself.
+
+**Registry.** `PPGMonitor._udp_boards` maps source IP → `UdpBoard` (module-level class), under
+`_udp_boards_lock`. The reader thread is the only writer, except `bad_chk`, which the drain
+increments under the same lock via `_udp_note_bad_chk()`. The main thread reads copies with
+`udp_boards_snapshot()` (list of dicts, oldest first). `_connect_udp()` and `_disconnect_udp()`
+clear it.
+
+| `UdpBoard` field | Meaning |
+|---|---|
+| `ip`, `mac`, `board`, `fw`, `lib`, `build`, `libsha` | identity; the last six come from `$CFG` (`None` until it arrives) |
+| `state(active_ip)` | `ACTIVE` (feeds the pipeline), `PRESENT` (seen, dropped), `LOST` (silent > `UDP_LOST_TIMEOUT_S`) |
+| `first_seen`, `last_seen` | `time.perf_counter()` |
+| `datagrams`, `bytes` | datagrams and payload bytes received |
+| `frames` | `$M1`–`$M4` data frames |
+| `other_lines` | `$CFG`, `$LCFG`, `$TCFG`, `$ERR`, `#` comments… |
+| `partial_datagrams` | datagrams carrying 1…`UDP_BATCH_SIZE`−1 data frames (batch flushed early) |
+| `max_line_len` | longest data frame seen, bytes — the watch for the 288-byte firmware slot (`UDP_QUEUE_FRAME_SIZE`) |
+| `gaps_air` | lost samples whose gap is a whole multiple of `UDP_BATCH_SIZE`: the datagram never arrived |
+| `gaps_queue` | lost samples with a remainder: frames dropped in the ESP32 UDP queue before batching |
+| `bad_chk` | checksum failures — active board only (validated by the drain, §4.5) |
+| `dropped` | lines not forwarded because the board was not active |
+| `cfg_requests` | `$CFG?` identity requests sent by the reader thread |
+
+**Identity acquisition.** The active board is asked through the normal path: `_on_udp_active()`
+schedules `request_chip_config(notify_lab_capture=False)` 300 ms after activation, so the reply
+also refreshes HW CONFIG and is parsed by the reader on its way to the queue. Non-active boards
+are queried by the reader itself with `$CFG?` on `UDP_CMD_PORT` from a dedicated socket
+(`id_query`), on registration and then every `UDP_CFG_RETRY_S` (3 s) while unidentified, at most
+`UDP_CFG_MAX_REQUESTS` (3) times. Their reply is parsed in the reader (`identity_from_cfg()`) and
+dropped.
+
+**Gap detection (Punto B) is per board**, each with its own `last_cnt`, so counters of different
+boards never corrupt each other's gap arithmetic. Only the active board updates `_gaps_B` (PYTHON TIMING
+"Ingestion") and emits the `[GAP B/UDP]` log line; the others only accumulate `gaps_air` /
+`gaps_queue`. The classification uses the batching invariant of `UDP_Task` (§4.2): frames travel
+`UDP_BATCH_SIZE` = 5 per datagram, so a gap of 5, 10, 15… is a datagram lost on the air and any
+other gap is the ESP32 discarding frames from its own queue.
+
+**What the shared counter actually did (measured 2026-09-09, `tools/udp_gap_algo_compare.py`).**
+Both detectors were replayed over the *same* recorded arrival sequence of the two live boards,
+20 015 data frames in 4 007 datagrams over 20 s, so the only variable is the algorithm. Frames
+travel in runs of `UDP_BATCH_SIZE`, so **19.4 %** of consecutive deltas cross a board boundary and
+are meaningless to a shared counter. What happens to them depends on how far apart the two sample
+counters are, and the 0 < gap ≤ 5000 plausibility window decides which way it fails:
+
+| Counter difference between boards | Old shared-counter detector |
+|---|---|
+| Below 5000 samples (boards booted within ~10 s of each other) | boundary deltas land inside the window and are counted: a storm of **false** gaps (the 2026-06-11 precedent) |
+| Above 5000 samples (the normal case; 2.14 M samples apart in this measurement) | boundary deltas are rejected as implausible and **silently discarded — the detector goes blind** |
+
+The blindness is the worse failure and it was demonstrated: with one whole datagram of the active
+board removed from the recording, the per-board detector reports 5 samples lost on the air, while
+the shared-counter detector reports **nothing at all** — a lost datagram manifests exactly at a run
+boundary. Replaying either board on its own, both detectors agree (5 samples, 1 event), which is
+also what confirms the live 0 is a genuinely clean link and not an artifact of the new code.
+
+**Observability.** Main-log lines: first datagram (active board), new board registered, board
+identified (`ip board mac — fw lib build`), LOST / back, MAC follow. Every `UDP_NET_SUMMARY_S`
+(10 s) the reader posts one host-generated line per board to UDP COM (§7.5) through
+`_sig_udpcom_line` — it never enters the queue, so it cannot be mistaken for firmware output:
+
+```
+# NET 192.168.137.142 incunest_V16 10:51:DB:50:48:F8 ACTIVE | 100.5 dgram/s 4.99 frm/dgram 1068 kbit/s | maxlen 265 partial 0 | gaps air 0 queue 0 | bad_chk 0 | dropped 0 | q 25
+```
+
+Rates are over the interval since the previous line; `q` is `_udp_queue.qsize()` at that moment
+(frames waiting for the next drain tick).
+
+**Constants** (§3): `UDP_BATCH_SIZE` = 5 (must match `src/main.cpp`), `UDP_LOST_TIMEOUT_S` = 2.0,
+`UDP_NET_SUMMARY_S` = 10.0, `UDP_CFG_RETRY_S` = 3.0, `UDP_CFG_MAX_REQUESTS` = 3.
+
+**Verification (2026-09-09).** Live, 16.A alone in `$M4`: 100.5 datagrams/s, 4.99 frames per
+datagram, 1068 kbit/s, longest frame 265 bytes, 0 gaps, 0 bad checksums, 12 505 frames in 25 s
+with nothing dropped and exactly one `$CFG` reaching the main thread. Live, **both boards at once**
+(17.A and 16.A, the case F1 exists for): 2 boards registered, one ACTIVE one PRESENT, both
+identified by MAC, the PRESENT one dropped in full, 0 gaps on either board, longest frame 264 / 265
+bytes, and the source switch verified in both directions (§4.8 F2). Loopback,
+`tools/udp_multiboard_test.py` (simulated boards on 127.0.0.1/.2/.3, real `$M4` template, ports
+15005/15006 so the bench does not interfere): 21 checks — A active, B present and identified by
+query, B fully dropped, no cross-board gaps, A LOST without switching, A back from a new IP with
+the same MAC followed, stale entry removed.
+
+**Bench utility.** `tools/udp_fw_versions.py` reports, without the GUI, every board streaming to :5005 with its rate and the identity fields of its `$CFG` (board, MAC, fw, lib, build, libsha). Run it with the script closed — it binds the data port.
+
+#### F2 — Source selector (v1.45)
+
+The sidebar gains a **SOURCE** combo under the UDP button, rebuilt at 1 Hz by
+`_refresh_source_combo()` from `udp_boards_snapshot()` — only when its content or the active
+source changed, so an open dropdown does not flicker.
+
+| Item | Meaning |
+|---|---|
+| `SERIAL COMx` (gold) | the COM port selected above feeds the pipeline (`_active_transport = "serial"`); the UDP receiver keeps registering boards |
+| `UDP <board> <MAC tail> <IP tail> · ACTIVE` (blue) | this board feeds the pipeline (`_esp32_ip`) |
+| `UDP … · PRESENT` (grey) | seen on the port, ignored |
+| `UDP … · LOST` (red) | silent for `UDP_LOST_TIMEOUT_S`; still selectable |
+
+Rules added to §4.8:
+
+5. **Switching is a user action.** Picking a board calls `_select_udp_source(ip, by_user=True)`:
+   the active binding moves under `_udp_boards_lock`, lines of the previous board still queued are
+   discarded (they would be parsed as the new one's), `request_chip_config(notify_lab_capture=False)`
+   refreshes HW CONFIG 300 ms later, and the UDP button goes ON (or LOST if the chosen board is
+   silent — the user may pick a LOST board and wait for it). Picking SERIAL calls
+   `_select_serial_source()`: pipeline from the COM port, UDP button LISTEN; the active board's
+   lines still reach the UDP COM console (the drain empties both queues and feeds the algorithms
+   from the active transport only, as before v1.44). The algorithm buffers
+   are **not** reset on a switch — the discontinuity is the same as a board reconnect and the
+   pipeline already tolerates it; a capture in progress records the switch through the `$CFG`
+   that follows.
+6. **The choice is remembered by MAC** (`PPGMonitor/udp_preferred_mac`, §9). On a later start the
+   first board to speak is still the provisional active one; when a board identifies itself with
+   the preferred MAC and the user has not picked anything by hand in this session
+   (`_udp_source_user_chosen`), the reader promotes it (`_udp_auto_promote()`, log "Preferred
+   board … identified"), and the main thread refreshes HW CONFIG through `_sig_udp_source_changed`.
+   This is the only automatic switch besides the DHCP follow (rule 4); a LOST board is never
+   replaced by a *different* one. Without a stored preference, behaviour is exactly v1.44.
+7. **LOST is visible.** The UDP button mirrors the active board: `UDP WiFi ● LOST` in red while it
+   is silent, back to ON when data resumes (`_refresh_source_combo()` handles the ON ↔ LOST pair;
+   OFF and LISTEN are set by the connect paths and by the SERIAL choice).
+
+Verification: `tools/udp_multiboard_test.py` phases 4–7 (pick B → B active and A' dropped,
+preference stored; pick SERIAL → both dropped, button LISTEN; active silent → button LOST, no
+promotion; fresh connection with B preferred → A' speaks first, B promoted on identification).
+
+**Not in this phase.** Non-active boards are not captured (F3, `LabCaptureWriter`); the firmware
+still learns the PC's IP from `wifi_config.h`.
 
 ---
 
@@ -616,7 +782,7 @@ Dark theme: background #121212, text #E0E0E0
 │ [Decim spin]          │ Plot 4: SpO2 / HR1/2/3   │ [TIMING] button          │
 │ ──────────────        │                          │                          │
 │ [UDP WiFi] toggle     │                          │                          │
-│ [UDP port spin]       │                          │                          │
+│ [SOURCE combo] v1.45  │                          │                          │
 │ ──────────────        │                          │                          │
 │ [PPG PLOTS]           │                          │                          │
 │ [PPG SIGNALS]         │                          │                          │
@@ -945,8 +1111,11 @@ Pause button stops auto-scroll while new lines are still received.
 ### 7.5 UdpComWindow — "UDP COM"
 
 Equivalent of SerialComWindow for the WiFi/UDP transport.
-Shows every raw frame received via UDP. Has a header label showing the UDP source address
+Shows every raw frame received via UDP from the **active board** (§4.8). Has a header label showing the UDP source address
 and port once the first packet is received.
+
+**v1.44.** Every `UDP_NET_SUMMARY_S` (10 s) one host-generated `# NET …` line per board seen on the
+data port — active or not — with its identity, state and network counters (format in §4.8).
 
 ### 7.6 SpO2LabWindow — "SPO2LAB — Calibration"
 
@@ -1613,6 +1782,42 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.45 — 2026-09-09
+
+**Multi-board UDP reception, phase F2 — SOURCE selector (§4.8 F2, §4.1, §6.1).** New combo under the
+UDP button listing `SERIAL COMx` and every board seen on the UDP port with its state (ACTIVE /
+PRESENT / LOST, colour-coded), rebuilt at 1 Hz from the board registry. Picking an item switches
+the pipeline source (`_select_udp_source()` / `_select_serial_source()`); the previous board's queued
+lines are discarded and HW CONFIG is refreshed via `$CFG?`. The chosen board is remembered by MAC
+(`PPGMonitor/udp_preferred_mac`) and promoted automatically on a later start once it identifies
+itself, unless the user has already picked a source by hand (`_udp_auto_promote()`, which also
+carries the v1.44 DHCP follow). The UDP button gains a red **LOST** state mirroring the active
+board (`_set_udp_button()` now paints OFF / LISTEN / ON / LOST). Test: phases 4–7 of
+`tools/udp_multiboard_test.py`.
+
+### v1.44 — 2026-09-09
+
+**Multi-board UDP reception, phase F1 — new §4.8.** `_udp_reader` demultiplexes datagrams by source
+IP into a board registry (`UdpBoard`, `_udp_boards`, `udp_boards_snapshot()`), identifies each
+board by the MAC in its `$CFG`, and forwards the **active board only** to `_udp_queue`. Other boards
+are queried with `$CFG?` from the reader thread, counted and dropped before the pipeline. A silent
+active board is flagged LOST and never replaced automatically; a board returning from a new DHCP
+lease with the same MAC is followed. Per-board network counters (datagrams/s, frames per datagram,
+kbit/s, longest frame, partial batches, gaps split into air-lost datagrams vs ESP32-queue drops,
+bad checksums, dropped lines) posted every 10 s as `# NET` lines in UDP COM (§7.5). Gap detection
+is now per board: with two boards on the port, 19.4 % of the shared counter's deltas crossed a
+board boundary and were either counted as false gaps (counters close) or silently discarded
+(counters far apart, the normal case), which made the detector blind to whole datagrams lost on the
+air. Measured with `tools/udp_gap_algo_compare.py`; see §4.8.
+Constants `UDP_BATCH_SIZE`, `UDP_LOST_TIMEOUT_S`, `UDP_NET_SUMMARY_S`, `UDP_CFG_RETRY_S`,
+`UDP_CFG_MAX_REQUESTS` (§3). Cross-references in §4.1 and §4.7. Test:
+`tools/udp_multiboard_test.py`.
+
+**Fix: the crash handler (§2.1) opened `crash.log` with the console code page.** On Windows
+(cp1252) any traceback containing an arrow or a Greek letter from a log message raised
+`UnicodeEncodeError` inside the handler and the traceback it existed to record was lost. Now
+`encoding="utf-8", errors="replace"`.
 
 ### v1.32 — 2026-09-04
 

@@ -6,7 +6,11 @@ import faulthandler
 from pathlib import Path
 
 def _crash_handler(exc_type, exc_val, exc_tb):
-    with open(os.path.join(os.path.dirname(__file__), "crash.log"), "a") as _f:
+    # utf-8 explicitly: the default console code page (cp1252 on Windows) cannot encode the
+    # arrows and Greek letters used in log messages, and a crash handler that itself raises
+    # UnicodeEncodeError loses the traceback it exists to record.
+    with open(os.path.join(os.path.dirname(__file__), "crash.log"), "a",
+              encoding="utf-8", errors="replace") as _f:
         import datetime as _dt
         _f.write(f"\n=== {_dt.datetime.now()} ===\n")
         _tb.print_exception(exc_type, exc_val, exc_tb, file=_f)
@@ -214,6 +218,12 @@ PORT             = 'COM15'
 BAUD             = 921600
 UDP_DEFAULT_PORT = 5005   # must match UDP_TARGET_PORT in include/wifi_config.h
 UDP_CMD_PORT     = 5006   # must match UDP_CMD_PORT in include/wifi_config.h
+UDP_BATCH_SIZE   = 5      # must match UDP_BATCH_SIZE in src/main.cpp: data frames per datagram
+# Multi-board reception (spec §4.8)
+UDP_LOST_TIMEOUT_S   = 2.0    # a board silent for this long is flagged LOST (never auto-replaced)
+UDP_NET_SUMMARY_S    = 10.0   # period of the per-board "# NET" counters line in UDP COM
+UDP_CFG_RETRY_S      = 3.0    # re-send $CFG? to a still-unidentified non-active board after this long
+UDP_CFG_MAX_REQUESTS = 3      # ... at most this many times
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_lab.ini")
 CAPTURES_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
 os.makedirs(CAPTURES_DIR, exist_ok=True)
@@ -11487,10 +11497,110 @@ class _StatsHighlightDelegate(QtWidgets.QStyledItemDelegate):
                 painter.restore()
 
 
+class UdpBoard:
+    """One board seen on the UDP data port: identity learned from its $CFG frame plus network
+    counters (spec §4.8). Keyed by source IP in PPGMonitor._udp_boards.
+
+    Written by the _udp_reader thread under PPGMonitor._udp_boards_lock; the drain adds bad_chk
+    under the same lock; the main thread reads copies via PPGMonitor.udp_boards_snapshot().
+    """
+    _DATA_PREFIXES = (b'M1', b'M2', b'M3', b'M4')
+    _ID_KEYS = (b'mac', b'board', b'fw', b'lib', b'build', b'libsha')
+
+    def __init__(self, ip, now):
+        self.ip = ip
+        self.first_seen = now
+        self.last_seen = now
+        self.mac = self.board = self.fw = self.lib = self.build = self.libsha = None
+        self.datagrams = 0          # datagrams received
+        self.bytes = 0              # payload bytes received
+        self.frames = 0             # $M1..$M4 data frames
+        self.other_lines = 0        # $CFG, $LCFG, $ERR, '#' comments...
+        self.partial_datagrams = 0  # datagrams with 1..UDP_BATCH_SIZE-1 data frames
+        self.max_line_len = 0       # longest data frame seen, bytes (M4 slot truncation watch)
+        self.gaps_air = 0           # lost samples in whole batches: datagram lost on the air
+        self.gaps_queue = 0         # lost samples in partial batches: dropped in the ESP32 queue
+        self.last_cnt = None
+        self.bad_chk = 0            # checksum failures (active board only: counted by the drain)
+        self.dropped = 0            # lines not forwarded because the board is not active
+        self.cfg_requests = 0
+        self.cfg_last_req_t = now
+        self.lost = False
+        self._sum_t, self._sum_datagrams, self._sum_bytes, self._sum_frames = now, 0, 0, 0
+
+    @staticmethod
+    def is_data_frame(line):
+        return line[:1] == b'$' and line[1:3] in UdpBoard._DATA_PREFIXES and line[3:4] == b','
+
+    def note_gap(self, cnt):
+        """Classify a sample-counter gap. Returns the gap (0 if none or implausible)."""
+        gap = 0
+        if self.last_cnt is not None:
+            gap = cnt - self.last_cnt - 1
+            if 0 < gap <= 5000:
+                # Frames travel UDP_BATCH_SIZE per datagram: a whole multiple lost means the
+                # datagram never arrived (air); a remainder means the ESP32 dropped frames from
+                # its own UDP queue before batching.
+                if gap % UDP_BATCH_SIZE == 0:
+                    self.gaps_air += gap
+                else:
+                    self.gaps_queue += gap
+            else:
+                gap = 0   # >5000 (10 s) or negative: counter reset / corrupted frame
+        self.last_cnt = cnt
+        return gap
+
+    def identity_from_cfg(self, line):
+        """Parse mac/board/fw/lib/build/libsha out of a $CFG frame. True if the identity changed."""
+        kv = {}
+        for part in line.split(b','):
+            k, sep, v = part.partition(b'=')
+            if sep and k in self._ID_KEYS:
+                kv[k] = v.split(b'*')[0].decode('ascii', 'replace')   # strip the *XX checksum
+        new = tuple(kv.get(k) for k in self._ID_KEYS)
+        if new[0] is None or new == (self.mac, self.board, self.fw, self.lib, self.build, self.libsha):
+            return False
+        self.mac, self.board, self.fw, self.lib, self.build, self.libsha = new
+        return True
+
+    def label(self):
+        return f"{self.ip} {self.board or '?'} {self.mac or '?'}"
+
+    def state(self, active_ip):
+        return "LOST" if self.lost else ("ACTIVE" if self.ip == active_ip else "PRESENT")
+
+    def summary_line(self, now, active_ip, qsize):
+        """The periodic '# NET' line for UDP COM. Rates are over the interval since the last call."""
+        dt = max(now - self._sum_t, 1e-3)
+        d = self.datagrams - self._sum_datagrams
+        fr = self.frames - self._sum_frames
+        kbit = (self.bytes - self._sum_bytes) * 8 / dt / 1e3
+        self._sum_t, self._sum_datagrams, self._sum_bytes, self._sum_frames = (
+            now, self.datagrams, self.bytes, self.frames)
+        return (f"# NET {self.label()} {self.state(active_ip)} | {d / dt:.1f} dgram/s "
+                f"{fr / max(d, 1):.2f} frm/dgram {kbit:.0f} kbit/s | maxlen {self.max_line_len} "
+                f"partial {self.partial_datagrams} | gaps air {self.gaps_air} queue {self.gaps_queue} "
+                f"| bad_chk {self.bad_chk} | dropped {self.dropped} | q {qsize}")
+
+    def snapshot(self, active_ip):
+        return {
+            'ip': self.ip, 'mac': self.mac, 'board': self.board, 'fw': self.fw, 'lib': self.lib,
+            'build': self.build, 'libsha': self.libsha, 'state': self.state(active_ip),
+            'first_seen': self.first_seen, 'last_seen': self.last_seen,
+            'datagrams': self.datagrams, 'bytes': self.bytes, 'frames': self.frames,
+            'other_lines': self.other_lines, 'partial_datagrams': self.partial_datagrams,
+            'max_line_len': self.max_line_len, 'gaps_air': self.gaps_air,
+            'gaps_queue': self.gaps_queue, 'bad_chk': self.bad_chk, 'dropped': self.dropped,
+            'cfg_requests': self.cfg_requests,
+        }
+
+
 class PPGMonitor(QtWidgets.QMainWindow):
     _sig_log           = QtCore.pyqtSignal(str)           # thread-safe log
     _sig_serial_result = QtCore.pyqtSignal(bool, str, str, object)  # (success, port, error_msg, ser_obj)
     _sig_udp_active    = QtCore.pyqtSignal()              # emitted by _udp_reader on first datagram
+    _sig_udpcom_line   = QtCore.pyqtSignal(str)           # host-generated line for the UDP COM console
+    _sig_udp_source_changed = QtCore.pyqtSignal(str, str)  # (ip, reason) the reader promoted another board
 
     def log(self, text):
         """Appends a timestamped line to the log panel, colour inferred from text content."""
@@ -11522,6 +11632,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._sig_log.connect(self.log, QtCore.Qt.QueuedConnection)  # thread-safe: always queued to main thread even from non-QThread
         self._sig_serial_result.connect(self._on_serial_result, QtCore.Qt.QueuedConnection)
         self._sig_udp_active.connect(self._on_udp_active, QtCore.Qt.QueuedConnection)
+        self._sig_udpcom_line.connect(self._on_udpcom_line, QtCore.Qt.QueuedConnection)
+        self._sig_udp_source_changed.connect(self._on_udp_source_changed, QtCore.Qt.QueuedConnection)
         self._serial_connecting = False   # guard: prevent concurrent open attempts
 
         # Configuración Ventana Principal
@@ -11826,6 +11938,28 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Runs in parallel with SERIAL — serial port stays open for command responses ($CFG, $DIAG, etc.). "
             f"Listens on the port configured below (default {UDP_DEFAULT_PORT})."))
         self.sidebar_layout.addWidget(self.btn_udp)
+
+        # SOURCE: which stream feeds plots, algorithms and captures (§4.8 F2). Items are rebuilt
+        # every second from the UDP board registry by _refresh_source_combo().
+        self.combo_source = QtWidgets.QComboBox()
+        self.combo_source.setStyleSheet(
+            "background-color: #2A2A2A; color: #44AAFF; font-size: 15px; padding: 3px;")
+        self.combo_source.setToolTip(_make_tooltip(
+            "SOURCE",
+            "Data source feeding the plots, algorithms and captures. "
+            "SERIAL: the COM port selected above. UDP <board>: one of the boards streaming to the "
+            "UDP port, listed as <board> <MAC tail> <IP tail> and its state — ACTIVE (feeding), "
+            "PRESENT (seen, ignored) or LOST (silent for 2 s). The first board to speak is chosen "
+            "automatically; pick another to switch. Your choice is remembered by MAC and applied on "
+            "the next start as soon as that board identifies itself. A board that stops sending is "
+            "shown LOST and is never replaced automatically.",
+            src="PPGMonitor._esp32_ip / _active_transport / udp_preferred_mac"))
+        self.combo_source.currentIndexChanged.connect(self._on_source_combo_changed)
+        self.sidebar_layout.addWidget(self.combo_source)
+        self._source_timer = QtCore.QTimer(self)
+        self._source_timer.setInterval(1000)
+        self._source_timer.timeout.connect(self._refresh_source_combo)
+        self._source_timer.start()
 
         self._lbl_wifi = QtWidgets.QLabel("WiFi: —")
         self._lbl_wifi.setStyleSheet("color: #666666; font-size: 14px; padding: 0px 2px;")
@@ -12438,6 +12572,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._cmd_udp_sock = None   # UDP socket for sending commands to ESP32 (port UDP_CMD_PORT)
         self._cfg_listener = None  # callable(text) set by LabCaptureWindow
         self._active_transport = "serial"  # "serial" or "udp" — only this queue feeds algorithms
+        self._udp_boards = {}                 # ip → UdpBoard: every source seen on the data port (§4.8)
+        self._udp_boards_lock = threading.Lock()
+        self._udp_preferred_mac = None        # board chosen by the user, remembered across sessions (§4.8 F2)
+        self._udp_source_user_chosen = False  # True once the user picked a source in this session
+        self._udp_btn_state = "OFF"           # OFF / LISTEN / ON / LOST — see _set_udp_button()
+        self._source_combo_sig = None         # last content signature of combo_source (rebuild only on change)
 
         self._populate_ports()
         self._restore_settings()
@@ -13301,6 +13441,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/combo_port",      self.combo_port.currentText())
         s.setValue("PPGMonitor/serial_connected", self.ser is not None and self.ser.is_open)
         s.setValue("PPGMonitor/udp_connected",    self._udp_thread is not None and self._udp_thread.is_alive())
+        s.setValue("PPGMonitor/udp_preferred_mac", self._udp_preferred_mac or "")
         s.setValue("PPGMonitor/ppgplots_open",  self.ppgplots_window  is not None)
         s.setValue("PPGMonitor/signals_open",   self.signals_window   is not None)
         s.setValue("PPGMonitor/signals2_open",  self.signals2_window  is not None)
@@ -13377,6 +13518,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # appears immediately — serial.Serial() can block on some ports.
         self._restore_serial_on_start = s.value("PPGMonitor/serial_connected", True, type=bool)
         self._restore_udp_on_start    = s.value("PPGMonitor/udp_connected",    False, type=bool)
+        self._udp_preferred_mac = s.value("PPGMonitor/udp_preferred_mac", "", type=str) or None
 
     def _populate_ports(self):
         current = self.combo_port.currentText()
@@ -13474,10 +13616,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         Switches active transport to UDP so serial frames stop feeding the pipeline."""
         self._active_transport = "udp"
         self.log(f"Data source: UDP WiFi (:{self._udp_port})")
-        self.btn_udp.setText(f"UDP WiFi  ●  ON  (:{self._udp_port})")
-        self.btn_udp.setStyleSheet(
-            "background-color: #1A1E3A; color: #44AAFF; font-size: 17px; "
-            "font-weight: bold; padding: 5px; border: 1px solid #44AAFF; border-radius: 4px;")
+        # Identity (mac/board/fw/lib) of the active board comes from its $CFG, which the reader
+        # thread parses on its way to the queue. Ask for it here, on the main thread and through
+        # request_chip_config(), so the reply also refreshes HW CONFIG without notifying LabCapture.
+        # The reader queries only NON-active boards itself: their replies never reach the pipeline.
+        QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
+        self._set_udp_button("ON")
+        self._refresh_source_combo()
 
     def _toggle_udp(self):
         if self._udp_thread is not None and self._udp_thread.is_alive():
@@ -13494,15 +13639,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
             try: self._udp_queue.get_nowait()
             except: break
         self._esp32_ip = None
+        with self._udp_boards_lock:
+            self._udp_boards.clear()
         if self._cmd_udp_sock is not None:
             self._cmd_udp_sock.close()
             self._cmd_udp_sock = None
         self._active_transport = "serial"
         self.log("UDP disconnected — data source: SERIAL")
-        self.btn_udp.setText("UDP WiFi  ●  OFF")
-        self.btn_udp.setStyleSheet(
-            "background-color: #1E1E1E; color: #666666; font-size: 17px; "
-            "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
+        self._set_udp_button("OFF")
+        self._refresh_source_combo()
 
     def _connect_udp(self):
         """Start UDP reader thread (runs in parallel with _serial_reader).
@@ -13517,67 +13662,288 @@ class PPGMonitor(QtWidgets.QMainWindow):
             except: break
         self._udp_stop.clear()
         self._gaps_B   = 0
+        with self._udp_boards_lock:
+            self._udp_boards.clear()
         self._udp_port = UDP_DEFAULT_PORT
         self._udp_thread = threading.Thread(target=self._udp_reader, daemon=True)
         self._udp_thread.start()
         # Transport switches to "udp" only after first datagram arrives (_on_udp_active).
         # Serial stays active until then so data is never lost while WiFi connects.
         self.log(f"UDP listening on port {self._udp_port} — data source stays SERIAL until first datagram")
-        self.btn_udp.setText(f"UDP WiFi  ●  LISTEN  (:{self._udp_port})")
-        self.btn_udp.setStyleSheet(
-            "background-color: #1A1E3A; color: #AAAAFF; font-size: 17px; "
-            "font-weight: bold; padding: 5px; border: 1px solid #8888CC; border-radius: 4px;")
+        self._set_udp_button("LISTEN")
 
     def _udp_reader(self):
-        """Dedicated thread: receives UDP datagrams into _udp_queue.
-        Each datagram contains UDP_BATCH_SIZE M1/M2 frames (one per line).
-        Frames are unpacked line-by-line and queued individually — the pipeline
-        downstream is identical to the serial path.
-        Gap detection (Punto B): checked per-frame when unpacking."""
+        """Dedicated thread: receives UDP datagrams, demultiplexes them by source IP and feeds
+        _udp_queue with the ACTIVE board's lines only (spec §4.8).
+
+        Every source IP gets a UdpBoard in _udp_boards: identity from its $CFG frame, network
+        counters. The first board to speak becomes the active one (_esp32_ip) and is never
+        replaced automatically — if it falls silent it is flagged LOST. Other boards are
+        registered, queried with $CFG? for their identity, counted, and dropped here: they never
+        reach the pipeline. A $CFG carrying the active board's MAC under a new IP is the same
+        board after a DHCP change, so the active binding follows the MAC.
+
+        Each datagram carries up to UDP_BATCH_SIZE data frames (one per line); frames are unpacked
+        and queued individually so the pipeline downstream is identical to the serial path.
+        Gap detection (Punto B) is per board, on the sample counter."""
         import socket as _socket
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
         sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, 1024 * 1024)  # 1 MB RX buffer
         sock.bind(('', self._udp_port))
         sock.settimeout(0.5)
-        _last_cnt = None
-        _known_ip = None
+        id_query = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)   # $CFG? to non-active boards
+        boards, lock = self._udp_boards, self._udp_boards_lock
+        _perf = time.perf_counter
+        next_summary = _perf() + UDP_NET_SUMMARY_S
+
+        def _request_cfg(b, now):
+            try:
+                id_query.sendto(b'$CFG?\n', (b.ip, UDP_CMD_PORT))
+            except OSError as e:
+                self._sig_log.emit(f"[UDP] $CFG? to {b.ip} failed: {e}")
+            b.cfg_requests += 1
+            b.cfg_last_req_t = now
+
+        def _housekeeping(now):
+            # LOST transitions, $CFG? retries and the periodic counters line. Runs after every
+            # datagram and on every receive timeout, so a silent active board is still detected.
+            nonlocal next_summary
+            with lock:
+                for b in boards.values():
+                    if not b.lost and now - b.last_seen > UDP_LOST_TIMEOUT_S:
+                        b.lost = True
+                        role = "Active board" if b.ip == self._esp32_ip else "Board"
+                        self._sig_log.emit(f"[UDP] {role} {b.label()} LOST — no data for "
+                                           f"{UDP_LOST_TIMEOUT_S:.0f} s (not switching)")
+                    if (b.mac is None and b.ip != self._esp32_ip
+                            and b.cfg_requests < UDP_CFG_MAX_REQUESTS
+                            and now - b.cfg_last_req_t > UDP_CFG_RETRY_S):
+                        _request_cfg(b, now)
+                if now >= next_summary:
+                    next_summary = now + UDP_NET_SUMMARY_S
+                    qsize = self._udp_queue.qsize()
+                    for b in boards.values():
+                        self._sig_udpcom_line.emit(b.summary_line(now, self._esp32_ip, qsize))
+
         while not self._udp_stop.is_set():
             try:
-                data, _addr = sock.recvfrom(4096)   # up to UDP_BATCH_SIZE frames per datagram (~1150 bytes for 5×$M4)
-                _src_ip = _addr[0]
-                if _known_ip is None:
-                    _known_ip = _src_ip
-                    self._esp32_ip = _src_ip
-                    self._sig_log.emit(f"[UDP] First datagram from {_src_ip}")
-                    self._sig_udp_active.emit()   # switch transport on main thread
-                elif _src_ip != _known_ip:
-                    self._sig_log.emit(f"[UDP] Source IP changed: {_known_ip} → {_src_ip}")
-                    _known_ip = _src_ip
-                    self._esp32_ip = _src_ip
-                if not data:
-                    continue
+                data, _addr = sock.recvfrom(4096)   # up to UDP_BATCH_SIZE frames per datagram (~1400 B for 5×$M4)
+            except _socket.timeout:
+                _housekeeping(_perf())
+                continue
+            except Exception:
+                break
+            now = _perf()
+            src_ip = _addr[0]
+            with lock:
+                b = boards.get(src_ip)
+                if b is None:
+                    b = boards[src_ip] = UdpBoard(src_ip, now)
+                    if self._esp32_ip is None:
+                        self._esp32_ip = src_ip
+                        self._sig_log.emit(f"[UDP] First datagram from {src_ip} — active board")
+                        self._sig_udp_active.emit()   # switch transport on main thread
+                    else:
+                        self._sig_log.emit(f"[UDP] New board {src_ip} — registered, not active; asking $CFG?")
+                        _request_cfg(b, now)
+                b.datagrams += 1
+                b.bytes += len(data)
+                b.last_seen = now
+                if b.lost:
+                    b.lost = False
+                    self._sig_log.emit(f"[UDP] Board {b.label()} back")
+                is_active = (src_ip == self._esp32_ip)
+                n_data = 0
                 for line in data.split(b'\n'):
                     line = line.rstrip(b'\r')
                     if not line:
                         continue
-                    if line.startswith(b'$M1,') or line.startswith(b'$M2,') or line.startswith(b'$M3,') or line.startswith(b'$M4,'):
+                    if UdpBoard.is_data_frame(line):
+                        n_data += 1
+                        b.frames += 1
+                        if len(line) > b.max_line_len:
+                            b.max_line_len = len(line)
                         try:
-                            _cnt = int(line[1:].split(b',')[1])
-                            if _last_cnt is not None:
-                                _gap = _cnt - _last_cnt - 1
-                                if 0 < _gap <= 5000:
-                                    self._gaps_B += _gap
-                                    self._sig_log.emit(
-                                        f"[GAP B/UDP] {_gap} samples lost (cnt {_last_cnt}\u2192{_cnt})")
-                            _last_cnt = _cnt
+                            gap = b.note_gap(int(line[4:].split(b',', 1)[0]))
                         except (ValueError, IndexError):
-                            pass
-                    self._udp_queue.put(line + b'\r\n')
-            except _socket.timeout:
-                continue
-            except Exception:
-                break
+                            gap = 0
+                        if gap and is_active:
+                            self._gaps_B += gap
+                            self._sig_log.emit(
+                                f"[GAP B/UDP] {gap} samples lost (cnt {b.last_cnt - gap - 1}\u2192{b.last_cnt})")
+                    else:
+                        b.other_lines += 1
+                        if line.startswith(b'$CFG,') and b.identity_from_cfg(line):
+                            self._sig_log.emit(
+                                f"[UDP] Board {b.label()} — fw {b.fw} lib {b.lib} build {b.build}"
+                                + (" (active)" if is_active else ""))
+                            if not is_active:
+                                is_active = self._udp_auto_promote(b)
+                    if is_active:
+                        self._udp_queue.put(line + b'\r\n')
+                    else:
+                        b.dropped += 1
+                if 0 < n_data < UDP_BATCH_SIZE:
+                    b.partial_datagrams += 1
+            _housekeeping(now)
+        id_query.close()
         sock.close()
+
+    def _udp_auto_promote(self, b):
+        """Reader thread, lock held: a non-active board has just identified itself. Two cases make
+        it the active source without a user action (§4.8 rules 4 and 6):
+        - it carries the active board's MAC → same hardware after a DHCP change: follow it;
+        - it is the board the user chose in an earlier session (`_udp_preferred_mac`) and nothing
+          has been chosen by hand in this one → the automatic first-to-speak pick was provisional.
+        A LOST board is never replaced by a *different* one here. Returns True if `b` is now active."""
+        act = self._udp_boards.get(self._esp32_ip)
+        if act is None or act is b:
+            return False
+        if act.mac is not None and act.mac == b.mac:
+            self._sig_log.emit(f"[UDP] Active board {b.mac} moved {act.ip} → {b.ip} (new DHCP lease) — following it")
+            del self._udp_boards[act.ip]
+            self._esp32_ip = b.ip
+            self._sig_udp_source_changed.emit(b.ip, "moved")
+            return True
+        if (self._udp_preferred_mac and b.mac == self._udp_preferred_mac
+                and not self._udp_source_user_chosen):
+            self._sig_log.emit(f"[UDP] Preferred board {b.label()} identified — now the active source "
+                               f"(was {act.label()})")
+            self._esp32_ip = b.ip
+            self._sig_udp_source_changed.emit(b.ip, "preferred")
+            return True
+        return False
+
+    def _on_udpcom_line(self, text):
+        """Main-thread slot: host-generated line (e.g. '# NET' counters) for the UDP COM console."""
+        if self.udpcom_window is not None:
+            self.udpcom_window.append_line(text)
+
+    def _udp_note_bad_chk(self):
+        """Drain (main thread): a frame from the active UDP board failed its checksum."""
+        with self._udp_boards_lock:
+            b = self._udp_boards.get(self._esp32_ip)
+            if b is not None:
+                b.bad_chk += 1
+
+    def udp_boards_snapshot(self):
+        """Copies of every UdpBoard seen since the UDP reader started, oldest first (§4.8)."""
+        with self._udp_boards_lock:
+            return [b.snapshot(self._esp32_ip)
+                    for b in sorted(self._udp_boards.values(), key=lambda b: b.first_seen)]
+
+    # ── Data-source selector (§4.8 F2) ──────────────────────────────────────────
+    _UDP_BTN_STYLES = {
+        # state: (text, background, foreground, border)
+        "OFF":    ("UDP WiFi  ●  OFF",                 "#1E1E1E", "#666666", "#444444"),
+        "LISTEN": ("UDP WiFi  ●  LISTEN  (:{port})",   "#1A1E3A", "#AAAAFF", "#8888CC"),
+        "ON":     ("UDP WiFi  ●  ON  (:{port})",       "#1A1E3A", "#44AAFF", "#44AAFF"),
+        "LOST":   ("UDP WiFi  ●  LOST  (:{port})",     "#3A1A1A", "#FF4444", "#FF4444"),
+    }
+
+    def _set_udp_button(self, state):
+        """OFF: receiver stopped. LISTEN: receiving but UDP is not the source (no data yet, or the
+        user picked SERIAL). ON: the active board feeds the pipeline. LOST: it fell silent."""
+        text, bg, fg, border = self._UDP_BTN_STYLES[state]
+        self.btn_udp.setText(text.format(port=getattr(self, '_udp_port', UDP_DEFAULT_PORT)))
+        self.btn_udp.setStyleSheet(
+            f"background-color: {bg}; color: {fg}; font-size: 17px; "
+            f"font-weight: bold; padding: 5px; border: 1px solid {border}; border-radius: 4px;")
+        self._udp_btn_state = state
+
+    def _refresh_source_combo(self):
+        """1 Hz (and after every source change): rebuild the SOURCE combo from the board registry
+        when its content or the active source changed, and mirror the active board's LOST state on
+        the UDP button. Rebuilding only on change keeps the dropdown usable while open."""
+        if not hasattr(self, '_udp_boards'):
+            return   # timer tick before __init__ finished
+        boards = self.udp_boards_snapshot()
+        items = [("serial", None, f"SERIAL {self.combo_port.currentText() or '—'}", "#FFDD44")]
+        colours = {"ACTIVE": "#44AAFF", "PRESENT": "#AAAAAA", "LOST": "#FF4444"}
+        for b in boards:
+            board = (b['board'] or '?').replace('incunest_', '')
+            mac_tail = b['mac'][-5:] if b['mac'] else '??:??'
+            ip_tail = '.' + b['ip'].rsplit('.', 1)[-1]
+            items.append(("udp", b['ip'], f"UDP {board} {mac_tail} {ip_tail} · {b['state']}",
+                          colours[b['state']]))
+        active_key = ("serial", None) if self._active_transport == "serial" else ("udp", self._esp32_ip)
+        sig = (tuple(it[:3] for it in items), active_key)
+        if sig != self._source_combo_sig:
+            self._source_combo_sig = sig
+            self.combo_source.blockSignals(True)
+            self.combo_source.clear()
+            for kind, ip, label, colour in items:
+                self.combo_source.addItem(label, (kind, ip))
+                self.combo_source.setItemData(self.combo_source.count() - 1,
+                                              QtGui.QBrush(QtGui.QColor(colour)), QtCore.Qt.ForegroundRole)
+            idx = next((i for i, it in enumerate(items) if it[:2] == active_key), 0)
+            self.combo_source.setCurrentIndex(idx)
+            self.combo_source.blockSignals(False)
+        # UDP button: ON ↔ LOST follows the active board; OFF/LISTEN are set by the connect paths.
+        if self._udp_btn_state in ("ON", "LOST") and self._active_transport == "udp":
+            act = next((b for b in boards if b['ip'] == self._esp32_ip), None)
+            want = "LOST" if (act is not None and act['state'] == "LOST") else "ON"
+            if want != self._udp_btn_state:
+                self._set_udp_button(want)
+
+    def _on_source_combo_changed(self, idx):
+        data = self.combo_source.itemData(idx)
+        if not data:
+            return
+        kind, ip = data
+        if kind == "serial":
+            self._select_serial_source()
+        else:
+            self._select_udp_source(ip, by_user=True)
+
+    def _select_udp_source(self, ip, by_user):
+        """Make the UDP board at `ip` the active source (user choice or restored preference)."""
+        with self._udp_boards_lock:
+            b = self._udp_boards.get(ip)
+            if b is None:
+                self.log(f"Source {ip} is no longer registered")
+                self._source_combo_sig = None
+                self._refresh_source_combo()
+                return
+            if self._esp32_ip != ip:
+                self._esp32_ip = ip
+                # Lines of the previous board still queued would be parsed as the new one's.
+                while not self._udp_queue.empty():
+                    try: self._udp_queue.get_nowait()
+                    except queue.Empty: break
+            mac, label, lost = b.mac, b.label(), b.lost
+        self._active_transport = "udp"
+        if by_user:
+            self._udp_source_user_chosen = True
+            if mac:
+                self._udp_preferred_mac = mac
+        self.log(f"Data source: UDP board {label}" + (" — currently LOST, waiting for data" if lost else ""))
+        if not lost:
+            QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
+        self._set_udp_button("LOST" if lost else "ON")
+        self._source_combo_sig = None
+        self._refresh_source_combo()
+
+    def _select_serial_source(self):
+        """Feed the pipeline from the COM port; the UDP receiver keeps registering boards."""
+        self._active_transport = "serial"
+        self._udp_source_user_chosen = True
+        port = self.combo_port.currentText() or '—'
+        is_open = self.ser is not None and self.ser.is_open
+        self.log(f"Data source: SERIAL ({port})" + ("" if is_open else " — port not open"))
+        if self._udp_thread is not None and self._udp_thread.is_alive():
+            self._set_udp_button("LISTEN")
+        self._source_combo_sig = None
+        self._refresh_source_combo()
+
+    def _on_udp_source_changed(self, ip, reason):
+        """Main-thread slot: the reader promoted `ip` (DHCP follow or preferred board). Refresh
+        HW CONFIG and the identity through the normal $CFG path, and the sidebar."""
+        QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
+        if self._udp_btn_state in ("ON", "LOST"):
+            self._set_udp_button("ON")
+        self._source_combo_sig = None
+        self._refresh_source_combo()
 
     def _serial_reader(self):
         """Dedicated thread: reads serial lines at full rate into a queue.
@@ -14004,6 +14370,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     computed_chk ^= ord(c)
                                 if computed_chk != expected_chk:
                                     chk_ok = 0
+                                    if _q is self._udp_queue:
+                                        self._udp_note_bad_chk()
                                     if _src_com_win is not None:
                                         _src_com_win.append_line(
                                             f"# BAD CHK (got {computed_chk:02X} exp {expected_chk:02X}): {line[:70]}")
@@ -14013,6 +14381,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             # *XX field present but not exactly 2 hex chars — malformed
                             if is_data_frame:
                                 chk_ok = 0
+                                if _q is self._udp_queue:
+                                    self._udp_note_bad_chk()
                                 if _src_com_win is not None:
                                     _src_com_win.append_line(
                                         f"# BAD CHK (malformed *field): {line[:70]}")
@@ -14024,6 +14394,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     else:
                         # No *XX field — reject data frames, pass through others ($ERR, comments)
                         if is_data_frame:
+                            if _q is self._udp_queue:
+                                self._udp_note_bad_chk()
                             if _src_com_win is not None:
                                 _src_com_win.append_line(
                                     f"# BAD CHK (no checksum field): {line[:70]}")
