@@ -20857,3 +20857,17 @@ Clasificadas por la pila del hilo que casca: **14 en `pyqtgraph/graphicsItems/Ax
 Experimento propuesto y no ejecutado, porque cambia el rendimiento de todas las graficas y lo decide Alex: `useOpenGL=False` y una sesion larga de uso. Si los cierres desaparecen, causa localizada; el coste posible es rasterizacion mas lenta, medible con PYTHON TIMING. Segundo candidato: `Inf`/`NaN` llegando a un eje, que conecta con la tarea de las guardas de division (OT_LED1/2).
 
 Anotado en la memoria de la tarea. Sin cambios de codigo.
+
+## Sesion 2026-09-10 - Commiteado F3 y el firmware; placas con hash limpio
+
+Alex: adelante con commitear y reflashear; el experimento de `useOpenGL` se deja para cuando haya tiempo o mas informacion (anotado como diferido en la memoria de la tarea, la evidencia no se pierde).
+
+Motivo del reflasheo, mas alla del orden: las dos placas reportaban `build=fb9f1b7-dirty`, y ese commit **no contenia** el cambio de WiFi, luego la procedencia no era imprecisa sino enganosa; cualquier captura de hoy habria quedado atribuida a un build que no era el que corria.
+
+Dos commits, separados para que se revisen aparte:
+- `9bb249e` **F3** — `LabCaptureWriter`, `MultiCaptureWindow`, enrutado por colas por placa, `frame_xor_ok()`, `HOST_T_US`, envio del modo de frame a cada placa, el arreglo del desbordamiento de N+5 muestras, y la correccion de los tamanos de fuente con la nueva §10 de la spec. Script v1.46, test a 67 checks.
+- `0b88aae` **firmware** — `WiFi.setSleep(WIFI_PS_NONE)` con los dos regimenes medidos en el comentario, la compuerta inerte `PULSENEST_NO_DATA_STREAM` y `tools/udp_cmd_latency.py`.
+
+Arbol limpio, reconstruidos los dos entornos (`PulseNest git hash: 0b88aae`, sin sufijo `-dirty`, lib `6eb7dfa`) y flasheadas las dos placas. Verificado por `$CFG?`: **16.A y 17.A con `build=0b88aae libsha=6eb7dfa`**, ambas emitiendo a 100 datagramas/s. Desde ahora las capturas son atribuibles a un commit reproducible.
+
+El script quedo cerrado para poder verificar (ocupa el puerto 5005). Alex propone a continuacion una funcionalidad nueva antes de volver al hilo A.
