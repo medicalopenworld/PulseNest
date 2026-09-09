@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.45
+# pulsenest_lab — Specification v1.46
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -552,8 +552,69 @@ Verification: `tools/udp_multiboard_test.py` phases 4–7 (pick B → B active a
 preference stored; pick SERIAL → both dropped, button LISTEN; active silent → button LOST, no
 promotion; fresh connection with B preferred → A' speaks first, B promoted on identification).
 
-**Not in this phase.** Non-active boards are not captured (F3, `LabCaptureWriter`); the firmware
-still learns the PC's IP from `wifi_config.h`.
+#### F3 — Simultaneous capture of several boards (v1.46)
+
+`LabCaptureWriter` (module level) is one capture CSV: header, rows, notes and counters for one
+board. It was extracted from `PPGMonitor._write_lab_capture_row` and the `_lab_capture_*`
+attributes so that the single capture and the multi-board capture share the column indexing —
+the part that silently produces a *well-formed row of garbage* when it is wrong — instead of
+holding two copies of it. It owns no Qt object: the caller reads `count` / `target` and decides
+what to display and when to stop.
+
+| Member | Role |
+|---|---|
+| `open(pre_notes)` | opens the file (cp1252, line-buffered), writes the `#` pre-notes then the header |
+| `format_row(raw_line, host_t_us)` | the pure part: raw frame → list of CSV values, or `None` if it is not an `$M1`–`$M4` frame |
+| `write_row(...)` | writes one row; returns True on the row that reaches `target` |
+| `close(post_notes)` | writes the `#` post-notes, closes, returns the row count |
+| `header()`, `count`, `skipped`, `active`, `label` | as named; `skipped` counts lines handed in that were not data frames |
+
+`PPGMonitor.is_lab_capturing` is a **read-only property** over `_lab_capture`, so there is no
+second copy of the state to fall out of step.
+
+**Fix that came with the extraction: a capture asked for N samples wrote N + 5.** The only brake
+was the caller's auto-stop, deferred with `singleShot(0)`, so the drain wrote out the frames
+already queued — measured at exactly 605 rows for a target of 600, on three runs of the version
+before the refactor and three of the version after, i.e. it was not a regression but a defect the
+differential test exposed. `write_row()` is now self-limiting: once `target` rows exist nothing
+more is accepted, and the count is exact. This is also what makes the multi-board case possible,
+where N writers cannot depend on one caller's stop timing.
+
+**Routing.** A board being captured gets a bounded queue, `UdpBoard.capture_q`
+(`UDP_CAPTURE_QUEUE_MAX` = 25 000 frames = 50 s at 500 Hz). The reader thread puts each data
+frame into it together with the arrival time of its datagram, and never blocks: an overflow is
+counted in `capture_overflow`, reported in the log at stop and shown in red in the window,
+because it means the Qt thread stopped keeping up. `PPGMonitor._drain_multi_capture()`, called at
+the head of every `_process_frames_tick()` before the algorithms, empties every queue and writes
+the rows — so **all writers run on the main thread and none of them needs a lock**.
+
+Consequences of routing through the reader rather than the pipeline:
+- the **ACTIVE board is not special**: a board that is merely PRESENT is recorded identically, and
+  a capture is unaffected by a source switch mid-run;
+- the rows are the fields off the wire, with no algorithm replica involved and no decimation.
+
+**Checksum.** The drain's inline validation only covers the active board's queue, so
+`frame_xor_ok(line)` (module level) validates every frame on the multi-board path. A frame with a
+wrong, malformed or missing `*XX` is counted per board and skipped, never written: a capture CSV
+is the input of the regression set, so a missing row is better than an unvalidated one. The
+rejected count is reported per board when the capture stops. Verified by a simulated board that
+corrupts one frame in twenty: its CSV shows the corresponding holes in `FW_SmpCnt` and the other
+board's shows none.
+
+**`HOST_T_US`** (D6) is the first column of every multi-board CSV: the arrival time of the
+datagram on this PC in microseconds, from `time.perf_counter()` — monotonic, arbitrary origin,
+so it aligns boards **within one session** and means nothing across sessions. Resolution is the
+datagram, not the sample: the five frames of a batch share one stamp, ~10 ms of granularity at
+100 datagrams/s. Measured: 180 distinct stamps in 900 rows, exactly one per datagram.
+
+**Frame mode.** Boards boot in `$M3` and only the active one is ever asked for `$M4`, so starting
+a capture sends the requested frame mode to **each** selected board through
+`send_cmd_to_ip(ip, ...)` — without it the 13 analog columns of the boards that were never asked
+would be written as `-1`, a well-formed CSV of missing data. `$MODE` is not acknowledged (§4.2),
+so the mode in force is still only evidenced by field 0 of the frames themselves.
+
+**Not in this phase.** The firmware still learns the PC's IP from `wifi_config.h` (D10 candidate);
+motherBoard does not emit PulseNest frames yet (F4).
 
 ---
 
@@ -779,6 +840,7 @@ Dark theme: background #121212, text #E0E0E0
 │ [PAUSE] [SAVE]        │ Plot 2: RED + RED_Amb    │                          │
 │ [RECORD CHK]          │        + RED_Sub         │ SIGNAL STATS table       │
 │ [Lab Capture]         │ Plot 3: PPG (display)    │                          │
+│ [MULTI CAPTURE] v1.46 │                          │                          │
 │ [Decim spin]          │ Plot 4: SpO2 / HR1/2/3   │ [TIMING] button          │
 │ ──────────────        │                          │                          │
 │ [UDP WiFi] toggle     │                          │                          │
@@ -1624,7 +1686,38 @@ is hidden, and the freed height goes to the expanded rows.
 Fed at 500 Hz from the serial path, next to the HR1TEST mirror; redrawn at 10 Hz
 (`_HR1LAB_REFRESH_EVERY`), timed as `plot_hr1lab` in PYTHON TIMING.
 
+### 7.20 MultiCaptureWindow — "MULTI CAPTURE" (v1.46)
+
+Records several boards at once, one CSV per board (§4.8 F3). Opened from the sidebar button
+`MULTI CAPTURE *`.
+
+Deliberately **not** a second LabCaptureWindow: no HGAC handling, no deferred start on a `$CFG`
+reply, no interaction with the algorithm replicas. Its job is raw simultaneous acquisition.
+
+| Control | Behaviour |
+|---|---|
+| Board table | one row per board the receiver has seen: tick box, board, MAC, IP, state (colour-coded as in the SOURCE combo), rows written, and frames dropped by a full capture queue in red. Rebuilt only when the *set* of boards changes, so a tick the user has just made survives the 1 Hz refresh |
+| Samples per board | rows per CSV, then stop by itself; 0 = continuous. Shows the equivalent duration at a nominal 500 Hz, labelled as nominal because each board's real rate is in its own `$CFG` |
+| Filename prefix | files are `<prefix>_<board>_<MAC tail>_<timestamp>.csv` in `captures/`. The board and MAC are in the name because the CSVs of one run are only useful together and a capture whose board cannot be identified is unusable |
+| Pre / post notes | written as `#` lines in **every** CSV of the run, the board's own identity line appended to the pre-notes |
+| START / STOP | opens the writers and sends the frame mode to each board; the tick boxes, the sample count and the prefix are locked while recording |
+
+While recording, the status line shows the slowest board's progress against the target and the
+total rows written. Closing the window **stops a capture in progress** rather than abandoning
+half-written files, and unchecks the sidebar button (parent `None`, as every subwindow — §7).
+
+Persisted: `MultiCaptureWindow/geometry`, `/samples`, `/prefix`.
+
+Verification: phase 8 of `tools/udp_multiboard_test.py` (two simulated boards, exactly 1000 rows
+each, `HOST_T_US` present and monotonic with one stamp per datagram, `$MODE` sent to both, notes
+in both files, filenames carrying each MAC, and the corrupting board's frames rejected by
+checksum and missing from its CSV). Live on one real board: 900 rows for a target of 900, analog
+columns populated, no queue overflow.
+
 ## 8. File outputs
+
+`captures/<prefix>_<board>_<MAC tail>_<timestamp>.csv` — one per board of a MULTI CAPTURE run
+(§7.20), first column `HOST_T_US`.
 
 All files are saved to `CAPTURES_DIR` (`captures/` subdirectory). The directory is created
 at startup (`os.makedirs(CAPTURES_DIR, exist_ok=True)`).
@@ -1715,6 +1808,31 @@ port that happens to be first alphabetically).
 
 ## 10. Display conventions
 
+### Font size (v1.46)
+
+**Do not declare a pixel font size for body text in a subwindow.** Let the controls inherit the
+application default, which is **12 pt** — a point size, so it scales with the display's DPI. Table
+headers and any `QLabel` with no stylesheet of its own land on that default, so the only way for a
+window to be homogeneous with them is to declare nothing.
+
+A `font-size: Npx` is a **fixed** size that does not scale. On a display with scaling it therefore
+renders *smaller* than the 12 pt default, not larger. Sizes derived from other widgets must come
+from `widget.fontMetrics()` at construction time (`lineSpacing()` for a text box's height,
+`horizontalAdvance()` for a field's width) rather than from a pixel constant, for the same reason.
+
+The sidebar of the main window is the documented exception: it uses explicit pixel sizes
+throughout (17-20 px), so a new control there matches its neighbours (`combo_source` is 18 px,
+like `combo_port` beside it).
+
+**How this section came to exist, because the mistake is easy to repeat.** MULTI CAPTURE (§7.20)
+was written with body text at 13-15 px, which looked small next to its own table headers. The
+first attempt to fix it set `font-size: 17px` on the whole window, "measured" as the header size
+from an instance run under `QT_QPA_PLATFORM=offscreen`. That measurement was worthless: the
+offscreen platform has no real font backend, reports a stub family, and its `QFontMetrics` do not
+correspond to anything on screen. The result on the real display was the opposite of the
+intention — the body text stayed small and **the headers shrank**, because a 17 px constant had
+replaced their DPI-scaled 12 pt. Font appearance is verified on screen, never offscreen.
+
 ### Color convention (curves and values)
 
 | Color | Meaning |
@@ -1782,6 +1900,28 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.46 — 2026-09-09
+
+**Multi-board UDP, phase F3 — simultaneous capture (§4.8 F3, new §7.20).** New module-level
+`LabCaptureWriter`, extracted from `PPGMonitor._write_lab_capture_row` and the `_lab_capture_*`
+attributes, so the single capture and the new multi-board capture share one copy of the column
+indexing; `is_lab_capturing` becomes a read-only property over it. New `MultiCaptureWindow` and
+its sidebar button record several boards at once, one CSV per board, written from per-board
+reader queues (`UdpBoard.capture_q`, bounded, overflow counted) by
+`PPGMonitor._drain_multi_capture()` on the main thread — so the ACTIVE board is not special and a
+source switch mid-run does not affect a capture. Every multi-board CSV carries `HOST_T_US`, the
+arrival time of the datagram on this PC (D6). New module-level `frame_xor_ok()` validates the
+checksum on that path, which the drain's inline check does not cover; rejected frames are counted
+per board and never written. Starting a capture sends the requested frame mode to each selected
+board (`send_cmd_to_ip()`), without which their 13 analog columns would all be `-1`.
+
+**Fix: a capture asked for N samples wrote N + 5.** The auto-stop is deferred with
+`singleShot(0)`, so the drain wrote out the frames already queued. Measured at exactly 605 rows
+for a target of 600 on three runs each side of the refactor, so a pre-existing defect rather than
+a regression. `LabCaptureWriter.write_row()` is now self-limiting and the row count is exact;
+continuous captures (`target = 0`) are unaffected. Row formatting was verified identical to the
+pre-refactor implementation over 54 real and synthetic frames × 2 column specs.
 
 ### v1.45 — 2026-09-09
 

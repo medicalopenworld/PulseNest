@@ -219,6 +219,11 @@ BAUD             = 921600
 UDP_DEFAULT_PORT = 5005   # must match UDP_TARGET_PORT in include/wifi_config.h
 UDP_CMD_PORT     = 5006   # must match UDP_CMD_PORT in include/wifi_config.h
 UDP_BATCH_SIZE   = 5      # must match UDP_BATCH_SIZE in src/main.cpp: data frames per datagram
+# Multi-board capture (spec §4.8 F3)
+# 25 000 frames = 50 s at 500 Hz. The reader must never block on a writer, so a board's capture
+# queue is bounded and an overflow is counted and reported rather than growing without limit:
+# it means the Qt thread stopped keeping up, which has to be visible.
+UDP_CAPTURE_QUEUE_MAX = 25000
 # Multi-board reception (spec §4.8)
 UDP_LOST_TIMEOUT_S   = 2.0    # a board silent for this long is flagged LOST (never auto-replaced)
 UDP_NET_SUMMARY_S    = 10.0   # period of the per-board "# NET" counters line in UDP COM
@@ -1563,6 +1568,26 @@ def _patch_viewbox_menu():
                         w.setMinimumWidth(360)
     _VBMenu.__init__ = _patched
 _patch_viewbox_menu()
+
+
+def frame_xor_ok(line: bytes) -> bool:
+    """True if `line` carries a valid NMEA-style `*XX` XOR checksum (§4.5).
+
+    Used by the multi-board capture path, which writes rows outside the drain's inline
+    validation. A frame with no `*XX` field, or a malformed one, is rejected: a capture CSV is
+    the input of the regression set, so an unvalidated row is worse than a missing one.
+    """
+    star = line.rfind(b'*')
+    if star < 1 or len(line) - star != 3:
+        return False
+    try:
+        expected = int(line[star + 1:], 16)
+    except ValueError:
+        return False
+    chk = 0
+    for c in line[1:star]:
+        chk ^= c
+    return chk == expected
 
 
 def _make_tooltip(name: str, text: str, src: str = "") -> str:
@@ -10753,6 +10778,131 @@ class _FullClickCheckBox(QtWidgets.QCheckBox):
         return self.rect().contains(pos)
 
 
+class LabCaptureWriter:
+    """One capture CSV: header, rows, notes and counters for a single board.
+
+    Extracted from `PPGMonitor._write_lab_capture_row` and the `_lab_capture_*` attributes
+    (v1.46, spec §4.8 F3) so that the single capture driven by LabCaptureWindow and a
+    simultaneous multi-board capture are the same code rather than two copies of the column
+    indexing — the part that silently produces a well-formed row of garbage when it is wrong.
+
+    Owns no Qt object and touches no UI: the caller reads `count` / `target` and decides what to
+    display. `write_row()` returns True on the sample that reaches the target, so the auto-stop
+    policy also stays with the caller.
+
+    Not thread-safe: one instance is written by one thread. The single capture is written by the
+    drain on the main thread; the multi-board capture routes every board's lines through
+    per-board queues so that all writers also run on the main thread (§4.8 F3).
+    """
+
+    # Only these frames carry samples. Anything else on the stream ($CFG? replies, $ERR, ...)
+    # must never become a CSV row: the fields would be indexed against the column spec and
+    # written as a well-formed row of garbage (e.g. "sr=500,numav=8,...").
+    _DATA_TAGS = ("M1", "M2", "M3", "M4")
+
+    # M2 parts layout: [0]=M2 [1]=cnt [2]=LED2 [3]=LED1 [4]=ALED2 [5]=ALED1 [6]=LED2_SUB [7]=LED1_SUB
+    _M2_MAP = {3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7}
+
+    # RF1/RF2 wire values ("500K", ...) -> ohms, for the RF1_OHM/RF2_OHM CSV columns.
+    # Mirrors incunest_afe4490.h's AFE4490RF enum / afeRFToStr() exactly (7 fixed values) —
+    # a closed lookup table, not a generic "K"/"M" suffix parser, so an unexpected string
+    # (firmware mismatch, corrupted frame) falls through to "-1" instead of silently misparsing.
+    _RF_STR_TO_OHM = {
+        "10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
+        "250K": 250e3, "500K": 500e3, "1M": 1e6,
+    }
+    _RF_COLS = ("FW_RF1_OHM", "FW_RF2_OHM")
+
+    # Arrival time of the datagram on the PC, in microseconds (D6). Optional first column: it is
+    # the only clock shared by several boards, so it is what aligns their CSVs. Resolution is
+    # limited to the datagram, not the sample: the five frames of a batch share one stamp
+    # (~10 ms granularity at 100 datagrams/s).
+    HOST_T_COL = "HOST_T_US"
+
+    def __init__(self, filepath, col_spec, target=0, host_t_us=False, label=""):
+        self.filepath  = filepath
+        self.col_spec  = col_spec
+        self.target    = target      # 0 = continuous
+        self.host_t_us = host_t_us
+        self.label     = label       # free text for logs (a board's ip/board/mac)
+        self.count     = 0           # rows written
+        self.skipped   = 0           # lines handed in that were not data frames
+        self._f        = None
+
+    @property
+    def active(self):
+        return self._f is not None
+
+    def header(self):
+        names = [csv_name for csv_name, _ in self.col_spec]
+        return ([self.HOST_T_COL] if self.host_t_us else []) + names
+
+    def open(self, pre_notes=""):
+        """Open the file and write pre-notes + header. Raises on failure; the caller logs."""
+        f = open(self.filepath, "w", buffering=1, encoding="cp1252", errors="replace")
+        if pre_notes.strip():
+            for txt in pre_notes.splitlines():
+                f.write(f"# {txt}\n")
+        f.write(",".join(self.header()) + "\n")
+        self._f = f
+
+    def format_row(self, raw_line, host_t_us=None):
+        """The pure part: one raw frame -> list of CSV values, or None if it is not a data frame."""
+        parts = raw_line[1:].split('*')[0].split(',')   # strip '$' and checksum
+        n = len(parts)
+        if n < 1 or parts[0] not in self._DATA_TAGS:
+            return None
+        is_m2 = (parts[0] == "M2")
+        row_vals = []
+        for csv_name, m1_idx in self.col_spec:
+            if is_m2:
+                mapped = self._M2_MAP.get(m1_idx, -1)
+                val = parts[mapped] if 0 <= mapped < n else "-1"
+            else:
+                val = parts[m1_idx] if m1_idx < n else "-1"
+            # RF1/RF2 arrive as a display string ("500K"), not a plain number like every other
+            # column — convert to ohms so time-series tools (this CSV's whole purpose) can read
+            # it. Unknown/out-of-range values (incl. our own "-1" fallback above, and firmware's
+            # "?" for an invalid enum) fall through unconverted to "-1".
+            if csv_name in self._RF_COLS:
+                val = str(self._RF_STR_TO_OHM.get(val, -1))
+            row_vals.append(val)
+        if self.host_t_us:
+            row_vals.insert(0, "-1" if host_t_us is None else str(host_t_us))
+        return row_vals
+
+    def write_row(self, raw_line, host_t_us=None):
+        """Write one CSV row. Returns True on the row that reaches `target`. Called at 500 Hz.
+
+        Self-limiting: once `target` rows are written nothing more is accepted, so a capture asked
+        for N samples contains exactly N. Before v1.46 the only brake was the caller's auto-stop,
+        deferred with `singleShot(0)`, so the drain wrote out the rest of the datagrams already
+        queued: measured **605 rows for a target of 600**, on three runs of each of the two
+        versions. Harmless for analysis, wrong for a file whose length is part of its identity,
+        and unworkable for the multi-board capture, where N writers cannot depend on one caller's
+        stop timing.
+        """
+        if self.target > 0 and self.count >= self.target:
+            return False
+        row_vals = self.format_row(raw_line, host_t_us)
+        if row_vals is None:
+            self.skipped += 1
+            return False
+        self._f.write(",".join(row_vals) + "\n")
+        self.count += 1
+        return self.target > 0 and self.count >= self.target
+
+    def close(self, post_notes=""):
+        """Flush post-notes, close the file, return the row count."""
+        if self._f is not None:
+            if post_notes.strip():
+                for txt in post_notes.splitlines():
+                    self._f.write(f"# {txt}\n")
+            self._f.close()
+            self._f = None
+        return self.count
+
+
 class LabCaptureWindow(QtWidgets.QMainWindow):
     """Controlled lab capture window.
 
@@ -10827,14 +10977,9 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         ("RF2_OHM",    "FW_RF2_OHM",    35, False),
     ]
 
-    # RF1/RF2 wire values ("500K", ...) -> ohms, for the RF1_OHM/RF2_OHM CSV columns above.
-    # Mirrors incunest_afe4490.h's AFE4490RF enum / afeRFToStr() exactly (7 fixed values) —
-    # a closed lookup table, not a generic "K"/"M" suffix parser, so an unexpected string (firmware
-    # mismatch, corrupted frame) falls through to "-1" instead of silently misparsing.
-    _RF_STR_TO_OHM = {
-        "10K": 10e3, "25K": 25e3, "50K": 50e3, "100K": 100e3,
-        "250K": 250e3, "500K": 500e3, "1M": 1e6,
-    }
+    # The table itself now lives in LabCaptureWriter, next to the code that applies it; this
+    # alias keeps the historical name working for anything that reads it from the window.
+    _RF_STR_TO_OHM = LabCaptureWriter._RF_STR_TO_OHM
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -11497,6 +11642,265 @@ class _StatsHighlightDelegate(QtWidgets.QStyledItemDelegate):
                 painter.restore()
 
 
+class MultiCaptureWindow(QtWidgets.QWidget):
+    """Record several boards at once, one CSV per board (spec §4.8 F3).
+
+    Deliberately not a second copy of LabCaptureWindow: no HGAC handling, no deferred start on a
+    `$CFG` reply, no algorithm interaction. The rows are the fields off the wire, written by one
+    `LabCaptureWriter` per board straight from the reader's queues, so a board that is merely
+    PRESENT is recorded exactly like the ACTIVE one and nothing here depends on which board feeds
+    the plots. Every capture carries the `HOST_T_US` column, the only clock the boards share.
+    """
+
+    _COL_HEADERS = ("", "Board", "MAC", "IP", "State", "Rows", "Dropped")
+    _NOMINAL_SR_HZ = 500   # for the "≈ N s" hint only; the real rate is per board in its $CFG
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self._checks = {}        # ip → QCheckBox
+        self._row_of = {}        # ip → table row
+        self.setWindowTitle("MULTI CAPTURE")
+        # NO declarar font-size aqui ni en los controles de abajo: el defecto de la aplicacion son
+        # 12 pt, en PUNTOS, que escalan con el DPI de la pantalla. Cualquier valor en px es fijo y
+        # en un monitor escalado sale mas pequeno que el defecto - que es justo lo que paso al
+        # intentar "igualar" esta ventana a 17 px: las cabeceras de la tabla encogieron. Las
+        # cabeceras y los QLabel sin hoja de estilo caen en el defecto, asi que la forma de que
+        # todo sea homogeneo es no fijar nada. Ver spec §10.
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._setup_ui()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        geom = s.value("MultiCaptureWindow/geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(900, 560)
+        self._spin_samples.setValue(s.value("MultiCaptureWindow/samples", 32500, type=int))
+        self._prefix.setText(s.value("MultiCaptureWindow/prefix", "MULTI", type=str))
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._refresh_boards)
+        self._timer.start()
+        self._refresh_boards()
+
+    # ── UI ──────────────────────────────────────────────────────────────────────
+    def _setup_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+
+        intro = QtWidgets.QLabel(
+            "One CSV per board, written straight from the wire. Boards in any state can be "
+            "recorded; the ACTIVE one is not special here.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #AAAAAA;")
+        layout.addWidget(intro)
+
+        self._table = QtWidgets.QTableWidget(0, len(self._COL_HEADERS))
+        self._table.setHorizontalHeaderLabels(self._COL_HEADERS)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self._table.setStyleSheet(
+            "QTableWidget { background-color: #1A1A1A; gridline-color: #333333; }"
+            "QHeaderView::section { background-color: #202020; color: #AAAAAA; padding: 4px; "
+            "border: 1px solid #333333; }")
+        self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self._table.setToolTip(_make_tooltip(
+            "Boards",
+            "Every board the UDP receiver has seen. Tick the ones to record. Rows is how many "
+            "samples that board's CSV holds so far; Dropped is frames lost because its capture "
+            "queue filled up, which means the main thread could not keep up.",
+            src="PPGMonitor.udp_boards_snapshot()"))
+        layout.addWidget(self._table, stretch=1)
+
+        form = QtWidgets.QHBoxLayout()
+        form.addWidget(QtWidgets.QLabel("Samples per board:"))
+        self._spin_samples = QtWidgets.QSpinBox()
+        self._spin_samples.setRange(0, 10_000_000)
+        self._spin_samples.setSingleStep(500)
+        self._spin_samples.setStyleSheet("background-color: #2A2A2A; color: #FFDD44;")
+        self._spin_samples.valueChanged.connect(self._update_duration_hint)
+        self._spin_samples.setToolTip(_make_tooltip(
+            "Samples per board",
+            "Rows to write per board, then stop by itself. 0 = continuous until STOP. Every CSV "
+            "holds exactly this many rows. The equivalent duration assumes 500 Hz; the real rate "
+            "of each board is in its own $CFG.",
+            src="MultiCaptureWindow/samples"))
+        form.addWidget(self._spin_samples)
+        self._lbl_duration = QtWidgets.QLabel("")
+        self._lbl_duration.setStyleSheet("color: #AAAAAA;")
+        form.addWidget(self._lbl_duration)
+        form.addSpacing(18)
+        form.addWidget(QtWidgets.QLabel("Filename prefix:"))
+        self._prefix = QtWidgets.QLineEdit()
+        self._prefix.setMinimumWidth(self._prefix.fontMetrics().horizontalAdvance("M" * 24))
+        self._prefix.setStyleSheet("background-color: #2A2A2A; color: #FFDD44;")
+        self._prefix.setToolTip(_make_tooltip(
+            "Filename prefix",
+            "Each file is &lt;prefix&gt;_&lt;board&gt;_&lt;MAC tail&gt;_&lt;timestamp&gt;.csv in the "
+            "captures/ directory. The board and MAC are in the name because the CSVs of one run "
+            "are only useful together, and a capture whose board cannot be identified is unusable.",
+            src="MultiCaptureWindow/prefix"))
+        form.addWidget(self._prefix)
+        form.addStretch(1)
+        layout.addLayout(form)
+
+        notes = QtWidgets.QHBoxLayout()
+        for attr, title, tip in (
+                ("_pre_notes", "Pre-capture notes",
+                 "Written as # comment lines at the top of every CSV of this run, before the "
+                 "header. The board's own identity line is appended automatically."),
+                ("_post_notes", "Post-capture notes",
+                 "Written as # comment lines at the end of every CSV of this run, including when "
+                 "the capture stops by itself on reaching the sample target.")):
+            box = QtWidgets.QVBoxLayout()
+            lbl = QtWidgets.QLabel(title)
+            lbl.setStyleSheet("color: #AAAAAA;")
+            box.addWidget(lbl)
+            edit = QtWidgets.QPlainTextEdit()
+            # Alto en lineas de la fuente que este en uso, no en pixeles: con el DPI escalado un
+            # valor fijo recorta el texto.
+            edit.setFixedHeight(edit.fontMetrics().lineSpacing() * 4 + 14)
+            edit.setStyleSheet("background-color: #1A1A1A; color: #E0E0E0; "
+                               "border: 1px solid #333333;")
+            edit.setToolTip(_make_tooltip(title, tip))
+            setattr(self, attr, edit)
+            box.addWidget(edit)
+            notes.addLayout(box)
+        layout.addLayout(notes)
+
+        bar = QtWidgets.QHBoxLayout()
+        self.btn_start = QtWidgets.QPushButton("START")
+        self.btn_start.setFixedWidth(160)
+        self.btn_start.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_start.clicked.connect(self._on_start_stop)
+        self.btn_start.setToolTip(_make_tooltip(
+            "START",
+            "Open one CSV per ticked board and start recording. Each board is also asked for the "
+            "current frame mode, because a board that was never asked stays in $M3 and its 13 "
+            "analog columns would be written as -1.",
+            src="PPGMonitor.start_multi_capture()"))
+        bar.addWidget(self.btn_start)
+        self._lbl_status = QtWidgets.QLabel("Idle")
+        self._lbl_status.setStyleSheet("color: #AAAAAA;")
+        self._lbl_status.setWordWrap(True)
+        bar.addWidget(self._lbl_status, stretch=1)
+        layout.addLayout(bar)
+        self._update_duration_hint()
+
+    def _update_duration_hint(self):
+        n = self._spin_samples.value()
+        self._lbl_duration.setText("continuous" if n == 0
+                                   else f"≈ {n / self._NOMINAL_SR_HZ:.0f} s at {self._NOMINAL_SR_HZ} Hz")
+
+    # ── board table ─────────────────────────────────────────────────────────────
+    def _refresh_boards(self):
+        mm = self.main_monitor
+        if mm is None:
+            return
+        boards = mm.udp_boards_snapshot()
+        running = bool(mm._multi_writers)
+        colours = {"ACTIVE": "#44AAFF", "PRESENT": "#AAAAAA", "LOST": "#FF4444"}
+        if [b["ip"] for b in boards] != list(self._row_of):
+            # Rebuild only when the set of boards changes: a checkbox the user has just ticked
+            # must not be dropped on every tick.
+            keep = {ip: cb.isChecked() for ip, cb in self._checks.items()}
+            self._table.setRowCount(0)
+            self._checks, self._row_of = {}, {}
+            for r, b in enumerate(boards):
+                self._table.insertRow(r)
+                cb = _FullClickCheckBox()
+                cb.setChecked(keep.get(b["ip"], True))
+                self._checks[b["ip"]] = cb
+                self._row_of[b["ip"]] = r
+                self._table.setCellWidget(r, 0, cb)
+                for c in range(1, len(self._COL_HEADERS)):
+                    self._table.setItem(r, c, QtWidgets.QTableWidgetItem(""))
+        for b in boards:
+            r = self._row_of[b["ip"]]
+            w = mm._multi_writers.get(b["ip"])
+            vals = ((b["board"] or "?").replace("incunest_", ""), b["mac"] or "?", b["ip"],
+                    b["state"], str(w.count) if w else "—",
+                    str(b["capture_overflow"]) if b["capture_overflow"] else "")
+            for c, txt in enumerate(vals, start=1):
+                item = self._table.item(r, c)
+                item.setText(txt)
+                if c == 4:
+                    item.setForeground(QtGui.QBrush(QtGui.QColor(colours[b["state"]])))
+                elif c == 6 and txt:
+                    item.setForeground(QtGui.QBrush(QtGui.QColor("#FF4444")))
+            self._checks[b["ip"]].setEnabled(not running)
+        self.btn_start.setText("STOP" if running else "START")
+        self._spin_samples.setEnabled(not running)
+        self._prefix.setEnabled(not running)
+
+    # ── start / stop ────────────────────────────────────────────────────────────
+    def _on_start_stop(self):
+        mm = self.main_monitor
+        if mm is None:
+            return
+        if mm._multi_writers:
+            mm.stop_multi_capture(post_notes=self.post_notes_text())
+            self._refresh_boards()
+            return
+        ips = [ip for ip, cb in self._checks.items() if cb.isChecked()]
+        if not ips:
+            self._lbl_status.setText("No board ticked.")
+            return
+        os.makedirs(CAPTURES_DIR, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        prefix = self._prefix.text().strip() or "MULTI"
+        boards = {b["ip"]: b for b in mm.udp_boards_snapshot()}
+        paths = {}
+        for ip in ips:
+            b = boards.get(ip, {})
+            board = (b.get("board") or "board").replace("incunest_", "")
+            mac_tail = (b.get("mac") or "").replace(":", "")[-6:] or ip.rsplit(".", 1)[-1]
+            paths[ip] = os.path.join(CAPTURES_DIR, f"{prefix}_{board}_{mac_tail}_{stamp}.csv")
+        col_spec = [(csv_name, idx) for _lbl, csv_name, idx, _mand in LabCaptureWindow._COLS]
+        started = mm.start_multi_capture(ips, self._spin_samples.value(), col_spec, paths,
+                                         pre_notes=self._pre_notes.toPlainText())
+        if not started:
+            self._lbl_status.setText("Could not start — see the main log.")
+        else:
+            self._lbl_status.setText(
+                f"Recording {len(started)} board(s) into {CAPTURES_DIR}"
+                + (f" — {len(ips) - len(started)} skipped" if len(started) != len(ips) else ""))
+        self._refresh_boards()
+
+    def post_notes_text(self):
+        return self._post_notes.toPlainText()
+
+    # ── callbacks from PPGMonitor ───────────────────────────────────────────────
+    def on_capture_progress(self, counts):
+        target = self._spin_samples.value()
+        total = sum(counts.values())
+        if target > 0:
+            self._lbl_status.setText(
+                f"Recording — {min(counts.values())}/{target} on the slowest board, "
+                f"{total} rows written")
+        else:
+            self._lbl_status.setText(f"Recording (continuous) — {total} rows written")
+
+    def on_capture_done(self, totals):
+        self._lbl_status.setText(
+            "Done: " + ", ".join(f"{ip.rsplit('.', 1)[-1]}={n}" for ip, n in sorted(totals.items()))
+            + f" rows in {CAPTURES_DIR}")
+        self._refresh_boards()
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("MultiCaptureWindow/geometry", self.saveGeometry())
+        s.setValue("MultiCaptureWindow/samples", self._spin_samples.value())
+        s.setValue("MultiCaptureWindow/prefix", self._prefix.text())
+        if self.main_monitor is not None:
+            # A capture in progress is not silently abandoned with its files half written.
+            if self.main_monitor._multi_writers:
+                self.main_monitor.stop_multi_capture(post_notes=self.post_notes_text())
+            self.main_monitor.btn_multi_capture.setChecked(False)
+            self.main_monitor.multi_capture_window = None
+        super().closeEvent(event)
+
+
 class UdpBoard:
     """One board seen on the UDP data port: identity learned from its $CFG frame plus network
     counters (spec §4.8). Keyed by source IP in PPGMonitor._udp_boards.
@@ -11526,6 +11930,11 @@ class UdpBoard:
         self.cfg_requests = 0
         self.cfg_last_req_t = now
         self.lost = False
+        # Multi-board capture (§4.8 F3). None = not being captured, which is the normal state and
+        # costs one attribute test per line in the reader.
+        self.capture_q = None
+        self.capture_queued = 0     # data frames handed to the queue
+        self.capture_overflow = 0   # data frames dropped because the queue was full
         self._sum_t, self._sum_datagrams, self._sum_bytes, self._sum_frames = now, 0, 0, 0
 
     @staticmethod
@@ -11591,7 +12000,8 @@ class UdpBoard:
             'other_lines': self.other_lines, 'partial_datagrams': self.partial_datagrams,
             'max_line_len': self.max_line_len, 'gaps_air': self.gaps_air,
             'gaps_queue': self.gaps_queue, 'bad_chk': self.bad_chk, 'dropped': self.dropped,
-            'cfg_requests': self.cfg_requests,
+            'cfg_requests': self.cfg_requests, 'capturing': self.capture_q is not None,
+            'capture_queued': self.capture_queued, 'capture_overflow': self.capture_overflow,
         }
 
 
@@ -11858,12 +12268,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.auto_save_timer.timeout.connect(self.auto_stop_save)
 
         self.lab_capture_window     = None
-        self.is_lab_capturing       = False
-        self._lab_capture_file      = None
-        self._lab_capture_count     = 0
-        self._lab_capture_target    = 0
-        self._lab_capture_col_spec  = []
-        self._lab_capture_filepath  = ""
+        self._lab_capture           = None   # LabCaptureWriter while a capture is running
+        self._multi_writers         = {}     # ip → LabCaptureWriter while a multi-board capture runs
+        self._multi_bad_chk         = {}     # ip → frames rejected by checksum during it
+        self.multi_capture_window   = None
 
         self._stats_timer = QtCore.QTimer()
         self._stats_timer.timeout.connect(self._update_stats_table)
@@ -11942,8 +12350,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # SOURCE: which stream feeds plots, algorithms and captures (§4.8 F2). Items are rebuilt
         # every second from the UDP board registry by _refresh_source_combo().
         self.combo_source = QtWidgets.QComboBox()
+        # 18px como su vecino combo_port: la barra lateral si usa tamanos en px de forma
+        # consistente, y este quedaba tres pixeles por debajo del de al lado.
         self.combo_source.setStyleSheet(
-            "background-color: #2A2A2A; color: #44AAFF; font-size: 15px; padding: 3px;")
+            "background-color: #2A2A2A; color: #44AAFF; font-size: 18px; padding: 3px;")
         self.combo_source.setToolTip(_make_tooltip(
             "SOURCE",
             "Data source feeding the plots, algorithms and captures. "
@@ -12012,6 +12422,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "CSV captures for offline algorithm analysis.<br/>"
             "* = runs at full 500 Hz rate, unaffected by the Decimation setting."))
         self.sidebar_layout.addWidget(self.btn_lab_capture)
+
+        self.btn_multi_capture = QtWidgets.QPushButton("MULTI CAPTURE *")
+        self.btn_multi_capture.setCheckable(True)
+        self.btn_multi_capture.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_multi_capture.clicked.connect(self.toggle_multi_capture)
+        self.btn_multi_capture.setToolTip(_make_tooltip(
+            "MULTI CAPTURE *",
+            "Record several boards at the same time, one CSV per board, straight from the wire "
+            "(§4.8 F3). Independent of the SOURCE selector: boards that are only PRESENT are "
+            "recorded too. Every CSV carries HOST_T_US, the arrival time on this PC, which is "
+            "the only clock the boards share.<br/>"
+            "* = full 500 Hz rate, unaffected by the Decimation setting."))
+        self.sidebar_layout.addWidget(self.btn_multi_capture)
 
         self.sidebar_layout.addSpacing(20)
 
@@ -12824,6 +13247,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
         elif self.ser is not None and self.ser.is_open:
             self.ser.write(data)
 
+    def send_cmd_to_ip(self, ip, data: bytes):
+        """Send a command to one specific board over UDP, whether or not it is the active source.
+
+        `send_cmd()` always targets the active board; the multi-board capture needs to put every
+        board it records into `$M4` (§4.8 F3), otherwise the 13 analog columns of the boards that
+        were never asked would be written as "-1" — a well-formed CSV of missing data.
+        """
+        if self._cmd_udp_sock is None:
+            import socket as _socket
+            self._cmd_udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        self._cmd_udp_sock.sendto(data, (ip, UDP_CMD_PORT))
+
     def _on_cfg_frame_received(self, line):
         """Parse a $CFG frame, log each field, and deliver formatted text to _cfg_listener."""
         kv = {}
@@ -13283,27 +13718,37 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.lab_capture_window.close()
                 self.lab_capture_window = None
 
+    @property
+    def is_lab_capturing(self):
+        """True while the single (active-board) capture is recording. Read-only since v1.46:
+        the state belongs to `_lab_capture`, so there is no second copy to fall out of step."""
+        return self._lab_capture is not None and self._lab_capture.active
+
+    _LAB_CAPTURE_PROGRESS_EVERY = 50
+
+    def toggle_multi_capture(self):
+        if self.btn_multi_capture.isChecked():
+            self.multi_capture_window = MultiCaptureWindow(self)
+            self.multi_capture_window.show()
+        else:
+            if self.multi_capture_window is not None:
+                self.multi_capture_window.main_monitor = None
+                self.multi_capture_window.close()
+                self.multi_capture_window = None
+
     def start_lab_capture(self, target: int, col_spec: list,
                           filepath: str, pre_notes: str):
         """Open the capture file, write pre-notes and header, start counting."""
         if self.is_paused:
             self.log("Cannot capture LAB while paused")
             return
+        writer = LabCaptureWriter(filepath, col_spec, target=target)
         try:
-            f = open(filepath, "w", buffering=1, encoding="cp1252", errors="replace")
-            if pre_notes.strip():
-                for txt in pre_notes.splitlines():
-                    f.write(f"# {txt}\n")
-            f.write(",".join(csv_name for csv_name, _ in col_spec) + "\n")
-            self._lab_capture_file = f
+            writer.open(pre_notes)
         except Exception as e:
             self.log(f"Error opening lab capture file: {e}")
             return
-        self.is_lab_capturing      = True
-        self._lab_capture_count    = 0
-        self._lab_capture_target   = target
-        self._lab_capture_col_spec = col_spec
-        self._lab_capture_filepath = filepath
+        self._lab_capture = writer
         mode = f"{target} samples" if target > 0 else "continuous"
         self.log(f"LAB CAPTURE recording ({mode}): {os.path.basename(filepath)}")
         if self.lab_capture_window is not None:
@@ -13313,60 +13758,136 @@ class PPGMonitor(QtWidgets.QMainWindow):
         """Flush post-notes, close the file, update the window."""
         if not self.is_lab_capturing:
             return
-        self.is_lab_capturing = False
-        count    = self._lab_capture_count
-        filepath = self._lab_capture_filepath
-        if self._lab_capture_file:
-            if post_notes.strip():
-                for txt in post_notes.splitlines():
-                    self._lab_capture_file.write(f"# {txt}\n")
-            self._lab_capture_file.close()
-            self._lab_capture_file = None
-        self.log(f"LAB CAPTURE done: {count} samples → {os.path.basename(filepath)}")
+        writer = self._lab_capture
+        self._lab_capture = None
+        count = writer.close(post_notes)
+        self.log(f"LAB CAPTURE done: {count} samples → {os.path.basename(writer.filepath)}")
         if self.lab_capture_window is not None:
-            self.lab_capture_window.on_capture_done(count, filepath)
+            self.lab_capture_window.on_capture_done(count, writer.filepath)
 
-    # Only these frames carry samples. Anything else on the stream ($CFG? replies,
-    # $ERR, ...) must never become a CSV row: the fields would be indexed against the
-    # column spec and written as a well-formed row of garbage (e.g. "sr=500,numav=8,...").
-    _LAB_CAPTURE_DATA_TAGS = ("M1", "M2", "M3", "M4")
+    # ── Multi-board capture (§4.8 F3) ───────────────────────────────────────────
+    def start_multi_capture(self, ips, target: int, col_spec: list, paths: dict,
+                            pre_notes: str = "", set_frame_mode: bool = True):
+        """Record several boards at once, one CSV per board, `paths` mapping ip → filepath.
+
+        Independent of the algorithm pipeline: the rows are the fields off the wire, taken from
+        the reader's per-board queues, so which board is the active source does not matter and
+        the boards that are merely PRESENT are recorded too. Returns the ips actually started.
+        """
+        if self._multi_writers:
+            self.log("MULTI CAPTURE already running")
+            return []
+        started = []
+        for ip in ips:
+            with self._udp_boards_lock:
+                b = self._udp_boards.get(ip)
+                label = b.label() if b is not None else ip
+            if b is None:
+                self.log(f"MULTI CAPTURE: {ip} is not registered, skipped")
+                continue
+            writer = LabCaptureWriter(paths[ip], col_spec, target=target,
+                                      host_t_us=True, label=label)
+            try:
+                writer.open(pre_notes + (f"\n{label}" if pre_notes else label))
+            except Exception as e:
+                self.log(f"MULTI CAPTURE: cannot open {paths[ip]}: {e}")
+                continue
+            self._multi_writers[ip] = writer
+            self._multi_bad_chk[ip] = 0
+            with self._udp_boards_lock:
+                b.capture_q = queue.Queue(maxsize=UDP_CAPTURE_QUEUE_MAX)
+                b.capture_queued = b.capture_overflow = 0
+            if set_frame_mode:
+                # Boards boot in $M3 and only the active one is ever asked for $M4.
+                try:
+                    self.send_cmd_to_ip(ip, f"$MODE,{self.frame_mode}\n".encode())
+                except OSError as e:
+                    self.log(f"MULTI CAPTURE: ${self.frame_mode} to {ip} failed: {e}")
+            started.append(ip)
+        if started:
+            mode = f"{target} samples" if target > 0 else "continuous"
+            self.log(f"MULTI CAPTURE recording ({mode}) on {len(started)} board(s)")
+        return started
+
+    def stop_multi_capture(self, post_notes: str = ""):
+        """Close every writer, release the reader-side queues, report per-board totals."""
+        if not self._multi_writers:
+            return {}
+        totals = {}
+        for ip, writer in self._multi_writers.items():
+            with self._udp_boards_lock:
+                b = self._udp_boards.get(ip)
+                if b is not None:
+                    b.capture_q = None
+                    overflow = b.capture_overflow
+                else:
+                    overflow = 0
+            count = writer.close(post_notes)
+            totals[ip] = count
+            extra = ""
+            if self._multi_bad_chk.get(ip):
+                extra += f", {self._multi_bad_chk[ip]} rejected by checksum"
+            if overflow:
+                extra += f", {overflow} DROPPED (capture queue full)"
+            self.log(f"MULTI CAPTURE {writer.label}: {count} samples → "
+                     f"{os.path.basename(writer.filepath)}{extra}")
+        self._multi_writers = {}
+        self._multi_bad_chk = {}
+        if self.multi_capture_window is not None:
+            self.multi_capture_window.on_capture_done(totals)
+        return totals
+
+    def _drain_multi_capture(self):
+        """Main thread, once per tick: write the queued frames of every captured board.
+
+        All writers run here, so none of them needs a lock. The checksum is validated here too
+        (the drain's inline check only covers the active board's queue), and a bad frame is
+        counted and skipped rather than written.
+        """
+        for ip, writer in self._multi_writers.items():
+            with self._udp_boards_lock:
+                b = self._udp_boards.get(ip)
+                q = b.capture_q if b is not None else None
+            if q is None:
+                continue
+            while True:
+                try:
+                    raw, host_t_us = q.get_nowait()
+                except queue.Empty:
+                    break
+                if not frame_xor_ok(raw):
+                    self._multi_bad_chk[ip] = self._multi_bad_chk.get(ip, 0) + 1
+                    continue
+                # The writer is self-limiting, so the queue is drained to the end whatever its
+                # target: leaving frames behind would only overflow it before the stop lands.
+                writer.write_row(raw.decode('utf-8', errors='ignore'), host_t_us)
+        # Completion is read from the writers, not from what happened in this tick: boards reach
+        # their target on different ticks, and a writer that is already full reports nothing.
+        if all(w.target > 0 and w.count >= w.target for w in self._multi_writers.values()):
+            post = ""
+            if self.multi_capture_window is not None:
+                post = self.multi_capture_window.post_notes_text()
+            QtCore.QTimer.singleShot(0, lambda: self.stop_multi_capture(post_notes=post))
+        elif self.multi_capture_window is not None:
+            self.multi_capture_window.on_capture_progress(
+                {ip: w.count for ip, w in self._multi_writers.items()})
 
     def _write_lab_capture_row(self, raw_line: str):
-        """Write one CSV row from a raw serial frame. Called at 500 Hz."""
-        parts = raw_line[1:].split('*')[0].split(',')   # strip '$' and checksum
-        n = len(parts)
-        if n < 1 or parts[0] not in self._LAB_CAPTURE_DATA_TAGS:
-            return
-        is_m2 = (parts[0] == "M2")
-        # M2 parts layout: [0]=M2 [1]=cnt [2]=LED2 [3]=LED1 [4]=ALED2 [5]=ALED1 [6]=LED2_SUB [7]=LED1_SUB
-        _M2_MAP = {3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7}
+        """Write one CSV row from a raw frame, then the UI side of it. Called at 500 Hz."""
+        writer = self._lab_capture
+        before = writer.count
+        target_reached = writer.write_row(raw_line)
 
-        row_vals = []
-        for csv_name, m1_idx in self._lab_capture_col_spec:
-            if is_m2:
-                mapped = _M2_MAP.get(m1_idx, -1)
-                val = parts[mapped] if 0 <= mapped < n else "-1"
-            else:
-                val = parts[m1_idx] if m1_idx < n else "-1"
-            # RF1/RF2 arrive as a display string ("500K"), not a plain number like every
-            # other column — convert to ohms so time-series tools (this CSV's whole purpose)
-            # can read it. Unknown/out-of-range values (incl. our own "-1" fallback above, and
-            # firmware's "?" for an invalid enum) fall through unconverted to "-1".
-            if csv_name in ("FW_RF1_OHM", "FW_RF2_OHM"):
-                val = str(LabCaptureWindow._RF_STR_TO_OHM.get(val, -1))
-            row_vals.append(val)
-
-        self._lab_capture_file.write(",".join(row_vals) + "\n")
-        self._lab_capture_count += 1
-
-        # Progress update throttled to every 50 samples
-        if self._lab_capture_count % 50 == 0 and self.lab_capture_window is not None:
-            self.lab_capture_window.on_capture_progress(
-                self._lab_capture_count, self._lab_capture_target)
+        # Progress update throttled to every 50 samples. Only when a row was actually written:
+        # a refused row (target already met, or a non-data line) leaves the count where it was,
+        # and re-reporting the same count on every one of them is noise.
+        if (writer.count != before
+                and writer.count % self._LAB_CAPTURE_PROGRESS_EVERY == 0
+                and self.lab_capture_window is not None):
+            self.lab_capture_window.on_capture_progress(writer.count, writer.target)
 
         # Auto-stop for timed capture
-        if (self._lab_capture_target > 0
-                and self._lab_capture_count >= self._lab_capture_target):
+        if target_reached:
             post = (self.lab_capture_window._post_notes.toPlainText()
                     if self.lab_capture_window else "")
             QtCore.QTimer.singleShot(0, lambda: self.stop_lab_capture(post_notes=post))
@@ -13734,6 +14255,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             except Exception:
                 break
             now = _perf()
+            host_t_us = int(now * 1e6)   # monotonic, arbitrary origin: aligns boards within a session
             src_ip = _addr[0]
             with lock:
                 b = boards.get(src_ip)
@@ -13771,6 +14293,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self._gaps_B += gap
                             self._sig_log.emit(
                                 f"[GAP B/UDP] {gap} samples lost (cnt {b.last_cnt - gap - 1}\u2192{b.last_cnt})")
+                        # Multi-board capture: every captured board goes through its own queue,
+                        # the active one included, so a capture is independent of which board
+                        # feeds the algorithms and of the frame decimation downstream. The stamp
+                        # is the arrival time of the datagram, shared by its five frames.
+                        if b.capture_q is not None:
+                            try:
+                                b.capture_q.put_nowait((line, host_t_us))
+                                b.capture_queued += 1
+                            except queue.Full:
+                                b.capture_overflow += 1
                     else:
                         b.other_lines += 1
                         if line.startswith(b'$CFG,') and b.identity_from_cfg(line):
@@ -14264,6 +14796,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._last_drain_t = _t0_drain
         self._queue_size_buf.append(self._serial_queue.qsize())  # Punto A
         try:
+            # Before the algorithms: a capture must not be starved by rendering or by algorithm
+            # cost, and it is independent of which board is the active source.
+            if self._multi_writers:
+                self._drain_multi_capture()
             _new_data = False
             for _q, _src_com_win in (
                     (self._serial_queue, self.serialcom_window),
@@ -14408,7 +14944,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     csv_line = f"{timestamp},{diff_us:>5},{line}"
 
                     # Lab Capture: full rate (500 Hz), before decimation
-                    if _is_active and self.is_lab_capturing and self._lab_capture_file:
+                    if _is_active and self._lab_capture is not None:
                         self._write_lab_capture_row(line)
 
                     # HR1TEST mirror: 500 Hz (before decimation) — must match firmware _update_hr1()
@@ -15122,8 +15658,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._save_settings()
         if getattr(self, 'is_saving', False) and getattr(self, 'save_file', None):
             self.save_file.close()
-        if getattr(self, 'is_lab_capturing', False) and getattr(self, '_lab_capture_file', None):
-            self._lab_capture_file.close()
+        if getattr(self, '_lab_capture', None) is not None:
+            self._lab_capture.close()
+        for _w in getattr(self, '_multi_writers', {}).values():
+            _w.close()
+        if getattr(self, 'multi_capture_window', None) is not None:
+            self.multi_capture_window.main_monitor = None
+            self.multi_capture_window.close()
         if getattr(self, 'save_file_chk', None):
             self.save_file_chk.close()
         if hasattr(self, '_reader_stop'):

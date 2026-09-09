@@ -14,14 +14,18 @@ Scenario
   5. The user picks SERIAL -> both boards dropped, UDP button LISTEN.
   6. B (active again) goes silent -> UDP button LOST; nothing replaces it.
   7. Fresh UDP connection with B preferred: A' speaks first, B is promoted when identified.
+  8. MULTI CAPTURE records both boards at once: one CSV each, exactly N rows, HOST_T_US present,
+     $MODE sent to every board, and corrupted frames rejected by checksum instead of written.
 
 Usage:  python tools/udp_multiboard_test.py [--live-template]
 Exit code 0 when every check passes.
 """
+import io
 import os
 import re
 import socket
 import sys
+import tempfile
 import threading
 import time
 
@@ -83,9 +87,13 @@ def with_chk(body):
 class FakeBoard(threading.Thread):
     """Streams UDP_BATCH_SIZE frames per datagram at ~100 datagrams/s and answers $CFG?."""
 
-    def __init__(self, ip, mac, board, template, start_cnt, rate_dgram_s=100, batch=5):
+    def __init__(self, ip, mac, board, template, start_cnt, rate_dgram_s=100, batch=5,
+                 corrupt_every=0):
         super().__init__(daemon=True)
         self.ip, self.mac, self.board = ip, mac, board
+        self.corrupt_every = corrupt_every   # 0 = never; else break the checksum of every Nth frame
+        self.corrupted = 0
+        self.mode_cmds = 0
         self.template_fields = template.split(b"*")[0].split(b",")
         self.cnt = start_cnt
         self.period = 1.0 / rate_dgram_s
@@ -102,7 +110,12 @@ class FakeBoard(threading.Thread):
         f = list(self.template_fields)
         f[1] = str(self.cnt).encode()
         self.cnt += 1
-        return with_chk(b",".join(f))
+        line = with_chk(b",".join(f))
+        if self.corrupt_every and self.cnt % self.corrupt_every == 0:
+            # Flip the last checksum nibble: a frame that must never reach a capture CSV.
+            self.corrupted += 1
+            line = line[:-1] + (b"0" if line[-1:] != b"0" else b"1")
+        return line
 
     def cfg_frame(self):
         body = (f"$CFG,sr=500,numav=8,led1=49.80,led2=49.80,board={self.board},mac={self.mac},"
@@ -120,6 +133,8 @@ class FakeBoard(threading.Thread):
                     if req.strip() == b"$CFG?":
                         self.cfg_requests += 1
                         self.data.sendto(self.cfg_frame() + b"\r\n", dst)
+                    elif req.startswith(b"$MODE,"):
+                        self.mode_cmds += 1
             except (BlockingIOError, OSError):
                 pass
             time.sleep(self.period)
@@ -145,9 +160,14 @@ def main():
     print("template:", template[:60].decode(), "...")
 
     app = QtWidgets.QApplication([])
-    # Isolate from the user's settings file: never write it (class-level, so timers and slots bound
-    # in __init__ get the no-op too) and start without a stored board preference.
-    P.PPGMonitor._save_settings = lambda self: None
+    # Isolate from the user's settings file. Redirecting SETTINGS_FILE covers everything:
+    # _save_settings, _restore_settings and every subwindow's closeEvent, each of which builds
+    # its own QSettings and would otherwise bypass a patched _save_settings — which is how an
+    # earlier version of this test left MultiCaptureWindow's prefix and geometry in the real ini.
+    # It also makes the run deterministic: no stored geometry, no stored board preference.
+    P.SETTINGS_FILE = os.path.join(tempfile.gettempdir(), "pulsenest_lab_test.ini")
+    if os.path.exists(P.SETTINGS_FILE):
+        os.remove(P.SETTINGS_FILE)
     w = P.PPGMonitor()
     w._udp_preferred_mac = None
     w._udp_source_user_chosen = False
@@ -288,6 +308,74 @@ def main():
           "preferred board promoted over the first speaker")
     check(any("Preferred board" in t for t in logs), "promotion logged")
     check(w.combo_source.itemData(w.combo_source.currentIndex()) == ("udp", "127.0.0.2"), "combo follows")
+
+    print("\n--- phase 8: MULTI CAPTURE both boards, one CSV each ---")
+    # Never write into the project's captures/ directory from a test.
+    tmpdir = os.path.join(tempfile.gettempdir(), "pulsenest_multicapture_test")
+    if os.path.isdir(tmpdir):
+        for f in os.listdir(tmpdir):
+            os.remove(os.path.join(tmpdir, f))
+    os.makedirs(tmpdir, exist_ok=True)
+    P.CAPTURES_DIR = tmpdir
+    # b2 corrupts one frame in 20: they must be counted and skipped, never written.
+    b2.corrupt_every = 20
+    win = P.MultiCaptureWindow(w)
+    w.multi_capture_window = win
+    win._spin_samples.setValue(1000)
+    win._prefix.setText("TEST")
+    win._pre_notes.setPlainText("phase 8")
+    win._post_notes.setPlainText("phase 8 end")
+    win._refresh_boards()
+    check(len(win._checks) == 2, f"board table lists 2 boards ({len(win._checks)})")
+    check(all(cb.isChecked() for cb in win._checks.values()), "boards ticked by default")
+    n_mode_before = {b.ip: b.mode_cmds for b in (a2, b2)}
+    win._on_start_stop()
+    spin(app, 1.0)
+    check(bool(w._multi_writers), "capture running")
+    check(all(not cb.isEnabled() for cb in win._checks.values()), "tick boxes locked while recording")
+    check(win.btn_start.text() == "STOP", f"button reads STOP ({win.btn_start.text()})")
+    for _ in range(60):                      # let both boards reach 1000 rows
+        spin(app, 0.3)
+        if not w._multi_writers:
+            break
+    check(not w._multi_writers, "auto-stopped when every board reached the target")
+    check(all(bd.mode_cmds > n_mode_before[bd.ip] for bd in (a2, b2)),
+          f"$MODE sent to every board ({[bd.mode_cmds for bd in (a2, b2)]})")
+    files = sorted(os.listdir(tmpdir))
+    check(len(files) == 2, f"2 CSVs written ({files})")
+    check(all(f.startswith("TEST_fake") and f.endswith(".csv") for f in files),
+          f"filenames carry prefix and board ({files})")
+    check(any(mac_a.replace(":", "")[-6:] in f for f in files)
+          and any(mac_b.replace(":", "")[-6:] in f for f in files),
+          "each filename carries its board's MAC tail")
+    for f in files:
+        txt = io.open(os.path.join(tmpdir, f), encoding="cp1252").read().splitlines()
+        body = [l for l in txt if not l.startswith("#")]
+        hdr, rows = body[0].split(","), body[1:]
+        notes = [l for l in txt if l.startswith("#")]
+        is_b = mac_b.replace(":", "")[-6:] in f
+        tag = "B(corrupting)" if is_b else "A"
+        ci, hi = hdr.index("FW_SmpCnt"), hdr.index("HOST_T_US")
+        cnts = [int(r.split(",")[ci]) for r in rows]
+        hosts = [int(r.split(",")[hi]) for r in rows]
+        check(hdr[0] == "HOST_T_US", f"{tag}: HOST_T_US first column")
+        check(len(rows) == 1000, f"{tag}: exactly 1000 rows ({len(rows)})")
+        check(all(len(r.split(",")) == len(hdr) for r in rows), f"{tag}: every row full width")
+        check("# phase 8" in notes and "# phase 8 end" in notes, f"{tag}: pre and post notes")
+        check(any("fake" in n for n in notes), f"{tag}: board identity in the notes")
+        check(hosts == sorted(hosts), f"{tag}: HOST_T_US monotonic")
+        check(len(set(hosts)) >= len(rows) // 5 - 2, f"{tag}: ~one stamp per datagram ({len(set(hosts))})")
+        holes = sum(1 for x, y in zip(cnts, cnts[1:]) if y - x != 1)
+        if is_b:
+            check(holes > 0, f"{tag}: corrupted frames missing from the CSV ({holes} holes)")
+        else:
+            check(holes == 0, f"{tag}: no holes ({holes})")
+    check(b2.corrupted > 0, f"B produced {b2.corrupted} corrupted frames")
+    check(any("rejected by checksum" in t for t in logs),
+          "the rejected frames are reported in the log")
+    win.main_monitor = None
+    win.close()
+    w.multi_capture_window = None
 
     a2.stop.set()
     b2.stop.set()
