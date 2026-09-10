@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.46
+# pulsenest_lab — Specification v1.47
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -124,15 +124,22 @@ Frame mode is selected with the `$MODE,Mx` command (no checksum — see §4.3):
 |------|---------|---------------|-----------------------|
 | `$M1` | `$M1,<SmpCnt>,<Ts_us>,<PPG_DISP>*XX` — minimal | | |
 | `$M2` | `$M2,<SmpCnt>,<Ts_us>,<PPG_DISP>,<SpO2>,<SpO2_SQI>,<HR3>,<HR3_SQI>,<RSQI>,<DiagCode>,<ProbeState>*XX` | | |
-| `$M3` | Full `AFE4490Data` (22 fields, table below) | ✔ | |
-| `$M4` | M3 + analog debug: `V_TIA`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS`, `RF1`, `RF2` | | ✔ |
+| `$M3` | Full `AFE4490Data` (22 fields, table below) | | |
+| `$M4` | M3 + analog debug: `V_TIA`×4, `I_PD`×4, `OT_LED1`, `OT_LED2`, `CH_MASKS`, `RF1`, `RF2` | ✔ | ✔ |
 
-**The two defaults differ, and that matters.** The ESP32 always boots in `$M3`
-(`main.cpp` `g_incunest_frame_mode`); `$M4` is what pulsenest_lab *requests* (saved in the .ini).
-`$MODE` carries no checksum, is not acknowledged, and the post-reset restore depends on a single
-`# incunest_afe4490 started` banner arriving on the active transport — so the requested mode is
-never evidence of the mode in force. **Field 0 of every data frame is the only ground truth**, and
-the script must treat it as such: see §6.5.1.
+**The two defaults now agree: the firmware boots in `$M4`** (`main.cpp`
+`g_incunest_frame_mode`, v1.47 / 2026-09-10), which is the mode the bench actually uses. Until then
+it booted in `$M3` while the script requested `$M4`, and closing that gap took a mode persisted in
+the .ini, a re-assertion after every detected restart, and a watchdog re-sending `$MODE` every
+200 ms. All of that is gone; see §4.9.
+
+Measured cost of the new default, over 40 real frames: `$M4` is 265 bytes against `$M3`'s 140, so
+1.07 against 0.57 Mbit/s and 15 against 8 ms of air per second per board at 72 Mbit/s. It also
+leaves 22 bytes of margin in the firmware's 288-byte queue slot from boot instead of 147.
+
+`$MODE` still carries no checksum and is not acknowledged, so a mode the script *asked for* is
+still never evidence of the mode in force. **Field 0 of every data frame remains the only ground
+truth**, and the script treats it as such: see §6.5.1.
 
 #### $M3 — Full data frame
 
@@ -616,6 +623,45 @@ so the mode in force is still only evidenced by field 0 of the frames themselves
 **Not in this phase.** The firmware still learns the PC's IP from `wifi_config.h` (D10 candidate);
 motherBoard does not emit PulseNest frames yet (F4).
 
+### 4.9 What the script does when a board restarts (v1.47)
+
+**It reads. It writes nothing.** Decision of 2026-09-10: the frame mode and the HGAC enable are
+properties of the board, so the host does not impose them.
+
+On the `# incunest_afe4490 started` banner — which marks a restart *detected*, from any cause: the
+RESET button, `$RESET`, an OTA flash, a power cycle, a crash or a brownout — the script sends only
+two queries:
+
+| | |
+|---|---|
+| `$CFG?` after 300 ms | hardware configuration, feeds HW CONFIG and the quick RF combos |
+| `$LCFG?` after 400 ms | library parameters. **Unconditional since v1.47**, not just when LIB CONFIG is open: `hgac_enable` drives the header HGAC combo and whether the RF combos are editable, and it is no longer forced to a known value, so the only way to display the truth is to ask |
+
+Two automatic writes were removed:
+
+- **the frame-mode restore.** The board boots in `$M4` (§4.2), so there is nothing to restore.
+- **`$SET,hgac_enable,1`.** The PulseNest firmware now enables HGAC itself at boot
+  (`main.cpp start_incunest`). Note this is set in **PulseNest's** firmware and *not* by changing
+  the library default: `hgac_enable = false` in `incunest_afe4490.h` is deliberate and shared with
+  the IncuNest motherBoard, the clinical firmware, which is unaffected.
+
+**The frame-mode watchdog is now bounded by a user action.** §6.5.1's re-send fires only while a
+mode *the user asked for in this session* is unconfirmed on the wire, and stops as soon as field 0
+agrees or the retry cap is reached. Before v1.47 it chased the value restored from the .ini for as
+long as the disagreement lasted. That was a host write with no user action behind it, and with two
+host instances wanting different modes it was an **unbounded** ping-pong, because the retry counter
+resets whenever the wire matches — so the 5-retry cap never engaged.
+
+Why it matters beyond tidiness: these were the only writes the script performed without a user
+action, so removing them makes it read-only except on explicit user commands. That is the
+precondition a second, strictly read-only instance needed (the shared-port proposal), and the HGAC
+one could silently invalidate data — a restart under a capture deliberately run with HGAC off would
+have had it switched back on, and `$CFG` does not carry `hgac_enable`.
+
+**Still open:** a capture's notes are built from `$CFG` only, so the HGAC state is not recorded in
+the CSV. While the script forced it on that was harmless; now that the board owns it, a capture
+should record what it actually was.
+
 ---
 
 ## 5. Algorithm classes
@@ -1076,7 +1122,8 @@ hardware is doing is the only thing worth displaying.
 
 | Attribute | Meaning |
 |-----------|---------|
-| `frame_mode` | Mode **requested** of the firmware. Persisted (`PPGMonitor/frame_mode`). Not evidence of anything. |
+| `frame_mode` | Mode **requested** of the firmware. Persisted (`PPGMonitor/frame_mode`). Not evidence of anything. Since v1.47 it is also *realigned to the wire* when nobody asked for it (see point 4). |
+| `_frame_mode_user_req` | v1.47: True while a mode **the user asked for in this session** is still unconfirmed on the wire. Gates the re-send. |
 | `_frame_mode_live` | Mode **in force**, read from field 0 of every data frame in the drain path. `None` until the first frame. Ground truth. |
 | `_frame_mode_shown` | Last live value pushed into the combo (change detection). |
 | `_frame_mode_mism_since` | `perf_counter()` of the first render tick of the current mismatch. |
@@ -1094,13 +1141,18 @@ hardware is doing is the only thing worth displaying.
    `_send_frame_cmd()` does not correct the combo inline — the next render tick re-asserts the
    live value, so a change that took shows the new mode and one that did not snaps back to the
    real one. Correcting it inline would flicker old → new on every successful change.
-4. **A mismatch that persists `_FRAME_MODE_MISM_S` (1 s) re-sends `$MODE`**, up to
-   `_FRAME_MODE_MAX_RETRIES` (5), one per mismatch episode-tick, logging each attempt
-   (`_sync_frame_mode_live()`, render tick). 1 s is comfortably longer than the 500 ms post-reset
-   restore delay, so the normal boot transient (firmware in `$M3` until the restore lands) never
-   triggers a re-send.
-5. **Bounded, then quiet.** After 5 failed re-sends the script stops and keeps showing the live
-   mode. Hammering a dead channel helps nobody, and the display is still honest.
+4. **Only a mode the user asked for is chased (v1.47).** A mismatch that persists
+   `_FRAME_MODE_MISM_S` (1 s) re-sends `$MODE` up to `_FRAME_MODE_MAX_RETRIES` (5), logging each
+   attempt — but **only while `_frame_mode_user_req` is set**, i.e. while a selection made in this
+   session is unconfirmed. If nobody asked, the wire wins: `frame_mode` is realigned to
+   `_frame_mode_live` and nothing is sent. Before v1.47 the watchdog chased the value restored
+   from the .ini for as long as the disagreement lasted, which is a host write with no user action
+   behind it (§4.9), and with two host instances wanting different modes it was **unbounded**: the
+   retry counter resets whenever the wire matches, so the cap never engaged. The 1 s delay also no
+   longer has a boot transient to sit out — the firmware boots in `$M4` (§4.2).
+5. **Bounded, then quiet.** After 5 failed re-sends the script stops, clears
+   `_frame_mode_user_req` and keeps showing the live mode. Hammering a dead channel helps nobody,
+   and the display is still honest.
 6. **`_send_frame_cmd()` logs when there is no command channel** instead of returning silently —
    a silent return left the combo advertising a mode the firmware had never been told about.
 7. **The live mode chooses the CSV header** of a live recording (`toggle_save()`), not the
@@ -1900,6 +1952,22 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.47 — 2026-09-10
+
+**The firmware boots in `$M4` with HGAC on, and the script stops writing to the board on restart —
+new §4.9, §4.2 and §6.5.1 updated.** Three decisions, taken together:
+
+1. `g_incunest_frame_mode` boots at `$M4` instead of `$M3` (PulseNest's `main.cpp`, not the
+   library). Verified on hardware with no script running: the first data frame after boot is `$M4`
+   and 3005 of 3005 frames were `$M4`.
+2. `start_incunest()` calls `afe.setHgacEnable(true)`, so the board decides. Verified by reading
+   `hgac_enable=1` back from the board after a boot with nothing asking. The library default stays
+   `false` for the clinical firmware.
+3. The banner handler keeps its two queries and loses both writes; the `$LCFG?` query becomes
+   unconditional. `_auto_enable_hgac()` is deleted rather than left unused — a function that writes
+   to the board and nobody calls invites being wired back by accident. The frame-mode watchdog now
+   only chases a mode the user asked for in this session.
 
 ### v1.46 — 2026-09-09
 

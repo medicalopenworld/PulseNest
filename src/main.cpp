@@ -55,7 +55,11 @@ static void udp_send_line(const char* buf);
 // responses even when running cable-free (UDP-only mode).
 static inline void Serial_print_locked(const char* s) {
     if (g_serial_mutex) xSemaphoreTake(g_serial_mutex, pdMS_TO_TICKS(20));
+#ifdef PULSENEST_SERIAL_NONBLOCKING
+    if ((int)Serial.availableForWrite() >= (int)strlen(s)) Serial.print(s);
+#else
     Serial.print(s);
+#endif
     if (g_serial_mutex) xSemaphoreGive(g_serial_mutex);
     udp_send_line(s);
 }
@@ -69,7 +73,11 @@ inline void Serial_printf(const char *fmt, ...) {
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
     if (g_serial_mutex) xSemaphoreTake(g_serial_mutex, pdMS_TO_TICKS(20));
+#ifdef PULSENEST_SERIAL_NONBLOCKING
+    if ((int)Serial.availableForWrite() >= (int)strlen(buffer)) Serial.print(buffer);
+#else
     Serial.print(buffer);
+#endif
     if (g_serial_mutex) xSemaphoreGive(g_serial_mutex);
     udp_send_line(buffer);
 }
@@ -196,7 +204,16 @@ static void udp_send_line(const char* buf) {
 //        v0.81: it's just the live config value, not something HGAC exclusively computes;
 //        HGAC_ALARM removed v0.50)
 enum class IncunestFrameMode { M1, M2, M3, M4 };
-volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M3;
+// Boot frame mode. $M4 since 2026-09-10 (decision by Alex), because $M3 was a default nobody
+// wanted: the script needs $M4 for its algorithm replicas (HR1LAB reads OT_LED1, which only
+// $M4 carries), so it used to persist a requested mode, re-assert it after every reset and run
+// a 200 ms watchdog to keep it there. Booting in the mode the bench actually uses deletes all
+// of that, and with it the risk of two host instances fighting over the mode.
+// Cost, measured on 40 real frames: $M4 is 265 B against $M3's 140 B, so 1.07 vs 0.57 Mbit/s
+// and 15 vs 8 ms of air per second per board at 72 Mbit/s. Note the margin in the 288 B queue
+// slot is now 22 B from boot instead of 147 B (see the $M4 slot truncation task).
+// This is PulseNest's own default, not the library's: motherBoard is unaffected.
+volatile IncunestFrameMode g_incunest_frame_mode = IncunestFrameMode::M4;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Library — incunest_afe4490
@@ -380,6 +397,17 @@ void start_incunest() {
     incunest_sample_count = 0;
     afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN, true);  // debug=true: combined queue items for atomic getData(data,dbg)
     afe.setPPGDispFilter(0.5f, 20.0f);
+    // HGAC on from boot. Decision by Alex 2026-09-10: whether the gain control runs is the
+    // board's business, not the host's. Until now the library booted it OFF and the script sent
+    // $SET,hgac_enable,1 on every detected restart - a host writing to the board with no user
+    // action, which is also what would make two host instances unsafe (one re-enabling HGAC
+    // under a capture the other deliberately ran with it off, silently, since $CFG does not
+    // carry hgac_enable).
+    // Set HERE and not by changing the library default: `hgac_enable = false` in
+    // incunest_afe4490.h is deliberate and shared with the IncuNest motherBoard, the clinical
+    // firmware. Flipping it there would turn the loop on in an incubator as a side effect of a
+    // bench convenience. PulseNest opts in for itself; the library default stays OFF.
+    afe.setHgacEnable(true);
     xTaskCreatePinnedToCore(Incunest_Task, "INCUNEST", 8192, NULL, 3, &g_incunest_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
     Serial_printf("# incunest_afe4490 started\n");
 }

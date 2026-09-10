@@ -12253,9 +12253,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._stats_ch_masks_or = 0       # OR of CH_MASKS over the current stats window
         self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
         self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA/V_ADC)
-        # Quick HW controls (SIGNAL STATS header). _hgac_enabled starts True because
-        # _auto_enable_hgac() enables HGAC on every firmware start; corrected by any $LCFG frame.
+        # Quick HW controls (SIGNAL STATS header). _hgac_enabled starts True because the
+        # PulseNest firmware enables HGAC at boot (main.cpp start_incunest, since 2026-09-10);
+        # corrected by any $LCFG frame, which is requested on every detected restart.
         self._hgac_enabled  = True
+        self._frame_mode_user_req = False   # True while a user-requested mode is unconfirmed
         self._quick_rf_shown = None       # last (rf1, rf2) pushed into the combos
         # HGAC actuation thresholds driving the V_TIA gauge. Seeded with the library defaults
         # and replaced by the live values from every $LCFG frame — they are runtime-tunable
@@ -12826,7 +12828,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _lbl_hgac.setStyleSheet(_quick_lbl_css)
         self.combo_quick_hgac = QtWidgets.QComboBox()
         self.combo_quick_hgac.addItems(["OFF", "ON"])
-        self.combo_quick_hgac.setCurrentIndex(1)   # matches _auto_enable_hgac() on firmware start
+        self.combo_quick_hgac.setCurrentIndex(1)   # the firmware boots with HGAC on; $LCFG? corrects it
         self.combo_quick_hgac.setStyleSheet(self._QUICK_CSS_ON)
         self.combo_quick_hgac.setFixedWidth(90)
         self.combo_quick_hgac.installEventFilter(self._quick_wheel_filter)
@@ -13067,6 +13069,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._frame_mode_mism_since = None   # restart the mismatch clock for the new target
         self._frame_mode_retries    = 0
         self._frame_mode_shown      = None   # force the next render tick to re-assert the truth
+        # Only a mode the user actually asked for is worth chasing (see _sync_frame_mode_live).
+        self._frame_mode_user_req   = True
         if not self._is_cmd_ready():
             # Was a silent return: the combo then showed a mode the firmware had never been told
             # about, with nothing in the log to explain it.
@@ -13101,6 +13105,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if _live == self.frame_mode:
             self._frame_mode_mism_since = None
             self._frame_mode_retries    = 0
+            self._frame_mode_user_req   = False   # request confirmed on the wire; stop chasing
+            return
+        if not self._frame_mode_user_req:
+            # The wire disagrees with `self.frame_mode`, but nobody asked for that in this
+            # session — it is just the value restored from the .ini. The board's mode is the
+            # board's business (decision 2026-09-10): show the truth and write nothing. Before
+            # this, the watchdog re-asserted the persisted mode every 200 ms for as long as the
+            # disagreement lasted, which is a host writing with no user action behind it, and
+            # with two host instances wanting different modes it was an unbounded ping-pong: the
+            # retry counter resets whenever the wire matches, so the 5-retry cap never engaged.
+            self.frame_mode = _live
             return
         _now = time.perf_counter()
         if self._frame_mode_mism_since is None:
@@ -13109,6 +13124,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if _now - self._frame_mode_mism_since < self._FRAME_MODE_MISM_S:
             return
         if self._frame_mode_retries >= self._FRAME_MODE_MAX_RETRIES:
+            self._frame_mode_user_req = False   # gave up: the wire is the truth from here on
             return
         self._frame_mode_retries   += 1
         self._frame_mode_mism_since = _now
@@ -13119,6 +13135,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.send_cmd(f"$MODE,{self.frame_mode}\n".encode())
         elif _n == 1:
             self.log("[FRAME] no command channel - cannot correct the mode")
+
+    def request_lib_config(self):
+        """Send $LCFG? and let the reply update whatever is listening. Read-only.
+
+        The window has its own `_auto_read_lcfg`, but the library parameters that the main window
+        itself depends on — `hgac_enable`, which drives the header HGAC combo and whether the RF
+        combos are editable, and the HGAC thresholds behind the V_TIA gauge — must be refreshed
+        whether or not LIB CONFIG happens to be open.
+        """
+        if not self._is_cmd_ready():
+            return False
+        self.send_cmd(b'$LCFG?\n')
+        if self.lib_config_window is not None:
+            self.lib_config_window._statusbar.showMessage("$LCFG? sent — waiting for response…")
+        return True
 
     def request_chip_config(self, notify_lab_capture=True):
         """Send $CFG? to ESP32. Response arrives asynchronously via _on_cfg_frame_received().
@@ -13213,21 +13244,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.log(f"{log_prefix} {payload}")
         return True
 
-    def _auto_enable_hgac(self):
-        """Bench convenience: enable HGAC after each firmware start (the ESP32 boots with the
-        library default hgac_enable=false). The library default stays OFF — safe for the IncuNest
-        motherBoard; this auto-enable only affects PulseNest bench sessions. To run with HGAC off
-        temporarily, set the LIB CONFIG combo to Disabled (reverts to enabled on the next reset)."""
-        if not self._is_cmd_ready():
-            return
-        payload = "$SET,hgac_enable,1"
-        chk = 0
-        for c in payload[1:]:
-            chk ^= ord(c)
-        self.send_cmd(f"{payload}*{chk:02X}\r\n".encode())
-        self.log("→ auto-enable HGAC ($SET,hgac_enable,1)")
-        self._hgac_enabled = True
-        self._sync_quick_hgac_combo()
+    # _auto_enable_hgac() was removed on 2026-09-10. It sent $SET,hgac_enable,1 on every
+    # detected firmware start, which is the host deciding a board setting with no user action
+    # behind it. The PulseNest firmware now enables HGAC itself at boot (main.cpp
+    # start_incunest) and the script only reads the state back with $LCFG?. Deleted rather
+    # than left unused: a function that writes to the board and nobody calls is an invitation
+    # to wire it back by accident.
 
     def _is_cmd_ready(self):
         """True if a command channel is available: serial open, or UDP active with known ESP32 IP."""
@@ -14838,22 +14860,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _bm = _re.search(r'Board:\s*(\S+)', line)
                                 if _bm:
                                     self.log(f"Board: {_bm.group(1)}")
-                            # "# incunest_afe4490 started" → Cmd_Task is running → send $CFG? + $LCFG? + $MODE
+                            # "# incunest_afe4490 started" → the board has (re)started. The script
+                            # READS its state and changes nothing (decision 2026-09-10, spec §4.9):
+                            # the mode and the HGAC enable are the board's business, and it now
+                            # boots in $M4 with HGAC on. What used to happen here — re-asserting
+                            # the saved frame mode and sending $SET,hgac_enable,1 — was the host
+                            # writing to the board with no user action behind it.
                             if 'started' in line.lower():
                                 self._post_reset_cfg_pending = False
                                 QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
-                                # Also refresh LIB CONFIG (RSQM/HGAC) if open: request_chip_config()
-                                # only sends $CFG? (HW), not $LCFG? — so LIB CONFIG would otherwise
-                                # keep stale values after a reset.
-                                if self.lib_config_window is not None:
-                                    QtCore.QTimer.singleShot(400, self.lib_config_window._auto_read_lcfg)
-                                # Restore saved frame mode (ESP32 always boots in M3)
-                                _fm = self.frame_mode
-                                QtCore.QTimer.singleShot(500,
-                                    lambda fm=_fm: self._send_frame_cmd(fm))
-                                # Bench convenience: re-enable HGAC (ESP32 boots with it OFF; the
-                                # library default stays OFF for the motherBoard — see _auto_enable_hgac).
-                                QtCore.QTimer.singleShot(600, self._auto_enable_hgac)
+                                # $LCFG? unconditionally, not just when LIB CONFIG is open: the
+                                # HGAC state is no longer forced to a known value, so the only way
+                                # the header combo and the RF editability can tell the truth is to
+                                # ask. The reply feeds both, window open or not.
+                                QtCore.QTimer.singleShot(400, self.request_lib_config)
                         elif 'frame mode' in line.lower():
                             if _is_active:
                                 _fm_txt = line.lstrip('# ').strip()
