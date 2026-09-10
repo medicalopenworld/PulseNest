@@ -10,6 +10,7 @@ En el fichero project_info.md está la información del proyecto Incunest.
 La librería `incunest_afe4490` vive en su propio repo: https://github.com/medicalopenworld/incunest_afe4490
 La spec `incunest_afe4490_spec.md` vive en ese repo (no en PulseNest)
 En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
+En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas físicas: MAC, revisión, entorno de PlatformIO que le corresponde, cómo identificarlas y los procedimientos de flasheo. **Consultarlo antes de cualquier OTA** y mantenerlo al día cuando aparezca una tarjeta nueva.
 
 
 ## Hardware y entorno

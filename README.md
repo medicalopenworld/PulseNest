@@ -15,9 +15,12 @@ This repository includes firmware code and a Python script to visualize serial o
 
 | Component | Details |
 |---|---|
-| MCU | ESP32-S3 (Incunest board V15 / V16) |
+| MCU | ESP32-S3 (Incunest board V15 / V16 / V17 / V18) |
 | Sensor | AFE4490 via SPI |
 | Framework | Arduino + PlatformIO |
+
+See **[docs/boards.md](docs/boards.md)** for the inventory of every physical board (MAC, revision,
+which PlatformIO environment to use), how to identify one, and the flashing procedures.
 
 ## Build and flash
 
