@@ -21035,3 +21035,29 @@ Anotado en `docs/boards.md`: el estado de la V16 en su fila, y el aviso de polar
 Consecuencia colateral que conviene tener presente: la V16 era el **control limpio** de la investigacion de las paradas de adquisicion de ayer (la fila "V16, sin USB, sin guarda: 500 frames/s, 0 silencios, tx_dropped 0"). Esa medida **ya no se puede repetir**, asi que cualquier comparacion futura habra que rehacerla con la V17 o entre las dos V18. Anotado tambien en la tarea correspondiente.
 
 Banco restante: V17 (`10:20:BA:14:75:60`) y las dos V18 (`...88:50` y `...87:B8`); la V15 estaba ya en desuso.
+
+## CIERRE DE SESION 2026-09-10/11
+
+Alex se va a dormir. Todo commiteado en cinco commits (`0fdba00` firmware+script, `846ef9b` entorno V18, `ee6a91e` inventario de tarjetas, `997af7f` herramienta de cotas del frame, `0dbfd38` log y backlog). Arbol limpio salvo los cuatro documentos de terceros de `docs/`, que no se versionan.
+
+### Estado del banco
+- **V16 `10:51:DB:50:48:F8` MUERTA** (2026-09-11, probable alimentacion incorrecta, humo). Era la placa de trabajo principal **y el control limpio** de la investigacion de las paradas.
+- Vivas: V17 `10:20:BA:14:75:60` y las dos V18 `...88:50` y `...87:B8`. La V15 en desuso.
+- Al cerrar, **ninguna placa emitiendo**.
+- ⚠️ **Polaridad de BATTERY espejada entre V17 y V18**: rojo en la esquina en V18, negro en V17. Riesgo destructivo con dos revisiones en el banco.
+- Las placas vivas llevan un build que corresponde a `5ed717e-dirty`, **anterior a los cinco commits de hoy**. Antes de volver a capturar: reconstruir y reflashear para que el `$CFG` reporte un hash reproducible.
+
+### Decisiones pendientes de Alex
+1. **Guarda del puerto serie incondicional?** Hoy entra inerte tras `#ifdef PULSENEST_SERIAL_NONBLOCKING`. Cambia el comportamiento de todas las placas: bloquear para entregar el diagnostico frente a descartar para garantizar el tiempo de adquisicion. Y con la V16 muerta se ha perdido el control del experimento.
+2. **Cotas del frame `$M4`.** El formato admite 727 B contra un hueco de 288, y pasar de 506 B **corrompe memoria**. La guarda de longitud yo la haria ya y por separado. Luego elegir entre acotar los valores y recortar campos derivables (variante hueco 320 / lote 4, que conserva OT) o quitar tambien OT.
+3. **Notas de captura con `$LCFG`**, para que quede constancia del estado de HGAC ahora que lo decide la placa.
+4. **`useOpenGL=False`** para los cierres espontaneos del script: diferido por decision de Alex hasta tener tiempo o mas informacion.
+
+### Lo que NO ha avanzado, y lo abrio Alex al empezar
+El **hilo A, HR1/HR2 en HR1LAB**, sigue exactamente donde estaba: el siguiente paso definido es el experimento offline de **DC rapido + blanking por ALED** sobre las capturas MS100, que no necesita banco. Dos dias de sesion se han ido enteros en el hilo B (multiplaca F1-F3), en el firmware y en incidencias de hardware. Conviene empezar por ahi manana.
+
+### Siguiente en el hilo B
+F4a: extraer el formateador de frames al repo de la libreria. Requiere devolver una placa a motherBoard. Antes de eso quedan dos comprobaciones de F3 que solo se hacen con el script delante: una captura multiple **con la sonda puesta** para confirmar que las columnas analogicas no salen a -1, y la longitud maxima real del frame en la linea `# NET`.
+
+### Balance de metodo del dia
+Cinco conclusiones estuvieron a punto de quedar mal escritas. Cuatro las salvo una medida de control: el detector de huecos se quedaba **ciego** en vez de dar falsas alarmas; los 45 ms de latencia de la 17.A eran una **asociacion degradada** y no el ahorro de energia; "el modem sleep no sirve de nada" solo era cierto **emitiendo**, y con la radio en reposo cuesta 4,7x; y "la guarda arregla las paradas" estaba **confundido por el uptime y por el conector USB**. La quinta la cazo Alex: el arreglo de los tamanos de fuente salio al reves porque medi las metricas de fuente en modo offscreen, donde no valen. Regla que queda: offscreen sirve para logica, ficheros y protocolo, nunca para aspecto.
