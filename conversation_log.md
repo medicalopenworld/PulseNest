@@ -20871,3 +20871,167 @@ Dos commits, separados para que se revisen aparte:
 Arbol limpio, reconstruidos los dos entornos (`PulseNest git hash: 0b88aae`, sin sufijo `-dirty`, lib `6eb7dfa`) y flasheadas las dos placas. Verificado por `$CFG?`: **16.A y 17.A con `build=0b88aae libsha=6eb7dfa`**, ambas emitiendo a 100 datagramas/s. Desde ahora las capturas son atribuibles a un commit reproducible.
 
 El script quedo cerrado para poder verificar (ocupa el puerto 5005). Alex propone a continuacion una funcionalidad nueva antes de volver al hilo A.
+
+## Sesion 2026-09-10 - Tres decisiones de Alex sobre quien manda en el estado de la placa
+
+Alex decide: (1) el firmware arranca en `$M4` por defecto; (2) el script no toca HGAC en los reinicios, lo decide la placa y va activo por defecto; (3) el script no modifica nada en los reinicios, solo lee el estado en el que la placa arranca. Y pide opinion.
+
+**Opinion dada antes de aplicar.** Las tres son correctas y la tercera es la mas limpia. Una advertencia importante sobre la segunda: "activo por defecto" NO debia hacerse cambiando el defecto de la libreria (`hgac_enable = false` en `incunest_afe4490.h`), porque ese defecto es deliberado y lo comparte el motherBoard de IncuNest, el firmware clinico; cambiarlo alli encenderia el lazo de ganancia en una incubadora como efecto secundario de una comodidad de banco. Se aplico por tanto en el firmware de PulseNest (`start_incunest()` llama a `afe.setHgacEnable(true)`), igual que el modo de arranque, que tambien es un defecto de PulseNest y no de la libreria. La libreria no se toca.
+
+**Aplicado.**
+- Firmware: `g_incunest_frame_mode = IncunestFrameMode::M4` (`src/main.cpp:208`) y `afe.setHgacEnable(true)` en `start_incunest()` (`:402`), los dos con el rationale y los numeros en el comentario.
+- Script v1.47: el manejador del banner de arranque conserva sus dos consultas y pierde las dos escrituras. La consulta `$LCFG?` pasa a ser **incondicional** (antes solo si la ventana LIB CONFIG estaba abierta): al no forzarse ya el estado de HGAC, preguntarlo es la unica forma de que el combo de la cabecera y la editabilidad de los combos RF digan la verdad. Nuevo metodo de solo lectura `request_lib_config()`.
+- El watchdog de `$MODE` pasa a estar acotado por accion del usuario (`_frame_mode_user_req`): solo persigue un modo pedido en esta sesion, y si nadie lo pidio el cable gana y `frame_mode` se realinea al valor real. Eso mata el ping-pong no acotado entre dos instancias, que era no acotado porque el contador de reintentos se pone a cero cada vez que el cable coincide.
+- `_auto_enable_hgac()` **eliminada**, no dejada sin usar: una funcion que escribe en la placa y a la que nadie llama es una invitacion a reconectarla por error. Corregido tambien el comentario obsoleto del combo rapido.
+
+**Verificacion en hardware, con el script cerrado para que nada pudiera pedir nada:** el primer frame de datos tras el arranque es `$M4` y **3005 de 3005** frames son `$M4`; y `hgac_enable=1` leido de la propia placa. Test de regresion 67/67. Coste del nuevo defecto, medido sobre 40 frames reales: `$M4` 265 B frente a 140 B de `$M3`, 1,07 frente a 0,57 Mbit/s, y 15 frente a 8 ms de aire por segundo y placa a 72 Mbit/s; el margen del hueco de 288 B pasa a ser de 22 B desde el arranque.
+
+**Consecuencia global que merece la pena nombrar:** con esto el script deja de escribir en la placa sin accion del usuario, que era justo la precondicion que necesitaba la segunda instancia de solo lectura. Las tres decisiones han desbloqueado esa propuesta casi de regalo.
+
+**Cabo suelto abierto y pendiente de decidir:** las notas de una captura se construyen solo con `$CFG`, que no lleva `hgac_enable`. Mientras el script lo forzaba a 1 era inocuo; ahora que lo decide la placa, una captura deberia registrar el estado real, o quedaria sin constancia en el CSV salvo por las columnas RF.
+
+**Ademas: la 17.A se ha caido una TERCERA vez, ya con `WIFI_PS_NONE` aplicado** (`build=0b88aae`). COM23 sigue presente con su MAC, luego alimentada y fuera de la red. Es **evidencia contra** la hipotesis del ahorro de energia: no la explica, o no es la unica causa. Solo se pudo flashear la 16.A; la 17.A queda pendiente de que vuelva.
+
+## Sesion 2026-09-10 - ¿Se puede GARANTIZAR que un frame nunca sobrepase el limite? No, y hay un fallo de memoria
+
+Alex, tras ver los margenes: "no me fio de que nuestras estimaciones se cumplan siempre sin excepcion ya que estamos enviando valores numericos en un formato de texto de tamano variable. ¿Como podemos garantizar que nunca sobrepasaremos el limite?". Razon tenia, y la pregunta correcta no era cuanto miden los frames medidos sino cuanto puede producir el formato.
+
+Acotado campo a campo desde el propio fuente con una herramienta nueva, **`tools/frame_size_bounds.py`**, que extrae las cadenas de formato de `src/main.cpp` y recalcula las cotas si el formato cambia.
+
+| modo | campos | minimo | MAXIMO posible | limite snprintf | hueco 288 | veredicto |
+|---|---|---|---|---|---|---|
+| `$M1` | 3 | 16 B | 42 B | 122 | cabe | seguro, todo acotado |
+| `$M2` | 10 | 30 B | 252 B | 186 | cabe | excede snprintf en 66 B |
+| `$M3` | 22 | 54 B | 591 B | 378 | +303 B | excede los tres limites |
+| `$M4` | 35 | 103 B | **727 B** | 506 | +439 B | excede los tres limites |
+
+**Causa raiz:** 10 campos usan `%.2f`/`%.5f` y **no hay forma de acotar un `%f` con el formato**, porque la anchura es un MINIMO y no un maximo. El entero de un `float` llega a 39 digitos (3,4e38), luego un `%.2f` puede emitir 43 caracteres y un `%.5f` 46. Esos 10 campos son 433 de los 727 B.
+
+**Hallazgo grave, peor que el truncado del hueco:** al pasar de `sizeof(buf)-6` (506 B en `$M4`) no hay un frame truncado, hay **corrupcion de memoria**. `snprintf` devuelve la longitud que HABRIA escrito, y el codigo hace luego `frame_xor_chk(buf+1, n-1)` (lectura fuera de limites) y `snprintf(buf+n, sizeof(buf)-n, ...)`, donde `sizeof(buf)-n` subdesborda a un `size_t` enorme y escribe pasado el buffer de pila. El frame `$CFG` **si** tiene guarda para esto (`$ERR,CFG,frame truncated`, `main.cpp:497`); los frames de datos **no**. Expuestos `$M2`, `$M3` y `$M4`; `$M1` seguro.
+
+**Realismo.** Tipico medido 265 B con sonda ausente (`spo2_r` y `pi` salen `nan`, 3 caracteres); con sonda puesta ~270 B, o sea ~18 B de margen. Para cruzar 288 hacen falta +24 caracteres: un campo a ~1e21 **o los cinco campos crudos a ~1e7 a la vez**. Y comparten denominador: `R`, `PI` y los SQI son cocientes AC/DC, asi que un DC casi nulo los infla de golpe. Seis campos van siempre sin puerta (`spo2_sqi`, `spo2_r`, `pi`, los tres `hr*_sqi`); los cuatro valores de HR y SpO2 si van condicionados a `sqi>0`. Que hay divisiones sin guarda ya estaba documentado (Inf silencioso en OT). Ojo: `Inf` y `nan` imprimen corto, asi que el peligro es el valor grande finito, no el infinito.
+
+**La solucion que proponia Alex (quitar campos redundantes) no basta sola:** quitar los 8 derivables baja el peor caso de 727 a 631 B, sigue muy por encima de 288, porque no toca los `%f`. Optimiza el tipico, no garantiza.
+
+**Opciones con el aire calculado** (ms/s por placa; 10 ms/s = 1% del canal):
+
+| escenario | tipico | lote | hueco | peor caso | pkt/s | aire | garantiza |
+|---|---|---|---|---|---|---|---|
+| hoy | 265 B | 5 | 288 | 727 B | 100 | 32,1 | NO |
+| acotar los `%f` | — | 5 | 288 | 366 B | 100 | — | NO, sobran 78 B |
+| acotar + quitar SUB y V_TIA | 205 B | 4 | 320 | 294 B | 125 | 33,0 | SI, conserva OT |
+| acotar + quitar SUB, V_TIA y OT | 185 B | 5 | 288 | 270 B | 100 | 27,6 | SI, pierde OT |
+
+Recomendacion en dos pasos: (1) la guarda de longitud ya y por separado, tres lineas copiando el patron de `$CFG` mas descartar y contar en `udp_send()` en vez de truncar en silencio — no garantiza el presupuesto pero convierte una corrupcion de memoria en un frame perdido y visible; (2) acotar los valores antes de formatear (`|v|<1000`, `R<100`; el `%e` es peor aqui porque engorda el tipico +53 B y se sale igual) y recortar los campos derivables en la variante hueco 320 / lote 4, que conserva OT y deja 26 B de margen demostrable. Quitar OT sale mas barato en bytes pero HR1LAB lo consume y el firmware lo calcula para que el host lo verifique: pasarlo a Python duplica logica de firmware.
+
+Con todo acotado, un `static_assert` sobre el peor caso lo vuelve demostrable en compilacion. Hoy no lo es: el assert existente compara el HUECO con la MTU, no el frame real, asi que no puede fallar mientras el hueco sea 288 y no dice nada del truncado. Y si el hueco sube a 320, `320*5 = 1600 > 1472` y el assert **fallaria**: hay que bajar el lote a 4.
+
+Sin cambios de codigo en el firmware: el analisis y las opciones quedan en la tarea del backlog y en la memoria; falta la decision de Alex.
+
+## Sesion 2026-09-10 - Parentesis: puesta en marcha de la 18.A (V18)
+
+Alex entrega una tarjeta IncuNest 18.A nueva, supuestamente sin flashear, en COM14, y pide flashearla con PulseNest.
+
+**Primer hallazgo antes de tocar nada: no existia entorno `incunest_V18`** (solo V15/V16/V17), asi que no se podia compilar para esa placa. Flashear el build V17 habria funcionado electricamente pero habria etiquetado `board=incunest_V17` en cada `$CFG` y por tanto en la cabecera de cada captura de esa tarjeta.
+
+**Base para crear el entorno, del fuente y no supuesta:** los pines del AFE4490 estan en el diccionario de placas de IncuNest (`motherBoard/include/config/board.h`) **fuera de toda rama `#if (HW_NUM ...)`**: `AFE_MISO 37`, `AFE_MOSI 35`, `AFE_SCK 36`, `AFE_ADC_READY 17`, `AFE44XX_CS 21`. Son los mismos en V16, V17 y V18. Lo que HW18 cambia alli son shunts, la referencia de corriente del calefactor y fototerapia, nada que toque este firmware. El entorno nuevo es por tanto identico al V17 salvo la cadena `BOARD_VERSION`, y existe por **procedencia**, no por pines.
+
+**Identidad de COM14 antes de flashear:** VID:PID `303A:1001` (USB-Serial-JTAG del ESP32-S3) y numero de serie USB `10:51:DB:50:88:50`, una MAC nueva que no es ninguna de las tres conocidas. Es decir, la placa queda identificada sin abrir el puerto, usando el truco que ya se aprendio con la 17.A.
+
+**Chip verificado con `esptool flash_id`:** ESP32-S3 QFN56 rev v0.2, WiFi+BLE, **sin PSRAM**, cristal 40 MHz, 8 MB de flash en modo **quad**. Coincide con lo que asume el entorno. Importaba: los modulos con PSRAM octal usan GPIO 35-37, que son justo los del SPI del AFE.
+
+**Incidencia durante la puesta en marcha.** Tras el primer flasheo por USB la placa no aparecio en la red durante mas de un minuto. Descartado por lectura del fuente que la inicializacion del AFE pudiera bloquear el WiFi: `start_incunest()` se llama en `setup()` **despues** de la inicializacion WiFi. Y descartado el desajuste de modulo por el `flash_id`. Como la consola va a UART0 y en esta placa no esta cableada, no habia diagnostico, asi que se aplico la propuesta que estaba anotada: compilar con `-DARDUINO_USB_CDC_ON_BOOT=1`, que mueve `Serial` al USB CDC y saca el banner por el mismo COM que se usa para flashear.
+
+Con eso, y **reseteando con el puerto ya abierto** (pulso de RTS dejando DTR en reposo, para no entrar en modo descarga), aparecio todo: banner, `# SYS` con la MAC y `Reset reason: POWERON`, asociacion a `in3wifi` con IP .225, `# incunest_afe4490 started`, 30 000 muestras contadas y `$TIMING`/`$TASK` normales. Detalle que explica los ceros iniciales: **la consola USB descarta lo que escribe si el host no tiene el puerto abierto**, asi que abrirlo despues del arranque pierde el banner. No queda establecido por que el primer arranque no se asocio; lo que si queda establecido es que la placa funciona.
+
+**Estado final:** reflasheado el build estandar (sin la consola en USB, que era solo para diagnostico) y verificado por UDP: `board=incunest_V18 mac=10:51:DB:50:88:50`, emitiendo a 100 datagramas/s y 1,07 Mbit/s en `$M4`, es decir arrancando en M4 y con HGAC activo por las decisiones de hoy. La 17.A esta desconectada (su COM23 ha desaparecido), asi que ahora emiten la 18.A (.225) y la 16.A (.228).
+
+Anotado en la memoria de hardware: la MAC de la 18.A, la base del entorno nuevo y el truco de la consola por USB para futuras puestas en marcha.
+
+## Sesion 2026-09-10 - Segunda tarjeta V18 (18.B) e inventario de tarjetas en el repo
+
+Alex entrega una segunda tarjeta V18 en COM15 y pide flashearla y **registrar esta y la anterior en algun listado de todas las tarjetas usadas**, suponiendo que ese listado ya existe pero sin saber donde.
+
+**El listado NO existia en el repo.** Estaba solo en un fichero de memoria del asistente, fuera del proyecto y sin versionar, que es exactamente por lo que no lo encontraba. Creado **`docs/boards.md`** como listado autoritativo, enlazado desde `README.md` y desde el `CLAUDE.md` del proyecto con la instruccion de consultarlo antes de cualquier OTA. Contiene: las cinco tarjetas y la pantalla con su MAC, revision y entorno de PlatformIO; como identificar una tarjeta (siempre por MAC, nunca por IP, y el numero de serie USB **es** la MAC); que cambia realmente entre revisiones (nada para este firmware salvo la V15, y el entorno separado existe por procedencia); y los procedimientos de flasheo por OTA y por USB con sus trampas. La memoria queda redirigida a ese documento.
+
+Inventario: 15.A `10:51:DB:50:7F:AC` (V15, en desuso), 16.A `10:51:DB:50:48:F8` (V16), 17.A `10:20:BA:14:75:60` (V17), **18.A `10:51:DB:50:88:50`**, **18.B `10:51:DB:50:87:B8`** (las dos V18, entregadas hoy) y la pantalla `98:88:E0:11:CC:64`. Los sufijos .A/.B siguen la convencion de Alex; a confirmar si el taller usa otras etiquetas.
+
+**La 18.B: chip verificado** (ESP32-S3 QFN56 rev v0.2, sin PSRAM, 8 MB quad, igual que la 18.A) y flasheada con `incunest_V18`. Ahora emite en .192 como `board=incunest_V18 mac=10:51:DB:50:87:B8`.
+
+**Y aqui esta la leccion del dia, porque me equivoque dos veces.** Tras flashear por USB, la placa no aparecia en la red — mismo sintoma que con la 18.A. Con la 18.A lo "resolvio" un pulso de RTS con el puerto abierto, y lo anote como procedimiento. Con la 18.B ese pulso no funciono. Sospeche entonces de GPIO0, que este firmware usa como salida para el PWDN del AFE siendo un pin de strapping: hipotesis razonable y **falsa**.
+
+La prueba decisiva fue `esptool --before no_reset read_mac`: **conecto sin resetear**, luego el chip estaba en el gestor de arranque ROM, en modo descarga, no ejecutando la aplicacion. Y la causa real no es la placa sino **el reset**: el esptool que empaqueta PlatformIO (v4.5.1) termina el upload con "Hard resetting via RTS pin" y eso puede dejar el chip en modo descarga; el esptool suelto de `tool-esptoolpy` (v4.8.5) usa "Hard resetting with RTC WDT" y acierta. Con `esptool --after hard_reset read_mac` la placa arranco, se asocio y empezo a emitir, y la comprobacion posterior de `--before no_reset` ya falla, que es la confirmacion de que corre la aplicacion.
+
+Corregido en la memoria lo que habia escrito sobre el pulso de RTS: **no es un metodo de reset valido** en estas placas. Con la 18.A funciono por suerte de temporizacion. Diagnostico y cura quedan documentados en `docs/boards.md`.
+
+Cuarta vez hoy que una conclusion mia iba a quedar mal escrita y la salva una medida de control; y la segunda en la que el error de metodo fue confundir "esto funciono una vez" con "esto es el procedimiento".
+
+### Correccion (misma sesion, 2026-09-10): "18.B" no existe
+
+Alex corrige: **la serigrafia marca la REVISION, no la unidad**. `18.A` va impreso en la placa para que se sepa que es una V18, y **las dos placas V18 lo llevan**, luego no puede identificar una unidad. Lo mismo vale para `15.A`, `16.A` y `17.A`: parecian nombres de unidad solo porque habia una placa por revision. La etiqueta "18.B" me la invente yo en la entrada anterior de este log y **no vale**: las entradas previas que la usan estan mal en ese punto (el log es incremental, asi que se corrige aqui y no se reescriben).
+
+**Las unidades se identifican por la MAC.** Y hay ademas un segundo identificador por unidad que Alex ha visto y cuya asignacion todavia no conoce; queda para mas adelante.
+
+Pista aportada, **sin confirmar**: el firmware de motherBoard de IncuNest lleva un numero de serie (`in3.serialNumber`) guardado en NVS bajo `NS_CFG`/`KEY_SERIAL`, y su propio codigo lo describe como *flasher-provisioned*: se escribe durante el aprovisionamiento al flashear, se lee al arrancar y se preserva ante un reset de ajustes. Es decir, lo asigna el proceso de flasheo y no se deriva del hardware. El firmware de PulseNest no tiene campo equivalente: su `$CFG` solo lleva `board=` (la cadena del build) y `mac=`. Si el identificador que vio Alex es ese, la respuesta a "como se asigna" es "en el aprovisionamiento"; falta comprobarlo.
+
+`docs/boards.md` rehecho en consecuencia: fuera la columna de unidad, la **MAC es la clave**, columna aparte para la serigrafia con la advertencia de que marca la revision, y la cuestion del segundo identificador anotada como abierta con la pista de arriba.
+
+## Sesion 2026-09-10 - Problema gordo: paradas de la adquisicion cada ~5 s. Es del firmware, y solo en las V18
+
+Alex reporta que cada ~5 s se paran todas las graficas del script y que al continuar la grafica queda distorsionada durante la parada, coincidiendo con lineas `# STAT n=745000 tx_dropped=720635` en UDP COM. No sabe si es del script o del firmware V18.
+
+**Medido desde el host, con el script cerrado**, para que el unico consumidor fuera la sonda (`scratchpad/stall_probe.py`: guarda instante de llegada, placa y contador de cada frame, y correlaciona huecos y silencios con las lineas especiales). Dos placas emitiendo a la vez, mismo aire, 45 s:
+
+| | V18 `...87:B8` | V16 `...48:F8` |
+|---|---|---|
+| frames/s | **452** | 500 |
+| huecos de contador | **0** | 0 |
+| silencios de llegada > 50 ms | **15, hasta 510 ms** | **0** |
+| `tx_dropped` | **97 %** | **0** |
+
+Asi que es del **firmware** y **solo en la V18**: la V16 esta perfecta en las mismas condiciones.
+
+**La clave para interpretarlo: cero huecos de contador pero 452 frames/s en vez de 500.** El contador lo incrementa la tarea de adquisicion por muestra leida; si la tarea se atasca no lee muestras, el contador no avanza y **no hay hueco**, la secuencia es continua pero mas lenta. El tiempo real si ha pasado, luego la senal queda **distorsionada en el tiempo**, que es exactamente lo que Alex describe. No se pierden muestras: se dejan de tomar.
+
+**Causa, confirmada por experimento y no por argumento.** `Serial_print_locked()` y `Serial_printf()` escribian con `Serial.print(...)` sin condicion, y se llaman **desde la tarea de adquisicion** para `# STAT` (cada 5000 muestras) y para el bloque `$TIMING`/`$TASK` (cada ~5 s, que es el periodo que Alex observaba). `Serial.print()` bloquea cuando el buffer TX de UART0 no tiene sitio, y en la V18 ese buffer esta lleno de forma permanente.
+
+Experimento: guarda condicional tras `#ifdef PULSENEST_SERIAL_NONBLOCKING` que omite la escritura si `availableForWrite()` es menor que la longitud. Misma placa, mismo aire: **500 frames/s exactos, cero silencios, `tx_dropped` = 0**. La V16 igual de limpia. Causa cerrada.
+
+**Detalle que da rabia y a la vez orienta el arreglo: el contador ya era una guarda y nunca se aplicaba.** `if (Serial.availableForWrite() < 30) incunest_tx_dropped++;` comprueba la condicion y **escribe igual**. Alguien anticipo el problema, lo instrumento y no actuo. El arreglo es convertir ese diagnostico en la guarda que evidentemente pretendia ser.
+
+**Lo que NO queda explicado, y no lo invento:** por que el buffer TX de UART0 no drena en las V18 y si en la V16, y por que con la guarda `tx_dropped` cae a 0 en vez de seguir contando un buffer lleno. Si importa, hay que instrumentarlo.
+
+**Decision pendiente de Alex:** hacer la guarda incondicional cambia el comportamiento de todas las placas. Hoy el firmware bloquea para garantizar la entrega del diagnostico; con la guarda descarta para garantizar el tiempo de adquisicion. Para un banco medico el tiempo manda, y la perdida ya esta contada y publicada en `# STAT tx_dropped`, pero afecta a quien use el camino serie (la V16 por COM25).
+
+**Y el defecto de fondo es de arquitectura, con tarea ya existente:** la tarea de adquisicion a 500 Hz hace E/S bloqueante para diagnosticos. Hay **dos** llamadas de esa clase y solo una ha mordido aqui: `Serial.print()`, confirmada, y `udp_send_line()` → `WiFiUDP::endPacket()`, que el propio comentario del codigo describe como bloqueante y que el camino de datos evita a proposito con un socket lwIP crudo. El arreglo correcto es sacar los diagnosticos de esa tarea a una cola consumida por una tarea de menor prioridad (`project_format_task_task`).
+
+Estado del banco: la V18 corre el build con la guarda y va bien; el fuente tiene la guarda tras `#ifdef`, asi que el build por defecto sigue siendo el de antes.
+
+## Sesion 2026-09-10 - Parentesis: flasheo por el USB J13, y correccion de la conclusion anterior
+
+Alex conecta la segunda placa V18 por el USB **J13** (el que no dice AIR SENSOR) y aparece en COM15. Pregunta si tambien se puede flashear por ese puerto.
+
+**Si, y verificado de extremo a extremo.** COM15 reporta `VID:PID 303A:1001` y numero de serie `10:51:DB:50:87:B8`, o sea **el mismo USB nativo del ESP32-S3 y la misma MAC** que por AIR SENSOR: J13 llega al mismo periferico. esptool conecta, sube su stub y lo ejecuta a traves de el, que es el mecanismo de un flasheo; y el flasheo real completo funciono, con hash verificado, rearranque y vuelta a la red. Con la misma trampa de siempre: hay que rematar con `esptool --after hard_reset` porque el reset por RTS de PlatformIO puede dejar el chip en modo descarga.
+
+**Y de paso el experimento tumbo mi conclusion de hace un rato.** Flashee a proposito el build **SIN la guarda** por J13, y la placa va **perfecta**: 500 frames/s, `tx_dropped` = 0 y ningun silencio por encima de 66 ms, sostenido durante 4 minutos de medida continua (de ~2,5 a ~11 min de uptime). Luego la guarda no era necesaria en esa condicion y mi experimento no aislaba lo que yo creia.
+
+**El fallo de diseno era mio: las dos medidas limpias fueron sobre placas recien arrancadas y la sucia llevaba ~30 minutos encendida** (n=910000). No controle ni el uptime ni el conector. Dije "causa cerrada" y me pase.
+
+Lo que si queda establecido, todo medido: (a) **la llamada que bloquea es `Serial.print()`** sobre un buffer TX de UART0 lleno, porque la guarda solo cambia si se llama o no en esa condicion y elimino las paradas; (b) **lo que llena ese buffer no esta establecido**, y no es el uptime por si solo, porque `tx_dropped` es *exactamente* 0 en las condiciones limpias, no "pequeno"; (c) descartado que `Serial` sea el CDC por USB, con el puerto abierto 15 s y la placa emitiendo salen **0 bytes**, luego va a UART0.
+
+Sospecha no comprobada del disparador: durante su puesta en marcha esa placa estuvo un rato sin WiFi, y con `!g_wifi_ready` el firmware escribe *cada* frame en Serial a 500 Hz, unos 133 kB/s frente a los ~92 kB/s que drena UART0 a 921600 baudios. Eso llenaria el buffer; lo que no explica es por que no drena en ~11 ms al volver el WiFi.
+
+Para reproducir el estado sucio: reconectar por AIR SENSOR o dejar la placa sin WiFi un rato, vigilando `tx_dropped` en `# STAT`, que es el testigo. La guarda sigue mereciendo la pena porque hace la adquisicion inmune a lo que llene ese buffer, y ese argumento no depende de conocer el disparador.
+
+## Sesion 2026-09-11 - La V16 ha muerto; polaridad de BATTERY espejada entre V17 y V18
+
+Alex pide apuntar dos cosas en el listado de tarjetas:
+
+1. **La V16 (`10:51:DB:50:48:F8`) esta muerta.** Probablemente por alimentacion incorrecta; salio humo. Era la placa de trabajo principal. En el momento de anotarlo no habia ninguna placa emitiendo en el puerto de datos.
+2. **La polaridad del conector BATTERY esta espejada entre revisiones:** en la **V18** el cable **rojo (positivo)** va en el extremo, la esquina de la placa; en la **V17** el que va en el extremo es el **negro (negativo)**.
+
+Anotado en `docs/boards.md`: el estado de la V16 en su fila, y el aviso de polaridad como **seccion propia y destacada** antes de la de identificacion, porque es riesgo destructivo. Redactado con la consecuencia practica explicita: un cable que asienta bien en una V17 queda **invertido** al enchufarlo en una V18 con la misma orientacion, y al contrario; con placas de varias revisiones en el mismo banco hay que comprobar el color contra la esquina cada vez. Se menciona que la V16 murio el mismo dia de lo que parecio alimentacion incorrecta, **sin afirmar** que fuera esta la causa, porque no se determino.
+
+Consecuencia colateral que conviene tener presente: la V16 era el **control limpio** de la investigacion de las paradas de adquisicion de ayer (la fila "V16, sin USB, sin guarda: 500 frames/s, 0 silencios, tx_dropped 0"). Esa medida **ya no se puede repetir**, asi que cualquier comparacion futura habra que rehacerla con la V17 o entre las dos V18. Anotado tambien en la tarea correspondiente.
+
+Banco restante: V17 (`10:20:BA:14:75:60`) y las dos V18 (`...88:50` y `...87:B8`); la V15 estaba ya en desuso.

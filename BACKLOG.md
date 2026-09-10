@@ -62,6 +62,11 @@ has not been triaged yet.
 - Creo que habría que subir rsqm_ot_thr (OT threshold para detectar PROBE_APPLIED) porque los dedos pueden llegar a ser muy finos. El inconveniente no sería con sondas tipo brida o pinza, sino con sondas abiertas donde el led y el fotodiodo no quedan enfrentados al quitar el dedo (por ejemplo las desechables)
 - Creo que _diag_task_body() también debería incluir PROBE_AMB_SATURATING (quizás todavía se llame PROBE_SATURATING) o mejor aún que sea distinta a PROBE_APPLIED.
 - Creo que pequeños movimientos de la sonda bajan el SQI de HR3 de forma innecesaria (pero no estoy seguro)
+- Las notas de una captura deben registrar el estado de los parámetros de librería, no solo el de hardware. Hoy las notas se construyen únicamente con la respuesta `$CFG` (`_cfg_listener` ← `_on_cfg_frame_received`), y `$CFG` **no lleva `hgac_enable`** ni el resto de parámetros RSQM/HGAC: eso va en `$LCFG`.
+	1. Por qué ahora sí importa: hasta el 2026-09-10 el script forzaba `$SET,hgac_enable,1` en cada reinicio, así que el estado era conocido y constante. Desde que **lo decide la placa** (arranca activo, el script solo lee), una captura podría hacerse con el control de ganancia apagado y **el CSV no lo diría**, salvo indirectamente porque las columnas `FW_RF1_OHM`/`FW_RF2_OHM` no se moverían.
+	2. Alcance mínimo: que la captura pida `$LCFG?` al empezar y vuelque la respuesta en las notas, igual que ya hace con `$CFG?` (la casilla de lectura automática existe y está marcada por defecto). Hay que decidir si también al terminar, para detectar un cambio a mitad de captura — el `$CFG` de cierre ya se compara así (`_capture_open_cfg`).
+	3. Afecta al set de regresión: `captures/CAPTURE_SET_SPEC.md` §2.3 exige que las columnas `FW_*` sean atribuibles a una configuración. Con HGAC fuera de las notas, esa atribución está incompleta.
+	4. Aplica igual a la ventana MULTI CAPTURE (§7.20), que hoy tampoco vuelca `$LCFG` y además graba varias placas, cada una con su propio estado.
 
 
 
