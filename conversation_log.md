@@ -21061,3 +21061,138 @@ F4a: extraer el formateador de frames al repo de la libreria. Requiere devolver 
 
 ### Balance de metodo del dia
 Cinco conclusiones estuvieron a punto de quedar mal escritas. Cuatro las salvo una medida de control: el detector de huecos se quedaba **ciego** en vez de dar falsas alarmas; los 45 ms de latencia de la 17.A eran una **asociacion degradada** y no el ahorro de energia; "el modem sleep no sirve de nada" solo era cierto **emitiendo**, y con la radio en reposo cuesta 4,7x; y "la guarda arregla las paradas" estaba **confundido por el uptime y por el conector USB**. La quinta la cazo Alex: el arreglo de los tamanos de fuente salio al reves porque medi las metricas de fuente en modo offscreen, donde no valen. Regla que queda: offscreen sirve para logica, ficheros y protocolo, nunca para aspecto.
+
+## Sesion 2026-09-12/13 - Analisis: quitar Arduino de IncuNest y de incunest_afe4490, pasar a ESP-IDF
+
+Alex pide un analisis de ventajas/inconvenientes, costes/beneficios, dificultades y planificacion
+para sacar Arduino del proyecto IncuNest y de la libreria, y trabajar con ESP-IDF. Pregunta
+explicita: "entiendes lo que quiero hacer y por que".
+
+### Lo primero que hubo que separar: son cuatro ejes, no uno
+- **A** framework: `arduino` -> `espidf`
+- **B** tooling: PlatformIO -> `idf.py`/CMake (**independiente de A**: PlatformIO tambien construye IDF)
+- **C** las librerias Arduino de terceros (consecuencia de A, no de B)
+- **D** alcance: libreria / PulseNest / motherBoard / Display_HMI
+- Y una quinta via que no es un compromiso pobre: **Arduino como componente de ESP-IDF**.
+
+### Estado medido (no estimado)
+| Componente | LOC | Contacto real con Arduino | Dificultad |
+|---|---|---|---|
+| `incunest_afe4490` | 4.481 | **~40 llamadas en 3 zonas** (`_write_reg`/`_read_reg`, `begin()`, 3 `Serial.printf`). Ya usa `esp_timer`, `esp_log`, FreeRTOS nativos, y ya tiene `platform_stub.h` | BAJA |
+| PulseNest `main.cpp` | 1.148 | WiFi x34, Serial x26, `WebServer`+`Update`. Ya usa lwIP crudo | MEDIA |
+| motherBoard | 23.152 (114 fich., 28 con `Arduino.h`) | `millis()` x237, WiFi x107, `Preferences` x103, `analog/ledc` x79 + **18 lib_deps de terceros** | ALTA |
+| Display_HMI | 35.281 | LVGL + panel RGB | MUY ALTA |
+
+**Hallazgo que cambia el plan: la libreria esta a 1-2 jornadas de ser agnostica.** Todo su Arduino
+cabe en una HAL de ~60 lineas (`hal_gpio_*`, `hal_spi_transfer`, `hal_attach_isr`, `hal_printf`),
+con tres implementaciones (arduino / idf / native, esta ultima absorbiendo el stub actual). Y
+`library.json` ya declara `"frameworks": ["arduino", "*"]`, que hoy es mentira.
+
+### Correccion 1: el motivo "el ecosistema Arduino esta en deriva" argumenta EN CONTRA
+Lo atribui al eje equivocado. Lo abandonado es **PlatformIO** (`platform-espressif32`), no
+arduino-esp32, que lo mantiene Espressif y va por 3.x sobre IDF 5.x. Ademas, desde la 3.0
+arduino-esp32 **se distribuye como componente IDF**: la frontera que se queria cruzar ya no es una
+frontera. Verificado en la maquina:
+
+| Proyecto | platform | Arduino | IDF |
+|---|---|---|---|
+| motherBoard, PulseNest | `espressif32@6.6.0` | 2.0.14 (dic-2023) | **4.4.6** |
+| Display_HMI | `pioarduino 53.03.10` | 3.1.0 | **5.3.0** |
+
+Mismo `framework = arduino` en los tres y **casi dos anos de diferencia en el IDF de debajo**: eso
+es puramente el `platform`. La cura de esa deuda cuesta 1-3 jornadas (unificar en pioarduino), no
+25-45. Y IDF puro no libra de la deriva, la traslada (i2c_master, esp_adc, RMT...).
+
+### Por que `sdkconfig` esta bloqueado con Arduino (verificado)
+`framework-arduinoespressif32-libs/esp32s3/` = **176 archivos `.a`, 199 MB, y un `sdkconfig` de
+1.773 opciones ya compilado**. Arduino entrega IDF precompilado; por eso no se puede cambiar una
+opcion sin recompilar IDF desde fuente, que es justo lo que ese flujo no hace.
+
+### Que hay en GitHub sobre la migracion (Alex dice que Pablo la esta haciendo)
+**No hay ninguna migracion terminada ni subida.** Lo que hay:
+
+1. **Rama `Conversion_ESPIDF`** - de **jlacostaarpide**, no de Pablo; ultimo commit **2026-05-03**;
+   sin PR; sin mergear. Mas seria de lo que parecia: 11 documentos de analisis
+   (`Docs/Display_HMI/01..10`, incluido `10_REGULATORY_COMPLIANCE`) y un `Firmware/Display_HMI_IDF/`
+   con **59 ficheros `.c/.h` propios** en 8 componentes (alarm, comm, drivers, ui con 5 pantallas y
+   6 widgets, wifi con OTA, system, lvgl_port). Se atasco en la **estabilidad del display** ("Better
+   screen stability, but not yet fixed"), el mismo terreno del known issue #9 de los bounce buffers.
+   Higiene: de los 1.928 ficheros que anade, **601 son basura** (`.cache/clangd/index/*.idx`).
+2. **Pablo sigue en Arduino y muy activo** (dev actualizado el 2026-09-11; ~20 ramas de features).
+3. **Pero Pablo YA ha hecho IDF nativo: `Firmware/SensorBoard_v2`** - ESP-IDF v6, CMake + `idf.py`,
+   **sin `platformio.ini`**, con `components/` propios, `dependencies.lock`, `test_apps/` con Unity y
+   ADRs numerados. Integrado en `dev` desde el 2026-09-03 y validado en banco. Y no es accesorio:
+   sus 3x SHT40 **son** el sensor de aire y humedad de la incubadora en los equipos nuevos.
+
+**Son tres ESP32-S3 en el producto** (motherBoard, Display HMI, SensorBoard v2), con fronteras
+limpias entre ellos (UART con protocolo propio, USB-CDC con framing y CRC16). Luego **no es una
+migracion, son tres**, una ya hecha, y se puede ir placa por placa con reversa en cada una.
+PulseNest no es un cuarto: corre sobre la misma placa que la motherBoard.
+
+### Correccion 2: el argumento del ADR-0003 no se sostiene
+Dije que el livelock del autoswap D+/D- del SensorBoard con la pila USB Host de la motherBoard
+(IDF 4.4.6) demostraba que "el IDF viejo ya cuesta dinero". **Falso.** El ADR menciona la version
+como **procedencia**, no como diagnostico: no dice que una version nueva lo arregle, un livelock por
+sincronizacion de dos periodos le pasa a cualquier implementacion razonable, y el problema **ya esta
+resuelto por diseno** (intercambio unico condicionado a evidencia de host). Argumento retirado.
+
+### Plan acordado (orden por coste/beneficio, todo reversible)
+- **Fase -1** Unificar motherBoard y PulseNest en `pioarduino 53.03.10` (1-3 j). Da IDF 5.3 sin
+  escribir IDF y un solo toolchain. Coste real: breaking changes de Arduino 2.0 -> 3.0.
+- **Fase -0.5** Desatascar `custom_sdkconfig` (0,5 j). El fallo documentado en el HMI es MSYS2/CMake
+  /Ninja contaminando la deteccion del compilador **host**, no un limite del enfoque.
+- **Fase 0** HAL agnostica en `incunest_afe4490` (1-2 j).
+- **Fase 1** PulseNest a IDF como cobaya barata (3-6 j).
+- **Fase 2** motherBoard a **Arduino como componente IDF** (2-4 j): sdkconfig completo sin tocar
+  aplicacion ni librerias.
+- **Fase 3** Retirar las 18 librerias una a una. De ellas: 3 desaparecen solas (adaptadores de
+  `Stream`/BusIO), ArduinoJson es portable tal cual, 5 tienen sustituto **oficial y mejor**
+  (esp-mqtt, esp_http_client, esp_modem, PCNT), 5 son drivers I2C de 150-250 lineas, el PID es
+  trivial, y **solo 2 son caras** (TFT_eSPI + Adafruit GFX).
+- **Display_HMI: no tocar.**
+
+**Conclusion de fondo:** el problema real no es el framework, son las librerias. El propio
+`platformio.ini` de motherBoard lo documenta: el SDK de ThingsBoard no compila en v0.15 ni en master
+por un bug suyo, TFT_eSPI esta pineada a un commit sin release, ArduinoHttpClient era un fork
+congelado en 2022 que creaba ambiguedad de build. Y PlatformIO **no tiene lockfile**, que es por lo
+que Pablo pinea commits SHA a mano; IDF lo hace solo (`dependencies.lock`). Para trazabilidad de
+SOUP en un dispositivo medico, esa diferencia pesa mas que la eleccion de framework.
+
+### Cambios de codigo de la sesion (higiene, no ingenieria)
+Al verificar el motivo del `sdkconfig` salio que **`sdkconfig.defaults` de PulseNest no hacia nada**,
+por dos razones independientes:
+1. Con `framework = arduino` no se lee (IDF viene precompilado). El valor real compilado es
+   `CONFIG_TINYUSB_CDC_TX_BUFSIZE=64`, no los 4096 del fichero **ni los 512 de su comentario**.
+2. **PulseNest no usa USB-CDC en absoluto**: no hay `ARDUINO_USB_CDC_ON_BOOT`, ni TinyUSB, ni
+   `USBCDC`. `Serial` es **UART0** a 921600. El fichero configuraba un periferico que este firmware
+   ni enciende.
+
+- **Borrado `sdkconfig.defaults`.** El build de `incunest_V18` compila igual (SUCCESS 48 s, Flash
+  30,2 %, RAM 18,6 %) tras regenerar `libFrameworkArduino.a` desde cero: prueba definitiva de que
+  era inerte.
+- **Corregidos los comentarios de `src/main.cpp:1013`** (dos lineas, no una: `setTxBufferSize` y el
+  `vTaskDelay` de abajo decian ambos "USB CDC"). Dato verificado en el core: **el default de
+  `_txBufferSize` es 0**, no 256 (`HardwareSerial.cpp:140`), y con `tx_buffer_size = 0`
+  `uart_driver_install` no crea ring buffer, asi que **cada escritura bloquea sobre la FIFO hardware
+  de 128 bytes**. Luego `setTxBufferSize(1024)` nunca fue un ajuste menor: es la diferencia entre no
+  tener buffer y tener ~11 ms de margen a 921600 baudios. La linea siempre hizo un trabajo real; solo
+  estaba mal descrita.
+
+Esto cierra el cabo suelto de la linea 6320 de este log ("perdida de muestras no resuelta con
+set_buffer_size ni sdkconfig.defaults", "impacto no confirmado"): la opcion D no tuvo impacto porque
+no podia tenerlo.
+
+### Pendiente de Alex
+1. **Commitear** los dos cambios (`D sdkconfig.defaults`, `M src/main.cpp`) - no se ha commiteado nada.
+2. **Preguntar a Pablo**, con cierta urgencia por el riesgo de solapamiento con la fase -1: (a) que
+   esta migrando exactamente - HMI, motherBoard, o se refiere al SensorBoard_v2; (b) IDF puro o
+   Arduino como componente; (c) si hay trabajo local sin subir o parte de `Conversion_ESPIDF`.
+3. Decidir si la fase -1 se aborda antes de cualquier otra medida, dado que **toda medicion tomada
+   hoy en motherBoard/PulseNest esta sobre una base de 2023** (Arduino 2.0.14 / IDF 4.4.6).
+
+### Balance de metodo
+Dos argumentos mios se cayeron al verificarlos, y los dos los tumbo Alex preguntando, no una medida:
+el motivo 4 (confundi el eje framework con el eje tooling, y resulto argumentar en contra) y el del
+ADR-0003 (converti una nota de trazabilidad en evidencia de coste). Ademas vendi la higiene del
+`sdkconfig.defaults` como "la accion de mejor coste/beneficio del analisis", que tambien era de mas:
+no mejora el firmware en un microsegundo, solo impide un razonamiento erroneo futuro.
