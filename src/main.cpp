@@ -1010,9 +1010,17 @@ void setup() {
     g_serial_mutex    = xSemaphoreCreateMutex();  // protects concurrent Serial writes from multiple tasks
     g_resp_udp_mutex  = xSemaphoreCreateMutex();  // protects g_resp_udp (used by Incunest_Task + Cmd_Task)
     g_udp_data_queue  = xQueueCreate(UDP_QUEUE_DEPTH, UDP_QUEUE_FRAME_SIZE);
-    Serial.setTxBufferSize(1024);  // enlarge USB-CDC TX buffer (default ~256) to reduce corruption at 500 Hz
+    // UART0 TX ring buffer. Serial here is UART0, not USB-CDC: this firmware never enables the
+    // S3's native USB, so nothing in it goes through TinyUSB. Must be called before begin(),
+    // which passes the size on to uart_driver_install(). The core's default is 0 — no ring
+    // buffer at all, so every write blocks until the 128-byte hardware FIFO drains. 1024 B is
+    // ~11 ms of margin at 921600 baud (8N1), which is what keeps a burst from stalling the
+    // 500 Hz acquisition task; it does not make Serial.print() non-blocking.
+    Serial.setTxBufferSize(1024);
     Serial.begin(921600);
-    vTaskDelay(pdMS_TO_TICKS(500));  // wait for USB CDC to stabilise before printing
+    // UART0 has nothing to enumerate; this delay only gives an already-attached monitor time to
+    // catch the banner.
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     // Startup banner
     Serial.printf("# PulseNest v" PULSENEST_FW_VERSION "+sha." PULSENEST_GIT_HASH
