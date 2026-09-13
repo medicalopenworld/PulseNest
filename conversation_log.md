@@ -21196,3 +21196,101 @@ el motivo 4 (confundi el eje framework con el eje tooling, y resulto argumentar 
 ADR-0003 (converti una nota de trazabilidad en evidencia de coste). Ademas vendi la higiene del
 `sdkconfig.defaults` como "la accion de mejor coste/beneficio del analisis", que tambien era de mas:
 no mejora el firmware en un microsegundo, solo impide un razonamiento erroneo futuro.
+
+## CIERRE DE SESION 2026-09-12/13
+
+Alex se va a dormir. **Ninguna placa se ha tocado en toda la sesion**: no se ha flasheado, no se ha
+capturado y no se ha encendido nada. Todo el trabajo ha sido de analisis, lectura de repos y dos
+ediciones de higiene. El banco queda como lo dejo la sesion anterior.
+
+### Lo que se hizo despues del bloque anterior
+
+La sesion continuo en modo pregunta-respuesta: Alex fue desmontando el analisis pregunta a
+pregunta, y eso tumbo dos argumentos mios (anotados en el bloque anterior) y precisó el resto.
+Conceptos que hubo que aclarar y que conviene que queden fijados:
+
+- **`platform` vs `framework`.** `platform` = el paquete de PlatformIO (toolchain, esptool, y **que
+  versiones** te instala). `framework` = la API contra la que escribes. Cambiar el platform es
+  configuracion; cambiar el framework es un proyecto. Los tres proyectos comparten
+  `framework = arduino` y tienen **dos platforms distintos**, de ahi los ~2 anos de diferencia de
+  ESP-IDF entre placas del mismo producto.
+- **PlatformIO vs ESP-IDF** no son alternativas del mismo eje: PlatformIO es un **constructor**
+  (no aporta una linea al binario), IDF es el **SDK** (FreeRTOS, drivers, lwIP). Compiten solo
+  porque IDF trae ademas su propio sistema de build (`idf.py`). Y PlatformIO **puede construir
+  IDF** (`framework = espidf`): salir de Arduino y salir de PlatformIO son decisiones separadas.
+- **`native` (PlatformIO, compilar para PC) no es "IDF nativo" (IDF sin Arduino).** Colision de
+  terminos que genere yo usando las dos acepciones en parrafos contiguos.
+- **HAL = Hardware Abstraction Layer.** La use varias respuestas seguidas sin expandirla nunca.
+  Alex: *"es la primera vez que lo veo, explica siempre los conceptos nuevos"*. Regla ampliada en
+  memoria: ya no son solo siglas, tambien conceptos.
+
+### La libreria SI la afecta la migracion de PulseNest — y la bloquea
+
+Pregunta de Alex: "la libreria es un .cpp y un .h, ¿se ve afectada?". **Si.** Dos ficheros no la
+protegen: `incunest_afe4490.h:17-18` hace `#include <Arduino.h>` y `<SPI.h>` en la rama no-offline,
+y en IDF puro esos headers no existen — falla en la primera linea. El `#ifdef` solo tiene dos
+ramas (stub offline / Arduino); **falta la de IDF**.
+
+Lo que hay que tocar es poco y localizado: `_write_reg`/`_read_reg` (SPI + `digitalWrite`),
+`begin()` (`pinMode`, `attachInterrupt`), 3 `Serial.printf`, y sueltos (`constrain` x11,
+`IRAM_ATTR`). **No se toca nada de FreeRTOS, `esp_timer` ni `esp_log`**: eso ya es IDF nativo.
+
+**Consecuencia de planificacion: la fase 0 no es paralela a la fase 1, es su prerrequisito.**
+
+### Los seis criterios de la fase 0 (todos en [[project_arduino_to_idf_migration_task]])
+1. Ficheros `hal_arduino.cpp` / `hal_idf.cpp` / **`hal_host.cpp`**.
+2. **NO** renombrar `[env:native]` — evaluado y descartado, el beneficio era cero o negativo.
+3. La HAL debe absorber los **dos stubs de host** que hoy conviven (`UNIT_TEST` con `test/stubs/`
+   en el repo de PulseNest, e `INCUNEST_OFFLINE` con `platform_stub.h` en el de la libreria).
+   Trampa a recordar: `INCUNEST_OFFLINE` **define** `UNIT_TEST`, asi que `UNIT_TEST` esta definida
+   en **los dos** caminos y no sirve para distinguirlos.
+4. **SI se mantiene `hal_arduino.cpp`.** Razon dura: la libreria la consume motherBoard, que sigue
+   en Arduino todo el plan (incluso en la fase 2). Razon decisiva, y es de dispositivo medico: con
+   `hal_arduino.cpp` motherBoard ejecuta **el mismo codigo de bus que hoy, byte por byte**, y la
+   fase 0 es refactorizacion pura para ella; sin el, seria un cambio funcional en la capa SPI del
+   firmware que controla una incubadora en uso. Se comprobo que tecnicamente se podria prescindir
+   (**el bus SPI no esta compartido**: `SPI.begin()` solo en `SPO2.cpp:55` con los pines del AFE, y
+   TFT_eSPI con todos los pines a 46), pero no conviene.
+5. **La HAL tiene que cubrir tambien FreeRTOS**, no solo hardware, o los stubs no desaparecen.
+   Consecuencia contraintuitiva: `hal_host.cpp` sera **el mas grande de los tres** — los otros dos
+   solo reenvian llamadas, el de host tiene que inventar tipos y funciones que no existen.
+6. `host` frente a `pc` / `unit_test` / `offline_runner`: gana `host` porque los tres ficheros
+   deben nombrar **la misma categoria** (el entorno de ejecucion). `unit_test` nombra un proposito,
+   `offline_runner` un programa concreto.
+
+### Mensaje para Pablo: REDACTADO, SIN ENVIAR
+Queda en el hilo de la conversacion, en version corta partida en dos mensajes de chat. Mensaje 1,
+las tres preguntas (que migra exactamente; IDF puro o Arduino como componente; si hay trabajo local
+sin subir o se parte de `Conversion_ESPIDF`). Mensaje 2, el dato que probablemente le haga
+reaccionar: **motherBoard sobre IDF 4.4.6 y el HMI sobre 5.3.0**, casi dos anos entre dos placas
+que se hablan, y es el `platform`, no el framework, asi que unificarlo sale barato.
+
+### Estado del repo
+Todo commiteado y **pusheado** a `origin/master`. Dos commits propios de la sesion (`b6add86`
+firmware+higiene, `1dc9e4b` log) y de paso subieron los cinco de la sesion del 10/11, que se habian
+quedado en local (el push fue de 14 commits). Arbol limpio salvo los cuatro documentos de terceros
+de `docs/`, que no se versionan. Verificado antes de empujar que `include/wifi_config.h` no esta
+versionado (esta en `.gitignore:7`) y que no viajaban credenciales.
+
+### Pendientes de Alex
+1. **Enviar los dos mensajes a Pablo.** Es lo que desbloquea todo: mientras no se sepa que esta
+   migrando, la fase -1 tiene riesgo de solapamiento.
+2. **Decidir si se aborda la fase -1** (unificar en pioarduino). Recordatorio incomodo: **toda
+   medicion tomada hoy en motherBoard y PulseNest esta sobre Arduino 2.0.14 / IDF 4.4.6, de
+   diciembre de 2023**. Antes de usar cualquier medida como argumento de la migracion, remedir.
+3. Los pendientes de la sesion anterior **siguen intactos**: guarda del puerto serie incondicional,
+   cotas del frame `$M4`, notas de captura con `$LCFG`, `useOpenGL=False`. Y el **hilo A
+   (HR1/HR2 en HR1LAB)** sigue sin avanzar: van tres sesiones seguidas.
+
+### Balance de metodo
+La sesion entera fue analisis, y **el metodo que funciono fue el de Alex, no el mio**: cuatro
+afirmaciones mias se cayeron y las cuatro las tumbo una pregunta suya, no una medida. El motivo 4
+("el ecosistema Arduino esta en deriva") argumentaba lo contrario de lo que yo dije, en cuanto se
+separo el eje del framework del eje del tooling. El argumento del ADR-0003 convertia una nota de
+trazabilidad en evidencia de coste. El renombrado `native`->`host` no tenia beneficio. Y la higiene
+del `sdkconfig.defaults` la vendi como "la accion de mejor coste/beneficio del analisis" cuando no
+mejora el firmware en un microsegundo.
+
+Regla que queda: **antes de presentar algo como argumento a favor de una decision cara, comprobar
+si el documento que lo respalda dice eso, o solo lo menciona.** Un ADR que anota una version esta
+registrando procedencia, no diagnosticando.
