@@ -11775,8 +11775,9 @@ class MultiCaptureWindow(QtWidgets.QWidget):
         self.btn_start.clicked.connect(self._on_start_stop)
         self.btn_start.setToolTip(_make_tooltip(
             "START",
-            "Open one CSV per ticked board and start recording. Each board is also asked for the "
-            "current frame mode, because a board that was never asked stays in $M3 and its 13 "
+            "Open one CSV per ticked board and start recording. Each board is also sent the "
+            "requested frame mode, because a board may have been switched to another mode during "
+            "the session (or still run a firmware that boots in $M3), and outside $M4 its 13 "
             "analog columns would be written as -1.",
             src="PPGMonitor.start_multi_capture()"))
         bar.addWidget(self.btn_start)
@@ -12095,11 +12096,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.last_time = None
         _s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         # frame_mode = mode *requested* of the firmware (persisted). It is NOT evidence of what
-        # the firmware is actually sending: the ESP32 always boots in $M3 (main.cpp
-        # g_incunest_frame_mode) and only leaves it when a $MODE command gets through, which is
-        # fire-and-forget (no checksum, no ACK checked). _frame_mode_live is the ground truth,
-        # read from field 0 of every data frame in the drain path; the sidebar combo displays
-        # that, and a persistent mismatch re-sends $MODE (see _sync_frame_mode_live).
+        # the firmware is actually sending: the ESP32 boots in $M4 (main.cpp
+        # g_incunest_frame_mode, since v1.47) but any host may have moved it with a $MODE
+        # command, which is fire-and-forget (no checksum, no ACK checked). _frame_mode_live is
+        # the ground truth, read from field 0 of every data frame in the drain path; the sidebar
+        # combo displays that, and a persistent mismatch with a mode the USER asked for in this
+        # session re-sends $MODE (see _sync_frame_mode_live).
         self.frame_mode = _s.value("PPGMonitor/frame_mode", "M4")
         self._frame_mode_live = None        # observed on the wire ("M1".."M4"), None until 1st frame
         self._frame_mode_shown = None       # last live value pushed into the combo
@@ -12482,14 +12484,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Frame mode",
             "$M1 PPG MODE: minimal frame (SmpCnt, Ts_us, PPG_DISP). Lowest bandwidth.\n"
             "$M2 BASIC MODE: PPG + SpO2 + HR3 + quality flags. Use over serial.\n"
-            "$M3 FULL MODE: all AFE4490Data fields (default). Use over UDP.\n"
-            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels. Use over UDP for analog analysis.\n"
+            "$M3 FULL MODE: all AFE4490Data fields. Use over UDP.\n"
+            "$M4 DEBUG MODE: M3 + V_TIA and I_PD for all 4 channels (firmware boot default). "
+            "Use over UDP for analog analysis.\n"
             "\n"
             "Shows the mode the firmware is actually sending, read from field 0 of every frame - "
             "not the mode requested. Picking a value sends $MODE and the combo follows once the "
             "frames confirm it; if they do not, $MODE is re-sent (up to 5 times) and the log "
-            "reports the mismatch. The ESP32 always boots in $M3, so this returns to the saved "
-            "mode a moment after each reset.",
+            "reports the mismatch. After a board reset the combo simply follows the wire (the "
+            "firmware boots in $M4); nothing is restored from the .ini.",
             src="$MODE,M{1-4}"))
         self.frame_mode_combo.currentIndexChanged.connect(self._on_frame_mode_combo_changed)
         self.sidebar_layout.addWidget(self.frame_mode_combo)
@@ -13090,7 +13093,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         $MODE is fire-and-forget (no checksum, no ACK checked) and the whole post-reset restore
         hangs off a single '# incunest_afe4490 started' banner reaching the queue of the *active*
         transport. Any of those going missing used to leave the UI claiming $M4 while the
-        firmware sat in its boot default $M3 -- silently, and permanently. Re-sending on a
+        firmware sat in $M3 (its boot default until v1.47) -- silently and for good. Re-sending on a
         persistent mismatch closes all of those holes at once, whichever message was lost.
 
         Bounded on purpose: if 5 re-sends do not take, the channel or the firmware is the problem
@@ -13273,8 +13276,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         """Send a command to one specific board over UDP, whether or not it is the active source.
 
         `send_cmd()` always targets the active board; the multi-board capture needs to put every
-        board it records into `$M4` (§4.8 F3), otherwise the 13 analog columns of the boards that
-        were never asked would be written as "-1" — a well-formed CSV of missing data.
+        board it records into `$M4` (§4.8 F3) — a board switched to another mode by any host, or
+        one still running a pre-v1.47 build (which booted in `$M3`), would otherwise have its 13
+        analog columns written as "-1", a well-formed CSV of missing data.
         """
         if self._cmd_udp_sock is None:
             import socket as _socket
@@ -13820,7 +13824,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 b.capture_q = queue.Queue(maxsize=UDP_CAPTURE_QUEUE_MAX)
                 b.capture_queued = b.capture_overflow = 0
             if set_frame_mode:
-                # Boards boot in $M3 and only the active one is ever asked for $M4.
+                # The firmware boots in $M4 (v1.47), but a board may have been switched by any
+                # host, or still run an older build that boots in $M3 — so ask each one.
                 try:
                     self.send_cmd_to_ip(ip, f"$MODE,{self.frame_mode}\n".encode())
                 except OSError as e:
@@ -13949,9 +13954,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 filename = os.path.join(CAPTURES_DIR, f"ppg_data_stream_{now_str}.csv")
                 try:
                     self.save_file = open(filename, "w", encoding="cp1252", errors="replace")
-                    # Live mode, not the requested one: right after a reset the firmware is still
-                    # in its boot default $M3 while $M4 may already be requested, and the header
-                    # has to describe the rows that will actually be written.
+                    # Live mode, not the requested one: $MODE is fire-and-forget, so the wire is
+                    # the only evidence of the mode in force, and the header has to describe the
+                    # rows that will actually be written.
                     _fm_hdr = self._frame_mode_live or self.frame_mode
                     if _fm_hdr == "M1":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP\n")
@@ -13959,7 +13964,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
                     elif _fm_hdr == "M4":
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS\n")
-                    else:  # M3 (default)
+                    else:  # M3 (and any unknown value)
                         self.save_file.write("Timestamp_PC,Diff_us_PC,FrameMode,ESP32_Sample_Cnt,ESP32_Timestamp_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState\n")
                     self.log(f"RECORDING LIVE: {filename}")
                     self.auto_save_timer.start(1000 * 1000)

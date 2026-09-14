@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.47
+# pulsenest_lab — Specification v1.48
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -614,11 +614,13 @@ so it aligns boards **within one session** and means nothing across sessions. Re
 datagram, not the sample: the five frames of a batch share one stamp, ~10 ms of granularity at
 100 datagrams/s. Measured: 180 distinct stamps in 900 rows, exactly one per datagram.
 
-**Frame mode.** Boards boot in `$M3` and only the active one is ever asked for `$M4`, so starting
-a capture sends the requested frame mode to **each** selected board through
-`send_cmd_to_ip(ip, ...)` — without it the 13 analog columns of the boards that were never asked
-would be written as `-1`, a well-formed CSV of missing data. `$MODE` is not acknowledged (§4.2),
-so the mode in force is still only evidenced by field 0 of the frames themselves.
+**Frame mode.** Starting a capture sends the requested frame mode to **each** selected board
+through `send_cmd_to_ip(ip, ...)`. The firmware boots in `$M4` since v1.47 (§4.9), so on a
+freshly flashed bench this is a no-op; it stays because a board may have been moved to another
+mode by any host during the session, or may still run a build older than v1.47 (which booted in
+`$M3`) — and outside `$M4` the 13 analog columns of that board would be written as `-1`, a
+well-formed CSV of missing data. `$MODE` is not acknowledged (§4.2), so the mode in force is
+still only evidenced by field 0 of the frames themselves.
 
 **Not in this phase.** The firmware still learns the PC's IP from `wifi_config.h` (D10 candidate);
 motherBoard does not emit PulseNest frames yet (F4).
@@ -1952,6 +1954,19 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.48 — 2026-09-14
+
+**Text only: every remaining claim that the firmware boots in `$M3` corrected — no behaviour
+change.** v1.47 moved the boot default to `$M4` but left nine comments and tooltips in the
+script (MULTI CAPTURE START, the frame-mode combo, the live-recording header, the frame-mode
+watchdog docstring, `send_cmd_to_ip()`, `start_multi_capture()`) and the §4.8 F3 paragraph saying
+the opposite. Found while resolving a
+three-way contradiction: the source says `$M4`; the boards on the bench still run a build older
+than v1.47, so they really do boot in `$M3` — which is what the BACKLOG note "sometimes `$M3`
+is sent by default" was observing; and the script text described the old default. The `$MODE`
+sent to each board at MULTI CAPTURE start is kept: it is still what covers a board switched by
+another host, or one not yet reflashed.
 
 ### v1.47 — 2026-09-10
 
