@@ -31,7 +31,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH is injected by
 // scripts/pre_build_hash.py and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.9"
+#define PULSENEST_FW_VERSION "0.10"
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
 // Defined in platformio.ini build_flags per board environment (incunest_V15 / incunest_V16).
@@ -90,6 +90,31 @@ static uint8_t frame_xor_chk(const char* p, int len) {
     return chk;
 }
 
+// Frames not sent because they did not fit: their buffer (frame_finish) or the UDP queue slot
+// (udp_send). Reported in the periodic "# STAT" line and by a rate-limited $ERR.
+static volatile uint32_t incunest_frame_dropped = 0;
+
+// Closes a "$..." frame in place: checks snprintf's return BEFORE using it, then appends
+// "*XX\r\n". Returns false when the payload did not fit in buf_size-6 — the frame must then be
+// dropped, not sent: `n` is what snprintf WOULD have written, so buf+n reads past the buffer
+// and buf_size-n underflows to a huge size_t (stack corruption). $CFG had this guard; the data
+// frames $M1..$M4 did not. The %f fields of $M3/$M4 cannot be bounded by the format
+// (tools/frame_size_bounds.py: worst case 727 B against a 512 B buffer), so this is the only
+// thing between a pathological sample and memory corruption. The $ERR is rate-limited on
+// purpose: Serial_printf() once per sample at 500 Hz would stall the acquisition task.
+static bool frame_finish(char* buf, size_t buf_size, int n, const char* tag) {
+    if (n < 0 || (size_t)n >= buf_size - 6) {
+        const uint32_t k = ++incunest_frame_dropped;
+        if (k == 1 || k % 500 == 0)
+            Serial_printf("$ERR,%s,frame too long (%d bytes, buffer %u), dropped x%lu\r\n",
+                          tag, n, (unsigned)buf_size, (unsigned long)k);
+        return false;
+    }
+    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
+    snprintf(buf + n, buf_size - n, "*%02X\r\n", chk);
+    return true;
+}
+
 // ── WiFi / UDP ────────────────────────────────────────────────────────────────
 // Data frames (hot path, 500 Hz): raw lwIP socket — avoids WiFiUDP overhead and
 // endPacket() blocking. Batching in UDP_Task reduces packet rate to ~100/sec.
@@ -111,7 +136,10 @@ static WebServer g_ota_server(80);
 // UDP_Task batches up to UDP_BATCH_SIZE frames per datagram and calls sendto()
 // via raw lwIP socket — reduces packet rate from 500/sec to ~100/sec, staying
 // well below lwIP TX buffer limits (~6 slots) and within UDP MTU (1472 bytes).
-#define UDP_QUEUE_FRAME_SIZE  288   // max frame size; M4 ≈ 260 bytes (v0.35: +OT_LED1/2 +CH_MASKS)
+#define UDP_QUEUE_FRAME_SIZE  288   // queue slot; $M4 measured 265 B (probe off), ~270 B (probe on).
+                                    // A frame that does not fit is DROPPED and counted (udp_send),
+                                    // never truncated. Worst case cannot be bounded by the format:
+                                    // tools/frame_size_bounds.py.
 #define UDP_QUEUE_DEPTH       64    // ~128 ms headroom at 500 Hz
 #define UDP_BATCH_SIZE        5     // frames per datagram: 5×288 = 1440 bytes < 1472 MTU
 #define UDP_MTU               1472  // max UDP payload without IP fragmentation (Ethernet/WiFi)
@@ -136,8 +164,19 @@ static inline void udp_send(const char* buf) {
     return;
 #endif
     if (!g_wifi_ready || g_udp_sock < 0 || g_udp_data_queue == nullptr) return;
+    const size_t len = strlen(buf);
+    if (len >= UDP_QUEUE_FRAME_SIZE) {
+        // Does not fit the queue slot: DROP, never truncate. strlcpy() used to cut the frame
+        // here, losing "*XX\r\n"; the stub was then glued to the next frame in the batch and
+        // the host reported two BAD CHK with no clue why. Typical $M4: 265 B against 288.
+        const uint32_t k = ++incunest_frame_dropped;
+        if (k == 1 || k % 500 == 0)
+            Serial_printf("$ERR,%.2s,frame too long for UDP slot (%u bytes, slot %d), dropped x%lu\r\n",
+                          buf + 1, (unsigned)len, UDP_QUEUE_FRAME_SIZE, (unsigned long)k);
+        return;
+    }
     char frame[UDP_QUEUE_FRAME_SIZE];
-    strlcpy(frame, buf, sizeof(frame));
+    memcpy(frame, buf, len + 1);
     xQueueSend(g_udp_data_queue, frame, 0);  // non-blocking: drop if full
 }
 
@@ -269,10 +308,10 @@ void Incunest_Task(void *pvParameters) {
                         (unsigned long)incunest_sample_count,
                         (unsigned long)micros(),
                         data.ppg_disp);
-                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    if (!g_wifi_ready) Serial_print_locked(buf);
-                    udp_send(buf);
+                    if (frame_finish(buf, sizeof(buf), n, "M1")) {
+                        if (!g_wifi_ready) Serial_print_locked(buf);
+                        udp_send(buf);
+                    }
                 } else if (g_incunest_frame_mode == IncunestFrameMode::M2) {
                     // $M2,SmpCnt,Ts_us,PPG_DISP,SpO2,SpO2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState*XX
                     // (PPG_DISP: OT domain [A/A] since v0.69, was ADC counts)
@@ -289,10 +328,10 @@ void Incunest_Task(void *pvParameters) {
                         (unsigned)data.rsqi,
                         (unsigned long)data.diag_code,
                         (int)data.probe_state);
-                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    if (!g_wifi_ready) Serial_print_locked(buf);
-                    udp_send(buf);
+                    if (frame_finish(buf, sizeof(buf), n, "M2")) {
+                        if (!g_wifi_ready) Serial_print_locked(buf);
+                        udp_send(buf);
+                    }
                 } else if (g_incunest_frame_mode == IncunestFrameMode::M3) {
                     // $M3,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,
                     //     SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState*XX
@@ -319,10 +358,10 @@ void Incunest_Task(void *pvParameters) {
                         (unsigned)data.rsqi,
                         (unsigned long)data.diag_code,
                         (int)data.probe_state);
-                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
-                    udp_send(buf);
+                    if (frame_finish(buf, sizeof(buf), n, "M3")) {
+                        if (!g_wifi_ready) Serial_print_locked(buf);  // suppress serial data frames when UDP active — keeps serial free for $SET/$CFG control traffic
+                        udp_send(buf);
+                    }
                 } else {  // M4
                     // $M4 = M3 + V_TIA_LED1/2/ALED1/2 + I_PD_LED1/2/ALED1/2 (scientific notation)
                     //     + OT_LED1/OT_LED2 [A/A] + CH_MASKS (validity masks, lib v0.35)
@@ -369,16 +408,17 @@ void Incunest_Task(void *pvParameters) {
                         dbg.analog.ot_led1,     dbg.analog.ot_led2,
                         ch_masks,
                         afeRFToStr(dbg.rf_led1), afeRFToStr(dbg.rf_led2));
-                    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-                    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-                    if (!g_wifi_ready) Serial_print_locked(buf);
-                    udp_send(buf);
+                    if (frame_finish(buf, sizeof(buf), n, "M4")) {
+                        if (!g_wifi_ready) Serial_print_locked(buf);
+                        udp_send(buf);
+                    }
                 }
 
                 // Periodic TX health report (~every 10 s at 500 Hz)
                 if (incunest_sample_count % 5000 == 0)
-                    Serial_printf("# STAT n=%lu tx_dropped=%lu\n",
-                                  (unsigned long)incunest_sample_count, (unsigned long)incunest_tx_dropped);
+                    Serial_printf("# STAT n=%lu tx_dropped=%lu frame_dropped=%lu\n",
+                                  (unsigned long)incunest_sample_count, (unsigned long)incunest_tx_dropped,
+                                  (unsigned long)incunest_frame_dropped);
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(1));  // no data yet: yield 1 ms to avoid busy-waiting. Only runs when getData() returns false.
@@ -447,9 +487,7 @@ static void send_tcfg_frame() {
         (unsigned long)t.t17, (unsigned long)t.t18, (unsigned long)t.t19, (unsigned long)t.t20,
         (unsigned long)t.t21, (unsigned long)t.t22, (unsigned long)t.t23, (unsigned long)t.t24,
         (unsigned long)t.t25, (unsigned long)t.t26, (unsigned long)t.t27, (unsigned long)t.t28);
-    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-    Serial_print_locked(buf);
+    if (frame_finish(buf, sizeof(buf), n, "TCFG")) Serial_print_locked(buf);
 }
 
 // Emit a $CFG frame with the current AFE4490 configuration.
@@ -500,13 +538,8 @@ static void send_cfg_frame() {
         // one alone cannot identify the firmware that produced a capture.
         PULSENEST_FW_VERSION, INCUNEST_AFE4490_VERSION,
         PULSENEST_GIT_HASH, INCUNEST_GIT_HASH);
-    if (n < 0 || n >= (int)sizeof(buf) - 6) {
-        // Fail loudly rather than emit a truncated frame the host would accept as valid.
-        Serial_printf("$ERR,CFG,frame truncated (%d bytes)\r\n", n);
-        return;
-    }
-    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
+    // Fail loudly rather than emit a truncated frame the host would accept as valid.
+    if (!frame_finish(buf, sizeof(buf), n, "CFG")) return;
     Serial_print_locked(buf);
     send_tcfg_frame();  // always emit timing config alongside $CFG
 }
@@ -526,9 +559,7 @@ static void send_lcfg_frame() {
         cfg.rsqm_probe_state_min_s,
         cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_high2, cfg.hgac_v_tia_high1, cfg.hgac_v_tia_low1,
         cfg.hgac_ema_fast_tau_s, cfg.hgac_ema_slow_tau_s, cfg.hgac_ema_ambient_tau_s);
-    uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-    snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-    Serial_print_locked(buf);
+    if (frame_finish(buf, sizeof(buf), n, "LCFG")) Serial_print_locked(buf);
 }
 
 // parse_tia_gain / parse_tia_cf / parse_stage2 — moved to incunest_afe4490.h as
@@ -906,9 +937,7 @@ static void process_command(char* cmd_buf, int cmd_len) {
         char buf[32];
         int n = snprintf(buf, sizeof(buf) - 6, "$DIAG,%06lX",
                          (unsigned long)diag_val);
-        uint8_t chk = frame_xor_chk(buf + 1, n - 1);
-        snprintf(buf + n, sizeof(buf) - n, "*%02X\r\n", chk);
-        Serial_print_locked(buf);
+        if (frame_finish(buf, sizeof(buf), n, "DIAG")) Serial_print_locked(buf);
     } else if (strcmp(cmd_buf, "$RESET") == 0) {
         Serial_printf("# Resetting...\n");
         vTaskDelay(pdMS_TO_TICKS(50));

@@ -291,7 +291,8 @@ script without setting `__file__`.
 The firmware-side buffer was raised 600 → 720 bytes at the same time, **with an explicit truncation
 guard**: `snprintf` was already truncating silently at the limit and the checksum was appended
 afterwards regardless, so an over-long frame would have arrived as well-formed but incomplete. It
-now emits `$ERR,CFG,frame truncated` instead.
+now emits `$ERR,CFG,frame too long (...)` instead. Since firmware 0.10 the same guard
+(`frame_finish()`) closes **every** `$` frame — `$M1..$M4`, `$TCFG`, `$LCFG`, `$DIAG` — see §4.4.
 
 #### $LCFG — Library/algorithm parameter report
 
@@ -348,10 +349,37 @@ $ERR,<reason>*XX
 
 Firmware rejected a `$SET` command. Logged to Serial Console and shown in `HWConfigWindow` status bar.
 
+**Frame-length guard (firmware 0.10).** Every `$` frame the firmware emits is closed by one
+function, `frame_finish()`, which checks the `snprintf` return **before** appending `*XX\r\n`. If
+the payload did not fit its buffer the frame is **dropped, never truncated** — `n` would be what
+`snprintf` *would have written*, and using it as an index reads past the buffer and underflows
+`sizeof(buf) - n` (stack corruption). Until 0.10 only `$CFG` had this guard; the data frames
+did not, and the `%f` fields of `$M3`/`$M4` cannot be bounded by the format
+(`tools/frame_size_bounds.py`: worst case 727 B against a 512 B buffer). A second guard in
+`udp_send()` drops a frame longer than the 288 B queue slot instead of `strlcpy`-truncating it
+(a truncated frame was glued to the next one in the batch → two BAD CHK, no cause visible).
+
+Both guards count into one firmware counter, reported in the periodic `# STAT` line
+(`frame_dropped=`) and announced with a **rate-limited** error — on the first drop and then
+every 500 — so a persistent overflow cannot stall the 500 Hz task with serial output:
+
+```
+$ERR,<TAG>,frame too long (<n> bytes, buffer <size>), dropped x<count>
+$ERR,<M?>,frame too long for UDP slot (<len> bytes, slot 288), dropped x<count>
+```
+
+`<TAG>` is `M1`..`M4`, `CFG`, `TCFG`, `LCFG` or `DIAG`. The script treats these like any `$ERR`:
+logged as `⚠ FIRMWARE ERROR` and shown in the config windows' status bars. Neither guard
+*guarantees* the budget — that needs the field clamping / frame trimming of the open task — but
+they turn a memory corruption into a lost, counted, visible frame.
+
 #### # lines — System messages
 
 Lines starting with `#` are human-readable status messages from the firmware:
 - `# SYS: ...` — startup info (chip, flash, heap)
+- `# STAT n=<samples> tx_dropped=<k> frame_dropped=<k>` — every 5000 samples (~10 s at 500 Hz):
+  frames skipped because the serial TX buffer was full, and frames dropped by the length guards
+  (§4.4 `$ERR`). Both should read 0 on a healthy bench.
 - `# incunest_afe4490 started` — library started
 - `# frame mode ...` — frame mode change
 - `# RESET_REASON: <reason>` — sent once over UDP after every boot (WiFi reconnect);
