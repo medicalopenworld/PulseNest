@@ -21294,3 +21294,388 @@ mejora el firmware en un microsegundo.
 Regla que queda: **antes de presentar algo como argumento a favor de una decision cara, comprobar
 si el documento que lo respalda dice eso, o solo lo menciona.** Un ADR que anota una version esta
 registrando procedencia, no diagnosticando.
+
+## Sesion 2026-09-14 - Contradiccion del modo de arranque $M3/$M4 resuelta (script v1.48)
+
+Alex abre preguntando que habia que decirle a Pablo (las tres preguntas sobre la migracion a IDF y
+el dato de las dos versiones de IDF, redactadas en formato WhatsApp, pendientes de enviar) y que
+tareas hay a corto plazo. Al aclarar la tarea 5 (las dos comprobaciones de F3 con la sonda puesta)
+salio una contradiccion a tres bandas sobre el modo de arranque del firmware, y Alex pidio resolverla.
+
+### Diagnostico: las tres afirmaciones eran ciertas, pero de tres objetos distintos
+| Donde | Que dice | Verdad |
+|---|---|---|
+| `src/main.cpp:216` | `g_incunest_frame_mode = IncunestFrameMode::M4` | si, desde `0fdba00` (v1.47, 2026-09-11) |
+| Placas vivas (17.A, dos V18) | build `5ed717e-dirty` | **anterior** a `0fdba00` -> arrancan en `$M3` |
+| `BACKLOG.md` "a veces se envia la $M3" | observacion de campo | **correcta, no es un bug** |
+| `pulsenest_lab.py` (9 sitios) + spec §4.8 F3 | "the ESP32 always boots in $M3" | obsoleto frente al fuente |
+
+Verificado con `git merge-base --is-ancestor 5ed717e 0fdba00` y con el diff de `0fdba00`, que es
+literalmente `M3 -> M4`. La "verificacion en HW" del 10-sep fue real, pero sobre la 16.A (muerta el
+11-sep) con un build local sucio que nunca llego a las placas vivas. La memoria
+`project_frame_modes.md` se contradecia a si misma: el `description` decia `$M3` y el cuerpo `$M4`.
+
+### Lo que se hizo (solo texto, sin cambio de comportamiento)
+- `pulsenest_lab.py`: 9 textos corregidos — tooltip START de MULTI CAPTURE, tooltip del combo de
+  modo (dos frases, una describia la restauracion post-reset que v1.47 elimino), comentario de
+  `__init__`, docstring de `_sync_frame_mode_live` (fechada como historica), comentario de la
+  cabecera de RECORDING LIVE, rama `else` del header, docstring de `send_cmd_to_ip()` y comentario
+  de `start_multi_capture()`. Compila (`py_compile`), barrido final sin restos.
+- `pulsenest_lab_spec.md`: v1.48; §4.8 F3 reescrito; changelog. El parrafo historico de §6.5.1
+  (linea ~2060, "the ESP32 always boots in $M3") se deja: es el registro de un fix de v1.32.
+- Memoria `project_frame_modes.md` corregida.
+- Script relanzado.
+
+### Decision que se mantiene
+El `$MODE` a cada placa al arrancar MULTI CAPTURE **no sobra** aunque el firmware arranque en `$M4`:
+cubre una placa cambiada de modo por otro host durante la sesion, o una aun sin reflashear. El
+tooltip estaba mal en el porque, no en el que.
+
+### Incidencia de metodo
+El primer grep (patrones `boots in $M3`, `(default)`) encontro 7 sitios; un segundo grep mas ancho
+(`never asked`, `Boards boot in`) encontro 2 mas. Regla: barrer por el CONCEPTO (todas las formas
+de decir "arranca en M3"), no por una frase. Y el parche aborto a la primera porque
+`pulsenest_lab.py` es LF con **7 lineas CRLF sueltas**: detectar el EOL por mayoria, no por presencia.
+
+### Pendiente
+- **Reflashear** las tres placas vivas: es lo que hace coincidir fuente y banco y lo que convierte
+  la nota del BACKLOG en obsoleta. Hasta entonces toda captura arranca en `$M3` salvo negociacion.
+- Enviar los dos mensajes a Pablo.
+- Nada commiteado en este bloque (Alex no lo ha pedido).
+
+## Sesion 2026-09-14 (tarde) - Revision del porte de incunest_afe4490 a ESP-IDF puro hecho por Pablo
+
+Pablo (WhatsApp 20:17): «he hecho merge a dev; claude ha modificado tu libreria, muy poquito,
+solo para hacerla compatible; revisa que este bien». Alex no sabia cuando fue el ultimo commit/push
+de la libreria. Esto responde sin preguntar a dos de las tres preguntas pendientes: **IDF puro** y
+**motherBoard**.
+
+### Donde esta cada cosa (verificado con fetch en los tres repos)
+- Nuestro repo `incunest_afe4490`: **intacto**. local = origin/master = `6eb7dfa`, tag v0.90
+  (2026-09-08). Sin PRs, forks ni ramas. Pablo no ha tocado nuestro repo.
+- IncuNest: rama nueva **`origin/refactor/idf-native-port`** (ultimo commit hoy). **`origin/dev` NO
+  la contiene** (dev sigue en el 11-sep): o el merge no esta pusheado o Pablo se refiere al
+  `merge: dev -> refactor/idf-native-port` del 13-sep. Preguntarselo.
+- La libreria va **vendorizada** como componente IDF en `Firmware/components/incunest_afe4490/`,
+  un solo commit (`e14a520c`, 11-sep). Base: **v0.81 (`4e0dd91`)**, el mismo pin que ya tenia
+  `motherBoard/platformio.ini:68`. La memoria decia que motherBoard estaba en v0.90: **falso**,
+  corregido. 20 commits detras, con cambios de API (v0.85, v0.87, v0.90).
+
+### Veredicto: funcionalmente correcto; dos defectos menores; tres deudas
+15 cambios (14 en el .cpp, 1 bloque de includes en el .h, stub intacto). La logica de senal no se
+toca, es cierto. Lo revisado por debajo: `plat_gpio.c` (ISR con trampolin IRAM_ATTR y tabla por
+GPIO, `gpio_install_isr_service(0)` = mismos flags que Arduino 2.0.14), `plat_spi.cpp` (`SpiBus`
+con forma de Arduino: `acquire_bus`, CS manual `spics_io_num=-1`, sin DMA, `polling_transmit` por
+byte), `plat_num.h` (`constrain`/`map` como plantillas, evaluacion unica: a mejor).
+
+- **Defecto A:** las tres `Serial.printf` de `$TIMING`/`$TASKS` pasaron a `ESP_LOGI` → prefijo
+  `I (ms) AFE4490:` + linea en blanco, y desaparece si el nivel de log es < INFO. Solo bajo
+  `INCUNEST_TIMING_STATS` → impacto nulo en produccion, pero es la unica traduccion no fiel, y
+  tienen `plat_print.h` que si lo seria.
+- **Defecto B:** `TAG_AFE` nuevo (la lib ya tenia `TAG`) + `esp_log.h` fuera del guard
+  `INCUNEST_OFFLINE`. Sin usar cuando TIMING esta off → **es la causa de su propio
+  `-Wno-error=unused-variable`**.
+- **Deuda 1 — cadencia SPI sin medir** (su propio CMakeLists lo marca «PENDIENTE DE BANCO»): por
+  muestra 6 accesos (2 escrituras a CONTROL0 + 4 lecturas) × 4 bytes = 24 `spi_device_polling_transmit` + 6 acquire/release. Frente al
+  registro directo de Arduino es 5–10× mas caro: estimado 150–270 µs por muestra en un periodo de
+  2 ms (frente a ~30–40 µs con Arduino). Cabe, pero hay que medirlo — y `$TIMING` es justo lo que el defecto A rompe.
+- **Deuda 2 — 7 `-Wno-error`** solo en el componente. Son avisos reales de NUESTRA lib que
+  PlatformIO no enseñaba. Nos toca: compilar upstream con `-Wall -Wextra -Werror` y limpiar.
+- **Deuda 3 — doble copia.** Cada release nuestra exige rehacer los parches. (Se dijo ademas que
+  subir el pin exigia adaptar la API en motherBoard: **suposicion FALSA**, ver inventario de la
+  entrada siguiente — v0.90 compila tal cual.) La salida es nuestra **fase 0 (HAL en upstream)**: la lib
+  compila en IDF sin parches y Pablo la consume por git sin copiar. Sube de prioridad; la fase −1
+  (pioarduino) pierde sentido para motherBoard y la fase 2 («Arduino como componente») queda
+  descartada por los hechos.
+
+### Pendiente de Alex
+1. Devolver feedback a Pablo (A, B, la medida de cadencia, y aclarar lo del merge a dev).
+2. Decidir si se arranca la fase 0 (HAL) antes de que motherBoard suba el pin a v0.90.
+3. Limpiar los 7 avisos en upstream.
+
+## Sesion 2026-09-14 (noche) - Inventario: que API de la libreria usa motherBoard y que cambio v0.81 -> v0.90
+
+Alex pregunto que es HAL (Hardware Abstraction Layer), que es el «pin» (fijar la dependencia a un
+commit: `#4e0dd91`), si migrar master a IDF (no: extenderlo con la HAL para que compile en
+Arduino, IDF y host), por que tres .cpp y no uno con #ifdef (trazabilidad: un diff en hal_idf.cpp
+no puede tocar lo que corre en la incubadora; ESP_PLATFORM lo definen ambos frameworks), y por
+que PulseNest tambien a IDF (fase 1, tras la fase 0: un cambio a la vez; el banco debe representar
+al destinatario). Luego pidio el inventario.
+
+### Resultado: v0.90 compila en motherBoard SIN tocar una linea
+motherBoard usa 5 metodos (`begin`, `setHgacEnable`, `getData`, `getTimingConfig`,
+`runAfeDiagnostics`), 3 tipos (`INCUNEST_AFE4490`, `AFE4490Data`, `AFE4490TimingConfig`) y 2
+enumeradores (`PROBE_APPLIED`=2, `PROBE_DISCONNECTED`=0). Todo identico en firma, struct y valor
+entre v0.81 y v0.90. No usa ninguno de los setters renombrados ni los estados eliminados. La spec
+v0.90 §14 ya lo decia: «motherBoard uses only ==/!= PROBE_APPLIED (9 sites) and is unaffected».
+
+**Correccion:** en el punto 5 de la respuesta anterior afirme que al subir el pin «el codigo de
+Pablo deja de compilar hasta que lo adapte». Era una suposicion, no una verificacion, y es
+**falsa**. El mensaje 2 redactado para Pablo la repetia («habra que rehacer los parches sobre otra
+base Y adaptar los consumidores»): si se ha enviado, corregir.
+
+### Cambios de comportamiento que si le llegan (a 500 Hz, sin llamar setSampleRate)
+- v0.89 OR->AND en probe_state: su puerta `== PROBE_APPLIED` se vuelve mas permisiva en tejido fino.
+- v0.82 hr2: cota del barrido de lags 137 -> ~81 muestras; HR2 ya no busca < ~37 bpm.
+- v0.86b: +384 B RAM. Resto: sin cambio numerico a 500 Hz.
+
+### Pendiente
+Subir el pin a v0.91 es para Pablo: cambiar un hash + revalidar probe_state y hr2. Nada de codigo.
+Lo que sigue pendiente es lo nuestro: HAL (fase 0), limpiar los 7 avisos, y decidir la fase 1.
+
+## Sesion 2026-09-14 (noche, 2) - Cinco preguntas sobre la estrategia de migracion
+
+Alex: (1) tiene sentido mantener HAL Arduino; (2) Arduino es para la lib, no para PulseNest; (3) el
+porte de Pablo es un shim; (4) por que lo hizo asi; (5) tendra un #define para elegir.
+
+Verificado en su rama antes de responder: existe `Firmware/docs/porte-esp-idf-nativo.md` (526 l.)
+con el criterio rector «preservar comportamiento» (equipo medico, unidades en Togo, tirada de 200);
+IDF v6.0.1; HMI+MB compilan sin Arduino; 26 tests de host; banco 15/15 el 11-sep SIN el AFE. Cero
+macros de seleccion de plataforma propias y cero `#include <Arduino.h>`; `platformio.ini` residual,
+a borrar tras el merge. B9 (riesgo maximo) es TinyGSM->esp_modem, no el AFE.
+
+Respuestas: (1) si, pero **transitorio** (cambia la decision del 13-sep): mientras exista un
+consumidor Arduino — motherBoard en dev y PulseNest hasta la fase 1; luego se borra. (2) correcto:
+PulseNest migra entero en la fase 1, no se mantiene doble; hasta entonces es quien valida
+`hal_arduino`. (3) hibrido: shim para lo masivo (millis, String, Print, SPI, NvsPrefs byte a byte,
+mapeo PWM), renombrado en GPIO, sustitucion en red y GPRS; precio ya pagado: dos regresiones de
+semantica implicita en banco (mutex de TwoWire, available()==0). (4) gestion de riesgo de
+dispositivo medico, en sus palabras; concentra el riesgo en ~20 ficheros de plataforma en vez de
+114 de aplicacion; la deuda SOUP sigue, ahora vendorizada en components/. (5) no: IDF puro sin
+vuelta atras. Nosotros si, pero por deteccion (guards por fichero + CMake), no por #define manual.
+
+## Sesion 2026-09-14 (noche, 3) - Limpieza de avisos de la libreria: v0.90b publicada
+
+Alex: «Arranca por el punto 1: limpia los 7 avisos» (los `-Wno-error=` que Pablo puso al componente
+vendorizado). Antes de tocar nada, se reprodujeron con dos compiladores: xtensa GCC 8.4 (Arduino,
+`pio run -e incunest_V17` con `-Wall -Wextra`) y host GCC 15.1 (MinGW, C++17 y C++20, con los stubs
+de `test/stubs`). No hay ESP-IDF instalado en esta maquina.
+
+### Hallazgo principal: la lista de Pablo es una PLANTILLA, no una medida
+`thingsboard` y `arduino_pid` llevan los mismos 5 `-Wno-error` con el mismo comentario textual;
+`incunest_gt911` los mismos 7 que la nuestra; `incunest_sensors` 12. De los 7, **solo 3 eran
+nuestros**:
+- `reorder` (1): el constructor inicializaba `_hr1_dc_alpha` antes que `_spo2_warmup_samples`, contra
+  el orden de declaracion. Lista reordenada; sin dependencia entre miembros.
+- `volatile` (2, solo C++20): `--` sobre `_switched_rc_settling_countdown` y `_diag_holdoff_samples`.
+  Reescrito `x = x - 1`; misma semantica no atomica.
+- `unused-parameter` (4): `_rsqm_update()` seguia recibiendo led1/led2/aled1/aled2, sin usar desde
+  v0.35 (todo llega por `AFE4490AnalogState`). Eliminados de la firma privada y del unico llamador.
+  (IDF compila con `-Wno-unused-parameter`, asi que este ni siquiera era de Pablo.)
+Los otros 4 no se reproducen ni tienen candidato: `unused-variable` era su propio `TAG_AFE`;
+`format-truncation` solo podria salir de los 2 `snprintf` bajo `INCUNEST_TIMING_STATS` (off en
+motherBoard, ni se compilan); `missing-field-initializers` sin candidato (la lib usa `{}`);
+`deprecated` sin API deprecada de IDF (`pdMS_TO_TICKS` no lo es).
+
+### Lo que se hizo (v0.90b, commit `41007c0`, pusheado a origin/master)
+- Los 3 arreglos de arriba. Sin cambio de comportamiento.
+- `library.json`: `"build": {"flags": ["-Wall","-Wextra","-Werror"]}` — solo a la lib. **Verificado en
+  el comando real del compilador de la placa** (build verbose tras borrar los .o de la lib): llegan
+  `-Wall -Wextra -Werror` junto a los `-Wno-*` del framework; a `main.cpp` no llega `-Werror`.
+- Version v0.90b en los 6 sitios del checklist (`library.json` 0.90.1, precedente v0.86b→0.86.1).
+  De paso: las cabeceras de .cpp/.h/stub/examples decian «v0.88» — checklist incumplido en v0.89 y
+  v0.90. Resincronizadas.
+- Spec: cabecera v0.90b + fila §14.
+
+### Verificacion
+- Host GCC 15, `-Wall -Wextra -Werror`, gnu++17 y gnu++20: 0 avisos, 0 errores.
+- `pio run -e incunest_V17`: SUCCESS con `-Werror` activo en la lib.
+- `pio test -e native`: **76/77 casos, 8/9 suites**. La novena, `test_biquad`, sale ERRORED de
+  compilacion y **ya estaba rota desde 2026-06-12** (la lib retiro `test_biquad_process` y
+  `test_recalc_biquad` en `29ba2c4`; el test no se toca desde abril). No es de este cambio.
+  Anotado en `project_unit_tests_task`. Nadie lo vio en tres meses porque el SUMMARY dice
+  «succeeded».
+
+### Para Pablo
+Con su copia v0.81 sigue necesitando `-Wno-error=reorder` (el reorder ya estaba) y
+`unused-variable` (su `TAG_AFE`). Al subir a v0.90b/0.91 puede borrar el bloque entero, salvo que
+conserve `TAG_AFE`.
+
+### Estado de los repos al cerrar el bloque (2026-09-14, 23:10)
+- `incunest_afe4490`: v0.90b commiteada y pusheada (`41007c0`), arbol limpio.
+- `PulseNest`: **sin commitear** — `pulsenest_lab.py` y `pulsenest_lab_spec.md` (v1.48, textos
+  $M3/$M4), `conversation_log.md` (cuatro entradas de hoy) y `BACKLOG.md` (una linea de Alex). Alex
+  no ha pedido commit; queda para cuando lo diga.
+- Placas: sin tocar en toda la sesion; siguen con el build `5ed717e-dirty` (arrancan en $M3).
+- Siguiente paso propuesto y pendiente de respuesta: fase 0 (HAL) de la libreria.
+
+## Sesion 2026-09-14 (noche, 4) - Fase 0 arranca: contrato `incunest_afe4490_hal.h` + instalacion de IDF v6.0.1
+
+Alex: no molestar a Pablo hasta tener algo avanzado; empezar por `hal.h` e instalar ESP-IDF v6.0.1.
+
+### Instalacion de IDF (en segundo plano)
+Tag `v6.0.1` verificado en espressif/esp-idf (`d59a485`). Clon `--depth 1 --recursive
+--shallow-submodules` en `C:\esp\v6.0.1\esp-idf` (misma ruta que Pablo, para que `IDF_PATH`
+coincida) + `install.bat esp32s3` (toolchains a `~/.espressif`). Log en scratchpad
+`idf_install.log`. Python 3.13.4 y git 2.48 ya estaban.
+
+### Hallazgo que reduce la fase 0: solo Arduino.h y SPI.h difieren
+Inventario por grep de v0.90b. Lo que difiere entre Arduino-ESP32 e IDF son **18 llamadas** del
+.cpp: pinMode x2, digitalWrite x5, attachInterrupt x1 (+ digitalPinToInterrupt x2), detachInterrupt
+x1, dos transacciones SPI de 4 bytes (beginTransaction/transfer x4/endTransaction), Serial.printf
+x3, constrain x6; mas HIGH/LOW/OUTPUT/INPUT_PULLUP/RISING/MSBFIRST/SPI_MODE0. **Todo lo demas es
+comun a los dos targets** porque Arduino-ESP32 corre sobre IDF: FreeRTOS (~270 llamadas:
+xSemaphoreTake 65, xSemaphoreGive 63, portMAX_DELAY 64...), ESP_LOGx 13, esp_timer_get_time 14,
+IRAM_ATTR 3. Eso NO se envuelve (reescribir 270 lineas de sincronizacion de una lib de paciente
+sin ganancia de portabilidad): solo tiene que EXISTIR en host -> una cabecera
+`incunest_afe4490_hal_host.h` con FreeRTOS/esp_log/esp_timer/esp_attr falsos con sus nombres, que
+absorbe `platform_stub.h` y `test/stubs/` de PulseNest (los dos caminos de host del 13-sep).
+Precisa el punto 5 de aquella sesion: la HAL "cubre" FreeRTOS proveyendolo en host, no envolviendolo.
+
+### Contrato escrito: `incunest_afe4490_hal.h` (borrador v0.91, sin commit)
+- GPIO: `_gpio_init_output(pin, level)`, `_gpio_init_input_pullup(pin)`, `_gpio_write(pin, level)`.
+- ISR: `_gpio_attach_isr_rising(pin, isr) -> bool`, `_gpio_detach_isr(pin)`; handler `void(void)`
+  como attachInterrupt. En IDF `gpio_install_isr_service(0)` = mismos flags que Arduino 2.0.x
+  (ISR no garantizada durante escritura de flash: igual que hoy, anotado).
+- SPI a nivel de TRANSACCION: `_spi_attach()/_spi_detach()` (el bus lo inicializa la app, como
+  siempre) y `_spi_transfer(cs, tx, rx, n)` = acquire, CS low, n bytes, CS high, release.
+  Arduino: n llamadas a `SPI.transfer(uint8_t)` — la misma secuencia byte a byte que v0.90b.
+  IDF: UNA `spi_device_polling_transmit` de 4 bytes en vez de 4 -> ataca la deuda 1 (el shim de
+  Pablo paga el overhead por byte). Reloj 2 MHz / MSB / modo 0 fijados en la HAL (son del AFE).
+  `INCUNEST_AFE4490_HAL_SPI_HOST` (default SPI2_HOST) solo para la impl. IDF.
+- Consola: `_console_printf(fmt, ...)` con atributo format -> Serial.printf / vprintf / vprintf.
+  Solo para $TIMING/$TASKS: protocolo con checksum, NO puede ir por ESP_LOGx (defecto A de Pablo).
+- Fuera del contrato a proposito: FreeRTOS/ESP_LOG/esp_timer/IRAM_ATTR (comunes), `constrain`
+  (helper clamp propio: el build Arduino es gnu++11, no hay std::clamp), SPI.begin (de la app).
+- Seleccion por DETECCION, sin macro manual: `ARDUINO` / `ESP_PLATFORM && !ARDUINO` /
+  `!ESP_PLATFORM`. PlatformIO compila los tres .cpp (dos vacios); CMake lista solo el _idf.
+- Criterio de aceptacion del camino Arduino: objeto xtensa identico antes/despues (desensamblado
+  sin __LINE__).
+- Sintaxis comprobada con g++ en gnu++11 y gnu++17.
+
+### Decisiones que quedan para Alex
+1. Nombres: `incunest_afe4490_hal_{arduino,idf,host}.cpp` (prefijo de dominio) frente a los
+   `hal_arduino.cpp`... del 13-sep.
+2. SPI a nivel de transaccion (propuesto) frente a nivel de byte (mas fiel al shim, 4x mas caro en IDF).
+3. Host sin macro (`!ESP_PLATFORM`); `UNIT_TEST` se queda solo para el `public:` de test.
+Hallazgo menor anotado: `begin()` no comprueba el retorno de `xTaskCreatePinnedToCore` (regla 3
+del proyecto); arreglo aparte, no en fase 0.
+
+### Instalacion de ESP-IDF v6.0.1: cuatro intentos fallidos antes del bueno (2026-09-14, 23:37-23:51)
+El clon fue limpio (2,5 min). Los toolchains no arrancaban y cada fallo tenia una causa distinta:
+1. `cmd //c "install.bat esp32s3"` desde Bash: comillas mal, cmd busco un programa llamado asi.
+2. `python tools/idf_tools.py install` directo: «MSys/Mingw is not supported» — el script hace
+   `if 'MSYSTEM' in os.environ`. `env -u MSYSTEM` no lo quita: el runtime MSYS la reinyecta.
+3. `.bat` de envoltorio con `set "MSYSTEM="`: el `cd /d C:\esp\v6.0.1\esp-idf` fallaba porque el
+   `.bat` se genero con `printf` y `\e`/`\v` son ESC y VT (`cat -A`: `C:^[sp^K6.0.1^[sp-idf`).
+   Y el `.bat` "convertido a CRLF" con `sed 's/$/\r/'` seguia en LF.
+4. Con ruta `C:/esp/...` (barras normales, cmd las acepta) y CRLF reales: cwd correcto, `dir` ve
+   `install.bat`, y `call install.bat` sigue «not recognized». Causa: la sesion tiene
+   **`NoDefaultCurrentDirectoryInExePath=1`** — cmd no ejecuta ficheros del directorio actual sin
+   `.\`. `call .\install.bat --help` funciona.
+El bueno: PowerShell desde Bash con `Remove-Item Env:MSYSTEM` y `& ./install.ps1 esp32s3`. A las
+23:51 descargaba xtensa-esp-elf **GCC 15.2.0_20251204** (IDF v6 = GCC 15, no 14 como supuse), gdb
+16.3, riscv32, cmake, ninja, openocd... Receta completa en la memoria
+`reference_esp_idf_v6_local_install`. Pendiente al terminar: `idf.py --version` y el compilador.
+
+### IDF v6.0.1 instalado y verificado (2026-09-14, 23:57)
+`install.ps1 esp32s3` termino con exit 0 (~6 min de descargas). `export.ps1` + `idf.py` funcionan
+desde PowerShell lanzado en Bash (con `Remove-Item Env:MSYSTEM`): `IDF_PATH=C:\esp\v6.0.1\esp-idf`,
+`xtensa-esp-elf-g++` **15.2.0** (crosstool-NG esp-15.2.0_20251204), cmake 4.0.3, ninja 1.12.1, venv
+`idf6.0_py3.13_env`. Nota: `idf.py --version` imprime «v1.0.3» — es la version del paquete idf.py
+(separado en IDF v6), no la de IDF; la de IDF la da `git describe` = v6.0.1. Prueba de humo en
+marcha: `examples/get-started/hello_world` con `set-target esp32s3 build` (copiado al scratchpad).
+Con esto, `hal_idf.cpp` se puede compilar aqui sin depender de Pablo, y la fase 1 tiene toolchain.
+
+### Prueba de humo IDF: hello_world esp32s3 compila (2026-09-15, 00:00)
+`idf.py set-target esp32s3 build` sobre `examples/get-started/hello_world` (copiado al scratchpad):
+152 pasos, `hello_world.bin` 145 kB, bootloader 0x5240, exit 0, 2 min. Toolchain completo
+verificado de punta a punta. Cierre del bloque: IDF v6.0.1 operativo; `hal.h` escrito; a la
+espera de las tres decisiones de Alex (nombres con prefijo, SPI por transaccion, host sin macro)
+para escribir los tres `.cpp` y `hal_host.h`.
+
+## Sesion 2026-09-15 (madrugada) - Fase 0 implementada: HAL en la libreria (v0.91 en curso)
+
+Alex delego las tres decisiones («Adelante con las tres, sigue»): nombres con prefijo
+`incunest_afe4490_hal_{arduino,idf,host}.cpp`, SPI a nivel de transaccion, host por `!ESP_PLATFORM`.
+
+### Hecho
+- Nuevos: `incunest_afe4490_hal.h` (contrato, 7 funciones), `incunest_afe4490_hal_host.h`
+  (FreeRTOS/esp_log/esp_timer/esp_attr falsos con sus nombres; sustituye a `platform_stub.h` y a
+  `test/stubs/` de PulseNest), los tres `.cpp` de la HAL, `CMakeLists.txt` raiz (componente IDF:
+  `REQUIRES esp_driver_gpio esp_driver_spi esp_timer`, `-Wall -Wextra -Werror`).
+- Transformacion por script (dry-run en memoria, cadenas exactas, pila de preprocesador):
+  **63 directivas eliminadas** (10 en .h, 53 en .cpp), 18 llamadas sustituidas, `spi_attach()` en
+  `begin()` y `spi_detach()` en `stop()`, `clampf()` propio (gnu++11 no tiene std::clamp), 6
+  comentarios reescritos para que no mientan, version v0.91, `library.json` 0.91.0 con
+  `frameworks: arduino, espidf`. Diff del .cpp: -207/+76. Ningun simbolo de Arduino queda en codigo.
+- PulseNest: `-I test/stubs` fuera de `platformio.ini`, `test/stubs/` borrado (`git rm`),
+  `tools/offline_runner` adaptado (`UNIT_TEST=1`, `hal_host.cpp` en sources, sin `#define
+  INCUNEST_OFFLINE`).
+
+### Verificacion
+- **Host** (GCC 15, gnu++17 y gnu++20, `-Wall -Wextra -Werror`): compila, enlaza y ejecuta;
+  `begin()` falla honesto («FreeRTOS object creation failed»), `getData` devuelve false.
+- **Arduino** `pio run -e incunest_V17`: SUCCESS; `hal_arduino.cpp.o` 105 kB, los otros dos 1,2 kB
+  (unidades vacias, como debe ser).
+- **Tests nativos** ya sin stubs: 76/77, 8/9 suites (test_biquad preexistente).
+- **ESP-IDF v6.0.1**: proyecto minimo `idf_smoke` con la lib como `EXTRA_COMPONENT_DIRS`:
+  `incunest_afe4490.cpp.obj` + `hal_idf.cpp.obj` compilan bajo `-Werror` con GCC 15.2,
+  `libincunest_afe4490.a` enlazada, `idf_smoke.bin` 228 kB. **La libreria compila en IDF puro sin
+  parches: objetivo de la fase 0 cumplido.**
+- **Comparacion de objetos xtensa** (v0.90b vs v0.91, funcion a funcion, 115 secciones):
+  78 identicas, 37 cambiadas, 0 nuevas/desaparecidas. Simbolos externos: salen los 12 de Arduino
+  (SPI, Serial, Print::printf, SPIClass::*, attach/detachInterrupt, digitalWrite, pinMode,
+  **log_printf, pathToFileName**), entran los 8 de la HAL + **esp_log_write, esp_log_timestamp**.
+  Codigo -492 B.
+
+### HALLAZGO que la comparacion destapo (y por lo que se hace la comparacion)
+`ESP_LOGx` tiene el mismo NOMBRE en Arduino e IDF pero **no la misma implementacion**:
+Arduino-ESP32 las redefine en `esp32-hal-log.h` (via `Arduino.h`): `log_printf`, formato
+`[E][fichero:linea] func(): ...`, nivel por `CORE_DEBUG_LEVEL`. Al quitar `Arduino.h` del .h, la
+lib en Arduino pasaba silenciosamente al camino IDF (`esp_log_write`, formato `E (ms) tag:`, nivel
+por sdkconfig del core, que podria ocultar los INFO/WARN). Eso explica la mayoria de las 37
+funciones cambiadas. Correccion: `#include <esp32-hal-log.h>` bajo `ARDUINO` en el .h (una linea)
+para que el camino de log en Arduino sea exactamente el de v0.90b. Anotado en `hal.h`.
+Se repite la comparacion tras el parche; esperado: solo begin/stop/_write_reg/_read_spi_raw/
+_emit_* /_rsqm_update y los 4-5 usuarios de constrain→clampf (roundf evaluado una vez: mejora).
+
+### Hallazgo colateral (preexistente)
+`tools/offline_runner` no compila desde antes de v0.81: llama `test_feed_spo2(int32_t,int32_t)` y
+la API es `(float, float, ProbeState)` desde el dominio OT (agosto). Anotado en
+`project_unit_tests_task`. Mismo patron que `test_biquad`.
+
+### Prueba de «refactor puro» cerrada (2026-09-15, ~00:45)
+Tres pasadas de comparacion del objeto xtensa (v0.90b vs v0.91), cada una quitando una fuente de
+ruido que no es codigo:
+1. Objetos de PlatformIO tal cual: 78 identicas / 37 cambiadas. Ruido: `__LINE__` en cada
+   `ESP_LOGx` de Arduino (el .cpp perdio 131 lineas) → inmediatos distintos → tamanos y saltos.
+   Y destapo el hallazgo real: `esp_log_write` en vez de `log_printf` (corregido con
+   `esp32-hal-log.h` bajo ARDUINO).
+2. Ambas recompiladas con el comando exacto de PlatformIO y `CORE_DEBUG_LEVEL=0` (sin logs):
+   79 / 36. `-fno-ipa-icf` no cambia nada. El diff literal de `setTIACF` y `setHgacEmaSlowTauS`
+   muestra las MISMAS instrucciones con destinos de salto ±1-4 bytes, relleno `.byte 00` movido y
+   offsets de `l32r` distintos: decisiones del ENSAMBLADOR (relajacion, alineacion, pool de
+   literales), no del compilador.
+3. Salida del compilador (`-S`, sin logs), etiquetas normalizadas: **102 de 113 funciones
+   identicas; las 11 cambiadas son exactamente las tocadas**: `_write_reg`, `_read_spi_raw`
+   (SPI→HAL), `_emit_tasks`, `_emit_timing` (console_printf), `begin`, `stop` (attach/detach) y
+   las 5 de `constrain`→`clampf` (setLED1Current, setLED2Current, setHgacVTiaHigh2,
+   _apply_analog_regs, _quantize_led_mA). `_process_sample` identico: los 4 parametros muertos de
+   `_rsqm_update` ya los eliminaba el compilador al inlinear. En `_quantize_led_mA` el diff son las
+   mismas comparaciones con la constante 0/255 materializada en float en vez de en entero:
+   equivalente en todo el dominio, NaN incluido.
+Simbolos externos: salen los 10 de Arduino, entran los 8 de la HAL; ninguno mas.
+Herramientas en scratchpad: `compile_lib_xtensa_nolog.py`, `compare_xtensa_objects.py`,
+`compare_asm_s.py`. Leccion: para demostrar «mismo codigo» hay que comparar la salida del
+compilador, no el objeto; el objeto arrastra __LINE__, relajacion y alineacion.
+
+### FASE 0 CERRADA: incunest_afe4490 v0.91 publicada (2026-09-15, ~01:10)
+Commit `d61d806`, tag **v0.91**, en origin/master; arbol limpio. Ficheros: +CMakeLists.txt,
++incunest_afe4490_hal.h, +_hal_arduino.cpp, +_hal_idf.cpp, +_hal_host.cpp, +_hal_host.h,
+-incunest_afe4490_platform_stub.h; .cpp/.h/spec/rationale/README/library.json/examples modificados.
+Spec: nueva **§1.4 Hardware abstraction layer** (contrato, tabla de las tres implementaciones,
+reglas, seleccion por deteccion, ESP_LOG en Arduino, evidencia 102/113), §9.3-9.6 reescritas
+(sin INCUNEST_OFFLINE; §9.5 es el historico), fila v0.91 en §14. README: requisitos y uso en
+ESP-IDF (EXTRA_COMPONENT_DIRS + spi_bus_initialize). Rationale: nota de `_emit_tasks` actualizada.
+
+**PulseNest queda con cambios SIN commitear** (Alex no lo ha pedido): `platformio.ini` (sin
+`-I test/stubs`), `test/stubs/` borrado (7 ficheros), `tools/offline_runner/{CMakeLists.txt,
+main.cpp}` adaptados, mas lo de la tarde (v1.48 script+spec, BACKLOG, este log). Con v0.91 por
+symlink, PulseNest compila (V17) y pasa 76/77 tests; esos cambios son necesarios para ello.
+
+Lo que sigue: (1) reflashear las placas del banco con v0.91 y verificar senal identica (criterio de
+aceptacion en Arduino); (2) medir la cadencia SPI en IDF cuando haya un consumidor IDF con placa
+(PulseNest fase 1, o la rama de Pablo apuntando a v0.91); (3) avisar a Pablo cuando Alex quiera:
+puede sustituir su copia vendorizada de v0.81 por el componente v0.91 via git sin parches (su
+`-Wno-error` sobra; su `spi_bus_initialize` en SPO2.cpp sigue valiendo).
