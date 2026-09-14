@@ -21679,3 +21679,49 @@ aceptacion en Arduino); (2) medir la cadencia SPI en IDF cuando haya un consumid
 (PulseNest fase 1, o la rama de Pablo apuntando a v0.91); (3) avisar a Pablo cuando Alex quiera:
 puede sustituir su copia vendorizada de v0.81 por el componente v0.91 via git sin parches (su
 `-Wno-error` sobra; su `spi_bus_initialize` en SPO2.cpp sigue valiendo).
+
+## Sesion 2026-09-15 (madrugada, 2) - Guarda de longitud de frames (fw 0.10) y reflash del banco con v0.91
+
+Alex: «adelante» al plan (commit PulseNest → guarda $M4 → reflash → Pablo → fase 1).
+
+### Commits de PulseNest (pusheados)
+`bbec9bd` fix(pulsenest_lab) textos $M3→$M4 (v1.48) · `c81f56f` build: seguir a la lib v0.91 (sin
+test/stubs, offline_runner sobre la HAL de host) · `6e029e6` docs: log de sesion · **`4881ca6`
+fix(firmware): guarda de longitud en todos los frames, fw 0.10**.
+
+### La guarda (fw 0.10)
+- `frame_finish(buf, size, n, tag)`: UN cierre para los 8 frames (`$M1..$M4`, `$CFG`, `$TCFG`,
+  `$LCFG`, `$DIAG`). Comprueba el retorno de `snprintf` ANTES de usarlo; si no cabe, descarta.
+  Antes solo `$CFG` lo hacia: en los frames de datos, pasado `sizeof(buf)-6`, `frame_xor_chk(buf+1,
+  n-1)` leia fuera del buffer y `snprintf(buf+n, sizeof(buf)-n, ...)` subdesbordaba el size_t.
+- `udp_send()`: un frame mas largo que el hueco de 288 B se DESCARTA, ya no se trunca con `strlcpy`
+  (el trozo se pegaba al frame siguiente del lote: dos BAD CHK sin causa visible).
+- Contador unico `incunest_frame_dropped` en `# STAT` (cada 5000 muestras) y `$ERR,<TAG>,frame too
+  long ...` limitado al primero y cada 500 (un `Serial_printf` por muestra a 500 Hz pararia la
+  tarea). El script ya trata todo `$ERR,` como aviso en log + barra de estado: sin cambios.
+- No garantiza el presupuesto (eso son las opciones 2-4 de la tarea: acotar %f y recortar campos);
+  convierte una corrupcion de memoria en un frame perdido, contado y visible. Spec §4.4 y `#` lines.
+- `PULSENEST_FW_VERSION` 0.9 → 0.10. V17 y V18 compilan, 832 kB, sin avisos.
+
+### Reflash OTA de las tres placas (2026-09-15 ~01:15)
+Descubiertas con `tools/udp_fw_versions.py` (script cerrado): las tres emitian $M4 a 100 dgram/s con
+`fw=0.9 lib=0.90 build=5ed717e-dirty`. Se commiteo ANTES de flashear para que el `$CFG` reporte un
+hash limpio. OTA por `curl -F update=@... http://<ip>/update` (docs/boards.md), una a una:
+
+| IP (hoy) | MAC | env | HTTP | reporta ahora |
+|---|---|---|---|---|
+| 192.168.137.14 | 10:51:DB:50:87:B8 | incunest_V18 | 200 | fw=0.10 lib=0.91 build=4881ca6 libsha=d61d806 |
+| 192.168.137.169 | 10:51:DB:50:88:50 | incunest_V18 | 200 | idem |
+| 192.168.137.62 | 10:20:BA:14:75:60 (17.A) | incunest_V17 | 200 | idem |
+
+Con esto: (a) la libreria v0.91 (HAL) corre en hardware real en Arduino — primera ejecucion fuera
+del compilador; (b) las placas arrancan en $M4 (se cierra del todo la contradiccion $M3/$M4);
+(c) el `$CFG` identifica el build. Script relanzado.
+
+### Pendiente de Alex (aceptacion en banco, con el script delante)
+1. Señal identica a la de ayer con la sonda puesta: PPG, SpO2, HR1-3, RF/HGAC. Si algo cambia, la
+   sospecha es la HAL (unica diferencia de codigo en el camino de la senal: SPI por transaccion,
+   misma secuencia byte a byte).
+2. `# STAT ... frame_dropped=0` en un rato de captura, y ningun `$ERR,M4,frame too long`.
+3. La tarea 5 (captura multiple con sonda, `maxlen` en `# NET`), que ahora ya tiene sentido: las
+   tres placas arrancan en $M4.

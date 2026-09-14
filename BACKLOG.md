@@ -44,7 +44,7 @@ has not been triaged yet.
 - Apunta como tarea pendiente: estudiar la posibilidad de anular STAGE2 ya que no la
   usamos (ventajas e inconvenientes)
 - whatsapp de Pablo del 14-ago
-- La trama $M4 a veces no se envía por defecto (se envía la $M3)
+- [x] La trama $M4 a veces no se envía por defecto (se envía la $M3) — RESUELTO 2026-09-15: era cierto, las placas llevaban un build anterior al cambio M3→M4 (0fdba00); reflasheadas con fw 0.10 (4881ca6), arrancan en $M4
 - _spo2_update() resetea constantemente ¿Merece la pena cambiar el código para que resetee sólo cuando es necesario? (ventajas y desventajas/inconvenientes/riesgos)
 - Estudiar si la señal DC podría ser utilizada para alguno de los dos siguientes usos:
 	1. El Anexo AA de la norma ISO explica que un %mod teóricamente aceptable puede ser clínicamente inútil si el nivel de DC es extremadamente bajo
