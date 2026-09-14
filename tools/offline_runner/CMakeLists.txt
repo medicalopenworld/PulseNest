@@ -8,10 +8,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(incunest_offline_runner
     main.cpp
     ../../lib/incunest_afe4490/incunest_afe4490.cpp
+    ../../lib/incunest_afe4490/incunest_afe4490_hal_host.cpp
 )
 
 target_compile_definitions(incunest_offline_runner PRIVATE
-    INCUNEST_OFFLINE=1
+    UNIT_TEST=1
     INCUNEST_TIMING_STATS=0
 )
 

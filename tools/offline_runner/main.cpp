@@ -3,7 +3,7 @@
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 
-#define INCUNEST_OFFLINE 1
+// Host build: the library selects its host HAL by itself (no ESP_PLATFORM); UNIT_TEST opens the test_feed_* API.
 #include "incunest_afe4490.h"
 
 #include <cstdio>
