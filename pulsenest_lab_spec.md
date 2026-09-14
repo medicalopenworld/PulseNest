@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.48
+# pulsenest_lab — Specification v1.49
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -482,7 +482,7 @@ clear it.
 | `gaps_air` | lost samples whose gap is a whole multiple of `UDP_BATCH_SIZE`: the datagram never arrived |
 | `gaps_queue` | lost samples with a remainder: frames dropped in the ESP32 UDP queue before batching |
 | `bad_chk` | checksum failures — active board only (validated by the drain, §4.5) |
-| `dropped` | lines not forwarded because the board was not active |
+| `not_active` | lines received while the board was **not** the active source, hence not forwarded to the algorithm pipeline (they still feed MULTI CAPTURE). Deliberate (decision D2) and cumulative since registration — **not a loss counter**. Named `dropped` until v1.48; renamed because on the bench it read like packet loss |
 | `cfg_requests` | `$CFG?` identity requests sent by the reader thread |
 
 **Identity acquisition.** The active board is asked through the normal path: `_on_udp_active()`
@@ -524,7 +524,7 @@ identified (`ip board mac — fw lib build`), LOST / back, MAC follow. Every `UD
 `_sig_udpcom_line` — it never enters the queue, so it cannot be mistaken for firmware output:
 
 ```
-# NET 192.168.137.142 incunest_V16 10:51:DB:50:48:F8 ACTIVE | 100.5 dgram/s 4.99 frm/dgram 1068 kbit/s | maxlen 265 partial 0 | gaps air 0 queue 0 | bad_chk 0 | dropped 0 | q 25
+# NET 192.168.137.142 incunest_V16 10:51:DB:50:48:F8 ACTIVE | 100.5 dgram/s 4.99 frm/dgram 1068 kbit/s | maxlen 265 partial 0 | gaps air 0 queue 0 | bad_chk 0 | not_active 0 | q 25
 ```
 
 Rates are over the interval since the previous line; `q` is `_udp_queue.qsize()` at that moment
@@ -1983,6 +1983,18 @@ pyqtgraph context menus from being too narrow to read.
 
 ## 12. Changelog
 
+### v1.49 — 2026-09-15
+
+**`# NET`: the per-board counter `dropped` is renamed `not_active` (§4.8, §7.5).** Asked by Alex
+on the first bench session with three boards at once: the ACTIVE board showed `dropped 101042`
+and it read like packet loss. It never was — it counts the lines of a board that were received
+while it was not the active source and therefore not forwarded to the algorithm pipeline
+(decision D2), cumulative since registration. A counter whose name suggests a fault it does not
+measure costs attention every time the line is read, so the name now says what it is. Snapshot
+key and `tools/udp_multiboard_test.py` renamed alike; behaviour unchanged. Same session, for the
+record: first `# NET` reading with the bench on firmware 0.10 / library v0.91 — 100.3 dgram/s,
+5.00 frm/dgram, `maxlen` 271/270/269 B, 0 gaps, 0 bad checksums on all three boards.
+
 ### v1.48 — 2026-09-14
 
 **Text only: every remaining claim that the firmware boots in `$M3` corrected — no behaviour
@@ -2056,7 +2068,7 @@ are queried with `$CFG?` from the reader thread, counted and dropped before the 
 active board is flagged LOST and never replaced automatically; a board returning from a new DHCP
 lease with the same MAC is followed. Per-board network counters (datagrams/s, frames per datagram,
 kbit/s, longest frame, partial batches, gaps split into air-lost datagrams vs ESP32-queue drops,
-bad checksums, dropped lines) posted every 10 s as `# NET` lines in UDP COM (§7.5). Gap detection
+bad checksums, not-active lines) posted every 10 s as `# NET` lines in UDP COM (§7.5). Gap detection
 is now per board: with two boards on the port, 19.4 % of the shared counter's deltas crossed a
 board boundary and were either counted as false gaps (counters close) or silently discarded
 (counters far apart, the normal case), which made the detector blind to whole datagrams lost on the

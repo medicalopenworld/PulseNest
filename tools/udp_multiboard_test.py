@@ -215,9 +215,9 @@ def main():
     check(sb.get("mac") == mac_b, "B identified via reader-thread $CFG? query")
     check(b.cfg_requests >= 1, f"B received {b.cfg_requests} $CFG? request(s)")
     check(set(cfg_seen) == {mac_a}, f"only A's $CFG reached the pipeline ({sorted(set(cfg_seen))})")
-    check(sb.get("frames", 0) > 0 and sb.get("dropped") == sb.get("frames") + sb.get("other_lines"),
-          "B fully dropped (frames + other_lines == dropped)")
-    check(sa.get("dropped") == 0, "A nothing dropped")
+    check(sb.get("frames", 0) > 0 and sb.get("not_active") == sb.get("frames") + sb.get("other_lines"),
+          "B fully not_active (frames + other_lines == not_active)")
+    check(sa.get("not_active") == 0, "A not_active == 0")
     check(w._gaps_B == 0 and sb.get("gaps_air") == 0 and sb.get("gaps_queue") == 0,
           "no cross-board gaps (counters 1000.. and 900000.. never mixed)")
     check(sa.get("frames", 0) > 0.8 * 500 * 7, "A ~500 frames/s ingested")
@@ -243,7 +243,7 @@ def main():
     check(w._esp32_ip == "127.0.0.3", "active binding followed the MAC to 127.0.0.3")
     check("127.0.0.1" not in snap, "stale entry for the old IP removed")
     check(s3.get("state") == "ACTIVE", "A' state ACTIVE")
-    check(0 <= s3.get("dropped", -1) <= 3 * P.UDP_BATCH_SIZE,
+    check(0 <= s3.get("not_active", -1) <= 3 * P.UDP_BATCH_SIZE,
           "A' forwarded after the follow (only the <=3 datagrams before its $CFG reply dropped)")
     check(any("moved 127.0.0.1" in t for t in logs), "move logged")
 
@@ -263,10 +263,10 @@ def main():
     snap = snapshot()
     check(w._esp32_ip == "127.0.0.2" and w._active_transport == "udp", "B is the active source")
     check(snap["127.0.0.2"]["state"] == "ACTIVE" and snap["127.0.0.3"]["state"] == "PRESENT", "states swapped")
-    d3, d2 = snap["127.0.0.3"]["dropped"], snap["127.0.0.2"]["dropped"]
+    d3, d2 = snap["127.0.0.3"]["not_active"], snap["127.0.0.2"]["not_active"]
     spin(app, 2.0)
     snap = snapshot()
-    check(snap["127.0.0.3"]["dropped"] > d3 and snap["127.0.0.2"]["dropped"] == d2, "A' dropped, B forwarded")
+    check(snap["127.0.0.3"]["not_active"] > d3 and snap["127.0.0.2"]["not_active"] == d2, "A' not_active, B forwarded")
     check(w._udp_preferred_mac == mac_b and w._udp_source_user_chosen, "choice remembered by MAC")
     check(w.btn_udp.text().startswith("UDP WiFi  ●  ON"), f"UDP button ON ({w.btn_udp.text()})")
     check(cfg_seen and cfg_seen[-1] == mac_b, "B's $CFG reached the pipeline after the switch")
@@ -278,7 +278,7 @@ def main():
     s2 = snapshot()["127.0.0.2"]
     spin(app, 1.0)
     s2b = snapshot()["127.0.0.2"]
-    check(s2b["frames"] > s2["frames"] and s2b["dropped"] == s2["dropped"],
+    check(s2b["frames"] > s2["frames"] and s2b["not_active"] == s2["not_active"],
           "B still flows to the UDP COM console (not dropped); the drain ignores it for algorithms")
     check(w.btn_udp.text().startswith("UDP WiFi  ●  LISTEN"), f"UDP button LISTEN ({w.btn_udp.text()})")
 

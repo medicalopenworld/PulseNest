@@ -11927,7 +11927,10 @@ class UdpBoard:
         self.gaps_queue = 0         # lost samples in partial batches: dropped in the ESP32 queue
         self.last_cnt = None
         self.bad_chk = 0            # checksum failures (active board only: counted by the drain)
-        self.dropped = 0            # lines not forwarded because the board is not active
+        self.not_active = 0         # lines received while this board was NOT the active source, so not
+                                    # forwarded to the algorithm pipeline (deliberate, decision D2; they
+                                    # still feed MULTI CAPTURE). Cumulative since registration — NOT a
+                                    # loss counter. Was called `dropped` until v1.48 and read like one.
         self.cfg_requests = 0
         self.cfg_last_req_t = now
         self.lost = False
@@ -11990,7 +11993,7 @@ class UdpBoard:
         return (f"# NET {self.label()} {self.state(active_ip)} | {d / dt:.1f} dgram/s "
                 f"{fr / max(d, 1):.2f} frm/dgram {kbit:.0f} kbit/s | maxlen {self.max_line_len} "
                 f"partial {self.partial_datagrams} | gaps air {self.gaps_air} queue {self.gaps_queue} "
-                f"| bad_chk {self.bad_chk} | dropped {self.dropped} | q {qsize}")
+                f"| bad_chk {self.bad_chk} | not_active {self.not_active} | q {qsize}")
 
     def snapshot(self, active_ip):
         return {
@@ -12000,7 +12003,7 @@ class UdpBoard:
             'datagrams': self.datagrams, 'bytes': self.bytes, 'frames': self.frames,
             'other_lines': self.other_lines, 'partial_datagrams': self.partial_datagrams,
             'max_line_len': self.max_line_len, 'gaps_air': self.gaps_air,
-            'gaps_queue': self.gaps_queue, 'bad_chk': self.bad_chk, 'dropped': self.dropped,
+            'gaps_queue': self.gaps_queue, 'bad_chk': self.bad_chk, 'not_active': self.not_active,
             'cfg_requests': self.cfg_requests, 'capturing': self.capture_q is not None,
             'capture_queued': self.capture_queued, 'capture_overflow': self.capture_overflow,
         }
@@ -14341,7 +14344,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if is_active:
                         self._udp_queue.put(line + b'\r\n')
                     else:
-                        b.dropped += 1
+                        b.not_active += 1
                 if 0 < n_data < UDP_BATCH_SIZE:
                     b.partial_datagrams += 1
             _housekeeping(now)

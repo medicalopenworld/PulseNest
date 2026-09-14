@@ -21725,3 +21725,23 @@ del compilador; (b) las placas arrancan en $M4 (se cierra del todo la contradicc
 2. `# STAT ... frame_dropped=0` en un rato de captura, y ningun `$ERR,M4,frame too long`.
 3. La tarea 5 (captura multiple con sonda, `maxlen` en `# NET`), que ahora ya tiene sentido: las
    tres placas arrancan en $M4.
+
+### Primera lectura del banco con fw 0.10 / lib v0.91 (Alex, UDP COM, 2026-09-15 ~01:25)
+`# STAT n=65000 tx_dropped=0 frame_dropped=0` (130 s, la guarda no ha saltado). `# NET` de las TRES
+placas a la vez — .169 (V18 88:50) ACTIVE, .14 (V18 87:B8) y .62 (17.A) PRESENT —: 100,3-100,4
+dgram/s, 5,00 frm/dgram, 1052-1069 kbit/s, **maxlen 271 / 270 / 269**, partial 0, gaps air 0
+queue 0, bad_chk 0, q 15. `dropped` 169756 / 89408 / 101042 = lineas de placa NO activa que el
+lector descarta a proposito (D2), acumulado desde el registro: no es perdida. Es la primera vez que
+F1/F2 corren con tres placas reales. **maxlen real 271 B → 17 B de margen sobre el hueco de 288**
+(estimacion de la tarea de truncado: ~270 con sonda). Pendiente saber que placa lleva la sonda.
+
+### ✅ ACEPTACION DE LA FASE 0 EN BANCO (Alex, 2026-09-15 ~01:30)
+Alex, con el script delante y la sonda puesta: «Todo se ve como ayer». PPG, SpO2, HR1-3 y HGAC
+iguales con la libreria v0.91 (HAL) en Arduino real, `frame_dropped=0`, transporte limpio en las
+tres placas. La fase 0 queda validada en hardware por el camino Arduino. No recuerda que placa
+lleva la sonda; `maxlen` 271 B (probablemente la .14, que tiene el frame mas largo) queda como
+medida del `$M4` maximo real con sonda: 17 B de margen sobre 288.
+Alex pide renombrar `dropped` en `# NET`: el nombre sugiere perdida y es un descarte deliberado
+(lineas de placa no activa que no van a la tuberia). Se renombra a `not_active` en script, test y spec.
+Hecho (v1.49): `dropped` → `not_active` en `# NET`, snapshot key, `UdpBoard.not_active` y el test
+(`tools/udp_multiboard_test.py`: 67/67). Spec §4.8 tabla + changelog v1.49. Script relanzado.
