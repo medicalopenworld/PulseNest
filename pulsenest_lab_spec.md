@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.51
+# pulsenest_lab — Specification v1.54
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -478,10 +478,11 @@ clear it.
 | `ip`, `mac`, `board`, `fw`, `lib`, `build`, `libsha` | identity; the last six come from `$CFG` (`None` until it arrives) |
 | `state(active_ip)` | `ACTIVE` (feeds the pipeline), `PRESENT` (seen, dropped), `LOST` (silent > `UDP_LOST_TIMEOUT_S`) |
 | `first_seen`, `last_seen` | `time.perf_counter()` |
-| `datagrams`, `bytes` | datagrams and payload bytes received |
+| `datagrams`, `bytes` | datagrams and payload bytes received, of every kind |
+| `data_datagrams` | datagrams carrying at least one data frame — the denominator of `frm/dgram` (v1.54). With firmware 0.12 the diagnostic burst is a datagram of its own, so `datagrams − data_datagrams` = diagnostic datagrams |
 | `frames` | `$M1`–`$M4` data frames |
 | `other_lines` | `$CFG`, `$LCFG`, `$TCFG`, `$ERR`, `#` comments… |
-| `partial_datagrams` | datagrams carrying 1…`UDP_BATCH_SIZE`−1 data frames (batch flushed early) |
+| `partial_datagrams` | datagrams with at least one data frame and **fewer than `UDP_BATCH_SIZE` lines in total**: the firmware closed the batch before filling it, i.e. a frame did not arrive within its 12 ms timeout. Counted on data frames alone until v1.53, which made the library's diagnostic lines look like stuttering — see below |
 | `max_line_len` | longest data frame seen, bytes — the watch for the 288-byte firmware slot (`UDP_QUEUE_FRAME_SIZE`) |
 | `gaps_air` | lost samples whose gap is a whole multiple of `UDP_BATCH_SIZE`: the datagram never arrived |
 | `gaps_queue` | lost samples with a remainder: frames dropped in the ESP32 UDP queue before batching |
@@ -532,9 +533,40 @@ identified (`ip board mac — fw lib build`), LOST / back, MAC follow. Every `UD
 ```
 
 Rates are over the interval since the previous line; `q` is `_udp_queue.qsize()` at that moment
-(frames waiting for the next drain tick).
+(frames waiting for the next drain tick). Every counter is cumulative since the board was
+registered, not a rate.
 
-**Constants** (§3): `UDP_BATCH_SIZE` = 5 (must match `src/main.cpp`), `UDP_LOST_TIMEOUT_S` = 2.0,
+**v1.53 — what counts as a partial batch.** The library emits five diagnostic lines every 5 s
+(`$TIMING` + one `$TASK` per task + `$TASKS_END`) and, since firmware 0.11, the console tee puts
+them on the **same queue as the data frames**, so they take slots in two otherwise full datagrams.
+Counting data frames alone therefore reported ~4 partial batches per 10 s on an idle, healthy link.
+Measured 2026-09-15 over 25 s of three boards (2507 datagrams each): 8 / 8 / 10 such datagrams,
+**every one of them carrying the full five lines**, and not a single genuinely short batch. The
+rule is now `n_data > 0 and n_lines < UDP_BATCH_SIZE`, which reports 0 on that same recording and
+still catches a batch closed by the 12 ms timeout. A datagram with no data frame at all (the
+firmware's immediate `udp_send_line()` replies: `# STAT`, `$CFG`, `$ERR`) never counted and still
+does not.
+
+**Firmware 0.12 / v1.54 — the invariant.** Alex did not want measurements and diagnostics mixed
+at all, so the firmware now keeps **two queues**: `g_udp_data_queue` for `$M1..$M4` and
+`g_udp_diag_queue` for the console tee (`$TIMING`, `$TASK`, `$TASKS_END`). `UDP_Task` sends the data
+batch and then drains the diagnostic queue into a datagram of its own (at most `UDP_BATCH_SIZE`
+lines, same MTU guard). Consequences the host can rely on:
+- **A data datagram carries exactly `UDP_BATCH_SIZE` frames**, with a single exception: the
+  firmware closed the batch because the next frame did not arrive within 12 ms. That is a real
+  stutter and it is what `partial` counts — there are no benign partial batches any more.
+- The classification of a lost datagram in `note_gap()` (multiple of 5 = lost in the air, remainder =
+  dropped in the ESP32 queue) is exact, not a heuristic.
+- A diagnostic burst can only lose itself: it no longer competes with the measurements for the 64
+  data slots. Its own drops are counted in `# STAT … diag_dropped=`.
+- `frm/dgram` in `# NET` divides by `data_datagrams`, so a perfect link reads **5.00** (4.99 when
+  every datagram counted). Cost of the change on the wire: one ~210 B datagram every 5 s, +0.2 %.
+Verified on the bench 2026-09-15 (see conversation_log) with a raw-datagram recording of the three
+boards: zero mixed datagrams. `tools/udp_multiboard_test.py`: `FakeBoard` emits the burst in its
+own datagram every 100 data datagrams; phase 1 checks `frames == 5 × data_datagrams` and
+`datagrams == data_datagrams + bursts`.
+
+**Constants** (§3): `UDP_BATCH_SIZE` = 5 (must match `main/pulsenest_main.cpp`), `UDP_LOST_TIMEOUT_S` = 2.0,
 `UDP_NET_SUMMARY_S` = 10.0, `UDP_CFG_RETRY_S` = 3.0, `UDP_CFG_MAX_REQUESTS` = 3.
 
 **Verification (2026-09-09).** Live, 16.A alone in `$M4`: 100.5 datagrams/s, 4.99 frames per
@@ -1336,6 +1368,29 @@ and port once the first packet is received.
 **v1.44.** Every `UDP_NET_SUMMARY_S` (10 s) one host-generated `# NET …` line per board seen on the
 data port — active or not — with its identity, state and network counters (format in §4.8).
 
+**v1.52 — view modes.** The active board sends ~500 data frames/s, so appending every one of them
+made the console one second of history: a `# NET`, a `$CFG` or a `$ERR` was pushed out of sight
+before it could be read. A `VIEW` combo in the top bar selects where the data line goes; the choice
+is kept in `UdpComWindow/view_mode` and restored between sessions.
+
+| Mode | Data line | Console | Cap |
+|---|---|---|---|
+| `LIVE + EVENTS` (default) | fixed field between the header and the console, rewritten once per drain tick (5 Hz) | events only | 2000 blocks |
+| `LIVE AT BOTTOM` | the console's last block, rewritten in place; events inserted above it | events + the live row | 2000 blocks |
+| `SCROLL` | appended like every other line (behaviour before v1.52) | everything | 500 blocks |
+
+- A batch is split by `_is_data_line()`: `<timestamp>,<df_us>,$M…` is a data frame, anything else
+  (`$TIMING`, `# …`, `$ERR`) is an event and always reaches the console, so the record loses nothing.
+- In the LIVE modes only the **last** data frame of each batch is displayed: the intermediate ones
+  are never read at that rate, and the window costs one Qt operation per tick instead of ~100.
+- `PAUSE` freezes the live line as well as the console.
+- In `LIVE + EVENTS` the live line carries the header's font and padding, so the fields sit under
+  their column names while neither is scrolled horizontally.
+
+**v1.53.** `$TASK` and `$TASKS_END` are echoed to the console like `$TIMING`: the library emits the
+three together every 5 s and only `$TIMING` was shown, which read as if the board sent nothing
+else. They still feed the ESP32 TIMING window from the ACTIVE board only.
+
 ### 7.6 SpO2LabWindow — "SPO2LAB — Calibration"
 
 Purpose: calibrate SpO2 probe coefficients (A, B) by regression over reference points.
@@ -2057,6 +2112,47 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.54 — 2026-09-15
+
+**Firmware 0.12: diagnostics in their own datagrams; `frm/dgram` over data datagrams (§4.8).**
+Alex did not want `$TIMING`/`$TASK` sharing datagrams with the measurements, and named the two
+risks: a diagnostic line growing past the MTU, and metrics silently assuming five data frames per
+datagram. The analysis found the MTU covered by the slot size (288 B) and the `static_assert`,
+and exactly one such assumption — `note_gap()`'s air/queue split — plus a stronger reason: the
+burst took 5 of the 64 data slots and could make the firmware drop *measurements* when the queue
+was near full. Firmware 0.12 gives the console tee its own queue, drained by `UDP_Task` into a
+separate datagram right after each data batch (no new task, no network call on the acquisition
+task, 2.3 kB RAM, +0.2 % datagrams). The invariant "a data datagram carries exactly
+`UDP_BATCH_SIZE` frames, except a batch closed by the 12 ms timeout" now holds, so `partial` and
+the gap classification are exact. Script: `data_datagrams` counter, `frm/dgram` divides by it
+(reads 5.00). `# STAT` gains `diag_dropped=`. Checks: `udp_multiboard_test.py` 93/93.
+
+### v1.53 — 2026-09-15
+
+**`partial` stops counting the diagnostic lines (§4.8), and `$TASK` reaches the console (§7.5).**
+Alex asked what the number after `partial` in `# NET` meant, having seen it climb by 4 every 10 s
+on a link with `gaps air 0 queue 0 bad_chk 0`. It was not stuttering: the library emits five
+diagnostic lines every 5 s and they share the data queue with the frames, so they take slots in
+two consecutive datagrams. Measured over 25 s of three boards: 26 datagrams flagged, every one of
+them with the full five lines, zero genuine short batches. The counter now needs `n_data > 0 and
+n_lines < UDP_BATCH_SIZE`. Same class of fix as `dropped` → `not_active` in v1.49: a counter whose
+name promises a fault it is not measuring costs attention on every read. Separately, `$TASK` and
+`$TASKS_END` are now echoed to UDP COM like `$TIMING` — the three lines travel together and only
+one of them was visible. Checks: `tools/udp_multiboard_test.py` phase 10, 89/89.
+
+### v1.52 — 2026-09-15
+
+**UDP COM: the data line stops scrolling (§7.5).** Alex's proposal: a repeated measurement line
+should overwrite the previous one instead of advancing. At ~500 frames/s the console held one
+second of history, so the lines that are actually read — `# NET`, `$CFG`, `$ERR`, `$TIMING`, bad
+checksums — were gone before they could be seen. A `VIEW` combo offers three modes instead of a
+switch between old and new: `LIVE + EVENTS` (default, live line in a fixed field under the header,
+console for events only, 2000 blocks ≈ hours), `LIVE AT BOTTOM` (live line rewritten as the
+console's last row, events above it) and `SCROLL` (the pre-v1.52 behaviour, for reading frame by
+frame). Only the last data frame per drain tick is displayed: one Qt operation per tick instead of
+~100. Events are never diverted — `_is_data_line()` sends only `$M…` frames to the live line.
+Checked offscreen in `tools/udpcom_view_test.py` (19 checks).
 
 ### v1.51 — 2026-09-15
 

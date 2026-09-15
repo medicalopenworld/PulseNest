@@ -49,7 +49,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.11"
+#define PULSENEST_FW_VERSION "0.12"
 
 // ── Pin definitions ────────────────────────────────────────────────────────────────────
 // From Kconfig (main/Kconfig.projbuild, menu "PulseNest board"): one build directory per board,
@@ -158,8 +158,10 @@ static uint8_t frame_xor_chk(const char* p, int len) {
 }
 
 // Frames not sent because they did not fit: their buffer (frame_finish) or the UDP queue slot
-// (udp_send). Reported in the periodic "# STAT" line and by a rate-limited $ERR.
+// (udp_enqueue). Reported in the periodic "# STAT" line and by a rate-limited $ERR. One counter
+// per queue, so measurements and diagnostics never hide each other's losses.
 static volatile uint32_t incunest_frame_dropped = 0;
+static volatile uint32_t incunest_diag_dropped  = 0;
 
 // Closes a "$..." frame in place: checks snprintf's return BEFORE using it, then appends
 // "*XX\r\n". Returns false when the payload did not fit in buf_size-6 — the frame must then be
@@ -199,47 +201,57 @@ static SemaphoreHandle_t g_resp_udp_mutex = nullptr;  // serialises udp_send_lin
 // OTA and UDP streaming coexist: TCP/80 for the page and the image, UDP/5005 data, UDP/5006 commands.
 static httpd_handle_t g_ota_server = nullptr;
 
-// ── UDP data queue (Incunest_Task → UDP_Task) ─────────────────────────────────
-// Decouples UDP transmission from the 500 Hz acquisition loop.
-// Incunest_Task deposits frames here with xQueueSend(..., 0) (non-blocking, ~µs).
-// UDP_Task batches up to UDP_BATCH_SIZE frames per datagram and calls sendto()
-// via raw lwIP socket — reduces packet rate from 500/sec to ~100/sec, staying
-// well below lwIP TX buffer limits (~6 slots) and within UDP MTU (1472 bytes).
-#define UDP_QUEUE_FRAME_SIZE  288   // queue slot; $M4 measured 265 B (probe off), ~270 B (probe on).
-                                    // A frame that does not fit is DROPPED and counted (udp_send),
+// ── UDP queues (producers → UDP_Task) ─────────────────────────────────────────
+// Two queues, one per kind of line, so that a measurement datagram carries UDP_BATCH_SIZE
+// measurement frames and nothing else (fw 0.12):
+//   g_udp_data_queue  $M1..$M4, one per sample, from Incunest_Task (500 Hz, core 0).
+//   g_udp_diag_queue  the library's $TIMING / $TASK / $TASKS_END burst (five lines every 5 s),
+//                     from the console tee on the library's acquisition task (core 1).
+// Both producers only xQueueSend(..., 0): non-blocking, ~µs. UDP_Task batches the data queue
+// UDP_BATCH_SIZE frames per datagram (500/s → ~100 datagrams/s, well below lwIP's TX buffers and
+// within the 1472 B UDP MTU) and, right after each batch, drains the diagnostic queue into a
+// datagram of its own. In fw 0.11 the diagnostic lines shared the data queue: they took slots in
+// two consecutive data batches every 5 s, so "five frames per datagram" was false 0.4 % of the
+// time, the host's partial-batch counter fired on a healthy link, and a burst of diagnostics
+// competed with the measurements for the same 64 slots (measured 2026-09-15, conversation_log).
+#define UDP_QUEUE_FRAME_SIZE  288   // queue slot; $M4 measured 265 B (probe off), 274 B (probe on).
+                                    // A line that does not fit is DROPPED and counted (udp_enqueue),
                                     // never truncated. Worst case cannot be bounded by the format:
                                     // tools/frame_size_bounds.py.
-#define UDP_QUEUE_DEPTH       64    // ~128 ms headroom at 500 Hz
+#define UDP_QUEUE_DEPTH       64    // data: ~128 ms headroom at 500 Hz
+#define UDP_DIAG_QUEUE_DEPTH  8     // diagnostics: one burst is five lines
 #define UDP_BATCH_SIZE        5     // frames per datagram: 5×288 = 1440 bytes < 1472 MTU
 #define UDP_MTU               1472  // max UDP payload without IP fragmentation (Ethernet/WiFi)
 
 // Compile-time guard: worst-case batch (all frames at max size) must fit within MTU.
-// If this fails, reduce UDP_BATCH_SIZE or UDP_QUEUE_FRAME_SIZE.
+// If this fails, reduce UDP_BATCH_SIZE or UDP_QUEUE_FRAME_SIZE. Covers the diagnostic datagram
+// too: udp_flush_diag() packs at most UDP_BATCH_SIZE lines into the same buffer.
 static_assert(UDP_QUEUE_FRAME_SIZE * UDP_BATCH_SIZE <= UDP_MTU,
     "UDP batch worst-case exceeds MTU — reduce UDP_BATCH_SIZE or UDP_QUEUE_FRAME_SIZE");
 
 static QueueHandle_t g_udp_data_queue = nullptr;
+static QueueHandle_t g_udp_diag_queue = nullptr;
 
-// Deposit one data frame into the async UDP queue.
-// Returns immediately — sendto() happens in UDP_Task, not here.
-// Drops silently if queue full (USB-CDC is the fallback).
-static inline void udp_send(const char* buf) {
+// Deposit one line into `q`. Returns immediately — sendto() happens in UDP_Task, not here.
+// Drops silently if the queue is full (USB-CDC is the fallback); a line that does not fit the
+// slot is dropped and counted in `*dropped`.
+static inline void udp_enqueue(QueueHandle_t q, const char* buf, volatile uint32_t* dropped) {
 #ifdef PULSENEST_NO_DATA_STREAM
     // Bench experiment only (build with -DPULSENEST_NO_DATA_STREAM): suppress the data stream
     // so the station's radio is genuinely idle. Command replies are unaffected - they go out
-    // through udp_send_line()/g_resp_udp, not through this queue - which is what makes it
+    // through udp_send_line()/g_resp_udp, not through these queues - which is what makes it
     // possible to measure command latency on an idle station. Never ship this flag.
-    (void)buf;
+    (void)q; (void)buf; (void)dropped;
     return;
 #endif
-    if (!g_wifi_ready || g_udp_sock < 0 || g_udp_data_queue == nullptr) return;
+    if (!g_wifi_ready || g_udp_sock < 0 || q == nullptr) return;
     const size_t len = strlen(buf);
     if (len >= UDP_QUEUE_FRAME_SIZE) {
         // Does not fit the queue slot: DROP, never truncate. strlcpy() used to cut the frame
         // here, losing "*XX\r\n"; the stub was then glued to the next frame in the batch and
         // the host reported two BAD CHK with no clue why. Typical $M4: 265 B against 288.
-        const uint32_t k = incunest_frame_dropped + 1;   // not ++: volatile, C++20
-        incunest_frame_dropped = k;
+        const uint32_t k = *dropped + 1;   // not ++: volatile, C++20
+        *dropped = k;
         if (k == 1 || k % 500 == 0)
             Serial_printf("$ERR,%.2s,frame too long for UDP slot (%u bytes, slot %d), dropped x%lu\r\n",
                           buf + 1, (unsigned)len, UDP_QUEUE_FRAME_SIZE, (unsigned long)k);
@@ -247,16 +259,22 @@ static inline void udp_send(const char* buf) {
     }
     char frame[UDP_QUEUE_FRAME_SIZE];
     memcpy(frame, buf, len + 1);
-    xQueueSend(g_udp_data_queue, frame, 0);  // non-blocking: drop if full
+    xQueueSend(q, frame, 0);  // non-blocking: drop if full
+}
+
+// Measurement frames ($M1..$M4), from Incunest_Task.
+static inline void udp_send(const char* buf) {
+    udp_enqueue(g_udp_data_queue, buf, &incunest_frame_dropped);
 }
 
 // The library's diagnostic lines ($TIMING, $TASK, $TASKS_END — INCUNEST_TIMING_STATS) go to the
-// console; this tee also puts them on the UDP data stream, so the ESP32 TIMING window of
+// console; this tee also puts them on the UDP stream, so the ESP32 TIMING window of
 // pulsenest_lab.py works with no UART attached (fw 0.11, lib v0.92). Runs on the library's
-// 500 Hz task: udp_send() only queues, and the lines already end in "*XX\r\n" like every frame.
+// 500 Hz task: it only queues, and the lines already end in "*XX\r\n" like every frame. Their
+// own queue since fw 0.12, so they never take a slot in a measurement datagram.
 static void lib_console_sink(const char* line, size_t len) {
     (void)len;
-    udp_send(line);
+    udp_enqueue(g_udp_diag_queue, line, &incunest_diag_dropped);
 }
 
 // ── UDP_Task: async batching sender ──────────────────────────────────────────
@@ -264,12 +282,46 @@ static void lib_console_sink(const char* line, size_t len) {
 // Batches up to UDP_BATCH_SIZE frames into one datagram and calls sendto() via
 // raw lwIP socket. Packet rate: 500 Hz / 5 = ~100 datagrams/sec — well below
 // lwIP TX buffer limits. sendto() is non-blocking when socket TX buffer has space.
+static void udp_sendto_batch(const char* batch, size_t len) {
+    if (len > UDP_MTU)
+        Serial_printf("# WARN UDP batch %u bytes > MTU %d — fragmentation risk\n",
+                      (unsigned)len, UDP_MTU);
+    if (sendto(g_udp_sock, batch, len, 0,
+               reinterpret_cast<struct sockaddr*>(&g_udp_dest), sizeof(g_udp_dest)) < 0)
+        Serial_printf("# ERR UDP sendto failed errno=%d\n", errno);
+}
+
+// Drain the diagnostic queue into datagrams of its own, at most UDP_BATCH_SIZE lines each.
+// Called right after a data batch went out, so `batch` is free again: sendto() has copied it into
+// lwIP's own buffer (pbuf) before returning. Also called when the data queue is idle, so a burst
+// emitted with the stream stopped does not sit in the queue until the next frame.
+static void udp_flush_diag(char* batch, size_t cap, char* frame) {
+    size_t len = 0;
+    int n = 0;
+    while (xQueueReceive(g_udp_diag_queue, frame, 0) == pdTRUE) {
+        const size_t flen = strlen(frame);
+        if (len > 0 && (n == UDP_BATCH_SIZE || len + flen > cap)) {   // datagram full: send, start another
+            udp_sendto_batch(batch, len);
+            len = 0;
+            n = 0;
+        }
+        memcpy(batch + len, frame, flen);
+        len += flen;
+        n++;
+    }
+    if (len > 0) udp_sendto_batch(batch, len);
+}
+
 static void UDP_Task(void *pvParameters) {
+    (void)pvParameters;
     static char batch[UDP_QUEUE_FRAME_SIZE * UDP_BATCH_SIZE];
     char frame[UDP_QUEUE_FRAME_SIZE];
     for (;;) {
         // Block until at least one frame is available (or 100 ms timeout)
-        if (xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        if (xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(100)) != pdTRUE) {
+            if (g_wifi_ready && g_udp_sock >= 0) udp_flush_diag(batch, sizeof(batch), frame);
+            continue;
+        }
         if (!g_wifi_ready || g_udp_sock < 0) continue;
 
         // Start batch with first frame
@@ -278,7 +330,8 @@ static void UDP_Task(void *pvParameters) {
 
         // Accumulate up to UDP_BATCH_SIZE frames, waiting up to 12 ms per frame.
         // At 500 Hz (1 frame/2 ms), this fills the batch in ~10 ms → ~100 datagrams/s.
-        // If a frame doesn't arrive within 12 ms, send the partial batch and continue.
+        // If a frame doesn't arrive within 12 ms, send the partial batch and continue — the only
+        // way a measurement datagram carries fewer than UDP_BATCH_SIZE frames (host: `partial`).
         for (int i = 1; i < UDP_BATCH_SIZE; i++) {
             if (xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(12)) != pdTRUE) break;
             size_t flen = strlen(frame);
@@ -286,14 +339,10 @@ static void UDP_Task(void *pvParameters) {
             memcpy(batch + batch_len, frame, flen);
             batch_len += flen;
         }
+        udp_sendto_batch(batch, batch_len);
 
-        if (batch_len > UDP_MTU)
-            Serial_printf("# WARN UDP batch %u bytes > MTU %d — fragmentation risk\n",
-                          (unsigned)batch_len, UDP_MTU);
-
-        if (sendto(g_udp_sock, batch, batch_len, 0,
-                   reinterpret_cast<struct sockaddr*>(&g_udp_dest), sizeof(g_udp_dest)) < 0)
-            Serial_printf("# ERR UDP sendto failed errno=%d\n", errno);
+        // Diagnostics ride in a datagram of their own, right behind the measurements they came with.
+        udp_flush_diag(batch, sizeof(batch), frame);
     }
 }
 
@@ -588,9 +637,9 @@ void Incunest_Task(void *pvParameters) {
 
                 // Periodic TX health report (~every 10 s at 500 Hz)
                 if (incunest_sample_count % 5000 == 0)
-                    Serial_printf("# STAT n=%lu tx_dropped=%lu frame_dropped=%lu\n",
+                    Serial_printf("# STAT n=%lu tx_dropped=%lu frame_dropped=%lu diag_dropped=%lu\n",
                                   (unsigned long)incunest_sample_count, (unsigned long)incunest_tx_dropped,
-                                  (unsigned long)incunest_frame_dropped);
+                                  (unsigned long)incunest_frame_dropped, (unsigned long)incunest_diag_dropped);
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(1));  // no data yet: yield 1 ms to avoid busy-waiting. Only runs when getData() returns false.
@@ -1238,6 +1287,7 @@ extern "C" void app_main(void) {
     g_serial_mutex    = xSemaphoreCreateMutex();  // protects concurrent Serial writes from multiple tasks
     g_resp_udp_mutex  = xSemaphoreCreateMutex();  // protects g_resp_udp (used by Incunest_Task + Cmd_Task)
     g_udp_data_queue  = xQueueCreate(UDP_QUEUE_DEPTH, UDP_QUEUE_FRAME_SIZE);
+    g_udp_diag_queue  = xQueueCreate(UDP_DIAG_QUEUE_DEPTH, UDP_QUEUE_FRAME_SIZE);
     // UART0 console with a 1024 B TX ring (see console_init) and NVS for the WiFi driver.
     console_init();
     nvs_init();

@@ -88,11 +88,16 @@ class FakeBoard(threading.Thread):
     """Streams UDP_BATCH_SIZE frames per datagram at ~100 datagrams/s and answers $CFG?."""
 
     def __init__(self, ip, mac, board, template, start_cnt, rate_dgram_s=100, batch=5,
-                 corrupt_every=0):
+                 corrupt_every=0, diag_every=100):
         super().__init__(daemon=True)
         self.ip, self.mac, self.board = ip, mac, board
         self.corrupt_every = corrupt_every   # 0 = never; else break the checksum of every Nth frame
         self.corrupted = 0
+        # fw 0.12: the library's five diagnostic lines travel in a datagram of their own, never as
+        # slots of a data batch. Every `diag_every` data datagrams (the real board: every 500).
+        self.diag_every = diag_every
+        self.sent = 0
+        self.diag_bursts = 0
         self.mode_cmds = 0
         self.template_fields = template.split(b"*")[0].split(b",")
         self.cnt = start_cnt
@@ -122,11 +127,24 @@ class FakeBoard(threading.Thread):
                 f"fw=0.9,lib=0.90,build=fake,libsha=fake").encode()
         return with_chk(body)
 
+    def diag_burst(self):
+        """$TIMING + one $TASK per library task + $TASKS_END, as the firmware emits them every 5 s."""
+        lines = [with_chk(b"$TIMING,7,25,11,25,19,42,11,29,434,721,600,610,1200,1500,5704,238,312"),
+                 with_chk(b"$TASK,incunest_afe4490,217,5708"),
+                 with_chk(b"$TASK,incunest_hr2,0,1800"),
+                 with_chk(b"$TASK,incunest_hr3,0,1236"),
+                 with_chk(b"$TASKS_END")]
+        return b"".join(line + b"\r\n" for line in lines)
+
     def run(self):
         dst = ("127.0.0.1", DATA_PORT)
         while not self.stop.is_set():
             payload = b"".join(self.frame() + b"\r\n" for _ in range(self.batch))
             self.data.sendto(payload, dst)
+            self.sent += 1
+            if self.diag_every and self.sent % self.diag_every == 0:
+                self.data.sendto(self.diag_burst(), dst)
+                self.diag_bursts += 1
             try:
                 while True:
                     req, _ = self.cmd.recvfrom(256)
@@ -221,6 +239,19 @@ def main():
     check(w._gaps_B == 0 and sb.get("gaps_air") == 0 and sb.get("gaps_queue") == 0,
           "no cross-board gaps (counters 1000.. and 900000.. never mixed)")
     check(sa.get("frames", 0) > 0.8 * 500 * 7, "A ~500 frames/s ingested")
+    # fw 0.12 invariant: a data datagram carries exactly UDP_BATCH_SIZE frames; the diagnostic
+    # burst is a datagram of its own, so it shows in `datagrams` but not in `data_datagrams`.
+    check(sa.get("data_datagrams", 0) > 0
+          and sa.get("frames") == P.UDP_BATCH_SIZE * sa.get("data_datagrams"),
+          f"A: frames == 5 x data_datagrams ({sa.get('frames')} vs {sa.get('data_datagrams')})")
+    # Datagrams without data = the diagnostic bursts + one $CFG reply per $CFG? received (a reply
+    # may still be in flight when the snapshot is taken, hence the +1).
+    no_data = sa.get("datagrams", 0) - sa.get("data_datagrams", 0)
+    check(a.diag_bursts > 0 and a.diag_bursts <= no_data <= a.diag_bursts + a.cfg_requests + 1,
+          f"A: {no_data} datagrams without data = {a.diag_bursts} diagnostic bursts + "
+          f"{a.cfg_requests} $CFG replies")
+    check(sa.get("partial_datagrams") == 0 and sb.get("partial_datagrams") == 0,
+          "partial == 0 on both boards with diagnostics in their own datagrams")
 
     print("\n--- phase 2: A goes silent -> LOST, no auto-switch ---")
     a.stop.set()
@@ -403,10 +434,43 @@ def main():
     check("source changed" in w._stream_disc_last, f"reason names the source ({w._stream_disc_last})")
     check(w._esp32_ip == other.ip, "pipeline now fed by the other board")
 
+    print("\n[phase 10] partial datagrams: a full datagram is five LINES, not five data frames")
+    # Measured on the bench 2026-09-15: the library emits five diagnostic lines every 5 s
+    # ($TIMING + three $TASK + $TASKS_END) and, since fw 0.11, they share the data queue, so they
+    # take slots in otherwise full datagrams. Counting data frames alone flagged those as partial
+    # batches — 26 of them in 75 s of three boards, and not one genuine short batch.
     a2.stop.set()
     b2.stop.set()
     a2.join(1.0)
     b2.join(1.0)
+    spin(app, 0.5)
+    src = active                       # stopped now; the test speaks for it from its own IP
+
+    def partial_of(ip):
+        return {x["ip"]: x for x in w.udp_boards_snapshot()}.get(ip, {}).get("partial_datagrams")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((src.ip, 0))
+
+    def dgram(lines):
+        sock.sendto(b"\r\n".join(lines) + b"\r\n", ("127.0.0.1", DATA_PORT))
+        spin(app, 0.4)
+
+    timing = with_chk(b"$TIMING,1,2,3,4,5,6,7,8,9,10,11,12,13,14,5700,230,300")
+    p0 = partial_of(src.ip)
+    dgram([src.frame() for _ in range(P.UDP_BATCH_SIZE)])
+    check(partial_of(src.ip) == p0, "5 data frames: not partial")
+    dgram([src.frame() for _ in range(P.UDP_BATCH_SIZE - 1)] + [timing])
+    check(partial_of(src.ip) == p0, "4 data frames + $TIMING = 5 lines: not partial")
+    dgram([src.frame() for _ in range(P.UDP_BATCH_SIZE - 2)])
+    check(partial_of(src.ip) == p0 + 1, "3 lines only: partial (batch closed by the timeout)")
+    dd0 = {x["ip"]: x for x in w.udp_boards_snapshot()}[src.ip]["data_datagrams"]
+    dgram([timing])
+    check(partial_of(src.ip) == p0 + 1, "a datagram with no data frame is not a partial batch")
+    check({x["ip"]: x for x in w.udp_boards_snapshot()}[src.ip]["data_datagrams"] == dd0,
+          "a diagnostic-only datagram does not count as a data datagram (frm/dgram unaffected)")
+    sock.close()
+
     w._disconnect_udp()
     ok = all(results)
     print(f"\n{sum(results)}/{len(results)} checks passed —", "OK" if ok else "FAILED")

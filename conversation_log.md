@@ -22016,3 +22016,140 @@ medida que lo motivaba: **SPI 292 µs (Arduino) → 230 µs (IDF), techo teorico
 ### Siguiente
 Tarea 5 (a) captura multiple con sonda en las 3 placas IDF (paridad con registro); hilo HR1LAB;
 flecos IDF sin prisa (esptool/consola USB bajo IDF v6, `measure_timing.py`, `offline_runner`).
+
+## Sesion 2026-09-15 (9) - Tarea 5 (a): captura multiple con sonda en las TRES placas IDF; UDP COM con modos de vista (v1.52)
+
+### Banco de partida
+Las tres placas emitiendo con **fw 0.11 / lib 0.92 / build `61599d3` / libsha `d81fadc`** (IDF en las
+tres): .14 (V18 87:B8), .169 (V18 88:50), .62 (V17 75:60). Descubiertas con `tools/udp_fw_versions.py`
+(script cerrado un momento y relanzado).
+
+### Aclaracion de Alex sobre el montaje
+Cada tarjeta tiene **su propia sonda** conectada; lo que habia que decidir era donde poner el tejido.
+Se descarto el simulador MS100 (solo admite una sonda: las otras dos habrian quedado en el caso corto,
+que ya estaba medido) y Alex puso **tres dedos, uno por sonda**.
+
+### La captura (15000 muestras = 30 s, prefijo `MULTI_IDF_PROBE`)
+| | V17 (.62) | V18 (.14) | V18 (.169) |
+|---|---|---|---|
+| Filas / huecos de contador | 15000 / **0** | 15000 / **0** | 15000 / **0** |
+| Cadencia | 499,8 Hz (30,01 s) | 499,8 Hz | 499,8 Hz |
+| Columnas analogicas a `-1` | **ninguna** | **ninguna** | **ninguna** |
+| ProbeState / DiagCode / CH_MASKS | 2 / 0 / 0000 (100 %) | idem | idem |
+| SpO2 p50 | 96,7 | 97,7 | 96,7 |
+| PI | 2,3-3,1 | 1,5-2,0 | 1,9-2,8 |
+| HR1 / HR2 / HR3 p50 | 51,3 / 51,5 / 51,4 | 51,6 / 51,5 / 51,4 | 51,5 / 51,6 / 51,4 |
+| RF1 / RF2 | 50k / 50k | 100k / 50k | 100k / 50k |
+
+- **Las 13 columnas analogicas salen pobladas en las tres**, incluidas las que estaban solo PRESENT:
+  el `$MODE,$M4` por placa de MULTI CAPTURE hace su trabajo. Era el punto que faltaba de F3.
+- **0 huecos en las tres a la vez** durante 30 s; `HOST_T_US` coherente con `FW_Ts_us` (30,00-30,01 s).
+- Comprobacion cruzada no buscada: los **nueve valores de HR caen en 51,3-51,6 bpm**. Tres placas,
+  tres sondas, tres dedos, misma persona: tres cadenas de medida independientes dentro de 0,3 bpm.
+- El HGAC dejo cada placa en un punto distinto y **estable, sin un solo cambio de RF en 30 s**.
+
+### El dato que motivaba la tarea: `maxlen` **274 / 274 / 273 B** con sonda aplicada
+Cota real del `$M4` en la condicion peor (SpO2, R, PI y HR1-3 imprimiendo numeros en vez de `nan` /
+`-1.00`): **14 B de margen** sobre el hueco de 288 B del lote, frente a los 17-19 B sin sonda. La
+estimacion de la tarea de truncado (~270 con sonda) se queda corta por 4 B. `gaps air 0 queue 0`,
+`bad_chk 0` en las tres.
+
+### Observacion sin cerrar: `partial 244 / 264 / 76` (antes 0)
+Un datagrama cuenta como parcial cuando lleva **menos de 5 frames de datos** (`_udp_reader`,
+`0 < n_data < UDP_BATCH_SIZE`). Desde fw 0.11 las lineas de consola (`$TIMING`, `$TASK`, `# STAT`)
+viajan por UDP y ocupan hueco en el lote, lo que explicaria el contador; los ordenes de magnitud
+cuadran (~2-3 lineas cada 5 s en los ~10 min de sesion) pero **no esta medido**: faltaria contrastar
+`partial` con `other_lines`. No es perdida.
+
+### Hallazgo para el hilo HR1: una racha unica de ~5,8 s con `HR1_SQI=0`
+`FW_HR1 = -1` en **una sola racha** en dos de las tres placas — V17 en t=13,6-19,5 s (2934 muestras),
+.169 en t=4,5-10,1 s (2829) — en instantes distintos, **mientras HR2 y HR3 seguian dando ~52 bpm sin
+inmutarse**. Senal limpia, sonda aplicada, DiagCode 0, RSQI 1. La .14 no fallo ni una vez. Material
+directo para el rediseno de HR1, no un problema de la captura.
+
+### Propuesta de Alex: que la linea de medidas no avance en UDP COM (script v1.52)
+Alex propuso que una linea de medidas repetida **sobreescriba la anterior** en vez de avanzar, y
+luego que en lugar de un conmutador entre lo viejo y lo nuevo hubiera **un selector de tres estados**.
+Implementado como combo `VIEW` (un `QComboBox`, no un spinbox: las opciones llevan nombre):
+- **`LIVE + EVENTS`** (defecto): la linea de datos es un campo fijo entre la cabecera y la consola,
+  reescrito una vez por tick (5 Hz); la consola queda **solo para eventos**, con tope de 2000 bloques.
+  Ahi esta la ganancia real: con los frames fuera, la ventana pasa de **un segundo** de historia a
+  horas de `# NET` / `$CFG` / `$ERR` / `$TIMING`, que es lo que de verdad se lee.
+- **`LIVE AT BOTTOM`**: misma linea viva como ultimo renglon de la consola, eventos por encima.
+- **`SCROLL`**: el comportamiento anterior a v1.52, frame a frame, tope 500.
+- Solo se muestra el **ultimo** frame de cada tick (una operacion de Qt por tick en vez de ~100) y
+  **ningun evento se desvia**: `_is_data_line()` manda a la linea viva solo `$M1..$M4`. `PAUSE`
+  congela tambien la linea viva. El modo se guarda en `UdpComWindow/view_mode` del `.ini`.
+- Todo el cambio cabe dentro de `UdpComWindow`: el bucle de drenaje ya separaba eventos de datos.
+- Verificado: **`tools/udpcom_view_test.py`, 19 comprobaciones offscreen** sobre los tres modos,
+  incluidas las delicadas (que un lote en LIVE AT BOTTOM reescriba la ultima fila en vez de anadir,
+  que un evento se inserte encima, y los topes 500/2000 al cambiar de modo). Spec §7.5 + changelog.
+
+### Incidencia: el script se cerro solo a mitad de sesion
+Es el crash conocido, **no del multiplaca ni nuevo**: `faulthandler.log` da `pyqtgraph
+AxisItem.py:681 paint` → *Windows fatal exception: access violation* (segfault en el pintado de ejes,
+no excepcion de Python). Van **28 caidas registradas, 18 con esa firma**. Sospecha apuntada:
+`useOpenGL=True` (`pulsenest_lab.py:15985`). No se toco para no meter una variable a mitad de la
+prueba de banco; la captura de 30 s salio entera.
+
+### Pendiente
+- Visto bueno de Alex a los tres modos de UDP COM en pantalla (si uno sobra, se quita del combo).
+- Confirmar o descartar la explicacion de `partial` (contrastar con `other_lines`).
+- Hilo HR1LAB (ahora con el dato de la racha de 5,8 s); opciones 2-4 del truncado `$M4`, que ya
+  tienen el margen real medido: 14 B.
+- Flecos IDF sin prisa (esptool/consola USB bajo IDF v6, `measure_timing.py`, `offline_runner`).
+
+## Sesion 2026-09-15 (10) - `partial` medido, no deducido: la regla del lote se corrige (script v1.53)
+
+Alex dio el visto bueno a los modos de UDP COM («me gusta como ha quedado»), paso trazas de banco y
+pregunto tres cosas: que son `$TIMING`/`$TASK`, por que no ve `$TASK` en UDP COM, y que indica el
+numero que sigue a `partial` en `# NET`.
+
+### La pista estaba en sus trazas
+`partial` sube **+4 cada 10 s, identico en las tres placas**, sean ACTIVE o PRESENT, con
+`gaps air 0 queue 0 bad_chk 0`. Que las tres vayan al mismo ritmo descarta al host.
+
+### Correccion de mi explicacion de la sesion (9)
+Habia escrito «~2-3 lineas de consola cada 5 s, un parcial por linea». **Son CINCO lineas y DOS
+parciales.** Cada ventana de `$TIMING` la libreria emite `$TIMING` + tres `$TASK` (una por tarea:
+`incunest_afe4490`, `incunest_hr2`, `incunest_hr3`) + `$TASKS_END` (`incunest_afe4490.cpp:2119-2158`),
+seguidas, en la misma iteracion de la tarea de 500 Hz. El `lib_console_sink` las mete en la MISMA
+cola que los frames (`pulsenest_main.cpp:257`) y `UDP_Task` arma lotes de 5: cinco lineas contra un
+lote de cinco desplazan el lote dos veces → dos datagramas con menos de 5 frames de datos por
+ventana, dos ventanas por intervalo de `# NET` → +4. El `# STAT` no interviene: va por
+`Serial_printf` → `udp_send_line`, datagrama propio sin frames de datos, que nunca conto.
+
+### LA MEDIDA (25 s de datagramas crudos de las tres placas, script cerrado)
+`scratchpad/dgram_compose.py`: bind en :5005 y desglose de cada datagrama.
+
+| | V18 (.14) | V18 (.169) | V17 (.62) |
+|---|---|---|---|
+| datagramas | 2507 | 2507 | 2507 |
+| parciales, regla vieja | 8 | 8 | 10 |
+| parciales, regla nueva | **0** | **0** | **0** |
+
+**Los 26 llevaban exactamente 5 lineas** y las no-datos eran `$TIMING`/`$TASK`/`$TASKS_END`. **Ni un
+solo lote cortado por timeout** en 75 s de tres placas: el 100 % del contador era artefacto.
+
+### Cambios aplicados (script v1.53)
+1. **Regla de `partial`**: de «menos de 5 frames de datos» a **`n_data > 0 and n_lines < UDP_BATCH_SIZE`**
+   (un datagrama lleno son cinco LINEAS, lleven lo que lleven). Sobre la misma grabacion: 26 → 0. El
+   datagrama de respuesta inmediata (`# STAT`, `$CFG`) sigue sin contar. Mismo caso que `dropped` →
+   `not_active` de v1.49: un contador cuyo nombre promete un fallo que no mide cuesta atencion cada vez.
+2. **`$TASK` y `$TASKS_END` se muestran en UDP COM** como `$TIMING`. La causa de que no se vieran era
+   una asimetria de implementacion, no una decision: `$TIMING` se anadia a `_console_lines` y las otras
+   dos hacian `continue` sin anadirse. Siguen alimentando ESP32 TIMING solo desde la placa ACTIVA.
+3. Spec v1.53: tabla de contadores de §4.8 reescrita, apartado con la medida, §7.5 con el eco de
+   `$TASK`, changelog. Tests: **`udp_multiboard_test.py` fase 10 nueva, 89/89** (los cuatro casos con
+   datagramas construidos a mano) y `udpcom_view_test.py` 19/19.
+
+### Explicaciones pedidas por Alex (quedan en el log por si se repiten)
+- **`$TIMING`** = cuanto tarda el CODIGO, en µs, por algoritmo (HR1/HR2/HR3/SpO2), el ciclo completo
+  de la tarea de 500 Hz, el calculo de HR2/HR3 en sus tareas, el stack libre y (v0.92) `spi_mean/max`.
+- **`$TASK`** = cuanta CPU y cuanta pila consume cada tarea FreeRTOS de la libreria; `217` = 21,7 %
+  de un nucleo, `5708` = palabras de pila libres. `$TASKS_END` cierra el grupo.
+- El numero tras `partial` (y los demas de `# NET`) es un **contador acumulado por placa desde que se
+  registro**, no una tasa.
+
+### Pendiente
+Sin cambios respecto a la sesion (9), menos la pregunta de `partial`, que queda cerrada con medida.

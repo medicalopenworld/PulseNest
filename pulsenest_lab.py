@@ -10790,14 +10790,31 @@ class UdpComWindow(QtWidgets.QWidget):
         "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS"
     )
 
+    # View modes (v1.52, Alex's proposal). The active board's data frames arrive at ~500 lines/s,
+    # so in SCROLL — the only mode before v1.52 — the console held one second of history and every
+    # event (`# NET`, `$CFG`, `$ERR`, `$TIMING`, bad checksums) scrolled out of sight before it
+    # could be read. The two LIVE modes stop the data line from scrolling: it is rewritten in
+    # place and the console is left for the events. SCROLL stays for reading frame by frame.
+    VIEW_LIVE_TOP    = "LIVE + EVENTS"    # data line in a fixed field under the header
+    VIEW_LIVE_BOTTOM = "LIVE AT BOTTOM"   # data line rewritten in the console's last block
+    VIEW_SCROLL      = "SCROLL"           # every line appended, the pre-v1.52 behaviour
+    VIEW_MODES = (VIEW_LIVE_TOP, VIEW_LIVE_BOTTOM, VIEW_SCROLL)
+
+    _MAX_BLOCKS_SCROLL = 500     # data frames included: about one second
+    _MAX_BLOCKS_EVENTS = 2000    # events only: hours
+
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
         self._paused = False
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        mode = s.value("UdpComWindow/view_mode", self.VIEW_LIVE_TOP)
+        self._view_mode = mode if mode in self.VIEW_MODES else self.VIEW_LIVE_TOP
+        self._live_text = ""       # last data line seen; what both LIVE modes display
+        self._bottom_live = False  # LIVE AT BOTTOM: the console's last block is the live line
         self.setWindowTitle("UDP COM")
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._setup_ui()
-        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         geom = s.value("UdpComWindow/geometry")
         if geom:
             self.restoreGeometry(geom)
@@ -10830,10 +10847,48 @@ class UdpComWindow(QtWidgets.QWidget):
             "QPushButton:checked { background-color: #CC6600; color: #FFFFFF; "
             "border: 1px solid #FF8800; }")
         self.btn_pause.setToolTip(_make_tooltip("PAUSE", "Freeze the console display. "
-            "The queue keeps draining and algorithms keep running; only new lines stop appearing."))
+            "The queue keeps draining and algorithms keep running; only the display stops "
+            "updating — in the LIVE modes the data line freezes too."))
         self.btn_pause.clicked.connect(self._toggle_pause)
+
+        self.combo_view = QtWidgets.QComboBox()
+        self.combo_view.addItems(self.VIEW_MODES)
+        self.combo_view.setCurrentText(self._view_mode)
+        self.combo_view.setFixedWidth(160)
+        self.combo_view.setToolTip(_make_tooltip("VIEW", (
+            "Where the data line of the active board goes. The board sends ~500 frames/s, so in "
+            "SCROLL the console is one second of history and the events are unreadable.<br><br>"
+            "<b>LIVE + EVENTS</b>: the data line is a fixed field under the header, rewritten 5 "
+            "times/s; the console below holds events only ('# NET', '$CFG', '$ERR', '$TIMING', "
+            "bad checksums) and its scroll never moves.<br>"
+            "<b>LIVE AT BOTTOM</b>: same live line, but as the console's last row, with the "
+            "events inserted above it.<br>"
+            "<b>SCROLL</b>: every frame appended, one line each — for reading the stream frame "
+            "by frame.<br><br>The choice is remembered between sessions.")))
+        self.combo_view.currentTextChanged.connect(self._set_view_mode)
+        view_label = QtWidgets.QLabel("VIEW")
+        view_label.setToolTip(self.combo_view.toolTip())
+        top_bar.addWidget(view_label)
+        top_bar.addWidget(self.combo_view)
         top_bar.addWidget(self.btn_pause)
         layout.addLayout(top_bar)
+
+        # The live data line: same font and padding as the header label above it, so the fields
+        # line up with their column names as long as neither is scrolled.
+        self.live_label = QtWidgets.QLabel("")
+        self.live_label.setFont(QtGui.QFont("Consolas", 9))
+        self.live_label.setWordWrap(False)
+        self.live_label.setMinimumWidth(0)
+        self.live_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.live_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.live_label.setStyleSheet("""
+            QLabel {
+                background-color: #000810; color: #7FD4FF;
+                padding: 5px 8px; border: 1px solid #245C7A;
+            }
+        """)
+        self.live_label.setVisible(self._view_mode == self.VIEW_LIVE_TOP)
+        layout.addWidget(self.live_label)
 
         self.console = QtWidgets.QPlainTextEdit()
         self.console.setReadOnly(True)
@@ -10849,30 +10904,112 @@ class UdpComWindow(QtWidgets.QWidget):
         self._paused = self.btn_pause.isChecked()
         self.btn_pause.setText("RESUME" if self._paused else "PAUSE")
 
-    def append_line(self, line):
-        """Append a single line immediately (for status/error messages)."""
-        if self._paused:
+    def _set_view_mode(self, mode):
+        """Switch view mode. The console text is kept; only the live line changes home."""
+        if mode not in self.VIEW_MODES or mode == self._view_mode:
             return
-        self.console.appendPlainText(line)
-        self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
+        if self._bottom_live:
+            self._remove_bottom_live()
+        self._view_mode = mode
+        self.live_label.setVisible(mode == self.VIEW_LIVE_TOP)
+        if mode == self.VIEW_LIVE_TOP:
+            self.live_label.setText(self._live_text)
+        elif mode == self.VIEW_LIVE_BOTTOM and self._live_text:
+            self._write_bottom_live()
+        self._trim()
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
+            "UdpComWindow/view_mode", mode)
 
-    def append_lines(self, lines):
-        """Batch append a list of lines (called from _process_frames_tick loop)."""
-        if self._paused or not lines:
-            return
-        self.console.appendPlainText('\n'.join(lines))
-        if self.console.blockCount() > 500:
+    @staticmethod
+    def _is_data_line(text):
+        """True for a console line carrying a data frame: '<timestamp>,<df_us>,$M<n>,...'."""
+        parts = text.split(',', 2)
+        return len(parts) == 3 and parts[2].startswith('$M')
+
+    def _trim(self):
+        """Cap the console. The limit depends on the mode: with the data frames out of the way,
+        the same widget holds hours of events instead of one second of frames."""
+        limit = self._MAX_BLOCKS_SCROLL if self._view_mode == self.VIEW_SCROLL else self._MAX_BLOCKS_EVENTS
+        while self.console.blockCount() > limit:
             cursor = self.console.textCursor()
             cursor.movePosition(QtGui.QTextCursor.Start)
             cursor.select(QtGui.QTextCursor.BlockUnderCursor)
             cursor.removeSelectedText()
             cursor.deleteChar()
+
+    def _write_bottom_live(self):
+        """LIVE AT BOTTOM: add the live line as the console's last block."""
+        self.console.appendPlainText(self._live_text)
+        self._bottom_live = True
+
+    def _update_bottom_live(self):
+        """Rewrite the last block in place — no block added, so nothing scrolls."""
+        if not self._bottom_live:
+            self._write_bottom_live()
+            return
+        cursor = self.console.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.StartOfBlock, QtGui.QTextCursor.KeepAnchor)
+        cursor.insertText(self._live_text)   # insertText replaces the selection
+
+    def _remove_bottom_live(self):
+        """Take the live line out of the document so an event can be appended above it."""
+        cursor = self.console.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.StartOfBlock, QtGui.QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        if self.console.blockCount() > 1:
+            cursor.deletePreviousChar()      # the newline that separated it
+        self._bottom_live = False
+
+    def _append_to_console(self, text, reset_hscroll=False):
+        """Append text below any live line, leaving the live line last."""
+        live = self._bottom_live
+        if live:
+            self._remove_bottom_live()
+        self.console.appendPlainText(text)
+        self._trim()
+        if live:
+            self._write_bottom_live()
         self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
-        self.console.horizontalScrollBar().setValue(0)
+        if reset_hscroll:
+            self.console.horizontalScrollBar().setValue(0)
+
+    def append_line(self, line):
+        """Append a single line immediately (for status/error messages)."""
+        if self._paused:
+            return
+        self._append_to_console(line)
+
+    def append_lines(self, lines):
+        """Batch update from the drain loop: data frames plus whatever else it forwards.
+
+        In the LIVE modes only the LAST data frame of the batch is displayed — at 500 frames/s
+        the intermediate ones are never read, and rewriting one line costs one Qt operation per
+        tick instead of a hundred. Events in the batch (e.g. `$TIMING`) still go to the console,
+        so nothing is dropped from the record.
+        """
+        if self._paused or not lines:
+            return
+        if self._view_mode == self.VIEW_SCROLL:
+            self._append_to_console('\n'.join(lines), reset_hscroll=True)
+            return
+        events = [s for s in lines if not self._is_data_line(s)]
+        if events:
+            self._append_to_console('\n'.join(events))
+        for s in reversed(lines):
+            if self._is_data_line(s):
+                self._live_text = s
+                if self._view_mode == self.VIEW_LIVE_TOP:
+                    self.live_label.setText(s)
+                else:
+                    self._update_bottom_live()
+                break
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         s.setValue("UdpComWindow/geometry", self.saveGeometry())
+        s.setValue("UdpComWindow/view_mode", self._view_mode)
         if self.main_monitor is not None:
             self.main_monitor.btn_udpcom.setChecked(False)
             self.main_monitor.udpcom_window = None
@@ -12037,7 +12174,8 @@ class UdpBoard:
         self.bytes = 0              # payload bytes received
         self.frames = 0             # $M1..$M4 data frames
         self.other_lines = 0        # $CFG, $LCFG, $ERR, '#' comments...
-        self.partial_datagrams = 0  # datagrams with 1..UDP_BATCH_SIZE-1 data frames
+        self.data_datagrams = 0     # datagrams carrying at least one data frame (fw 0.12: all but the diagnostic ones)
+        self.partial_datagrams = 0  # datagrams with data frames but fewer than UDP_BATCH_SIZE lines
         self.max_line_len = 0       # longest data frame seen, bytes (M4 slot truncation watch)
         self.gaps_air = 0           # lost samples in whole batches: datagram lost on the air
         self.gaps_queue = 0         # lost samples in partial batches: dropped in the ESP32 queue
@@ -12056,6 +12194,7 @@ class UdpBoard:
         self.capture_queued = 0     # data frames handed to the queue
         self.capture_overflow = 0   # data frames dropped because the queue was full
         self._sum_t, self._sum_datagrams, self._sum_bytes, self._sum_frames = now, 0, 0, 0
+        self._sum_data_datagrams = 0
 
     @staticmethod
     def is_data_frame(line):
@@ -12102,12 +12241,16 @@ class UdpBoard:
         """The periodic '# NET' line for UDP COM. Rates are over the interval since the last call."""
         dt = max(now - self._sum_t, 1e-3)
         d = self.datagrams - self._sum_datagrams
+        dd = self.data_datagrams - self._sum_data_datagrams
         fr = self.frames - self._sum_frames
         kbit = (self.bytes - self._sum_bytes) * 8 / dt / 1e3
         self._sum_t, self._sum_datagrams, self._sum_bytes, self._sum_frames = (
             now, self.datagrams, self.bytes, self.frames)
+        self._sum_data_datagrams = self.data_datagrams
+        # frm/dgram over the datagrams that carry data: since fw 0.12 the diagnostic burst travels
+        # in a datagram of its own, and dividing by every datagram would read 4.99 on a perfect link.
         return (f"# NET {self.label()} {self.state(active_ip)} | {d / dt:.1f} dgram/s "
-                f"{fr / max(d, 1):.2f} frm/dgram {kbit:.0f} kbit/s | maxlen {self.max_line_len} "
+                f"{fr / max(dd, 1):.2f} frm/dgram {kbit:.0f} kbit/s | maxlen {self.max_line_len} "
                 f"partial {self.partial_datagrams} | gaps air {self.gaps_air} queue {self.gaps_queue} "
                 f"| bad_chk {self.bad_chk} | not_active {self.not_active} | q {qsize}")
 
@@ -12116,7 +12259,8 @@ class UdpBoard:
             'ip': self.ip, 'mac': self.mac, 'board': self.board, 'fw': self.fw, 'lib': self.lib,
             'build': self.build, 'libsha': self.libsha, 'state': self.state(active_ip),
             'first_seen': self.first_seen, 'last_seen': self.last_seen,
-            'datagrams': self.datagrams, 'bytes': self.bytes, 'frames': self.frames,
+            'datagrams': self.datagrams, 'data_datagrams': self.data_datagrams,
+            'bytes': self.bytes, 'frames': self.frames,
             'other_lines': self.other_lines, 'partial_datagrams': self.partial_datagrams,
             'max_line_len': self.max_line_len, 'gaps_air': self.gaps_air,
             'gaps_queue': self.gaps_queue, 'bad_chk': self.bad_chk, 'not_active': self.not_active,
@@ -14392,11 +14536,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     b.lost = False
                     self._sig_log.emit(f"[UDP] Board {b.label()} back")
                 is_active = (src_ip == self._esp32_ip)
-                n_data = 0
+                n_data = n_lines = 0
                 for line in data.split(b'\n'):
                     line = line.rstrip(b'\r')
                     if not line:
                         continue
+                    n_lines += 1
                     if UdpBoard.is_data_frame(line):
                         n_data += 1
                         b.frames += 1
@@ -14432,7 +14577,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self._udp_queue.put(line + b'\r\n')
                     else:
                         b.not_active += 1
-                if 0 < n_data < UDP_BATCH_SIZE:
+                # A batch closed early by the 12 ms per-frame timeout is what this counts: the
+                # stream is stuttering. Counting data frames alone made it count the diagnostic
+                # lines too — the library emits five ($TIMING + three $TASK + $TASKS_END) every
+                # 5 s and, since fw 0.11, they share the data queue, so they take slots in two
+                # consecutive full datagrams. Measured 2026-09-15 over 75 s of three boards: 26
+                # such datagrams, every one of them with the full five lines, and not a single
+                # genuinely short batch. Hence the line count: a full datagram is five LINES,
+                # whatever they carry.
+                if n_data > 0:
+                    b.data_datagrams += 1
+                if 0 < n_data and n_lines < UDP_BATCH_SIZE:
                     b.partial_datagrams += 1
             _housekeeping(now)
         id_query.close()
@@ -15220,7 +15375,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     # $TASK frame: one per FreeRTOS task, emitted after $TIMING
                     # Format: $TASK,name,cpu_pct_x10,stack_words*XX
+                    # Shown in the console like $TIMING (v1.53): the three lines travel together
+                    # and only $TIMING was echoed, which read as if the board sent nothing else.
                     if line.startswith('$TASK,'):
+                        _console_lines.append(csv_line)
                         if not _is_active:
                             continue
                         _tp = line[1:].split('*')[0].split(',')
@@ -15236,6 +15394,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     # $TASKS_END: all $TASK frames for this cycle have been received
                     if line.startswith('$TASKS_END'):
+                        _console_lines.append(csv_line)
                         if self.esp32_timing_window is not None and _is_active:
                             self.esp32_timing_window.esp32_update_tasks(self._pending_tasks)
                         continue
