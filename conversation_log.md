@@ -22153,3 +22153,80 @@ solo lote cortado por timeout** en 75 s de tres placas: el 100 % del contador er
 
 ### Pendiente
 Sin cambios respecto a la sesion (9), menos la pregunta de `partial`, que queda cerrada con medida.
+
+## Sesion 2026-09-15 (11) - fw 0.12: el diagnostico viaja en sus propios datagramas (lab v1.54)
+
+Alex, tras la explicacion de que `$TIMING`/`$TASK` compartian datagrama con las medidas: «No me gusta
+la idea de que viajen mezcladas», con dos riesgos concretos: (1) que las tramas de diagnostico
+crezcan y desborden el MTU; (2) que alguna metrica suponga cinco tramas de medida por datagrama.
+Pidio analizarlo bien antes de tocar nada; luego «adelante».
+
+### Analisis (sobre el codigo, no de memoria)
+- **Riesgo 1, cubierto por construccion y sin depender de la mezcla**: `udp_send()` descarta (nunca
+  trunca) cualquier linea >= 288 B y la cuenta; la cola es de ranuras fijas de 288 B; `static_assert`
+  5 x 288 = 1440 <= 1472. `$TIMING` se forma en un buffer de 256 B en la lib y `$TASK` en uno de 96:
+  ni truncadas llegarian a 288. El modo de fallo real si alguien anade campos es el DESCARTE
+  silencioso contado en `frame_dropped`, no el desbordamiento.
+- **Riesgo 2, confirmado en UN sitio**: `UdpBoard.note_gap()` (`pulsenest_lab.py:12210`) clasifica
+  una perdida por `gap % 5` (aire vs cola del ESP32). Con ~2 datagramas cada 5 s llevando <5 medidas,
+  perder justo uno de esos se etiquetaria mal (0,4 % de los datagramas; solo la etiqueta).
+- **El argumento mas fuerte no eran las metricas sino el aislamiento**: la rafaga de diagnostico
+  ocupaba 5 de las 64 ranuras de la cola de MEDIDAS; con la cola casi llena por congestion WiFi
+  habria hecho descartar medidas (`tx_dropped`), y crece con cualquier linea nueva que pase por el sink.
+- Cuatro formas de separarlas: (A) segunda cola vaciada por `UDP_Task` — ELEGIDA; (B) misma cola y
+  separar por prefijo en el consumidor — acopla transporte a formato y no aisla; (C) `udp_send_line()`
+  desde el sink — `sendto()` sincrono en la tarea de adquisicion de la lib, prohibido por el propio
+  contrato del sink (`hal.h`: «must only queue, never block or send») — **me corrijo: lo habia
+  propuesto la sesion anterior como si fuera gratis**; (D) tarea nueva — sobredimensionado.
+- Hallazgo colateral, fuera de alcance: `# STAT` y `$ERR` salen con `Serial_printf` →
+  `udp_send_line()` → `sendto()` SINCRONO desde `Incunest_Task` (la que formatea las medidas) cada
+  10 s. No rompe el invariante (van solos) pero es una llamada de red bloqueante en una tarea de
+  medida. `Serial_printf` la usan cuatro tareas: tocarla es otra decision.
+
+### Firmware 0.12 (`fbd0cc5`)
+- `g_udp_diag_queue` (8 x 288 B = 2,3 kB) para el tee de consola; `udp_enqueue(q, buf, &dropped)`
+  comun a las dos colas (mismo descarte >= 288 B, un contador por cola: `incunest_diag_dropped`).
+- `UDP_Task`: `udp_sendto_batch()` extraido; `udp_flush_diag()` vacia la cola de diagnostico en
+  datagramas propios (<= 5 lineas cada uno, mismo `static_assert`) justo tras cada lote de medidas
+  —reutiliza el buffer `batch`, que `sendto()` ya copio a su pbuf— y tambien cuando la cola de datos
+  esta ociosa (100 ms), para que una rafaga con el flujo parado no se quede atascada.
+- `# STAT ... diag_dropped=`. `PULSENEST_FW_VERSION` 0.12. Sin tarea nueva, sin llamada de red en
+  la tarea de adquisicion, +1 datagrama de ~210 B cada 5 s (+0,2 %). **La libreria no se toca.**
+- **Invariante resultante**: un datagrama de medidas lleva EXACTAMENTE `UDP_BATCH_SIZE` tramas salvo
+  cierre por el timeout de 12 ms, que es un tartamudeo real y lo que `partial` cuenta. `note_gap()`
+  pasa de heuristica a exacta.
+- V18 y V17 compilan bajo `-Werror` (891.984 B). El primer `build.ps1 V18` murio con exit 127 tras
+  el re-run de CMake sin mas rastro; el segundo, identico, compilo. Esporadico; no investigado.
+
+### Script v1.54
+- `UdpBoard.data_datagrams`; `frm/dgram` en `# NET` divide por el (con todos los datagramas leeria
+  4,99 en un enlace perfecto). Snapshot con `data_datagrams`.
+- `tools/udp_multiboard_test.py`: `FakeBoard` emite la rafaga de diagnostico en datagrama propio
+  cada 100 datagramas de datos; fase 1 comprueba `frames == 5 x data_datagrams` y que los datagramas
+  sin datos son las rafagas + las respuestas `$CFG`; fase 10 comprueba que un datagrama solo-diag no
+  cuenta como de datos. **93/93**. Primer intento 92/93 por un check mio demasiado estricto (no
+  contaba las respuestas `$CFG` como datagramas sin datos): corregido el check, no el codigo.
+- Spec v1.54: §4.8 (`data_datagrams`, bloque «Firmware 0.12 / v1.54 — the invariant»,
+  `src/main.cpp` → `main/pulsenest_main.cpp` en la nota de `UDP_BATCH_SIZE`), changelog.
+
+### Banco
+Commit `fbd0cc5` ANTES de compilar para hash limpio; OTA raw (`curl --data-binary`) a las tres en
+paralelo: HTTP 200 en 4,1 / 3,9 / 4,9 s. Las tres reportan `fw=0.12 lib=0.92 build=fbd0cc5
+libsha=d81fadc`. **Verificacion con 25 s de datagramas crudos** (`scratchpad/dgram_verify.py`):
+
+| | .14 (V18) | .169 (V18) | .62 (V17) |
+|---|---|---|---|
+| datagramas de datos con exactamente 5 tramas | 2501 | 2500 | 2500 |
+| mixtos (datos + diagnostico) | **0** | **0** | **0** |
+| lotes cortos | **0** | **0** | **0** |
+| solo-diagnostico (5 lineas) | 5 | 4 | 5 |
+| `# STAT` solos | 3 | 2 | 2 |
+| frm por datagrama de datos | **5,000** | **5,000** | **5,000** |
+
+El invariante se cumple en las tres. Script relanzado.
+
+### Pendiente
+- Alex: ver `# NET` con `frm/dgram 5.00` y `partial 0`, y `# STAT ... diag_dropped=0`.
+- Decidir si `# STAT`/`$ERR` (sendto sincrono en `Incunest_Task`) pasan tambien por la cola de
+  diagnostico (hallazgo colateral de hoy).
+- Hilo HR1LAB (racha de 5,8 s); truncado `$M4` opciones 2-4 (margen real 14 B); flecos IDF.
