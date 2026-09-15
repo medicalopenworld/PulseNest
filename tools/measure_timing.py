@@ -4,9 +4,11 @@ Usage:  python tools/measure_timing.py [COMxx] [seconds]
         (port auto-detected if omitted — the first non-Bluetooth serial port; default 25 s)
 
 Requirements:
-  - Firmware built with INCUNEST_TIMING_STATS=1 (already set in platformio.ini). No reflash needed
+  - Firmware built with INCUNEST_TIMING_STATS=1 (set project-wide in CMakeLists.txt). No reflash needed
     if the running image has it: frames are emitted every 2500 samples = 5 s at 500 Hz.
-  - USB cable. `_emit_timing()` uses Serial.printf, so $TIMING goes over SERIAL ONLY, never UDP.
+  - UART0 cable: this tool reads the serial console. Since fw 0.11 / lib v0.92 the same frames also
+    travel over UDP (the firmware tees the library's console lines into the data stream), so the
+    ESP32 TIMING window of pulsenest_lab.py shows them with no cable at all.
 
 What it answers: whether the PRF can be raised. `_ts_cycle` (incunest_afe4490.cpp) wraps the 6 SPI
 transactions plus the whole of `_process_sample()` under `_state_mutex` — everything that must fit

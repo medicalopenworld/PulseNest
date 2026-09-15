@@ -1,8 +1,6 @@
-# PulseNest — ESP-IDF project (phase 1 of the Arduino → ESP-IDF port, branch feat/idf-port).
-#
-# The PlatformIO build (platformio.ini, src/main.cpp) stays intact and authoritative until this
-# build reaches parity on the bench; then it is removed in its own commit. Until then the two
-# builds coexist: `pio run -e incunest_V18` and `idf.py -B build_V18 build` from the same tree.
+# PulseNest — ESP-IDF v6.0.1 project (esp32s3). Ported from Arduino/PlatformIO on 2026-09-15; the
+# PlatformIO build was removed once this one reached parity on the bench (conversation_log.md,
+# sessions 2026-09-15). Build with scripts/build.ps1 <Board>, or by hand as below.
 #
 # Board selection: Kconfig (main/Kconfig.projbuild, menu "PulseNest board"), preset per board in
 # sdkconfig.board.V15 … V18. One build directory AND one sdkconfig per board (-DSDKCONFIG puts
@@ -24,5 +22,5 @@ project(pulsenest)
 # Per-algorithm timing instrumentation inside the library ($TIMING / $TASKS frames over the
 # console). A project-wide definition because the library compiles it in, not only main. This is
 # the instrument that measures the SPI cost per sample under ESP-IDF — one of the reasons for the
-# port — so it stays on in every PulseNest build, as it did under PlatformIO.
+# port — so it stays on in every PulseNest build. The host tests set it too (tools/host_tests).
 idf_build_set_property(COMPILE_DEFINITIONS "INCUNEST_TIMING_STATS=1" APPEND)

@@ -10,16 +10,16 @@ En el fichero project_info.md está la información del proyecto Incunest.
 La librería `incunest_afe4490` vive en su propio repo: https://github.com/medicalopenworld/incunest_afe4490
 La spec `incunest_afe4490_spec.md` vive en ese repo (no en PulseNest)
 En el fichero conversation_log.md está todo lo que Alex dialoga con Claude
-En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas físicas: MAC, revisión, entorno de PlatformIO que le corresponde, cómo identificarlas y los procedimientos de flasheo. **Consultarlo antes de cualquier OTA** y mantenerlo al día cuando aparezca una tarjeta nueva.
+En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas físicas: MAC, revisión, preset de build que le corresponde, cómo identificarlas y los procedimientos de flasheo. **Consultarlo antes de cualquier OTA** y mantenerlo al día cuando aparezca una tarjeta nueva.
 
 
 ## Hardware y entorno
-- **MCU:** ESP32-S3 (placa IncuNest V16)
+- **MCU:** ESP32-S3 (placas IncuNest V17 y V18; V15 en desuso, V16 muerta)
 - **Sensor:** AFE4490 por SPI
-- **Framework:** Arduino + PlatformIO
-- **platformio.ini:** `platform = espressif32@6.6.0`, `framework = arduino`, `board = esp32-s3-devkitc-1`
+- **Framework:** **ESP-IDF v6.0.1 nativo** (sin Arduino, sin PlatformIO) desde 2026-09-15. Instalado en `C:\esp\v6.0.1\esp-idf`.
+- **Build:** `.\scripts\build.ps1 V18` (un `build_Vxx/` y un `sdkconfig` por placa a partir de `sdkconfig.defaults` + `sdkconfig.board.Vxx`); `-Ota <ip>` flashea por OTA (cuerpo raw), `-Usb COMxx` por USB. Firmware en `main/pulsenest_main.cpp`; pines por Kconfig (`main/Kconfig.projbuild`).
 - **OS:** FreeRTOS (multitarea)
-- **Librería AFE4490:** `incunest_afe4490` — repo propio: https://github.com/medicalopenworld/incunest_afe4490 (consumida via `lib_deps` en `platformio.ini`)
+- **Librería AFE4490:** `incunest_afe4490` — repo propio: https://github.com/medicalopenworld/incunest_afe4490 (consumida como componente IDF: `EXTRA_COMPONENT_DIRS` → `lib/incunest_afe4490`, symlink al repo local)
 
 ## Especificación de incunest_afe4490
 - Ver `incunest_afe4490_spec.md` en https://github.com/medicalopenworld/incunest_afe4490 — leer antes de tocar cualquier cosa relacionada con incunest_afe4490
@@ -28,7 +28,7 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 - Objetivo: cada versión de la spec debe ser capaz por sí sola de regenerar la librería correspondiente
 
 ## Herramientas del proyecto
-- **Firmware ESP32-S3:** validación de señal PPG y SpO2 en la placa IncuNest V16
+- **Firmware ESP32-S3:** validación de señal PPG y SpO2 en las placas IncuNest V17/V18
 - **`pulsenest_lab.py`:** script Python para visualizar, analizar y capturar las señales PPG (forma parte del proyecto, no es un script auxiliar). Ver `pulsenest_lab_spec.md` antes de modificarlo.
 
 ## Log de conversaciones
@@ -45,7 +45,7 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 5. **Dispositivo médico** — la fiabilidad es prioridad 1. Nada de hacks o workarounds frágiles.
 
 ## Stack tecnológico
-- C++ (Arduino + ESP-IDF + FreeRTOS)
+- C++ (ESP-IDF v6 + FreeRTOS; gnu++26, `-Wall -Wextra -Werror`)
 - ESP-IDF para configuración de hardware a bajo nivel (logs, Bluetooth)
 - FreeRTOS para multitarea (`freertos/semphr.h`)
 

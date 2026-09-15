@@ -281,12 +281,12 @@ suffix** marks a working tree with uncommitted changes, i.e. a build that matche
 cannot be reproduced from the hash alone. That is the normal case while developing, so staying
 silent about it would be misleading.
 
-`scripts/pre_build_hash.py` produces both. It previously looked for the library only under
-`.pio/libdeps/<env>/incunest_afe4490`, a path that does not exist when the library is consumed
-through the `lib/` symlink (the usual local setup), so the hash silently fell back to `unknown` —
-which is exactly what the first captures after the OTA recorded. It now tries `lib/` first, then
-libdeps, and takes the project root from `env["PROJECT_DIR"]` because PlatformIO `exec()`s the
-script without setting `__file__`.
+`scripts/gen_build_version.py` produces both, run by a CMake custom target on **every** build and
+written to `build_<Board>/build_version.h` (`PULSENEST_GIT_HASH`, `INCUNEST_GIT_HASH`); the header
+is only rewritten when a hash changes, so an unchanged tree does not recompile. Until fw 0.10 the
+PlatformIO pre-build script `scripts/pre_build_hash.py` injected the same two values as `-D` flags
+(after an episode where it looked for the library only under `.pio/libdeps/` and the hash fell
+back to `unknown` in the captures); it left with PlatformIO on 2026-09-15.
 
 The firmware-side buffer was raised 600 → 720 bytes at the same time, **with an explicit truncation
 guard**: `snprintf` was already truncating silently at the limit and the checksum was appended

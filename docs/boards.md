@@ -4,13 +4,13 @@ Every physical board used with PulseNest, with the one thing that identifies it 
 its **MAC address**. Until 2026-09-10 this list lived only in an assistant memory file outside the
 repository, which is why nobody could find it. This file is the authoritative listing.
 
-| MAC | Board rev. | Silkscreen | PlatformIO env | Delivered | Status |
+| MAC | Board rev. | Silkscreen | Build preset | Delivered | Status |
 |---|---|---|---|---|---|
-| `10:51:DB:50:7F:AC` | V15 | 15.A | `incunest_V15` | Feb–Mar 2026 | IN3ATOR, the first board. Possibly damaged, out of use since 2026-09-09 |
-| `10:51:DB:50:48:F8` | V16 | 16.A | `incunest_V16` | Apr 2026 | **DEAD — 2026-09-11.** Probably incorrect power supply; smoke was seen. Was the main working board until then |
-| `10:20:BA:14:75:60` | V17 | 17.A | `incunest_V17` | — | Dropped off the WiFi three times on 2026-09-09/10 while still powered; cause not established |
-| `10:51:DB:50:88:50` | V18 | 18.A | `incunest_V18` | 2026-09-10 | Flashed and verified 2026-09-10 |
-| `10:51:DB:50:87:B8` | V18 | 18.A | `incunest_V18` | 2026-09-10 | Flashed and verified 2026-09-10 |
+| `10:51:DB:50:7F:AC` | V15 | 15.A | `sdkconfig.board.V15` | Feb–Mar 2026 | IN3ATOR, the first board. Possibly damaged, out of use since 2026-09-09 |
+| `10:51:DB:50:48:F8` | V16 | 16.A | `sdkconfig.board.V16` | Apr 2026 | **DEAD — 2026-09-11.** Probably incorrect power supply; smoke was seen. Was the main working board until then |
+| `10:20:BA:14:75:60` | V17 | 17.A | `sdkconfig.board.V17` | — | Dropped off the WiFi three times on 2026-09-09/10 while still powered; cause not established |
+| `10:51:DB:50:88:50` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-10 | Flashed and verified 2026-09-10 |
+| `10:51:DB:50:87:B8` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-10 | Flashed and verified 2026-09-10 |
 | `98:88:E0:11:CC:64` | — | — | — | — | Display HMI. Not a PulseNest target. Its own WiFi client: MQTT, OTA, web, mDNS |
 
 **The silkscreen marks the revision, not the unit.** `18.A` is printed on the board so you can tell
@@ -69,72 +69,91 @@ So V16, V17 and V18 are electrically identical from the AFE's point of view. Onl
 with DRDY on GPIO 45. What HW18 changes in that dictionary is shunt resistors, the heater current
 reference and phototherapy, none of which this firmware touches.
 
-**Then why one environment per revision?** For **provenance**. `BOARD_VERSION` travels in every
+**Then why one build preset per revision?** For **provenance**. `BOARD_VERSION` travels in every
 `$CFG` frame and therefore into the header of every capture, so a V18 board flashed with the V17
-build would label its captures as V17 for ever. Use the env that matches the board.
+build would label its captures as V17 for ever. Use the preset that matches the board
+(`scripts/build.ps1 V18` → `sdkconfig.board.V18` → `CONFIG_PULSENEST_BOARD_V18`, `main/Kconfig.projbuild`).
 
 ## Flashing
 
+The firmware is an **ESP-IDF v6.0.1** project since 2026-09-15 (Arduino/PlatformIO removed after the
+port reached parity on the bench). `scripts/build.ps1 <Board>` builds the preset for one revision
+into `build_<Board>/`; `-Ota <ip>` flashes it over the air, `-Usb COMxx` over USB.
+
 **Over the air**, for a board already running PulseNest — the normal case:
 
-```bash
-arp -a | grep -i <mac>                     # find its current IP, verify the MAC
-pio run -e incunest_V18
-curl -sS -m 90 -w "%{http_code}\n" -F update=@.pio/build/incunest_V18/firmware.bin http://<ip>/update
+```powershell
+python tools/udp_fw_versions.py             # lists every board streaming: IP, MAC, fw, lib, hashes
+.\scripts\build.ps1 V18 -Ota <ip>           # build, then POST the raw image to http://<ip>/update
 ```
+
+`-Ota` sends the image as a **raw body** (`curl --data-binary`), which is what the ESP-IDF firmware's
+`/update` handler expects. A board still running the **Arduino** firmware (fw ≤ 0.11 built with
+PlatformIO) expects a multipart form instead — once, to move it over:
+
+```powershell
+curl.exe -sS -m 120 -w "%{http_code}`n" -F update=@build_V18/pulsenest.bin http://<ip>/update
+```
+
+The bootloader is not touched by OTA; the Arduino-era bootloader (IDF 4.4) boots the IDF v6 image
+without complaint (verified on both V18 boards and the V17, 2026-09-15). The board answers `OK`,
+restarts 300 ms later and is back on the WiFi in 15–25 s. `tools/udp_fw_versions.py` needs UDP port
+5005, so close `pulsenest_lab.py` before running it (`taskkill /F /IM pythonw.exe`).
 
 Verify the MAC before every OTA. A board was flashed with the wrong build on 2026-06-12 by
 targeting an IP without checking.
 
-**Over USB**, for a blank board:
+**Over USB**, for a blank board (native USB port, labelled AIR SENSOR, or a UART0 adapter):
 
-```bash
-pio run -e incunest_V18 -t upload --upload-port COM15
-# then force a proper reset - see the gotcha below
-python ~/.platformio/packages/tool-esptoolpy/esptool.py --port COM15 --after hard_reset read_mac
+```powershell
+.\scripts\build.ps1 V18 -Usb COM15          # idf.py flash: bootloader + partition table + app
+```
+
+Building by hand, without the script (from a shell where `export.ps1` has run):
+
+```powershell
+idf.py -B build_V18 -DSDKCONFIG=build_V18/sdkconfig -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.board.V18" set-target esp32s3 build
 ```
 
 ### Gotcha: after a USB flash the board can stay in download mode
 
-PlatformIO's bundled esptool (v4.5.1) ends an upload with *"Hard resetting via RTS pin"*, and on
-these USB-Serial-JTAG boards that can leave the chip in the **ROM download bootloader** instead of
-running the application. The symptoms are silent and misleading: the flash verifies, the COM port
-is present, and the board never joins the WiFi and never prints anything.
+esptool ends an upload with a reset over the RTS pin, and on these USB-Serial-JTAG boards that can
+leave the chip in the **ROM download bootloader** instead of running the application. The symptoms
+are silent and misleading: the flash verifies, the COM port is present, and the board never joins
+the WiFi and never prints anything. Learned with PlatformIO's esptool 4.5.1 (two board bring-ups on
+2026-09-10, the first misdiagnosed as a WiFi problem); not yet re-checked with the esptool that
+ESP-IDF v6 ships.
 
 Diagnosing it takes one command — if esptool connects **without** performing a reset, the chip is
-sitting in download mode:
+sitting in download mode (`esptool` here is the one in the IDF Python environment):
 
-```bash
-python ~/.platformio/packages/tool-esptoolpy/esptool.py --port COM15 --before no_reset read_mac
+```powershell
+esptool --port COM15 --before no_reset read_mac
 ```
 
-The cure is a reset that does not touch the EN/GPIO0 lines. The standalone esptool (v4.8.5) uses
-*"Hard resetting with RTC WDT"* and gets it right:
+The cure is a reset that does not touch the EN/GPIO0 lines (*"Hard resetting with RTC WDT"*):
 
-```bash
-python ~/.platformio/packages/tool-esptoolpy/esptool.py --port COM15 --after hard_reset read_mac
+```powershell
+esptool --port COM15 --after hard_reset read_mac
 ```
 
 A pyserial RTS pulse is **not** a valid substitute: on these boards it lands the chip in download
-mode about as often as not. Cost of learning this: two board bring-ups on 2026-09-10, the first
-misdiagnosed as a WiFi problem.
+mode about as often as not.
 
 ### Getting a console on a bare board
 
-`Serial` goes to **UART0**, the physical pins, because the build defines `ARDUINO_USB_MODE=1`
-without `ARDUINO_USB_CDC_ON_BOOT`. On a board with no UART0 wiring there is therefore no console at
-all: the native USB port flashes and debugs, but carries no firmware output.
+The console is **UART0**, the physical pins (`CONFIG_ESP_CONSOLE_UART_DEFAULT`, 921600 baud set by
+`console_init()`), exactly where it was under Arduino. On a board with no UART0 wiring there is
+therefore no console at all: the native USB port flashes and debugs, but carries no firmware output.
+Since fw 0.11 the `$TIMING`/`$TASK` diagnostics also travel over UDP, so the bench needs no console
+for them.
 
-For a bring-up, move the console onto that same USB port with a temporary build:
-
-```bash
-PLATFORMIO_BUILD_FLAGS="-DARDUINO_USB_CDC_ON_BOOT=1" pio run -e incunest_V18 -t upload --upload-port COM15
-```
-
-Two things to know. The USB console **discards anything written while the host has the port
-closed**, so open the port first and reset the board afterwards, or the banner is lost. And reflash
-the standard build when finished: this one moves `Serial` off UART0, which is not where the rest of
-the project expects it.
+For a bring-up you can move the console onto the native USB port with a temporary build:
+`idf.py -B build_V18 menuconfig` → *Component config → ESP System Settings → Channel for console
+output → USB Serial/JTAG*, then rebuild and flash. **Not yet exercised** with this firmware
+(2026-09-15); the Arduino-era equivalent (`ARDUINO_USB_CDC_ON_BOOT=1`) worked, with the caveat that
+the USB console discards anything written while the host has the port closed — open the port first,
+reset the board afterwards. Reflash the standard build when finished.
 
 ## Power
 
