@@ -49,7 +49,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.12"
+#define PULSENEST_FW_VERSION "0.13"
 
 // ── Pin definitions ────────────────────────────────────────────────────────────────────
 // From Kconfig (main/Kconfig.projbuild, menu "PulseNest board"): one build directory per board,
@@ -116,6 +116,8 @@ static void nvs_init(void) {
 // Forward declaration: defined in the WiFi/UDP section below.
 // Sends a line immediately via g_resp_udp when WiFi is active (no-op otherwise).
 static void udp_send_line(const char* buf);
+// Forward declaration: defined after the UDP queues. Console + diagnostic queue, never sendto().
+static void diag_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // Mutex-protected Serial.print — use for pre-built frame buffers.
 // Also relays to UDP when WiFi is active so pulsenest_lab.py receives $CFG/$DIAG
@@ -133,6 +135,8 @@ static inline void Serial_print_locked(const char* s) {
 
 // Mutex-protected Serial_printf — use for # comments and $ERR lines from tasks.
 // Also relays to UDP when WiFi is active (same reasoning as Serial_print_locked).
+// NOT from a measurement task (Incunest_Task, or the library's acquisition task through the console
+// tee): the relay is a synchronous sendto() under a mutex. Those use diag_printf() (fw 0.13).
 inline void Serial_printf(const char *fmt, ...) {
     char buffer[128];
     va_list args;
@@ -206,7 +210,10 @@ static httpd_handle_t g_ota_server = nullptr;
 // measurement frames and nothing else (fw 0.12):
 //   g_udp_data_queue  $M1..$M4, one per sample, from Incunest_Task (500 Hz, core 0).
 //   g_udp_diag_queue  the library's $TIMING / $TASK / $TASKS_END burst (five lines every 5 s),
-//                     from the console tee on the library's acquisition task (core 1).
+//                     from the console tee on the library's acquisition task (core 1); and, since
+//                     fw 0.13, every other line a measurement task emits (`# STAT`, the
+//                     frame-too-long `$ERR`) through diag_printf() — so no measurement task ever
+//                     calls the network stack.
 // Both producers only xQueueSend(..., 0): non-blocking, ~µs. UDP_Task batches the data queue
 // UDP_BATCH_SIZE frames per datagram (500/s → ~100 datagrams/s, well below lwIP's TX buffers and
 // within the 1472 B UDP MTU) and, right after each batch, drains the diagnostic queue into a
@@ -252,9 +259,12 @@ static inline void udp_enqueue(QueueHandle_t q, const char* buf, volatile uint32
         // the host reported two BAD CHK with no clue why. Typical $M4: 265 B against 288.
         const uint32_t k = *dropped + 1;   // not ++: volatile, C++20
         *dropped = k;
+        // diag_printf, not Serial_printf: this runs on Incunest_Task or on the library's acquisition
+        // task (console tee), and neither may call sendto(). The recursion diag_printf → udp_enqueue
+        // is one level deep by construction: the $ERR line is ~80 B and always fits the slot.
         if (k == 1 || k % 500 == 0)
-            Serial_printf("$ERR,%.2s,frame too long for UDP slot (%u bytes, slot %d), dropped x%lu\r\n",
-                          buf + 1, (unsigned)len, UDP_QUEUE_FRAME_SIZE, (unsigned long)k);
+            diag_printf("$ERR,%.2s,frame too long for UDP slot (%u bytes, slot %d), dropped x%lu\r\n",
+                        buf + 1, (unsigned)len, UDP_QUEUE_FRAME_SIZE, (unsigned long)k);
         return;
     }
     char frame[UDP_QUEUE_FRAME_SIZE];
@@ -275,6 +285,26 @@ static inline void udp_send(const char* buf) {
 static void lib_console_sink(const char* line, size_t len) {
     (void)len;
     udp_enqueue(g_udp_diag_queue, line, &incunest_diag_dropped);
+}
+
+// A diagnostic line from a MEASUREMENT task: console + the diagnostic UDP queue, never
+// udp_send_line(). Serial_printf() is the same thing with a synchronous sendto() at the end —
+// fine for Cmd_Task and UDP_Task, and exactly what Incunest_Task and the library's acquisition
+// task must not do (fw 0.13; the Arduino build once stalled the 500 Hz task for 100-500 ms on a
+// blocking Serial.print(), same failure mode). No wait anywhere: the console mutex is tried with
+// zero timeout and the UART ring is only written if the line fits — the UDP copy is the one that
+// matters on the bench, and the queue drops rather than blocks.
+static void diag_printf(const char* fmt, ...) {
+    char buffer[UDP_QUEUE_FRAME_SIZE];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    if (g_serial_mutex == nullptr || xSemaphoreTake(g_serial_mutex, 0) == pdTRUE) {
+        if (console_tx_free() >= (int)strlen(buffer)) console_write(buffer);
+        if (g_serial_mutex) xSemaphoreGive(g_serial_mutex);
+    }
+    udp_enqueue(g_udp_diag_queue, buffer, &incunest_diag_dropped);
 }
 
 // ── UDP_Task: async batching sender ──────────────────────────────────────────
@@ -348,14 +378,17 @@ static void UDP_Task(void *pvParameters) {
 
 // Send a single response frame immediately over UDP (no batching).
 // Used for $CFG, $TCFG, $DIAG, $ERR, and # comment lines routed via Serial_printf /
-// Serial_print_locked. Protected by g_resp_udp_mutex so it is safe from any task.
-// No-op if WiFi is not connected.
+// Serial_print_locked from Cmd_Task, UDP_Task and the OTA server — never from a measurement task
+// (fw 0.13: those go through diag_printf() and the diagnostic queue). Serialised by
+// g_resp_udp_mutex. The take used to have a 10 ms timeout whose result was ignored, so on expiry
+// the line went out unprotected and the mutex was given without being held; with only
+// non-critical callers left, waiting for it is the right thing. No-op if WiFi is not connected.
 static void udp_send_line(const char* buf) {
     if (!g_wifi_ready) return;
     size_t len = strlen(buf);
     if (len == 0) return;
     if (g_udp_sock < 0) return;
-    if (g_resp_udp_mutex) xSemaphoreTake(g_resp_udp_mutex, pdMS_TO_TICKS(10));
+    if (g_resp_udp_mutex) xSemaphoreTake(g_resp_udp_mutex, portMAX_DELAY);
     sendto(g_udp_sock, buf, len, 0, reinterpret_cast<struct sockaddr*>(&g_udp_dest), sizeof(g_udp_dest));
     if (g_resp_udp_mutex) xSemaphoreGive(g_resp_udp_mutex);
 }
@@ -637,9 +670,9 @@ void Incunest_Task(void *pvParameters) {
 
                 // Periodic TX health report (~every 10 s at 500 Hz)
                 if (incunest_sample_count % 5000 == 0)
-                    Serial_printf("# STAT n=%lu tx_dropped=%lu frame_dropped=%lu diag_dropped=%lu\n",
-                                  (unsigned long)incunest_sample_count, (unsigned long)incunest_tx_dropped,
-                                  (unsigned long)incunest_frame_dropped, (unsigned long)incunest_diag_dropped);
+                    diag_printf("# STAT n=%lu tx_dropped=%lu frame_dropped=%lu diag_dropped=%lu\n",
+                                (unsigned long)incunest_sample_count, (unsigned long)incunest_tx_dropped,
+                                (unsigned long)incunest_frame_dropped, (unsigned long)incunest_diag_dropped);
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(1));  // no data yet: yield 1 ms to avoid busy-waiting. Only runs when getData() returns false.

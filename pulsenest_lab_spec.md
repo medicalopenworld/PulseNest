@@ -559,6 +559,10 @@ lines, same MTU guard). Consequences the host can rely on:
   dropped in the ESP32 queue) is exact, not a heuristic.
 - A diagnostic burst can only lose itself: it no longer competes with the measurements for the 64
   data slots. Its own drops are counted in `# STAT … diag_dropped=`.
+- **Firmware 0.13:** `# STAT` and the frame-too-long `$ERR` take the diagnostic queue too
+  (`diag_printf()`), so no measurement task ever calls the network stack — before, both went out
+  through a synchronous `sendto()` from the task that formats the measurements. For the host nothing
+  changes: `# STAT` is still a `#` line, now inside a diagnostic datagram.
 - `frm/dgram` in `# NET` divides by `data_datagrams`, so a perfect link reads **5.00** (4.99 when
   every datagram counted). Cost of the change on the wire: one ~210 B datagram every 5 s, +0.2 %.
 Verified on the bench 2026-09-15 (see conversation_log) with a raw-datagram recording of the three

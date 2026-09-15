@@ -157,7 +157,8 @@ The console is **UART0**, the physical pins (`CONFIG_ESP_CONSOLE_UART_DEFAULT`, 
 therefore no console at all: the native USB port flashes and debugs, but carries no firmware output.
 Since fw 0.11 the `$TIMING`/`$TASK` diagnostics also travel over UDP, so the bench needs no console
 for them; since fw 0.12 they ride in datagrams of their own, never as slots of a measurement batch
-(`# STAT … diag_dropped=` counts the ones that did not fit their queue).
+(`# STAT … diag_dropped=` counts the ones that did not fit their queue), and since fw 0.13 `# STAT`
+itself takes that queue too — no measurement task calls the network stack.
 
 For a bring-up you can move the console onto the native USB port with a temporary build:
 `idf.py -B build_V18 menuconfig` → *Component config → ESP System Settings → Channel for console

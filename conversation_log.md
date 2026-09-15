@@ -22230,3 +22230,44 @@ El invariante se cumple en las tres. Script relanzado.
 - Decidir si `# STAT`/`$ERR` (sendto sincrono en `Incunest_Task`) pasan tambien por la cola de
   diagnostico (hallazgo colateral de hoy).
 - Hilo HR1LAB (racha de 5,8 s); truncado `$M4` opciones 2-4 (margen real 14 B); flecos IDF.
+
+## Sesion 2026-09-15 (12) - fw 0.13: ninguna tarea de medida llama a la red (`diag_printf`)
+
+Alex: «Que hacemos con esto» (el colateral de la sesion 11: `# STAT`/`$ERR` con `sendto()`
+sincrono desde `Incunest_Task`). Recomendacion: hacerlo, pero quirurgico. La regla correcta no es
+«nada hace `sendto()`» sino **«ninguna tarea de MEDIDA hace `sendto()`»**; `Cmd_Task`, `UDP_Task` y
+el servidor OTA no miden y sus respuestas deben poder superar los 288 B de una ranura. Alex: «adelante».
+
+### Inventario (grep completo de `Serial_printf`/`Serial_print_locked`)
+Desde tareas de medida salian en sincrono exactamente DOS lineas: `# STAT` (`Incunest_Task`, cada
+10 s) y el `$ERR frame too long` de `udp_enqueue()`, que corre en `Incunest_Task` **o en la tarea de
+adquisicion de la libreria** (via el sink) — este ultimo es una violacion latente del contrato del
+sink («never block or send»), hoy inalcanzable (`$TIMING` se forma en 256 B) pero con el camino
+abierto desde fw 0.11. `# CHK` solo existe bajo `-DCHK_AMB_SUB`. Las ~60 llamadas de `Cmd_Task`
+(confirmaciones `# SET`, `$ERR` de comandos, `$CFG`/`$TCFG`/`$LCFG`/`$DIAG`) NO se tocan.
+
+### Por que merece hacerse
+El modo de fallo —tarea de medida atascada en una escritura sincrona— ya mordio en este proyecto:
+las paradas de 100-500 ms cada ~5 s en las V18 eran `Serial.print()` bloqueando la tarea de 500 Hz.
+Un `sendto()` es lo mismo con otra cola detras: rapido mientras lwIP tiene buffers, bloqueante justo
+cuando la WiFi va mal. El argumento no es el coste (~100 µs cada 10 s) sino que el camino exista.
+
+### Cambio (fw 0.13, ~25 lineas en `main/pulsenest_main.cpp`)
+- **`diag_printf(fmt, ...)`**: formatea en 288 B; consola UART solo si consigue el mutex serie con
+  timeout CERO y la linea cabe en el ring (`console_tx_free()`), nunca espera; y `udp_enqueue()` a la
+  cola de diagnostico. Es «`Serial_printf` sin red». `PULSENEST_SERIAL_NONBLOCKING` no esta definido
+  en ningun build, asi que `Serial_printf` sigue siendo bloqueante en la UART: correcto para
+  `Cmd_Task`, inaceptable para una tarea de medida — por eso `diag_printf` comprueba siempre el hueco.
+- `# STAT` y el `$ERR frame too long` pasan a `diag_printf`. Recursion `udp_enqueue → diag_printf →
+  udp_enqueue` de profundidad UNO por construccion (el `$ERR` mide ~80 B y siempre cabe; cola llena
+  → descarte silencioso).
+- **`udp_send_line()`**: el `xSemaphoreTake(…, 10 ms)` ignoraba el resultado — al expirar enviaba
+  sin proteccion y hacia `Give` de un mutex que no poseia. Con solo llamadores no criticos, pasa a
+  `portMAX_DELAY`. Defecto latente cerrado de paso.
+- `PULSENEST_FW_VERSION` 0.13. Spec §4.8 (una vineta en el bloque del invariante), `docs/boards.md`.
+- Para el receptor nada cambia: `# STAT` sigue siendo una linea `#`, ahora dentro de un datagrama
+  de diagnostico.
+
+### Verificacion
+Pendiente al escribir esto: build V18 en curso; despues commit, rebuild con hash limpio, OTA a las
+tres, `# STAT … diag_dropped=0` cada 10 s en UDP COM, 25 s de datagramas crudos con 0 mixtos.
