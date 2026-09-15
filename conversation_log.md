@@ -21886,3 +21886,66 @@ Paso 6: paridad en banco con el script (Alex: senal, `# NET`, ventanas) y medida
 bajo IDF (decidir UART vs `$TIMING?` por UDP). Paso 7: borrar `platformio.ini`,
 `scripts/pre_build_hash.py`, `src/main.cpp`, `[env:native]`; `docs/boards.md` con OTA
 `--data-binary`; memorias `feedback_platformio_tasks`; merge a master.
+
+## Sesion 2026-09-15 (madrugada, 6) - Paso 6: la cadencia SPI medida por fin (lib v0.92, fw 0.11, lab v1.51)
+
+Alex: «1. Se ven muy parecidas. 2. Adelante» (paridad a ojo OK; medir `$TIMING` bajo IDF).
+
+### Correccion de mi estimacion
+`$TIMING` lo emite la LIBRERIA (cada 5 s, `hal_console_printf` → UART), no el firmware, y no
+llevaba ningun campo de SPI: `cycle` = bloque SPI + todos los algoritmos. Para medir lo que
+motiva la fase hacian falta dos cambios pequenos en la lib, no «15 lineas en main».
+
+### Lib v0.92 (`74f8070`, tag, push)
+- `_ts_spi`: cronometra las 6 tramas SPI de una muestra (2 escrituras CONTROL0 + 4 lecturas),
+  desde el primer `_write_reg` al ultimo, sin el mutex. `spi_mean,spi_max` se ANADEN AL FINAL de
+  `$TIMING` (tras `stack_free`) para que un parser de 15 valores siga funcionando.
+- Tee de consola en la HAL: `incunest_afe4490_hal_console_set_sink(sink)`; cada linea de
+  `hal_console_printf` se entrega tambien al sink (NUL-terminada, en la tarea de 500 Hz → solo
+  encolar). idf y host formatean ahora en buffer (`vsnprintf` + `fwrite`) como Arduino.
+- motherBoard sin cambio de comportamiento (TIMING_STATS off, sin sink). Spec §1.4, §8.4, §14.
+
+### PulseNest fw 0.11 + lab v1.51 (`9d3e61b`, rama `feat/idf-port`)
+- Ambos mains registran `lib_console_sink` → `udp_send(line)` antes de `afe.begin()`: `$TIMING`,
+  `$TASK`, `$TASKS_END` viajan en el flujo de datos UDP. Sin UART en el banco, es la unica via.
+- Script: parser acepta 15 o 17 valores; fila «SPI (6 frames)» en Task A («—» con firmware
+  viejo); `$TIMING`/`$TASK`/`$TASKS_END` solo de la placa ACTIVA (antes cada placa pisaba la
+  ventana cada 5 s). `tools/host_tests` compila la lib con `INCUNEST_TIMING_STATS=1`.
+- Verificado: host 9/9 (81 casos), IDF V18 y Arduino V17/V18 bajo `-Werror`, multiboard 85/85.
+
+### Banco: las tres placas a fw 0.11 + lib v0.92
+.14 (IDF, OTA raw 4,2 s), .169 y .62 (Arduino, OTA multipart ~13 s). Las tres reportan
+`fw=0.11 lib=0.92 build=9d3e61b libsha=74f8070`. `$TIMING` llega por UDP de las tres.
+
+### LA MEDIDA (ventana de 12 s, 2-3 frames por placa, sin sonda)
+| | SPI media | SPI max | ciclo media | ciclo max | Task A CPU |
+|---|---|---|---|---|---|
+| Arduino V18 (.169) | **292 µs** | 390-419 | 475 | ~780 | 23,7 % |
+| Arduino V17 (.62)  | **293 µs** | 394-441 | 474 | ~785 | 23,7 % |
+| ESP-IDF V18 (.14)  | **230 µs** | 308-312 | 415 | ~725 | 21,9 % |
+
+- **IDF solo gana un 21 % en SPI** (292 → 230 µs). El techo fisico son 96 µs (6 × 32 bits a
+  2 MHz): en Arduino sobran ~200 µs y en IDF ~135 µs. Bajo IDF el sobrante es overhead del
+  driver `spi_master` por transaccion (`acquire_bus` + `polling_transmit` + `release` ≈ 22 µs
+  por trama); bajo Arduino, `SPI.transfer(uint8_t)` escribe el periferico directamente pero
+  paga 4 transferencias de 1 byte por trama.
+- La cifra «30-40 µs en Arduino» que circulaba (y con la que compare el shim de Pablo) era
+  FALSA: nunca se habia medido. El «150-270 µs» estimado para su shim (24 polling_transmit por
+  muestra) es coherente con los ~38 µs/trama medidos aqui.
+- Algoritmos, mismo codigo distinto compilador (GCC 15.2 vs 8.4, ambos -O2): hr1 7 vs 17 µs
+  (IDF mejor), hr3fp 18 vs 10 y spo2 12 vs 8 (IDF peor). Nada relevante frente a 2000 µs.
+- Stack libre Task A: 5700 (IDF) vs 5328-5420 (Arduino) bytes.
+
+### Palancas si se quiere bajar mas (no aplicadas; decision de Alex)
+1. Adquirir el bus UNA vez por muestra (hoy la HAL hace acquire/release en cada trama): la
+   firma `hal_spi_transfer(cs, tx, rx, n)` no lo permite; haria falta un `hal_spi_begin/end`.
+2. Subir SCLK por encima de 2 MHz (comprobar el maximo del AFE4490 en el datasheet).
+3. Escribir los registros del periferico SPI directamente (lo que hace Arduino), saltando
+   `spi_master`: maximo rendimiento, minima portabilidad.
+Con 22 % de CPU en Task A y 2000 µs de presupuesto, ninguna es urgente.
+
+### Pendiente
+Paso 7: borrar `platformio.ini`, `scripts/pre_build_hash.py`, `src/main.cpp`, `[env:native]`;
+`docs/boards.md` (OTA `--data-binary`, `idf.py` por placa); README/CLAUDE.md (framework);
+memoria `feedback_platformio_tasks`; merge a master; reflashear .169 y .62 con IDF.
+Luego avisar a Pablo (v0.92 por git sin parches; `-Wno-error` fuera; la cadencia medida).
