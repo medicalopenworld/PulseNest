@@ -83,3 +83,4 @@ build_V1[5-8]/
 sdkconfig
 sdkconfig.old
 managed_components/
+tools/host_tests/build/
