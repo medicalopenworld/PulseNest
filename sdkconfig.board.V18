@@ -1,0 +1,3 @@
+# PulseNest — board preset. Build with:
+#   idf.py -B build_V18 -DSDKCONFIG=build_V18/sdkconfig -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.board.V18" set-target esp32s3 build
+CONFIG_PULSENEST_BOARD_V18=y

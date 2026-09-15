@@ -76,3 +76,10 @@ docs/ISO_80601-2-61-2026.pdf
 # WHO-UNICEF oxygen therapy device specifications (2019). CC BY-NC-SA, freely downloadable
 # from WHO IRIS — kept out of the repo because linking is enough (see third_party_references.md).
 docs/19061_WHO-UNICEF*.pdf
+
+# ESP-IDF build (phase 1 port): generated per-board build dirs and sdkconfig
+build/
+build_V1[5-8]/
+sdkconfig
+sdkconfig.old
+managed_components/

@@ -1,0 +1,50 @@
+menu "PulseNest board"
+
+    # The IncuNest board revision PulseNest runs on. Only the DRDY pin and the name reported in
+    # $CFG differ between revisions (see docs/boards.md); the SPI bus, CS and PWDN are common.
+    # Replaces PlatformIO's one-environment-per-board (-DAFE4490_DRDY_PIN, -DBOARD_VERSION).
+    choice PULSENEST_BOARD
+        prompt "IncuNest board revision"
+        default PULSENEST_BOARD_V18
+
+        config PULSENEST_BOARD_V15
+            bool "IncuNest V15 (DRDY on GPIO45)"
+        config PULSENEST_BOARD_V16
+            bool "IncuNest V16 (DRDY on GPIO17)"
+        config PULSENEST_BOARD_V17
+            bool "IncuNest V17 (DRDY on GPIO17)"
+        config PULSENEST_BOARD_V18
+            bool "IncuNest V18 (DRDY on GPIO17)"
+    endchoice
+
+    config PULSENEST_BOARD_VERSION
+        string
+        default "incunest_V15" if PULSENEST_BOARD_V15
+        default "incunest_V16" if PULSENEST_BOARD_V16
+        default "incunest_V17" if PULSENEST_BOARD_V17
+        default "incunest_V18" if PULSENEST_BOARD_V18
+
+    config PULSENEST_AFE_DRDY_PIN
+        int
+        default 45 if PULSENEST_BOARD_V15
+        default 17
+
+    # Common to every revision. Kept as Kconfig ints rather than literals in the source so the
+    # pin map lives in one place (project rule: pins from a single dictionary, never hardcoded).
+    config PULSENEST_SPI_SCK_PIN
+        int "AFE4490 SPI SCK GPIO"
+        default 36
+    config PULSENEST_SPI_MISO_PIN
+        int "AFE4490 SPI MISO GPIO"
+        default 37
+    config PULSENEST_SPI_MOSI_PIN
+        int "AFE4490 SPI MOSI GPIO"
+        default 35
+    config PULSENEST_AFE_CS_PIN
+        int "AFE4490 chip-select GPIO"
+        default 21
+    config PULSENEST_AFE_PWDN_PIN
+        int "AFE4490 PWDN GPIO"
+        default 0
+
+endmenu

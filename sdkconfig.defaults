@@ -1,0 +1,27 @@
+# PulseNest — ESP-IDF defaults shared by every board (per-board choice in sdkconfig.board.*).
+# Mirrors what platformio.ini [base_incunest_esp32s3] set: ESP32-S3 at 240 MHz, 8 MB flash,
+# DIO at 80 MHz, the OTA partition table, console on UART0 at 921600, -O2.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash and partitions (8 MB, two OTA app slots of 2.6 MB + spiffs; same CSV PlatformIO used)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="ESP32S3_OTA_partition_8MB.csv"
+
+# CPU and RTOS
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# Console: UART0. The bench speed (921600, pulsenest_lab.py monitor_speed) is set by the firmware
+# itself in console_init() — CONFIG_ESP_CONSOLE_UART_BAUDRATE is only editable with a CUSTOM
+# console, and the ROM/bootloader log stays at 115200 in any case, exactly as under Arduino.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# Optimisation: PlatformIO built with -O2 (build_flags). PERF = -O2 in ESP-IDF.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Logging: the library uses ESP_LOGE/W/I; INFO was what CORE_DEBUG_LEVEL=5 effectively showed.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
