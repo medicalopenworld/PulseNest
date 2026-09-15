@@ -37,7 +37,9 @@ param(
     [string]$IdfPath = 'C:\esp\v6.0.1\esp-idf'
 )
 
-$ErrorActionPreference = 'Stop'
+# No 'Stop' here: export.ps1 and idf.py print progress on stderr, which Windows PowerShell would turn
+# into a terminating error. Exit codes are checked by hand below.
+$ErrorActionPreference = 'Continue'
 Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
 if (-not $env:IDF_PATH) {
     if (-not (Test-Path "$IdfPath\export.ps1")) { throw "ESP-IDF not found at $IdfPath (use -IdfPath)" }
@@ -48,12 +50,12 @@ $root  = Split-Path -Parent $PSScriptRoot
 $build = "build_$Board"
 Set-Location $root
 
-$args = @('-B', $build, "-DSDKCONFIG=$build/sdkconfig",
+$idfArgs = @('-B', $build, "-DSDKCONFIG=$build/sdkconfig",
           "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board.$Board")
-if (-not (Test-Path "$build/sdkconfig")) { $args += @('set-target', 'esp32s3') }
-$args += 'build'
+if (-not (Test-Path "$build/sdkconfig")) { $idfArgs += @('set-target', 'esp32s3') }
+$idfArgs += 'build'
 
-idf.py @args
+idf.py @idfArgs
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
 $bin = Join-Path $root "$build/pulsenest.bin"
