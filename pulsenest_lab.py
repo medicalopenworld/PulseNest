@@ -6441,6 +6441,7 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
         ("HR2 fast path",    0),
         ("HR3 fast path",    0),
         ("SpO2",             0),
+        ("SPI (6 frames)",   0),
         ("Cycle (SPI+all)",  0),
         ("HR2 autocorr",     1),
         ("HR3 FFT+HPS",      1),
@@ -6473,8 +6474,8 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
         vbox.addWidget(self._lbl_status)
 
         # Table: section header rows + data rows
-        # Physical row layout: header_A, 5 data rows, header_BC, 2 data rows = 9 rows total
-        self._table = QtWidgets.QTableWidget(9, 4)
+        # Physical row layout: header_A, 6 data rows, header_BC, 2 data rows = 10 rows total
+        self._table = QtWidgets.QTableWidget(10, 4)
         self._table.setHorizontalHeaderLabels(["Algorithm", "Mean (µs)", "Max (µs)", "Metric"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -6492,9 +6493,9 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
         hdr_a.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self._table.setItem(0, 0, hdr_a)
 
-        # Rows 1–5: Task A data rows
-        self._data_rows_A = [1, 2, 3, 4, 5]  # physical rows for HR1, HR2fp, HR3fp, SpO2, Cycle
-        for phys_row, (name, _) in zip(self._data_rows_A, self._ROW_DEFS[:5]):
+        # Rows 1–6: Task A data rows
+        self._data_rows_A = [1, 2, 3, 4, 5, 6]  # physical rows for HR1, HR2fp, HR3fp, SpO2, SPI, Cycle
+        for phys_row, (name, _) in zip(self._data_rows_A, self._ROW_DEFS[:6]):
             item = QtWidgets.QTableWidgetItem(f"  {name}")
             item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
             self._table.setItem(phys_row, 0, item)
@@ -6503,18 +6504,18 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
                 cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 self._table.setItem(phys_row, col, cell)
 
-        # Row 6: Task B/C section header
-        self._table.setSpan(6, 0, 1, 4)
+        # Row 7: Task B/C section header
+        self._table.setSpan(7, 0, 1, 4)
         hdr_bc = QtWidgets.QTableWidgetItem("  Task B/C — Async ~2 Hz  (CPU load % = mean / 500 000 µs)")
         hdr_bc.setFlags(QtCore.Qt.ItemIsEnabled)
         hdr_bc.setBackground(QtGui.QColor("#1E2E3E"))
         hdr_bc.setForeground(QtGui.QColor("#88BBDD"))
         hdr_bc.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        self._table.setItem(6, 0, hdr_bc)
+        self._table.setItem(7, 0, hdr_bc)
 
-        # Rows 7–8: Task B/C data rows
-        self._data_rows_BC = [7, 8]  # physical rows for HR2 compute, HR3 compute
-        for phys_row, (name, _) in zip(self._data_rows_BC, self._ROW_DEFS[5:]):
+        # Rows 8–9: Task B/C data rows
+        self._data_rows_BC = [8, 9]  # physical rows for HR2 compute, HR3 compute
+        for phys_row, (name, _) in zip(self._data_rows_BC, self._ROW_DEFS[6:]):
             item = QtWidgets.QTableWidgetItem(f"  {name}")
             item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
             self._table.setItem(phys_row, 0, item)
@@ -6527,6 +6528,8 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
             "Timing table",
             "Execution time per algorithm, measured with esp_timer_get_time() (1 µs resolution).\n"
             "Task A (real-time): Budget % = max / 2000 µs × 100. Cycle includes SPI + all fast paths.\n"
+            "SPI = the six 4-byte frames that read one sample (2 CONTROL0 writes + 4 register reads), on\n"
+            "their own: the bus cost of the firmware's HAL (lib >= v0.92; '—' from older firmware).\n"
             "Task B/C (async): CPU load % = mean / 500 000 µs × 100 (compute time / invocation period)."))
         vbox.addWidget(self._table)
 
@@ -6570,8 +6573,9 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
                       hr3fp_mean, hr3fp_max, spo2_mean, spo2_max,
                       cycle_mean, cycle_max,
                       hr2cmp_mean, hr2cmp_max, hr3cmp_mean, hr3cmp_max,
-                      stack_free):
-        """Called with parsed integer µs values from a $TIMING frame."""
+                      stack_free, spi_mean=None, spi_max=None):
+        """Called with parsed integer µs values from a $TIMING frame. spi_* arrived with lib v0.92
+        (appended after stack_free); None from older firmware leaves that row at "—"."""
         import datetime
         now = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -6581,9 +6585,14 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
             (hr2fp_mean, hr2fp_max),
             (hr3fp_mean, hr3fp_max),
             (spo2_mean,  spo2_max),
+            (spi_mean,   spi_max),
             (cycle_mean, cycle_max),
         ]
         for phys_row, (mean_us, max_us) in zip(self._data_rows_A, task_a_data):
+            if mean_us is None:   # SPI row from a firmware older than lib v0.92
+                for col in (1, 2, 3):
+                    self._table.item(phys_row, col).setText("—")
+                continue
             budget_pct = max_us / self._BUDGET_US * 100.0
             self._table.item(phys_row, 1).setText(f"{mean_us}")
             self._table.item(phys_row, 2).setText(f"{max_us}")
@@ -15188,16 +15197,23 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # TIMING diagnostic frame: handle before decimation, not counted as data
                     # Format: $TIMING,hr1_mean,hr1_max,hr2fp_mean,hr2fp_max,hr3fp_mean,hr3fp_max,
                     #                 spo2_mean,spo2_max,cycle_mean,cycle_max,
-                    #                 hr2cmp_mean,hr2cmp_max,hr3cmp_mean,hr3cmp_max,stack_free*XX
+                    #                 hr2cmp_mean,hr2cmp_max,hr3cmp_mean,hr3cmp_max,stack_free,
+                    #                 spi_mean,spi_max*XX      (spi_* since lib v0.92, appended last)
+                    # Since fw 0.11 it also arrives over UDP (the firmware tees the library's console
+                    # lines into the data stream); with several boards only the ACTIVE one feeds the
+                    # window, like every other per-board view (v1.51).
                     if line.startswith('$TIMING,'):
                         _console_lines.append(csv_line)
+                        if not _is_active:
+                            continue
                         self._pending_tasks = []  # reset task accumulator for new cycle
                         if self.esp32_timing_window is not None:
                             _tp = line[1:].split('*')[0].split(',')
                             if len(_tp) >= 16:
                                 try:
                                     vals = [int(x) for x in _tp[1:16]]
-                                    self.esp32_timing_window.esp32_update_timing(*vals)
+                                    spi = [int(x) for x in _tp[16:18]] if len(_tp) >= 18 else [None, None]
+                                    self.esp32_timing_window.esp32_update_timing(*vals, *spi)
                                 except (ValueError, IndexError):
                                     pass
                         continue
@@ -15205,6 +15221,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # $TASK frame: one per FreeRTOS task, emitted after $TIMING
                     # Format: $TASK,name,cpu_pct_x10,stack_words*XX
                     if line.startswith('$TASK,'):
+                        if not _is_active:
+                            continue
                         _tp = line[1:].split('*')[0].split(',')
                         if len(_tp) >= 4:
                             try:
@@ -15218,7 +15236,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
                     # $TASKS_END: all $TASK frames for this cycle have been received
                     if line.startswith('$TASKS_END'):
-                        if self.esp32_timing_window is not None:
+                        if self.esp32_timing_window is not None and _is_active:
                             self.esp32_timing_window.esp32_update_tasks(self._pending_tasks)
                         continue
 

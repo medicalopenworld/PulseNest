@@ -26,7 +26,8 @@ add_library(incunest_afe4490_host STATIC
     "${INCUNEST_LIB_DIR}/incunest_afe4490.cpp"
     "${INCUNEST_LIB_DIR}/incunest_afe4490_hal_host.cpp")
 target_include_directories(incunest_afe4490_host PUBLIC "${INCUNEST_LIB_DIR}")
-target_compile_definitions(incunest_afe4490_host PUBLIC UNIT_TEST)
+# INCUNEST_TIMING_STATS=1 as in the firmware: the instrumentation must compile on the host too.
+target_compile_definitions(incunest_afe4490_host PUBLIC UNIT_TEST INCUNEST_TIMING_STATS=1)
 target_compile_options(incunest_afe4490_host PRIVATE -Wall -Wextra -Werror)
 
 # One executable per suite: test/test_<name>/*.cpp -> test_<name>

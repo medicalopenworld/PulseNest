@@ -49,7 +49,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.10"
+#define PULSENEST_FW_VERSION "0.11"
 
 // ── Pin definitions ────────────────────────────────────────────────────────────────────
 // From Kconfig (main/Kconfig.projbuild, menu "PulseNest board"): one build directory per board,
@@ -248,6 +248,15 @@ static inline void udp_send(const char* buf) {
     char frame[UDP_QUEUE_FRAME_SIZE];
     memcpy(frame, buf, len + 1);
     xQueueSend(g_udp_data_queue, frame, 0);  // non-blocking: drop if full
+}
+
+// The library's diagnostic lines ($TIMING, $TASK, $TASKS_END — INCUNEST_TIMING_STATS) go to the
+// console; this tee also puts them on the UDP data stream, so the ESP32 TIMING window of
+// pulsenest_lab.py works with no UART attached (fw 0.11, lib v0.92). Runs on the library's
+// 500 Hz task: udp_send() only queues, and the lines already end in "*XX\r\n" like every frame.
+static void lib_console_sink(const char* line, size_t len) {
+    (void)len;
+    udp_send(line);
 }
 
 // ── UDP_Task: async batching sender ──────────────────────────────────────────
@@ -603,6 +612,7 @@ void start_incunest() {
     vTaskDelay(pdMS_TO_TICKS(100));
 
     incunest_sample_count = 0;
+    incunest_afe4490_hal_console_set_sink(lib_console_sink);   // before begin(): see hal.h
     afe.begin(AFE4490_CS_PIN, AFE4490_DRDY_PIN, true);  // debug=true: combined queue items for atomic getData(data,dbg)
     afe.setPPGDispFilter(0.5f, 20.0f);
     // HGAC on from boot. Decision by Alex 2026-09-10: whether the gain control runs is the

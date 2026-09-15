@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.50
+# pulsenest_lab — Specification v1.51
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -328,10 +328,14 @@ $TIMING,<hr1_mean_us>,<hr1_max_us>,<hr2fp_mean_us>,<hr2fp_max_us>,
         <hr3fp_mean_us>,<hr3fp_max_us>,<spo2_mean_us>,<spo2_max_us>,
         <cycle_mean_us>,<cycle_max_us>,
         <hr2cmp_mean_us>,<hr2cmp_max_us>,<hr3cmp_mean_us>,<hr3cmp_max_us>,
-        <stack_free>*XX
+        <stack_free>,<spi_mean_us>,<spi_max_us>*XX
 ```
 
-Emitted every ~5 s. Requires `INCUNEST_TIMING_STATS=1`.
+Emitted every ~5 s. Requires `INCUNEST_TIMING_STATS=1`. `spi_*` (lib ≥ v0.92, appended last) is
+the cost of the six 4-byte SPI frames that read one sample; the parser accepts both the 15- and
+the 17-value frame. Since fw 0.11 the frame also arrives on the UDP data stream (the firmware
+tees the library's console lines into it), so the window no longer needs a UART; with several
+boards only the ACTIVE one updates it (v1.51).
 
 #### $TASK — FreeRTOS task info
 
@@ -1624,7 +1628,7 @@ capture.
 Purpose: display FreeRTOS algorithm timing stats from `$TIMING` / `$TASK` frames.
 
 **Contents:**
-- Bar chart: mean and max µs per algorithm (SpO2, HR1, HR2 FP, HR3 FP, HR2 CMP, HR3 CMP, full cycle)
+- Table: mean and max µs per algorithm (HR1, HR2 FP, HR3 FP, SpO2, **SPI (6 frames)** — v1.51, lib ≥ v0.92, "—" from older firmware — full cycle, HR2 CMP, HR3 CMP)
 - Stack free watermarks per task
 - Task table: name, CPU%, stack words (from `$TASK` frames)
 
@@ -2053,6 +2057,17 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.51 — 2026-09-15
+
+**ESP32 TIMING over UDP, with the SPI cost on its own row.** The ESP-IDF port of the firmware
+exists to cut the SPI overhead of the sample read (Arduino: 4 × `SPI.transfer(uint8_t)` per
+4-byte frame; IDF: one transmit), and nothing measured it: `cycle` lumps SPI with every
+algorithm. Library v0.92 appends `spi_mean,spi_max` to `$TIMING` and firmware 0.11 tees the
+library's console lines into the UDP data stream, so the window works on a bench with no
+UART. Script: parser accepts 15 or 17 values, new `SPI (6 frames)` row in Task A, and
+`$TIMING`/`$TASK`/`$TASKS_END` are taken from the ACTIVE board only (before, every board's
+frame overwrote the window every 5 s).
 
 ### v1.50 — 2026-09-15
 
