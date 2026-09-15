@@ -22376,3 +22376,13 @@ ritmo hace falta menos decaimiento entre latidos). Con tau=20 s esta captura tam
 rachas: el apagon de los dos latidos perdidos cae fuera del fichero, en el ultimo segundo. O sea,
 confirma que **el cambio no rompe nada y ensancha el margen**, no que reproduzca el fallo y lo cure.
 Para eso habria que repetir con el acoplamiento flojo de la sesion de las 15:33.
+
+### Cierre: commit en los dos repos y reflasheo con hash limpio
+- Libreria `dcf2a9c` — *v0.93: hr1_max_decay_tau_s 20 s -> 1.5 s, the first measured value it has
+  ever had* (codigo, spec v0.93, `library.json`, cabeceras de version; la de `.h` decia v0.91 con el
+  define en 0.92).
+- PulseNest `cccf6ee` — espejo `FW_MAX_DECAY_TAU_S`, `tools/hr1_streak_forensics.py`, los dos tests
+  de `test_sample_rate.cpp`, spec v1.55 y este log.
+- Rebuild y OTA raw a las tres con MAC verificada: **HTTP 200 en 4,7 / 4,1 / 4,6 s**. Las tres
+  reportan `fw=0.13 lib=0.93 build=cccf6ee libsha=dcf2a9c` — se acabo el `-dirty`. Script relanzado.
+- **Sin push**: los dos repos quedan commiteados en local, a la espera de que Alex lo pida.
