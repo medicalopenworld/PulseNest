@@ -99,7 +99,8 @@ curl.exe -sS -m 120 -w "%{http_code}`n" -F update=@build_V18/pulsenest.bin http:
 *Flash*. The page sends the file the same way (`XMLHttpRequest.send(file)` = raw body) and shows `OK`
 or `FAILED`. This is the path to give someone who only has the `.bin`.
 
-Sending the wrong format fails safely in both directions: a multipart form to an ESP-IDF board is
+The .bin itself is always the same ESP32 application image; what differs is how the HTTP request wraps
+it (raw body vs multipart form). Using the wrong wrapping fails safely in both directions: a multipart form to an ESP-IDF board is
 rejected on the first chunk (the body starts with the form boundary, not the image magic byte) and
 the board answers `FAIL` with the flash untouched; a raw body to an Arduino board finds no `update`
 form field and nothing is written either.
