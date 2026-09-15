@@ -21995,3 +21995,24 @@ medida que lo motivaba: **SPI 292 µs (Arduino) → 230 µs (IDF), techo teorico
 - Re-verificar bajo IDF v6 el gotcha de esptool tras flash USB y la consola por USB (menuconfig).
 - `tools/offline_runner` roto desde antes de v0.81 (firma de `test_feed_spo2`).
 - Tarea 5 (a) captura multiple con sonda; hilo HR1LAB; opciones 2-4 del truncado $M4.
+
+## Sesion 2026-09-15 (madrugada, 8) - Cierre: preguntas sobre OTA raw y la HAL; mensaje a Pablo
+
+- Alex pregunto que significa «OTA solo raw» y si esta documentado. Aclarado: el `.bin` es
+  siempre la misma imagen ESP32; lo que cambia es el envoltorio del cuerpo HTTP (formulario
+  multipart en el fw Arduino, cuerpo raw en el fw IDF). `docs/boards.md` ampliado con la via por
+  navegador (`http://<ip>/`, sin herramientas) y el fallo seguro en ambos sentidos (`08f1836`);
+  la palabra «formato» sustituida por «envoltorio del cuerpo» (`3946745`).
+- Explicado: «22-24 % de un nucleo» es TODA la Task A; el SPI solo es 14,6 % (Arduino) / 11,5 %
+  (IDF); de los 230 µs, 96 son bits en el cable y ~135 sobrecarga del driver `spi_master`.
+- Explicado como se elige la implementacion de la HAL: por deteccion (`ARDUINO` /
+  `ESP_PLATFORM && !ARDUINO` / ninguna), sin macro del usuario; un solo juego de 8 funciones
+  enlaza. Y que Arduino no implica PlatformIO (falta `library.properties` si algun dia se quiere
+  desde el Arduino IDE; sin consumidor que lo pida).
+- Mensaje WhatsApp a Pablo redactado y revisado (v0.92 con HAL en vez de shim; submodulo en el
+  tag v0.92, la raiz ya es componente IDF; comprobar `spi_bus_initialize` en `SPI2_HOST` antes
+  de `begin()`; PulseNest en IDF puro). Alex lo envia.
+
+### Siguiente
+Tarea 5 (a) captura multiple con sonda en las 3 placas IDF (paridad con registro); hilo HR1LAB;
+flecos IDF sin prisa (esptool/consola USB bajo IDF v6, `measure_timing.py`, `offline_runner`).
