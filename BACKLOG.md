@@ -67,7 +67,7 @@ has not been triaged yet.
 	2. Alcance mínimo: que la captura pida `$LCFG?` al empezar y vuelque la respuesta en las notas, igual que ya hace con `$CFG?` (la casilla de lectura automática existe y está marcada por defecto). Hay que decidir si también al terminar, para detectar un cambio a mitad de captura — el `$CFG` de cierre ya se compara así (`_capture_open_cfg`).
 	3. Afecta al set de regresión: `captures/CAPTURE_SET_SPEC.md` §2.3 exige que las columnas `FW_*` sean atribuibles a una configuración. Con HGAC fuera de las notas, esa atribución está incompleta.
 	4. Aplica igual a la ventana MULTI CAPTURE (§7.20), que hoy tampoco vuelca `$LCFG` y además graba varias placas, cada una con su propio estado.
-- Cuando quito y pongo tensión a una placa, los plots de pulsenest se vuelven locos al principio
+- [x] Cuando quito y pongo tensión a una placa, o doy al botón RESET ESP32, o cambio de placa UDP, los plots de pulsenest se vuelven locos al principio — RESUELTO 2026-09-15 (v1.50, spec §4.10): nada reseteaba los buffers al reiniciar el flujo; ahora un evento de discontinuidad (contador atrás, banner/RESET_REASON, cambio de fuente) los reinicia y avisa a las 10 ventanas
 
 
 

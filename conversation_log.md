@@ -21745,3 +21745,42 @@ Alex pide renombrar `dropped` en `# NET`: el nombre sugiere perdida y es un desc
 (lineas de placa no activa que no van a la tuberia). Se renombra a `not_active` en script, test y spec.
 Hecho (v1.49): `dropped` → `not_active` en `# NET`, snapshot key, `UdpBoard.not_active` y el test
 (`tools/udp_multiboard_test.py`: 67/67). Spec §4.8 tabla + changelog v1.49. Script relanzado.
+
+## Sesion 2026-09-15 (madrugada, 3) - Nota del BACKLOG: «los plots se vuelven locos» tras RESET / tension / cambio de placa (v1.50)
+
+Alex pidio abordarla antes de seguir con el plan. Diagnostico por lectura del codigo (sin
+adivinar): eran TRES fallos con UNA causa — nada en el script sabia que el flujo se habia reiniciado.
+1. Ventanas LAB/TEST (SpO2Lab, SpO2Test, HR1/HR2/HR3Test): «muestra nueva» = contador > ultimo
+   visto. Tras un reinicio (contador a 0) se CONGELABAN hasta que el contador nuevo superara al
+   viejo (minutos); al cambiar a una placa con contador mayor REPROCESABAN los 10 s del buffer con
+   muestras de la otra placa y lo contaban como hueco.
+2. PI Lab fija su origen de tiempo con el primer Ts_us: tras el reinicio el tiempo era NEGATIVO.
+3. El reinicio no era detectable por UDP: el banner `# incunest_afe4490 started` sale antes de
+   que haya WiFi (main.cpp:452, start_incunest) y nunca llega; `# RESET_REASON` llega pero solo se
+   logueaba; el detector de huecos descarta el retroceso como implausible; el cambio de fuente no
+   avisaba a nadie. SIGNALS/SIGNALS2 si detectaban el retroceso y se limpiaban, pero se
+   re-sembraban con los buffers del monitor, que seguian con el empalme.
+
+### Diseño (spec §4.10): un evento, un sitio, todos los consumidores
+`PPGMonitor._on_stream_discontinuity(reason)`, disparado por: (a) retroceso del contador > 5000
+muestras (10 s) en la fuente activa, comprobado ANTES de la decimacion — la senal que no necesita
+ninguna linea `#`, cubre el corte de alimentacion; (b) banner o `# RESET_REASON` de la activa;
+(c) cambio de fuente (`_select_udp_source`, promocion automatica, paso a SERIAL). Eventos a < 2 s
+son uno. Hace: rellena IN PLACE los 34 deques del monitor (`_init_stream_buffers()`, misma tabla
+que `__init__`; in place porque las ventanas reciben los deques por argumento), anota
+`# event @row N: stream discontinuity: ...` en una LAB CAPTURE en curso (con las post-notas, el
+cuerpo del CSV sigue siendo solo filas), y llama `on_stream_discontinuity()` en 10 ventanas
+(SpO2Lab, SpO2Test, HR1/2/3Test, PILab, HR1Lab, HR2Lab, Signals, Signals2), cada una protegida.
+Detalle no obvio: `_last_sample_cnt = 0`, NO -1 — los deques rellenados llevan contador 0 y no
+deben tomarse por 500 muestras nuevas. No toca: parametros de usuario, `_frame_mode_live`,
+contadores de huecos, HW/LIB CONFIG (ya se re-consultan con el banner), escritores MULTI CAPTURE
+(siguen a su placa, no a la activa; marcador por placa = pendiente).
+Lo que NO se «resetea»: la HGAC de la placa reconverge y SpO2 pasa su warm-up de 18 s tras un
+reinicio — es el instrumento asentandose y debe verse; v1.50 solo quita el empalme del host.
+
+### Verificacion
+`tools/udp_multiboard_test.py` fase 9: 85/85 (67 + 18). La placa simulada activa reinicia
+(704258 → 0): 1 evento, motivo con el contador, buffers sin ningun contador viejo (max 462),
+logueado; el usuario elige la otra placa: 2º evento con el motivo de fuente. Script relanzado.
+Pendiente de Alex con placa real: RESET ESP32, cambio de placa y corte de tension → debe verse
+`[STREAM] discontinuity: ...` en el log y los plots arrancar limpios (tras 10 s de «sin datos»).
