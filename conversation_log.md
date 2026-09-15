@@ -21784,3 +21784,59 @@ reinicio — es el instrumento asentandose y debe verse; v1.50 solo quita el emp
 logueado; el usuario elige la otra placa: 2º evento con el motivo de fuente. Script relanzado.
 Pendiente de Alex con placa real: RESET ESP32, cambio de placa y corte de tension → debe verse
 `[STREAM] discontinuity: ...` en el log y los plots arrancar limpios (tras 10 s de «sin datos»).
+
+## Sesion 2026-09-15 (madrugada, 4) - FASE 1 arranca: PulseNest a ESP-IDF, pasos 1-4 compilan
+
+Alex: posponer a Pablo; «quitar PlatformIO» (fase 1). OK a las tres decisiones: **IDF nativo**
+(no el shim de Pablo: vive en una rama sin mergear de otro repo y PulseNest debe construirse solo
+con su repo + la lib), **OTA por cuerpo binario** (`curl --data-binary`, pagina con `x.send(file)`;
+sin parsear multipart), **rama `feat/idf-port`** con PlatformIO intacto hasta paridad en banco.
+Antes explique «medir la cadencia SPI en IDF»: 6 tramas de 4 bytes por muestra; Arduino ~30-40 µs
+(registro directo), shim de Pablo 24 llamadas al driver (150-270 µs estimado), nuestra HAL 6
+llamadas (40-70 µs estimado); nadie lo ha medido; importa por el catalogo de PRF hasta 1600 Hz
+(periodo 625 µs); se mide con `$TIMING` (por eso la HAL conservo `console_printf`).
+
+### Medida previa de main.cpp (1185 lineas)
+Arduino real: Serial ~40 (centralizado en `Serial_print_locked`/`Serial_printf` + lectura en
+Cmd_Task), WiFi 11 (una funcion), WebServer+Update 10, WiFiUDP 5, SPI.begin/pinMode/micros/ESP.*
+~12. El resto (sendto, sockets lwIP, FreeRTOS, esp_reset_reason, esp_wifi_set_ps, esp_chip_info) ya
+era IDF nativo. PlatformIO aportaba: 4 envs que solo difieren en DRDY (45 en V15, 17 resto) y
+BOARD_VERSION; `pre_build_hash.py`; particiones OTA 8 MB; 9 tests Unity.
+
+### Paso 1 — esqueleto (compila): `CMakeLists.txt` raiz (lib como componente desde
+`lib/incunest_afe4490`, `INCUNEST_TIMING_STATS=1` global), `main/` (CMakeLists con `-Wall -Wextra
+-Werror`, `Kconfig.projbuild` con choice V15..V18 + pines comunes, `pulsenest_main.cpp`),
+`sdkconfig.defaults` (esp32s3, 8 MB DIO 80 MHz, CSV OTA de PlatformIO, 240 MHz, -O2, UART0),
+`sdkconfig.board.V15..V18`, `scripts/gen_build_version.py` (build_version.h con hashes -dirty en
+CADA build, solo reescribe si cambia; sustituye a pre_build_hash.py). Un build dir y un sdkconfig
+por placa: `idf.py -B build_V18 -DSDKCONFIG=build_V18/sdkconfig -DSDKCONFIG_DEFAULTS="..." build`.
+Detalle: `CONFIG_ESP_CONSOLE_UART_BAUDRATE` no es editable con la consola por defecto → el baud
+(921600) lo fija `console_init()` en el firmware.
+
+### Pasos 2-4 — port de main.cpp (compila, 890 kB): script `port_main_to_idf.py` (scratchpad),
+sustituciones exactas con dry-run sobre una COPIA; `src/main.cpp` no se toca.
+- Consola: driver UART0 (`uart_driver_install` TX ring 1024, RX 256), `uart_vfs_dev_use_driver` +
+  `setvbuf(stdout, _IONBF)` para que el `printf` de la lib ($TIMING) y los de app_main compartan
+  camino y orden; `console_tx_free()` = `availableForWrite`; `uart_read_bytes(...,0)` en Cmd_Task.
+- WiFi: `esp_wifi` STA con EventGroup, MISMO bucle de reintentos por red y mismas etiquetas de
+  fallo (mapeo de `wifi_err_reason_t`); los 40 comentarios del modem sleep medido se conservan.
+- `g_cmd_udp`/`g_resp_udp` (WiFiUDP) → socket lwIP no bloqueante en :5006 y `sendto` por
+  `g_udp_sock` (mismo destino que los datos), mutex conservado.
+- OTA: `esp_http_server` (tarea propia; fuera el `handleClient()` de Cmd_Task) + `esp_ota_ops`,
+  cuerpo raw en trozos de 4 kB, `OK`/`FAIL` y `esp_restart()` a 300 ms. Comportamiento durante el
+  flasheo igual que antes (ISR DRDY no IRAM-safe en ambos).
+- `setup()` → `app_main()` (+ `nvs_init()` para esp_wifi); `SPI.begin` → `spi_bus_init()`; PWDN →
+  gpio; `micros()` → `esp_timer_get_time()`; `ESP.restart` → `esp_restart`; PSRAM → heap_caps.
+- Errores de compilacion, todos de gnu++26: 4 `++` sobre volatile (→ `x = x + 1`), 1
+  `WIFI_REASON_ASSOC_EXPIRE` inexistente en IDF v6, y `spi_flash` faltaba en REQUIRES.
+- Verificacion por conjuntos de lineas: TODA linea no-plataforma de src/main.cpp esta en el port
+  (las 9 «ausentes» son el bloque OTA reescrito y una declaracion reindentada). Flags: lib y main
+  con `INCUNEST_TIMING_STATS=1`, `-Wextra -Werror`, `-std=gnu++26`.
+
+### Pendiente
+Paso 2-4 en BANCO (no se ha ejecutado en hardware): consola por UART0/USB → script SERIAL; WiFi +
+UDP → script UDP y `# NET`; OTA con `curl --data-binary`. Luego paso 5 (tests host a CMake+Unity),
+6 (paridad + `$TIMING` spi_us en IDF), 7 (borrar PlatformIO, docs/boards.md, memorias).
+Decision de banco pendiente de Alex: probar por USB (adaptador UART0 / USB nativo con esptool) o
+por OTA en UNA V18 desde el firmware Arduino actual (recuperacion por USB si el port no levanta WiFi).
+Trampa anotada: `PYTHONIOENCODING=utf-8` para parches con caracteres no cp1252 (dos abortos hoy).
