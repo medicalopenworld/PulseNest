@@ -1968,6 +1968,18 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
 
     # ── Update (called from main monitor loop) ────────────────────────────────
 
+    def on_stream_discontinuity(self):
+        """The monitor restarted its buffers (board restart / source change): start over too.
+        _last_sample_cnt = 0, not -1: the refilled monitor buffers carry counter 0 and must not
+        be taken for 500 new samples."""
+        self._last_sample_cnt = 0
+        for buf in (self._buf_t, self._buf_spo2_fw, self._buf_R_fw, self._buf_spo2_loc, self._buf_R_loc,
+                    self._buf_dc_ir, self._buf_dc_red, self._buf_rms_ir, self._buf_rms_red):
+            buf.clear()
+        for c in (getattr(self, "calc", None), getattr(self, "_calc", None)):
+            if c is not None and hasattr(c, "reset"):
+                c.reset()
+
     def update_algorithms(self, data_led1_sub, data_led2_sub, data_spo2, data_spo2_r,
                           data_timestamp_us, data_sample_counter):
         """Run per-sample algorithm (called from PPGMonitor._process_frames_tick)."""
@@ -2663,6 +2675,16 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Export error", str(e))
 
     # ── Live update (called from PPGMonitor) ──────────────────────────────────
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): start over, keep parameters."""
+        if self._offline_mode:
+            return
+        self._last_sample_cnt = 0      # the refilled monitor buffers carry counter 0
+        self._t0_us = None
+        self._clear_buffers()
+        if hasattr(self._calc, "reset"):
+            self._calc.reset()
 
     def update_algorithms(self, data_ot_led1, data_ot_led2, data_probe_state,
                           data_spo2, data_spo2_r, data_spo2_sqi,
@@ -3406,6 +3428,14 @@ class HR1TestWindow(QtWidgets.QMainWindow):
 
     # ── Live update (called from PPGMonitor) ──────────────────────────────────
 
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): re-apply the current
+        parameters (resets the calculator and the plot buffers) without touching the spinboxes."""
+        if self._offline_mode:
+            return
+        self._on_param_changed()
+        self._last_sample_cnt = 0      # the refilled monitor buffers carry counter 0
+
     def update_plots(self, data_hr1, data_hr1_sqi, data_timestamp_us, data_sample_counter):
         """Update HR comparison plots. Signal chain is read from PPGMonitor's hr1test_calc."""
         if self._offline_mode:
@@ -4038,6 +4068,14 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Export error", str(e))
 
     # ── Live update ───────────────────────────────────────────────────────────
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): re-apply the current
+        parameters (resets the calculator and the plot buffers) without touching the spinboxes."""
+        if self._offline_mode:
+            return
+        self._on_param_changed()
+        self._last_sample_cnt = 0      # the refilled monitor buffers carry counter 0
 
     def update_algorithms(self, data_ot_led1, data_probe_state, data_hr2, data_hr2_sqi,
                           data_timestamp_us, data_sample_counter):
@@ -5223,6 +5261,17 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.curve_hr_py.setVisible(visible)
         self.curve_sqi_py.setVisible(visible)
 
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): start over, keep parameters."""
+        if self._offline_mode:
+            return
+        self._last_sample_cnt = 0      # the refilled monitor buffers carry counter 0
+        self._t0_us = None
+        for buf in [self._buf_t, self._buf_hr_fw, self._buf_hr_py,
+                    self._buf_hr_delta, self._buf_sqi_fw, self._buf_sqi_py]:
+            buf.clear()
+        self._get_live_calc().reset()
+
     def update_plots(self, data_led1_sub, data_hr3, data_hr3_sqi,
                      data_timestamp_us, data_sample_counter):
         if self._offline_mode or self._paused:
@@ -5876,6 +5925,21 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._spo2_b.append(self.calc_b.spo2)
 
     # ── render (called from PPGMonitor render tick) ───────────────────────────
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): new time origin, fresh
+        estimators and plot buffers, same configuration (what _on_go_live does, minus the buttons).
+        The time origin matters most here: a restarted board's Ts_us starts again near zero."""
+        if self._offline_mode:
+            return
+        self._t0_us = None
+        self.calc_a.reset(); self.calc_b.reset()
+        self._t_buf.clear(); self._ir_buf.clear()
+        self._dc_sub_a.clear(); self._dc_sub_b.clear()
+        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._pi_ir_a.clear();  self._pi_ir_b.clear()
+        self._r_a.clear();      self._r_b.clear()
+        self._spo2_a.clear();   self._spo2_b.clear()
 
     def update_plots(self):
         if self._paused or not self._t_buf:
@@ -8527,6 +8591,16 @@ class HR1LabWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage("Save failed: %s" % e, 8000)
 
     # ── Refresh ──────────────────────────────────────────────────────────────
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): a new recording, exactly as
+        when the user resumes from PAUSE — splicing two moments would create a false RR interval.
+        A paused window keeps its frozen view."""
+        if self._paused:
+            return
+        self._n_fed = 0
+        self._raw.clear()
+        self.reset_all()
+
     def update_plots(self, data_pi=None):
         if self._paused:
             return          # leave the frozen view alone, including zoom and pan
@@ -8842,6 +8916,13 @@ class HR2LabWindow(QtWidgets.QMainWindow):
         b = np.array([ bw*k/d,  0.0, -bw*k/d])
         a = np.array([1.0, 2.0*(o0sq - k*k)/d, (k*k - bw*k + o0sq)/d])
         return b, a
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): drop the biquad state and the
+        filtered buffer so the filter re-seeds from the new stream, not from the spliced one."""
+        self._incunest_zi = None
+        self._last_sample_cnt = None
+        self._incunest_filt_buf = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
 
     def update_plots(self, ppg_data, timestamp_us_data, sample_counter_data):
         data = np.array(ppg_data)
@@ -9404,6 +9485,15 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self._paused = checked
         self.btn_pause.setText("CONTINUE" if checked else "PAUSE")
 
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): re-seed from scratch — the
+        same reaction update_plots() has to a counter going back, but told explicitly, so a
+        source change (counter jumping forward) resets too."""
+        self._sig_last_sc = None
+        for buf in (self._sig_led2, self._sig_led1, self._sig_aled2, self._sig_aled1,
+                    self._sig_led2_sub, self._sig_led1_sub, self._sig_ppgdisp):
+            buf.clear()
+
     def update_plots(self, data_led2, data_led1, data_aled2, data_aled1,
                      data_led2_sub, data_led1_sub, data_ppgdisp, data_sample_counter):
         # ── 1. Accumulate new samples into internal rolling buffers ──────────
@@ -9675,6 +9765,14 @@ class PPGSignals2Window(QtWidgets.QWidget):
         self._selected_attr[g][slot] = attr
         curve.setVisible(attr is not None)
         self._update_title(g)
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): re-seed from scratch (see
+        PPGSignalsWindow.on_stream_discontinuity)."""
+        self._sig_last_sc = None
+        for g in range(3):
+            for slot in range(3):
+                self._bufs[g][slot].clear()
 
     def update_plots(self):
         if self.main_monitor is None:
@@ -10827,6 +10925,7 @@ class LabCaptureWriter:
         self.label     = label       # free text for logs (a board's ip/board/mac)
         self.count     = 0           # rows written
         self.skipped   = 0           # lines handed in that were not data frames
+        self.events    = []          # (row, text): stream discontinuities, written with the post-notes
         self._f        = None
 
     @property
@@ -10892,9 +10991,17 @@ class LabCaptureWriter:
         self.count += 1
         return self.target > 0 and self.count >= self.target
 
+    def add_event(self, text):
+        """Record something that happened mid-capture (a board restart, a source change). It is
+        written as a '# event @row N: ...' line with the post-notes, not inline: the CSV body
+        stays rows only, and a reader of the regression set learns where the splice is."""
+        self.events.append((self.count, text))
+
     def close(self, post_notes=""):
-        """Flush post-notes, close the file, return the row count."""
+        """Flush events and post-notes, close the file, return the row count."""
         if self._f is not None:
+            for row, txt in self.events:
+                self._f.write(f"# event @row {row}: {txt}\n")
             if post_notes.strip():
                 for txt in post_notes.splitlines():
                     self._f.write(f"# {txt}\n")
@@ -12056,44 +12163,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
 
         # Estructuras de Datos
-        self.data_lib_id = deque(["?"]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_sample_counter = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_timestamp_us = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_ppgdisp = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr1 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_spo2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_led2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_led1  = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_aled1 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_aled2 = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_led1_sub = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_led2_sub = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr2      = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr3      = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_spo2_r   = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_pi       = deque([-1.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_spo2_sqi = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr1_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr2_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_hr3_sqi  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_rsqi        = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_diag_code   = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_probe_state = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        # AFE4490DebugData analog signals — populated only when frame_mode == "M4"
-        self.data_v_tia_led1  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_v_tia_led2  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_v_tia_aled1 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_v_tia_aled2 = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_i_pd_led1   = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_i_pd_led2   = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_i_pd_aled1  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_i_pd_aled2  = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self.data_ot2_led1    = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)  # OT_LED1 from $M4 frame [A/A]
-        self.data_ot2_led2    = deque([0.0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)  # OT_LED2 from $M4 frame [A/A]
-        # CH_MASKS from $M4 frame (lib v0.35 validity masks, packed hex):
-        #   bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg, [11:8]=tia_over_fs, [15:12]=tia_over_lin
-        #   within each nibble, bit = channel per AFE4490Ch: LED1=0, ALED1=1, LED2=2, ALED2=3
-        self.data_ch_masks    = deque([0]*WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        # Rolling buffers read by the plots and the LAB windows. Created here and refilled in place
+        # on a stream discontinuity (board restart, source change) — see _init_stream_buffers().
+        self._init_stream_buffers()
 
         self.is_paused = False
         self.last_time = None
@@ -12176,6 +12248,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._pilab_refresh_counter    = 0
         self._pytiming_refresh_counter = 0
         self._decim_counter = 0
+        # Stream continuity (see _on_stream_discontinuity): last data-frame counter of the active
+        # source, time of the last discontinuity, and counters for tests and diagnostics.
+        self._stream_last_cnt   = None
+        self._stream_disc_t     = 0.0
+        self._stream_disc_count = 0
+        self._stream_disc_last  = ""
         self.hr3_calc = HRFFTCalc()
 
         # ── Python timing rolling buffers (last 50 measurements, in ms) ──────────
@@ -14458,8 +14536,87 @@ class PPGMonitor(QtWidgets.QMainWindow):
         else:
             self._select_udp_source(ip, by_user=True)
 
+    # ── Stream discontinuity: board restart, power cycle, source change ───────────────────────
+    # (name, fill) of every rolling buffer. One table so that __init__ and a discontinuity fill
+    # them identically.
+    _STREAM_BUFFERS = (
+        ("data_lib_id", "?"), ("data_sample_counter", 0), ("data_timestamp_us", 0),
+        ("data_ppgdisp", 0), ("data_hr1", 0), ("data_spo2", 0),
+        ("data_led2", 0), ("data_led1", 0), ("data_aled1", 0), ("data_aled2", 0),
+        ("data_led1_sub", 0), ("data_led2_sub", 0),
+        ("data_hr2", -1.0), ("data_hr3", -1.0), ("data_spo2_r", -1.0), ("data_pi", -1.0),
+        ("data_spo2_sqi", 0.0), ("data_hr1_sqi", 0.0), ("data_hr2_sqi", 0.0), ("data_hr3_sqi", 0.0),
+        ("data_rsqi", 0), ("data_diag_code", 0), ("data_probe_state", 0),
+        # AFE4490DebugData analog signals — populated only when frame_mode == "M4"
+        ("data_v_tia_led1", 0.0), ("data_v_tia_led2", 0.0), ("data_v_tia_aled1", 0.0), ("data_v_tia_aled2", 0.0),
+        ("data_i_pd_led1", 0.0), ("data_i_pd_led2", 0.0), ("data_i_pd_aled1", 0.0), ("data_i_pd_aled2", 0.0),
+        ("data_ot2_led1", 0.0), ("data_ot2_led2", 0.0),     # OT_LED1/2 from the $M4 frame [A/A]
+        # CH_MASKS from the $M4 frame (lib v0.35 validity masks, packed hex):
+        #   bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg, [11:8]=tia_over_fs, [15:12]=tia_over_lin
+        #   within each nibble, bit = channel per AFE4490Ch: LED1=0, ALED1=1, LED2=2, ALED2=3
+        ("data_ch_masks", 0),
+    )
+    _STREAM_DISC_SUPPRESS_S = 2.0    # banner, RESET_REASON and the counter describe ONE restart
+    _STREAM_CNT_BACK_MIN    = 5000   # the counter must go back > 10 s; UDP reordering is < 5 frames
+
+    def _init_stream_buffers(self):
+        """Create (first call) or refill in place (later calls) the WINDOW_SIZE rolling buffers.
+        In place, because the LAB windows receive these deques as arguments and SIGNALS2 reads
+        them through main_monitor: the objects must stay the same, only their content restarts.
+        The fill values are the ones the windows already treat as "no data" (0, -1.0, "?")."""
+        for name, fill in self._STREAM_BUFFERS:
+            d = getattr(self, name, None)
+            if d is None:
+                setattr(self, name, deque([fill] * WINDOW_SIZE, maxlen=WINDOW_SIZE))
+            else:
+                d.clear()
+                d.extend([fill] * WINDOW_SIZE)
+
+    def _on_stream_discontinuity(self, reason):
+        """The sample stream feeding the pipeline is no longer continuous with what the buffers
+        hold: the board restarted (RESET button, $RESET, power cycle, OTA, crash) or the active
+        source is now another board, or the serial port. Everything that accumulated samples,
+        time or filter state must start over, or it splices two recordings. Before v1.50 nothing
+        did: the LAB windows, which take "new sample" to mean "counter above the last seen",
+        froze after a restart until the new counter overtook the old one (minutes), or
+        re-processed the whole 10 s buffer with another board's samples after a source change;
+        PI LAB's time axis went negative; the plots showed the splice for 10 s. Alex's note of
+        2026-09-15: "the plots go crazy at the start" after a power cycle, RESET ESP32 or a UDP
+        board change — three triggers, one cause.
+
+        One event, one place, every consumer. Fired by (a) a data-frame counter that goes back by
+        more than _STREAM_CNT_BACK_MIN — the signal that needs no '#' line, so it also covers a
+        power cycle whose banner never reached UDP (the banner is printed before WiFi is up);
+        (b) the '# incunest_afe4490 started' banner or '# RESET_REASON' of the active source;
+        (c) a source change. Duplicates within _STREAM_DISC_SUPPRESS_S are one event. Main thread
+        only (called from the drain tick and from the source selectors)."""
+        now = time.perf_counter()
+        if now - self._stream_disc_t < self._STREAM_DISC_SUPPRESS_S:
+            return
+        self._stream_disc_t     = now
+        self._stream_disc_count += 1
+        self._stream_disc_last  = reason
+        self._stream_last_cnt   = None
+        self._decim_counter     = 0
+        self._init_stream_buffers()
+        if self._lab_capture is not None and self._lab_capture.active:
+            self._lab_capture.add_event(f"stream discontinuity: {reason}")
+        for name in ("spo2lab_window", "spo2test_window", "hr1test_window", "hr2test_window",
+                     "hr3test_window", "pilab_window", "hr1lab_window", "hr2lab_window",
+                     "signals_window", "signals2_window"):
+            win = getattr(self, name, None)
+            hook = getattr(win, "on_stream_discontinuity", None) if win is not None else None
+            if hook is None:
+                continue
+            try:
+                hook()
+            except Exception as e:           # one window must not take the others down
+                self.log(f"[STREAM] {name}.on_stream_discontinuity failed: {e}")
+        self.log(f"[STREAM] discontinuity: {reason} — plot and algorithm buffers restarted")
+
     def _select_udp_source(self, ip, by_user):
         """Make the UDP board at `ip` the active source (user choice or restored preference)."""
+        _changed = self._active_transport != "udp"
         with self._udp_boards_lock:
             b = self._udp_boards.get(ip)
             if b is None:
@@ -14469,12 +14626,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 return
             if self._esp32_ip != ip:
                 self._esp32_ip = ip
+                _changed = True
                 # Lines of the previous board still queued would be parsed as the new one's.
                 while not self._udp_queue.empty():
                     try: self._udp_queue.get_nowait()
                     except queue.Empty: break
             mac, label, lost = b.mac, b.label(), b.lost
         self._active_transport = "udp"
+        if _changed:
+            self._on_stream_discontinuity(f"source changed to UDP {label}")
         if by_user:
             self._udp_source_user_chosen = True
             if mac:
@@ -14488,6 +14648,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def _select_serial_source(self):
         """Feed the pipeline from the COM port; the UDP receiver keeps registering boards."""
+        if self._active_transport != "serial":
+            self._on_stream_discontinuity("source changed to SERIAL")
         self._active_transport = "serial"
         self._udp_source_user_chosen = True
         port = self.combo_port.currentText() or '—'
@@ -14501,6 +14663,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _on_udp_source_changed(self, ip, reason):
         """Main-thread slot: the reader promoted `ip` (DHCP follow or preferred board). Refresh
         HW CONFIG and the identity through the normal $CFG path, and the sidebar."""
+        self._on_stream_discontinuity(f"source {reason} to UDP {ip}")
         QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
         if self._udp_btn_state in ("ON", "LOST"):
             self._set_udp_button("ON")
@@ -14876,6 +15039,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             # writing to the board with no user action behind it.
                             if 'started' in line.lower():
                                 self._post_reset_cfg_pending = False
+                                self._on_stream_discontinuity("board restarted (start banner)")
                                 QtCore.QTimer.singleShot(300, lambda: self.request_chip_config(notify_lab_capture=False))
                                 # $LCFG? unconditionally, not just when LIB CONFIG is open: the
                                 # HGAC state is no longer forced to a known value, so the only way
@@ -14889,6 +15053,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         elif line.startswith('# RESET_REASON:'):
                             # ESP32 reboot diagnostic (sent once over UDP after WiFi reconnect)
                             self.log(f"[RESET] ESP32 rebooted — reason: {line[15:].strip()}")
+                            if _is_active:
+                                self._on_stream_discontinuity(f"board restarted ({line[15:].strip()})")
                         elif line.startswith('# SYS:'):
                             self.log(line[6:].strip())
                         elif line.startswith('# WiFi') or line.startswith('#   ['):
@@ -15088,6 +15254,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # Only feed data pipeline from the active transport
                     if not _is_active:
                         continue
+
+                    # A data frame whose counter went back by more than 10 s: the board restarted
+                    # (or another board is now the source) — the buffers must start over. Checked
+                    # before decimation so no restart slips through between kept frames.
+                    if line.startswith('$M'):
+                        try:
+                            _cnt = int(line.split(',', 2)[1])
+                        except (ValueError, IndexError):
+                            _cnt = None
+                        if _cnt is not None:
+                            if (self._stream_last_cnt is not None
+                                    and _cnt + self._STREAM_CNT_BACK_MIN < self._stream_last_cnt):
+                                self._on_stream_discontinuity(
+                                    f"sample counter went back ({self._stream_last_cnt} \u2192 {_cnt})")
+                            self._stream_last_cnt = _cnt
 
                     # Decimation: skip N-1 out of every N data frames for console + plots
                     self._decim_counter += 1

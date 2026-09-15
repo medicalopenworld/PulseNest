@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.49
+# pulsenest_lab — Specification v1.50
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -693,6 +693,77 @@ the CSV. While the script forced it on that was harmless; now that the board own
 should record what it actually was.
 
 ---
+
+### 4.10 Stream discontinuities: restart, power cycle, source change (v1.50)
+
+The plots and every LAB window accumulate samples, time and filter state. That state is only
+meaningful while the incoming stream is **continuous** with it. Three things break the
+continuity — a board restart (RESET button, `$RESET`, an OTA flash, a power cycle, a crash), a
+change of active source (another UDP board, or the serial port), and, for the LAB windows, a
+counter that does not carry on from the last one seen.
+
+**Before v1.50 nothing reacted.** The consequences were the "plots go crazy at the start" of
+Alex's note (2026-09-15), and they were three different faults with one cause:
+
+- the LAB/TEST windows (`SpO2Lab`, `SpO2Test`, `HR1Test`, `HR2Test`, `HR3Test`) take "new sample"
+  to mean *counter above the last one seen* — after a restart (counter from 0) they **froze**
+  until the new counter overtook the old one, minutes; after a switch to a board with a higher
+  counter they **re-processed the whole 10 s buffer** with the other board's samples and counted
+  it as a gap;
+- **PI LAB** fixes its time origin on the first `Ts_us` it sees; after a restart the time went
+  **negative** and the X axis jumped;
+- the restart itself was **not detectable over UDP**: the `# incunest_afe4490 started` banner is
+  printed before WiFi is up, so it never reaches the host; `# RESET_REASON` does, but was only
+  logged; the per-board gap detector discards a counter going back as implausible; and a source
+  change told nobody. `SIGNALS`/`SIGNALS2` did detect a counter going back and cleared
+  themselves — then re-seeded from the monitor's buffers, which still held the splice.
+
+**One event, one place, every consumer.** `PPGMonitor._on_stream_discontinuity(reason)`:
+
+| Trigger | Where | Note |
+|---|---|---|
+| Data-frame counter goes back by more than `_STREAM_CNT_BACK_MIN` (5000 samples = 10 s) | drain tick, on every `$M*` line of the active source, **before decimation** | Needs no `#` line: covers a power cycle whose banner never reached UDP. UDP reordering moves a counter back by < 5 frames and does not qualify |
+| `# incunest_afe4490 started` banner of the active source | drain tick | Serial, or UDP if WiFi was already up |
+| `# RESET_REASON: …` of the active source | drain tick | Sent once by the firmware after WiFi reconnects |
+| `_select_udp_source()` to a different board, `_on_udp_source_changed()` (DHCP follow, preferred-board promotion), `_select_serial_source()` from UDP | source selectors | |
+
+Events closer than `_STREAM_DISC_SUPPRESS_S` (2 s) are one event: a restart is typically
+announced by the counter, then the banner, then `RESET_REASON`.
+
+What the event does, in order:
+
+1. `_stream_last_cnt = None`, `_decim_counter = 0`.
+2. **Refills the monitor's 34 rolling buffers in place** (`_init_stream_buffers()`, the same
+   table `__init__` uses: `0`, `-1.0` or `"?"` per buffer). In place, because the LAB windows
+   receive the deques as arguments and `SIGNALS2` reads them through `main_monitor`: the objects
+   stay, the content restarts. The plots therefore show 10 s of "no data" and then the new stream
+   — the splice is visible as a restart, not as a signal.
+3. If a LAB CAPTURE is running, records `# event @row N: stream discontinuity: <reason>` — written
+   with the post-notes, not inline, so the CSV body stays rows only and a reader of the regression
+   set knows where the splice is (`LabCaptureWriter.add_event()`).
+4. Calls `on_stream_discontinuity()` on every open window that implements it, each guarded so one
+   failure cannot stop the others: `SpO2Lab`, `SpO2Test`, `HR1Test`, `HR2Test`, `HR3Test`
+   (buffers cleared, calculator reset, `_last_sample_cnt = 0` — **0, not −1**, so the refilled
+   monitor buffers, which carry counter 0, are not taken for 500 new samples; parameters and
+   spinboxes untouched; windows in offline/CSV mode ignore the event), `PI LAB` (new time origin,
+   estimators reset, buffers cleared — what GO LIVE does minus the buttons), `HR1 LAB` (new
+   recording, as when resuming from PAUSE; a paused window keeps its frozen view), `HR2 LAB`
+   (biquad state and filtered buffer dropped), `SIGNALS`/`SIGNALS2` (re-seed from scratch).
+5. Logs `[STREAM] discontinuity: <reason> — plot and algorithm buffers restarted`.
+
+What the event deliberately does **not** touch: user parameters (spinboxes, combos, presets),
+`_frame_mode_live` (the wire is still the truth), the gap counters (`_gaps_B`, the `# NET` ones —
+a restart is not a lost datagram), HW CONFIG / LIB CONFIG (their `$CFG?`/`$LCFG?` re-queries
+already run on the banner, §4.9), and MULTI CAPTURE writers (they follow their own board, not the
+active source; a per-board restart marker for them is an open item).
+
+The signal itself is not "reset": after a restart the board's HGAC re-converges from its default
+gain for a few seconds and SpO2 goes through its 18 s warm-up. That is the instrument settling and
+it stays visible — the point of v1.50 is that the host no longer adds a splice on top of it.
+
+Verified by `tools/udp_multiboard_test.py` phase 9: the active simulated board restarts its counter
+→ one event, reason names the counter, no old counter left in the buffers, logged; the user picks
+the other board → a second event, reason names the source.
 
 ## 5. Algorithm classes
 
@@ -1982,6 +2053,21 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.50 — 2026-09-15
+
+**Stream discontinuities — one event that restarts every buffer (new §4.10).** From Alex's
+BACKLOG note: after a power cycle, the RESET ESP32 button or a change of UDP board "the plots
+go crazy at the start". Three faults, one cause — nothing in the script knew the stream had
+restarted: the LAB/TEST windows froze (no counter above the last seen) or re-processed the
+whole 10 s buffer with another board's samples; PI LAB's time origin made time negative; the
+restart was undetectable over UDP (the start banner is printed before WiFi is up). Now
+`PPGMonitor._on_stream_discontinuity()` fires on a counter going back > 10 s (before
+decimation; the signal that needs no `#` line), on the banner or `# RESET_REASON` of the
+active source, and on any source change; it refills the monitor's 34 rolling buffers in place,
+notes the event in a running LAB CAPTURE (post-notes, `# event @row N`), and calls
+`on_stream_discontinuity()` on the ten windows that hold state. Parameters, gap counters and
+the live frame mode are untouched. Test: `tools/udp_multiboard_test.py` phase 9 (+15 checks).
 
 ### v1.49 — 2026-09-15
 

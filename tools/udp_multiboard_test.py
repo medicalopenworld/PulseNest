@@ -377,6 +377,32 @@ def main():
     win.close()
     w.multi_capture_window = None
 
+    # ── Phase 9: stream discontinuity — a board restart and a source change restart the buffers ──
+    print("\n[phase 9] stream discontinuity")
+    for cls in ("SpO2LabWindow", "SpO2TestWindow", "HR1TestWindow", "HR2TestWindow", "HR3TestWindow",
+                "PILabWindow", "HR1LabWindow", "HR2LabWindow", "PPGSignalsWindow", "PPGSignals2Window"):
+        check(callable(getattr(getattr(P, cls), "on_stream_discontinuity", None)),
+              f"{cls} implements on_stream_discontinuity")
+    active = a2 if w._esp32_ip == a2.ip else b2
+    other = b2 if active is a2 else a2
+    spin(app, 2.5)                                   # past the suppression window of earlier events
+    d0 = w._stream_disc_count
+    hi_before = max(w.data_sample_counter)
+    check(hi_before > 5000, f"buffers hold the old counters before the restart ({hi_before})")
+    active.cnt = 0                                   # the active board "restarts": counter from zero
+    spin(app, 1.0)
+    check(w._stream_disc_count == d0 + 1, f"restart detected exactly once ({w._stream_disc_count - d0})")
+    check("counter went back" in w._stream_disc_last, f"reason names the counter ({w._stream_disc_last})")
+    check(max(w.data_sample_counter) < 5000,
+          f"buffers restarted: no old counter left ({max(w.data_sample_counter)})")
+    check(any("[STREAM] discontinuity" in x for x in logs), "the discontinuity is logged")
+    spin(app, 2.5)                                   # past the suppression window again
+    w._select_udp_source(other.ip, by_user=True)     # the user picks the other board
+    spin(app, 0.6)
+    check(w._stream_disc_count == d0 + 2, f"a source change is a discontinuity too ({w._stream_disc_count - d0})")
+    check("source changed" in w._stream_disc_last, f"reason names the source ({w._stream_disc_last})")
+    check(w._esp32_ip == other.ip, "pipeline now fed by the other board")
+
     a2.stop.set()
     b2.stop.set()
     a2.join(1.0)
