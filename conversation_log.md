@@ -22271,3 +22271,18 @@ cuando la WiFi va mal. El argumento no es el coste (~100 µs cada 10 s) sino que
 ### Verificacion
 Pendiente al escribir esto: build V18 en curso; despues commit, rebuild con hash limpio, OTA a las
 tres, `# STAT … diag_dropped=0` cada 10 s en UDP COM, 25 s de datagramas crudos con 0 mixtos.
+
+### Banco fw 0.13 (commit `364ad3a`, OTA raw a las tres: HTTP 200 en 4,0 / 4,0 / 4,9 s)
+Las tres reportan `fw=0.13 lib=0.92 build=364ad3a libsha=d81fadc`. 25 s de datagramas crudos
+(`scratchpad/dgram_verify.py`), las tres placas: **2500 datagramas de medidas con exactamente 5
+tramas, 0 mixtos, 0 lotes cortos**, 5 rafagas de diagnostico (5 lineas), y `# STAT` en datagramas
+propios (llega a la cola fuera de la rafaga y `udp_flush_diag()` la vacia tras cada lote). Que el
+`# STAT` siga llegando cada 10 s es la prueba observable de que `diag_printf` funciona; que ya no
+haya `sendto()` en una tarea de medida es por construccion (grep: cero `Serial_printf` fuera de
+`Cmd_Task`/`UDP_Task`/OTA/arranque). Script relanzado. Compilacion V18 y V17 sin avisos.
+
+### Cerrado
+El colateral de la sesion 11 queda cerrado con regla: **toda linea nueva emitida desde
+`Incunest_Task` o desde la libreria va por `diag_printf`, nunca por `Serial_printf`** (memoria
+`project_udp_transport`). Pendientes sin cambio: hilo HR1LAB (racha de 5,8 s), truncado `$M4`
+opciones 2-4 (margen real 14 B), flecos IDF.
