@@ -21840,3 +21840,49 @@ UDP → script UDP y `# NET`; OTA con `curl --data-binary`. Luego paso 5 (tests 
 Decision de banco pendiente de Alex: probar por USB (adaptador UART0 / USB nativo con esptool) o
 por OTA en UNA V18 desde el firmware Arduino actual (recuperacion por USB si el port no levanta WiFi).
 Trampa anotada: `PYTHONIOENCODING=utf-8` para parches con caracteres no cp1252 (dos abortos hoy).
+
+## Sesion 2026-09-15 (madrugada, 5) - FASE 1: el port IDF corre en una V18 (por OTA) y los tests de host pasan a CMake+Unity
+
+Peticion de Alex: «Prueba por OTA en una V18, avanza mientras con el paso 5».
+
+### Banco: firmware IDF flasheado por OTA en la V18 `10:51:DB:50:87:B8` (.14)
+- Recompilado con el arbol limpio para que `$CFG` identifique el binario: `PULSENEST_GIT_HASH
+  "ea4a8aa"`, lib `d61d806`, `pulsenest.bin` 890 864 B.
+- Flasheo desde el firmware Arduino fw 0.10 con su OTA multipart (`curl -F update=@build_V18/
+  pulsenest.bin`): HTTP 200 «OK» en 14,7 s. **El bootloader de Arduino (IDF 4.4.6) arranca la
+  imagen de IDF v6.0.1 sin mas** (formato de imagen estable; el bootloader no se toca por OTA).
+- A los 25 s la placa se anuncia: `fw=0.10 lib=0.91 build=ea4a8aa libsha=d61d806`.
+- **Flujo:** 100,3 dgram/s, 501 frm/s, `bad_chk 0`, maxlen 1320 B — identico a las dos Arduino
+  (.169 V18 y .62 V17) medidas en la misma ventana.
+- **Comandos UDP:** `$CFG?`, `$LCFG?`, `$DIAG?` responden con los frames completos. `$MODE,M3` →
+  `$MODE,M1` → `$MODE,M4` conmutan (frames `$M3`/`$M1`/`$M4`, datagramas 1325/700/1325 B, banner
+  `# Frame mode: ...`). `# STAT n=60000 tx_dropped=0 frame_dropped=0`.
+- **OTA raw IDF→IDF:** `GET /` 200 (pagina 1162 B); `curl --data-binary @build_V18/pulsenest.bin`
+  → «OK» en 4,2 s; la placa vuelve con el mismo build. (El multipart `-F` NO sirve ya en esta
+  placa: el handler IDF escribe el cuerpo tal cual y fallaria en el magic byte.)
+- Dos falsas alarmas mias, no del firmware: (1) las respuestas a comandos van a `<ip>:5005` del
+  remitente, mi sonda habia cerrado ese socket; (2) `$ERR,MODE,invalid` porque envie `$MODE,3` en
+  vez de `$MODE,M3` — identico en la placa Arduino de control.
+- `$TCFG?` y `$TIMING?` no son comandos UDP en ninguno de los dos firmwares (`$TIMING` era solo
+  por serie). **No hay UART conectada** (solo COM Bluetooth) → la medida `spi_us` bajo IDF queda
+  para el paso 6: o adaptador UART0 o exponer `$TIMING?` por UDP en el port.
+- **Estado del banco al cerrar:** .14 (87:B8) = **firmware IDF `ea4a8aa`**; .169 (88:50) y .62
+  (V17) = Arduino fw 0.10 `4881ca6`. Las tres con lib v0.91. Script v1.50 relanzado.
+
+### Paso 5 — tests de host a CMake + Unity (commit `5c19735`, rama `feat/idf-port`)
+- `tools/host_tests/CMakeLists.txt`: lib de host (`incunest_afe4490.cpp` + `_hal_host.cpp`,
+  `-DUNIT_TEST`, `-Wall -Wextra -Werror`) + un ejecutable por `test/test_*/`, contra Unity 2.6.0
+  **vendorizada sin modificar** desde `components/unity/unity` de IDF (MIT, 4 ficheros).
+- `tools/host_tests/run_host_tests.py`: configura (Ninja), compila, ejecuta y resume por suite;
+  filtros por nombre y `--clean`; exit = suites fallidas. Sustituye a `pio test -e native`.
+- **`test_biquad` revivido**: no compilaba desde 2026-06-12 (llamaba a `test_biquad_process`/
+  `test_recalc_biquad`, retirados cuando `BiquadFilter` paso a `init_bp/reset/process`).
+  Reescrito sobre esa API con las mismas 5 aserciones. `test/README` reescrito.
+- Resultado en MinGW-w64 g++ 15.1 / cmake 4.0.1 / ninja 1.12.1: **9/9 suites, 81 casos OK**.
+- Sigue roto y fuera de alcance: `tools/offline_runner` (`test_feed_spo2` con firma vieja).
+
+### Pendiente
+Paso 6: paridad en banco con el script (Alex: senal, `# NET`, ventanas) y medida `$TIMING` spi_us
+bajo IDF (decidir UART vs `$TIMING?` por UDP). Paso 7: borrar `platformio.ini`,
+`scripts/pre_build_hash.py`, `src/main.cpp`, `[env:native]`; `docs/boards.md` con OTA
+`--data-binary`; memorias `feedback_platformio_tasks`; merge a master.
