@@ -22286,3 +22286,93 @@ El colateral de la sesion 11 queda cerrado con regla: **toda linea nueva emitida
 `Incunest_Task` o desde la libreria va por `diag_printf`, nunca por `Serial_printf`** (memoria
 `project_udp_transport`). Pendientes sin cambio: hilo HR1LAB (racha de 5,8 s), truncado `$M4`
 opciones 2-4 (margen real 14 B), flecos IDF.
+
+---
+
+## Sesion 2026-09-15 (13) - La racha de 5,8 s explicada: un latido perdido, y `hr1_max_decay_tau_s` 20 -> 1,5 s (lib v0.93)
+
+### La pregunta
+El hilo HR1LAB se retoma con el dato de banco de la sesion 9: `FW_HR1 = -1` durante **una sola
+racha de ~5,8 s** en dos de las tres placas, en instantes distintos, con senal limpia
+(`PROBE_APPLIED`, DiagCode 0, RSQI 1) y **HR2/HR3 publicando ~52 bpm sin inmutarse**.
+
+### El diagnostico: no es un fallo del SQI, es el SQI protegiendo
+Nueva herramienta `tools/hr1_streak_forensics.py`: reproduce la variante SPEC sobre el `FW_OT_LED1`
+capturado (precargando el estimador de DC con la cabecera del fichero — el firmware lleva minutos
+corriendo y dejar que la replica gaste 4-5 tau asentandose fabricaria una diferencia), compara sus
+rachas con la columna del firmware muestra a muestra, y localiza los latidos por una via
+independiente (`find_peaks`, distancia minima 0,7 s). **En la V17 la replica reproduce la racha del
+firmware hasta la muestra** (13,60-19,46 s en ambas), que es lo que autoriza a leer sus internos.
+
+Lo que hay dentro:
+- **Un unico latido perdido**, el de t=12,507 s: amplitud 8,82e-07 contra un umbral de 1,04e-06 —
+  se queda al **85 % del umbral**. Mide el **56 % del latido anterior**, mientras el `running_max`
+  seguia sujeto por el pico de t=7,94 s (2,17e-06): con tau=20 s cae solo un ~20 % en 4,5 s.
+- **Un latido perdido cuesta cinco**: su RR doble (2,323 s = exactamente 2x) ocupa el buffer de 5
+  intervalos hasta que lo empujan fuera. 5 latidos a 52 bpm = **5,86 s**. La amplificacion x5 es
+  estructural y **no depende de tau**.
+- **El SQI acerto**: la media del buffer contaminado da **43 bpm** (37 en la .169). Publicarlo
+  habria sido una **falsa bradicardia** — justo la alarma que justifica el monitor. La puerta hizo
+  su trabajo; lo que fallo fue el detector, que le entrego un intervalo malo.
+- **Por que la .14 no falla**: CV de amplitud latido a latido **23 %**, contra **37 %** (V17) y
+  **43 %** (.169). Latidos perdidos 0 / 1 / 3. La modulacion de amplitud real del sujeto es la
+  variable, y una memoria de 20 s no la sigue.
+
+### El cambio: `hr1_max_decay_tau_s` 20 s -> 1,5 s (lib **v0.93**, spec §10.4)
+El 20 s nunca fue una eleccion: es el literal historico `0,9999` por muestra escrito en segundos a
+500 Hz, y la propia v0.87 lo admitia. Ahora tiene dos medidas independientes detras:
+1. **MS100 perturbadas (2026-09-08)**: optimo plano de 1 a 3 s (76-78 % peor caso frente a 53 % con
+   tau=20 s), colapso en 0,5 s (49 % a 60 bpm: el umbral cae tanto entre latidos que se cuenta la
+   dicrota).
+2. **Captura con sonda en tres placas (2026-09-15)**: con tau=1,5 s **se recupera cada latido
+   perdido en las tres, con CERO detecciones extra**. El barrido cuenta extras junto a perdidos a
+   proposito: recuperar disponibilidad contando la dicrota puntuaria como exito si solo se mirara
+   la disponibilidad, y es el fallo peligroso.
+
+Regla de seleccion, la conservadora: **el mayor tau que aguanta en 40-250 bpm**, no el maximo de la
+metrica — mas memoria es un umbral mas estable y menos sitio para inventar latidos.
+
+### Que se toco
+- `incunest_afe4490.cpp`: el default, con el rationale medido en el comentario. Version **v0.93**
+  (`.h`, `_hal.h`, `library.json`; la cabecera de `.h` decia v0.91 con el define en 0.92 — corregida).
+- `incunest_afe4490_spec.md` **v0.93**: §5.2 paso 3 reescrito (el `x0,9999` era texto muerto desde
+  v0.87), fila nueva en constantes de §5.2 y en §10.4, bloque «de donde sale 1,5 s» con las dos
+  campanas, e historial.
+- `test/test_sample_rate/test_sample_rate.cpp`: `test_hr1_running_max_decay_is_time_based` fijaba el
+  20 s en su expectativa — ahora **fija tau el mismo** (4 s) y comprueba la propiedad que importa
+  (exp(-1) a cualquier PRF); y un test nuevo, `test_hr1_max_decay_default_is_the_measured_value`,
+  clava el default en 1,5 s con un mensaje que manda a la spec §10.4 si alguien lo mueve.
+  **9/9 suites, 82 tests.**
+- `pulsenest_lab.py`: `FW_MAX_DECAY_TAU_S` 20 -> 1,5 (espejo; la variante SPEC sigue a la libreria)
+  y los tres textos que contaban la historia del 0,9999. `pulsenest_lab_spec.md` **v1.55**: §5.3.0,
+  §5.3.3 (la herramienta y las dos lecciones que sobreviven al valor) y changelog.
+
+### Banco
+Compilacion V17 y V18 sin avisos (`-Werror`). OTA raw a las tres, MAC verificada antes de cada una:
+**HTTP 200 en 4,1 / 4,1 / 4,3 s**, y las tres reportan `fw=0.13 lib=0.93`. Script relanzado.
+**Falta la confirmacion con sonda**: repetir la captura multiple de 30 s y comprobar que HR1 ya no
+se apaga. Sin sonda aplicada HR1 no corre, asi que esa medida la tiene que hacer Alex.
+
+### La palanca que queda abierta
+Tau corrige la causa de ESTE fallo, no la amplificacion x5. Medido de paso, sobre las **mismas**
+detecciones: cambiar media/desviacion por **mediana/MAD** en el SQI pasa de 69 % a 100 % de latidos
+validos publicando el HR correcto (50,6-52,7 bpm). Queda **como medida, no como recomendacion**: una
+mediana esconde una **pausa cardiaca real** igual de bien que esconde un latido perdido, y
+distinguirlas no se puede desde la serie de RR — hay que mirar la onda (¿hubo pulso entre los dos
+latidos aceptados?). Decision para otra sesion.
+
+### Confirmacion en banco con sonda (captura `*_20260915_230924`, tras el OTA)
+Alex repitio la captura multiple de 30 s con las tres placas ya en lib v0.93. **`FW_HR1_SQI = 0` en
+el 0,0 % de las tres**: ninguna racha, HR1 publicando los 30 s a ~61,5 bpm.
+
+**El dato que vale no es ese, es el contrafactual** (misma captura, replica con el tau viejo): en la
+.169, **tau=20 s habria perdido 2 latidos** (t=28,816 y 29,778 s), que alcanzaban el **99 % y el
+88 %** de aquel umbral — los dos al filo. Con tau=1,5 s esos mismos latidos cruzan al **167 %**.
+El firmware real no perdio ninguno.
+
+**Lo que esta captura NO demuestra:** la senal de las 23:09 es mas benigna que la de las 15:33 — CV
+de amplitud 12,6 / 11,4 / 27,7 % frente a 36,6 / 23,0 / 43,3 %, y 61,5 bpm en vez de 51,8 (a mas
+ritmo hace falta menos decaimiento entre latidos). Con tau=20 s esta captura tampoco habria mostrado
+rachas: el apagon de los dos latidos perdidos cae fuera del fichero, en el ultimo segundo. O sea,
+confirma que **el cambio no rompe nada y ensancha el margen**, no que reproduzca el fallo y lo cure.
+Para eso habria que repetir con el acoplamiento flojo de la sesion de las 15:33.

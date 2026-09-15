@@ -764,10 +764,10 @@ class HR1Variant:
     AVAILABILITY_WIN_S  = 30.0    # window for the availability metric
 
     # Running-max decay, shared by every variant that keeps a decaying peak reference.
-    # Mirrors the library's hr1_max_decay_tau_s (v0.87). The 20 s default has no rationale
-    # of its own: the library's spec states it "reproduces 0.9999 exactly at 500 Hz, so
-    # default behaviour is unchanged" — it is the inherited per-sample literal in seconds.
-    FW_MAX_DECAY_TAU_S = 20.0
+    # Mirrors the library's hr1_max_decay_tau_s, measured and set to 1.5 s in lib v0.93
+    # (spec §10.4). It was 20 s until then — the inherited 0.9999 per-sample literal written
+    # in seconds at 500 Hz, never a chosen value.
+    FW_MAX_DECAY_TAU_S = 1.5
     FW_MAX_DECAY_BEATS = 0.0
 
     def __init__(self):
@@ -1008,7 +1008,7 @@ class HR1TestCalc(HR1Variant):
     Processing chain per sample:
       OT_LED1 → IIR DC removal (τ=1.6 s) → negate (PPG polarity) →
       moving average LP (cutoff ~5 Hz, len=fs/(2×5), max 64) →
-      running maximum (×0.9999 decay) →
+      running maximum (exponential decay, τ = 1.5 s — lib v0.93) →
       threshold crossing (0.6 × running_max, refractory 0.2 s) →
       RR buffer (last 5 intervals) →
       HR1 = fs × 60 / mean(RR) →
@@ -1040,8 +1040,8 @@ class HR1TestCalc(HR1Variant):
                  "Time constant of the running maximum's exponential decay. Sets how long an "
                  "old peak keeps raising the threshold. It is a RECOVERY parameter: with a "
                  "step drop in amplitude to a fraction g, detection resumes only after "
-                 "tau*ln(0.6/g) — 13.9 s at the 20 s default. The library default has no "
-                 "rationale of its own; it is the inherited 0.9999 per-sample literal."),
+                 "tau*ln(0.6/g) — 1.0 s for a halved beat at the 1.5 s default, against 13.9 s "
+                 "at the 20 s it replaced (lib v0.93, measured: spec §10.4)."),
         HR1Param('max_decay_beats',   'Max decay beats', 0.0,  20.0,
                  HR1Variant.FW_MAX_DECAY_BEATS,   1, 0.5, 'beats',
                  "0 = use the fixed tau above (firmware behaviour). Above 0, the decay time "
@@ -1227,8 +1227,8 @@ class HR1BiquadCalc(HR1Variant):
                  "Time constant of the running maximum's exponential decay. Sets how long an "
                  "old peak keeps raising the threshold. It is a RECOVERY parameter: with a "
                  "step drop in amplitude to a fraction g, detection resumes only after "
-                 "tau*ln(0.6/g) — 13.9 s at the 20 s default. The library default has no "
-                 "rationale of its own; it is the inherited 0.9999 per-sample literal."),
+                 "tau*ln(0.6/g) — 1.0 s for a halved beat at the 1.5 s default, against 13.9 s "
+                 "at the 20 s it replaced (lib v0.93, measured: spec §10.4)."),
         HR1Param('max_decay_beats',   'Max decay beats', 0.0,  20.0,
                  HR1Variant.FW_MAX_DECAY_BEATS,   1, 0.5, 'beats',
                  "0 = use the fixed tau above (firmware behaviour). Above 0, the decay time "
@@ -3099,8 +3099,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             src="hr1_ma_max_len"))
         self._spin_decay.setToolTip(_make_tooltip("Running max decay tau",
             "Time constant of the running maximum's exponential decay [s]. "
-            "Firmware default: 20 s (lib v0.87 — reproduces the former 0.9999 per-sample "
-            "factor exactly at 500 Hz). Shorter tau forgets old peaks faster.",
+            "Firmware default: 1.5 s (lib v0.93, measured — it was 20 s, the inherited 0.9999 "
+            "per-sample factor at 500 Hz). Shorter tau forgets old peaks faster.",
             src="hr1_max_decay_tau_s"))
         self._spin_thr.setToolTip(_make_tooltip("Threshold factor",
             "Rising-edge threshold = factor × running_max. Firmware default: 0.6.",

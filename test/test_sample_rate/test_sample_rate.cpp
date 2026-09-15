@@ -242,17 +242,23 @@ void test_time_parameters_hold_across_catalogue() {
 // The running-max decay, measured on the running max itself rather than on its coefficient.
 //
 // Feed one large sample to charge the tracker, then silence for a fixed number of SECONDS, and
-// check what fraction survives. The decay is exponential with tau = 20 s, so after t seconds the
-// tracker must hold exp(-t/20) of the peak - the same fraction at every rate. The 0.9999
-// per-sample literal this replaces held exp(-t/20) at 500 Hz but exp(-t/6.25) at 1600 Hz.
+// check what fraction survives. The decay is exponential, so after tau seconds the tracker must
+// hold exp(-1) of the peak - the same fraction at every rate. The 0.9999 per-sample literal this
+// replaces held exp(-t/20) at 500 Hz but exp(-t/6.25) at 1600 Hz.
+//
+// The test sets tau itself instead of relying on the default: what is under test is the
+// rate invariance, not the value shipped. The default is asserted separately below, where a
+// deliberate change is meant to fail and send whoever made it to spec §10.4.
 void test_hr1_running_max_decay_is_time_based() {
-    static const float T_S = 10.0f;                 // long enough to decay measurably
-    const float expected = expf(-T_S / 20.0f);      // hr1_max_decay_tau_s = 20 s
+    static const float TAU_S = 4.0f;                // long enough to hold across the catalogue
+    static const float T_S   = TAU_S;               // one time constant
+    const float expected     = expf(-1.0f);         // 0.368 of the peak, at every rate
 
     for (uint8_t i = 0; i < INCUNEST_AFE4490::sampleRateCount(); i++) {
         const uint16_t hz = kAFE_SAMPLE_RATE_HZ[i];
         INCUNEST_AFE4490 afe;
         afe.setSampleRate((AFE4490SampleRate)i);
+        afe.setHR1MaxDecayTauS(TAU_S);
 
         // _hr1_update() removes DC and NEGATES (peaks up for conventional PPG polarity), so the
         // input has to go BELOW the DC estimate to produce a positive peak. And the moving average
@@ -276,6 +282,15 @@ void test_hr1_running_max_decay_is_time_based() {
     }
 }
 
+// The shipped default, pinned on purpose: it is a measured value (lib v0.93), not an arbitrary
+// one, and the measurements live in spec §10.4. If you are here because this failed, the value
+// moved - update the spec in the same commit.
+void test_hr1_max_decay_default_is_the_measured_value() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 1.5f, afe.getConfig().hr1_max_decay_tau_s,
+        "hr1_max_decay_tau_s default moved away from the measured 1.5 s - see spec SS10.4");
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_catalogue_is_not_empty);
@@ -288,5 +303,6 @@ int main() {
     RUN_TEST(test_hr1_ma_not_clamped_across_catalogue);
     RUN_TEST(test_time_parameters_hold_across_catalogue);
     RUN_TEST(test_hr1_running_max_decay_is_time_based);
+    RUN_TEST(test_hr1_max_decay_default_is_the_measured_value);
     return UNITY_END();
 }

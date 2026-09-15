@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.54
+# pulsenest_lab — Specification v1.55
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -940,6 +940,17 @@ Verified: at 500 Hz with defaults, output is identical sample-by-sample to the p
 implementation at 45/60/140/250 BPM. (The library's spec says 20 s reproduces 0.9999 "exactly";
 it does so to 5e-9 — the exact value is 19.999 s — with no effect on any detection.)
 
+**v1.55 — the default is now 1.5 s, not 20 s**, following lib v0.93 (spec §10.4), which is where
+the rationale lives. `FW_MAX_DECAY_TAU_S` is a mirror: the SPEC variant is frozen against the
+library, so it moves when the library moves. Forensics behind the change, on this side:
+`tools/hr1_streak_forensics.py` — it replays SPEC over a capture, compares its `hr1_sqi = 0`
+streaks against the firmware's column sample by sample, finds the beats the detector missed by an
+independent route (`find_peaks`, 0.7 s minimum distance), and sweeps tau counting BOTH missed
+beats and extra detections, because a tau that buys availability by counting the dicrotic notch is
+the dangerous failure, not the fix. It also contrasts the specified SQI rule (mean/std over 5 RR)
+against a robust median/MAD rule on the same detections, which separates "the detector missed a
+beat" from "the SQI reacted to it" — see §5.3.3.
+
 #### 5.3.1 `HR1TestCalc` — the SPEC variant
 
 Replicates `INCUNEST_AFE4490::_hr1_update()`. **Frozen by definition:** it tracks the library and
@@ -963,6 +974,32 @@ class constants) consumed, never computed here. While `probe_state != PROBE_APPL
 `reset()` runs every sample (idempotent), `hr_bpm`/`hr_sqi` forced to `nan`/`0`. Gap detection
 (via `sample_counter`) still runs regardless of `probe_state` — it tracks frame continuity, not
 finger presence.
+
+#### 5.3.3 `tools/hr1_streak_forensics.py` — why HR1 went invalid, off a capture
+
+**v1.55.** Bench 2026-09-15, three IDF boards on the same subject at ~52 bpm for 30 s with clean
+signal (`PROBE_APPLIED`, DiagCode 0, RSQI 1): `FW_HR1` went to −1 for one ~5.8 s run on two of the
+three boards, at different instants, while HR2 and HR3 published throughout. The tool replays SPEC
+over the captured `FW_OT_LED1` — pre-charging the DC estimator with the head of the file, since the
+firmware has been running for minutes and letting the replay spend 4–5 τ settling would fabricate a
+difference — and on the V17 capture it reproduces the firmware's streak to the sample, which is
+what licenses reading its internals.
+
+What it found, and the two lessons that outlive the value it produced:
+
+- **One missed beat costs five.** A doubled RR interval occupies the 5-interval buffer until it is
+  pushed out; at 52 bpm that is 5.8 s of `hr1_sqi = 0` from a single detection failure. The ×5
+  amplification is structural, independent of τ, and it is the availability lever still open.
+- **The SQI was right, not wrong.** Averaging the contaminated buffer gives 43 bpm (37 on the other
+  board): publishing it would have been a false bradycardia — the event the monitor exists to
+  catch. Any change to this gate has to preserve that, which is why the tool reports the
+  median/MAD alternative (100 % availability at the correct 50.6–52.7 bpm on the same detections)
+  as a MEASUREMENT and not as a recommendation: a robust centre hides a true cardiac pause just as
+  effectively as it hides a missed beat. Distinguishing the two needs the waveform — was there a
+  pulse between the two accepted beats? — not the RR series.
+
+The τ sweep counts extra detections alongside missed beats for the same reason (§5.3.0): recovering
+availability by counting the dicrotic notch would score as success on availability alone.
 
 ### 5.4 HR2TestCalc
 
@@ -2116,6 +2153,19 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.55 — 2026-09-15
+
+**HR1's running-max decay default follows lib v0.93: 20 s → 1.5 s (§5.3.0), and
+`tools/hr1_streak_forensics.py` is the forensics that closed it (§5.3.3).** Three boards recorded
+the same subject for 30 s on clean signal and two of them lost `hr1_sqi` for one ~5.8 s run while
+HR2/HR3 never flinched. Replaying SPEC off the capture puts the whole streak on a single missed
+beat — 56 % of the previous beat's amplitude, reaching 85 % of a threshold still held up by a peak
+4.5 s old — whose doubled RR interval then occupies the 5-interval buffer for five beats. The
+board that never failed is the one whose beat-to-beat amplitude CV was 23 % against 37 % and 43 %
+on the two that did. τ = 1.5 s recovers every missed beat on all three with zero extra detections,
+which matches independently what the perturbed MS100 sweep measured on 2026-09-08. Only the
+mirrored default and its tooltips change in the script; the algorithm is untouched.
 
 ### v1.54 — 2026-09-15
 
