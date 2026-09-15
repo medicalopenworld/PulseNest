@@ -21949,3 +21949,49 @@ Paso 7: borrar `platformio.ini`, `scripts/pre_build_hash.py`, `src/main.cpp`, `[
 `docs/boards.md` (OTA `--data-binary`, `idf.py` por placa); README/CLAUDE.md (framework);
 memoria `feedback_platformio_tasks`; merge a master; reflashear .169 y .62 con IDF.
 Luego avisar a Pablo (v0.92 por git sin parches; `-Wno-error` fuera; la cadencia medida).
+
+## Sesion 2026-09-15 (madrugada, 7) - Paso 7: PlatformIO fuera del repo; FASE 1 COMPLETA, merge a master
+
+Alex: «adelante» (paso 7).
+
+### Que se ha quitado y que lo sustituye (`417b3b8`, `61599d3`)
+- Borrados: `platformio.ini`, `scripts/pre_build_hash.py`, `src/main.cpp`. Localmente tambien
+  `.pio/` y los logs de pio (regenerables; PlatformIO sigue instalado en la maquina por si hiciera
+  falta volver, y todo esta en git).
+- Nuevo `scripts/build.ps1 <V15|V16|V17|V18> [-Ota <ip>] [-Usb COMxx]`: exporta el entorno IDF
+  (quita `MSYSTEM`), un `build_Vxx/` + `sdkconfig` por placa a partir de `sdkconfig.defaults` +
+  `sdkconfig.board.Vxx`, `set-target` solo la primera vez, OTA con cuerpo raw, USB con `idf.py flash`.
+  Probado: V17 desde cero, V18 incremental, `-Ota` raw sobre la .14.
+  **Trampa:** no correr con `$ErrorActionPreference = 'Stop'` — `export.ps1` e `idf.py` escriben
+  progreso por stderr y Windows PowerShell 5.1 lo convierte en error terminal (abortaba en silencio
+  con exit 0). Y `$args` es variable automatica de PowerShell: renombrada a `$idfArgs`.
+- `docs/boards.md`: columna «Build preset» (`sdkconfig.board.Vxx`), seccion Flashing reescrita
+  (OTA raw; el multipart `-F` UNA vez para una placa que aun corra Arduino; USB via idf.py; el
+  gotcha de esptool en modo descarga y la consola por USB via menuconfig quedan marcados como NO
+  re-verificados bajo IDF v6). README, CLAUDE.md (framework, build, lib como componente, placas
+  V17/V18), CMake raiz, spec del script (procedencia del hash: `gen_build_version.py`),
+  `tools/measure_timing.py`, `.gitignore`. Spec de la lib §8.4: el flag lo pone el consumidor
+  (PulseNest por CMake) — commit `d81fadc` en la lib.
+
+### Banco: las TRES placas en IDF
+.169 (V18) y .62 (V17) pasadas por OTA multipart (el ultimo desde Arduino) al build IDF; la .14
+re-flasheada raw con el script para homogeneizar. Las tres: `fw=0.11 lib=0.92 build=61599d3
+libsha=d81fadc`. `$TIMING` de las tres identico al perfil IDF: SPI 228-238 µs media / ~305 max,
+ciclo 411-431 µs, stack 5700. A partir de ahora el OTA es SOLO raw (`build.ps1 -Ota` o
+`curl --data-binary`); `curl -F` fallaria en el magic byte.
+
+### Merge
+`feat/idf-port` → `master` (fast-forward, master no se habia movido). La rama se conserva.
+
+### FASE 1 cerrada — resumen de la noche
+Fase 0 (HAL en la lib, v0.91) + fase 1 (PulseNest a IDF v6.0.1, fw 0.11, lib v0.92) en una sesion:
+compila, corre en las 3 placas, mismos frames/comandos/OTA, tests de host 9/9 en CMake+Unity, y la
+medida que lo motivaba: **SPI 292 µs (Arduino) → 230 µs (IDF), techo teorico 96 µs**.
+
+### Pendiente
+- **Avisar a Pablo** (pospuesto por Alex): v0.92 consumible por git sin sus 15 parches; quitar su
+  `-Wno-error`; la cadencia SPI medida (su shim con 24 polling_transmit/muestra estara en ~250 µs,
+  no en 30-40; y el techo es 96 µs).
+- Re-verificar bajo IDF v6 el gotcha de esptool tras flash USB y la consola por USB (menuconfig).
+- `tools/offline_runner` roto desde antes de v0.81 (firma de `test_feed_spo2`).
+- Tarea 5 (a) captura multiple con sonda; hilo HR1LAB; opciones 2-4 del truncado $M4.
