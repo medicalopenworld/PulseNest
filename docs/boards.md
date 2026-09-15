@@ -95,6 +95,15 @@ PlatformIO) expects a multipart form instead — once, to move it over:
 curl.exe -sS -m 120 -w "%{http_code}`n" -F update=@build_V18/pulsenest.bin http://<ip>/update
 ```
 
+**Without any tooling**, from a browser: open `http://<ip>/`, choose `build_V18/pulsenest.bin`, press
+*Flash*. The page sends the file the same way (`XMLHttpRequest.send(file)` = raw body) and shows `OK`
+or `FAILED`. This is the path to give someone who only has the `.bin`.
+
+Sending the wrong format fails safely in both directions: a multipart form to an ESP-IDF board is
+rejected on the first chunk (the body starts with the form boundary, not the image magic byte) and
+the board answers `FAIL` with the flash untouched; a raw body to an Arduino board finds no `update`
+form field and nothing is written either.
+
 The bootloader is not touched by OTA; the Arduino-era bootloader (IDF 4.4) boots the IDF v6 image
 without complaint (verified on both V18 boards and the V17, 2026-09-15). The board answers `OK`,
 restarts 300 ms later and is back on the WiFi in 15–25 s. `tools/udp_fw_versions.py` needs UDP port
