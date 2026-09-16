@@ -126,6 +126,49 @@ def render(boards, client, hub, t_start):
     return "\n".join(out)
 
 
+class Screen:
+    """Redraw in place instead of clearing the console. `cls` spawns a shell, wipes the whole
+    screen and then the text is printed: that blank instant, once a second, is the flicker. Here
+    the cursor goes home, every line erases its own tail (\\x1b[K), whatever is left below is
+    erased once (\\x1b[J), and the whole frame goes out in a single write."""
+
+    def __init__(self):
+        self.enabled = self._enable_vt()
+        if self.enabled:
+            sys.stdout.write("\x1b[?25l\x1b[2J\x1b[H")     # hide cursor, clear once, home
+            sys.stdout.flush()
+
+    @staticmethod
+    def _enable_vt():
+        if os.name != "nt":
+            return True
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            h = k32.GetStdHandle(-11)                       # STD_OUTPUT_HANDLE
+            mode = ctypes.c_uint32()
+            if not k32.GetConsoleMode(h, ctypes.byref(mode)):
+                return False
+            return bool(k32.SetConsoleMode(h, mode.value | 0x0004))   # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        except Exception:
+            return False
+
+    def draw(self, text):
+        if not self.enabled:                                # not a VT console (or a pipe): plain frames
+            if sys.stdout.isatty():
+                os.system("cls" if os.name == "nt" else "clear")
+            print(text)
+            sys.stdout.flush()
+            return
+        sys.stdout.write("\x1b[H" + "\x1b[K\n".join(text.split("\n")) + "\x1b[K\x1b[J")
+        sys.stdout.flush()
+
+    def close(self):
+        if self.enabled:
+            sys.stdout.write("\x1b[?25h\n")                 # cursor back
+            sys.stdout.flush()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
@@ -139,6 +182,7 @@ def main():
     boards = {}
     t_start = time.monotonic()
     next_draw = next_status = 0.0
+    screen = Screen()
     try:
         while True:
             item = client.recv(0.1)
@@ -154,11 +198,11 @@ def main():
                 client.request_status()
             if now >= next_draw:
                 next_draw = now + args.refresh
-                os.system("cls" if os.name == "nt" else "clear")
-                print(render(boards, client, hub, t_start))
+                screen.draw(render(boards, client, hub, t_start))
     except KeyboardInterrupt:
         pass
     finally:
+        screen.close()
         client.close()
     return 0
 
