@@ -12,8 +12,9 @@ from the last $M4 · count of $ERR lines · seconds since last seen. Below: the 
 
 The frame is read the way UdpBoard does in the lab: fields by position after '$' (spec §4.2 —
 [0]=mode [1]=SmpCnt ... [10]=SpO2 [14]=HR1 [20]=RSQI [21]=DiagCode [22]=ProbeState [34]=RF1
-[35]=RF2). Anything that does not parse is shown as '?', never raised: a monitor must outlive a
-malformed line.
+[35]=RF2). ProbeState is shown by its enumerator name from incunest_afe4490.h (DISCONNECTED,
+OT_HIGH, APPLIED, AMB_SATURATING, ONLY_LED_SATURATING). Anything that does not parse is shown as
+'?', never raised: a monitor must outlive a malformed line.
 
     python tools/fleet_monitor.py [--hub IP[:PORT]] [--refresh 1.0]
 """
@@ -28,7 +29,13 @@ from pulsenest_hub_client import HubClient       # noqa: E402
 
 ID_KEYS = ("mac", "board", "fw", "lib", "build")
 LOST_S = 2.0
-PROBE_STATES = {"0": "ABSENT", "1": "APPLIED", "2": "PARTIAL", "3": "SATUR", "4": "LEDSAT"}
+# enum class ProbeState in incunest_afe4490.h, minus the PROBE_ prefix -- the same names the lab
+# shows (SIGNAL STATS / OT MONITOR). The first version of this table had invented labels AND the
+# numbering shifted by one (2 read "PARTIAL" while the board was saying APPLIED). Never again:
+# the label IS the enumerator's name, so a reader can grep it in the library.
+PROBE_STATES = {"0": "DISCONNECTED", "1": "OT_HIGH", "2": "APPLIED",
+                "3": "AMB_SATURATING", "4": "ONLY_LED_SATURATING"}
+PROBE_W = max(len(v) for v in PROBE_STATES.values())
 
 
 class BoardView:
@@ -97,7 +104,7 @@ def render(boards, client, hub, t_start):
     out = [f"PulseNest fleet — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
            f", read-only)  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}", ""]
     hdr = (f"{'IP':15s} {'MAC':17s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
-           f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>7s} {'RSQI':>4s} {'diag':>5s} "
+           f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
            f"{'SpO2':>5s} {'HR1':>6s} {'RF1/RF2':>10s} {'ERR':>3s} {'last':>5s}")
     out.append(hdr)
     out.append("-" * len(hdr))
@@ -107,7 +114,7 @@ def render(boards, client, hub, t_start):
         i, fl = b.ident, b.fields
         out.append(f"{b.ip:15s} {i.get('mac', '?'):17s} {i.get('board', '?')[:12]:12s} "
                    f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
-                   f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {fl.get('probe', '?'):>7s} "
+                   f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {fl.get('probe', '?'):>{PROBE_W}s} "
                    f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} {fl.get('spo2', '?'):>5s} "
                    f"{fl.get('hr1', '?'):>6s} {(fl.get('rf1', '?') + '/' + fl.get('rf2', '?')):>10s} "
                    f"{b.errs:3d} {state:>5s}")
