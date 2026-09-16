@@ -37,11 +37,14 @@ sys.path.insert(0, _ROOT)
 os.chdir(_ROOT)
 
 import pulsenest_lab as P  # noqa: E402
+import pulsenest_hub as H  # noqa: E402
+import pulsenest_hub_client as HC  # noqa: E402
 from PyQt5 import QtCore, QtWidgets  # noqa: E402
 
 DATA_PORT, CMD_PORT = 15005, 15006
 P.UDP_DATA_PORT = DATA_PORT
 P.UDP_CMD_PORT = CMD_PORT
+HC.AUTOSTART_ENABLED = False          # the test runs its own hub, in-process, on the spare port
 P.UDP_LOST_TIMEOUT_S = 1.5
 P.UDP_NET_SUMMARY_S = 4.0
 
@@ -213,6 +216,12 @@ def main():
     mac_a, mac_b = "AA:AA:AA:AA:AA:01", "BB:BB:BB:BB:BB:02"
     a = FakeBoard("127.0.0.1", mac_a, "fakeA", template, start_cnt=1000)
     b = FakeBoard("127.0.0.2", mac_b, "fakeB", template, start_cnt=900000)
+
+    # Since v1.60 the lab is a hub subscriber (spec 4.9): the fake boards send to the data port,
+    # the hub owns it and forwards to the lab, tagged with each board's IP. Same test, one hop more.
+    hub = H.Hub(port=DATA_PORT, cmd_port=CMD_PORT)
+    hub.open()
+    threading.Thread(target=hub.serve_forever, daemon=True).start()
 
     w._connect_udp()
     a.start()

@@ -1,0 +1,479 @@
+"""PulseNest hub -- owns the host's UDP data port and fans the boards' stream out to subscribers.
+
+Why it exists. A UDP unicast datagram is delivered to exactly one socket, and the boards send
+everything to one compiled IP (wifi_config.h). So only one program on the bench PC could ever
+read the stream, and every bench tool had to be run with pulsenest_lab.py closed. The hub is that
+one program: it binds UDP_DATA_PORT, and re-sends every datagram, byte for byte, to whoever asked.
+The air does not change (the boards keep one stream over WiFi); the copies travel over loopback or
+the wired side of the PC, which is free. Running on the PC that straddles the hotspot and the LAN,
+it is also the only place from which a second PC can be served without spending hotspot air.
+
+What it deliberately is not. It has no GUI and no third-party dependency (stdlib only), and it
+does NOT interpret the frames: it looks at the first byte, prepends the origin, and forwards.
+Nothing here converts a number, so a malformed frame cannot raise. The single exception is the
+configuration cache, which keeps the last $CFG/$TCFG/$LCFG line of each board AS TEXT (prefix
+match only) so that a late subscriber learns the board identities without putting a byte on the
+air. It is meant to be the most boring process on the machine.
+
+Two planes on ONE socket, told apart by the first byte:
+
+    '$', '#', ...   board plane, unchanged: a datagram from a board. Forwarded to subscribers.
+    '@'             hub plane: a subscriber talking to the hub. One message per datagram, ASCII,
+                    first line = verb + arguments, the rest of the datagram = payload (for @TO).
+
+Subscriber -> hub                     Hub -> subscriber
+    @SUB <name>                           @OK SUB            then the cache: @FROM lines (below)
+    @CTRL <name>                          @OK CTRL   |  @REFUSED CTRL <holder> <since>
+    @PING                                 @PONG boards=<n> subs=<n> ctrl=<name|-> up=<s>
+    @STATUS                               @STATUS\\r\\n<one line per board and subscriber>
+    @TO <ip>\\r\\n<payload>                 (payload -> <ip>:UDP_CMD_PORT) | @REFUSED TO <reason>
+    @RELEASE                              @OK RELEASE
+    @UNSUB                                (nothing)
+                                          @FROM <ip>\\r\\n<original datagram, verbatim>
+
+Rules.
+- A subscriber is known by the source address of its messages; the hub answers THERE, from its
+  own socket, so the subscriber needs no well-known port and a remote PC's firewall sees plain
+  UDP replies to its own outbound traffic. A subscriber that stops pinging for SUB_EXPIRE_S is
+  forgotten.
+- Exactly ONE controller at a time. @TO is forwarded only for the controller; everyone else is
+  read-only by construction. Control is granted if nobody holds it or the holder expired, and
+  only to a local address unless --allow-remote-control is given: writing to a medical device
+  from another machine must be a deliberate choice, never the default.
+- The hub itself sends exactly ONE thing to a board: a single "$CFG?" when it first sees a
+  board IP, and once more each time that board comes back after BOARD_LOST_S of silence (it
+  may have rebooted into a new build -- an OTA is routine here). Nothing else, ever.
+- Datagram boundaries are preserved: what the board sent as one datagram, the subscriber gets as
+  one datagram (with the @FROM line in front). pulsenest_lab.py's batching invariant depends on it.
+- No SO_REUSEADDR. Two hubs must not "coexist" with one of them silently receiving nothing
+  (measured 2026-09-10); the second bind must FAIL, loudly.
+- A slow or dead subscriber is dropped by expiry; sendto() never blocks on UDP, so it cannot
+  stall the loop. On Windows an ICMP port-unreachable surfaces as an OSError on the socket: it is
+  caught and ignored, the loop goes on.
+
+Run it by hand for the log on the console, or let a subscriber start it (pulsenest_hub_client
+launches it detached, with python.exe so a `taskkill /IM pythonw.exe` of the lab leaves it alive):
+
+    python pulsenest_hub.py [--port 5005] [--allow-remote-control] [--idle-exit-min 0]
+"""
+import argparse
+import logging
+import logging.handlers
+import os
+import select
+import socket
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
+
+HUB_SIGIL      = b"@"
+PING_S         = 2.0     # what a subscriber is expected to send (pulsenest_hub_client does)
+SUB_EXPIRE_S   = 10.0    # a subscriber silent for this long is forgotten (and loses control)
+BOARD_LOST_S   = 2.0     # @STATUS marks a board LOST after this silence; nothing else acts on it
+CFG_PREFIXES   = (b"$CFG,", b"$TCFG,", b"$LCFG,")
+RATE_WINDOW_S  = 2.0     # datagram rate window for @STATUS
+LOG_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_hub.log")
+
+log = logging.getLogger("pulsenest_hub")
+
+
+def _local_addresses():
+    """Every IP that means 'this machine', so a subscriber talking to the hub through the LAN
+    address of the same PC still counts as local for control."""
+    ips = {"127.0.0.1"}
+    try:
+        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    return ips
+
+
+def is_loopback(ip):
+    return ip.startswith("127.")
+
+
+class Board:
+    """One source IP that sent board-plane datagrams."""
+    __slots__ = ("ip", "first_seen", "last_seen", "datagrams", "bytes", "cfg", "cfg_asked",
+                 "_win_t", "_win_n", "rate")
+
+    def __init__(self, ip, now):
+        self.ip = ip
+        self.first_seen = self.last_seen = now
+        self.datagrams = 0
+        self.bytes = 0
+        self.cfg = {}            # prefix -> last raw line (bytes, no line ending)
+        self.cfg_asked = False   # the hub's one and only "$CFG?" to this board
+        self._win_t, self._win_n, self.rate = now, 0, 0.0
+
+    def seen(self, now, nbytes):
+        self.last_seen = now
+        self.datagrams += 1
+        self.bytes += nbytes
+        self._win_n += 1
+        if now - self._win_t >= RATE_WINDOW_S:
+            self.rate = self._win_n / (now - self._win_t)
+            self._win_t, self._win_n = now, 0
+
+    def cache_cfg(self, data):
+        """Keep the last $CFG/$TCFG/$LCFG line. Prefix match only; the text is never read."""
+        if not any(p[:1] in data for p in (b"$",)):
+            return
+        for line in data.split(b"\n"):
+            line = line.rstrip(b"\r")
+            for p in CFG_PREFIXES:
+                if line.startswith(p):
+                    self.cfg[p] = line
+                    break
+
+
+class Subscriber:
+    __slots__ = ("addr", "name", "joined", "last_seen", "sent", "is_controller")
+
+    def __init__(self, addr, name, now):
+        self.addr = addr
+        self.name = name
+        self.joined = self.last_seen = now
+        self.sent = 0
+        self.is_controller = False
+
+    def label(self):
+        return f"{self.addr[0]}:{self.addr[1]} {self.name}"
+
+
+class Hub:
+    """The hub proper. Usable in-process (tests start one on a spare port in a thread) or as the
+    process run by main()."""
+
+    def __init__(self, port=UDP_DATA_PORT, bind_ip="", allow_remote_control=False,
+                 idle_exit_s=0.0, cmd_port=UDP_CMD_PORT):
+        self.port = port
+        self.bind_ip = bind_ip
+        self.cmd_port = cmd_port
+        self.allow_remote_control = allow_remote_control
+        self.idle_exit_s = idle_exit_s
+        self.sock = None
+        self.boards = {}        # ip -> Board
+        self.subs = {}          # (ip, port) -> Subscriber
+        self.controller = None  # (ip, port) or None
+        self.ctrl_since = None
+        self.started = None
+        self.local_ips = _local_addresses()
+        self._stop = threading.Event()
+        self._idle_since = None
+        # counters for @STATUS / log
+        self.n_board_dgrams = 0
+        self.n_fanout = 0
+        self.n_refused = 0
+        self.n_sock_errors = 0
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────────────────────
+    def open(self):
+        """Bind the data port. Raises OSError (EADDRINUSE / WSAEADDRINUSE 10048) if taken --
+        that is the desired behaviour, see the module docstring."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
+        s.bind((self.bind_ip, self.port))
+        s.setblocking(False)
+        self.sock = s
+        self.started = time.monotonic()
+        log.info("hub listening on :%d (commands to boards on :%d, remote control %s)",
+                 self.port, self.cmd_port, "ALLOWED" if self.allow_remote_control else "local only")
+
+    def stop(self):
+        self._stop.set()
+
+    def close(self):
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+
+    def serve_forever(self):
+        """The loop. One select() per iteration, housekeeping every ~0.5 s."""
+        if self.sock is None:
+            self.open()
+        next_house = time.monotonic() + 0.5
+        try:
+            while not self._stop.is_set():
+                try:
+                    r, _, _ = select.select([self.sock], [], [], 0.5)
+                except (OSError, ValueError):
+                    break
+                now = time.monotonic()
+                if r:
+                    # Drain everything queued: at 100 datagrams/s per board a select() per
+                    # datagram would be wasteful, and recvfrom on a non-blocking socket is cheap.
+                    for _ in range(256):
+                        try:
+                            data, addr = self.sock.recvfrom(65535)
+                        except BlockingIOError:
+                            break
+                        except OSError as exc:
+                            # Windows: ICMP port unreachable from a dead subscriber lands here as
+                            # WSAECONNRESET. Not fatal; expiry will drop that subscriber.
+                            self.n_sock_errors += 1
+                            log.debug("socket error on recv: %s", exc)
+                            break
+                        if data[:1] == HUB_SIGIL:
+                            self._on_hub_message(addr, data, now)
+                        else:
+                            self._on_board_datagram(addr, data, now)
+                if now >= next_house:
+                    next_house = now + 0.5
+                    if self._housekeeping(now):
+                        break
+        finally:
+            self.close()
+            log.info("hub stopped")
+
+    # ── board plane ───────────────────────────────────────────────────────────────────────────
+    def _on_board_datagram(self, addr, data, now):
+        ip = addr[0]
+        b = self.boards.get(ip)
+        if b is None:
+            b = self.boards[ip] = Board(ip, now)
+            log.info("board %s seen for the first time — asking $CFG? once", ip)
+            self._ask_cfg_once(b)
+        elif now - b.last_seen > BOARD_LOST_S:
+            # Back after a silence. Two things: subscribers that joined meanwhile never got this
+            # board's configuration (the join replay covers live boards only), so hand out what
+            # we have; and a board that went away may have rebooted with a new build (an OTA is
+            # routine on this bench), so ask it once more — the fresh $CFG refreshes the cache
+            # and reaches everyone as live traffic.
+            log.info("board %s back after %.0f s — replaying its configuration, asking $CFG? again",
+                     ip, now - b.last_seen)
+            for sub in list(self.subs.values()):
+                self._replay_board(sub.addr, b)
+            b.cfg_asked = False
+            self._ask_cfg_once(b)
+        b.seen(now, len(data))
+        b.cache_cfg(data)
+        self.n_board_dgrams += 1
+        if self.subs:
+            self._fanout(ip, data)
+
+    def _ask_cfg_once(self, b):
+        if b.cfg_asked:
+            return
+        b.cfg_asked = True
+        self._send((b.ip, self.cmd_port), b"$CFG?\n")
+
+    def _fanout(self, ip, data):
+        payload = b"@FROM " + ip.encode("ascii") + b"\r\n" + data
+        for sub in list(self.subs.values()):
+            if self._send(sub.addr, payload):
+                sub.sent += 1
+                self.n_fanout += 1
+
+    # ── hub plane ─────────────────────────────────────────────────────────────────────────────
+    def _on_hub_message(self, addr, data, now):
+        head, _, rest = data.partition(b"\n")
+        parts = head.rstrip(b"\r").split()
+        verb = parts[0][1:].upper() if parts else b""
+        args = parts[1:]
+        sub = self.subs.get(addr)
+        if sub is not None:
+            sub.last_seen = now
+
+        if verb == b"PING":
+            if sub is not None:
+                self._send(addr, self._pong())
+            else:
+                # A ping from someone we forgot (expired, or hub restarted): tell it so it
+                # re-subscribes instead of waiting for frames that will never come.
+                self._send(addr, b"@REFUSED PING not-subscribed\r\n")
+        elif verb in (b"SUB", b"CTRL"):
+            name = (args[0].decode("ascii", "replace") if args else "?")[:32]
+            if sub is None:
+                sub = self.subs[addr] = Subscriber(addr, name, now)
+                log.info("subscriber %s joined (%s)", sub.label(), verb.decode())
+            else:
+                sub.name = name
+            if verb == b"CTRL":
+                self._grant_control(sub, now)
+            else:
+                self._send(addr, b"@OK SUB\r\n")
+            self._replay_cache(addr)
+        elif verb == b"TO":
+            self._forward_command(addr, sub, args, rest)
+        elif verb == b"RELEASE":
+            if self.controller == addr:
+                self._release_control("released by the controller")
+            self._send(addr, b"@OK RELEASE\r\n")
+        elif verb == b"UNSUB":
+            if sub is not None:
+                self._forget(addr, "unsubscribed")
+        elif verb == b"STATUS":
+            self._send(addr, self.status_text().encode("utf-8", "replace"))
+        else:
+            self._send(addr, b"@REFUSED " + (parts[0] if parts else b"?")[:16] + b" unknown-verb\r\n")
+
+    def _grant_control(self, sub, now):
+        addr = sub.addr
+        if self.controller is not None and self.controller != addr:
+            holder = self.subs.get(self.controller)
+            if holder is not None and now - holder.last_seen <= SUB_EXPIRE_S:
+                self.n_refused += 1
+                since = time.strftime("%H:%M:%S", time.localtime(self.ctrl_since))
+                self._send(addr, f"@REFUSED CTRL {holder.name} {since}\r\n".encode("ascii", "replace"))
+                log.info("control refused to %s: held by %s since %s", sub.label(), holder.name, since)
+                return
+            self._release_control("holder expired")
+        if not self.allow_remote_control and addr[0] not in self.local_ips and not is_loopback(addr[0]):
+            self.n_refused += 1
+            self._send(addr, b"@REFUSED CTRL remote-control-disabled\r\n")
+            log.info("control refused to %s: remote control is disabled", sub.label())
+            return
+        if self.controller != addr:
+            self.controller = addr
+            self.ctrl_since = time.time()
+            sub.is_controller = True
+            log.info("control granted to %s", sub.label())
+        self._send(addr, b"@OK CTRL\r\n")
+
+    def _release_control(self, why):
+        if self.controller is None:
+            return
+        holder = self.subs.get(self.controller)
+        if holder is not None:
+            holder.is_controller = False
+        log.info("control released (%s): was %s", why, holder.label() if holder else self.controller)
+        self.controller = None
+        self.ctrl_since = None
+
+    def _forward_command(self, addr, sub, args, payload):
+        if sub is None or self.controller != addr:
+            self.n_refused += 1
+            self._send(addr, b"@REFUSED TO not-controller\r\n")
+            return
+        if not args:
+            self._send(addr, b"@REFUSED TO missing-ip\r\n")
+            return
+        ip = args[0].decode("ascii", "replace")
+        if not payload:
+            self._send(addr, b"@REFUSED TO empty-payload\r\n")
+            return
+        self._send((ip, self.cmd_port), payload)
+
+    def _replay_cache(self, addr):
+        """A new subscriber gets the last configuration lines of every LIVE board, wrapped exactly
+        like live traffic, so its normal parser learns the identities with no special case. A
+        board silent for more than BOARD_LOST_S is left out: handing a newcomer the identity of a
+        board that is not there would let it pick a dead board as its source. Its configuration
+        is replayed to everyone the moment it speaks again (_on_board_datagram)."""
+        now = time.monotonic()
+        for b in sorted(self.boards.values(), key=lambda x: x.first_seen):
+            if now - b.last_seen <= BOARD_LOST_S:
+                self._replay_board(addr, b)
+
+    def _replay_board(self, addr, b):
+        for p in CFG_PREFIXES:
+            line = b.cfg.get(p)
+            if line is not None:
+                self._send(addr, b"@FROM " + b.ip.encode("ascii") + b"\r\n" + line + b"\r\n")
+
+    def _pong(self):
+        ctrl = self.subs.get(self.controller).name if self.controller in self.subs else "-"
+        up = time.monotonic() - self.started if self.started else 0.0
+        return (f"@PONG boards={len(self.boards)} subs={len(self.subs)} ctrl={ctrl} up={up:.0f}\r\n"
+                .encode("ascii", "replace"))
+
+    def status_text(self):
+        now = time.monotonic()
+        lines = ["@STATUS", f"hub port={self.port} up={now - (self.started or now):.0f}s "
+                            f"board_dgrams={self.n_board_dgrams} fanout={self.n_fanout} "
+                            f"refused={self.n_refused} sock_errors={self.n_sock_errors}"]
+        for b in sorted(self.boards.values(), key=lambda x: x.first_seen):
+            silence = now - b.last_seen
+            state = "LOST" if silence > BOARD_LOST_S else "live"
+            lines.append(f"board {b.ip} {state} last={silence:.1f}s dgram/s={b.rate:.0f} "
+                         f"dgrams={b.datagrams} cfg={'yes' if b.cfg.get(b'$CFG,') else 'no'}")
+        for s in sorted(self.subs.values(), key=lambda x: x.joined):
+            lines.append(f"sub {s.addr[0]}:{s.addr[1]} {s.name} ctrl={int(s.is_controller)} "
+                         f"last={now - s.last_seen:.1f}s sent={s.sent}")
+        return "\r\n".join(lines) + "\r\n"
+
+    # ── housekeeping ──────────────────────────────────────────────────────────────────────────
+    def _housekeeping(self, now):
+        """Expire silent subscribers; idle exit. Returns True when the hub should exit."""
+        for addr, s in list(self.subs.items()):
+            if now - s.last_seen > SUB_EXPIRE_S:
+                self._forget(addr, f"silent for {now - s.last_seen:.0f} s")
+        if self.idle_exit_s > 0:
+            if self.subs:
+                self._idle_since = None
+            elif self._idle_since is None:
+                self._idle_since = now
+            elif now - self._idle_since > self.idle_exit_s:
+                log.info("no subscribers for %.0f s — idle exit", self.idle_exit_s)
+                return True
+        return False
+
+    def _forget(self, addr, why):
+        s = self.subs.pop(addr, None)
+        if s is None:
+            return
+        if self.controller == addr:
+            self._release_control(why)
+        log.info("subscriber %s left (%s)", s.label(), why)
+
+    def _send(self, addr, payload):
+        try:
+            self.sock.sendto(payload, addr)
+            return True
+        except OSError as exc:
+            self.n_sock_errors += 1
+            log.debug("sendto %s failed: %s", addr, exc)
+            return False
+
+
+# ── process entry point ───────────────────────────────────────────────────────────────────────
+def _setup_logging(quiet):
+    log.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S")
+    fh = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=2,
+                                              encoding="utf-8")
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+    if not quiet and sys.stderr is not None:
+        sh = logging.StreamHandler(sys.stderr)
+        sh.setFormatter(fmt)
+        log.addHandler(sh)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="PulseNest hub: owns the UDP data port, fans the "
+                                             "boards' stream out to read-only subscribers")
+    ap.add_argument("--port", type=int, default=UDP_DATA_PORT, help="data port to own (default %(default)s)")
+    ap.add_argument("--allow-remote-control", action="store_true",
+                    help="let a subscriber on ANOTHER machine become the controller (default: local only)")
+    ap.add_argument("--idle-exit-min", type=float, default=0.0,
+                    help="exit after this many minutes without subscribers (0 = never, the default)")
+    ap.add_argument("--quiet", action="store_true", help="log to file only")
+    a = ap.parse_args(argv)
+    _setup_logging(a.quiet)
+    hub = Hub(port=a.port, allow_remote_control=a.allow_remote_control,
+              idle_exit_s=a.idle_exit_min * 60.0)
+    try:
+        hub.open()
+    except OSError as exc:
+        # 10048 (Windows) / 98 (Linux): the port is taken. Loud and specific, on purpose.
+        log.error("cannot bind :%d — %s. Another hub, or a tool binding the data port directly "
+                  "(an old pulsenest_lab.py?), owns it.", a.port, exc)
+        return 2
+    try:
+        hub.serve_forever()
+    except KeyboardInterrupt:
+        hub.stop()
+        hub.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

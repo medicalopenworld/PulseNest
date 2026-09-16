@@ -219,6 +219,7 @@ BAUD             = 921600
 # UDP ports live in pulsenest_net.py, the host-side source of truth (the firmware mirror is
 # include/wifi_config.h, gitignored; `python pulsenest_net.py` checks they agree).
 from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
+import pulsenest_hub_client as _hubc  # noqa: E402  (the lab is a hub subscriber and its controller)
 UDP_BATCH_SIZE   = 5      # must match UDP_BATCH_SIZE in src/main.cpp: data frames per datagram
 # Multi-board capture (spec §4.8 F3)
 # 25 000 frames = 50 s at 500 Hz. The reader must never block on a writer, so a board's capture
@@ -13255,7 +13256,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._udp_stop     = threading.Event()   # controls _udp_reader thread
         self._udp_thread   = None
         self._esp32_ip     = None   # ESP32 IP learned from first incoming UDP packet
-        self._cmd_udp_sock = None   # UDP socket for sending commands to ESP32 (port UDP_CMD_PORT)
+        self._hub = None                 # HubClient, created and closed by _udp_reader (spec §4.9)
+        self._hub_refusal_logged = False # one log line per streak of commands the hub refused
         self._cfg_listener = None  # callable(text) set by LabCaptureWindow
         self._active_transport = "serial"  # "serial" or "udp" — only this queue feeds algorithms
         self._udp_boards = {}                 # ip → UdpBoard: every source seen on the data port (§4.8)
@@ -13515,7 +13517,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _is_cmd_ready(self):
         """True if a command channel is available: serial open, or UDP active with known ESP32 IP."""
         if self._active_transport == "udp" and self._esp32_ip is not None:
-            return True
+            return self._hub is not None and self._hub.controller
         return self.ser is not None and self.ser.is_open
 
     def send_cmd(self, data: bytes):
@@ -13523,12 +13525,24 @@ class PPGMonitor(QtWidgets.QMainWindow):
         Serial: written directly to the open COM port.
         UDP: sent as a single datagram to ESP32 IP:UDP_CMD_PORT (learned from incoming data)."""
         if self._active_transport == "udp" and self._esp32_ip is not None:
-            import socket as _socket
-            if self._cmd_udp_sock is None:
-                self._cmd_udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-            self._cmd_udp_sock.sendto(data, (self._esp32_ip, UDP_CMD_PORT))
+            self._hub_send(self._esp32_ip, data)
         elif self.ser is not None and self.ser.is_open:
             self.ser.write(data)
+
+    def _hub_send(self, ip, data):
+        """Every UDP command to a board goes through the hub, which forwards it only while this
+        lab holds the control (spec §4.9). Returns False, with one log line per refusal streak,
+        when it does not: no hub connection, or another program is the controller."""
+        hub = self._hub
+        if hub is not None and hub.send_to_board(ip, data):
+            self._hub_refusal_logged = False
+            return True
+        if not self._hub_refusal_logged:
+            self._hub_refusal_logged = True
+            why = ("no hub connection" if hub is None or not hub.connected
+                   else f"control held by {hub.control_refused_by or 'another program'}")
+            self.log(f"[HUB] command to {ip} NOT sent — {why}")
+        return False
 
     def send_cmd_to_ip(self, ip, data: bytes):
         """Send a command to one specific board over UDP, whether or not it is the active source.
@@ -13538,10 +13552,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         one still running a pre-v1.47 build (which booted in `$M3`), would otherwise have its 13
         analog columns written as "-1", a well-formed CSV of missing data.
         """
-        if self._cmd_udp_sock is None:
-            import socket as _socket
-            self._cmd_udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-        self._cmd_udp_sock.sendto(data, (ip, UDP_CMD_PORT))
+        self._hub_send(ip, data)
 
     def _on_cfg_frame_received(self, line):
         """Parse a $CFG frame, log each field, and deliver formatted text to _cfg_listener."""
@@ -13575,7 +13586,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  Firmware: PulseNest v{kv.get('fw','?')}   "
             f"incunest_afe4490 v{kv.get('lib','?')}   build {kv.get('build','?')}"
         )
-        if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', True):
+        if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', False):
             self._cfg_listener(text)
         self._last_cfg = kv
         # Feed the quick RF combos from $CFG. NOT a one-shot seed: in frame modes $M1-$M3 the
@@ -13591,7 +13602,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.hw_config_window.update_from_cfg(kv)
         if self.pilab_window is not None:
             self.pilab_window._sync_spo2_coeffs(kv)
-        self._cfg_notify_lab_capture = True   # reset to default after each frame
+        # Back to "do not notify" after each frame. The default used to be True, which pasted
+        # every $CFG nobody here asked for (another host's query, the hub's cache replay on each
+        # connect) into the Lab Capture pre-notes. Only request_chip_config(notify=True) — the
+        # capture state machine and the manual buttons — opts a reply in, one frame at a time.
+        self._cfg_notify_lab_capture = False
 
     def _on_lcfg_frame_received(self, line):
         """Parse a $LCFG frame and deliver values to LIBConfigWindow (if open)."""
@@ -14447,9 +14462,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._esp32_ip = None
         with self._udp_boards_lock:
             self._udp_boards.clear()
-        if self._cmd_udp_sock is not None:
-            self._cmd_udp_sock.close()
-            self._cmd_udp_sock = None
         self._active_transport = "serial"
         self.log("UDP disconnected — data source: SERIAL")
         self._set_udp_button("OFF")
@@ -14475,7 +14487,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._udp_thread.start()
         # Transport switches to "udp" only after first datagram arrives (_on_udp_active).
         # Serial stays active until then so data is never lost while WiFi connects.
-        self.log(f"UDP listening on port {self._udp_port} — data source stays SERIAL until first datagram")
+        self.log(f"UDP via hub 127.0.0.1:{self._udp_port} — data source stays SERIAL until first datagram")
         self._set_udp_button("LISTEN")
 
     def _udp_reader(self):
@@ -14491,22 +14503,31 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
         Each datagram carries up to UDP_BATCH_SIZE data frames (one per line); frames are unpacked
         and queued individually so the pipeline downstream is identical to the serial path.
-        Gap detection (Punto B) is per board, on the sample counter."""
-        import socket as _socket
-        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, 1024 * 1024)  # 1 MB RX buffer
-        sock.bind(('', self._udp_port))
-        sock.settimeout(0.5)
-        id_query = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)   # $CFG? to non-active boards
+        Gap detection (Punto B) is per board, on the sample counter.
+
+        Since v1.60 the datagrams come from the hub (spec §4.9), not from a socket on the data
+        port: HubClient hands them over with the board's IP, byte-identical to what the board
+        sent, so everything below this line is unchanged. The lab subscribes as the CONTROLLER;
+        if another program holds the control the stream still arrives, and every command is
+        refused with a log line (_hub_send). A hub that is not running is started by the client."""
+        hub = _hubc.HubClient("pulsenest_lab", hub=("127.0.0.1", self._udp_port), control=True,
+                              log=self._sig_log.emit)
+        self._hub = hub
+        if hub.connect():
+            self._sig_log.emit(f"[HUB] connected to 127.0.0.1:{self._udp_port}"
+                               + (" as controller" if hub.controller
+                                  else f" READ-ONLY — control held by {hub.control_refused_by}"))
+        else:
+            self._sig_log.emit(f"[HUB] no hub answering on 127.0.0.1:{self._udp_port} — retrying in the background")
         boards, lock = self._udp_boards, self._udp_boards_lock
         _perf = time.perf_counter
         next_summary = _perf() + UDP_NET_SUMMARY_S
 
         def _request_cfg(b, now):
-            try:
-                id_query.sendto(b'$CFG?\n', (b.ip, UDP_CMD_PORT))
-            except OSError as e:
-                self._sig_log.emit(f"[UDP] $CFG? to {b.ip} failed: {e}")
+            # Refused when we are not the controller: the hub asked this board $CFG? itself when
+            # it first saw it and replays the answer to every subscriber, so identity arrives
+            # anyway. Counted regardless, so the retry cap still ends the attempts.
+            hub.send_to_board(b.ip, b'$CFG?\n')
             b.cfg_requests += 1
             b.cfg_last_req_t = now
 
@@ -14532,16 +14553,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self._sig_udpcom_line.emit(b.summary_line(now, self._esp32_ip, qsize))
 
         while not self._udp_stop.is_set():
-            try:
-                data, _addr = sock.recvfrom(4096)   # up to UDP_BATCH_SIZE frames per datagram (~1400 B for 5×$M4)
-            except _socket.timeout:
+            item = hub.recv(0.5)      # (board_ip, datagram) — pings, pongs and reconnects inside
+            if item is None:
                 _housekeeping(_perf())
                 continue
-            except Exception:
-                break
+            src_ip, data = item
             now = _perf()
             host_t_us = int(now * 1e6)   # monotonic, arbitrary origin: aligns boards within a session
-            src_ip = _addr[0]
             with lock:
                 b = boards.get(src_ip)
                 if b is None:
@@ -14614,8 +14632,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if 0 < n_data and n_lines < UDP_BATCH_SIZE:
                     b.partial_datagrams += 1
             _housekeeping(now)
-        id_query.close()
-        sock.close()
+        hub.close()
+        self._hub = None
 
     def _udp_auto_promote(self, b):
         """Reader thread, lock held: a non-active board has just identified itself. Two cases make
@@ -16085,8 +16103,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._udp_stop.set()
         if hasattr(self, '_udp_thread') and self._udp_thread is not None:
             self._udp_thread.join(timeout=1.0)
-        if hasattr(self, '_cmd_udp_sock') and self._cmd_udp_sock is not None:
-            self._cmd_udp_sock.close()
         if getattr(self, 'ser', None) is not None and self.ser.is_open:
             self.ser.close()
         if self.ppgplots_window is not None:
