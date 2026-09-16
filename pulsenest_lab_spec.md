@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.56
+# pulsenest_lab — Specification v1.57
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -997,6 +997,32 @@ What it found, and the two lessons that outlive the value it produced:
   as a MEASUREMENT and not as a recommendation: a robust centre hides a true cardiac pause just as
   effectively as it hides a missed beat. Distinguishing the two needs the waveform — was there a
   pulse between the two accepted beats? — not the RR series.
+
+**v1.57 — the ground truth now follows the rate, and the 40 bpm cell is closed.** `true_beats()`
+established the reference beats with `find_peaks(distance=0.7*fs)`, a refractory inherited from
+that 52 bpm bench capture and therefore a **85 bpm ceiling**: from 140 bpm up it kept every other
+beat (140 → 63 peaks = 67 bpm; 250 → 55 = 58 bpm) and every real beat the detector *did* find in
+between was scored as an "extra", so that column grew with the rate and measured nothing. Two
+passes now — a permissive one (0.20 s, a 300 bpm ceiling) to estimate the median RR, then the real
+one at 0.6 × RR — with the rate in the filename deliberately unused, because the truth must not
+depend on the label it is checking. The 52 bpm capture still yields the same 25 beats, so the
+v1.55 finding is untouched. `replay()` no longer accepts a parameter the calculator does not have:
+a mistyped name used to be stored as an unread attribute and the sweep came out flat, which reads
+as "τ does not matter".
+
+With that, `MS100_PROBEPERT_98SPO2_40HR` (150 s, 100 beats = 40.0 bpm) answers the one cell of the
+τ-in-beats table that the 2026-09-08 campaign could not reach. Scored separately on the clean and
+the pressed stretches — which the capture's own `PRESS_SCHEDULE_S` note makes possible, and which
+matters because the two failures point in opposite directions: **on 78 s of clean signal (38 beats,
+amplitude CV 6.8 %) there are 0 missed and 0 extra detections at every τ from 20 s down to 1 s.**
+The double counting feared at 1.00 beats of memory does not happen, because without amplitude
+variation the threshold is never the binding constraint. On the pressed stretch (55 beats, CV
+41.5 %) τ = 20 s would have lost **16 beats, 29 %** — at 40 bpm the v1.55 change was far more
+necessary than at 52. τ = 1.5 s loses 3 and τ = 3 s loses 1, but τ = 3 s loses one beat that
+τ = 1.5 s keeps on the 51.8 bpm bench capture: a tie inside the noise of one capture per point.
+The optimum stays flat over 1.5–5 s, consistent with the 1–3 s of 2026-09-08, so the default stays
+at 1.5 s — and a τ expressed in beats (`max_decay_beats`, τ = N × RR) is now unnecessary across the
+whole 40–250 bpm range, not just above 60.
 
 The τ sweep counts extra detections alongside missed beats for the same reason (§5.3.0): recovering
 availability by counting the dicrotic notch would score as success on availability alone.
@@ -2160,6 +2186,16 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.57 — 2026-09-16
+
+**The forensics ground truth follows the rate, and τ is measured at 40 bpm (§5.3.3).** The
+reference peak picker had a fixed 0.7 s refractory — an 85 bpm ceiling that halved the beat count
+from 140 bpm up and turned the "extra detections" column into noise; it is now estimated from the
+signal in two passes. `replay()` rejects unknown parameters instead of silently producing a flat
+sweep. The 40 bpm capture that this made scoreable closes the last unmeasured cell of the τ table:
+clean signal is indifferent to τ, the perturbed stretch would have lost 29 % of its beats at the
+old 20 s, and 1.5 s stays as the default.
 
 ### v1.56 — 2026-09-16
 
