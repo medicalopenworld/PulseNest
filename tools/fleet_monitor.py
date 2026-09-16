@@ -110,7 +110,7 @@ class BoardView:
 
 def render(boards, client, hub, t_start):
     now = time.monotonic()
-    out = [f"PulseNest fleet — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
+    out = [f"PulseNest {os.path.basename(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
            f", read-only)  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}", ""]
     hdr = (f"{'IP':15s} {'MAC':17s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
            f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
