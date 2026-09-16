@@ -11234,6 +11234,12 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     # alias keeps the historical name working for anything that reads it from the window.
     _RF_STR_TO_OHM = LabCaptureWriter._RF_STR_TO_OHM
 
+    # Sample count is what the capture controls, but seconds are what the operator annotates in
+    # the notes ("~20 s: 1 press"), so the progress bar shows both. The real rate comes from the
+    # $CFG read at capture start; this is the fallback when there is none (no $CFG yet, or a
+    # build that doesn't send 'sr').
+    _NOMINAL_SR_HZ = 500
+
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
@@ -11246,6 +11252,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
         self._pending_stop     = False  # a stop is waiting for the closing $CFG reply
         self._capture_open_cfg = None   # config read when the capture started, to compare at the end
         self._hgac_restore_to  = None   # hgac_enable value to put back on stop, None = leave alone
+        self._capture_fs       = float(self._NOMINAL_SR_HZ)  # Hz, frozen at capture start
         self._cfg_timeout = QtCore.QTimer(self)
         self._cfg_timeout.setSingleShot(True)
         self._cfg_timeout.timeout.connect(self._on_cfg_timeout)
@@ -11807,11 +11814,28 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
             self.main_monitor.log("WARNING: could not restore hgac_enable — it is still OFF")
 
     # ── Callbacks from PPGMonitor ─────────────────────────────────────────────
+    def _board_fs(self) -> float:
+        """Sample rate of the board being captured, from the last $CFG; nominal if unknown."""
+        kv = getattr(self.main_monitor, "_last_cfg", None) or {}
+        try:
+            fs = float(str(kv.get("sr", "")).strip())
+        except ValueError:
+            return float(self._NOMINAL_SR_HZ)
+        return fs if fs > 0 else float(self._NOMINAL_SR_HZ)
+
+    def _progress_text(self, count: int, target: int) -> str:
+        """Progress as samples and as seconds, on the rate frozen when the capture started."""
+        fs = self._capture_fs
+        if target > 0:
+            return f"{count} / {target}  ({count / fs:.0f} / {target / fs:.0f} s)"
+        return f"{count}  ({count / fs:.0f} s)"
+
     def on_capture_started(self, filepath: str, target: int):
         self._set_capturing(True)
+        self._capture_fs = self._board_fs()
         self._progress.setMaximum(target if target > 0 else 0)
         self._progress.setValue(0)
-        self._progress.setFormat("0" if target == 0 else f"0 / {target}")
+        self._progress.setFormat(self._progress_text(0, target))
         name = os.path.basename(filepath)
         self._lbl_status.setText(f"CAPTURING → {name}")
         self._lbl_status.setStyleSheet(
@@ -11820,16 +11844,15 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     def on_capture_progress(self, count: int, target: int):
         if target > 0:
             self._progress.setValue(count)
-            self._progress.setFormat(f"{count} / {target}")
         else:
             self._progress.setMaximum(0)
-            self._progress.setFormat(f"{count}")
+        self._progress.setFormat(self._progress_text(count, target))
 
     def on_capture_done(self, count: int, filepath: str):
         self._set_capturing(False)
         self._progress.setMaximum(100)
         self._progress.setValue(100)
-        self._progress.setFormat(f"{count} samples")
+        self._progress.setFormat(f"{count} samples  ({count / self._capture_fs:.0f} s)")
         name = os.path.basename(filepath)
         self._lbl_status.setText(f"DONE  {count} samples → {name}")
         self._lbl_status.setStyleSheet(

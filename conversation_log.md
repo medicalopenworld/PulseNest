@@ -22386,3 +22386,60 @@ Para eso habria que repetir con el acoplamiento flojo de la sesion de las 15:33.
 - Rebuild y OTA raw a las tres con MAC verificada: **HTTP 200 en 4,7 / 4,1 / 4,6 s**. Las tres
   reportan `fw=0.13 lib=0.93 build=cccf6ee libsha=dcf2a9c` — se acabo el `-dirty`. Script relanzado.
 - **Sin push**: los dos repos quedan commiteados en local, a la espera de que Alex lo pida.
+
+
+## Sesion 2026-09-16 (1) - Push de los dos repos (tag v0.93) y la barra de Lab Capture en segundos (script v1.56)
+
+### Push
+- `incunest_afe4490` `d81fadc..dcf2a9c` y `PulseNest` `948df2f..703c3d1`, los dos a `origin/master`.
+- **Tag anotado `v0.93`** en la libreria: faltaba, y v0.90/v0.91/v0.92 si estaban. La politica de la
+  libreria es un tag por version.
+- Los cuatro PDF/HTML de terceros de `docs/` siguen sin versionar (repo publico).
+
+### Campana MS100 del extremo bajo: que ritmos y con que protocolo
+Alex pregunta a que bpm poner el simulador. Decidido: **40 bpm es la que falta** (unica fila sin
+medir de la tabla tau-en-latidos: con tau=1,5 s son 1,00 latidos de memoria, umbral efectivo 22 %;
+medido esta 1,5 latidos = funciona y 0,5 = colapsa). Se anaden **50** (para acotar el codo si 40
+falla), **35** y **30** (el suelo del pliego OMS-UNICEF, pendiente desde hace tiempo).
+
+Dos condiciones del protocolo, ambas correcciones al de la campana del 08-09:
+1. **Con perturbacion, obligatorio.** En MS100 sin perturbar todos los latidos tienen la misma
+   amplitud: no se pierde ninguno con ningun tau y la medida sale vacia. La limpia de 40 bpm que ya
+   existe no sirve para esto. El fallo necesita variacion de amplitud latido a latido (en banco con
+   dedo fue CV 23-43 %).
+2. **150 s en vez de 60 s.** A 250 bpm, 60 s son 250 latidos; a 30 bpm son 30. La estadistica se
+   hunde justo en el extremo que se quiere medir.
+
+No hace falta reflashear por cada tau: `tools/hr1_streak_forensics.py` reproduce el detector offline
+sobre `FW_OT_LED1`, asi que **una captura por ritmo alimenta el barrido entero**.
+
+### El comentario de los ficheros `MS100_PROBEPERT_*`
+Alex pregunta que hacer con las lineas `# Manual presses on the sensor housing: ~20 s: 1 press...`.
+Es texto libre que el escribio en el campo **Pre-capture notes** de la ventana de captura; ninguna
+herramienta lo lee, pero es **la unica procedencia** de esas capturas: sin el, un `PROBEPERT` es
+indistinguible de uno limpio hasta que miras la senal.
+- **En las viejas no se toca**: es el acta de lo que paso.
+- **En las nuevas hay que cambiarlo**, y no solo por la duracion: el calendario esta en *segundos*,
+  y un apreton dura un tiempo fijo de reloj (~0,5 s) que son **2 latidos a 250 bpm y un cuarto de
+  latido a 30 bpm** — el mismo defecto que acabamos de corregir en tau. Propuesto para las de 150 s:
+  `PRESS_SCHEDULE_S: 30=1, 50=2, 70=3, 90=4`, con tramos limpios 0-30 s y 110-150 s (el final sirve
+  para lo que mas importa: comprobar que tau=1,5 s **no inventa** latidos sin perturbacion).
+- **Cabo suelto**: mientras las marcas sean `~20 s` a ojo, la herramienta no puede separar "latidos
+  perdidos durante el apreton" de "latidos perdidos en senal limpia", que son dos metricas con
+  significado clinico opuesto. La ventana ya tiene mecanismo de eventos (`self.events`, pares
+  fila-texto que se vuelcan a las post-notes); un boton que estampe la fila exacta al apretar son
+  ~15 lineas. **Pendiente de que Alex decida** si se hace antes de grabar.
+
+### Cambio de codigo: la barra de progreso de Lab Capture, en muestras Y en segundos (v1.56)
+Pedido por Alex, y directamente al servicio de lo anterior: los apretones se anotan en segundos de
+reloj, y el operador no tenia lectura en esas unidades mientras grababa.
+- `timed: 37500 / 75000  (75 / 150 s)` · `continuo: 12750  (26 s)` · `fin: 75000 samples  (150 s)`.
+- Los segundos son `count / fs`, con **fs leido del campo `sr` del `$CFG` de esa captura** (no una
+  constante) y **congelado al arrancar**, para que el numero no salte a mitad y coincida con el que
+  queda escrito en la cabecera del fichero. Fallback a `_NOMINAL_SR_HZ` = 500 si el build no manda
+  `sr`, igual que ya hacia `MultiCaptureWindow` con su pista de duracion.
+- Tocado: `_NOMINAL_SR_HZ`, `_capture_fs`, `_board_fs()`, `_progress_text()` y los tres callbacks
+  (`on_capture_started/progress/done`).
+- Verificado offscreen: seis casos de `_board_fs` (500, 1000, sin `sr`, `?`, `0`, sin `$CFG`) y los
+  cuatro estados de la barra. A 1000 Hz las mismas 75000 muestras se leen como 75 s.
+- Spec `pulsenest_lab_spec.md` -> **v1.56** (§7.13 y changelog).

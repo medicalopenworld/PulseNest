@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.55
+# pulsenest_lab — Specification v1.56
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1646,7 +1646,14 @@ Purpose: controlled capture with metadata for lab sessions.
   for an invalid enum) fall through to "-1". Hence the `_OHM` suffix in the CSV column name,
   unlike the frame field itself
 - Mode: continuous / timed (N samples)
-- Progress bar (timed mode)
+- Progress bar, in **both units**: `37500 / 75000  (75 / 150 s)` when timed, `12750  (26 s)` when
+  continuous (v1.56). The capture is controlled in samples, but the operator works in seconds:
+  the perturbation protocol of a `MS100_PROBEPERT_*` capture is annotated in the notes as
+  "~20 s: 1 press", and judging "is it time for the next press?" from a sample count means
+  dividing by the rate in your head while your other hand is on the probe. Seconds are
+  `count / fs` with `fs` read from the `sr` field of the `$CFG` of that capture and **frozen at
+  start** (`_board_fs()`, falling back to `_NOMINAL_SR_HZ` = 500 when a build sends no `sr`), so
+  the number shown can't shift mid-capture and matches the rate written in the file's own header
 - [START] / [STOP]
 - **Column profiles** (added 2026-09-05): two preset buttons that tick the checkboxes.
   *Data (raw only)* keeps the 10 columns that cannot be reconstructed later — `SmpCnt`, `Ts_us`,
@@ -2153,6 +2160,15 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.56 — 2026-09-16
+
+**The Lab Capture progress bar reads in seconds as well as samples (§7.13).** Nothing about the
+capture changes — it is still controlled, stored and reported in samples — but the bar now shows
+`count / target  (s / s)` alongside. The trigger is the perturbed-MS100 campaign: the presses are
+annotated in wall-clock seconds in the pre-notes, and the operator had no reading in those units
+while recording. The rate comes from that capture's `$CFG` rather than a constant, so a board at
+any PRF of the catalogue reports its own seconds.
 
 ### v1.55 — 2026-09-15
 
