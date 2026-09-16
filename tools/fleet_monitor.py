@@ -6,8 +6,9 @@ $MODE can leave it, by construction (spec §4.11). It can run on the bench PC ne
 another PC with `--hub <bench-pc-ip>`.
 
 Per board: IP · MAC · board type · fw / lib / build (from the hub's $CFG cache and any live $CFG)
-· datagrams/s · frame mode · sample-counter gaps · probe state, RSQI, DiagCode, SpO2, HR1 and RF
-from the last $M4 · count of $ERR lines · seconds since last seen. Below: the hub's own status
+· datagrams/s · frame mode · sample-counter gaps · probe state, RSQI, DiagCode, SpO2, HR1,
+V_TIA_LED1/2 (volts, 2 decimals) and RF from the last $M4 · count of $ERR lines · `last`: "live"
+while the board spoke within the last 2 s, else the silence in seconds. Below: the hub's own status
 (@STATUS: subscribers and who holds the control).
 
 The frame is read the way UdpBoard does in the lab: fields by position after '$' (spec §4.2 —
@@ -95,8 +96,16 @@ class BoardView:
                 return p[i].decode("ascii", "replace")
             except IndexError:
                 return "?"
+
+        def volts(i):
+            try:
+                return f"{float(p[i]):.2f}"
+            except (IndexError, ValueError):
+                return "?"
         self.fields = {"spo2": f(10), "hr1": f(14), "rsqi": f(20), "diag": f(21),
-                       "probe": PROBE_STATES.get(f(22), f(22)), "rf1": f(34), "rf2": f(35)}
+                       "probe": PROBE_STATES.get(f(22), f(22)),
+                       "vtia1": volts(23), "vtia2": volts(24),      # V_TIA_LED1 / V_TIA_LED2, volts
+                       "rf1": f(34), "rf2": f(35)}
 
 
 def render(boards, client, hub, t_start):
@@ -105,7 +114,7 @@ def render(boards, client, hub, t_start):
            f", read-only)  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}", ""]
     hdr = (f"{'IP':15s} {'MAC':17s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
            f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
-           f"{'SpO2':>5s} {'HR1':>6s} {'RF1/RF2':>10s} {'ERR':>3s} {'last':>5s}")
+           f"{'SpO2':>5s} {'HR1':>6s} {'V_TIA1':>6s} {'V_TIA2':>6s} {'RF1/RF2':>10s} {'ERR':>3s} {'last':>5s}")
     out.append(hdr)
     out.append("-" * len(hdr))
     for b in sorted(boards.values(), key=lambda x: x.ip):
@@ -116,7 +125,8 @@ def render(boards, client, hub, t_start):
                    f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
                    f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {fl.get('probe', '?'):>{PROBE_W}s} "
                    f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} {fl.get('spo2', '?'):>5s} "
-                   f"{fl.get('hr1', '?'):>6s} {(fl.get('rf1', '?') + '/' + fl.get('rf2', '?')):>10s} "
+                   f"{fl.get('hr1', '?'):>6s} {fl.get('vtia1', '?'):>6s} {fl.get('vtia2', '?'):>6s} "
+                   f"{(fl.get('rf1', '?') + '/' + fl.get('rf2', '?')):>10s} "
                    f"{b.errs:3d} {state:>5s}")
     if not boards:
         out.append("(no board seen yet)")
