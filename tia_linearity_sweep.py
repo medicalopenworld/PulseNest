@@ -42,8 +42,7 @@ import time
 from datetime import datetime
 
 # ── Protocol (must match pulsenest_lab.py) ──────────────────────────────────
-UDP_DATA_PORT = 5005          # ESP32 -> host data frames
-UDP_CMD_PORT  = 5006          # host -> ESP32 commands
+from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT   # the one place the ports live
 ADC_FS_COUNTS = 2 ** 21 - 1   # positive full-scale code (datasheet Table 7)
 ADC_FSR       = 1.2           # V
 

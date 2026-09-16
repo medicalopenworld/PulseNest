@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.58
+# pulsenest_lab — Specification v1.59
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -64,7 +64,8 @@ Defined at module level, after imports.
 |----------|-------|---------|
 | `PORT` | `'COM15'` | Default serial port (overridable via UI combo) |
 | `BAUD` | `921600` | Serial baud rate — must match firmware |
-| `UDP_DEFAULT_PORT` | `5005` | Default UDP listen port — must match `wifi_config.h` |
+| `UDP_DATA_PORT` | `5005` | UDP port the host listens on (boards → host). Imported from `pulsenest_net.py`, the host-side source of truth since v1.59; the firmware mirror is `include/wifi_config.h` (`UDP_TARGET_PORT`), gitignored, and `python pulsenest_net.py` checks they agree |
+| `UDP_CMD_PORT` | `5006` | UDP port each board listens on (host → board). Same module |
 | `SETTINGS_FILE` | `pulsenest_lab.ini` (same dir) | Qt QSettings persistence file |
 | `CAPTURES_DIR` | `captures/` (same dir) | Output directory for all CSV captures; created at startup |
 | `WINDOW_SIZE` | `500` | Rolling display buffer length (10 s @ 50 Hz) |
@@ -1355,7 +1356,7 @@ Stats are accumulated over `spin_stats_interval` seconds (default 1 s, user-conf
 | HGAC / RF1 / RF2 | Quick HW controls, see §6.3.1 — apply on selection, no Set button |
 | Frame mode combo | `$M1`–`$M4`; mirrors the mode in force and requests a change, see §6.5.1 |
 | UDP WiFi button | Toggle UDP receiver on/off; switches active transport |
-| UDP port spin | UDP listen port (default 5005) |
+| UDP port spin | UDP listen port (default `UDP_DATA_PORT` = 5005) |
 | Subwindow buttons | Toggle-open/close each secondary window |
 
 #### 6.5.1 Frame mode combo — mirror, not a setting
@@ -2226,6 +2227,17 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.59 — 2026-09-16
+
+**One source of truth for the UDP ports: `pulsenest_net.py` (§2).** `UDP_DATA_PORT` (5005, the
+host's listening port) and `UDP_CMD_PORT` (5006, each board's) were copied by hand into five
+programs — the lab, `tia_linearity_sweep.py`, `tools/udp_cmd_latency.py`, `tools/udp_fw_versions.py`
+and `tools/udp_multiboard_test.py` — and the firmware's copy sits in a gitignored file, so nothing
+tracked held the number. All five import the module now; `python pulsenest_net.py` verifies the
+local `wifi_config.h` against it. The lab's `UDP_DEFAULT_PORT` is renamed `UDP_DATA_PORT`: the
+two are the listening port of each END of the link, and the old name hid that. Phase 0 of the
+hub / read-only subscribers work (§4.9, forthcoming); no behaviour changes.
 
 ### v1.58 — 2026-09-16
 

@@ -40,7 +40,7 @@ import pulsenest_lab as P  # noqa: E402
 from PyQt5 import QtCore, QtWidgets  # noqa: E402
 
 DATA_PORT, CMD_PORT = 15005, 15006
-P.UDP_DEFAULT_PORT = DATA_PORT
+P.UDP_DATA_PORT = DATA_PORT
 P.UDP_CMD_PORT = CMD_PORT
 P.UDP_LOST_TIMEOUT_S = 1.5
 P.UDP_NET_SUMMARY_S = 4.0

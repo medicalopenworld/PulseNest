@@ -16,12 +16,13 @@ With no IP, every board currently streaming to the data port is measured.
 Run with pulsenest_lab.py closed (it binds the data port).
 """
 import argparse
+import os
 import socket
 import sys
 import time
 
-DATA_PORT = 5005   # UDP_TARGET_PORT in include/wifi_config.h
-CMD_PORT = 5006    # UDP_CMD_PORT in include/wifi_config.h
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402  (the one place the ports live)
 
 
 def discover(sock, seconds):
@@ -49,7 +50,7 @@ def probe(sock, ip, timeout_s):
         pass
     sock.settimeout(0.05)
     t0 = time.perf_counter()
-    sock.sendto(b"$CFG?\n", (ip, CMD_PORT))
+    sock.sendto(b"$CFG?\n", (ip, UDP_CMD_PORT))
     deadline = t0 + timeout_s
     while time.perf_counter() < deadline:
         try:
@@ -86,15 +87,15 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
     try:
-        sock.bind(("0.0.0.0", DATA_PORT))
+        sock.bind(("0.0.0.0", UDP_DATA_PORT))
     except OSError as exc:
-        print(f"ERROR: cannot bind :{DATA_PORT} ({exc}) - close pulsenest_lab.py")
+        print(f"ERROR: cannot bind :{UDP_DATA_PORT} ({exc}) - close pulsenest_lab.py")
         return 1
     sock.settimeout(0.2)
 
     targets = args.ips or discover(sock, 3.0)
     if not targets:
-        print(f"no board streaming to :{DATA_PORT} and no IP given")
+        print(f"no board streaming to :{UDP_DATA_PORT} and no IP given")
         return 1
     tag = f" [{args.label}]" if args.label else ""
     print(f"$CFG? round-trip latency{tag} - {args.n} probes per board, {args.gap:.2f} s apart\n")

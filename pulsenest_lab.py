@@ -216,8 +216,9 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 # --- CONFIGURACIÓN ---
 PORT             = 'COM15'
 BAUD             = 921600
-UDP_DEFAULT_PORT = 5005   # must match UDP_TARGET_PORT in include/wifi_config.h
-UDP_CMD_PORT     = 5006   # must match UDP_CMD_PORT in include/wifi_config.h
+# UDP ports live in pulsenest_net.py, the host-side source of truth (the firmware mirror is
+# include/wifi_config.h, gitignored; `python pulsenest_net.py` checks they agree).
+from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
 UDP_BATCH_SIZE   = 5      # must match UDP_BATCH_SIZE in src/main.cpp: data frames per datagram
 # Multi-board capture (spec §4.8 F3)
 # 25 000 frames = 50 s at 500 Hz. The reader must never block on a writer, so a board's capture
@@ -12444,7 +12445,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._last_drain_t  = None   # for drain_interval measurement
         self._last_render_t = None   # for render_interval measurement
         self._gaps_B   = 0     # Punto B gap detection (updated in _serial_reader / _udp_reader thread)
-        self._udp_port = UDP_DEFAULT_PORT
+        self._udp_port = UDP_DATA_PORT
         self._queue_size_buf        = deque(maxlen=50)  # Punto A: serial queue depth history
 
         # ── Stats table buffers (reset every N seconds) ───────────────────────
@@ -12605,7 +12606,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "UDP WiFi",
             "Start or stop the UDP receiver. Click to toggle. "
             "Runs in parallel with SERIAL — serial port stays open for command responses ($CFG, $DIAG, etc.). "
-            f"Listens on the port configured below (default {UDP_DEFAULT_PORT})."))
+            f"Listens on the port configured below (default {UDP_DATA_PORT})."))
         self.sidebar_layout.addWidget(self.btn_udp)
 
         # SOURCE: which stream feeds plots, algorithms and captures (§4.8 F2). Items are rebuilt
@@ -14469,7 +14470,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._gaps_B   = 0
         with self._udp_boards_lock:
             self._udp_boards.clear()
-        self._udp_port = UDP_DEFAULT_PORT
+        self._udp_port = UDP_DATA_PORT
         self._udp_thread = threading.Thread(target=self._udp_reader, daemon=True)
         self._udp_thread.start()
         # Transport switches to "udp" only after first datagram arrives (_on_udp_active).
@@ -14672,7 +14673,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         """OFF: receiver stopped. LISTEN: receiving but UDP is not the source (no data yet, or the
         user picked SERIAL). ON: the active board feeds the pipeline. LOST: it fell silent."""
         text, bg, fg, border = self._UDP_BTN_STYLES[state]
-        self.btn_udp.setText(text.format(port=getattr(self, '_udp_port', UDP_DEFAULT_PORT)))
+        self.btn_udp.setText(text.format(port=getattr(self, '_udp_port', UDP_DATA_PORT)))
         self.btn_udp.setStyleSheet(
             f"background-color: {bg}; color: {fg}; font-size: 17px; "
             f"font-weight: bold; padding: 5px; border: 1px solid {border}; border-radius: 4px;")

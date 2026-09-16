@@ -11,13 +11,14 @@ Usage:  python tools/udp_fw_versions.py [IP ...] [--discover S] [--reply S]
 Must be run with pulsenest_lab.py closed (it owns :5005).
 """
 import argparse
+import os
 import re
 import socket
 import sys
 import time
 
-DATA_PORT = 5005   # UDP_TARGET_PORT in include/wifi_config.h
-CMD_PORT = 5006    # UDP_CMD_PORT in include/wifi_config.h
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402  (the one place the ports live)
 ID_KEYS = ("board", "mac", "fw", "lib", "build", "libsha")
 
 
@@ -30,9 +31,9 @@ def main():
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.bind(("0.0.0.0", DATA_PORT))
+        sock.bind(("0.0.0.0", UDP_DATA_PORT))
     except OSError as exc:
-        print(f"ERROR: cannot bind :{DATA_PORT} ({exc}) — is pulsenest_lab.py running?")
+        print(f"ERROR: cannot bind :{UDP_DATA_PORT} ({exc}) — is pulsenest_lab.py running?")
         return 1
     sock.settimeout(0.2)
 
@@ -50,11 +51,11 @@ def main():
     for ip, (n, b) in sorted(sources.items()):
         print(f"  {ip:16s} {n / args.discover:6.1f} datagrams/s  {b * 8 / args.discover / 1e6:5.2f} Mbit/s")
     if not sources:
-        print(f"  (no UDP traffic on :{DATA_PORT})")
+        print(f"  (no UDP traffic on :{UDP_DATA_PORT})")
 
     targets = sorted(set(sources) | set(args.ips))
     for ip in targets:
-        sock.sendto(b"$CFG?\n", (ip, CMD_PORT))
+        sock.sendto(b"$CFG?\n", (ip, UDP_CMD_PORT))
     print(f"Sent $CFG? to: {', '.join(targets) if targets else '(none)'}")
 
     cfg_frames = {}  # ip -> line
