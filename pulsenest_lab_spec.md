@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.57
+# pulsenest_lab — Specification v1.58
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -932,6 +932,46 @@ number of beats instead: `tau = N x RR`, so the threshold falls by the same frac
 at any rate. The lower bound on this parameter is proportional to RR — the threshold must not
 collapse between beats — so expressed in seconds it differs 6x across the declared 40-300 BPM
 range, which no single fixed value can satisfy.
+
+**v1.58 — the threshold is referenced to zero, not to the waveform's floor.** Observed by Alex on
+the HR1LAB rows (SPEC losing beats BPF keeps) and measured here. The running maximum decays
+*multiplicatively*, so it falls towards **zero**, and the threshold is `0.6 x running_max`. That is
+60 % of the pulse amplitude only if the trough of the filtered waveform sits at zero. With a floor
+`b` and an amplitude `A` above it, the beat has to reach
+
+    (0.6*(b + A) - b) / A  =  0.6 + 0.4 * b/A
+
+of its own amplitude. So `hr1_threshold_fraction` is not the detection margin: `b/A` is, and `b`
+is whatever the DC remover left behind. Measured per beat (floor = minimum over the preceding RR),
+on `MS100_PROBEPERT_98SPO2_40HR` (100 beats) and the 51.8 bpm bench capture (25):
+
+| variant | capture | median effective fraction | worst beat |
+|---------|---------|---------------------------|------------|
+| SPEC | 40 bpm | 0.449 | **0.685** |
+| BPF  | 40 bpm | 0.484 | 0.505 |
+| SPEC | 51.8 bpm | 0.382 | 0.461 |
+| BPF  | 51.8 bpm | 0.437 | 0.456 |
+
+Two things follow, and the second is the one that matters. First, **the nominal 0.6 is never
+0.6**: the floor normally sits *below* zero (`b/A` median −0.38 for SPEC), so the detector runs
+more permissive than the constant reads — one more entry for the buried-literals inventory.
+Second, **the defect is the modulation, not the bias**: on the same capture SPEC's effective
+fraction spans 0.27–0.685 against BPF's 0.25–0.505, and only SPEC ever puts the floor *above* zero
+(`b/A` up to +0.212). Its worst beats are exactly the ones after a press, where baseline wander
+walks through its 0.0995 Hz corner and BPF's 0.5 Hz stops. The counts agree in direction, on the
+pressed stretch at 40 bpm: SPEC 3 missed / 8 extra, BPF 2 / 6.
+
+This says the front end is a proxy for the real defect. Speeding the DC removal was already
+measured (2026-09-06/08) to be a trade, not a win — `BPF 0.5 Hz` reproduces `SPEC with dc tau
+0.4 s` row for row, so it is the corner and not the filter type, and accelerating the return to
+zero cut missed beats at 140–220 bpm while buying 4–5 extra beats at 60 bpm off the derivative
+peak of the step. **Referencing the threshold to a decaying running *minimum* instead**
+(`threshold = floor + k x (peak - floor)`) would make the margin invariant to the offset, and to
+the corner frequency, without touching the filter. Untested — an idea, not a measurement.
+
+*Method note: the reference beats come from peaks of SPEC's moving average for both variants, and
+the biquad has a different group delay. At 40 and 52 bpm the ±0.35 s matching window absorbs it;
+at 250 bpm it would not, so a variant comparison up there needs a common front end first.*
 
 `_update_decay_alpha()` lives in `HR1Variant` and recomputes the factor only on a rate change or a
 new RR interval, never per sample. Both SPEC and BPF consume `self._decay_alpha_v`.
@@ -2186,6 +2226,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.58 — 2026-09-16
+
+**Why SPEC loses beats that BPF keeps: the threshold is referenced to zero (§5.3.0).** Alex saw it
+on the HR1LAB rows and named the mechanism — the running max decays towards zero rather than
+towards the floor of the waveform, so whatever DC the front end leaves behind modulates the
+detection margin. Measured as `0.6 + 0.4 x b/A`: SPEC spans 0.27–0.685 of the pulse amplitude
+across one capture, BPF 0.25–0.505. The nominal 0.6 is never 0.6 in either.
 
 ### v1.57 — 2026-09-16
 

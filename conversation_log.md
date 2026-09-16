@@ -22490,3 +22490,49 @@ compatible con el 1-3 s de la campana del 08-09. Mover la libreria otra vez no t
 Con la verdad corregida, el barrido completo (limpio / perturbado, 6 ritmos) dice ademas que
 **tau=20 s falla en todo el rango** (16/55 a 40 bpm, 16/116 a 180, 33/139 a 220, 46/158 a 250) y que
 de 140 bpm arriba cualquier tau <= 5 s da 0 perdidos y <= 1 extra.
+
+### Observacion de Alex en HR1LAB: el umbral se referencia al cero, no al suelo de la onda
+Comparando visualmente las filas **SPEC** y **BPF** (asi se llaman: el `NAME` de cada variante,
+clases `HR1TestCalc` y `HR1BiquadCalc`; no existe ningun `HR1_SPEC`), Alex ve que SPEC falla mas
+que BPF y da el mecanismo: **SPEC tarda mas en cancelar la DC, y el decay baja hacia cero y no
+hacia el suelo de la forma de onda.** De acuerdo, y medido.
+
+El maximo corriente decae **multiplicativamente** (`running_max *= decay`), o sea **hacia cero**, y
+el umbral es `0,6 x running_max`. Eso es el 60 % de la amplitud del pulso **solo si el valle de la
+onda filtrada esta en cero**. Con un suelo `b` y una amplitud `A` por encima, el latido tiene que
+alcanzar `(0,6*(b+A) - b)/A = 0,6 + 0,4*b/A` de su propia amplitud. Es decir:
+**`hr1_threshold_fraction` no es el margen de deteccion; `b/A` lo es, y `b` es lo que deje el
+eliminador de DC.**
+
+Medido por latido (suelo = minimo del RR anterior), fraccion efectiva del umbral:
+
+| variante | captura | mediana | peor latido |
+|----------|---------|---------|-------------|
+| SPEC | 40 bpm (100 latidos) | 0,449 | **0,685** |
+| BPF  | 40 bpm | 0,484 | 0,505 |
+| SPEC | 51,8 bpm banco (25) | 0,382 | 0,461 |
+| BPF  | 51,8 bpm | 0,437 | 0,456 |
+
+Dos consecuencias, y la segunda es la que importa:
+1. **El 0,6 nominal nunca es 0,6.** El suelo esta casi siempre *por debajo* del cero (b/A mediana
+   -0,38 en SPEC), asi que el detector corre mas permisivo de lo que dice la constante. Una entrada
+   mas para el inventario de literales enterrados.
+2. **El defecto es la modulacion, no el sesgo.** En la misma captura SPEC va de 0,27 a 0,685 y BPF
+   de 0,25 a 0,505, y **solo SPEC llega a poner el suelo por encima del cero** (b/A hasta +0,212).
+   Sus peores latidos son justo los de despues de un apreton, donde la deriva de linea base pasa
+   por su esquina de 0,0995 Hz y la de 0,5 Hz de BPF corta. Los conteos van en la misma direccion
+   en el tramo perturbado a 40 bpm: **SPEC 3 perdidos / 8 extra, BPF 2 / 6**.
+
+**Consecuencia de diseno:** el front-end es un sintoma, no la causa. Acelerar la DC ya se midio
+(06-09/08-09) y es un canje, no una victoria: `BPF 0,5 Hz` reproduce `SPEC con dc tau 0,4 s` fila
+por fila — es la frecuencia de esquina, no el tipo de filtro — y acelerar el retorno a cero bajo
+los perdidos a 140-220 bpm pero compro 4-5 latidos extra a 60 bpm (pico derivativo del escalon).
+**Referenciar el umbral a un minimo corriente con el mismo decay** (`umbral = suelo + k*(pico -
+suelo)`) haria el margen invariante al offset y a la esquina, sin tocar el filtro. **Sin probar.**
+
+Anotado en `pulsenest_lab_spec.md` v1.58 (§5.3.0) y en la memoria
+`project_hr1_threshold_reference_task`.
+
+*Nota de metodo: los latidos de referencia salen de los picos de la media movil de SPEC para las
+dos variantes, y el biquad tiene otro retardo de grupo. A 40 y 52 bpm la ventana de +/-0,35 s lo
+absorbe; a 250 bpm no, asi que comparar variantes alli exige antes un front-end comun.*
