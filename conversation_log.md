@@ -22443,3 +22443,50 @@ reloj, y el operador no tenia lectura en esas unidades mientras grababa.
 - Verificado offscreen: seis casos de `_board_fs` (500, 1000, sin `sr`, `?`, `0`, sin `$CFG`) y los
   cuatro estados de la barra. A 1000 Hz las mismas 75000 muestras se leen como 75 s.
 - Spec `pulsenest_lab_spec.md` -> **v1.56** (§7.13 y changelog).
+
+### La captura de 40 bpm: la celda que faltaba, medida
+`MS100_PROBEPERT_98SPO2_40HR_20260916_103601` (V17, 150 s, fw 0.13 / lib v0.93 / build `cccf6ee`,
+con el `PRESS_SCHEDULE_S` nuevo en las notas). **100 latidos en 150 s = 40,0 bpm exactos.**
+
+El calendario de apretones en las notas permite lo que antes no se podia hacer: **separar el tramo
+limpio del perturbado**, que responden a preguntas distintas y opuestas — un latido perdido es una
+falsa bradicardia (molesta), una deteccion extra esconde una bradicardia real (peligrosa).
+
+| tramo | latidos | CV de amplitud | RR |
+|-------|---------|----------------|-----|
+| limpio (10-30 y 112-150 s) | 38 | **6,8 %** | 1,496-1,502 s (metronomo) |
+| perturbado (30-112 s) | 55 | **41,5 %** | 0,930-1,998 s |
+
+**Resultado (barrido de tau, latidos perdidos / extra):**
+- **Tramo limpio: 0 perdidos y 0 extra con TODOS los tau, de 20 s a 1 s.** El miedo al doble conteo
+  a 40 bpm (1,00 latidos de memoria, umbral efectivo 22 %) **no se materializa**: en senal limpia
+  el tau es irrelevante porque la amplitud no varia.
+- Tramo perturbado: **tau=20 s habria perdido 16 de 55 latidos (29 %)** — el cambio de ayer no solo
+  fue correcto, a 40 bpm era mucho mas necesario que a 52. Con tau=1,5 s se pierden 3; con 2 s, 3;
+  con 3 s y 5 s, 1. Extras: 8 con 1,5 s, 6 con 2 s, 5 con 3/5/20 s, **todos dentro de apretones,
+  ninguno en senal limpia**.
+
+**Decision: se queda en 1,5 s.** El 3 s gana en esta captura (1 perdido frente a 3, 5 extras frente
+a 8) pero **pierde en la del banco con dedo a 51,8 bpm** (1 perdido frente a 0 de 25). Es un empate
+dentro del ruido de una sola captura por punto, y el optimo sigue siendo **plano de 1,5 a 5 s**,
+compatible con el 1-3 s de la campana del 08-09. Mover la libreria otra vez no tiene respaldo.
+**La celda de 40 bpm de la tabla tau-en-latidos queda cerrada**, y con ella el argumento para
+`max_decay_beats` (tau = N x RR): un tau fijo cubre de 40 a 250 bpm.
+
+### Dos defectos corregidos en `tools/hr1_streak_forensics.py`
+1. **Techo de 85 bpm en la verdad de referencia.** `true_beats()` usaba
+   `find_peaks(distance=0.7*fs)`, un refractario fijo heredado de la captura de banco a 52 bpm.
+   De 140 bpm en adelante contaba **un latido de cada dos** (140 -> 63 picos = 67 bpm; 250 -> 55 =
+   58 bpm) y cada latido real que el detector si encontraba en medio se anotaba como "extra": la
+   columna de extras crecia con el ritmo y no decia nada de tau. Ahora son dos pasadas — una
+   permisiva (0,20 s = techo de 300 bpm) para estimar el RR mediano, y la real con refractario
+   0,6 x RR — **sin usar el ritmo del nombre del fichero**, que es lo que se esta comprobando.
+   Validado: 100 latidos a 40 bpm, 138/176/212/241 a 140/180/220/250, y **25 sin cambio en la
+   captura de banco de 51,8 bpm — la conclusion del 15-09 no se toca** (verificado re-ejecutando).
+2. **`replay()` aceptaba en silencio parametros inexistentes.** Un nombre mal escrito se guardaba
+   como atributo nuevo que nadie lee y el barrido salia **plano**, con pinta de "tau da igual".
+   Ahora `AttributeError`.
+
+Con la verdad corregida, el barrido completo (limpio / perturbado, 6 ritmos) dice ademas que
+**tau=20 s falla en todo el rango** (16/55 a 40 bpm, 16/116 a 180, 33/139 a 220, 46/158 a 250) y que
+de 140 bpm arriba cualquier tau <= 5 s da 0 perdidos y <= 1 extra.

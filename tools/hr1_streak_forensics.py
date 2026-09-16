@@ -90,6 +90,10 @@ def replay(ot, fs, **params):
     """
     c = P.HR1TestCalc()
     for k, v in params.items():
+        if not hasattr(c, k):
+            raise AttributeError(
+                f"HR1TestCalc has no {k!r}: a mistyped parameter would otherwise be set as a new "
+                f"attribute, nobody would read it, and the sweep would come out flat")
         setattr(c, k, v)
     c.reset()
     c._recalc_params(fs)
@@ -110,7 +114,25 @@ def replay(ot, fs, **params):
 
 
 def true_beats(ma, fs):
-    tb, _ = find_peaks(ma, distance=int(0.7 * fs), prominence=np.std(ma) * 0.5)
+    """Beats established independently of the detector under test. -> peak indices.
+
+    The refractory has to follow the rate. A fixed 0.7 s (the first version of this tool, written
+    for a 52 bpm bench capture) is a 85 bpm ceiling: from 140 bpm up it keeps every other beat,
+    and every real beat the detector finds in between is then scored as an "extra" - the extra
+    column exploded with the rate and said nothing about tau. So: one permissive pass to estimate
+    the median RR, then the real pass with a refractory of 0.6 x that RR. The rate written in the
+    filename is deliberately not used: the truth must not depend on the label it is checking.
+
+    Validated against counts known by other means: 100 beats in the 150 s at 40 bpm, 25 in the
+    52 bpm bench capture (unchanged from the fixed-refractory version, so the 2026-09-15 finding
+    stands), and N x duration / 60 at each MS100 rate, whose simulator is a metronome.
+    """
+    prom = np.std(ma) * 0.5
+    coarse, _ = find_peaks(ma, distance=int(0.20 * fs), prominence=prom)   # 300 bpm ceiling
+    if len(coarse) < 3:
+        return coarse
+    rr = np.median(np.diff(coarse)) / fs
+    tb, _ = find_peaks(ma, distance=max(1, int(0.6 * rr * fs)), prominence=prom)
     return tb
 
 
