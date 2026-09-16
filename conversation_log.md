@@ -22614,3 +22614,17 @@ decision de firmware aparte.
 - Windows Firewall: el hub es `python.exe` y puede pedir permiso la primera vez en otra maquina.
 - La memoria `project_two_instances_shared_udp_task` queda absorbida (una segunda instancia del
   lab es hoy posible como lector; como controlador, la primera lo tiene).
+
+### Anadido: fleet_monitor sin parpadeo, y el hook que mata al hub
+- Alex: el monitor parpadea. Causa: `cls` en cada refresco (shell + pantalla en blanco + pintar).
+  Arreglo `aae36a9`: redibujado en sitio con ANSI (cursor al origen, cada linea borra su cola,
+  `\x1b[J` para lo que sobre, un solo `write`); VT activado con `SetConsoleMode`; sin consola VT
+  o por tuberia, cuadros planos. Hay que relanzar el monitor abierto para verlo.
+- **El hub #1 murio a las 23:42:37 sin traza** y el lab arranco el #2 solo. Causa encontrada: el
+  PreToolUse hook `~/.claude/hooks/pulsenest_launch_pre.sh` ejecuta `Stop-Process -Name python`
+  cuando mi Bash lanza `pulsenest_lab.py` — mata TODOS los `python.exe` (hub, monitor, herramientas),
+  no los `pythonw.exe` que pretendia. Propuesto a Alex filtrar por linea de comandos
+  (`pulsenest_lab\.py`); no tocado sin su permiso. Memoria `reference_launch_hook_kills_python`.
+- Alex: "cambialo". Hook sustituido (copia en `pulsenest_launch_pre.sh.bak`): ahora para solo los
+  procesos python/pythonw cuya linea de comandos contenga `pulsenest_lab.py`. Prueba en seco sobre
+  los procesos vivos: mataria el lab (pythonw 50360) y dejaria el hub (9832) y el monitor de Alex.
