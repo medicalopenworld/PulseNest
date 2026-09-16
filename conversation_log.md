@@ -22536,3 +22536,81 @@ Anotado en `pulsenest_lab_spec.md` v1.58 (§5.3.0) y en la memoria
 *Nota de metodo: los latidos de referencia salen de los picos de la media movil de SPEC para las
 dos variantes, y el biquad tiene otro retardo de grupo. A 40 y 52 bpm la ventana de +/-0,35 s lo
 absorbe; a 250 bpm no, asi que comparar variantes alli exige antes un front-end comun.*
+
+
+## Sesion 2026-09-16 (2) - Tarea urgente: el hub UDP y los suscriptores de solo lectura (lab v1.60)
+
+Alex pausa el hilo HR1 (todo commiteado) por una tarea urgente doble: (1) unificar los puertos
+5005/5006, (2) que otros procesos/scripts lean lo que emiten las placas, en general sin poder
+mandar comandos. Analisis, decisiones por preguntas, implementacion completa y verificacion en banco.
+
+### El analisis que cambio la pregunta
+- **5005 y 5006 no son dos puertos de la misma maquina**: 5005 lo escucha el PC (placas -> PC),
+  5006 lo escucha cada placa (PC -> placa). Es el puerto de escucha de cada extremo de un enlace.
+  "Unificar" solo puede ser "mismo numero en los dos extremos".
+- El firmware **descarta la direccion del emisor** (`recvfrom(..., NULL, NULL)`,
+  `pulsenest_main.cpp:1286`) y responde al IP compilado por SSID en `wifi_config.h`, que esta en
+  `.gitignore`: el numero autoritativo no estaba en el repo.
+- Probado en Windows 11: bind comodin + bind a IP concreta **conviven en el mismo puerto** y gana el
+  mas especifico -> unificar era viable, pero **no aportaba nada a (2)**: el unicast se entrega a un
+  socket. Recomendacion aceptada por Alex: **invertir el orden**, la (2) decide si la (1) se hace.
+
+### Decisiones fijadas en el dialogo (preguntas de Alex)
+1. Escenario tipico: placas en el Mobile Hotspot de Windows (8 clientes max, NAT 192.168.137.0/24),
+   el segundo PC en la otra red del PC del banco. **El hub vive en la frontera**, unico sitio desde
+   el que servir al otro PC sin gastar aire del hotspot. El suscriptor inicia siempre y el hub le
+   responde a su direccion de origen (cortafuegos del PC remoto contento).
+2. **Un controlador a la vez**, no "el lab" por nombre: `@CTRL`, concedido si nadie lo tiene o el
+   titular caduco; rechazo explicito con nombre y hora; **solo desde direcciones locales** salvo
+   `--allow-remote-control`. Los lectores no preguntan nada: el hub cachea el ultimo `$CFG` y lo
+   entrega al suscribirse.
+3. Un cambio de configuracion llega solo: la placa emite `$CFG`+`$TCFG` tras cada `$SET`
+   (`send_cfg_frame()`), y la RF de HGAC viaja en cada muestra `$M4`. El hub reenvia todo crudo.
+   Excepcion unica del hub hacia las placas: **un `$CFG?` por placa nueva** (y otro cuando vuelve
+   tras 2 s de silencio: tras un OTA la cache tendria el build viejo).
+4. **Un solo puerto, :5005 del PC del hub**, para placas y suscriptores; el sigilo distingue los
+   planos (`$` placas, `@` hub: `@SUB/@CTRL/@PING/@TO/@STATUS`, y `@FROM <ip>` antepuesto a cada
+   datagrama reenviado). Descartado un segundo puerto.
+5. **Sin GUI y sin dependencias**: stdlib, un `select`, no interpreta tramas (solo prefijos).
+   Observable via `@STATUS` y un **monitor de flota** como suscriptor aparte (puede tener GUI, si
+   se cae no afecta a nadie, puede correr en otro PC, no puede tocar las placas).
+6. Latidos: `@PING` suscriptor -> hub, `@PONG` de vuelta. **La vida del hub se juzga por los
+   pongs, nunca por los datos**: placas en silencio != hub muerto. Cualquier suscriptor arranca el
+   hub si hace falta, **solo si la direccion es localhost y :5005 esta libre**; el hub sale
+   detached con **python.exe** para sobrevivir al `taskkill /IM pythonw.exe` del lab.
+
+### Hecho (commits `f890743`, `66e4810` + este)
+- **Fase 0**: `pulsenest_net.py`, unica fuente de verdad de `UDP_DATA_PORT`/`UDP_CMD_PORT`
+  (estaban copiados a mano en 5 programas); `python pulsenest_net.py` comprueba `wifi_config.h`.
+  `UDP_DEFAULT_PORT` del lab renombrado `UDP_DATA_PORT`. Spec v1.59.
+- **`pulsenest_hub.py`** (~330 lineas) y **`pulsenest_hub_client.py`** (cliente compartido:
+  connect/recv/send_to_board, reconexion por pongs perdidos, auto-arranque).
+- **Lab v1.60**: `_udp_reader` toma `(ip, datagrama)` del cliente; todo lo de aguas abajo
+  (UdpBoard, huecos, reglas de placa activa, multi-captura) intacto. Comandos por `_hub_send()`;
+  `_is_cmd_ready()` solo con control. **Arreglo que el hub saco a la luz**: un `$CFG` no pedido se
+  pegaba en las notas de Lab Capture (flag por defecto en on y reseteado a on tras cada trama);
+  ahora por defecto off, opt-in por peticion.
+- Herramientas: `udp_fw_versions.py` lector puro (ya no exige el lab cerrado);
+  `udp_cmd_latency.py` y `tia_linearity_sweep.py` reclaman el control (paran con el nombre del
+  titular si el lab lo tiene); nuevo **`tools/fleet_monitor.py`** (una linea por placa: identidad,
+  build, dgram/s, modo, huecos, sonda, RSQI, diag, SpO2, HR1, RF, $ERR, ultimo visto + `@STATUS`).
+- Tests: **`tools/hub_test.py` 27/27** (etiquetado, limites de datagrama, replay de cache, un
+  `$CFG?` por placa, controlador unico, solo-lectura en cliente y en hub, ping/pong, caducidad
+  libera el control, muerte del hub + reconexion a uno nuevo, segundo bind rechazado);
+  **`tools/udp_multiboard_test.py` con el hub en medio 93/93** sin tocar ni un check.
+- **Banco real**: `taskkill` del lab viejo (tenia :5005 directo), `udp_fw_versions.py` arranca el
+  hub solo y ve las **tres placas a 100 dgram/s** con identidad por la cache
+  (V17 .7, V18 .84, V18 .153; fw 0.13 lib 0.93 build cccf6ee). Sin aviso de cortafuegos.
+- Spec **v1.60, nuevo §4.11** (la spec ya tenia §4.9 y §4.10; referencias renumeradas).
+
+### La pregunta (1), cerrada
+Con hub el aire no cambia; unificar el numero compra una constante y cuesta reflasheo + una
+transicion en la que una placa vieja deja de aceptar comandos en silencio. **No se hace por si
+sola.** Solo con C (la placa responde a quien le hablo, muere la tabla de IPs compilada), que es
+decision de firmware aparte.
+
+### Pendiente / cabos
+- Monitor de flota con GUI (fase 2b larga); el de consola ya existe.
+- Windows Firewall: el hub es `python.exe` y puede pedir permiso la primera vez en otra maquina.
+- La memoria `project_two_instances_shared_udp_task` queda absorbida (una segunda instancia del
+  lab es hoy posible como lector; como controlador, la primera lo tiene).

@@ -217,7 +217,7 @@ def main():
     a = FakeBoard("127.0.0.1", mac_a, "fakeA", template, start_cnt=1000)
     b = FakeBoard("127.0.0.2", mac_b, "fakeB", template, start_cnt=900000)
 
-    # Since v1.60 the lab is a hub subscriber (spec 4.9): the fake boards send to the data port,
+    # Since v1.60 the lab is a hub subscriber (spec 4.11): the fake boards send to the data port,
     # the hub owns it and forwards to the lab, tagged with each board's IP. Same test, one hop more.
     hub = H.Hub(port=DATA_PORT, cmd_port=CMD_PORT)
     hub.open()

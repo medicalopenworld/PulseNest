@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.59
+# pulsenest_lab — Specification v1.60
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -805,6 +805,131 @@ it stays visible — the point of v1.50 is that the host no longer adds a splice
 Verified by `tools/udp_multiboard_test.py` phase 9: the active simulated board restarts its counter
 → one event, reason names the counter, no old counter left in the buffers, logged; the user picks
 the other board → a second event, reason names the source.
+
+### 4.11 The hub: one owner of the data port, any number of read-only subscribers (v1.60)
+
+**The problem it removes.** A UDP unicast datagram is delivered to exactly one socket, and every
+board sends to the one IP compiled into `wifi_config.h`. So only one program on the bench PC could
+ever read the stream: every bench tool (`udp_fw_versions.py`, `tia_linearity_sweep.py`,
+`udp_cmd_latency.py`) had to be run with the lab closed, a second lab instance was impossible
+(measured 2026-09-10: with `SO_REUSEADDR` both binds succeed and one socket receives nothing, in
+silence), and nothing could be watched from another PC. Alex's request (2026-09-16): let other
+processes and scripts read what the boards send, most of them without the right to send commands.
+
+**The design.** `pulsenest_hub.py` is the one program that binds `UDP_DATA_PORT`. It re-sends
+every datagram, byte for byte, to whoever subscribed, with one line in front naming the board it
+came from. Nothing on the air changes: the boards keep sending one stream to one IP; the copies
+travel over loopback or over the wired/LAN side of the PC, which is free. Two things follow from
+the bench topology — boards on the Windows Mobile Hotspot (8 clients maximum, a NAT'd
+`192.168.137.0/24`), the bench PC also on the lab LAN: the hub sits exactly on the frontier between
+the two networks, which is the only place from which a second PC can be served without spending
+hotspot air; and multicast/broadcast were ruled out because on WiFi they go at the basic rate with
+no retransmission (each board would climb from 2–4 % to ~18 % of the channel, measured 2026-09-10).
+
+**What the hub deliberately is not.** No GUI, no third-party dependency (stdlib only), one thread,
+one `select()` loop. It does **not** interpret frames: it looks at the first byte, prepends the
+origin, forwards. Nothing in it converts a number, so a malformed frame cannot raise. The one
+exception is a **configuration cache**: the last `$CFG`/`$TCFG`/`$LCFG` line of each board, kept
+as text by prefix match, so that a late subscriber learns the identities without a byte on the
+air. It is meant to be the most boring process on the machine — the lab has known spontaneous
+closures (pyqtgraph painting, §project memory), and a process that paints nothing cannot die of
+that.
+
+**Two planes on one socket, told apart by the first byte.** `$`/`#`… is the board plane,
+untouched. `@` is the hub plane: one message per datagram, ASCII, first line = verb + arguments,
+the rest of the datagram = payload.
+
+| subscriber → hub | hub → subscriber |
+|---|---|
+| `@SUB <name>` | `@OK SUB`, then the cache replay (below) |
+| `@CTRL <name>` | `@OK CTRL` · `@REFUSED CTRL <holder> <since>` · `@REFUSED CTRL remote-control-disabled` |
+| `@PING` (every 2 s) | `@PONG boards=<n> subs=<n> ctrl=<name\|-> up=<s>` · `@REFUSED PING not-subscribed` |
+| `@TO <ip>\r\n<payload>` | payload → `<ip>:UDP_CMD_PORT` (controller only) · `@REFUSED TO not-controller` |
+| `@STATUS` | `@STATUS` + one line per board and per subscriber |
+| `@RELEASE` · `@UNSUB` | `@OK RELEASE` · (nothing) |
+| | **`@FROM <ip>\r\n<original datagram, verbatim>`** — the data plane |
+
+The subscriber is known by the source address of its own messages and the hub answers **there**,
+from its single socket: no well-known port on the subscriber side, and a remote PC's firewall
+sees plain UDP replies to its own outbound traffic (the periodic `@PING` keeps that state alive).
+Datagram boundaries are preserved — what the board sent as one datagram, the subscriber gets as one
+datagram plus the `@FROM` line — which is what the lab's batching invariant (§4.8, five lines per
+datagram) depends on. The controller addresses one board per command; with several boards there
+is no other honest way.
+
+**Rules.**
+1. **One controller at a time.** `@TO` is forwarded for the controller alone; everyone else is
+   read-only *by construction*, not by convention. Control is granted to whoever asks when nobody
+   holds it or the holder has expired, and refused otherwise with the holder's name and time — no
+   silent fights. It is granted **only to a local address** unless the hub runs with
+   `--allow-remote-control`: writing to a medical device from another machine must be a deliberate
+   choice, never the default. This also settles the blocker of the old two-instances idea (§6.5.1):
+   the lab's automatic writes (`$MODE` watchdog, HGAC state) come from one controller only.
+2. **The hub sends exactly one thing to a board**: a single `$CFG?` when it first sees a board IP,
+   and once more each time that board returns after `BOARD_LOST_S` (2 s) of silence — a board
+   that went away may have rebooted into a new build, and an OTA is routine on this bench. Nothing
+   else, ever.
+3. **Cache replay, live boards only.** On `@SUB`/`@CTRL` the subscriber receives the cached lines
+   of every board seen within the last 2 s, wrapped exactly like live traffic, so its normal parser
+   learns the identities with no special case. A LOST board is left out on purpose: handing a
+   newcomer the identity of a board that is not there would let it pick a dead board as its
+   source. When that board speaks again its cache is replayed to everyone, and rule 2 refreshes it.
+4. **Liveness is ping/pong, never the data.** A subscriber declares the hub dead after three
+   unanswered pings (6 s). Boards falling silent is a bench event; the hub dying is a host event;
+   using the data stream as a sign of life would confuse the two.
+5. **A silent subscriber is forgotten after 10 s** (and loses the control if it held it). A slow
+   subscriber cannot stall the hub: UDP `sendto()` never blocks, and the ICMP port-unreachable
+   that Windows raises on the socket when a subscriber is gone is caught and ignored.
+6. **No `SO_REUSEADDR`.** A second hub on the port must fail its bind loudly; two hubs "coexisting"
+   with one of them receiving nothing is exactly the failure measured on 2026-09-10.
+
+**`pulsenest_hub_client.py`** is the shared client every host-side program uses: `HubClient(name,
+control=False)` → `connect()`, `recv(timeout)` → `(board_ip, datagram)` or `None`,
+`send_to_board(ip, data)` (controller only), `request_status()`, `close()`. Pings, pongs and
+reconnection happen inside `recv()`; `recv()` belongs to one thread, `send_to_board()` may be
+called from any. **Auto-start:** when the hub address is loopback and nothing answers, the client
+launches `pulsenest_hub.py` **detached, with `python.exe`** — not `pythonw.exe` — so the usual
+`taskkill /F /IM pythonw.exe` that restarts the lab leaves the hub alive, and the hub outlives
+whoever started it. Never for a remote hub address (a hub on the wrong PC would be useless, the
+boards send to the bench PC). If two programs race, the second hub fails its bind and exits; both
+talk to the one that won. The hub logs to `pulsenest_hub.log` (rotating, gitignored).
+
+**What changed in the lab (v1.60).** `_udp_reader` no longer binds the data port: it takes
+`(board_ip, datagram)` from a `HubClient("pulsenest_lab", control=True)` and everything downstream
+— `UdpBoard`, gap detection, the active-board rules of §4.8, multi-board capture — is unchanged.
+Every UDP command (`send_cmd`, `send_cmd_to_ip`, the reader's own `$CFG?` to unidentified boards)
+goes through `_hub_send()`, which forwards only while the lab holds the control and otherwise logs
+once per refusal streak; `_is_cmd_ready()` is true over UDP only while the lab is the controller,
+so the UI's "no command channel" messages tell the truth. One fix the hub forced into the open: an
+unsolicited `$CFG` used to be pasted into the Lab Capture pre-notes, because the notify flag
+defaulted to on and was reset to on after every frame. It now defaults to off and is opted in per
+request (`request_chip_config(notify_lab_capture=True)`: the capture state machine and the manual
+buttons). Otherwise every connect would have pasted the cache replay into the notes.
+
+**Tools.** `tools/udp_fw_versions.py` is a read-only subscriber: identities from the cache replay,
+rates from the stream, nothing sent — it runs next to the lab now. `tools/udp_cmd_latency.py` and
+`tia_linearity_sweep.py` send commands, so they claim the control and stop with a message naming
+the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_monitor.py` is the
+first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
+gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;
+it cannot touch a board, and runs on the bench PC or on another one with `--hub <bench-pc-ip>`.
+
+**Verification.** `tools/hub_test.py` (in-process hub on a spare port, two fake boards, a
+controller and a reader): 27 checks — origin tagging, boundaries, cache replay, one `$CFG?` per
+board, single controller, read-only enforcement both client- and hub-side, ping/pong, expiry
+releasing the control, `@STATUS`, hub death detected and reconnection to a new hub, duplicate bind
+refused. `tools/udp_multiboard_test.py` runs unchanged with the hub between the fake boards and
+the lab: 93/93.
+
+**What this decides about the ports (the first half of the request).** `5005` is the port the
+HOST listens on, `5006` the port each BOARD listens on — the listening port of each end of one
+link, not two ports on one machine. Using one number at both ends was shown viable (a wildcard
+bind and a specific-address bind coexist on the same port on Windows 11, most specific wins), but
+with the hub the air protocol does not change, so the unification buys one constant and costs a
+reflash plus a transition in which an old board silently stops taking commands. Not done. It only
+becomes worth it together with a firmware change that answers to the sender's address instead of
+the compiled table (§`pulsenest_main.cpp:1286`, `recvfrom(…, NULL, NULL)`), which is a separate
+decision.
 
 ## 5. Algorithm classes
 
@@ -2228,6 +2353,22 @@ pyqtgraph context menus from being too narrow to read.
 
 ## 12. Changelog
 
+### v1.60 — 2026-09-16
+
+**The hub (§4.11): `pulsenest_hub.py` owns the data port and fans the boards' stream out to
+read-only subscribers; the lab is its first subscriber and its controller.** A unicast datagram
+reaches one socket, so until now every bench tool needed the lab closed and nothing could watch
+the boards from another PC. The hub forwards each datagram verbatim behind an `@FROM <ip>` line;
+one controller at a time (local only by default), everyone else read-only by construction; a
+`$CFG` cache replayed to newcomers (live boards only) and on a board's return; ping/pong liveness,
+never the data stream; no `SO_REUSEADDR`. `pulsenest_hub_client.py` is the shared client
+(auto-starts a local hub, detached, with `python.exe`). In the lab, `_udp_reader` takes its
+datagrams from the client and every UDP command goes through `_hub_send()`; an unsolicited `$CFG`
+no longer lands in the Lab Capture notes. `udp_fw_versions.py` runs next to the lab now;
+`udp_cmd_latency.py` and `tia_linearity_sweep.py` claim the control; new `tools/fleet_monitor.py`.
+`tools/hub_test.py` 27/27, `tools/udp_multiboard_test.py` with the hub in the middle 93/93. The
+5005/5006 unification is settled as "not on its own" (§4.11, last paragraph).
+
 ### v1.59 — 2026-09-16
 
 **One source of truth for the UDP ports: `pulsenest_net.py` (§2).** `UDP_DATA_PORT` (5005, the
@@ -2237,7 +2378,7 @@ and `tools/udp_multiboard_test.py` — and the firmware's copy sits in a gitigno
 tracked held the number. All five import the module now; `python pulsenest_net.py` verifies the
 local `wifi_config.h` against it. The lab's `UDP_DEFAULT_PORT` is renamed `UDP_DATA_PORT`: the
 two are the listening port of each END of the link, and the old name hid that. Phase 0 of the
-hub / read-only subscribers work (§4.9, forthcoming); no behaviour changes.
+hub / read-only subscribers work (§4.11); no behaviour changes.
 
 ### v1.58 — 2026-09-16
 

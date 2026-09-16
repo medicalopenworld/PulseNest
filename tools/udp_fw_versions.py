@@ -1,86 +1,85 @@
-"""Report the firmware of every PulseNest board streaming to this PC — no GUI needed.
+"""Report the firmware of every PulseNest board streaming to this PC — no GUI, nothing sent to the air.
 
-1. Bind the UDP data port (:5005) and listen a few seconds to learn the source IPs and their rates.
-2. Send "$CFG?" to each source (and to any IP given on the command line) on the command port :5006.
-3. Parse every $CFG reply: board, MAC, PulseNest version, library version, build hashes.
+A read-only subscriber of the hub (spec §4.11). On joining, the hub replays the last $CFG line of
+every live board, so the identities arrive at once; the tool then listens for `--discover` seconds
+to measure each board's datagram rate and pick up any fresher $CFG. It never sends a command: it
+cannot, it is not the controller. If a board shows no $CFG, the hub's single "$CFG?" to it was
+lost — ask again from the lab (HW CONFIG → Read from chip) or restart the board.
 
 The $CFG frame is the only reliable source of a board's version: the OTA page shows none and the
 serial banner is only visible over USB. Identify boards by MAC — hotspot IPs change between sessions.
 
-Usage:  python tools/udp_fw_versions.py [IP ...] [--discover S] [--reply S]
-Must be run with pulsenest_lab.py closed (it owns :5005).
+Usage:  python tools/udp_fw_versions.py [--discover S] [--hub IP[:PORT]]
+Runs alongside pulsenest_lab.py (it used to need the lab closed: both wanted the data port). With
+no hub running on this PC it starts one.
 """
 import argparse
 import os
 import re
-import socket
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402  (the one place the ports live)
+from pulsenest_net import UDP_DATA_PORT          # noqa: E402  (the one place the ports live)
+from pulsenest_hub_client import HubClient       # noqa: E402
+
 ID_KEYS = ("board", "mac", "fw", "lib", "build", "libsha")
+
+
+def parse_hub(text):
+    host, _, port = text.partition(":")
+    return (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("ips", nargs="*", help="extra IPs to query even if they are not streaming")
-    ap.add_argument("--discover", type=float, default=3.0, metavar="S", help="listen time before querying")
-    ap.add_argument("--reply", type=float, default=4.0, metavar="S", help="wait time for $CFG replies")
+    ap.add_argument("--discover", type=float, default=3.0, metavar="S", help="listen time (default %(default)s)")
+    ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]",
+                    help="hub to subscribe to (default: this PC; a remote hub is read-only anyway)")
     args = ap.parse_args()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.bind(("0.0.0.0", UDP_DATA_PORT))
-    except OSError as exc:
-        print(f"ERROR: cannot bind :{UDP_DATA_PORT} ({exc}) — is pulsenest_lab.py running?")
+    hub = parse_hub(args.hub)
+    client = HubClient("udp_fw_versions", hub=hub, control=False, log=print)
+    if not client.connect():
+        print(f"ERROR: no hub answering on {hub[0]}:{hub[1]}"
+              + (" and none could be started" if hub[0].startswith("127.") else ""))
         return 1
-    sock.settimeout(0.2)
 
-    sources = {}  # ip -> [datagrams, bytes]
-    t_end = time.time() + args.discover
-    while time.time() < t_end:
-        try:
-            data, (ip, _) = sock.recvfrom(4096)
-        except socket.timeout:
+    sources = {}     # ip -> [datagrams, bytes]
+    cfg_lines = {}   # ip -> last $CFG line
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < args.discover:
+        item = client.recv(0.2)
+        if item is None:
             continue
-        s = sources.setdefault(ip, [0, 0])
-        s[0] += 1
-        s[1] += len(data)
-    print(f"Discovery ({args.discover:.0f} s):")
+        ip, data = item
+        for line in data.decode("ascii", "replace").splitlines():
+            if line.startswith("$CFG,"):
+                cfg_lines[ip] = line
+        if data[:2] == b"$M":                       # data frames only count towards the rate
+            s = sources.setdefault(ip, [0, 0])
+            s[0] += 1
+            s[1] += len(data)
+    client.close()
+
+    print(f"Discovery ({args.discover:.0f} s) via hub {hub[0]}:{hub[1]}:")
     for ip, (n, b) in sorted(sources.items()):
         print(f"  {ip:16s} {n / args.discover:6.1f} datagrams/s  {b * 8 / args.discover / 1e6:5.2f} Mbit/s")
     if not sources:
-        print(f"  (no UDP traffic on :{UDP_DATA_PORT})")
-
-    targets = sorted(set(sources) | set(args.ips))
-    for ip in targets:
-        sock.sendto(b"$CFG?\n", (ip, UDP_CMD_PORT))
-    print(f"Sent $CFG? to: {', '.join(targets) if targets else '(none)'}")
-
-    cfg_frames = {}  # ip -> line
-    t_end = time.time() + args.reply
-    while time.time() < t_end:
-        try:
-            data, (ip, _) = sock.recvfrom(4096)
-        except socket.timeout:
-            continue
-        for line in data.decode("ascii", "replace").splitlines():
-            if line.startswith("$CFG,"):
-                cfg_frames[ip] = line
-    sock.close()
+        print("  (no board streaming)")
 
     print("\nFirmware per board:")
-    for ip in targets:
-        line = cfg_frames.get(ip)
+    for ip in sorted(set(sources) | set(cfg_lines)):
+        line = cfg_lines.get(ip)
         if not line:
-            print(f"  {ip:16s} no $CFG reply")
+            print(f"  {ip:16s} no $CFG in the hub's cache — ask from the lab (HW CONFIG → Read from chip)")
             continue
         fields = {}
         for k in ID_KEYS:
             m = re.search(rf"(?:^|,){k}=([^,*]*)", line)
             fields[k] = m.group(1) if m else "?"
-        print(f"  {ip:16s} " + "  ".join(f"{k}={fields[k]}" for k in ID_KEYS))
+        silent = "" if ip in sources else "   (identity cached, board not streaming now)"
+        print(f"  {ip:16s} " + "  ".join(f"{k}={fields[k]}" for k in ID_KEYS) + silent)
     return 0
 
 

@@ -12,51 +12,51 @@ Probes are deliberately spaced by an interval that is not a multiple of the beac
 samples land on different phases of the beacon cycle rather than always the same one.
 
 Usage:  python tools/udp_cmd_latency.py [-n 40] [--gap 0.37] [IP ...]
-With no IP, every board currently streaming to the data port is measured.
-Run with pulsenest_lab.py closed (it binds the data port).
+With no IP, every board currently streaming is measured.
+
+Goes through the hub (spec §4.11) as its CONTROLLER — it has to, it sends $CFG?. The lab holds the
+control while open, so run this with the lab closed; the hub itself may stay up (one is started if
+none answers). The extra hop is two loopback datagrams, well under a millisecond against the tens
+to hundreds being measured.
 """
 import argparse
 import os
-import socket
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402  (the one place the ports live)
+from pulsenest_net import UDP_DATA_PORT          # noqa: E402  (the one place the ports live)
+from pulsenest_hub_client import HubClient       # noqa: E402
 
 
-def discover(sock, seconds):
-    """Source IPs currently streaming, in first-seen order."""
+def discover(client, seconds):
+    """Board IPs currently streaming through the hub, in first-seen order."""
     seen = []
     t_end = time.time() + seconds
     while time.time() < t_end:
-        try:
-            _data, (ip, _port) = sock.recvfrom(4096)
-        except socket.timeout:
+        item = client.recv(0.2)
+        if item is None:
             continue
-        if ip not in seen:
+        ip, data = item
+        if data[:2] == b"$M" and ip not in seen:
             seen.append(ip)
     return seen
 
 
-def probe(sock, ip, timeout_s):
+def probe(client, ip, timeout_s):
     """Round-trip time of one `$CFG?` in ms, or None on timeout."""
-    # Drop whatever is already buffered so an earlier reply cannot be mistaken for this one.
-    sock.settimeout(0)
-    try:
-        while True:
-            sock.recvfrom(65535)
-    except (BlockingIOError, socket.timeout, OSError):
+    # Drop whatever is already queued so an earlier reply cannot be mistaken for this one.
+    while client.recv(0.0) is not None:
         pass
-    sock.settimeout(0.05)
     t0 = time.perf_counter()
-    sock.sendto(b"$CFG?\n", (ip, UDP_CMD_PORT))
+    if not client.send_to_board(ip, b"$CFG?\n"):
+        return None
     deadline = t0 + timeout_s
     while time.perf_counter() < deadline:
-        try:
-            data, (src, _port) = sock.recvfrom(65535)
-        except (socket.timeout, BlockingIOError):
+        item = client.recv(min(0.05, max(0.0, deadline - time.perf_counter())))
+        if item is None:
             continue
+        src, data = item
         if src != ip or b"$CFG," not in data:
             continue
         return (time.perf_counter() - t0) * 1e3
@@ -84,18 +84,20 @@ def main():
     ap.add_argument("--label", default="", help="tag printed with the results (e.g. before/after)")
     args = ap.parse_args()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
-    try:
-        sock.bind(("0.0.0.0", UDP_DATA_PORT))
-    except OSError as exc:
-        print(f"ERROR: cannot bind :{UDP_DATA_PORT} ({exc}) - close pulsenest_lab.py")
+    client = HubClient("udp_cmd_latency", control=True, log=print)
+    if not client.connect():
+        print(f"ERROR: no hub answering on 127.0.0.1:{UDP_DATA_PORT} and none could be started")
         return 1
-    sock.settimeout(0.2)
+    if not client.controller:
+        print("ERROR: this tool sends $CFG? and must be the hub's controller - control is held by "
+              f"{client.control_refused_by or 'another program'} (pulsenest_lab.py keeps it while open)")
+        client.close()
+        return 1
 
-    targets = args.ips or discover(sock, 3.0)
+    targets = args.ips or discover(client, 3.0)
     if not targets:
-        print(f"no board streaming to :{UDP_DATA_PORT} and no IP given")
+        print("no board streaming through the hub and no IP given")
+        client.close()
         return 1
     tag = f" [{args.label}]" if args.label else ""
     print(f"$CFG? round-trip latency{tag} - {args.n} probes per board, {args.gap:.2f} s apart\n")
@@ -103,7 +105,7 @@ def main():
     for ip in targets:
         rtts, timeouts = [], 0
         for i in range(args.n):
-            r = probe(sock, ip, args.timeout)
+            r = probe(client, ip, args.timeout)
             if r is None:
                 timeouts += 1
             else:
@@ -124,7 +126,7 @@ def main():
             bins[int(r // 20) * 20] = bins.get(int(r // 20) * 20, 0) + 1
         for lo in sorted(bins):
             print(f"{'':16s}   {lo:4d}-{lo + 19:4d} ms | {'#' * bins[lo]} {bins[lo]}")
-    sock.close()
+    client.close()
     return 0
 
 

@@ -13256,7 +13256,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._udp_stop     = threading.Event()   # controls _udp_reader thread
         self._udp_thread   = None
         self._esp32_ip     = None   # ESP32 IP learned from first incoming UDP packet
-        self._hub = None                 # HubClient, created and closed by _udp_reader (spec §4.9)
+        self._hub = None                 # HubClient, created and closed by _udp_reader (spec §4.11)
         self._hub_refusal_logged = False # one log line per streak of commands the hub refused
         self._cfg_listener = None  # callable(text) set by LabCaptureWindow
         self._active_transport = "serial"  # "serial" or "udp" — only this queue feeds algorithms
@@ -13531,7 +13531,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
 
     def _hub_send(self, ip, data):
         """Every UDP command to a board goes through the hub, which forwards it only while this
-        lab holds the control (spec §4.9). Returns False, with one log line per refusal streak,
+        lab holds the control (spec §4.11). Returns False, with one log line per refusal streak,
         when it does not: no hub connection, or another program is the controller."""
         hub = self._hub
         if hub is not None and hub.send_to_board(ip, data):
@@ -14505,7 +14505,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         and queued individually so the pipeline downstream is identical to the serial path.
         Gap detection (Punto B) is per board, on the sample counter.
 
-        Since v1.60 the datagrams come from the hub (spec §4.9), not from a socket on the data
+        Since v1.60 the datagrams come from the hub (spec §4.11), not from a socket on the data
         port: HubClient hands them over with the board's IP, byte-identical to what the board
         sent, so everything below this line is unchanged. The lab subscribes as the CONTROLLER;
         if another program holds the control the stream still arrives, and every command is

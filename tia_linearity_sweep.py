@@ -26,7 +26,9 @@ same mA) for both RF values, the compression is in the TIA, not in the LED.
 
 Usage
 -----
-1. CLOSE pulsenest_lab.py (this script binds the same UDP data port 5005).
+1. This script WRITES to the board ($SET ramps), so it must hold the hub's control
+   (spec 4.11): close pulsenest_lab.py first, it keeps the control while open. The hub
+   itself may stay up (the script starts one if none is running).
 2. ESP32 streaming over WiFi as usual.  Probe WITHOUT finger.
 3. Run:  python tia_linearity_sweep.py
 4. Results: tia_linearity_sweep_<date>.csv + console analysis
@@ -42,7 +44,8 @@ import time
 from datetime import datetime
 
 # ── Protocol (must match pulsenest_lab.py) ──────────────────────────────────
-from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT   # the one place the ports live
+from pulsenest_net import UDP_DATA_PORT   # the one place the ports live
+from pulsenest_hub_client import HubClient  # every host-side program is a hub subscriber
 ADC_FS_COUNTS = 2 ** 21 - 1   # positive full-scale code (datasheet Table 7)
 ADC_FSR       = 1.2           # V
 
@@ -70,51 +73,48 @@ def checksum_wrap(payload: str) -> bytes:
 
 
 class Esp32Link:
-    """UDP link: receives $M4 frames on UDP_DATA_PORT, sends commands to
-    ESP32_IP:UDP_CMD_PORT (IP learned from the first incoming datagram)."""
+    """Link to the board through the hub (spec 4.11): receives the $M4 datagrams the hub forwards
+    (tagged with the board's IP) and sends commands as the hub's CONTROLLER. The board's IP is
+    learned from the first forwarded datagram."""
 
     def __init__(self):
-        self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.rx.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
-        try:
-            self.rx.bind(("", UDP_DATA_PORT))
-        except OSError:
-            sys.exit(f"ERROR: cannot bind UDP port {UDP_DATA_PORT} — "
-                     "close pulsenest_lab.py first.")
-        self.rx.settimeout(1.0)
-        self.tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.hub = HubClient("tia_linearity_sweep", control=True, log=print)
+        if not self.hub.connect():
+            sys.exit(f"ERROR: no hub answering on 127.0.0.1:{UDP_DATA_PORT} and none could be started.")
+        if not self.hub.controller:
+            sys.exit("ERROR: this script writes to the board and must be the hub's controller — "
+                     f"control is held by {self.hub.control_refused_by or 'another program'} "
+                     "(pulsenest_lab.py keeps it while open: close it first).")
         self.esp32_ip = None
 
     def wait_esp32(self, timeout_s=15.0):
-        print(f"Waiting for ESP32 datagrams on UDP :{UDP_DATA_PORT} ...")
+        print("Waiting for board datagrams through the hub ...")
         t_end = time.monotonic() + timeout_s
         while time.monotonic() < t_end:
-            try:
-                _, addr = self.rx.recvfrom(4096)
-                self.esp32_ip = addr[0]
-                print(f"ESP32 found at {self.esp32_ip}")
-                return
-            except socket.timeout:
+            item = self.hub.recv(1.0)
+            if item is None or item[1][:2] != b"$M":
                 continue
+            self.esp32_ip = item[0]
+            print(f"ESP32 found at {self.esp32_ip}")
+            return
         sys.exit("ERROR: no UDP data received — is the ESP32 streaming?")
 
     def send(self, payload: str):
-        self.tx.sendto(checksum_wrap(payload), (self.esp32_ip, UDP_CMD_PORT))
+        if not self.hub.send_to_board(self.esp32_ip, checksum_wrap(payload)):
+            sys.exit("ERROR: command refused by the hub — control lost")
         time.sleep(CMD_GAP_S)   # lwIP RX queue is shallow; pace the datagrams
 
     def send_raw(self, payload: str):
         # $MODE (and other non-$SET commands) must be sent WITHOUT checksum:
         # firmware does an exact strcmp on the argument text.
-        self.tx.sendto(f"{payload}\n".encode(), (self.esp32_ip, UDP_CMD_PORT))
+        if not self.hub.send_to_board(self.esp32_ip, f"{payload}\n".encode()):
+            sys.exit("ERROR: command refused by the hub — control lost")
         time.sleep(CMD_GAP_S)
 
     def drain(self, seconds: float):
         t_end = time.monotonic() + seconds
         while time.monotonic() < t_end:
-            try:
-                self.rx.recvfrom(4096)
-            except socket.timeout:
-                pass
+            self.hub.recv(max(0.0, min(1.0, t_end - time.monotonic())))
 
     def collect(self, n: int, timeout_s=6.0):
         """Collect n $M4 samples -> list of (led1_counts, v_tia_led1).
@@ -122,10 +122,10 @@ class Esp32Link:
         out = []
         t_end = time.monotonic() + timeout_s
         while len(out) < n and time.monotonic() < t_end:
-            try:
-                data, _ = self.rx.recvfrom(4096)
-            except socket.timeout:
+            item = self.hub.recv(1.0)
+            if item is None or item[0] != self.esp32_ip:
                 continue
+            data = item[1]
             for line in data.split(b"\n"):
                 line = line.strip().rstrip(b"\r")
                 if not line.startswith(b"$M4,"):
