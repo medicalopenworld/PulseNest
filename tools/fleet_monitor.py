@@ -108,7 +108,19 @@ class BoardView:
                        "rf1": f(34), "rf2": f(35)}
 
 
-def render(boards, client, hub, t_start):
+GREEN, RED, RESET = "\x1b[32m", "\x1b[31m", "\x1b[0m"
+
+
+def probe_cell(label, colors):
+    """The probe column: APPLIED in green, every other state in red, '?' (no frame yet) plain.
+    Width is applied to the bare label first — escape codes must not count as characters."""
+    cell = f"{label:>{PROBE_W}s}"
+    if not colors or label == "?":
+        return cell
+    return (GREEN if label == "APPLIED" else RED) + cell + RESET
+
+
+def render(boards, client, hub, t_start, colors=False):
     now = time.monotonic()
     out = [f"PulseNest {os.path.basename(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
            f", read-only)  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}", ""]
@@ -123,7 +135,7 @@ def render(boards, client, hub, t_start):
         i, fl = b.ident, b.fields
         out.append(f"{b.ip:15s} {i.get('mac', '?'):17s} {i.get('board', '?')[:12]:12s} "
                    f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
-                   f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {fl.get('probe', '?'):>{PROBE_W}s} "
+                   f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {probe_cell(fl.get('probe', '?'), colors)} "
                    f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} {fl.get('spo2', '?'):>5s} "
                    f"{fl.get('hr1', '?'):>6s} {fl.get('vtia1', '?'):>6s} {fl.get('vtia2', '?'):>6s} "
                    f"{(fl.get('rf1', '?') + '/' + fl.get('rf2', '?')):>10s} "
@@ -215,7 +227,7 @@ def main():
                 client.request_status()
             if now >= next_draw:
                 next_draw = now + args.refresh
-                screen.draw(render(boards, client, hub, t_start))
+                screen.draw(render(boards, client, hub, t_start, colors=screen.enabled))
     except KeyboardInterrupt:
         pass
     finally:
