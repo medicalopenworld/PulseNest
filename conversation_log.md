@@ -22690,3 +22690,62 @@ decision de firmware aparte.
 - Aclarado a Alex: `pythonw` quita la ventana de consola, `start` desliga el proceso del shell (lo
   necesito yo, el no); en PowerShell `start` es alias de `Start-Process` y **no admite mas de dos
   posicionales** (`start python a.py extra` falla; hay que usar `a.py,extra`). Probado en su maquina.
+
+## Sesion 2026-09-17 (2) - Boton PLOTS: mitigacion del crash de pintado para capturas en hospital (lab v1.63)
+
+Alex repasa la lista de tareas pendientes; elige empezar por la del BACKLOG "opcion de desactivar
+graficos" (plan de contingencia ante un crash aleatorio de `pulsenest_lab.py` mientras se mide en
+un hospital, donde perder la captura no es aceptable).
+
+### Analisis: 14 subventanas pintan con pyqtgraph, la principal no
+`_refresh_plots_tick()` (temporizador de 200 ms) alimenta `update_plots()` en 13 subventanas:
+HR1TEST, HR1LAB, HR2TEST, HR2LAB, HR3TEST, HR3LAB, SPO2TEST, SPO2LAB, PPG Plots, PPG SIGNALS,
+PPG SIGNALS 2, ALGO RESULTS, PILAB. Una mas fuera de ese tick pero con `PlotWidget` propio: LIB
+CONFIG (curva de asentamiento, se lee al abrir). La ventana principal (`PPGMonitor`, SIGNAL
+STATS) no tiene ningun grafico de pyqtgraph. Cada una de las 14 se abre/cierra con el mismo
+patron: un boton `checkable` en la barra lateral conectado a un `toggle_xxx()` que lee
+`self.btn_xxx.isChecked()` y crea-o-cierra la ventana.
+
+### Diseno: un boton, reutiliza el cierre que ya existia
+En vez de inventar un estado nuevo (ventana oculta pero viva), el boton **PLOTS** llama a
+`.click()` sobre cada uno de los 14 botones que este marcado -- exactamente el click que haria
+Alex a mano -- por lo que el cierre pasa por el `toggle_xxx()`/`closeEvent` de siempre (geometria
+guardada, `main_monitor=None`, `self.xxx_window=None`), sin logica nueva que pueda desviarse de
+la existente. Despues bloquea los 14 botones (`setEnabled(False)`) para que no se puedan
+reabrir. Intactos: SIGNAL STATS, HW CONFIG, LAB CAPTURE, MULTI CAPTURE, SERIAL COM, UDP COM,
+DIAGNOSTICS, PYTHON/ESP32 TIMING, AFE SWEEP TEST, y la conexion con el hub.
+
+Persistencia en `PPGMonitor/plots_disabled` (QSettings), aplicada tambien en
+`_restore_settings()` al arrancar: si el crash llega y el lab se relanza, el bloqueo sigue
+activo sin que nadie tenga que acordarse de reactivarlo.
+
+### Bug propio encontrado al escribir el test: UnicodeEncodeError con "●"
+`tools/disable_plots_test.py` (nuevo, offscreen, sin placa ni hub) murio a mitad, sin traza, al
+imprimir el texto del boton ("PLOTS  ●  OFF") a la salida redirigida: `cp1252` no tiene el
+caracter "●" (U+25CF), y eso lanza `UnicodeEncodeError` sin capturar. Es exactamente la razon
+por la que `pulsenest_net.banner()` se declaro ASCII-only ayer. Arreglado con
+`sys.stdout.reconfigure(encoding="utf-8", errors="replace")`, como ya hacia
+`tools/udp_multiboard_test.py`. Verificado con `faulthandler.log` (fecha del 16-09, sin entrada
+nueva) que NO fue un crash nativo real, solo una excepcion Python no capturada en el test.
+
+Resultado: **13/13** en `tools/disable_plots_test.py` (cierre real de las tres abiertas,
+bloqueo de las 14, un boton bloqueado no se puede pulsar, desbloqueo sin reabrir nada, y
+persistencia via una instancia `PPGMonitor` nueva). `tools/udp_multiboard_test.py` sigue en
+100/100.
+
+### Cierre: dos cambios de hoy se habian quedado sin documentar en la spec
+Al ir a anadir la seccion nueva, se encontro que el boton READ-ONLY del UDP (commit `63111a7`,
+antes de esta sesion) y los rotulos de identidad de cada script (`d552c60`, `69ef2f5`) nunca
+llegaron a `pulsenest_lab_spec.md` -- **incumplimiento de la regla obligatoria de CLAUDE.md**
+(actualizar la spec en el mismo turno que el codigo). Corregido con tres entradas retroactivas:
+- **v1.61**: la quinta columna del boton UDP, READ-ONLY, y el hallazgo de que un cliente
+  rechazado no volvia a pedir el control (arreglado el 16-09, documentado hoy).
+- **v1.62**: los rotulos de identidad de cada script, y la convencion ASCII-only de consola.
+- **v1.63**: el boton PLOTS de hoy, nueva Sec6.5.2.
+
+BACKLOG.md: item 2 marcado `[x]` HECHO; item 1 (herramienta de captura sin Qt) sigue pendiente
+de la decision bruto+conversor vs CSV directo -- **este boton no la sustituye**: si el crash
+viene de otra parte (division por cero silenciosa, etc.), el proceso sigue siendo Python+Qt.
+Memoria: `project_disable_plots_toggle_task` (nueva), `project_signals2_crash_investigation_task`
+actualizada (mitigado, no resuelto; el experimento `useOpenGL=False` sigue pendiente y es
+ortogonal a esto).

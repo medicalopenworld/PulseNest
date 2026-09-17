@@ -12624,6 +12624,36 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "usually a second lab instance — so every command from here is refused."))
         self.sidebar_layout.addWidget(self.btn_udp)
 
+        # Crash mitigation for unattended captures (spec §6.5.2): every pyqtgraph-bearing
+        # subwindow, closed by name. Not HR1LAB/HR2LAB/etc. by chance -- this is exactly the
+        # set fed from _refresh_plots_tick() plus LIB CONFIG (one PlotWidget, outside the
+        # render tick but still a paint surface). SIGNAL STATS, HW CONFIG, LAB CAPTURE and the
+        # hub connection are untouched: nothing here reduces what a capture can record.
+        self._PLOT_WINDOW_BUTTONS = (
+            "btn_hr1test", "btn_hr1lab", "btn_hr2test", "btn_hr2lab", "btn_hr3test", "btn_hr3lab",
+            "btn_spo2test", "btn_spo2lab", "btn_ppgplots", "btn_signals", "btn_signals2",
+            "btn_results", "btn_pilab", "btn_lib_config",
+        )
+        self.btn_disable_plots = QtWidgets.QPushButton("PLOTS  ●  ON")
+        self.btn_disable_plots.setCheckable(True)
+        self.btn_disable_plots.setStyleSheet(
+            "background-color: #1E1E1E; color: #666666; font-size: 17px; "
+            "font-weight: bold; padding: 5px; border: 1px solid #444444; border-radius: 4px;")
+        self.btn_disable_plots.clicked.connect(self._toggle_disable_plots)
+        self.btn_disable_plots.setToolTip(_make_tooltip(
+            "Disable plotting",
+            "Crash mitigation for an unattended capture where a crash cannot be afforded (e.g. "
+            "in a hospital). Closes every pyqtgraph-bearing subwindow (the HR*TEST/LAB and SPO2* "
+            "pairs, PPG PLOTS, SIGNALS, SIGNALS2, RESULTS, PI LAB, LIB CONFIG) and disables their "
+            "buttons so none can reopen. Their paint code is the confirmed cause of repeated "
+            "silent native crashes (Windows access violation, pyqtgraph AxisItem.paint / "
+            "GraphicsView.paintEvent) -- click to toggle; state is remembered across restarts.\n\n"
+            "Everything else keeps running: algorithms, SIGNAL STATS, HW CONFIG, LAB CAPTURE, "
+            "MULTI CAPTURE, the serial/UDP connection and the hub. A capture in progress is never "
+            "interrupted by toggling this.",
+            "project_signals2_crash_investigation_task"))
+        self.sidebar_layout.addWidget(self.btn_disable_plots)
+
         # SOURCE: which stream feeds plots, algorithms and captures (§4.8 F2). Items are rebuilt
         # every second from the UDP board registry by _refresh_source_combo().
         self.combo_source = QtWidgets.QComboBox()
@@ -14298,6 +14328,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/diagnostics_open", self.diag_window         is not None)
         s.setValue("PPGMonitor/afe_sweep_open",    self.afe_sweep_window     is not None)
         s.setValue("PPGMonitor/labcapture_open",  self.lab_capture_window is not None)
+        s.setValue("PPGMonitor/plots_disabled",   self.btn_disable_plots.isChecked())
         # Persist geometry of all open subwindows (survives taskkill; also saved in their closeEvent)
         if self.ppgplots_window  is not None: s.setValue("PPGPlotsWindow/geometry",    self.ppgplots_window.saveGeometry())
         if self.signals_window   is not None: s.setValue("PPGSignalsWindow/geometry",  self.signals_window.saveGeometry())
@@ -14354,6 +14385,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._restore_serial_on_start = s.value("PPGMonitor/serial_connected", True, type=bool)
         self._restore_udp_on_start    = s.value("PPGMonitor/udp_connected",    False, type=bool)
         self._udp_preferred_mac = s.value("PPGMonitor/udp_preferred_mac", "", type=str) or None
+        # No window is open yet at this point in __init__, so this only locks the buttons and
+        # paints the toggle -- there is nothing to close.
+        self._apply_disable_plots(s.value("PPGMonitor/plots_disabled", False, type=bool), log_it=False)
 
     def _populate_ports(self):
         current = self.combo_port.currentText()
@@ -14717,6 +14751,36 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"background-color: {bg}; color: {fg}; font-size: 17px; "
             f"font-weight: bold; padding: 5px; border: 1px solid {border}; border-radius: 4px;")
         self._udp_btn_state = state
+
+    def _toggle_disable_plots(self):
+        """btn_disable_plots.clicked: the button has already flipped isChecked() by the time
+        this runs (native Qt behaviour), so it already reads the state being ENTERED."""
+        self._apply_disable_plots(self.btn_disable_plots.isChecked(), log_it=True)
+
+    def _apply_disable_plots(self, disabled, log_it):
+        """Single choke point, called both from the button and from _restore_settings() at
+        startup. Closing a window goes through its OWN toggle_xxx() via a synthetic .click() --
+        exactly what a manual click on that button would do -- so nothing about how a window
+        closes (closeEvent, geometry save, main_monitor=None) is duplicated or bypassed here."""
+        n_closed = 0
+        for name in self._PLOT_WINDOW_BUTTONS:
+            btn = getattr(self, name)
+            if disabled and btn.isChecked():
+                btn.click()   # -> toggle_xxx() sees isChecked()==False -> closes, sets None
+                n_closed += 1
+            btn.setEnabled(not disabled)
+        self.btn_disable_plots.setChecked(disabled)
+        if disabled:
+            text, bg, fg, border = "PLOTS  ●  OFF", "#123A3A", "#33DDDD", "#33DDDD"
+        else:
+            text, bg, fg, border = "PLOTS  ●  ON", "#1E1E1E", "#666666", "#444444"
+        self.btn_disable_plots.setText(text)
+        self.btn_disable_plots.setStyleSheet(
+            f"background-color: {bg}; color: {fg}; font-size: 17px; "
+            f"font-weight: bold; padding: 5px; border: 1px solid {border}; border-radius: 4px;")
+        if log_it:
+            self.log("Plotting DISABLED" + (f" — closed {n_closed} window(s)" if n_closed else "")
+                     if disabled else "Plotting enabled")
 
     def _refresh_source_combo(self):
         """1 Hz (and after every source change): rebuild the SOURCE combo from the board registry

@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.60
+# pulsenest_lab — Specification v1.63
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -100,8 +100,22 @@ This prevents the app from appearing frozen when WiFi is not reachable but USB i
 | LISTEN (UDP thread running; no datagrams yet, **or the user picked SERIAL as source**) | `"serial"` |
 | ON (the active board feeds the pipeline) | `"udp"` |
 | LOST (v1.45: the active board has been silent for `UDP_LOST_TIMEOUT_S`; not replaced) | `"udp"` |
+| READ-ONLY (v1.61: another program holds the hub's control, spec §4.11) | `"udp"` |
 
-The four states are painted by `_set_udp_button(state)`. Since v1.45 the **SOURCE** combo under the
+The five states are painted by `_set_udp_button(state)`. **READ-ONLY (amber, not red)** is the
+one that is NOT about the board: data flows and the algorithms run exactly as in ON, but this
+lab instance is not the hub's controller, so every command it sends (`$SET`, `$MODE`, `$CFG?`)
+is refused. In practice this means a second lab instance is open — the hub grants control to
+whichever subscriber asks first and refuses it to the rest, by name and since when
+(`control refused to ... : held by pulsenest_lab since 08:27:01`, logged once per change, not
+on every retry). It clears on its own when the holder closes: `HubClient` re-claims the control
+every `CTRL_RETRY_S` (5 s) while it wants it and does not have it — found while writing the test
+for this: without the retry, a refused instance stayed read-only until restarted, because it had
+only ever asked once, at connect(). Verified by `tools/udp_multiboard_test.py` phase 11: a rival
+subscriber takes the control, the lab still receives and feeds the pipeline, its button reads
+READ-ONLY, its `$SET` is not sent, and control returns on its own when the rival leaves.
+
+Since v1.45 the **SOURCE** combo under the
 button (§4.8, F2) is where the user picks what feeds the pipeline: `SERIAL COMx` or any board seen on
 the UDP port. The buttons only start and stop the transports.
 
@@ -1480,9 +1494,50 @@ Stats are accumulated over `spin_stats_interval` seconds (default 1 s, user-conf
 | Stats interval | Stats table update interval in seconds (default 1) |
 | HGAC / RF1 / RF2 | Quick HW controls, see §6.3.1 — apply on selection, no Set button |
 | Frame mode combo | `$M1`–`$M4`; mirrors the mode in force and requests a change, see §6.5.1 |
-| UDP WiFi button | Toggle UDP receiver on/off; switches active transport |
+| UDP WiFi button | Toggle UDP receiver on/off; switches active transport. States: OFF / LISTEN / ON / LOST / READ-ONLY (v1.61, above) |
 | UDP port spin | UDP listen port (default `UDP_DATA_PORT` = 5005) |
+| PLOTS button (v1.63) | Toggle every pyqtgraph-bearing subwindow closed and locked — crash mitigation, see §6.5.2 |
 | Subwindow buttons | Toggle-open/close each secondary window |
+
+#### 6.5.2 PLOTS button — disable plotting for an unattended capture (v1.63)
+
+**Why.** `faulthandler.log` holds 28 `Windows fatal exception: access violation` entries since
+2026-07, 18 of them in `pyqtgraph/graphicsItems/AxisItem.py:681 in paint` or
+`pyqtgraph/widgets/GraphicsView.py:137 in paintEvent` (`project_signals2_crash_investigation_task`).
+Every one is a native segfault: it kills the process with no Python traceback, and under
+`pythonw` (no console) with no visible sign at all. Something a hospital capture cannot survive.
+The suspected trigger, `useOpenGL=True` (set once at startup, `if __name__ == "__main__"`), is
+still untested with `False` — an orthogonal, deferred lever (it would still leave software
+rendering exercising the same code path). This button removes the whole class of risk instead of
+tuning it: while it is on, none of the fourteen pyqtgraph-bearing subwindows can be open, so their
+paint code never runs, in this process, regardless of what the renderer backend is.
+
+**The fourteen.** Exactly the fed-from-`_refresh_plots_tick()` set — `HR1TEST`/`HR1LAB`,
+`HR2TEST`/`HR2LAB`, `HR3TEST`/`HR3LAB`, `SPO2TEST`/`SPO2LAB`, `PPG Plots`, `PPG SIGNALS`,
+`PPG SIGNALS 2`, `ALGO RESULTS`, `PILAB` — plus `LIB CONFIG`, which owns one `PlotWidget` (a
+settling-time curve, read on demand) but sits outside that 200 ms tick. Not touched: `SIGNAL
+STATS` (the main window itself has no plot), `HW CONFIG`, `LAB CAPTURE`, `MULTI CAPTURE`,
+`SERIAL COM`, `UDP COM`, `DIAGNOSTICS`, `PYTHON TIMING`, `ESP32 TIMING`, `AFE SWEEP TEST`, and the
+serial/UDP/hub connections — nothing a capture needs to record is disabled.
+
+**What it does**, in `_apply_disable_plots(disabled, log_it)`, entirely by driving each of the
+fourteen buttons through the checkable-button/`toggle_xxx()` pair it already had (§6.5): turning
+it on calls `.click()` on every one that is currently checked — exactly the click the user would
+make — so the window closes through its own, unmodified `closeEvent` (geometry saved,
+`main_monitor` cleared, `self.xxx_window` set back to `None`); it then disables all fourteen
+buttons so none can reopen. Turning it off re-enables them and reopens nothing — the user opens
+what they need, same as always. The state is a QSettings boolean
+(`PPGMonitor/plots_disabled`), applied once more from `_restore_settings()` at startup: no
+window is open yet at that point, so this only paints the button and locks the fourteen — the
+point being that the setting outlives a crash-triggered relaunch without anyone having to
+remember to reapply it.
+
+**Verification:** `tools/disable_plots_test.py`, offscreen, no board and no hub — opens
+`HR1LAB`, `SPO2TEST` and `LIB CONFIG`, toggles the button on and checks all three close through
+their own `toggle_xxx()` and all fourteen buttons lock; checks a locked button truly cannot be
+clicked open; toggles off and checks the buttons unlock and nothing reopens on its own; then a
+save/restore round-trip through a fresh `PPGMonitor` instance, confirming the disabled state (and
+the locked buttons) survive a relaunch with no window ever created to close. 13/13.
 
 #### 6.5.1 Frame mode combo — mirror, not a setting
 
@@ -2352,6 +2407,42 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.63 — 2026-09-17
+
+**PLOTS button (§6.5.2): disable every pyqtgraph-bearing subwindow for an unattended capture.**
+`faulthandler.log` has 28 native segfaults since 2026-07, 18 of them inside pyqtgraph's own paint
+code (`project_signals2_crash_investigation_task`) — unacceptable for a hospital session where a
+crash loses the recording. The button closes and locks the fourteen plot-bearing subwindows
+(everything fed by `_refresh_plots_tick()`, plus `LIB CONFIG`) through their own existing
+`toggle_xxx()`, so nothing about how a window closes is duplicated; `SIGNAL STATS`, `HW CONFIG`,
+`LAB CAPTURE`, `MULTI CAPTURE` and the hub connection are untouched. State persists across a
+relaunch. `tools/disable_plots_test.py`: 13/13, offscreen.
+
+### v1.62 — 2026-09-17
+
+**Every running program names its own file.** With a dozen scripts in the project, the one thing
+the screen could not tell you was which file drew it. The lab prefixes all 24 window titles with
+the running file (`pulsenest_lab.py - HR1LAB`) through a `_win()` helper built on
+`pulsenest_net.script_name()`; console tools print a first `== <file> ==  <what it does>` line
+via `pulsenest_net.banner()`, ASCII-only on purpose — these lines reach a Windows console that
+may be `cp1252`, where a non-ASCII character raises `UnicodeEncodeError` on the very first
+`print()` (found the hard way today, in `tools/disable_plots_test.py`'s own checks: the "●"
+button-state dot is fine inside Qt, since it never reaches a console, but crashes an offline
+test that prints it to redirected stdout without `sys.stdout.reconfigure(encoding="utf-8")` —
+now the convention every test in `tools/` follows). The main window's title also changed from
+"AFE4490 Advanced Monitor" (what it displays) to "PulseNest: a lab for the incunest_afe4490
+library" (what it is for) — every algorithm window here is a mirror of that library.
+
+### v1.61 — 2026-09-17
+
+**A fifth UDP button state, READ-ONLY (§4.11), for when another program holds the hub's
+control.** Amber, not red: data is flowing and the algorithms run exactly as in ON — what is
+missing is the right to write, because another subscriber (in practice, almost always a second
+lab instance) is the hub's controller. Found and fixed together: writing the regression phase for
+it (`tools/udp_multiboard_test.py` phase 11) exposed that a refused client never asked for the
+control again, so a lab that lost a race stayed read-only until restarted even after the rival
+closed; `HubClient` now re-claims every `CTRL_RETRY_S` while it wants the control and lacks it.
 
 ### v1.60 — 2026-09-16
 

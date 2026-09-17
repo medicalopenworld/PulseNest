@@ -68,8 +68,8 @@ has not been triaged yet.
 	3. Afecta al set de regresión: `captures/CAPTURE_SET_SPEC.md` §2.3 exige que las columnas `FW_*` sean atribuibles a una configuración. Con HGAC fuera de las notas, esa atribución está incompleta.
 	4. Aplica igual a la ventana MULTI CAPTURE (§7.20), que hoy tampoco vuelca `$LCFG` y además graba varias placas, cada una con su propio estado.
 - Plan de contingencia ante el riesgo de posible crash aleatorio de pulsenest_lab.py mientras se mide en un hospital:
-	1. Desarrollar una app de captura robusta sin Qt
-	2. Opción de desactivar gráficos
+	1. Desarrollar una app de captura robusta sin Qt — pendiente: bruto+conversor vs CSV directo
+	2. [x] Opción de desactivar gráficos — HECHO 2026-09-17 (v1.63, spec §6.5.2): botón PLOTS, cierra y bloquea las 14 subventanas con pyqtgraph; SIGNAL STATS/HW CONFIG/LAB CAPTURE/hub intactos; persiste tras reinicio; `tools/disable_plots_test.py` 13/13
 
 
 
