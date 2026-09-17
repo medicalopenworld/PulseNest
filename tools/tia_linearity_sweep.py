@@ -30,22 +30,23 @@ Usage
    (spec 4.11): close pulsenest_lab.py first, it keeps the control while open. The hub
    itself may stay up (the script starts one if none is running).
 2. ESP32 streaming over WiFi as usual.  Probe WITHOUT finger.
-3. Run:  python tia_linearity_sweep.py
+3. Run:  python tools/tia_linearity_sweep.py
 4. Results: tia_linearity_sweep_<date>.csv + console analysis
    (+ tia_linearity_sweep_<date>.png if matplotlib is available).
 
 Protocol constants must match pulsenest_lab.py / include/wifi_config.h.
 """
 
-import socket
+import os
 import statistics
 import sys
 import time
 from datetime import datetime
 
 # ── Protocol (must match pulsenest_lab.py) ──────────────────────────────────
-from pulsenest_net import UDP_DATA_PORT   # the one place the ports live
-from pulsenest_hub_client import HubClient  # every host-side program is a hub subscriber
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pulsenest_net import UDP_DATA_PORT   # noqa: E402  (the one place the ports live)
+from pulsenest_hub_client import HubClient  # noqa: E402  (every host-side program subscribes)
 ADC_FS_COUNTS = 2 ** 21 - 1   # positive full-scale code (datasheet Table 7)
 ADC_FSR       = 1.2           # V
 

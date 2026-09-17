@@ -908,7 +908,7 @@ buttons). Otherwise every connect would have pasted the cache replay into the no
 
 **Tools.** `tools/udp_fw_versions.py` is a read-only subscriber: identities from the cache replay,
 rates from the stream, nothing sent — it runs next to the lab now. `tools/udp_cmd_latency.py` and
-`tia_linearity_sweep.py` send commands, so they claim the control and stop with a message naming
+`tools/tia_linearity_sweep.py` send commands, so they claim the control and stop with a message naming
 the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_monitor.py` is the
 first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
 gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;

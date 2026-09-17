@@ -191,11 +191,14 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
         for line in client.last_status.splitlines()[1:]:
             if line.startswith(("hub ", "sub ")):
                 out.append("  " + line)
-    if boards and any(b.last_err for b in boards.values()):
+    notes = [f"  {b.ip} is {b.ident.get('board', '?')} {b.ident.get('mac', '?')} back on a new "
+             f"lease (was {b.moved_from}) — one row, counters carried"
+             for b in sorted(boards.values(), key=lambda x: x.ip) if b.moved_from]
+    notes += [f"  last $ERR {b.ip}: {b.last_err}"
+              for b in sorted(boards.values(), key=lambda x: x.ip) if b.last_err]
+    if notes:
         out.append("")
-        for b in boards.values():
-            if b.last_err:
-                out.append(f"  last $ERR {b.ip}: {b.last_err}")
+        out.extend(notes)
     return "\n".join(out)
 
 

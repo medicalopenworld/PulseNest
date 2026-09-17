@@ -31,7 +31,7 @@ from claude_agent_sdk import (
     query,
 )
 
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parent.parent   # tools/ -> repo root
 CAPTURES_DIR = PROJECT_DIR / "captures"
 REPORTS_DIR = PROJECT_DIR / "reports" / "sweep_agents"
 

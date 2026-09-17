@@ -3,7 +3,8 @@
 Two fake boards (127.0.0.2 / 127.0.0.3, the addresses tools/udp_multiboard_test.py uses), a hub
 on :15105, a controller client and a read-only client. Checks the contract the lab and the tools
 will rely on: origin tagging, datagram boundaries, cache replay, single controller, read-only
-enforcement, liveness (ping/pong), expiry, and that the hub asks each board $CFG? exactly once.
+enforcement, liveness (ping/pong), expiry, and the hub's bounded identity query ($CFG?, retried
+while unanswered).
 No real bench involved; run any time:
 
     python tools/hub_test.py
@@ -22,6 +23,7 @@ import pulsenest_hub_client as C   # noqa: E402
 DATA_PORT, CMD_PORT = 15105, 15106
 C.AUTOSTART_ENABLED = False
 H.SUB_EXPIRE_S = 1.5          # fast expiry for the test
+H.CFG_RETRY_S = 0.3           # fast identity retry for the test
 C.PING_S = 0.3
 C.MAX_MISSED_PONGS = 3
 
@@ -34,9 +36,10 @@ def check(name, cond, detail=""):
 
 
 class FakeBoard(threading.Thread):
-    def __init__(self, ip, mac, rate_s=0.02):
+    def __init__(self, ip, mac, rate_s=0.02, answer_cfg=True):
         super().__init__(daemon=True)
         self.ip, self.mac, self.period = ip, mac, rate_s
+        self.answer_cfg = answer_cfg       # False: the board never answers $CFG? (lost datagrams)
         self.data = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.data.bind((ip, 0))
         self.cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -67,7 +70,8 @@ class FakeBoard(threading.Thread):
                     self.cmds.append(req)
                     if req.strip() == b"$CFG?":
                         self.cfg_requests += 1
-                        self.data.sendto(self.cfg(), dst)
+                        if self.answer_cfg:
+                            self.data.sendto(self.cfg(), dst)
             except (BlockingIOError, OSError):
                 pass
             time.sleep(self.period)
@@ -195,6 +199,25 @@ def main():
         ctrl.recv(0.05)
     check("new hub asked the boards $CFG? once each again (2 total per board)",
           (a.cfg_requests, b.cfg_requests) == (2, 2), f"{a.cfg_requests},{b.cfg_requests}")
+
+    # ── identity query: retried while unanswered, bounded ─────────────────────────────────
+    # Without a $CFG a subscriber has no MAC, and one that keys its rows by MAC (fleet_monitor)
+    # cannot tell a board back on a new DHCP lease from a second board. So the query is retried
+    # -- and capped, because a board that never answers must not be asked for ever.
+    mute = FakeBoard("127.0.0.4", "AA:AA:AA:AA:AA:04", answer_cfg=False)
+    mute.start()
+    t0 = time.monotonic()
+    while mute.cfg_requests < H.CFG_MAX_REQUESTS and time.monotonic() - t0 < 5.0:
+        ctrl.recv(0.1)
+    check("a board that does not answer $CFG? is asked again, up to the cap",
+          mute.cfg_requests == H.CFG_MAX_REQUESTS, f"{mute.cfg_requests} requests")
+    n_at_cap = mute.cfg_requests
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 1.5:
+        ctrl.recv(0.1)
+    check("and not once more after the cap", mute.cfg_requests == n_at_cap,
+          f"{mute.cfg_requests} > {n_at_cap}")
+    mute.stop.set()
 
     # ── no SO_REUSEADDR: a second hub on the same port must fail its bind ──────────────────
     dup = H.Hub(port=DATA_PORT, cmd_port=CMD_PORT)

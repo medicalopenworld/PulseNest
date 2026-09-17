@@ -40,9 +40,13 @@ Rules.
   read-only by construction. Control is granted if nobody holds it or the holder expired, and
   only to a local address unless --allow-remote-control is given: writing to a medical device
   from another machine must be a deliberate choice, never the default.
-- The hub itself sends exactly ONE thing to a board: a single "$CFG?" when it first sees a
-  board IP, and once more each time that board comes back after BOARD_LOST_S of silence (it
-  may have rebooted into a new build -- an OTA is routine here). Nothing else, ever.
+- The hub itself only ever asks a board for its identity: "$CFG?" when it first sees a board
+  IP, and again when that board comes back after BOARD_LOST_S of silence (it may have rebooted
+  into a new build -- an OTA is routine here). The query is UDP and can be lost, so it is
+  retried every CFG_RETRY_S up to CFG_MAX_REQUESTS times *until the board answers*, and not
+  once more: without a $CFG the subscribers have no MAC, and a subscriber that keys its rows by
+  MAC (fleet_monitor) cannot tell a board back on a new DHCP lease from a second board. Nothing
+  else is ever sent to a board.
 - Datagram boundaries are preserved: what the board sent as one datagram, the subscriber gets as
   one datagram (with the @FROM line in front). pulsenest_lab.py's batching invariant depends on it.
 - No SO_REUSEADDR. Two hubs must not "coexist" with one of them silently receiving nothing
@@ -72,7 +76,10 @@ from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
 HUB_SIGIL      = b"@"
 PING_S         = 2.0     # what a subscriber is expected to send (pulsenest_hub_client does)
 SUB_EXPIRE_S   = 10.0    # a subscriber silent for this long is forgotten (and loses control)
-BOARD_LOST_S   = 2.0     # @STATUS marks a board LOST after this silence; nothing else acts on it
+BOARD_LOST_S   = 2.0     # a board silent for this long is LOST: @STATUS says so, and on its
+                         # return the hub replays its cache and asks $CFG? again
+CFG_RETRY_S    = 3.0     # gap between identity queries to a board that has not answered yet
+CFG_MAX_REQUESTS = 3     # ... and how many times in total, per appearance
 CFG_PREFIXES   = (b"$CFG,", b"$TCFG,", b"$LCFG,")
 RATE_WINDOW_S  = 2.0     # datagram rate window for @STATUS
 LOG_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_hub.log")
@@ -97,8 +104,8 @@ def is_loopback(ip):
 
 class Board:
     """One source IP that sent board-plane datagrams."""
-    __slots__ = ("ip", "first_seen", "last_seen", "datagrams", "bytes", "cfg", "cfg_asked",
-                 "_win_t", "_win_n", "rate")
+    __slots__ = ("ip", "first_seen", "last_seen", "datagrams", "bytes", "cfg", "cfg_requests",
+                 "cfg_last_req", "_win_t", "_win_n", "rate")
 
     def __init__(self, ip, now):
         self.ip = ip
@@ -106,7 +113,8 @@ class Board:
         self.datagrams = 0
         self.bytes = 0
         self.cfg = {}            # prefix -> last raw line (bytes, no line ending)
-        self.cfg_asked = False   # the hub's one and only "$CFG?" to this board
+        self.cfg_requests = 0    # identity queries sent for this appearance (see CFG_MAX_REQUESTS)
+        self.cfg_last_req = 0.0
         self._win_t, self._win_n, self.rate = now, 0, 0.0
 
     def seen(self, now, nbytes):
@@ -238,8 +246,8 @@ class Hub:
         b = self.boards.get(ip)
         if b is None:
             b = self.boards[ip] = Board(ip, now)
-            log.info("board %s seen for the first time — asking $CFG? once", ip)
-            self._ask_cfg_once(b)
+            log.info("board %s seen for the first time — asking $CFG?", ip)
+            self._ask_cfg(b, now)
         elif now - b.last_seen > BOARD_LOST_S:
             # Back after a silence. Two things: subscribers that joined meanwhile never got this
             # board's configuration (the join replay covers live boards only), so hand out what
@@ -250,18 +258,19 @@ class Hub:
                      ip, now - b.last_seen)
             for sub in list(self.subs.values()):
                 self._replay_board(sub.addr, b)
-            b.cfg_asked = False
-            self._ask_cfg_once(b)
+            b.cfg_requests = 0
+            self._ask_cfg(b, now)
         b.seen(now, len(data))
         b.cache_cfg(data)
         self.n_board_dgrams += 1
         if self.subs:
             self._fanout(ip, data)
 
-    def _ask_cfg_once(self, b):
-        if b.cfg_asked:
-            return
-        b.cfg_asked = True
+    def _ask_cfg(self, b, now):
+        """Ask this board who it is. Bounded: CFG_MAX_REQUESTS per appearance, and only while it
+        has not answered -- the reply is cached, so one good answer ends the queries."""
+        b.cfg_requests += 1
+        b.cfg_last_req = now
         self._send((b.ip, self.cmd_port), b"$CFG?\n")
 
     def _fanout(self, ip, data):
@@ -401,7 +410,14 @@ class Hub:
 
     # ── housekeeping ──────────────────────────────────────────────────────────────────────────
     def _housekeeping(self, now):
-        """Expire silent subscribers; idle exit. Returns True when the hub should exit."""
+        """Retry unanswered identity queries; expire silent subscribers; idle exit.
+        Returns True when the hub should exit."""
+        for b in self.boards.values():
+            if (not b.cfg.get(b"$CFG,") and b.cfg_requests < CFG_MAX_REQUESTS
+                    and now - b.last_seen <= BOARD_LOST_S
+                    and now - b.cfg_last_req > CFG_RETRY_S):
+                log.info("board %s has not answered $CFG? (%d) — asking again", b.ip, b.cfg_requests)
+                self._ask_cfg(b, now)
         for addr, s in list(self.subs.items()):
             if now - s.last_seen > SUB_EXPIRE_S:
                 self._forget(addr, f"silent for {now - s.last_seen:.0f} s")
