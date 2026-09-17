@@ -25,7 +25,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT          # noqa: E402  (the one place the ports live)
+from pulsenest_net import UDP_DATA_PORT, banner  # noqa: E402  (the one place the ports live)
 from pulsenest_hub_client import HubClient       # noqa: E402
 
 
@@ -84,6 +84,7 @@ def main():
     ap.add_argument("--label", default="", help="tag printed with the results (e.g. before/after)")
     args = ap.parse_args()
 
+    print(banner(__file__, "round-trip latency of a command, per board"))
     client = HubClient("udp_cmd_latency", control=True, log=print)
     if not client.connect():
         print(f"ERROR: no hub answering on 127.0.0.1:{UDP_DATA_PORT} and none could be started")

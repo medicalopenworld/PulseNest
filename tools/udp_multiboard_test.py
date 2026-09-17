@@ -181,6 +181,7 @@ def main():
             print("no live $M4 on :5005, using the embedded template")
         else:
             template = live
+    print(f"== {os.path.basename(__file__)} ==  simulated boards -> hub -> lab, offscreen")
     print("template:", template[:60].decode(), "...")
 
     app = QtWidgets.QApplication([])

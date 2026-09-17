@@ -90,6 +90,7 @@ def drain(client, seconds):
 
 
 def main():
+    print(f"== {os.path.basename(__file__)} ==  hub + client, in process, on :{DATA_PORT}")
     hub = H.Hub(port=DATA_PORT, cmd_port=CMD_PORT)
     hub.open()
     hub_thread = threading.Thread(target=hub.serve_forever, daemon=True)

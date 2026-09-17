@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fleet_monitor as F  # noqa: E402
 
+print(f"== {os.path.basename(__file__)} ==  offline checks of the fleet_monitor table")
+
 ok = []
 
 

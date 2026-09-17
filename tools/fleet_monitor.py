@@ -40,7 +40,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT          # noqa: E402
+from pulsenest_net import UDP_DATA_PORT, script_name          # noqa: E402
 from pulsenest_hub_client import HubClient       # noqa: E402
 
 ID_KEYS = ("mac", "board", "fw", "lib", "build")
@@ -230,7 +230,7 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
     now = time.monotonic()
     silent = sorted((b for b in boards.values() if now - b.last_seen > LOST_S), key=lambda x: x.ip)
     prefix = ip_prefix(boards)
-    out = [f"PulseNest {os.path.basename(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
+    out = [f"PulseNest {script_name(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
            f", read-only)" + (f"  boards {prefix}.*" if prefix else "")
            + f"  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}"]
     # The alert line — the one thing on this screen that must never be quiet. A board that fell

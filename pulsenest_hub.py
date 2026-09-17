@@ -71,7 +71,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
+from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT, banner, script_name  # noqa: E402
 
 HUB_SIGIL      = b"@"
 PING_S         = 2.0     # what a subscriber is expected to send (pulsenest_hub_client does)
@@ -188,8 +188,9 @@ class Hub:
         s.setblocking(False)
         self.sock = s
         self.started = time.monotonic()
-        log.info("hub listening on :%d (commands to boards on :%d, remote control %s)",
-                 self.port, self.cmd_port, "ALLOWED" if self.allow_remote_control else "local only")
+        log.info("%s listening on :%d (commands to boards on :%d, remote control %s)",
+                 script_name(__file__), self.port, self.cmd_port,
+                 "ALLOWED" if self.allow_remote_control else "local only")
 
     def stop(self):
         self._stop.set()
@@ -474,6 +475,8 @@ def main(argv=None):
     ap.add_argument("--quiet", action="store_true", help="log to file only")
     a = ap.parse_args(argv)
     _setup_logging(a.quiet)
+    if not a.quiet:
+        print(banner(__file__, f"owns UDP :{a.port}, fans the boards' stream out to subscribers"))
     hub = Hub(port=a.port, allow_remote_control=a.allow_remote_control,
               idle_exit_s=a.idle_exit_min * 60.0)
     try:

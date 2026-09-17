@@ -1,4 +1,4 @@
-"""PulseNest network constants -- the one place the UDP port numbers live on the host side.
+"""What every host-side PulseNest program shares: the UDP ports, and how it names itself.
 
 Two ports, one per END of the link. They are not two ports on one machine:
 
@@ -15,8 +15,12 @@ module is. Running it checks that the local wifi_config.h agrees:
 
     python pulsenest_net.py
 
-Every host-side program imports from here -- pulsenest_lab.py, tia_linearity_sweep.py and the
-tools/ scripts. Until 2026-09-16 each of them carried its own copy of both numbers.
+Every host-side program imports from here -- pulsenest_lab.py, tools/tia_linearity_sweep.py and
+the rest of tools/. Until 2026-09-16 each of them carried its own copy of both numbers.
+
+It also holds script_name()/banner(), so that a running program always says which file it is:
+the lab puts it in every window title, the console tools print it as their first line. With a
+dozen scripts around, that is the one thing the screen could not tell you.
 """
 import os
 import re
@@ -24,6 +28,22 @@ import sys
 
 UDP_DATA_PORT = 5005
 UDP_CMD_PORT = 5006
+
+
+def script_name(path):
+    """-> the file name a running program should show, e.g. "fleet_monitor.py". Pass __file__."""
+    return os.path.basename(os.path.abspath(path))
+
+
+def banner(path, what=""):
+    """First line of output of a console tool: the file that is running, then what it does.
+
+    ASCII only, on purpose: these lines go to a Windows console that may be cp1252, where a box
+    character or a dash would raise UnicodeEncodeError on the very first print.
+    """
+    name = script_name(path)
+    return f"== {name} ==" + (f"  {what}" if what else "")
+
 
 # Firmware mirror. Maps our name to the #define in include/wifi_config.h.
 _FIRMWARE_MIRROR = {
@@ -57,4 +77,5 @@ if __name__ == "__main__":
         for line in issues:
             print("  " + line)
         sys.exit(1)
+    print(banner(__file__, "the host-side source of truth for the UDP ports"))
     print(f"OK: wifi_config.h agrees (data :{UDP_DATA_PORT}, commands :{UDP_CMD_PORT})")

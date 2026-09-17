@@ -220,6 +220,13 @@ BAUD             = 921600
 # include/wifi_config.h, gitignored; `python pulsenest_net.py` checks they agree).
 from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
 import pulsenest_hub_client as _hubc  # noqa: E402  (the lab is a hub subscriber and its controller)
+from pulsenest_net import script_name as _script_name  # noqa: E402
+
+
+def _win(title):
+    """Window title, prefixed with the file that is running. Alex, 2026-09-17: with a dozen
+    scripts in the project, a window on screen did not say which one had drawn it."""
+    return f"{_script_name(__file__)} - {title}"
 UDP_BATCH_SIZE   = 5      # must match UDP_BATCH_SIZE in src/main.cpp: data frames per datagram
 # Multi-board capture (spec §4.8 F3)
 # 25 000 frames = 50 s at 500 Hz. The reader must never block on a writer, so a board's capture
@@ -1636,7 +1643,7 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("SPO2LAB — Calibration")
+        self.setWindowTitle(_win("SPO2LAB — Calibration"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -2132,7 +2139,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("SPO2TEST")
+        self.setWindowTitle(_win("SPO2TEST"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -2920,7 +2927,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor     = main_monitor
-        self.setWindowTitle("HR1TEST")
+        self.setWindowTitle(_win("HR1TEST"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -3599,7 +3606,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor     = main_monitor
-        self.setWindowTitle("HR2TEST")
+        self.setWindowTitle(_win("HR2TEST"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -4772,7 +4779,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor     = main_monitor
-        self.setWindowTitle("HR3TEST")
+        self.setWindowTitle(_win("HR3TEST"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -5432,7 +5439,7 @@ class PILabWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("PILAB")
+        self.setWindowTitle(_win("PILAB"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -5986,7 +5993,7 @@ class PILabWindow(QtWidgets.QMainWindow):
 
     def _show_help(self):
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("PILAB — Help")
+        dlg.setWindowTitle(_win("PILAB — Help"))
         dlg.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         dlg.resize(900, 800)
         lay = QtWidgets.QVBoxLayout(dlg)
@@ -6215,7 +6222,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("PYTHON TIMING — Script Performance")
+        self.setWindowTitle(_win("PYTHON TIMING — Script Performance"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
             "PythonTimingWindow/geometry")
@@ -6451,7 +6458,7 @@ class Esp32TimingWindow(QtWidgets.QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("ESP32 TIMING — CPU Budget & Load")
+        self.setWindowTitle(_win("ESP32 TIMING — CPU Budget & Load"))
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("Esp32TimingWindow/geometry")
         if geom: self.restoreGeometry(geom)
         else:    self.resize(640, 980)
@@ -6725,7 +6732,7 @@ class DiagnosticsWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_monitor = parent
-        self.setWindowTitle("AFE4490 Diagnostics")
+        self.setWindowTitle(_win("AFE4490 Diagnostics"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
             "DiagnosticsWindow/geometry")
@@ -6890,7 +6897,7 @@ class HWConfigWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_monitor = parent
-        self.setWindowTitle("HW CONFIG — AFE4490")
+        self.setWindowTitle(_win("HW CONFIG — AFE4490"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HWConfigWindow/geometry")
         if geom: self.restoreGeometry(geom)
@@ -7703,7 +7710,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_monitor = parent
-        self.setWindowTitle("LIB CONFIG — RSQM / HGAC Parameters")
+        self.setWindowTitle(_win("LIB CONFIG — RSQM / HGAC Parameters"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("LIBConfigWindow/geometry")
         if geom: self.restoreGeometry(geom)
@@ -8404,7 +8411,7 @@ class HR1LabWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("HR1LAB")
+        self.setWindowTitle(_win("HR1LAB"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -8648,7 +8655,7 @@ class HR3LabWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("HR3LAB")
+        self.setWindowTitle(_win("HR3LAB"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -8801,7 +8808,7 @@ class HR2LabWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("HR2LAB")
+        self.setWindowTitle(_win("HR2LAB"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -9078,7 +9085,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("PPG Plots")
+        self.setWindowTitle(_win("PPG Plots"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._setup_ui()
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -9296,7 +9303,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("PPG Signals")
+        self.setWindowTitle(_win("PPG Signals"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._paused = False
         _sig_buf = int(SIG_MAX_S * SPO2_RECEIVED_FS)
@@ -9609,7 +9616,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("PPG Signals 2 (any channel)")
+        self.setWindowTitle(_win("PPG Signals 2 (any channel)"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._paused = False
         _sig_buf = int(SIG_MAX_S * SPO2_RECEIVED_FS)
@@ -9842,7 +9849,7 @@ class AlgoResultsWindow(QtWidgets.QWidget):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("Algorithm Results")
+        self.setWindowTitle(_win("Algorithm Results"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._setup_ui()
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -9917,7 +9924,7 @@ class SerialComWindow(QtWidgets.QWidget):
         super().__init__()
         self.main_monitor = main_monitor
         self._paused = False
-        self.setWindowTitle("Serial COM")
+        self.setWindowTitle(_win("Serial COM"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._setup_ui()
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -10099,7 +10106,7 @@ class AFESweepTestWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__(parent=None)
         self.main_monitor = main_monitor
-        self.setWindowTitle("AFE SWEEP TEST")
+        self.setWindowTitle(_win("AFE SWEEP TEST"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 24px;")
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("AFESweepTestWindow/geometry")
         if geom:
@@ -10814,7 +10821,7 @@ class UdpComWindow(QtWidgets.QWidget):
         self._view_mode = mode if mode in self.VIEW_MODES else self.VIEW_LIVE_TOP
         self._live_text = ""       # last data line seen; what both LIVE modes display
         self._bottom_live = False  # LIVE AT BOTTOM: the console's last block is the live line
-        self.setWindowTitle("UDP COM")
+        self.setWindowTitle(_win("UDP COM"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._setup_ui()
         geom = s.value("UdpComWindow/geometry")
@@ -11245,7 +11252,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
-        self.setWindowTitle("Lab Capture")
+        self.setWindowTitle(_win("Lab Capture"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 28px;")
 
         # Deferred-start state (see _begin_capture). Set before _setup_ui() so a signal that
@@ -11938,7 +11945,7 @@ class MultiCaptureWindow(QtWidgets.QWidget):
         self.main_monitor = main_monitor
         self._checks = {}        # ip → QCheckBox
         self._row_of = {}        # ip → table row
-        self.setWindowTitle("MULTI CAPTURE")
+        self.setWindowTitle(_win("MULTI CAPTURE"))
         # NO declarar font-size aqui ni en los controles de abajo: el defecto de la aplicacion son
         # 12 pt, en PUNTOS, que escalan con el DPI de la pantalla. Cualquier valor en px es fijo y
         # en un monitor escalado sale mas pequeno que el defecto - que es justo lo que paso al
@@ -12336,7 +12343,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._serial_connecting = False   # guard: prevent concurrent open attempts
 
         # Configuración Ventana Principal
-        self.setWindowTitle("AFE4490 Advanced Monitor (by Medical Open World)")
+        self.setWindowTitle(_win("AFE4490 Advanced Monitor (by Medical Open World)"))
         self.resize(1800, 1100)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
 
