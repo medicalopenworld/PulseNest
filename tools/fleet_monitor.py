@@ -11,6 +11,12 @@ V_TIA_LED1/2 (volts, 2 decimals) and RF from the last $M4 · count of $ERR lines
 while the board spoke within the last 2 s, else the silence in seconds. Below: the hub's own status
 (@STATUS: subscribers and who holds the control).
 
+Silence is the one thing this screen must never be quiet about: a board that stops (2 s) keeps
+its row, painted white on red, and an alert line under the title names it; with no board at all
+the alert says for how long. Rows are keyed by IP but identity is the MAC: a board back under a
+new DHCP lease replaces its old row (counters carried over) instead of leaving a ghost — a row
+that stays red is hardware that is really not there.
+
 The frame is read the way UdpBoard does in the lab: fields by position after '$' (spec §4.2 —
 [0]=mode [1]=SmpCnt ... [10]=SpO2 [14]=HR1 [20]=RSQI [21]=DiagCode [22]=ProbeState [34]=RF1
 [35]=RF2). ProbeState is shown by its enumerator name from incunest_afe4490.h (DISCONNECTED,
@@ -51,7 +57,8 @@ class BoardView:
         self.gaps = 0
         self.errs = 0
         self.last_err = ""
-        self.fields = {}      # spo2, hr1, rsqi, diag, probe, rf1, rf2
+        self.moved_from = None   # previous IP of the same MAC, when a new lease replaced a row
+        self.fields = {}      # spo2, hr1, rsqi, diag, probe, vtia1, vtia2, rf1, rf2
 
     def feed(self, data, now):
         self.last_seen = now
@@ -120,10 +127,43 @@ def probe_cell(label, colors):
     return (GREEN if label == "APPLIED" else RED) + cell + RESET
 
 
-def render(boards, client, hub, t_start, colors=False):
+RED_BG = "\x1b[41;97m"      # white on red: a board that fell silent, or no board at all
+
+
+def dedupe_by_mac(boards, b):
+    """A board back under a new DHCP lease is the same hardware: keep ONE row (the newest IP),
+    carry the session counters over, drop the ghost. Identity is the MAC, as in the lab (§4.8).
+    A row that stays after this is a board that is genuinely not there any more."""
+    mac = b.ident.get("mac")
+    if not mac:
+        return
+    for other in list(boards.values()):
+        if other is not b and other.ident.get("mac") == mac:
+            newer, older = (b, other) if b.last_seen >= other.last_seen else (other, b)
+            newer.dgrams += older.dgrams
+            newer.gaps += older.gaps
+            newer.errs += older.errs
+            newer.moved_from = older.ip
+            del boards[older.ip]
+
+
+def render(boards, client, hub, t_start, colors=False, t_last_any=None):
     now = time.monotonic()
+    silent = sorted((b for b in boards.values() if now - b.last_seen > LOST_S), key=lambda x: x.ip)
     out = [f"PulseNest {os.path.basename(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
-           f", read-only)  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}", ""]
+           f", read-only)  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}"]
+    # The alert line — the one thing on this screen that must never be quiet. A board that fell
+    # silent, or no board at all, goes white on red across the width; otherwise the line is blank.
+    if not boards:
+        since = now - (t_last_any if t_last_any is not None else t_start)
+        alert = (f"!! NO BOARD RECEIVED for {since:.0f} s — boards powered? hotspot broadcasting? "
+                 f"hub receiving? (its counters are below)")
+    elif silent:
+        alert = "!! SILENT: " + "   ".join(f"{b.ip} {b.ident.get('board', '?')} for {now - b.last_seen:.0f} s"
+                                          for b in silent)
+    else:
+        alert = ""
+    out.append((RED_BG + alert + RESET) if (alert and colors) else alert)
     hdr = (f"{'IP':15s} {'MAC':17s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
            f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
            f"{'SpO2':>5s} {'HR1':>6s} {'V_TIA1':>6s} {'V_TIA2':>6s} {'RF1/RF2':>10s} {'ERR':>3s} {'last':>5s}")
@@ -131,15 +171,19 @@ def render(boards, client, hub, t_start, colors=False):
     out.append("-" * len(hdr))
     for b in sorted(boards.values(), key=lambda x: x.ip):
         silence = now - b.last_seen
-        state = f"{silence:4.0f}s" if silence > LOST_S else "live"
+        lost = silence > LOST_S
+        state = f"{silence:4.0f}s" if lost else "live"
         i, fl = b.ident, b.fields
-        out.append(f"{b.ip:15s} {i.get('mac', '?'):17s} {i.get('board', '?')[:12]:12s} "
-                   f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
-                   f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {probe_cell(fl.get('probe', '?'), colors)} "
-                   f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} {fl.get('spo2', '?'):>5s} "
-                   f"{fl.get('hr1', '?'):>6s} {fl.get('vtia1', '?'):>6s} {fl.get('vtia2', '?'):>6s} "
-                   f"{(fl.get('rf1', '?') + '/' + fl.get('rf2', '?')):>10s} "
-                   f"{b.errs:3d} {state:>5s}")
+        # A lost row is painted whole, so the probe cell gets no colour of its own there: its
+        # RESET would cut the row's background in the middle.
+        row = (f"{b.ip:15s} {i.get('mac', '?'):17s} {i.get('board', '?')[:12]:12s} "
+               f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
+               f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {probe_cell(fl.get('probe', '?'), colors and not lost)} "
+               f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} {fl.get('spo2', '?'):>5s} "
+               f"{fl.get('hr1', '?'):>6s} {fl.get('vtia1', '?'):>6s} {fl.get('vtia2', '?'):>6s} "
+               f"{(fl.get('rf1', '?') + '/' + fl.get('rf2', '?')):>10s} "
+               f"{b.errs:3d} {state:>5s}")
+        out.append((RED_BG + row + RESET) if (colors and lost) else row)
     if not boards:
         out.append("(no board seen yet)")
     out.append("")
@@ -210,6 +254,7 @@ def main():
     client.connect()
     boards = {}
     t_start = time.monotonic()
+    t_last_any = None
     next_draw = next_status = 0.0
     screen = Screen()
     try:
@@ -218,16 +263,19 @@ def main():
             now = time.monotonic()
             if item is not None:
                 ip, data = item
+                t_last_any = now
                 b = boards.get(ip)
                 if b is None:
                     b = boards[ip] = BoardView(ip)
                 b.feed(data, now)
+                dedupe_by_mac(boards, b)
             if now >= next_status:
                 next_status = now + 5.0
                 client.request_status()
             if now >= next_draw:
                 next_draw = now + args.refresh
-                screen.draw(render(boards, client, hub, t_start, colors=screen.enabled))
+                screen.draw(render(boards, client, hub, t_start, colors=screen.enabled,
+                                   t_last_any=t_last_any))
     except KeyboardInterrupt:
         pass
     finally:
