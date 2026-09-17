@@ -12343,7 +12343,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._serial_connecting = False   # guard: prevent concurrent open attempts
 
         # Configuración Ventana Principal
-        self.setWindowTitle(_win("AFE4490 Advanced Monitor (by Medical Open World)"))
+        # Says what this program is FOR, not what it displays: the lab exists to exercise and
+        # verify the incunest_afe4490 library, and every algorithm window here is a mirror of it.
+        self.setWindowTitle(_win("PulseNest: a lab for the incunest_afe4490 library "
+                                 "(by Medical Open World)"))
         self.resize(1800, 1100)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
 
