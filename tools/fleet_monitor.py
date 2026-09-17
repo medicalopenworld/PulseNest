@@ -6,10 +6,19 @@ $MODE can leave it, by construction (spec §4.11). It can run on the bench PC ne
 another PC with `--hub <bench-pc-ip>`.
 
 Per board: IP · MAC · board type · fw / lib / build (from the hub's $CFG cache and any live $CFG)
-· datagrams/s · frame mode · sample-counter gaps · probe state, RSQI, DiagCode, SpO2, HR1,
-V_TIA_LED1/2 (volts, 2 decimals) and RF from the last $M4 · count of $ERR lines · `last`: "live"
-while the board spoke within the last 2 s, else the silence in seconds. Below: the hub's own status
-(@STATUS: subscribers and who holds the control).
+· datagrams/s · frame mode · sample-counter gaps · probe state, RSQI, DiagCode, SpO2, HR1, HR2,
+HR3, and TIAn/RFn (the TIA voltage next to the gain resistor that produced it) from the last $M4
+· count of $ERR lines · `last`: "live" while the board spoke within the last 2 s, else the silence
+in seconds. Below: the hub's own status (@STATUS: subscribers and who holds the control).
+
+Columns are kept narrow so there is room to add more: the IP shows its last two octets with the
+common prefix in the header (full addresses when the boards are not on one subnet), the MAC its
+last three octets, the probe state a shortened but never mid-word label.
+
+SpO2/HR1/HR2/HR3 are coloured by their own SQI, green above 0.9 and dark red below, over the mean
+since the last redraw -- the criterion SIGNAL STATS uses in the lab. With one caveat: the lab
+applies it to HR1/2/3 only, so for SpO2 the threshold is BORROWED, not validated (spo2_sqi is
+computed differently). Treat the SpO2 colour as a hint.
 
 Silence is the one thing this screen must never be quiet about: a board that stops (2 s) keeps
 its row, painted white on red, and an alert line under the title names it; with no board at all
@@ -40,9 +49,25 @@ LOST_S = 2.0
 # shows (SIGNAL STATS / OT MONITOR). The first version of this table had invented labels AND the
 # numbering shifted by one (2 read "PARTIAL" while the board was saying APPLIED). Never again:
 # the label IS the enumerator's name, so a reader can grep it in the library.
-PROBE_STATES = {"0": "DISCONNECTED", "1": "OT_HIGH", "2": "APPLIED",
-                "3": "AMB_SATURATING", "4": "ONLY_LED_SATURATING"}
+# Shortened to keep the column at 12 chars, but never cut mid-word: a mechanical truncation
+# would print "AMB_SATURATI", which reads like a typo. The enumerator is next to each label so
+# it is still greppable in the library.
+PROBE_STATES = {"0": "DISCONNECTED",    # PROBE_DISCONNECTED
+                "1": "OT_HIGH",         # PROBE_OT_HIGH
+                "2": "APPLIED",         # PROBE_APPLIED
+                "3": "AMB_SAT",         # PROBE_AMB_SATURATING
+                "4": "ONLY_LED_SAT"}    # PROBE_ONLY_LED_SATURATING
 PROBE_W = max(len(v) for v in PROBE_STATES.values())
+
+# SIGNAL STATS (pulsenest_lab.py) paints the HR1/HR2/HR3 mean green above this SQI and dark red
+# below, over the MEAN of the SQI in its window -- not the last sample, which on a marginal
+# signal would flash green/red every refresh. Same here, averaged over one refresh interval.
+SQI_THRESHOLD = 0.9
+# The lab does NOT colour SpO2: there is no criterion to copy. Extended here on request
+# (2026-09-17) with the same 0.9, which is BORROWED, not validated -- spo2_sqi is computed
+# differently from the HR ones (it is PI-weighted, and its upper bound is still an open
+# question: project_spo2_pi_upper_bound_task). Read the SpO2 colour as a hint, not a verdict.
+SQI_OF = {"spo2": "spo2_sqi", "hr1": "hr1_sqi", "hr2": "hr2_sqi", "hr3": "hr3_sqi"}
 
 
 class BoardView:
@@ -58,7 +83,20 @@ class BoardView:
         self.errs = 0
         self.last_err = ""
         self.moved_from = None   # previous IP of the same MAC, when a new lease replaced a row
-        self.fields = {}      # spo2, hr1, rsqi, diag, probe, vtia1, vtia2, rf1, rf2
+        # SQI accumulated since the last redraw, per measurement: the colour follows the MEAN,
+        # as SIGNAL STATS does, so a marginal signal does not flash at the refresh rate.
+        self.sqi_sum = {k: 0.0 for k in SQI_OF}
+        self.sqi_n = {k: 0 for k in SQI_OF}
+        self.fields = {}      # spo2, hr1..hr3 + their SQIs, rsqi, diag, probe, vtia, rf
+
+    def sqi_mean(self, key):
+        """-> mean SQI of this measurement since the last redraw, or None if nothing arrived."""
+        n = self.sqi_n.get(key, 0)
+        return self.sqi_sum[key] / n if n else None
+
+    def sqi_reset(self):
+        for k in self.sqi_sum:
+            self.sqi_sum[k], self.sqi_n[k] = 0.0, 0
 
     def feed(self, data, now):
         self.last_seen = now
@@ -109,13 +147,32 @@ class BoardView:
                 return f"{float(p[i]):.2f}"
             except (IndexError, ValueError):
                 return "?"
-        self.fields = {"spo2": f(10), "hr1": f(14), "rsqi": f(20), "diag": f(21),
+        self.fields = {"spo2": f(10), "spo2_sqi": f(11),
+                       "hr1": f(14), "hr1_sqi": f(15),
+                       "hr2": f(16), "hr2_sqi": f(17),
+                       "hr3": f(18), "hr3_sqi": f(19),
+                       "rsqi": f(20), "diag": f(21),
                        "probe": PROBE_STATES.get(f(22), f(22)),
                        "vtia1": volts(23), "vtia2": volts(24),      # V_TIA_LED1 / V_TIA_LED2, volts
                        "rf1": f(34), "rf2": f(35)}
+        for key, sqi_key in SQI_OF.items():
+            try:
+                self.sqi_sum[key] += float(self.fields[sqi_key])
+                self.sqi_n[key] += 1
+            except (KeyError, ValueError):
+                pass
 
 
 GREEN, RED, RESET = "\x1b[32m", "\x1b[31m", "\x1b[0m"
+
+
+def sqi_cell(text, mean, width, colors):
+    """A measurement cell coloured by its own SQI, the SIGNAL STATS way: green above the
+    threshold, dark red below. Plain while no SQI has arrived yet."""
+    cell = f"{text:>{width}s}"
+    if not colors or mean is None:
+        return cell
+    return (GREEN if mean > SQI_THRESHOLD else RED) + cell + RESET
 
 
 def probe_cell(label, colors):
@@ -128,6 +185,28 @@ def probe_cell(label, colors):
 
 
 RED_BG = "\x1b[41;97m"      # white on red: a board that fell silent, or no board at all
+
+
+def ip_prefix(boards):
+    """-> the first two octets shared by every board, or None when they differ.
+
+    Worth folding into the header only while the whole fleet is on one subnet, which is the
+    bench case (the hotspot). A subscriber watching a hub whose boards sit on two networks gets
+    the full addresses instead: shortening them there would hide the very thing that differs.
+    """
+    prefixes = {".".join(b.ip.split(".")[:2]) for b in boards.values() if b.ip.count(".") == 3}
+    return prefixes.pop() if len(prefixes) == 1 else None
+
+
+def short_ip(ip, prefix):
+    return ip[len(prefix) + 1:] if prefix and ip.startswith(prefix + ".") else ip
+
+
+def short_mac(mac):
+    """Last three octets. The first three are NOT common (V17 is 10:20:BA, the V18s 10:51:DB),
+    so they cannot go in the header -- but the last three identify every board in the inventory."""
+    parts = mac.split(":")
+    return ":".join(parts[-3:]) if len(parts) == 6 else mac
 
 
 def dedupe_by_mac(boards, b):
@@ -150,8 +229,10 @@ def dedupe_by_mac(boards, b):
 def render(boards, client, hub, t_start, colors=False, t_last_any=None):
     now = time.monotonic()
     silent = sorted((b for b in boards.values() if now - b.last_seen > LOST_S), key=lambda x: x.ip)
+    prefix = ip_prefix(boards)
     out = [f"PulseNest {os.path.basename(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
-           f", read-only)  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}"]
+           f", read-only)" + (f"  boards {prefix}.*" if prefix else "")
+           + f"  up {now - t_start:5.0f} s     {time.strftime('%H:%M:%S')}"]
     # The alert line — the one thing on this screen that must never be quiet. A board that fell
     # silent, or no board at all, goes white on red across the width; otherwise the line is blank.
     if not boards:
@@ -164,9 +245,11 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
     else:
         alert = ""
     out.append((RED_BG + alert + RESET) if (alert and colors) else alert)
-    hdr = (f"{'IP':15s} {'MAC':17s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
+    ip_w = 7 if prefix else 15
+    hdr = (f"{'IP':{ip_w}s} {'MAC':8s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
            f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
-           f"{'SpO2':>5s} {'HR1':>6s} {'V_TIA1':>6s} {'V_TIA2':>6s} {'RF1/RF2':>10s} {'ERR':>3s} {'last':>5s}")
+           f"{'SpO2':>5s} {'HR1':>6s} {'HR2':>6s} {'HR3':>6s} "
+           f"{'TIA1':>4s} {'RF1':>4s} {'TIA2':>4s} {'RF2':>4s} {'ERR':>3s} {'last':>5s}")
     out.append(hdr)
     out.append("-" * len(hdr))
     for b in sorted(boards.values(), key=lambda x: x.ip):
@@ -174,16 +257,23 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
         lost = silence > LOST_S
         state = f"{silence:4.0f}s" if lost else "live"
         i, fl = b.ident, b.fields
-        # A lost row is painted whole, so the probe cell gets no colour of its own there: its
-        # RESET would cut the row's background in the middle.
-        row = (f"{b.ip:15s} {i.get('mac', '?'):17s} {i.get('board', '?')[:12]:12s} "
+        # A lost row is painted whole, so no cell gets a colour of its own there: its RESET
+        # would cut the row's background in the middle.
+        cell_colors = colors and not lost
+        row = (f"{short_ip(b.ip, prefix):{ip_w}s} {short_mac(i.get('mac', '?')):8s} "
+               f"{i.get('board', '?')[:12]:12s} "
                f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
-               f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {probe_cell(fl.get('probe', '?'), colors and not lost)} "
-               f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} {fl.get('spo2', '?'):>5s} "
-               f"{fl.get('hr1', '?'):>6s} {fl.get('vtia1', '?'):>6s} {fl.get('vtia2', '?'):>6s} "
-               f"{(fl.get('rf1', '?') + '/' + fl.get('rf2', '?')):>10s} "
+               f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {probe_cell(fl.get('probe', '?'), cell_colors)} "
+               f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} "
+               f"{sqi_cell(fl.get('spo2', '?'), b.sqi_mean('spo2'), 5, cell_colors)} "
+               f"{sqi_cell(fl.get('hr1', '?'), b.sqi_mean('hr1'), 6, cell_colors)} "
+               f"{sqi_cell(fl.get('hr2', '?'), b.sqi_mean('hr2'), 6, cell_colors)} "
+               f"{sqi_cell(fl.get('hr3', '?'), b.sqi_mean('hr3'), 6, cell_colors)} "
+               f"{fl.get('vtia1', '?'):>4s} {fl.get('rf1', '?'):>4s} "
+               f"{fl.get('vtia2', '?'):>4s} {fl.get('rf2', '?'):>4s} "
                f"{b.errs:3d} {state:>5s}")
         out.append((RED_BG + row + RESET) if (colors and lost) else row)
+        b.sqi_reset()
     if not boards:
         out.append("(no board seen yet)")
     out.append("")
