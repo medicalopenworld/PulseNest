@@ -1,8 +1,24 @@
-"""P1-P6 offline: widths, shortening, HR2/HR3, TIAn/RFn order, SQI colouring by the mean."""
-import re, sys, time
-sys.path.insert(0, r"C:\PRJ\MOW\PulseNest\tools")
-sys.path.insert(0, r"C:\PRJ\MOW\PulseNest")
-import fleet_monitor as F
+"""Offline checks for tools/fleet_monitor.py -- the table, not the network.
+
+Feeds synthetic $CFG and $M4 datagrams straight into BoardView/render(), so it needs neither a
+hub nor a board and runs in a fraction of a second:
+
+    python tools/fleet_monitor_test.py
+
+Covers what the columns promise (2026-09-17): the shortened IP/MAC/probe labels and the fallback
+to full addresses across subnets, the column order SpO2 HR1 HR2 HR3 RF1 TIA1 RF2 TIA2, the fields
+each cell reads, row/header alignment, and the SQI colouring -- green above 0.9 over the MEAN
+since the last redraw (not the last sample), no colour before any SQI arrives, and a lost row
+painted whole with no inner colour that would cut its background.
+"""
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import fleet_monitor as F  # noqa: E402
 
 ok = []
 
@@ -58,9 +74,10 @@ check("P3 probe label shortened, never mid-word", " APPLIED " in row and F.PROBE
 check("P3 no mid-word truncation in the table", F.PROBE_STATES["3"] == "AMB_SAT"
       and F.PROBE_STATES["4"] == "ONLY_LED_SAT")
 # P4 / P5
-check("P4+P5 column order: SpO2 HR1 HR2 HR3 TIA1 RF1 TIA2 RF2",
-      re.search(r"SpO2\s+HR1\s+HR2\s+HR3\s+TIA1\s+RF1\s+TIA2\s+RF2\s+ERR\s+last", hdr) is not None, hdr)
-check("P4 values pair up with their gain resistor", re.search(r"0\.87\s+50K\s+1\.20\s+100K", row) is not None, row)
+check("P4+P5 column order: SpO2 HR1 HR2 HR3 RF1 TIA1 RF2 TIA2",
+      re.search(r"SpO2\s+HR1\s+HR2\s+HR3\s+RF1\s+TIA1\s+RF2\s+TIA2\s+ERR\s+last", hdr) is not None, hdr)
+check("P4 each resistor is followed by the voltage it produced",
+      re.search(r"50K\s+0\.87\s+100K\s+1\.20", row) is not None, row)
 check("P5 HR2 and HR3 read from fields 16 and 18", re.search(r"60\.8\s+0\.0\s", row) is not None, row)
 # widths
 check("narrower than before (163) despite 3 more columns", len(hdr) <= 150, f"{len(hdr)} chars")

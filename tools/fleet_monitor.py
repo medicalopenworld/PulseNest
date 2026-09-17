@@ -7,7 +7,7 @@ another PC with `--hub <bench-pc-ip>`.
 
 Per board: IP · MAC · board type · fw / lib / build (from the hub's $CFG cache and any live $CFG)
 · datagrams/s · frame mode · sample-counter gaps · probe state, RSQI, DiagCode, SpO2, HR1, HR2,
-HR3, and TIAn/RFn (the TIA voltage next to the gain resistor that produced it) from the last $M4
+HR3, and RFn/TIAn (each gain resistor next to the TIA voltage it produced) from the last $M4
 · count of $ERR lines · `last`: "live" while the board spoke within the last 2 s, else the silence
 in seconds. Below: the hub's own status (@STATUS: subscribers and who holds the control).
 
@@ -249,7 +249,7 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
     hdr = (f"{'IP':{ip_w}s} {'MAC':8s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
            f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
            f"{'SpO2':>5s} {'HR1':>6s} {'HR2':>6s} {'HR3':>6s} "
-           f"{'TIA1':>4s} {'RF1':>4s} {'TIA2':>4s} {'RF2':>4s} {'ERR':>3s} {'last':>5s}")
+           f"{'RF1':>4s} {'TIA1':>4s} {'RF2':>4s} {'TIA2':>4s} {'ERR':>3s} {'last':>5s}")
     out.append(hdr)
     out.append("-" * len(hdr))
     for b in sorted(boards.values(), key=lambda x: x.ip):
@@ -269,8 +269,8 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
                f"{sqi_cell(fl.get('hr1', '?'), b.sqi_mean('hr1'), 6, cell_colors)} "
                f"{sqi_cell(fl.get('hr2', '?'), b.sqi_mean('hr2'), 6, cell_colors)} "
                f"{sqi_cell(fl.get('hr3', '?'), b.sqi_mean('hr3'), 6, cell_colors)} "
-               f"{fl.get('vtia1', '?'):>4s} {fl.get('rf1', '?'):>4s} "
-               f"{fl.get('vtia2', '?'):>4s} {fl.get('rf2', '?'):>4s} "
+               f"{fl.get('rf1', '?'):>4s} {fl.get('vtia1', '?'):>4s} "
+               f"{fl.get('rf2', '?'):>4s} {fl.get('vtia2', '?'):>4s} "
                f"{b.errs:3d} {state:>5s}")
         out.append((RED_BG + row + RESET) if (colors and lost) else row)
         b.sqi_reset()
