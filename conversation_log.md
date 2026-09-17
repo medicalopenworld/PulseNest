@@ -22628,3 +22628,65 @@ decision de firmware aparte.
 - Alex: "cambialo". Hook sustituido (copia en `pulsenest_launch_pre.sh.bak`): ahora para solo los
   procesos python/pythonw cuya linea de comandos contenga `pulsenest_lab.py`. Prueba en seco sobre
   los procesos vivos: mataria el lab (pythonw 50360) y dejaria el hub (9832) y el monitor de Alex.
+
+### fleet_monitor: tres retoques de Alex, y el arranque de la herramienta de captura robusta
+- **Etiquetas de `probe` = nombres del enum** (`0204f8e`): mi tabla tenia nombres inventados Y la
+  numeracion corrida en uno (con el dedo puesto mostraba "PARTIAL" cuando la placa decia APPLIED).
+  Ahora `DISCONNECTED / OT_HIGH / APPLIED / AMB_SATURATING / ONLY_LED_SATURATING`, como el lab.
+- `V_TIA1`/`V_TIA2` (voltios, 2 decimales) antes de `RF1/RF2` (`f142ab6`); titulo con el nombre del
+  script (`5206b43`); `probe` en color, APPLIED verde y el resto rojo; `last` explicado (segundos
+  desde el ultimo datagrama; `live` si < 2 s).
+- **Nueva tarea de Alex: herramienta de captura ROBUSTA para campanas en hospital** (el lab es
+  inestable por el pintado de pyqtgraph; alli no cabe un crash). Decidido esta noche:
+  1. **Una herramienta para todas las tarjetas**, no una por tarjeta: la medida es simultanea (mismo
+     reloj del host), los metadatos son unos, y una consola en el hospital. El aislamiento se
+     consigue sin GUI + un escritor por tarjeta con su propio try/except, no con N procesos.
+  2. Cubre **varios bebes con una sonda** y **un bebe con varias sondas** con la misma herramienta:
+     solo cambian los metadatos por tarjeta (sujeto y nivel por MAC, o sitio por MAC).
+  3. **Visor multitarjeta aparte** (suscriptor con GUI, puede morir solo); la captura headless.
+  4. Recomendado y **pendiente de que Alex decida**: **bruto + conversor** (grabar cada datagrama
+     tal cual con sello del host e IP — literalmente el flujo `@FROM` del hub con hora —, y un
+     conversor que produce el CSV exacto de CAPTURE LAB, verificado byte a byte contra
+     `LabCaptureWriter`; conversion automatica al parar, en proceso aparte; el bruto se puede
+     reinyectar en un hub para probar todo el ecosistema con sesiones reales). Coste ~0,5 GB/h/placa.
+  Siguiente decision: ficha de metadatos y teclas de operacion en consola.
+- Explicados a peticion: F3 (= fase 3 del multiplaca, la MULTI CAPTURE, con `host_t_us` como reloj
+  comun) y T1/T2/T3 (niveles de verdad del set de capturas: simulador / referencia clinica / sin
+  referencia).
+- **Tarea apuntada para manana (Alex)**: en `fleet_monitor.py` indicar CLARAMENTE que una tarjeta
+  ha dejado de emitir — cambiar el color de `last` quiza no baste; probablemente color de FONDO de
+  la celda o de la fila. Anotado en `project_robust_capture_tool_task`.
+
+## Sesion 2026-09-17 (1) - Manana: el hub aguanto la noche; el hotspot no; fleet_monitor grita el silencio
+- **Hub 8 h vivo**: 2,05 M datagramas recibidos, 3,46 M reenviados, 0 rechazos, 3 800 errores de
+  socket — todos de suscriptores muertos sin `@UNSUB` (ICMP puerto inalcanzable hasta caducar a
+  los 10 s); benignos. Mejora anotada: separar ese ruido de los errores reales en el contador.
+- Las placas no aparecian tras encenderlas: **el hub no recibia nada** (contador clavado) y el ARP
+  del hotspot estaba vacio. El PC se habia suspendido ~3 h (el hub vio al monitor 10 999 s en
+  silencio); el hotspot quedo `Up` con IP pero sin emitir. Alex lo reinicio y las placas volvieron
+  **con IPs nuevas** (.122/.131/.45).
+- Eso dejo en su monitor tres filas fantasma junto a las tres vivas. Hecho (commit de arriba):
+  **una fila por MAC** (una placa que vuelve con otro lease sustituye su fila y hereda contadores),
+  y la tarea apuntada anoche: **fila entera blanco sobre rojo** cuando una placa calla > 2 s, mas
+  una **linea de alerta** bajo el titulo que la nombra con su silencio; sin ninguna placa, la
+  alerta dice desde cuando. Comprobado offline (dedupe + alerta) y en vivo con las tres placas.
+- Leccion para la herramienta de hospital: lista de comprobacion previa (suspension, enchufe,
+  auto-apagado del hotspot) — en memoria `project_robust_capture_tool_task`.
+- Movidos a `tools/` (`a850e70`): `tia_linearity_sweep.py` (experimento de banco) y
+  `agent_sweep_batch.py` (ejemplo del Agent SDK de julio), con `git mv` y sus rutas arregladas.
+  Criterio: **la raiz es el sistema que corre** (lab, hub, cliente, constantes de red), `tools/` es
+  lo que se lanza de vez en cuando. Queda un cabo: el sweep escribe su CSV con nombre relativo, o
+  sea en el directorio desde el que se lance.
+- **Agujero encontrado al responder a Alex** ("que pasa si reseteo una tarjeta y vuelve con otra
+  IP"): el `$CFG?` del hub es UDP y se mandaba **una sola vez**; si se perdia, el suscriptor se
+  quedaba sin MAC y la fila fantasma no se iba nunca. Ahora se reintenta cada `CFG_RETRY_S`=3 s
+  hasta `CFG_MAX_REQUESTS`=3, **solo mientras la placa no conteste**. Dos checks nuevos:
+  hub_test 29/29, multiplaca 93/93. `fleet_monitor` ademas avisa bajo la tabla cuando una fila
+  cambio de IP ("back on a new lease (was ...) - one row, counters carried").
+- `pulsenest_hub_client.py`: Alex propuso renombrarlo a `_lib`. Descartado (no es idioma Python,
+  `_client` ya lo dice, y `pulsenest_net.py` es igual de importable pero SI ejecutable). En su
+  lugar (`92915dc`) el fichero **responde si lo lanzas**: imprime que es una biblioteca y que
+  ejecutar en su lugar, exit 2. Es el unico de la raiz sin `__main__`.
+- Aclarado a Alex: `pythonw` quita la ventana de consola, `start` desliga el proceso del shell (lo
+  necesito yo, el no); en PowerShell `start` es alias de `Start-Process` y **no admite mas de dos
+  posicionales** (`start python a.py extra` falla; hay que usar `a.py,extra`). Probado en su maquina.
