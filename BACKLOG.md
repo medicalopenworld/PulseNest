@@ -67,7 +67,9 @@ has not been triaged yet.
 	2. Alcance mínimo: que la captura pida `$LCFG?` al empezar y vuelque la respuesta en las notas, igual que ya hace con `$CFG?` (la casilla de lectura automática existe y está marcada por defecto). Hay que decidir si también al terminar, para detectar un cambio a mitad de captura — el `$CFG` de cierre ya se compara así (`_capture_open_cfg`).
 	3. Afecta al set de regresión: `captures/CAPTURE_SET_SPEC.md` §2.3 exige que las columnas `FW_*` sean atribuibles a una configuración. Con HGAC fuera de las notas, esa atribución está incompleta.
 	4. Aplica igual a la ventana MULTI CAPTURE (§7.20), que hoy tampoco vuelca `$LCFG` y además graba varias placas, cada una con su propio estado.
-- [x] Cuando quito y pongo tensión a una placa, o doy al botón RESET ESP32, o cambio de placa UDP, los plots de pulsenest se vuelven locos al principio — RESUELTO 2026-09-15 (v1.50, spec §4.10): nada reseteaba los buffers al reiniciar el flujo; ahora un evento de discontinuidad (contador atrás, banner/RESET_REASON, cambio de fuente) los reinicia y avisa a las 10 ventanas
+- Plan de contingencia ante el riesgo de posible crash aleatorio de pulsenest_lab.py mientras se mide en un hospital:
+	1. Desarrollar una app de captura robusta sin Qt
+	2. Opción de desactivar gráficos
 
 
 
@@ -90,6 +92,7 @@ has not been triaged yet.
       sin guard) y desde 2000 Hz la ventana de ambiente ya baja del mínimo de 50 µs de TI.
       Pendiente: decidir el techo de PRF soportado. Ver memoria
       `project_prf_range_settle_windows_task` y conversation_log 2026-08-22.
+- [x] Cuando quito y pongo tensión a una placa, o doy al botón RESET ESP32, o cambio de placa UDP, los plots de pulsenest se vuelven locos al principio — RESUELTO 2026-09-15 (v1.50, spec §4.10): nada reseteaba los buffers al reiniciar el flujo; ahora un evento de discontinuidad (contador atrás, banner/RESET_REASON, cambio de fuente) los reinicia y avisa a las 10 ventanas
 
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->
