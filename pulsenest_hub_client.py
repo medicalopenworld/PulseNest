@@ -13,6 +13,11 @@ Shared by every host-side program: pulsenest_lab.py (subscriber + controller), t
     c.send_to_board("192.168.137.62", b"$CFG?\\n")  # controller only; False when refused
     c.close()
 
+Control. A client created with control=True claims it at connect() and, if refused, keeps
+asking every CTRL_RETRY_S from inside recv(): the holder may close at any moment (with two labs
+open by accident, one is read-only until the other goes away) and the wait should not be a
+restart. The refusal is logged when it changes, not on every retry.
+
 Liveness. The client pings the hub every PING_S from inside recv(); the hub answers @PONG. The
 DATA stream is NOT used as a sign of life: boards falling silent is a bench event, the hub dying
 is a host event, and the two must never be confused. After MAX_MISSED_PONGS unanswered pings the
@@ -40,6 +45,9 @@ from pulsenest_net import UDP_DATA_PORT  # noqa: E402
 
 PING_S            = 2.0
 MAX_MISSED_PONGS  = 3          # 6 s of silence from the hub = dead
+CTRL_RETRY_S      = 5.0        # a client that wants the control and was refused keeps asking:
+                               # the holder may close (a second lab instance usually does), and
+                               # without this the refused one stayed read-only until restarted
 CONNECT_TIMEOUT_S = 1.0        # wait for @OK after @SUB/@CTRL
 RECONNECT_EVERY_S = 2.0
 HUB_SCRIPT        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_hub.py")
@@ -93,6 +101,7 @@ class HubClient:
         self.last_status = None                    # text of the last @STATUS reply
         self.launched = 0                          # how many times we started a hub
         self._last_ping_t = 0.0
+        self._last_ctrl_try = 0.0
         self._missed = 0
         self._next_reconnect = 0.0
         self._lock = threading.Lock()              # guards sendto from several threads (belt)
@@ -169,6 +178,10 @@ class HubClient:
             return None
         if now - self._last_ping_t >= PING_S:
             self._ping(now)
+        if (self.want_control and not self.controller
+                and now - self._last_ctrl_try >= CTRL_RETRY_S):
+            self._last_ctrl_try = now
+            self._send_hub(b"@CTRL " + self.name.encode("ascii", "replace") + b"\r\n")
         deadline = now + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -210,6 +223,8 @@ class HubClient:
         if verb == b"@OK":
             what = parts[1] if len(parts) > 1 else b""
             if what == b"CTRL":
+                if not self.controller:
+                    self.log("[HUB] control granted")
                 self.controller = True
                 self.control_refused_by = None
                 return "ok-ctrl"
@@ -219,9 +234,11 @@ class HubClient:
         if verb == b"@REFUSED":
             what = parts[1] if len(parts) > 1 else b""
             if what == b"CTRL":
+                was = self.control_refused_by
                 self.controller = False
                 self.control_refused_by = b" ".join(parts[2:]).decode("ascii", "replace")
-                self.log(f"[HUB] control refused: held by {self.control_refused_by}")
+                if self.control_refused_by != was:
+                    self.log(f"[HUB] control refused: held by {self.control_refused_by}")
                 return "refused-ctrl"
             if what == b"PING":
                 # The hub forgot us (it restarted, or we were silent too long): re-subscribe.

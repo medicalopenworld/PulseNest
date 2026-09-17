@@ -16,6 +16,9 @@ Scenario
   7. Fresh UDP connection with B preferred: A' speaks first, B is promoted when identified.
   8. MULTI CAPTURE records both boards at once: one CSV each, exactly N rows, HOST_T_US present,
      $MODE sent to every board, and corrupted frames rejected by checksum instead of written.
+  9-10. Stream discontinuities, and what counts as a partial datagram (five LINES, not five frames).
+  11. A rival program holds the hub's control: the lab still receives, its UDP button says
+     READ-ONLY, its $SET is not sent, and the control comes back on its own when the rival leaves.
 
 Usage:  python tools/udp_multiboard_test.py [--live-template]
 Exit code 0 when every check passes.
@@ -479,6 +482,29 @@ def main():
     check({x["ip"]: x for x in w.udp_boards_snapshot()}[src.ip]["data_datagrams"] == dd0,
           "a diagnostic-only datagram does not count as a data datagram (frm/dgram unaffected)")
     sock.close()
+
+    print("\n[phase 11] a second lab reads but cannot write: the UDP button says READ-ONLY")
+    # Two instances of the lab happened by accident on 2026-09-17: both painted normally and
+    # only the hub's log said the second had been refused the control. The button has to say it.
+    w._disconnect_udp()
+    spin(app, 0.5)
+    rival = HC.HubClient("rival_lab", hub=("127.0.0.1", DATA_PORT), control=True, log=lambda m: None)
+    check(rival.connect() and rival.controller, "a rival program takes the hub's control first")
+    a2 = FakeBoard("127.0.0.1", mac_a, "fakeA", template, start_cnt=5000)
+    a2.start()
+    w._connect_udp()
+    spin(app, 3.0)
+    check(w._hub is not None and not w._hub.controller, "the lab is refused the control")
+    check(w._active_transport == "udp", "it still receives and feeds the pipeline")
+    check(w.btn_udp.text().startswith("UDP WiFi  ●  READ-ONLY"), f"button READ-ONLY ({w.btn_udp.text()})")
+    check(any("READ-ONLY" in t and "rival_lab" in t for t in logs), "the log names who holds it")
+    check(not w.send_set("led1", "20"), "a $SET from the read-only instance is not sent")
+    rival.release_control()
+    rival.close()
+    spin(app, 8.0)          # the client re-claims every CTRL_RETRY_S
+    check(w._hub.controller and w.btn_udp.text().startswith("UDP WiFi  ●  ON"),
+          f"control returns when the rival leaves ({w.btn_udp.text()})")
+    a2.stop.set()
 
     w._disconnect_udp()
     ok = all(results)

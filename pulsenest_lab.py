@@ -12607,7 +12607,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "UDP WiFi",
             "Start or stop the UDP receiver. Click to toggle. "
             "Runs in parallel with SERIAL — serial port stays open for command responses ($CFG, $DIAG, etc.). "
-            f"Listens on the port configured below (default {UDP_DATA_PORT})."))
+            f"Subscribes to the hub on port {UDP_DATA_PORT} (spec §4.11) and claims its control.\n\n"
+            "LISTEN: receiving, but the pipeline is fed by SERIAL.   ON: the active board feeds "
+            "the pipeline and this instance can command the boards.   LOST: the active board fell "
+            "silent.   READ-ONLY (amber): data is flowing but another program holds the control — "
+            "usually a second lab instance — so every command from here is refused."))
         self.sidebar_layout.addWidget(self.btn_udp)
 
         # SOURCE: which stream feeds plots, algorithms and captures (§4.8 F2). Items are rebuilt
@@ -14685,11 +14689,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
         "LISTEN": ("UDP WiFi  ●  LISTEN  (:{port})",   "#1A1E3A", "#AAAAFF", "#8888CC"),
         "ON":     ("UDP WiFi  ●  ON  (:{port})",       "#1A1E3A", "#44AAFF", "#44AAFF"),
         "LOST":   ("UDP WiFi  ●  LOST  (:{port})",     "#3A1A1A", "#FF4444", "#FF4444"),
+        # Amber, not red: data is flowing and the algorithms run. What is missing is the right to
+        # WRITE — another program holds the hub's control (spec §4.11), which in practice means a
+        # second lab is open. Every $SET, $MODE and $CFG? from this instance will be refused, and
+        # a capture that reads the chip config automatically cannot start.
+        "READONLY": ("UDP WiFi  ●  READ-ONLY  (:{port})", "#3A2E12", "#FFBB33", "#FFBB33"),
     }
 
     def _set_udp_button(self, state):
         """OFF: receiver stopped. LISTEN: receiving but UDP is not the source (no data yet, or the
-        user picked SERIAL). ON: the active board feeds the pipeline. LOST: it fell silent."""
+        user picked SERIAL). ON: the active board feeds the pipeline. LOST: it fell silent.
+        READ-ONLY: receiving and feeding the pipeline, but this instance does not hold the hub's
+        control, so it cannot command the boards."""
         text, bg, fg, border = self._UDP_BTN_STYLES[state]
         self.btn_udp.setText(text.format(port=getattr(self, '_udp_port', UDP_DATA_PORT)))
         self.btn_udp.setStyleSheet(
@@ -14725,11 +14736,24 @@ class PPGMonitor(QtWidgets.QMainWindow):
             idx = next((i for i, it in enumerate(items) if it[:2] == active_key), 0)
             self.combo_source.setCurrentIndex(idx)
             self.combo_source.blockSignals(False)
-        # UDP button: ON ↔ LOST follows the active board; OFF/LISTEN are set by the connect paths.
-        if self._udp_btn_state in ("ON", "LOST") and self._active_transport == "udp":
+        # UDP button: ON ↔ LOST ↔ READ-ONLY follows the active board and the hub's control;
+        # OFF/LISTEN are set by the connect paths. LOST wins: a board that fell silent is the more
+        # urgent fact, and it is shown in red against READ-ONLY's amber.
+        if self._udp_btn_state in ("ON", "LOST", "READONLY") and self._active_transport == "udp":
             act = next((b for b in boards if b['ip'] == self._esp32_ip), None)
-            want = "LOST" if (act is not None and act['state'] == "LOST") else "ON"
+            if act is not None and act['state'] == "LOST":
+                want = "LOST"
+            elif self._hub is not None and self._hub.connected and not self._hub.controller:
+                want = "READONLY"
+            else:
+                want = "ON"
             if want != self._udp_btn_state:
+                if want == "READONLY":
+                    self.log("[HUB] READ-ONLY: another program holds the control — "
+                             f"{self._hub.control_refused_by or 'unknown'}. "
+                             "Commands to the boards will be refused (a second lab instance?)")
+                elif self._udp_btn_state == "READONLY":
+                    self.log("[HUB] control acquired — this instance can command the boards again")
                 self._set_udp_button(want)
 
     def _on_source_combo_changed(self, idx):
