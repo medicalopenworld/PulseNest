@@ -274,3 +274,17 @@ class HubClient:
             # Windows: ICMP unreachable (hub gone) surfaces here. Treated as silence; the
             # ping/pong logic decides.
             return None
+
+
+if __name__ == "__main__":
+    # The only file in the repository root that is imported and never run. Rather than rename it
+    # (a `_lib` suffix is not a Python idiom, and `_client` already says what it is), it answers
+    # the question itself when someone tries.
+    print(__doc__.split("\n\n")[0])
+    print("\nThis is a LIBRARY: import it, do not run it.\n"
+          "  the hub itself        python pulsenest_hub.py      (usually started by the first client)\n"
+          "  a read-only viewer    python tools/fleet_monitor.py\n"
+          "  the versions report   python tools/udp_fw_versions.py\n"
+          "  the lab               start pythonw pulsenest_lab.py\n"
+          "  the ports in use      python pulsenest_net.py")
+    sys.exit(2)
