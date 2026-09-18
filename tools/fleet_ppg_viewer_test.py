@@ -22,6 +22,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import fleet_ppg_viewer as V  # noqa: E402
 
+# Before anything constructs a Viewer: its closeEvent writes settings, and a test must never
+# land in the user's real fleet_ppg_viewer.ini.
+import tempfile  # noqa: E402
+V.SETTINGS_FILE = os.path.join(tempfile.gettempdir(), "fleet_ppg_viewer_test.ini")
+if os.path.exists(V.SETTINGS_FILE):
+    os.remove(V.SETTINGS_FILE)
+
 print(f"== {os.path.basename(__file__)} ==  offline checks of the PPG viewer")
 
 ok = []
@@ -180,7 +187,18 @@ titles = [b[0].titleLabel.text for b in win.bands.values()]
 check(all("APPLIED" in t for t in titles), "the band titles carry the probe state", str(titles))
 check(all("SpO2" in b[2].item.toHtml() for b in win.bands.values()),
       "every band got its numbers panel next to the plot")
-win.close()
+# ── the settings file: a first run sizes itself, and the choice survives ──────────────────
+check(win.height() > 400, "a first run takes its height from the screen, not a fixed 800 px",
+      f"{win.width()}x{win.height()}")
+win.resize(900, 1234)
+win.close()                      # closeEvent writes the geometry
+check(os.path.exists(V.SETTINGS_FILE), "closing writes the settings file")
+
+again = V.Viewer(("127.0.0.1", 15999), 15.0)
+check(again.height() == 1234 and again.width() == 900,
+      "and the next run comes up the size it was left",
+      f"{again.width()}x{again.height()}")
+again.close()
 
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
 # _exit skips Qt's teardown, which can hang on a window that never had an event loop — but it

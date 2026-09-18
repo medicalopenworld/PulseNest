@@ -7,6 +7,11 @@ that slips shows up as the shape going wrong at a glance — usually before any 
 
     python tools/fleet_ppg_viewer.py [--hub IP[:PORT]] [--window 15] [--opengl]
 
+The window size and the seconds on screen are remembered in `tools/fleet_ppg_viewer.ini`
+(per machine, not versioned), so the first-run defaults — a size taken from the screen rather
+than a fixed number of pixels that cannot know how many bands there will be — only ever matter
+once.
+
 Deliberately narrow. It does not capture, does not command a board, carries no algorithms and no
 configuration; all of that lives elsewhere. If it dies, it is relaunched and nothing else notices
 — which is the whole point of being a separate process hanging off the hub.
@@ -77,6 +82,8 @@ LOST_S       = 2.0
 WINDOW_S     = 15.0
 REDRAW_MS    = 100
 DRAIN_MS     = 20
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "fleet_ppg_viewer.ini")
 ID_KEYS      = ("mac", "board")
 PROBE_STATES = {"0": "DISCONNECTED", "1": "OT_HIGH", "2": "APPLIED",
                 "3": "AMB_SAT", "4": "ONLY_LED_SAT"}
@@ -275,7 +282,7 @@ class Viewer(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{script_name(__file__)} — live PPG per board "
                             f"(hub {hub[0]}:{hub[1]}, read-only)")
-        self.resize(1100, 800)
+        self._restore_geometry()
         self.window_s = window_s
         self.traces = {}
         self.bands = {}          # ip -> (PlotItem, PlotDataItem, LabelItem)
@@ -294,6 +301,31 @@ class Viewer(QtWidgets.QMainWindow):
         self.redraw_timer = QtCore.QTimer(self)
         self.redraw_timer.timeout.connect(self.redraw)
         self.redraw_timer.start(REDRAW_MS)
+
+    # ── settings ──────────────────────────────────────────────────────────────────────────
+    def _restore_geometry(self):
+        """The saved window, or on a first run a size taken from the screen.
+
+        It used to be a flat 1100x800, which cut the last band off as soon as there were three
+        boards — a fixed pixel height cannot know how many bands there will be, nor how tall
+        the display is. 88 % of the available height is a starting point; after that the file
+        remembers whatever the user chose, which is the only size that is actually right.
+        """
+        saved = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("geometry")
+        if saved is not None and self.restoreGeometry(saved):
+            return
+        screen = QtWidgets.QApplication.primaryScreen()
+        area = screen.availableGeometry() if screen is not None else None
+        if area is None:
+            self.resize(1100, 800)
+            return
+        self.resize(min(1200, int(area.width() * 0.6)), int(area.height() * 0.88))
+        self.move(area.left() + 40, area.top() + 20)
+
+    def _save_settings(self):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("geometry", self.saveGeometry())
+        s.setValue("window_s", self.window_s)
 
     # ── network ───────────────────────────────────────────────────────────────────────────
     def drain(self):
@@ -353,6 +385,7 @@ class Viewer(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.drain_timer.stop()
         self.redraw_timer.stop()
+        self._save_settings()
         self.client.close()
         event.accept()
 
@@ -360,8 +393,9 @@ class Viewer(QtWidgets.QMainWindow):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
-    ap.add_argument("--window", type=float, default=WINDOW_S, metavar="S",
-                    help="seconds of signal on screen (default %(default)s)")
+    ap.add_argument("--window", type=float, default=None, metavar="S",
+                    help=f"seconds of signal on screen (default {WINDOW_S:.0f}, or whatever was "
+                         f"last used — it is remembered in fleet_ppg_viewer.ini)")
     ap.add_argument("--opengl", action="store_true",
                     help="turn pyqtgraph's OpenGL back on — the suspect in the lab's paint "
                          "crashes, off here by default so this viewer can test it")
@@ -379,7 +413,13 @@ def main():
           f"tools/fleet_ppg_viewer_faulthandler.log)")
 
     app = QtWidgets.QApplication(sys.argv)
-    win = Viewer(hub, args.window)
+    # Explicit on the command line wins; otherwise what the last run left in the .ini; otherwise
+    # the default. Saved on close either way, so --window is also how you change it for good.
+    window_s = args.window
+    if window_s is None:
+        window_s = float(QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+                         .value("window_s", WINDOW_S))
+    win = Viewer(hub, window_s)
     win.show()
     return app.exec_()
 

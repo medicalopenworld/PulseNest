@@ -23377,3 +23377,26 @@ un segundo hex elegido a ojo (`#00697F`, `#0A7A3A`, que venian a ser el 50 %), a
 del color brillante con `dim(colour, DIM_FACTOR)` al **30 %** -> `#003E4C` y `#004C1F`. Asi los
 dos colores no pueden separarse al tocar uno, y queda **una sola perilla** que girar la proxima
 vez que no atenue bastante.
+
+### Tamano de ventana del visor: del screen en el primer arranque, y recordado despues (v1.72)
+Alex: 1) la ventana no arranca lo bastante alta y la ultima grafica se corta; 2) que le parece
+un `.ini` para recordar el tamano. Las dos van juntas: con persistencia, el valor por defecto
+solo importa la primera vez.
+
+- **Primer arranque**: en vez de `1100x800` fijo —un numero de pixeles no puede saber cuantas
+  bandas habra ni como de alta es la pantalla— toma el 88 % del alto disponible y hasta el 60 %
+  del ancho. En la pantalla de Alex (2880x1704 logicos) sale **1200x1499** en vez de 1100x800.
+- **`tools/fleet_ppg_viewer.ini`** (QSettings, junto al script, en `.gitignore` como
+  `pulsenest_lab.ini`): guarda la geometria y los segundos de ventana al cerrar. `--window` en
+  la linea de comandos manda y ademas queda guardado, asi que tambien sirve para cambiarlo de
+  forma permanente.
+
+Test: el `.ini` se redirige a un temporal **antes** de construir ningun `Viewer` (la leccion de
+`feedback_offscreen_tests_settings_autosave`: el `closeEvent` escribe su propio QSettings), y
+se comprueba el viaje de ida y vuelta — cerrar con 900x1234 y que la instancia siguiente arranque
+asi. 35/35.
+
+**Aviso para mi**: al comprobar la geometria elegida lo hice primero con `QT_QPA_PLATFORM=
+offscreen`, cuya pantalla ficticia es 800x600, y me dio "480x528". Casi lo reporto como si fuera
+lo que veria Alex. Las medidas de pantalla NO valen en offscreen (la de fuentes tampoco, ya
+estaba anotado en `feedback_font_sizes`).
