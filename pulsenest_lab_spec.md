@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.67
+# pulsenest_lab — Specification v1.68
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -972,6 +972,9 @@ the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_
 first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
 gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;
 it cannot touch a board, and runs on the bench PC or on another one with `--hub <bench-pc-ip>`.
+Every numeric cell goes through `fit()`, which **guarantees** the column width (v1.68): a value
+too long drops decimals rather than shifting every column to its right, and one that still does
+not fit shows `#####` rather than a truncated digit string, which would be a different number.
 
 **Stopping it by hand: `python pulsenest_hub.py --stop` (v1.67).** The running hub is detached
 and has no window, so there is no Ctrl+C and no console to close, and `taskkill /IM python.exe`
@@ -2492,6 +2495,17 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.68 — 2026-09-18
+
+**No cell may widen the fleet monitor's table.** Reported by Alex: at SpO2 `100.00` — six
+characters in a five-wide column — every column to its right shifted by one for as long as the
+reading held. Fixed in a `fit()` that every numeric cell now goes through, rather than by
+special-casing the value 100: the same trap was waiting in `diag` and in the HR columns at a
+3-digit rate. A value too long loses decimals first (`100.00` → `100.0`, and the second decimal
+of an SpO2 specified to a few percent was never information); one that still does not fit shows
+`#####`, because a cut-off digit string is a different number and a monitor reporting the wrong
+value quietly is worse than one saying it cannot show it. `tools/fleet_monitor_test.py`: 23/23.
 
 ### v1.67 — 2026-09-18
 

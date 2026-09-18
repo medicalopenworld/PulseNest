@@ -18,7 +18,10 @@ labelled by role ("hub" / "subscriber") and by the file actually running it (e.g
 
 Columns are kept narrow so there is room to add more: the IP shows its last two octets with the
 common prefix in the header (full addresses when the boards are not on one subnet), the MAC its
-last three octets, the probe state a shortened but never mid-word label.
+last three octets, the probe state a shortened but never mid-word label. Every numeric cell goes
+through fit(), which guarantees the column width -- a value too long loses decimals ("100.00" ->
+"100.0") instead of shoving every column to its right, which is what SpO2 reaching 100 used to
+do.
 
 SpO2/HR1/HR2/HR3 are coloured by their own SQI, green above 0.9 and dark red below, over the mean
 since the last redraw -- the criterion SIGNAL STATS uses in the lab. With one caveat: the lab
@@ -174,10 +177,33 @@ class BoardView:
 GREEN, RED, RESET = "\x1b[32m", "\x1b[31m", "\x1b[0m"
 
 
+def fit(text, width):
+    """Right-align `text` in EXACTLY `width` characters. A cell must never widen the table.
+
+    A number too long loses decimals first -- "100.00" in a 5-wide column becomes "100.0", which
+    is the honest thing to drop: SpO2 is specified to a few percent, so the second decimal was
+    never information. Only if the integer part alone does not fit does the cell give up, and
+    then it shows "#####" rather than a truncated number: a cut-off digit string is a different
+    number, and a monitor that quietly reports the wrong value is worse than one that says it
+    cannot show it.
+    """
+    if len(text) <= width:
+        return f"{text:>{width}s}"
+    whole, dot, frac = text.partition(".")
+    if dot:
+        for n in range(len(frac) - 1, 0, -1):
+            shorter = f"{whole}.{frac[:n]}"
+            if len(shorter) <= width:
+                return f"{shorter:>{width}s}"
+        if len(whole) <= width:
+            return f"{whole:>{width}s}"
+    return "#" * width
+
+
 def sqi_cell(text, mean, width, colors):
     """A measurement cell coloured by its own SQI, the SIGNAL STATS way: green above the
     threshold, dark red below. Plain while no SQI has arrived yet."""
-    cell = f"{text:>{width}s}"
+    cell = fit(text, width)
     if not colors or mean is None:
         return cell
     return (GREEN if mean > SQI_THRESHOLD else RED) + cell + RESET
@@ -274,13 +300,13 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
                f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
                f"{i.get('elfsha', '?')[:8]:>8s} "
                f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {probe_cell(fl.get('probe', '?'), cell_colors)} "
-               f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} "
+               f"{fit(fl.get('rsqi', '?'), 4)} {fit(fl.get('diag', '?'), 5)} "
                f"{sqi_cell(fl.get('spo2', '?'), b.sqi_mean('spo2'), 5, cell_colors)} "
                f"{sqi_cell(fl.get('hr1', '?'), b.sqi_mean('hr1'), 6, cell_colors)} "
                f"{sqi_cell(fl.get('hr2', '?'), b.sqi_mean('hr2'), 6, cell_colors)} "
                f"{sqi_cell(fl.get('hr3', '?'), b.sqi_mean('hr3'), 6, cell_colors)} "
-               f"{fl.get('rf1', '?'):>4s} {fl.get('vtia1', '?'):>4s} "
-               f"{fl.get('rf2', '?'):>4s} {fl.get('vtia2', '?'):>4s} "
+               f"{fit(fl.get('rf1', '?'), 4)} {fit(fl.get('vtia1', '?'), 4)} "
+               f"{fit(fl.get('rf2', '?'), 4)} {fit(fl.get('vtia2', '?'), 4)} "
                f"{b.errs:3d} {state:>5s}")
         out.append((RED_BG + row + RESET) if (colors and lost) else row)
         b.sqi_reset()

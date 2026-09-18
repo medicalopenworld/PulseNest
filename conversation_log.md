@@ -23214,3 +23214,20 @@ desaparecido, cierre limpio en el log. El banco se recupero solo en **7 segundos
 `pulsenest_lab.py` con el control y `fleet_monitor.py` suscrito.
 
 Spec -> v1.67.
+
+### fleet_monitor: ninguna celda puede ensanchar la tabla (v1.68)
+Alex: con SpO2 = `100.00` (seis caracteres en una columna de cinco) todas las columnas de la
+derecha se desplazaban una posicion mientras durase la lectura. Propuso mostrar `100.0`.
+
+Hecho, pero no como caso especial del valor 100: la misma trampa esperaba en `diag` (un DiagCode
+mas ancho) y en las columnas de HR con un ritmo de tres digitos. Ahora **toda celda numerica pasa
+por `fit()`**, que garantiza el ancho: si el valor no cabe pierde primero decimales
+(`100.00` -> `100.0`, y el segundo decimal de una SpO2 especificada al 2-3 % nunca fue
+informacion), y si aun asi no cabe muestra `#####` — nunca una cifra cortada, que seria un numero
+distinto y un monitor que miente en silencio es peor que uno que dice que no puede mostrarlo.
+
+`tools/fleet_monitor_test.py` **23/23**, con cuatro checks nuevos. Uno de ellos fallo al
+escribirlo y **el error era mio, no del codigo**: afirmaba que `100.00` no aparecia en la fila,
+pero HR1 tambien valia 100.00 y ahi si cabe (columna de 6). Corregida la asercion para comprobar
+justo eso: SpO2 suelta el decimal, las columnas mas anchas lo conservan. Verificado en vivo con
+una placa a 100.0 y las otras dos alineadas.

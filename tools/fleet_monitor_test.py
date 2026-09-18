@@ -95,6 +95,25 @@ check("idfver parsed but deliberately NOT a column",
 check("every row matches the header width", all(len(strip(l)) == len(hdr) for l in plain
                                                 if "incunest_V17" in l), f"{len(row)} vs {len(hdr)}")
 
+# The width guarantee. Reported by Alex 2026-09-18: at SpO2 100.00 -- six characters in a
+# five-wide column -- every column to its right shifted by one, for as long as the reading held.
+sat = F.BoardView("192.168.137.77")
+sat.feed(cfg, now)
+sat.feed(frame("100.00", "0.99", "100.00", "0.99", "250.00", "0.99", "61.0", "0.99"), now)
+sat_txt = strip(F.render({"s": sat}, _C(), ("127.0.0.1", 5005), now, colors=True))
+sat_hdr = next(l for l in sat_txt.split("\n") if l.startswith("IP"))
+sat_row = next(l for l in sat_txt.split("\n") if "incunest_V17" in l)
+check("SpO2 at 100 does not widen its column: the row still matches the header",
+      len(sat_row) == len(sat_hdr), f"{len(sat_row)} vs {len(sat_hdr)}")
+# SpO2 (5 wide) drops its second decimal; HR1, at the same 100.00 but 6 wide, keeps it. The
+# first version of this check asserted "100.00" was absent from the whole row and failed on
+# HR1 -- the assertion was wrong, not the formatter.
+check("SpO2 drops the decimal it can afford while the wider HR columns keep theirs",
+      re.search(r"\s100\.0\s+100\.00\s+250\.00\s", sat_row) is not None, sat_row[:130])
+check("a 3-digit HR still fits its 6-wide column untouched", " 250.00 " in sat_row, sat_row[:120])
+check("fit() never invents a number: what cannot fit shows as #####",
+      F.fit("123456", 5) == "#####" and F.fit("1234.56", 5) == " 1234")
+
 # P6: colour by the MEAN of the SQI, green above 0.9
 b2 = boards["192.168.137.131"]
 b2.feed(frame("97.5", "0.95", "61.2", "0.99", "60.8", "0.95", "0.0", "0.10"), now)
