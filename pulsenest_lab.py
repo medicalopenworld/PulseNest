@@ -14558,7 +14558,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         sent, so everything below this line is unchanged. The lab subscribes as the CONTROLLER;
         if another program holds the control the stream still arrives, and every command is
         refused with a log line (_hub_send). A hub that is not running is started by the client."""
-        hub = _hubc.HubClient("pulsenest_lab", hub=("127.0.0.1", self._udp_port), control=True,
+        hub = _hubc.HubClient(_script_name(__file__), hub=("127.0.0.1", self._udp_port), control=True,
                               log=self._sig_log.emit)
         self._hub = hub
         if hub.connect():

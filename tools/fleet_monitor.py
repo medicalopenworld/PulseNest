@@ -9,7 +9,9 @@ Per board: IP · MAC · board type · fw / lib / build (from the hub's $CFG cach
 · datagrams/s · frame mode · sample-counter gaps · probe state, RSQI, DiagCode, SpO2, HR1, HR2,
 HR3, and RFn/TIAn (each gain resistor next to the TIA voltage it produced) from the last $M4
 · count of $ERR lines · `last`: "live" while the board spoke within the last 2 s, else the silence
-in seconds. Below: the hub's own status (@STATUS: subscribers and who holds the control).
+in seconds. Below: the hub's own status (@STATUS) -- one row per hub and per subscriber, each
+labelled by role ("hub" / "subscriber") and by the file actually running it (e.g.
+"pulsenest_hub.py", "pulsenest_lab.py"), never by its position in the list.
 
 Columns are kept narrow so there is room to add more: the IP shows its last two octets with the
 common prefix in the header (full addresses when the boards are not on one subnet), the MAC its
@@ -36,6 +38,7 @@ OT_HIGH, APPLIED, AMB_SATURATING, ONLY_LED_SATURATING). Anything that does not p
 """
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -278,9 +281,22 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
         out.append("(no board seen yet)")
     out.append("")
     if client.last_status:
+        # Relabelled, not passed through raw: the wire format is "hub ..."/"sub <addr> <name> ...",
+        # and Alex found that ambiguous to read cold -- was the hub identified by being first in
+        # the list, or by the literal word "hub"? Neither should be the answer. Every row now
+        # says its role in a column of its own (hub / subscriber) and the file that is running it
+        # (script_name(), same as every window title and console banner in this project), with
+        # the rest of the fields passed through unchanged.
         for line in client.last_status.splitlines()[1:]:
-            if line.startswith(("hub ", "sub ")):
-                out.append("  " + line)
+            if line.startswith("hub "):
+                m = re.search(r"file=(\S+)", line)
+                fname = m.group(1) if m else "?"
+                rest = re.sub(r"\bfile=\S+\s*", "", line[len("hub "):]).strip()
+                out.append(f"  {'hub':<10s} {fname:<20s} {rest}")
+            elif line.startswith("sub "):
+                _, addr, remainder = line.split(" ", 2)
+                fname, _, rest = remainder.partition(" ")
+                out.append(f"  {'subscriber':<10s} {fname:<20s} {addr} {rest}")
     notes = [f"  {b.ip} is {b.ident.get('board', '?')} {b.ident.get('mac', '?')} back on a new "
              f"lease (was {b.moved_from}) — one row, counters carried"
              for b in sorted(boards.values(), key=lambda x: x.ip) if b.moved_from]
@@ -343,7 +359,7 @@ def main():
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
 
-    client = HubClient("fleet_monitor", hub=hub, control=False, log=lambda m: None)
+    client = HubClient(script_name(__file__), hub=hub, control=False, log=lambda m: None)
     client.connect()
     boards = {}
     t_start = time.monotonic()

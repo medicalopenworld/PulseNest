@@ -396,7 +396,8 @@ class Hub:
 
     def status_text(self):
         now = time.monotonic()
-        lines = ["@STATUS", f"hub port={self.port} up={now - (self.started or now):.0f}s "
+        lines = ["@STATUS", f"hub file={script_name(__file__)} port={self.port} "
+                            f"up={now - (self.started or now):.0f}s "
                             f"board_dgrams={self.n_board_dgrams} fanout={self.n_fanout} "
                             f"refused={self.n_refused} sock_errors={self.n_sock_errors}"]
         for b in sorted(self.boards.values(), key=lambda x: x.first_seen):

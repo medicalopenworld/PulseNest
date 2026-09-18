@@ -22749,3 +22749,203 @@ viene de otra parte (division por cero silenciosa, etc.), el proceso sigue siend
 Memoria: `project_disable_plots_toggle_task` (nueva), `project_signals2_crash_investigation_task`
 actualizada (mitigado, no resuelto; el experimento `useOpenGL=False` sigue pendiente y es
 ortogonal a esto).
+
+
+---
+
+## 2026-09-18 -- Tercera placa V18 en el banco: MAC `10:51:DB:50:87:A4`
+
+### Pregunta previa: estandares de CSV para series temporales
+Alex pregunto si existe un estandar para guardar series temporales en CSV. Conclusion: **no existe
+uno solo**; hay cuatro capas con normas distintas.
+
+| Capa | Norma |
+|---|---|
+| Sintaxis del fichero | RFC 4180 (+ tipo MIME `text/csv`) |
+| Representacion del tiempo | ISO 8601 / RFC 3339 |
+| Metadatos y tipos de columna | CSVW (W3C), Frictionless Table Schema / Data Package, SDMX-CSV (ISO 17369) |
+| Señal fisiologica muestreada | EDF+ / BDF+, WFDB (PhysioNet), ISO/IEEE 11073-10404 |
+
+Hallazgos sobre las capturas actuales al revisarlas:
+- Las 15 lineas `#` de cabecera **violan RFC 4180** (no contempla comentarios): obligan a
+  `comment='#'` en pandas y rompen las herramientas estrictas. Es justo el problema que CSVW y
+  Frictionless resuelven sacando los metadatos a un fichero hermano.
+- **No hay origen de tiempo parseable**: `FW_SmpCnt` y `FW_Ts_us` (reloj del firmware desde el
+  arranque) son relativos, y la fecha solo vive en un comentario de texto libre. Una captura de
+  hospital sin `t0` absoluto no se correlaciona con la historia clinica ni con el monitor de
+  referencia.
+- **Mojibake** en la cabecera (`AFE4490 config �`, `AMBDAC: 0 �A`): bytes escritos en una
+  codificacion y leidos en otra. Fijar UTF-8 sin BOM al tocar el exportador.
+
+La forma wide (`timestamp, canal_1, canal_2...`, 35 columnas) es la correcta para multicanal
+sincrono; no cambiarla. Propuesta para el hilo de la herramienta de captura robusta: CSV RFC 4180
+estricto + sidecar `*.datapackage.json` (Frictionless) con `t0` ISO 8601 y `fs`, manteniendo
+`FW_SmpCnt` como clave primaria para detectar huecos, y exportador a WFDB/BDF+ como paso posterior,
+no como formato de captura. **Sin aplicar todavia** -- queda como recomendacion para la decision
+abierta bruto+conversor vs CSV directo.
+
+### Flasheo de COM19: aparece una placa que no estaba en el inventario
+Alex pidio flashear "una V18 que hay en COM19". Antes de flashear se identifico el puerto con el
+truco de `docs/boards.md` (el numero de serie USB del S3 nativo **es la MAC**, sin abrir el puerto):
+
+    COM19 | VID:PID=303A:1001 | SER=10:51:DB:50:87:A4
+
+**Esa MAC no estaba en `docs/boards.md`.** Las dos V18 inventariadas eran `...88:50` y `...87:B8`.
+Se verifico que no fuera una errata de transcripcion de `87:B8`: esa esta documentada de forma
+independiente decenas de veces en este log (flasheo por USB via COM15, OTA, `udp_fw_versions.py`),
+asi que `87:A4` es una **tercera V18 real**. Difieren en un solo byte, lo que la hace facil de
+confundir al leerla de un vistazo.
+
+Se flasheo igualmente con el preset V18 que Alex pidio: un preset equivocado no dana nada (V16/V17/
+V18 son electricamente identicas para el AFE) y solo afecta a la **procedencia** -- `BOARD_VERSION`
+viaja en cada `$CFG` y acaba en la cabecera de cada captura. Es reversible reflasheando.
+
+    .\scripts\build.ps1 V18 -Usb COM19
+
+Resultado: hash verificado, 892.224 bytes de aplicacion. esptool cerro con *"Hard resetting via RTS
+pin"*, que es exactamente la condicion que `docs/boards.md` documenta como capaz de dejar el chip en
+el gestor de arranque de descarga; se comprobo con `esptool --port COM19 --before no-reset read-mac`
+y **no conecto**, o sea que la aplicacion estaba corriendo. Es la primera vez que se comprueba esa
+trampa con el esptool de ESP-IDF v6 (v5.4.0) en vez del de PlatformIO (4.5.1): esta vez no ocurrio.
+
+Verificacion en vivo **sin matar el hub**: `pulsenest_hub.py` (PID 9832) tenia el 5005 con
+`fleet_monitor.py` suscrito, asi que en lugar de reclamar el puerto se hablo con el hub como un
+suscriptor mas (`@STATUS`, luego `@SUB` para recibir el replay de `$CFG`). La placa aparecio como
+`live` en 192.168.137.154 a 107 datagramas/s:
+
+    board=incunest_V18, mac=10:51:DB:50:87:A4, fw=0.13, lib=0.93, build=6e6d036
+
+### Decisiones
+- `docs/boards.md`: fila nueva para `10:51:DB:50:87:A4`, con la fecha de entrega marcada como *not
+  recorded* y una nota de que la revision V18 es la lectura de la serigrafia por parte de Alex, no
+  algo medido -- este firmware no distingue V16/V17/V18.
+- **Los sufijos 18.A / 18.B se abandonan.** Eran nombres informales de Alex para dos unidades que
+  ambas rotulan `18.A` en la serigrafia; con tres V18 ya no sirven. Convencion nueva, escrita en
+  `docs/boards.md`: **identificar por los tres ultimos bytes de la MAC** (`88:50`, `87:B8`,
+  `87:A4`), leyendolos hasta el final.
+- Memoria `hardware_mac_addresses.md` corregida: decia "las dos V18".
+
+### Pendiente
+- **Fecha de entrega y procedencia de `87:A4`**: sin registrar. Tampoco se sabe si Alex la
+  considera una unidad nueva del taller o una que ya tenia sin anotar.
+- Sigue sin resolverse el "segundo identificador por unidad" que Alex ha visto (abierto desde
+  2026-09-10); con tres V18 en el banco hace mas falta que antes.
+
+
+### Cuarta placa V18: MAC `10:51:DB:50:82:5C` (COM20)
+
+Alex pidio flashear "una nueva tarjeta V18" en COM20 -- lo que de paso confirma que estan llegando
+unidades nuevas del taller. Identificada antes de tocar nada: `10:51:DB:50:82:5C`, otra MAC que no
+estaba en el inventario. Para entonces la `87:A4` de COM19 ya estaba desconectada.
+
+**Dos fallos de flasheo antes de que entrara**, los dos de puerto, ninguno del firmware:
+
+1. `Could not open COM20 ... the system cannot find the file specified`. El puerto **desaparecio**
+   entre la identificacion y el intento de esptool; un listado inmediato despues no encontro ningun
+   ESP32-S3 conectado. Se espero con un bucle que vigilaba la MAC concreta y el puerto reaparecio.
+2. `ClearCommError failed (PermissionError(13, 'The device does not recognize the command.'))`, que
+   es el puerto reenumerando bajo los pies de esptool. Diagnosticado atacando a esptool directamente
+   en vez de a traves de ninja: **el chip respondia perfectamente** -- ESP32-S3 QFN56 rev v0.2,
+   USB-Serial/JTAG, MAC confirmada. Era transitorio.
+
+Al tercer intento entro a la primera:
+
+    .\scripts\build.ps1 V18 -Usb COM20
+
+892.240 bytes, hash verificado. Tampoco quedo en modo descarga (`--before no-reset` no conecto), lo
+que hace **dos de dos** con el esptool de ESP-IDF v6 (5.4.0): la trampa documentada en
+`docs/boards.md` es del esptool 4.5.1 de PlatformIO y de momento no se reproduce con el nuevo.
+Verificada en vivo por el hub: `board=incunest_V18, mac=10:51:DB:50:82:5C, fw=0.13, lib=0.93`.
+
+### Hallazgo: `-dirty` en la marca de procedencia puede ser solo documentacion
+La placa nueva reporto `build=6e6d036-dirty`, mientras que la `87:A4`, flasheada minutos antes desde
+el **mismo commit**, reporto `build=6e6d036` limpio. La diferencia no es de firmware: en medio se
+habian editado `docs/boards.md` y `conversation_log.md` y nada mas (`git status --porcelain`
+confirmo que no habia ni un fichero de codigo tocado). Mismo binario, etiqueta de procedencia
+distinta.
+
+Importa porque `build=` viaja en cada `$CFG` y acaba en la cabecera de cada captura: un `-dirty` ahi
+sugiere firmware no reproducible cuando puede ser un `.md`. Anotado en `docs/boards.md` en una
+seccion nueva, *Provenance*, con la recomendacion de **commitear la documentacion antes de una
+sesion de flasheo** para que la etiqueta signifique algo. No se ha cambiado el codigo que genera la
+marca; queda como cabo suelto por si conviene distinguir codigo de documentacion en el hash.
+
+### Estado del inventario al cerrar
+Cuatro placas V18 en `docs/boards.md`: `88:50`, `87:B8`, `87:A4` (nueva hoy) y `82:5C` (nueva hoy).
+La convencion 18.A/18.B queda definitivamente abandonada a favor de los tres ultimos bytes de la MAC.
+Sigue pendiente la fecha de entrega y la procedencia de `87:A4`, y el "segundo identificador por
+unidad" que Alex ha visto (abierto desde 2026-09-10) -- con cuatro V18 iguales en el banco, cada vez
+mas necesario.
+
+
+### La V18 `10:51:DB:50:87:B8` se devuelve a taller (2026-09-18)
+
+Alex avisa de que esa placa se ha devuelto hoy al taller. Anotado en `docs/boards.md` y en los
+sitios donde se la daba por viva. El motivo de la devolucion no se ha registrado.
+
+Se repaso todo el repo y la memoria buscando `87:B8` para separar lo que era **estado presente**
+(hay que corregirlo) de lo que era **medicion fechada** (no se toca):
+
+| Sitio | Que decia | Accion |
+|---|---|---|
+| `docs/boards.md`, fila de la tabla | "Flashed and verified 2026-09-10" | Marcada **RETURNED TO THE WORKSHOP — 2026-09-18**, con aviso de no lanzarle OTA |
+| `docs/boards.md`, convencion de nombres | listaba las cuatro V18 como si estuvieran en el banco | Ahora dice: en el banco `88:50`, `87:A4`, `82:5C` |
+| memoria `hardware_mac_addresses.md` | "objetivos vivos: las cuatro V18" | Tres, con la devolucion anotada |
+| memoria `feedback_ota_flash.md` | su aviso de 2026-09-11 nombraba `87:B8` como banco vivo | Remite a `docs/boards.md` y anota la devolucion |
+| memoria `project_acquisition_stall_serial_block_task.md` | "la V18 `...87:B8` corre el build con la guarda y va bien" | Ver abajo |
+| `conversation_log.md` (decenas de menciones) | historico | **Intacto**, es incremental |
+| memoria, tabla de medidas del stall y verificacion del bootloader IDF | mediciones fechadas | **Intactas** |
+
+**Efecto colateral que no era evidente:** `87:B8` era la unica placa que corria el build **con la
+guarda** del `Serial.print()` bloqueante, el experimento abierto sobre las paradas de 100-500 ms a
+500 Hz. Al irse la placa, ese experimento se queda sin sujeto. Para retomarlo hay que reflashear el
+build con la guarda en otra V18 (`88:50`, `87:A4` o `82:5C`) -- y ademas rehacer la referencia,
+porque la comparacion original era contra la V16 `48:F8`, que esta muerta desde el 2026-09-11.
+Anotado tanto en la fila de `docs/boards.md` como en la memoria de la tarea.
+
+Se mantiene en `docs/boards.md` la advertencia de que `87:B8` y `87:A4` son placas distintas y no
+una errata la una de la otra, con la razon actualizada: ahora que solo una de las dos esta en el
+banco, leer una entrada del log anterior al 18-09 como si fuera la placa que se tiene delante
+atribuiria sus medidas a la unidad equivocada.
+
+### Pendiente
+- **Motivo de la devolucion de `87:B8`**: no registrado. Si volvio por averia, conviene saberlo --
+  seria la segunda V18 con problemas y cambiaria la lectura de los fallos de puerto vistos hoy en
+  `82:5C`.
+
+## Sesion 2026-09-18 (1) - fleet_monitor.py: quien es el hub y quien es cada suscriptor, sin ambiguedad (lab v1.64)
+
+Alex, sobre el bloque de estado de `fleet_monitor.py`: 1) los suscriptores debian mostrar el
+nombre del fichero (".py"), no un alias corto ("fleet_monitor" -> "fleet_monitor.py"); 2) no
+sabia si distinguir la fila del hub por ser la primera de la lista o por empezar con la palabra
+"hub", y esa fila tampoco decia que fichero la ejecutaba.
+
+### Causa
+El nombre que cada programa registraba en el hub (`HubClient(name, ...)`) era un alias escrito a
+mano en cada `HubClient("fleet_monitor", ...)`, `HubClient("pulsenest_lab", ...)`, etc. -- nunca
+se uso `pulsenest_net.script_name(__file__)`, que es el mismo ayudante que ya pone el nombre del
+fichero en cada titulo de ventana y en cada banner de consola desde ayer. Y la linea del hub en
+`@STATUS` no llevaba ningun campo de fichero: literalmente la palabra "hub" y nada mas.
+
+### Arreglo
+- Los cinco programas reales que hablan con el hub (`pulsenest_lab.py`, `tools/fleet_monitor.py`,
+  `tools/udp_fw_versions.py`, `tools/udp_cmd_latency.py`, `tools/tia_linearity_sweep.py`) pasan
+  ahora `script_name(__file__)` como nombre -- sin alias a mano, se deriva del fichero real.
+  (Los nombres sinteticos de `tools/hub_test.py` y `tools/udp_multiboard_test.py`, que simulan
+  escenarios genericos, se dejan como estaban a proposito).
+- `pulsenest_hub.py`: la linea `hub ...` de `status_text()` gana un campo `file=pulsenest_hub.py`.
+- `tools/fleet_monitor.py`: ya no reenvia las lineas crudas del protocolo (`hub .../sub ...`);
+  las reetiqueta con una columna explicita `hub` / `subscriber` seguida del nombre de fichero,
+  para que el papel de cada fila no dependa de la posicion ni de una palabra suelta.
+
+### Verificado
+`tools/hub_test.py` 29/29, `tools/udp_multiboard_test.py` 100/100 (ningun check dependia del
+formato exacto de la linea del hub). En vivo contra el hub que lleva corriendo desde el 16-09: se
+ve "subscriber fleet_monitor.py" en la fila nueva, y "hub ?" en la del hub -- **el proceso del
+hub sigue con el codigo de ayer**, asi que su propia fila no tiene el campo `file=` todavia.
+**Pendiente de que Alex decida reiniciar el hub** (afecta a su sesion del lab si tiene el
+control tomado en ese momento) para ver "pulsenest_hub.py" en su fila; su instancia vieja de
+`fleet_monitor.py` (sin el ".py" en el nombre, vista en el mismo listado) tambien necesita
+relanzarse para registrarse con el nombre nuevo.
+
+Spec `pulsenest_lab_spec.md` -> v1.64 (Sec4.11 ampliada).

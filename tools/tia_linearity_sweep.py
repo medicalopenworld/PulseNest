@@ -45,7 +45,7 @@ from datetime import datetime
 
 # ── Protocol (must match pulsenest_lab.py) ──────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT, banner   # noqa: E402  (the one place the ports live)
+from pulsenest_net import UDP_DATA_PORT, banner, script_name   # noqa: E402  (the one place the ports live)
 from pulsenest_hub_client import HubClient  # noqa: E402  (every host-side program subscribes)
 ADC_FS_COUNTS = 2 ** 21 - 1   # positive full-scale code (datasheet Table 7)
 ADC_FSR       = 1.2           # V
@@ -79,7 +79,7 @@ class Esp32Link:
     learned from the first forwarded datagram."""
 
     def __init__(self):
-        self.hub = HubClient("tia_linearity_sweep", control=True, log=print)
+        self.hub = HubClient(script_name(__file__), control=True, log=print)
         if not self.hub.connect():
             sys.exit(f"ERROR: no hub answering on 127.0.0.1:{UDP_DATA_PORT} and none could be started.")
         if not self.hub.controller:

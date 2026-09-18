@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.63
+# pulsenest_lab — Specification v1.64
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -909,7 +909,7 @@ boards send to the bench PC). If two programs race, the second hub fails its bin
 talk to the one that won. The hub logs to `pulsenest_hub.log` (rotating, gitignored).
 
 **What changed in the lab (v1.60).** `_udp_reader` no longer binds the data port: it takes
-`(board_ip, datagram)` from a `HubClient("pulsenest_lab", control=True)` and everything downstream
+`(board_ip, datagram)` from a `HubClient(script_name(__file__), control=True)` and everything downstream
 — `UdpBoard`, gap detection, the active-board rules of §4.8, multi-board capture — is unchanged.
 Every UDP command (`send_cmd`, `send_cmd_to_ip`, the reader's own `$CFG?` to unidentified boards)
 goes through `_hub_send()`, which forwards only while the lab holds the control and otherwise logs
@@ -927,6 +927,16 @@ the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_
 first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
 gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;
 it cannot touch a board, and runs on the bench PC or on another one with `--hub <bench-pc-ip>`.
+
+**Every subscriber registers with its own running file (v1.64), not a hand-typed short name.**
+Every real `HubClient(...)` call passes `pulsenest_net.script_name(__file__)` as its `name` — the
+same helper behind every window title and console banner (§ "every running program names its own
+file") — so the hub's `@STATUS` and `fleet_monitor.py`'s rendering of it say "pulsenest_lab.py",
+"fleet_monitor.py", "udp_fw_versions.py", never a shortened guess. The hub's own line in
+`@STATUS` gained a matching `file=pulsenest_hub.py` field, and `fleet_monitor.py` no longer
+passes the raw `hub .../sub ...` lines through: each is relabelled with an explicit `hub` /
+`subscriber` column so the role is never inferred from being first in the list or from a
+one-word prefix — a distinction Alex found himself unable to make from the old rendering.
 
 **Verification.** `tools/hub_test.py` (in-process hub on a spare port, two fake boards, a
 controller and a reader): 27 checks — origin tagging, boundaries, cache replay, one `$CFG?` per
@@ -2407,6 +2417,17 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.64 — 2026-09-18
+
+**Every hub subscriber is named by its own running file, and `fleet_monitor.py` says so
+explicitly.** Alex could not tell, from the old rendering of `@STATUS`, whether a row was the
+hub because it came first or because the line started with the word "hub", and it never named
+the file running it at all. Every real `HubClient(...)` call now passes
+`pulsenest_net.script_name(__file__)` instead of a hand-typed name ("fleet_monitor" →
+"fleet_monitor.py"); the hub's own `@STATUS` line gained `file=pulsenest_hub.py`; and
+`fleet_monitor.py` relabels each row with an explicit `hub` / `subscriber` column instead of
+passing the wire format through.
 
 ### v1.63 — 2026-09-17
 

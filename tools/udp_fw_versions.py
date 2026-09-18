@@ -20,7 +20,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT, banner  # noqa: E402  (the one place the ports live)
+from pulsenest_net import UDP_DATA_PORT, banner, script_name  # noqa: E402  (the one place the ports live)
 from pulsenest_hub_client import HubClient       # noqa: E402
 
 ID_KEYS = ("board", "mac", "fw", "lib", "build", "libsha")
@@ -40,7 +40,7 @@ def main():
 
     print(banner(__file__, "firmware of every board, through the hub, read-only"))
     hub = parse_hub(args.hub)
-    client = HubClient("udp_fw_versions", hub=hub, control=False, log=print)
+    client = HubClient(script_name(__file__), hub=hub, control=False, log=print)
     if not client.connect():
         print(f"ERROR: no hub answering on {hub[0]}:{hub[1]}"
               + (" and none could be started" if hub[0].startswith("127.") else ""))
