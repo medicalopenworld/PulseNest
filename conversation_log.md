@@ -23275,3 +23275,36 @@ que no revientan, y la ventana real construida offscreen con su banda y su curva
 En vivo contra las tres placas: suscrito como `fleet_ppg_viewer.py`, ~11 000 datagramas
 recibidos, faulthandler de 0 bytes. **Falta que Alex mire la ventana**: que los datos llegan y no
 se cae lo he verificado yo, pero si la onda se ve bien solo lo puede decir el.
+
+### `useOpenGL`: medido, y apagado en el lab (v1.70)
+Alex pregunta que cambia entre `on` y `off`. Mirado el codigo de pyqtgraph 0.13.7 instalado en
+vez de citarlo de memoria, y **le corregi a mi mismo un dato que le habia dado mal**: el
+troceado de 5000 puntos en vez de 50 esta en `_getFillPathList` — **solo para curvas con
+relleno**, que las nuestras no tienen. Asi que no "perdemos" ese troceado al apagarlo.
+
+**Para nosotros `useOpenGL` cambia exactamente una cosa**: el viewport del `QGraphicsView`
+(`QOpenGLWidget` en vez de `QWidget`). El camino rapido de GPU de verdad (`paintGL`,
+`glDrawArrays`) exige ademas `enableExperimental`, que el proyecto no pone nunca. O sea: las
+mismas llamadas de QPainter, otro rasterizador. El comentario del lab —"offloads curve
+rasterization to the GPU (dramatically faster...)"— **describia algo que no estaba pasando**.
+
+**Medido** con `tools/opengl_paint_bench.py` (nuevo): mismo proceso, mismos datos, viewport
+intercambiado en caliente, cronometrando el `paintEvent` real y el ritmo sostenido de repintados.
+
+    3x500 puntos:  raster 67,6/s  vs  OpenGL 42,8/s   (x1,58 a favor del raster)
+    3x2000:        raster 43,0/s  vs  OpenGL 38,4/s   (x1,12)
+    3x5000:        raster 38,0/s  vs  OpenGL 30,9/s   (x1,23)
+
+El raster gana en los tres tamanos, y su tiempo de pintado tampoco es peor. Con eso: el lab pasa
+a **`useOpenGL=False`** y el comentario queda reescrito con la medida. Costaba velocidad y
+compraba el sitio del segfault (`AxisItem.paint` -> `picture.play`, 18 de las 28 caidas).
+
+**Aviso de metodo**: la primera version del banco cronometraba alrededor de `repaint()` desde
+fuera y daba **0,00 ms** — el pintado no ocurria ahi. Numeros imposibles con pinta de resultado.
+Corregido a cronometrar dentro del `paintEvent` y a medir tambien el ritmo sostenido, porque bajo
+OpenGL el tiempo de CPU infravalora (el driver vuelve antes de que la GPU acabe). El banco avisa
+solo si la mediana sale por debajo de 0,05 ms.
+
+Lo que esto **no** demuestra: que los crashes desaparezcan. 28 caidas en dos meses es tasa baja;
+hara falta tiempo de banco. El `faulthandler.log` sigue puesto y si aparece una entrada nueva con
+OpenGL apagado, el siguiente sospechoso son los `Inf`/`NaN` llegando a un eje.

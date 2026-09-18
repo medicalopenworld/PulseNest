@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.69
+# pulsenest_lab — Specification v1.70
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2516,6 +2516,24 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.70 — 2026-09-18
+
+**`useOpenGL` is off, and the comment that justified it was wrong on both counts.** The lab set
+`pg.setConfigOptions(useOpenGL=True)` claiming it "offloads curve rasterization to the GPU
+(dramatically faster … especially for >1000-point curves)". Reading pyqtgraph 0.13.7: the GPU
+fast path (`PlotCurveItem.paintGL`) needs `enableExperimental`, which this project never set, and
+the other OpenGL-dependent branch (5000-point chunks instead of 50) is in `_getFillPathList`, for
+filled curves, which these are not. For these plots the option swapped one thing — the
+`QGraphicsView` viewport, `QOpenGLWidget` instead of `QWidget` — leaving the same QPainter calls
+to a different rasteriser. Then measured with the new `tools/opengl_paint_bench.py` (same
+process, same data, viewport swapped in place, timing the real `paintEvent` and the sustained
+redraw rate): **raster sustains more redraws per second at every size** — ×1.58 at 3×500 points,
+×1.12 at 2000, ×1.23 at 5000 — with no penalty in paint time. pyqtgraph defaults the option to
+False on every platform and calls OpenGL "poorly supported with Qt+GraphicsView", and
+`AxisItem.paint()`'s `picture.play(p)` — the authors' own "sometimes we get a segfault here" —
+paints onto that viewport, where 18 of the lab's 28 crashes happened. It cost speed and bought
+the crash site. `tools/udp_multiboard_test.py` 100/100, `tools/disable_plots_test.py` 13/13.
 
 ### v1.69 — 2026-09-18
 

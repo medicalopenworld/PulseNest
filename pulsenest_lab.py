@@ -16288,10 +16288,27 @@ if __name__ == "__main__":
 
     app = QtWidgets.QApplication(sys.argv)
 
-    # GPU rendering — must be set before any PlotWidget is created.
-    # useOpenGL=True offloads curve rasterization to the GPU (dramatically
-    # faster than software antialiasing, especially for >1000-point curves).
-    pg.setConfigOptions(antialias=True, useOpenGL=True)
+    # Must be set before any PlotWidget is created.
+    #
+    # useOpenGL was True here until 2026-09-18, on the strength of a comment claiming it
+    # "offloads curve rasterization to the GPU (dramatically faster ... especially for
+    # >1000-point curves)". Reading pyqtgraph 0.13.7 and then measuring showed that was wrong
+    # on both counts:
+    #   - The GPU fast path (PlotCurveItem.paintGL, glDrawArrays) runs only when the config
+    #     option `enableExperimental` is also set, which this project never set. The other
+    #     OpenGL-dependent branch — 5000-point path chunks instead of 50 — is inside
+    #     _getFillPathList, for curves with a fill, which these plots do not have. So for us
+    #     useOpenGL only swapped the QGraphicsView viewport (QOpenGLWidget instead of QWidget):
+    #     the same QPainter calls, a different rasteriser.
+    #   - Measured by tools/opengl_paint_bench.py (same process, same data, viewport swapped in
+    #     place): raster sustains MORE redraws per second at every size tried — x1.58 at 3x500
+    #     points, x1.12 at 2000, x1.23 at 5000 — and its paint is no slower.
+    # pyqtgraph itself defaults useOpenGL to False on every platform: "in general openGL is
+    # poorly supported with Qt+GraphicsView". And AxisItem.paint() ends in picture.play(p) —
+    # under the authors' own "## Sometimes we get a segfault here ???" — painting onto that
+    # viewport, which is where 18 of this program's 28 recorded crashes happened
+    # (project_signals2_crash_investigation_task). So it cost speed and bought the crash site.
+    pg.setConfigOptions(antialias=True, useOpenGL=False)
 
     class _FastTipStyle(QtWidgets.QProxyStyle):
         def styleHint(self, hint, option=None, widget=None, returnData=None):
