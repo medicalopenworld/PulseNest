@@ -23308,3 +23308,28 @@ solo si la mediana sale por debajo de 0,05 ms.
 Lo que esto **no** demuestra: que los crashes desaparezcan. 28 caidas en dos meses es tasa baja;
 hara falta tiempo de banco. El `faulthandler.log` sigue puesto y si aparece una entrada nueva con
 OpenGL apagado, el siguiente sospechoso son los `Inf`/`NaN` llegando a un eje.
+
+### El visor gana los dos numeros grandes, al estilo de un monitor de cabecera (v1.71)
+Alex, tras ver la ventana: que a la derecha de cada banda aparezcan HR (HR3 de momento) y SpO2
+en grande, imitando a Masimo/Nellcor. Hecho, copiando tres convenciones de esas maquinas que no
+son estetica sino seguridad:
+- **SpO2 en cian, ritmo en verde**, etiqueta pequena encima y unidad pequena al lado. (En el lab
+  el verde significa "firmware" por `project_color_convention`, pero aqui TODOS los numeros son
+  del firmware, asi que el color no tiene nada que desambiguar.)
+- **Una lectura invalida muestra `--`**, nunca el `-1.00` del firmware y nunca el ultimo valor
+  bueno. Un centinela pintado en grande se lee como una medida.
+- **Los digitos se atenuan cuando el SQI propio baja de 0,9** — el mismo umbral de SIGNAL STATS —
+  para que un numero del que no te puedes fiar no grite igual que uno del que si.
+El ritmo se etiqueta **HR3**, no "PR": esto es un banco con tres algoritmos de HR corriendo a la
+vez, y esconder cual lo produjo seria fidelidad mal entendida al formato comercial.
+
+El HTML se construye en `BoardTrace.numbers_html()`, o sea en la clase de datos y no en el
+widget, para que el test lea exactamente lo que veria una persona sin construir ventana.
+`tools/fleet_ppg_viewer_test.py` **29/29** (valores, `--` en invalido, atenuado por SQI, y que
+una placa en silencio deja de mostrar sus ultimos numeros).
+
+### Primer dato del experimento de OpenGL
+El visor anterior estuvo suscrito **desde las 15:22 hasta las 22:09 sin una sola caida**
+(~6 h 47 min; el hub lo habria expulsado a los 10 s si hubiera muerto, y el log no tiene ningun
+left/joined intermedio). `fleet_ppg_viewer_faulthandler.log`: **0 bytes**. Con `useOpenGL=False`.
+No es prueba todavia —28 caidas en dos meses es tasa baja— pero es el primer tramo largo limpio.

@@ -35,6 +35,19 @@ What it draws, and why those choices:
   band instead of growing a second one.
 - **Title and frame coloured by ProbeState** (green APPLIED, red anything else, and LOST after
   2 s of silence). The state often names the problem before the waveform shows it.
+- **Two large numbers beside each band**, in the idiom of a bedside oximeter (Masimo, Nellcor,
+  Philips): SpO2 in cyan, pulse rate in green, a small label above each and the unit small
+  beside the digits. Three conventions from those machines are worth copying exactly, because
+  they are about not misleading the person reading across the room:
+  * an invalid reading shows **`--`**, never the last good number and never a sentinel. The
+    firmware sends `-1.00`; showing that would read as a measurement.
+  * the digits **dim** when the measurement's own SQI is below 0.9 — the same threshold SIGNAL
+    STATS uses in the lab — so a number you should not trust does not shout as loudly as one
+    you can.
+  * the number is large enough to read from where you stand, which is the whole point.
+  The rate is labelled **HR3**, not "PR": this is a bench tool with three heart-rate algorithms
+  running side by side, and hiding which one produced the number would be the wrong kind of
+  faithfulness to the commercial idiom.
 """
 import argparse
 import faulthandler
@@ -54,6 +67,8 @@ _fault_log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 faulthandler.enable(file=_fault_log, all_threads=True)
 
 PPG_FIELD    = 9      # $M3/$M4: mode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP
+SPO2_FIELD, SPO2_SQI_FIELD = 10, 11
+HR3_FIELD,  HR3_SQI_FIELD  = 18, 19
 PROBE_FIELD  = 22
 DECIM        = 10     # 500 Hz -> 50 Hz on screen
 LOST_S       = 2.0
@@ -65,6 +80,13 @@ PROBE_STATES = {"0": "DISCONNECTED", "1": "OT_HIGH", "2": "APPLIED",
                 "3": "AMB_SAT", "4": "ONLY_LED_SAT"}
 APPLIED      = "APPLIED"
 GREEN, RED, GREY = "#44FF88", "#FF4444", "#888888"
+# Bedside-monitor palette: SpO2 cyan, pulse rate green, as on Masimo/Philips/Nellcor. In the lab
+# green means "firmware" (project_color_convention), but every number in this window comes from
+# the firmware, so there is nothing for the colour to disambiguate here.
+SPO2_COLOUR, SPO2_DIM = "#00D0FF", "#00697F"
+HR_COLOUR,   HR_DIM   = "#00FF6A", "#0A7A3A"
+DASH_COLOUR  = "#666666"
+SQI_GOOD     = 0.9    # same threshold SIGNAL STATS uses to call a reading trustworthy
 
 
 class BoardTrace:
@@ -81,6 +103,7 @@ class BoardTrace:
         self.t = deque()          # arrival time of each kept sample (monotonic seconds)
         self.y = deque()
         self.probe = "?"
+        self.spo2 = self.spo2_sqi = self.hr3 = self.hr3_sqi = None
         self.samples = 0          # samples seen, before decimation
         self._decim = 0
         self.moved_from = None    # previous IP of the same MAC
@@ -114,6 +137,13 @@ class BoardTrace:
         self.samples += 1
         if len(p) > PROBE_FIELD:
             self.probe = PROBE_STATES.get(p[PROBE_FIELD].decode("ascii", "replace"), "?")
+        def number(idx):
+            try:
+                return float(p[idx])
+            except (IndexError, ValueError):
+                return None
+        self.spo2, self.spo2_sqi = number(SPO2_FIELD), number(SPO2_SQI_FIELD)
+        self.hr3, self.hr3_sqi = number(HR3_FIELD), number(HR3_SQI_FIELD)
         self._decim += 1
         if self._decim < DECIM:
             return
@@ -145,6 +175,26 @@ class BoardTrace:
         if self.probe == APPLIED:
             return GREEN
         return RED if self.probe != "?" else GREY
+
+    def numbers_html(self, now):
+        """The panel beside the band. Built here, not in the widget, so the offline test can
+        read exactly what a person would see without constructing a window."""
+        def block(label, value, sqi, unit, bright, dim):
+            invalid = value is None or value <= 0 or self.is_lost(now)
+            if invalid:
+                text, colour = "--", DASH_COLOUR
+            else:
+                text = f"{value:.0f}"
+                colour = bright if (sqi is not None and sqi > SQI_GOOD) else dim
+            return (f"<div style='margin-bottom:6px;'>"
+                    f"<span style='font-size:11pt; color:#AAAAAA;'>{label}</span><br/>"
+                    f"<span style='font-size:44pt; font-weight:bold; color:{colour};'>{text}</span>"
+                    f"<span style='font-size:12pt; color:{colour};'> {unit}</span></div>")
+
+        return ("<div style='text-align:right;'>"
+                + block("%SpO2", self.spo2, self.spo2_sqi, "%", SPO2_COLOUR, SPO2_DIM)
+                + block("HR3", self.hr3, self.hr3_sqi, "bpm", HR_COLOUR, HR_DIM)
+                + "</div>")
 
     def title(self, now):
         if self.is_lost(now):
@@ -218,7 +268,8 @@ class Viewer(QtWidgets.QMainWindow):
     def drop_band(self, ip):
         band = self.bands.pop(ip, None)
         if band is not None:
-            self.layout_widget.removeItem(band[0])
+            for item in band[:1] + band[2:]:   # the plot and the numbers; the curve lives in it
+                self.layout_widget.removeItem(item)
 
     def band_for(self, ip):
         if ip in self.bands:
@@ -226,21 +277,26 @@ class Viewer(QtWidgets.QMainWindow):
         if self._empty is not None:
             self.layout_widget.removeItem(self._empty)
             self._empty = None
-        plot = self.layout_widget.addPlot(row=len(self.bands), col=0)
+        row = len(self.bands)
+        plot = self.layout_widget.addPlot(row=row, col=0)
         plot.showGrid(x=True, y=True, alpha=0.2)
         plot.setXRange(-self.window_s, 0, padding=0)
         plot.setLabel("bottom", "seconds ago")
         curve = plot.plot(pen=pg.mkPen("#44AAFF", width=1))
-        self.bands[ip] = (plot, curve)
+        numbers = self.layout_widget.addLabel("", row=row, col=1, justify="right")
+        numbers.item.setTextWidth(190)          # fixed, so the waveform keeps the rest
+        self.layout_widget.ci.layout.setColumnStretchFactor(0, 1)
+        self.bands[ip] = (plot, curve, numbers)
         return self.bands[ip]
 
     def redraw(self):
         now = time.monotonic()
         for ip, tr in sorted(self.traces.items(), key=lambda kv: kv[1].first_seen):
             tr.trim(now)
-            plot, curve = self.band_for(ip)
+            plot, curve, numbers = self.band_for(ip)
             plot.setTitle(tr.title(now), color=tr.state_colour(now), size="11pt")
             curve.setData([t - now for t in tr.t], list(tr.y))
+            numbers.item.setHtml(tr.numbers_html(now))
 
     def closeEvent(self, event):
         self.drain_timer.stop()

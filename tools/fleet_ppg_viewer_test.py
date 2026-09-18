@@ -32,11 +32,14 @@ def check(cond, msg, detail=""):
     print(("PASS " if cond else "FAIL ") + msg + (f"  [{detail}]" if detail and not cond else ""))
 
 
-def frame(ppg, probe="2", mode="M4"):
-    """A $M4 with PPG_DISP and ProbeState at their spec positions, junk elsewhere."""
+def frame(ppg, probe="2", mode="M4", spo2="97.5", spo2_sqi="0.99",
+          hr3="61.0", hr3_sqi="0.99"):
+    """A $M4 with the fields this viewer reads at their spec positions, junk elsewhere."""
     p = [mode, "1000", "0"] + ["0"] * 33
     p[V.PPG_FIELD] = ppg
     p[V.PROBE_FIELD] = probe
+    p[V.SPO2_FIELD], p[V.SPO2_SQI_FIELD] = spo2, spo2_sqi
+    p[V.HR3_FIELD], p[V.HR3_SQI_FIELD] = hr3, hr3_sqi
     return ("$" + ",".join(p) + "*00\r\n").encode()
 
 
@@ -78,6 +81,37 @@ check("LOST" in tr.title(now + 7) and "7 s" in tr.title(now + 7),
 fresh = V.BoardTrace("192.168.137.50", now)
 check(fresh.state_colour(now) == V.GREY, "grey until a frame says what the probe is doing")
 
+# ── the bedside numbers ───────────────────────────────────────────────────────────────────
+num = V.BoardTrace("192.168.137.80", now)
+num.feed(CFG, now)
+num.feed(frame("1.0e-05", spo2="97.5", spo2_sqi="0.99", hr3="61.4", hr3_sqi="0.95"), now)
+html = num.numbers_html(now)
+check(">98<" in html or ">97<" in html, "SpO2 shown as whole digits", html[:200])
+check(">61<" in html, "HR3 shown as whole digits")
+check(V.SPO2_COLOUR in html and V.HR_COLOUR in html,
+      "both bright: each SQI is above the 0.9 threshold")
+check("%SpO2" in html and "HR3" in html and "bpm" in html,
+      "labelled the way a bedside monitor labels them")
+
+# A firmware -1.00 is not a measurement: a monitor shows --, never the sentinel and never the
+# last good value.
+num.feed(frame("1.0e-05", spo2="-1.00", spo2_sqi="0.00", hr3="-1.00", hr3_sqi="0.00"), now)
+html = num.numbers_html(now)
+check(html.count("--") == 2 and "-1" not in html,
+      "an invalid reading shows -- , never the -1.00 sentinel", html[:200])
+check(V.DASH_COLOUR in html and V.SPO2_COLOUR not in html,
+      "and it is greyed, not coloured as if it were a reading")
+
+# Below the SQI threshold the digits dim: still shown, visibly less trustworthy.
+num.feed(frame("1.0e-05", spo2="95.0", spo2_sqi="0.40", hr3="61.0", hr3_sqi="0.99"), now)
+html = num.numbers_html(now)
+check(V.SPO2_DIM in html and V.HR_COLOUR in html,
+      "a low-SQI SpO2 dims while a good HR3 stays bright", html[:200])
+
+# A board that fell silent must not keep displaying its last numbers.
+check(num.numbers_html(now + 9).count("--") == 2,
+      "once LOST, both numbers go to --")
+
 # ── one band per MAC across a DHCP change ─────────────────────────────────────────────────
 traces = {}
 a = traces["192.168.137.7"] = V.BoardTrace("192.168.137.7", now - 30)
@@ -114,13 +148,15 @@ for ip, mac in (("192.168.137.1", "AA:AA:AA:AA:AA:01"), ("192.168.137.2", "BB:BB
         tr.feed(frame("1.5e-05"), t0)
 win.redraw()
 check(len(win.bands) == 2, "one band per board", str(len(win.bands)))
-check(all(len(c.getData()[0]) == 5 for _, c in win.bands.values()),
+check(all(len(b[1].getData()[0]) == 5 for b in win.bands.values()),
       "each curve got its 5 decimated points",
-      str([len(c.getData()[0]) for _, c in win.bands.values()]))
+      str([len(b[1].getData()[0]) for b in win.bands.values()]))
 xs = win.bands["192.168.137.1"][1].getData()[0]
 check(all(x <= 0 for x in xs), "x is seconds AGO: never positive", str(xs[:3]))
-titles = [p.titleLabel.text for p, _ in win.bands.values()]
+titles = [b[0].titleLabel.text for b in win.bands.values()]
 check(all("APPLIED" in t for t in titles), "the band titles carry the probe state", str(titles))
+check(all("%SpO2" in b[2].item.toHtml() for b in win.bands.values()),
+      "every band got its numbers panel next to the plot")
 win.close()
 
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
