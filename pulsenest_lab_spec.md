@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.65
+# pulsenest_lab — Specification v1.66
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -273,7 +273,8 @@ All emitted by the firmware asynchronously.
 ```
 $CFG,led1=<v>,led2=<v>,range=<v>,tia1=<v>,cf1=<v>,stg21=<v>,stage2en1=<v>,
      tia2=<v>,cf2=<v>,stg22=<v>,stage2en2=<v>,ambdac=<v>,sr=<v>,numav=<v>,
-     ensepgain=<v>,...,board=<v>,mac=<v>,fw=<v>,lib=<v>,build=<v>,libsha=<v>*XX
+     ensepgain=<v>,...,board=<v>,mac=<v>,fw=<v>,lib=<v>,build=<v>,libsha=<v>,
+     elfsha=<v>,idfver=<v>*XX
 ```
 
 Emitted at startup, after `$SET`, and in response to `$CFG?`. Parsed by
@@ -284,10 +285,53 @@ Emitted at startup, after `$SET`, and in response to `$CFG?`. Parsed by
 `INCUNEST_AFE4490_VERSION`, and **two** git hashes, because the firmware is built from two
 repositories and a change in one does not move the other's hash:
 
-| Field | Repository | Macro |
+| Field | What it identifies | Source |
 |---|---|---|
-| `build` | this project (`src/main.cpp` and everything around it) | `PULSENEST_GIT_HASH` |
-| `libsha` | `incunest_afe4490` | `INCUNEST_GIT_HASH` |
+| `build` | the commit this project was built from | `PULSENEST_GIT_HASH` |
+| `libsha` | the commit of `incunest_afe4490` | `INCUNEST_GIT_HASH` |
+| `elfsha` (v1.66) | **the image itself** — first 8 bytes of its ELF SHA-256, 16 hex | `esp_app_get_description()->app_elf_sha256` |
+| `idfver` (v1.66) | the toolchain | `esp_app_get_description()->idf_ver` |
+
+**Why a fourth field, and why the first two were not enough (measured 2026-09-18).** Three boards
+on the bench reported three different `build=` — `cccf6ee`, `6e6d036`, `6e6d036-dirty` — **while
+running the same firmware**: between the first two there are 25 commits and not one touches
+`main/`; the `-dirty` came from two `.md` files edited between one flash and the next. A repository
+hash answers "what did the working tree look like", and this repository holds the lab script, the
+hub, `tools/` and the documentation, none of which reach the chip. That produces two errors, and
+the second is the dangerous one: *the same `build=` on different binaries* (the `sdkconfig` of each
+board is not versioned, `include/wifi_config.h` is gitignored — both compile in), and *a different
+`build=` on the same binary*, which invites hunting for a firmware difference that does not exist
+and discarding captures that were comparable.
+
+Three changes, in the order they must be applied:
+
+1. **`scripts/gen_build_version.py` hashes only what enters the image** (`main/`, the root
+   `CMakeLists.txt`, `sdkconfig.defaults`, `sdkconfig.board.*`, the partition CSV; for the library,
+   exactly what its `idf_component_register()` compiles, so editing the spec — mandatory on every
+   design change — no longer moves `libsha`). Verified: the scoped hash is `364ad3a` from `HEAD`,
+   from `cccf6ee` and from `6e6d036` — one answer for the three boards, matching their common
+   `fw=0.13` — and a spec-only commit in the library (`d81fadc`) correctly reports `74f8070`.
+   An allow-list, not "everything except docs": anything new can only reach the image through a
+   file already on the list (`main/CMakeLists.txt` registers sources, the root one components,
+   `sdkconfig.*` the options), so nothing slips in silently.
+2. **`CONFIG_APP_REPRODUCIBLE_BUILD=y`** (`sdkconfig.defaults`), without which the compile
+   timestamp travels inside the image and any fingerprint of it distinguishes *compilations*
+   rather than *codes*. It was not sufficient on its own: two clean builds of identical sources
+   still differed in exactly **68 bytes**, and the diff located the cause in **our own startup
+   banner** (`__DATE__ " " __TIME__`) — the other 65 bytes were its consequences, the app
+   descriptor's SHA and the image checksum. With the banner's timestamp removed (nothing is lost:
+   `build`/`libsha` say which commit, `elfsha` which image, `idfver` which toolchain), two
+   independent builds from scratch now produce **byte-identical images**.
+3. **`elfsha`/`idfver` in `$CFG`**, which is what finally answers "do these two boards run the
+   same binary" and covers what git cannot see: a pass through `menuconfig`, a toolchain change,
+   an OTA that answered `OK` without taking, and above all `include/wifi_config.h` — gitignored
+   because it carries WiFi credentials, yet holding the SSIDs, the target PC address per network
+   and the UDP ports, all compiled in. Moving the bench to another network (a hospital, say)
+   means a different binary that no repository hash can distinguish.
+
+Frame budget, measured on the bench rather than estimated: the real `$CFG` is **447–453 B** on the
+three boards (the code comment claiming ~560 was an overestimate), the two fields add 38, and
+`snprintf` may use 714 of the 720-byte buffer — **223 B of margin**.
 
 They matter because the `FW_*` columns of a CSV become uninterpretable as soon as the algorithms
 change, and a version number alone does not identify a build — during development most builds are
@@ -490,7 +534,7 @@ clear it.
 
 | `UdpBoard` field | Meaning |
 |---|---|
-| `ip`, `mac`, `board`, `fw`, `lib`, `build`, `libsha` | identity; the last six come from `$CFG` (`None` until it arrives) |
+| `ip`, `mac`, `board`, `fw`, `lib`, `build`, `libsha`, `elfsha`, `idfver` | identity; all but `ip` come from `$CFG` (`None` until it arrives) |
 | `state(active_ip)` | `ACTIVE` (feeds the pipeline), `PRESENT` (seen, dropped), `LOST` (silent > `UDP_LOST_TIMEOUT_S`) |
 | `first_seen`, `last_seen` | `time.perf_counter()` |
 | `datagrams`, `bytes` | datagrams and payload bytes received, of every kind |
@@ -599,7 +643,7 @@ bytes, and the source switch verified in both directions (§4.8 F2). Loopback,
 query, B fully dropped, no cross-board gaps, A LOST without switching, A back from a new IP with
 the same MAC followed, stale entry removed.
 
-**Bench utility.** `tools/udp_fw_versions.py` reports, without the GUI, every board streaming to :5005 with its rate and the identity fields of its `$CFG` (board, MAC, fw, lib, build, libsha). Run it with the script closed — it binds the data port.
+**Bench utility.** `tools/udp_fw_versions.py` reports, without the GUI, every board streaming to :5005 with its rate and the identity fields of its `$CFG` (board, MAC, fw, lib, build, libsha, elfsha, idfver). Since v1.60 it is a hub subscriber and runs next to the lab.
 
 #### F2 — Source selector (v1.45)
 
@@ -2430,6 +2474,22 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.66 — 2026-09-18
+
+**Firmware provenance that follows the binary, not the repository (§4.4).** Measured: three boards
+reporting three different `build=` while running the same firmware, because a repository hash moves
+when the lab script or a `.md` changes. Three changes, in order: `gen_build_version.py` now hashes
+only the paths that enter the image (verified — the three boards would all have said `364ad3a`);
+`CONFIG_APP_REPRODUCIBLE_BUILD=y`, plus removing the `__DATE__`/`__TIME__` from our own startup
+banner, which a byte-diff identified as the *only* real source of non-determinism (68 bytes
+differed between two clean builds; two builds from scratch are now byte-identical); and
+`elfsha`/`idfver` in `$CFG`, the image's own fingerprint and the toolchain, which cover what git
+cannot see — the unversioned per-board `sdkconfig` and the gitignored `include/wifi_config.h`,
+which carries the network configuration into the binary. Frame budget measured, not estimated:
+447–453 B today, +38, 223 B of margin. PC side: `UdpBoard` identity and the capture header
+(`Image: elfsha … ESP-IDF …`), `fleet_monitor.py` (an `elfsha` column; `idfver` parsed but kept out
+of the table on width grounds), `udp_fw_versions.py` (both). Tests 19/19, 30/30, 13/13, 100/100.
 
 ### v1.65 — 2026-09-18
 

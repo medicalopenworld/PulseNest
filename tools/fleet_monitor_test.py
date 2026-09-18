@@ -52,7 +52,8 @@ def frame(spo2, spo2_sqi, hr1, hr1_sqi, hr2, hr2_sqi, hr3, hr3_sqi):
     return ("$" + ",".join(p) + "*00\r\n").encode()
 
 
-cfg = b"$CFG,sr=500,board=incunest_V17,mac=10:20:BA:14:75:60,fw=0.13,lib=0.93,build=cccf6ee*00\r\n"
+cfg = (b"$CFG,sr=500,board=incunest_V17,mac=10:20:BA:14:75:60,fw=0.13,lib=0.93,build=cccf6ee,"
+       b"elfsha=752b9e01df703576,idfver=v6.0.1*00\r\n")
 now = time.monotonic()
 boards = {}
 b = boards["192.168.137.131"] = F.BoardView("192.168.137.131")
@@ -82,7 +83,15 @@ check("P4 each resistor is followed by the voltage it produced",
       re.search(r"50K\s+0\.87\s+100K\s+1\.20", row) is not None, row)
 check("P5 HR2 and HR3 read from fields 16 and 18", re.search(r"60\.8\s+0\.0\s", row) is not None, row)
 # widths
-check("narrower than before (163) despite 3 more columns", len(hdr) <= 150, f"{len(hdr)} chars")
+check("still narrower than the 163 it started from, now with elfsha too",
+      len(hdr) <= 160, f"{len(hdr)} chars")
+check("elfsha shown, truncated to 8 hex - enough to tell two images apart",
+      re.search(r"build\s+elfsha\s", hdr) is not None and " 752b9e01 " in row,
+      hdr[:60] + " | " + row[:70])
+# Deliberate: idfver is parsed into the identity but kept out of the table -- it is the same
+# on every board until a toolchain change, and the width is the scarce resource here.
+check("idfver parsed but deliberately NOT a column",
+      "idfver" in F.ID_KEYS and "v6.0.1" not in row, row[:80])
 check("every row matches the header width", all(len(strip(l)) == len(hdr) for l in plain
                                                 if "incunest_V17" in l), f"{len(row)} vs {len(hdr)}")
 

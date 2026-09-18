@@ -21,6 +21,7 @@
 #include "driver/spi_master.h"
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
+#include "esp_app_desc.h"           // esp_app_get_description(): ELF SHA-256 and IDF version
 #include "esp_event.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
@@ -757,9 +758,25 @@ static void send_cfg_frame() {
     AFE4490Config cfg = afe.getConfig();
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    // 720: the frame is ~560 chars today and the fw/lib/build fields added ~45 more. Sized with
-    // margin because a truncated frame would still get a valid checksum appended below and reach
-    // the host as a well-formed but incomplete $CFG.
+    // Fingerprint of THIS image: the first 8 bytes of the ELF SHA-256 that ESP-IDF embeds in
+    // every application (esp_app_desc_t), which nothing in this project read until now. 16 hex
+    // characters tell any two builds apart and still read next to build=; `esptool image-info`
+    // prints the full 32 bytes for comparing a board against a .bin on disk. Built by hand
+    // rather than with snprintf("%02x"): the compiler cannot prove a 2-char bound for %x and
+    // -Wformat-truncation is an error here.
+    static const char kHex[] = "0123456789abcdef";
+    const esp_app_desc_t* app_desc = esp_app_get_description();
+    char elf_sha8[17];
+    for (int i = 0; i < 8; ++i) {
+        elf_sha8[i * 2]     = kHex[(app_desc->app_elf_sha256[i] >> 4) & 0x0F];
+        elf_sha8[i * 2 + 1] = kHex[app_desc->app_elf_sha256[i] & 0x0F];
+    }
+    elf_sha8[16] = '\0';
+    // 720: measured on the bench 2026-09-18, three boards, the real frame is 447-453 B (the
+    // "~560" this comment used to claim was an overestimate); elfsha/idfver add 38, so 485-491
+    // against the 714 snprintf may use — 223 B of margin. Sized with margin because a truncated
+    // frame would still get a valid checksum appended below and reach the host as a well-formed
+    // but incomplete $CFG.
     char buf[720];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$CFG,sr=%u,numav=%u,led1=%.2f,led2=%.2f,range=%u"
@@ -774,7 +791,7 @@ static void send_cfg_frame() {
         // Provenance: which firmware produced this capture. Without it the FW_* columns of a
         // CSV become uninterpretable as soon as the algorithms change — see
         // captures/CAPTURE_SET_SPEC.md §2.3.
-        ",fw=%s,lib=%s,build=%s,libsha=%s",
+        ",fw=%s,lib=%s,build=%s,libsha=%s,elfsha=%s,idfver=%s",
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_sep_tia_en ? 1 : 0,
@@ -793,11 +810,17 @@ static void send_cfg_frame() {
         cfg.spo2_a, cfg.spo2_b,
         BOARD_VERSION,
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-        // build = this project's commit, libsha = the library's. Two repositories, two
-        // hashes: a change in main.cpp does not move the library's hash and vice versa, so
-        // one alone cannot identify the firmware that produced a capture.
+        // build = this project's commit, libsha = the library's, each covering only the paths
+        // that reach this image (scripts/gen_build_version.py). They say WHICH COMMIT the image
+        // was built from — what they cannot say is whether two images are the same, because
+        // include/wifi_config.h is gitignored and build_Vxx/sdkconfig is not versioned: both
+        // compile in and move no hash. elfsha is the image's own fingerprint and answers exactly
+        // that, and idfver pins the toolchain, which nothing captured until now. Meaningful
+        // because CONFIG_APP_REPRODUCIBLE_BUILD is on: otherwise the compile timestamp inside
+        // the image would make elfsha differ for identical sources.
         PULSENEST_FW_VERSION, INCUNEST_AFE4490_VERSION,
-        PULSENEST_GIT_HASH, INCUNEST_GIT_HASH);
+        PULSENEST_GIT_HASH, INCUNEST_GIT_HASH,
+        elf_sha8, app_desc->idf_ver);
     // Fail loudly rather than emit a truncated frame the host would accept as valid.
     if (!frame_finish(buf, sizeof(buf), n, "CFG")) return;
     Serial_print_locked(buf);
@@ -1328,11 +1351,15 @@ extern "C" void app_main(void) {
     // catch the banner.
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Startup banner
+    // Startup banner. No __DATE__/__TIME__: measured 2026-09-18, two builds of identical sources
+    // differed in exactly 68 bytes and this string was the only cause — the other 65 are the
+    // consequences (the app descriptor's ELF SHA-256 and the image checksum at the end).
+    // CONFIG_APP_REPRODUCIBLE_BUILD removes ESP-IDF's own timestamp; this one was ours, and it
+    // alone made every rebuild a different binary, which is what elfsha= exists to detect.
+    // Nothing is lost: build/libsha say which commit, elfsha= which image, idfver= which toolchain.
     printf("# PulseNest v" PULSENEST_FW_VERSION "+sha." PULSENEST_GIT_HASH
                   " | incunest_afe4490 v" INCUNEST_AFE4490_VERSION
                   "+sha." INCUNEST_GIT_HASH
-                  " | build: " __DATE__ " " __TIME__
                   " | Board: %s — Medical Open World\n", BOARD_VERSION);
 
     // System info — shown in pulsenest_lab log on startup/reset (prefix "# SYS:")

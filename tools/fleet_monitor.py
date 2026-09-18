@@ -8,6 +8,9 @@ another PC with `--hub <bench-pc-ip>`.
 Per board: IP · MAC · board type · fw / lib / build (from the hub's $CFG cache and any live $CFG)
 · datagrams/s · frame mode · sample-counter gaps · probe state, RSQI, DiagCode, SpO2, HR1, HR2,
 HR3, and RFn/TIAn (each gain resistor next to the TIA voltage it produced) from the last $M4
+· `elfsha`: the first 8 hex of the image's own SHA-256, the one field here that says whether two
+boards run the same BINARY (`build` is a commit, and commits move for reasons that never reach
+the chip)
 · count of $ERR lines · `last`: "live" while the board spoke within the last 2 s, else the silence
 in seconds. Below: the hub's own status (@STATUS) -- one row per hub and per subscriber, each
 labelled by role ("hub" / "subscriber") and by the file actually running it (e.g.
@@ -46,7 +49,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, script_name          # noqa: E402
 from pulsenest_hub_client import HubClient       # noqa: E402
 
-ID_KEYS = ("mac", "board", "fw", "lib", "build")
+# idfver is read but not shown: it is the same on every board of a fleet until a toolchain
+# change, and this table is width-constrained. tools/udp_fw_versions.py prints it.
+ID_KEYS = ("mac", "board", "fw", "lib", "build", "elfsha", "idfver")
 LOST_S = 2.0
 # enum class ProbeState in incunest_afe4490.h, minus the PROBE_ prefix -- the same names the lab
 # shows (SIGNAL STATS / OT MONITOR). The first version of this table had invented labels AND the
@@ -250,6 +255,7 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
     out.append((RED_BG + alert + RESET) if (alert and colors) else alert)
     ip_w = 7 if prefix else 15
     hdr = (f"{'IP':{ip_w}s} {'MAC':8s} {'board':12s} {'fw':>5s} {'lib':>5s} {'build':>8s} "
+           f"{'elfsha':>8s} "
            f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
            f"{'SpO2':>5s} {'HR1':>6s} {'HR2':>6s} {'HR3':>6s} "
            f"{'RF1':>4s} {'TIA1':>4s} {'RF2':>4s} {'TIA2':>4s} {'ERR':>3s} {'last':>5s}")
@@ -266,6 +272,7 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
         row = (f"{short_ip(b.ip, prefix):{ip_w}s} {short_mac(i.get('mac', '?')):8s} "
                f"{i.get('board', '?')[:12]:12s} "
                f"{i.get('fw', '?'):>5s} {i.get('lib', '?'):>5s} {i.get('build', '?')[:8]:>8s} "
+               f"{i.get('elfsha', '?')[:8]:>8s} "
                f"{b.rate:5.0f} {b.mode:>4s} {b.gaps:5d} {probe_cell(fl.get('probe', '?'), cell_colors)} "
                f"{fl.get('rsqi', '?'):>4s} {fl.get('diag', '?'):>5s} "
                f"{sqi_cell(fl.get('spo2', '?'), b.sqi_mean('spo2'), 5, cell_colors)} "

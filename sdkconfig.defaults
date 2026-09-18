@@ -25,3 +25,12 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 # Logging: the library uses ESP_LOGE/W/I; INFO was what CORE_DEBUG_LEVEL=5 effectively showed.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Reproducible builds: without this, ESP-IDF embeds the compile date, time and absolute source
+# paths in the image, so two builds of the same sources differ byte for byte. Measured on the
+# 2026-09-18 image: `esptool image-info` showed "Compile time: Sep 18 2026 00:49:58". That makes
+# the image's own SHA-256 (esp_app_desc_t.app_elf_sha256, reported as `elfsha` in $CFG) useless
+# for the question it exists to answer — "do these two boards run the same firmware?" — because
+# it would differ for identical code. Turning it on also makes "recompile the commit and compare"
+# a viable check. Cost: assert/log paths become relative to the project instead of absolute.
+CONFIG_APP_REPRODUCIBLE_BUILD=y

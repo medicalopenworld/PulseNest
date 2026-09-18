@@ -3,16 +3,65 @@
 
 Usage: gen_build_version.py <pulsenest_dir> <library_dir> <output.h>
 
-Same rule as the PlatformIO-era scripts/pre_build_hash.py: short hash of HEAD, with "-dirty"
-appended when the working tree has local changes (tracked files only), "unknown" when the
-directory is not a git repository. Two repositories, two hashes: a change in main.cpp does not
-move the library's hash and vice versa, so one alone cannot identify the firmware that produced a
-capture. The header is rewritten only when its content changes, so an unchanged tree does not
-recompile main on every `idf.py build`.
+Each hash covers ONLY the files that end up inside the ESP32 image, not the whole repository.
+Measured 2026-09-18, three boards on the bench reporting three different `build=` while running
+the same firmware: between `cccf6ee` and `6e6d036` there are 25 commits and not one of them
+touches `main/` -- they are pulsenest_lab.py, the hub, tools/ and documentation -- and the third
+board's `-dirty` came from two `.md` files edited between one flash and the next. A hash of the
+whole repository answers "what did the working tree look like", which is not the question a
+capture header asks. The question is "which firmware produced these FW_* columns"
+(captures/CAPTURE_SET_SPEC.md §2.3), and the dangerous direction of the old answer was not the
+false "-dirty": it was **a different hash for an identical binary**, which invites you to hunt
+for a firmware difference that does not exist and to discard captures that were comparable.
+
+Scoping it to the paths below gives `364ad3a` from HEAD, from `cccf6ee` and from `6e6d036` --
+one answer for the three boards, and it matches their common `fw=0.13`.
+
+Why an allow-list and not "everything except the docs": anything new can only reach the image by
+being wired in through a file that is already on the list (`main/CMakeLists.txt` registers the
+sources, the root `CMakeLists.txt` the components, `sdkconfig.*` the options), so a new firmware
+file cannot slip in without moving the hash. The failure mode that matters for a medical device
+is the silent "same firmware" on different binaries, and that path is closed.
+
+**Known blind spot, and it is not closeable from git:** `main/CMakeLists.txt` puts `../include`
+on the include path, and `include/wifi_config.h` is gitignored (it carries WiFi credentials).
+It holds the SSIDs, the target PC address per network and the UDP ports, all compiled into the
+image -- so moving the bench to another network means a different binary with an unchanged hash.
+Only a fingerprint of the image itself covers that: `elfsha` from `esp_app_get_description()`,
+which in turn needs CONFIG_APP_REPRODUCIBLE_BUILD to be worth comparing. See
+`project_binary_provenance_cfg_task` and `docs/boards.md` §Provenance.
+
+"-dirty" is appended when those same paths have uncommitted changes (tracked files only);
+"unknown" when the directory is not a git repository. The header is rewritten only when its
+content changes, so an unchanged tree does not recompile main on every `idf.py build`.
 """
 import os
 import subprocess
 import sys
+
+# PulseNest: what the ESP-IDF build reads. `main/` is the whole firmware, the root CMakeLists
+# wires the component in, sdkconfig.* are the build options, and the CSV is the partition table
+# (sdkconfig.defaults: CONFIG_PARTITION_TABLE_CUSTOM_FILENAME).
+PULSENEST_BINARY_PATHS = (
+    "main/",
+    "CMakeLists.txt",
+    "sdkconfig.defaults",
+    "sdkconfig.board.*",
+    "ESP32S3_OTA_partition_8MB.csv",
+)
+
+# The library: exactly what its idf_component_register() compiles, plus the headers that come
+# with them. Deliberately NOT the specs, the design rationale, README, examples/ or library.json
+# -- the spec is edited on every design change by a mandatory project rule, and that must not
+# look like a firmware change. Coupled to the library's CMakeLists.txt, which is on the list, so
+# adding a source there moves the hash even before this tuple is updated.
+LIBRARY_BINARY_PATHS = (
+    "CMakeLists.txt",
+    "incunest_afe4490.cpp",
+    "incunest_afe4490.h",
+    "incunest_afe4490_hal.h",
+    "incunest_afe4490_hal_idf.cpp",
+)
 
 
 def _git(args, cwd):
@@ -23,13 +72,18 @@ def _git(args, cwd):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def describe(path):
+def describe(path, binary_paths):
+    """-> short hash of the last commit that touched `binary_paths`, "-dirty" if they are."""
     if not path or not os.path.isdir(path):
         return "unknown"
-    h = _git(["rev-parse", "--short", "HEAD"], path)
+    h = _git(["log", "-1", "--format=%h", "--", *binary_paths], path)
+    if not h:
+        # No commit in history touched them: a fresh repo, or this list has gone stale against a
+        # reorganised tree. Fall back to the whole-repo hash — a wrong-but-loud answer beats none.
+        h = _git(["rev-parse", "--short", "HEAD"], path)
     if not h:
         return "unknown"
-    if _git(["status", "--porcelain", "--untracked-files=no"], path):
+    if _git(["status", "--porcelain", "--untracked-files=no", "--", *binary_paths], path):
         h += "-dirty"
     return h
 
@@ -39,7 +93,8 @@ def main():
         print(__doc__)
         return 2
     pulsenest_dir, lib_dir, out = sys.argv[1], sys.argv[2], sys.argv[3]
-    pn, lib = describe(pulsenest_dir), describe(lib_dir)
+    pn = describe(pulsenest_dir, PULSENEST_BINARY_PATHS)
+    lib = describe(lib_dir, LIBRARY_BINARY_PATHS)
     content = (
         "// Generated by scripts/gen_build_version.py on every build — do not edit, do not commit.\n"
         f'#define PULSENEST_GIT_HASH "{pn}"\n'

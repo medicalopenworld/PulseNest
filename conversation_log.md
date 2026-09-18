@@ -23091,3 +23091,62 @@ un `.md` seguiria moviendo cualquier huella.
 
 Indice de memoria actualizado para que la conclusion este en la linea, no solo dentro del fichero:
 antes decia "`$CFG` debe llevar elfsha/idfver", que es justo la lectura equivocada.
+
+
+## Sesion 2026-09-18 (3) - Procedencia del firmware: que el hash siga al binario, no al repositorio (lab v1.66)
+
+Alex cierra la consulta de la otra CLI y me pide ejecutar "los cambios que consideres". Los tres
+de `project_binary_provenance_cfg_task`, mas dos rutas que faltaban y un cuarto hallazgo propio.
+
+### Cambio 1 (principal): el hash solo mira lo que entra en el binario
+`scripts/gen_build_version.py`: `describe()` pasa de `git rev-parse --short HEAD` del repo entero
+a `git log -1 --format=%h -- <rutas del binario>` (y el `git status` igual de acotado).
+
+Rutas de PulseNest: `main/`, `CMakeLists.txt`, `sdkconfig.defaults`, `sdkconfig.board.*` y
+**`ESP32S3_OTA_partition_8MB.csv`** — esta ultima faltaba en la propuesta: esta versionada y
+`sdkconfig.defaults:12` la usa como tabla de particiones. Libreria: exactamente lo que compila su
+`idf_component_register()`, fuera specs/README/examples/library.json.
+
+Verificado: `364ad3a` desde HEAD, desde `cccf6ee` y desde `6e6d036` — las tres placas del caso
+medido habrian dicho lo mismo. En la libreria, desde el commit solo-spec `d81fadc` el hash acotado
+devuelve `74f8070`, el ultimo commit de codigo. Y con `docs/boards.md` modificado en el arbol, el
+hash ya no sale `-dirty`.
+
+**Por que lista blanca y no "todo menos la documentacion"**: lo nuevo solo puede llegar a la
+imagen a traves de un fichero que ya esta en la lista (`main/CMakeLists.txt` registra las fuentes,
+el raiz los componentes, `sdkconfig.*` las opciones). El modo de fallo peligroso en dispositivo
+medico es el "mismo firmware" falso, y ese camino queda cerrado.
+
+### Cambio 2: la opcion de IDF no bastaba, el culpable era nuestro
+`CONFIG_APP_REPRODUCIBLE_BUILD=y` quito el sello de ESP-IDF (`esptool image-info` -> `Compile
+time:` vacio), **pero dos compilaciones limpias del mismo fuente seguian dando binarios
+distintos**. Diff byte a byte: **68 bytes en 4 rangos**, y el unico causal era
+`__DATE__ " " __TIME__` en **nuestro propio banner de arranque**; los otros 65 eran consecuencia
+(el SHA del descriptor de app y el checksum final). Quitado del banner, **dos compilaciones desde
+cero dan imagenes identicas byte a byte** (`e2ab4d83...` las dos veces). No se pierde nada:
+`build`/`libsha` dicen el commit, `elfsha` la imagen, `idfver` el toolchain.
+
+### Cambio 3: `elfsha` e `idfver` en `$CFG`
+Firmware: 16 hex del `app_elf_sha256` construidos con tabla hexadecimal a mano — no
+`snprintf("%02x")`, porque el compilador no puede acotar `%x` a dos caracteres y
+`-Wformat-truncation` es error aqui. Lado PC: `UdpBoard` (claves, atributos, `snapshot()`), una
+linea nueva `Image: elfsha ... ESP-IDF ...` en la cabecera de TODOS los CSV, `fleet_monitor.py`
+(columna `elfsha` de 8 caracteres; `idfver` se parsea pero **no** se muestra: es constante en toda
+la flota y la tabla va justa) y `udp_fw_versions.py` (los dos campos).
+
+**Presupuesto de trama medido, no estimado**: el `$CFG` real son **447-453 B** en las tres placas
+— el comentario del codigo decia ~560 y sobreestimaba; corregido. Con +38 quedan 485-491 contra
+el limite de 714: **223 B de margen**.
+
+### El experimento del hub se respondio solo
+Mate el hub a proposito para ver si alguien lo relanzaba. **Lo relanzo el `fleet_monitor.py` de
+Alex** a las 10:51:43 (sus pongs perdidos dispararon el auto-arranque del cliente), y el hub nuevo
+ya arranco con el codigo de hoy: el log dice `pulsenest_hub.py listening on :5005 (... idle exit
+after 300s)` — nombre de fichero (v1.64) e inactividad de 5 min (v1.65) confirmados en vivo.
+
+### Estado
+Compila limpio bajo `-Wall -Wextra -Werror`. Tests: fleet_monitor 19/19, hub 30/30, disable_plots
+13/13, multiplaca 100/100. Spec -> v1.66 (Sec4.4 reescrita con la tabla de cuatro campos).
+**Pendiente: reflashear las tres placas** — hasta entonces los consumidores muestran `?`, que es
+el comportamiento correcto ante firmware antiguo. No lo he hecho: es accion fisica sobre hardware
+compartido y la pido antes.

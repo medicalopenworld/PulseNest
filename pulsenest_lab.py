@@ -12195,13 +12195,18 @@ class UdpBoard:
     under the same lock; the main thread reads copies via PPGMonitor.udp_boards_snapshot().
     """
     _DATA_PREFIXES = (b'M1', b'M2', b'M3', b'M4')
-    _ID_KEYS = (b'mac', b'board', b'fw', b'lib', b'build', b'libsha')
+    _ID_KEYS = (b'mac', b'board', b'fw', b'lib', b'build', b'libsha', b'elfsha', b'idfver')
 
     def __init__(self, ip, now):
         self.ip = ip
         self.first_seen = now
         self.last_seen = now
         self.mac = self.board = self.fw = self.lib = self.build = self.libsha = None
+        # Image fingerprint and toolchain (firmware 2026-09-18). build/libsha say which
+        # commit; elfsha says whether two boards run the same IMAGE, which no repository
+        # hash can answer — include/wifi_config.h is gitignored and build_Vxx/sdkconfig is
+        # not versioned, and both compile in. None on a board with older firmware.
+        self.elfsha = self.idfver = None
         self.datagrams = 0          # datagrams received
         self.bytes = 0              # payload bytes received
         self.frames = 0             # $M1..$M4 data frames
@@ -12251,16 +12256,18 @@ class UdpBoard:
         return gap
 
     def identity_from_cfg(self, line):
-        """Parse mac/board/fw/lib/build/libsha out of a $CFG frame. True if the identity changed."""
+        """Parse the identity keys out of a $CFG frame. True if the identity changed."""
         kv = {}
         for part in line.split(b','):
             k, sep, v = part.partition(b'=')
             if sep and k in self._ID_KEYS:
                 kv[k] = v.split(b'*')[0].decode('ascii', 'replace')   # strip the *XX checksum
         new = tuple(kv.get(k) for k in self._ID_KEYS)
-        if new[0] is None or new == (self.mac, self.board, self.fw, self.lib, self.build, self.libsha):
+        if new[0] is None or new == (self.mac, self.board, self.fw, self.lib, self.build,
+                                     self.libsha, self.elfsha, self.idfver):
             return False
-        self.mac, self.board, self.fw, self.lib, self.build, self.libsha = new
+        (self.mac, self.board, self.fw, self.lib, self.build,
+         self.libsha, self.elfsha, self.idfver) = new
         return True
 
     def label(self):
@@ -12289,7 +12296,8 @@ class UdpBoard:
     def snapshot(self, active_ip):
         return {
             'ip': self.ip, 'mac': self.mac, 'board': self.board, 'fw': self.fw, 'lib': self.lib,
-            'build': self.build, 'libsha': self.libsha, 'state': self.state(active_ip),
+            'build': self.build, 'libsha': self.libsha,
+            'elfsha': self.elfsha, 'idfver': self.idfver, 'state': self.state(active_ip),
             'first_seen': self.first_seen, 'last_seen': self.last_seen,
             'datagrams': self.datagrams, 'data_datagrams': self.data_datagrams,
             'bytes': self.bytes, 'frames': self.frames,
@@ -13628,7 +13636,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             # running an older build. Without it the FW_* columns of a capture cannot be
             # attributed to a firmware version once the algorithms change.
             f"  Firmware: PulseNest v{kv.get('fw','?')}   "
-            f"incunest_afe4490 v{kv.get('lib','?')}   build {kv.get('build','?')}"
+            f"incunest_afe4490 v{kv.get('lib','?')}   build {kv.get('build','?')}\n"
+            # elfsha is the only field here that identifies the IMAGE rather than a commit:
+            # two captures with the same elfsha came from the same binary, whatever their
+            # build= says. Meaningful because CONFIG_APP_REPRODUCIBLE_BUILD is on.
+            f"  Image: elfsha {kv.get('elfsha','?')}   ESP-IDF {kv.get('idfver','?')}"
         )
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', False):
             self._cfg_listener(text)

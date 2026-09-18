@@ -130,7 +130,8 @@ class FakeBoard(threading.Thread):
 
     def cfg_frame(self):
         body = (f"$CFG,sr=500,numav=8,led1=49.80,led2=49.80,board={self.board},mac={self.mac},"
-                f"fw=0.9,lib=0.90,build=fake,libsha=fake").encode()
+                f"fw=0.9,lib=0.90,build=fake,libsha=fake,"
+                f"elfsha=aabbccdd11223344,idfver=v6.0.1").encode()
         return with_chk(body)
 
     def diag_burst(self):
