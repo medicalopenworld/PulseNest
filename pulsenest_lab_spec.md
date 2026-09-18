@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.64
+# pulsenest_lab — Specification v1.65
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -927,6 +927,19 @@ the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_
 first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
 gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;
 it cannot touch a board, and runs on the bench PC or on another one with `--hub <bench-pc-ip>`.
+
+**The auto-started hub shuts itself down after 5 minutes with nobody subscribed (v1.65).**
+Found by Alex: the hub `launch_hub()` starts has no CLI flags of its own, so it always ran with
+whatever `pulsenest_hub.py`'s own `--idle-exit-min` default was -- and that default was `0`
+(never exit). One instance ran **34+ hours** after every subscriber that had ever used it was
+gone. `DEFAULT_IDLE_EXIT_MIN = 5.0` is now that default; `Hub.__init__`'s own default stays `0`
+so a test building a `Hub()` directly (`tools/hub_test.py`, `tools/udp_multiboard_test.py`) is
+unaffected -- only the CLI entry point changed, and the auto-started hub goes through the CLI.
+`--idle-exit-min 0` still disables it, for a bench session meant to run for hours with gaps
+between captures. The "listening on" log line now states the setting
+(`idle exit after 300s` / `idle exit disabled`) so `pulsenest_hub.log` says which policy is in
+force without having to read the source. Verified: `tools/hub_test.py` starts a `Hub` with
+`idle_exit_s=0.3` and nobody ever subscribing, and checks `serve_forever()` returns within 3 s.
 
 **Every subscriber registers with its own running file (v1.64), not a hand-typed short name.**
 Every real `HubClient(...)` call passes `pulsenest_net.script_name(__file__)` as its `name` — the
@@ -2417,6 +2430,17 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.65 — 2026-09-18
+
+**The auto-started hub shuts itself down after 5 minutes idle, instead of forever.** It had an
+`--idle-exit-min` flag from the start, but `launch_hub()` never passed it and the flag's own CLI
+default was 0 (never exit) -- so the only hub that ever runs in practice (the auto-started one)
+never had an exit path. One instance ran 34+ hours after everyone using it was gone. New
+`DEFAULT_IDLE_EXIT_MIN = 5.0` is the CLI default now; `Hub.__init__`'s own default is untouched
+at 0, so nothing that builds a `Hub()` directly in a test is affected. `--idle-exit-min 0` still
+means never, for a long bench session. `tools/hub_test.py`: 30/30 (new check: idle_exit_s=0.3,
+nobody subscribes, `serve_forever()` returns within 3 s). `tools/udp_multiboard_test.py`: 100/100.
 
 ### v1.64 — 2026-09-18
 

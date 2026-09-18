@@ -58,7 +58,11 @@ Rules.
 Run it by hand for the log on the console, or let a subscriber start it (pulsenest_hub_client
 launches it detached, with python.exe so a `taskkill /IM pythonw.exe` of the lab leaves it alive):
 
-    python pulsenest_hub.py [--port 5005] [--allow-remote-control] [--idle-exit-min 0]
+    python pulsenest_hub.py [--port 5005] [--allow-remote-control] [--idle-exit-min 5]
+
+It shuts itself down after DEFAULT_IDLE_EXIT_MIN minutes with nobody subscribed (2026-09-18: the
+auto-started hub had no exit path at all and one instance ran for 34+ hours after everyone using
+it was gone; --idle-exit-min 0 disables this and runs forever, as before).
 """
 import argparse
 import logging
@@ -82,6 +86,11 @@ CFG_RETRY_S    = 3.0     # gap between identity queries to a board that has not 
 CFG_MAX_REQUESTS = 3     # ... and how many times in total, per appearance
 CFG_PREFIXES   = (b"$CFG,", b"$TCFG,", b"$LCFG,")
 RATE_WINDOW_S  = 2.0     # datagram rate window for @STATUS
+DEFAULT_IDLE_EXIT_MIN = 5.0   # the CLI's --idle-exit-min default (Hub.__init__'s own default
+                              # stays 0 = never, so a test that builds a Hub() directly is
+                              # unaffected): the auto-started hub inherits this by not passing
+                              # the flag at all, and Alex found one that had been left running
+                              # 34+ hours with nobody subscribed -- nothing was watching for that
 LOG_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_hub.log")
 
 log = logging.getLogger("pulsenest_hub")
@@ -188,9 +197,10 @@ class Hub:
         s.setblocking(False)
         self.sock = s
         self.started = time.monotonic()
-        log.info("%s listening on :%d (commands to boards on :%d, remote control %s)",
-                 script_name(__file__), self.port, self.cmd_port,
-                 "ALLOWED" if self.allow_remote_control else "local only")
+        log.info("%s listening on :%d (commands to boards on :%d, remote control %s, "
+                 "idle exit %s)", script_name(__file__), self.port, self.cmd_port,
+                 "ALLOWED" if self.allow_remote_control else "local only",
+                 f"after {self.idle_exit_s:.0f}s" if self.idle_exit_s > 0 else "disabled")
 
     def stop(self):
         self._stop.set()
@@ -471,8 +481,9 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=UDP_DATA_PORT, help="data port to own (default %(default)s)")
     ap.add_argument("--allow-remote-control", action="store_true",
                     help="let a subscriber on ANOTHER machine become the controller (default: local only)")
-    ap.add_argument("--idle-exit-min", type=float, default=0.0,
-                    help="exit after this many minutes without subscribers (0 = never, the default)")
+    ap.add_argument("--idle-exit-min", type=float, default=DEFAULT_IDLE_EXIT_MIN,
+                    help="exit after this many minutes without subscribers "
+                         "(default %(default)s; 0 = never)")
     ap.add_argument("--quiet", action="store_true", help="log to file only")
     a = ap.parse_args(argv)
     _setup_logging(a.quiet)

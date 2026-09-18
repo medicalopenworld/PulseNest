@@ -220,6 +220,16 @@ def main():
           f"{mute.cfg_requests} > {n_at_cap}")
     mute.stop.set()
 
+    # ── idle exit: a hub with idle_exit_s set shuts itself down once nobody is subscribed ──
+    # The CLI defaults to this (DEFAULT_IDLE_EXIT_MIN); Hub()'s own default stays 0 (never),
+    # so building one directly -- as every check above just did -- is unaffected.
+    idle_hub = H.Hub(port=DATA_PORT + 2, cmd_port=CMD_PORT + 2, idle_exit_s=0.3)
+    idle_hub.open()
+    t0 = time.monotonic()
+    idle_hub.serve_forever()  # blocks -- no subscriber ever joins, so idle exit must fire
+    check("a hub with idle_exit_s set exits on its own with nobody subscribed",
+          time.monotonic() - t0 < 3.0, f"took {time.monotonic() - t0:.2f}s")
+
     # ── no SO_REUSEADDR: a second hub on the same port must fail its bind ──────────────────
     dup = H.Hub(port=DATA_PORT, cmd_port=CMD_PORT)
     try:

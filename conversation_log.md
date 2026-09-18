@@ -22949,3 +22949,35 @@ control tomado en ese momento) para ver "pulsenest_hub.py" en su fila; su instan
 relanzarse para registrarse con el nombre nuevo.
 
 Spec `pulsenest_lab_spec.md` -> v1.64 (Sec4.11 ampliada).
+
+## Sesion 2026-09-18 (2) - El hub se apaga solo a los 5 min sin nadie conectado (v1.65); hub muerto a proposito para comprobar quien lo relanza
+
+Alex, tras ver que el hub llevaba **34+ horas vivo** desde el 16-09 sin que nadie lo apagara:
+"Mata el hub (comprobaremos si alguien lo reinicia). Anade la funcionalidad de que se apague
+solo si durante un periodo nadie se ha conectado (propongo 5 minutos)".
+
+### Causa: el flag existia, pero nadie lo activaba
+`pulsenest_hub.py` ya tenia `--idle-exit-min`, pensado para esto, pero **`launch_hub()` (el que
+arranca el hub automaticamente, la unica via real de arranque) nunca lo pasaba**, y el valor por
+defecto del propio flag era `0` = nunca. Es decir, el hub que de verdad se usa en la practica no
+tenia ninguna via de apagado.
+
+### Arreglo
+`DEFAULT_IDLE_EXIT_MIN = 5.0` como nueva constante y nuevo valor por defecto de `--idle-exit-min`
+en la CLI. **El valor por defecto de `Hub.__init__` (0 = nunca) no se toca**, para que
+`tools/hub_test.py` y `tools/udp_multiboard_test.py` (que construyen `Hub()` directamente, sin
+pasar por argparse) sigan sin verse afectados. `--idle-exit-min 0` sigue disponible para quien
+quiera un hub de banco que dure horas con huecos entre capturas. La linea de log "listening on"
+ahora dice la politica en vigor (`idle exit after 300s` / `idle exit disabled`).
+
+Nuevo check en `tools/hub_test.py`: un hub con `idle_exit_s=0.3` sin que nadie se suscriba nunca,
+y se comprueba que `serve_forever()` vuelve en menos de 3 s. **30/30**. `udp_multiboard_test.py`
+sigue en **100/100**.
+
+### El hub matado
+`Stop-Process` sobre el proceso `python.exe` que llevaba `pulsenest_hub.py` en su linea de
+comandos desde el 16-09. Sin relanzarlo yo: queda pendiente ver si algo lo levanta solo (el lab,
+`fleet_monitor.py`, o cualquier herramienta, en cuanto alguien la use) con el codigo de hoy
+puesto — asi su propia fila en `@STATUS` dira por fin `file=pulsenest_hub.py`.
+
+Spec `pulsenest_lab_spec.md` -> v1.65 (Sec4.11 ampliada).
