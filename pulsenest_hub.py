@@ -29,6 +29,7 @@ Subscriber -> hub                     Hub -> subscriber
     @TO <ip>\\r\\n<payload>                 (payload -> <ip>:UDP_CMD_PORT) | @REFUSED TO <reason>
     @RELEASE                              @OK RELEASE
     @UNSUB                                (nothing)
+    @STOP                                 @OK STOP  |  @REFUSED STOP local-only
                                           @FROM <ip>\\r\\n<original datagram, verbatim>
 
 Rules.
@@ -59,6 +60,13 @@ Run it by hand for the log on the console, or let a subscriber start it (pulsene
 launches it detached, with python.exe so a `taskkill /IM pythonw.exe` of the lab leaves it alive):
 
     python pulsenest_hub.py [--port 5005] [--allow-remote-control] [--idle-exit-min 5]
+    python pulsenest_hub.py --stop          # ask the running one to exit
+
+--stop exists because the running hub is detached and has no window: there is no Ctrl+C and no
+console to close, and `taskkill /IM python.exe` would take the monitor and every tool with it.
+It sends @STOP over the data port, which only a local address may use -- deliberately NOT opened
+by --allow-remote-control, a flag about commanding boards; whoever administers the bench PC has
+a shell on it already.
 
 It shuts itself down after DEFAULT_IDLE_EXIT_MIN minutes with nobody subscribed (2026-09-18: the
 auto-started hub had no exit path at all and one instance ran for 34+ hours after everyone using
@@ -331,6 +339,20 @@ class Hub:
                 self._forget(addr, "unsubscribed")
         elif verb == b"STATUS":
             self._send(addr, self.status_text().encode("utf-8", "replace"))
+        elif verb == b"STOP":
+            # `python pulsenest_hub.py --stop`. The process is detached and has no window, so
+            # without this the only way to stop it was hunting its PID by command line — the
+            # kind of incantation nobody remembers. LOCALHOST ONLY, and deliberately not opened
+            # up by --allow-remote-control: that flag is about commanding boards, and whoever
+            # administers the bench PC already has a shell on it.
+            if addr[0] in self.local_ips or is_loopback(addr[0]):
+                log.info("stop requested by %s:%d — exiting", addr[0], addr[1])
+                self._send(addr, b"@OK STOP\r\n")
+                self._stop.set()
+            else:
+                self.n_refused += 1
+                self._send(addr, b"@REFUSED STOP local-only\r\n")
+                log.info("stop refused to %s:%d (not local)", addr[0], addr[1])
         else:
             self._send(addr, b"@REFUSED " + (parts[0] if parts else b"?")[:16] + b" unknown-verb\r\n")
 
@@ -475,9 +497,32 @@ def _setup_logging(quiet):
         log.addHandler(sh)
 
 
+def stop_running_hub(port, timeout=1.5):
+    """Ask the hub on `port` to exit. -> (stopped, reply): `reply` is None when nothing answered.
+
+    The two failures are told apart on purpose. "Nobody answered" and "something answered and
+    said no" look the same from the caller's side if you only return a bool, and the first
+    version of this did exactly that: run against a hub started before @STOP existed, it
+    reported "no hub answered" while a hub was plainly running and had in fact replied
+    @REFUSED STOP unknown-verb. A message that denies what the user can see is worse than none.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(b"@STOP\r\n", ("127.0.0.1", port))
+        data, _ = s.recvfrom(1024)
+        return data.startswith(b"@OK STOP"), data.split(b"\r\n")[0].decode("ascii", "replace")
+    except OSError:
+        return False, None    # nobody listening, or it died before replying
+    finally:
+        s.close()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="PulseNest hub: owns the UDP data port, fans the "
                                              "boards' stream out to read-only subscribers")
+    ap.add_argument("--stop", action="store_true",
+                    help="tell the hub running on this machine to exit, and exit")
     ap.add_argument("--port", type=int, default=UDP_DATA_PORT, help="data port to own (default %(default)s)")
     ap.add_argument("--allow-remote-control", action="store_true",
                     help="let a subscriber on ANOTHER machine become the controller (default: local only)")
@@ -487,6 +532,22 @@ def main(argv=None):
     ap.add_argument("--quiet", action="store_true", help="log to file only")
     a = ap.parse_args(argv)
     _setup_logging(a.quiet)
+    if a.stop:
+        stopped, reply = stop_running_hub(a.port)
+        if stopped:
+            print(banner(__file__, f"the hub on :{a.port} was asked to stop, and acknowledged"))
+            return 0
+        if reply is None:
+            print(banner(__file__, f"no hub answered on :{a.port} — nothing to stop"))
+        else:
+            print(banner(__file__, f"a hub on :{a.port} answered but did not stop: {reply}"))
+            if "unknown-verb" in reply:
+                print("  It was started before --stop existed. Stop it once by PID and the next "
+                      "one will understand:\n"
+                      "    Get-CimInstance Win32_Process -Filter \"name='python.exe'\" |\n"
+                      "      Where-Object { $_.CommandLine -match 'pulsenest_hub' } |\n"
+                      "      ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+        return 1
     if not a.quiet:
         print(banner(__file__, f"owns UDP :{a.port}, fans the boards' stream out to subscribers"))
     hub = Hub(port=a.port, allow_remote_control=a.allow_remote_control,

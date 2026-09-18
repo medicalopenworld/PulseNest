@@ -27,6 +27,8 @@ H.CFG_RETRY_S = 0.3           # fast identity retry for the test
 C.PING_S = 0.3
 C.MAX_MISSED_PONGS = 3
 
+CRLF = (chr(13) + chr(10)).encode()
+
 results = []
 
 
@@ -219,6 +221,48 @@ def main():
     check("and not once more after the cap", mute.cfg_requests == n_at_cap,
           f"{mute.cfg_requests} > {n_at_cap}")
     mute.stop.set()
+
+    # ── @STOP / --stop: the detached hub has no window and no Ctrl+C ──────────────────────
+    stop_hub = H.Hub(port=DATA_PORT + 4, cmd_port=CMD_PORT + 4)
+    stop_hub.open()
+    stop_thread = threading.Thread(target=stop_hub.serve_forever, daemon=True)
+    stop_thread.start()
+    time.sleep(0.3)
+
+    # A "remote" @STOP must be refused. It cannot be sent over loopback (127.x counts as local),
+    # so the handler is driven directly with a non-local address -- the same path a datagram
+    # from another machine would take.
+    stop_hub._on_hub_message(("8.8.8.8", 1234), b"@STOP" + CRLF, time.monotonic())
+    time.sleep(0.2)
+    check("@STOP from a non-local address is refused and the hub stays up",
+          stop_thread.is_alive() and not stop_hub._stop.is_set())
+
+    stopped, reply = H.stop_running_hub(DATA_PORT + 4)
+    check("stop_running_hub() reports the hub acknowledged", stopped and reply == "@OK STOP",
+          f"{stopped}, {reply!r}")
+    stop_thread.join(2.0)
+    check("and the hub really exited", not stop_thread.is_alive())
+
+    stopped, reply = H.stop_running_hub(DATA_PORT + 6, timeout=0.4)
+    check("no hub on the port: not stopped, and no reply to report",
+          stopped is False and reply is None, f"{stopped}, {reply!r}")
+
+    # The third case, and the one that actually happened: something answers and says no. An
+    # older hub does not know @STOP, and reporting that as "nothing answered" denies what the
+    # user can see running. Simulated with a plain socket that replies like that hub did.
+    import socket as _sock
+    old_hub = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+    old_hub.bind(("127.0.0.1", DATA_PORT + 8))
+
+    def _answer_refusal():
+        data, peer = old_hub.recvfrom(256)
+        old_hub.sendto(b"@REFUSED STOP unknown-verb" + CRLF, peer)
+
+    threading.Thread(target=_answer_refusal, daemon=True).start()
+    stopped, reply = H.stop_running_hub(DATA_PORT + 8)
+    old_hub.close()
+    check("a hub that refuses is reported as refusing, not as absent",
+          stopped is False and reply == "@REFUSED STOP unknown-verb", f"{stopped}, {reply!r}")
 
     # ── idle exit: a hub with idle_exit_s set shuts itself down once nobody is subscribed ──
     # The CLI defaults to this (DEFAULT_IDLE_EXIT_MIN); Hub()'s own default stays 0 (never),

@@ -23178,3 +23178,39 @@ consumidores nuevos ante firmware antiguo, comprobado sin querer.
 `docs/boards.md`: las tres filas anotadas con la fecha y el `elfsha`, y la seccion *Provenance*
 cerrada — describia el defecto porque se escribio antes del arreglo; ahora describe el arreglo,
 con estas mismas placas como prueba.
+
+
+### `python pulsenest_hub.py --stop`, y una respuesta a dos preguntas de Alex
+**1) Se apaga a los 5 minutos aunque las placas esten emitiendo?** Si. La condicion mira SOLO
+`self.subs`; las placas no cuentan. Correcto: el hub no graba nada, es un repetidor puro, y el
+primer cliente que vuelva lo levanta solo (solo se pierde la cache de `$CFG`, que se reconstruye
+en un segundo). Una captura nunca lo mata, porque la hace `pulsenest_lab.py`, que *es* un
+suscriptor. El unico caso donde estorbaria: un suscriptor **remoto** intermitente, que no puede
+auto-arrancarlo (el auto-arranque es solo localhost) -> para eso, `--idle-exit-min 0`.
+
+**2) Como apagarlo a mano?** No habia forma sencilla: proceso desligado y sin ventana, ni Ctrl+C
+ni consola que cerrar, y un `taskkill /IM python.exe` se llevaria el monitor y las herramientas.
+Anadido `--stop`: manda `@STOP` por el puerto de datos y el hub sale por su cierre normal (el log
+dice `stop requested by ... — exiting` y luego `hub stopped`, no una muerte). **Solo desde
+direcciones locales**, y a proposito NO lo abre `--allow-remote-control`: ese flag va de mandar a
+las placas, y quien administra el PC del banco ya tiene shell en el.
+
+### Un fallo propio, encontrado al probarlo en vivo
+La primera version devolvia un bool y, contra el hub que estaba corriendo (de las 10:51, anterior
+al cambio), imprimio **"no hub answered on :5005 — nothing to stop"**... mientras el hub estaba
+ahi, a la vista, y de hecho habia contestado `@REFUSED @STOP unknown-verb`. Un mensaje que niega
+lo que el usuario esta viendo es peor que no decir nada. Corregido: `stop_running_hub()` devuelve
+`(stopped, reply)` y el CLI distingue los tres casos — parado / nadie contesto / **contesto y dijo
+que no**, citando la respuesta y, para ese caso concreto, imprimiendo el comando por PID de una
+sola vez.
+
+### Verificado
+`tools/hub_test.py` **35/35**, con cuatro checks nuevos: rechazo desde direccion no local
+(inyectado por el handler, porque 127.x cuenta como local y no se puede simular por loopback),
+la parada reconocida, el puerto sin hub, y un socket que responde un rechazo. Y en vivo: el hub
+viejo rechazo el `@STOP` (mensaje correcto), lo mate por PID una vez, el cliente levanto uno
+nuevo con el codigo de hoy, y sobre ese `--stop` funciono — `acknowledged`, exit 0, proceso
+desaparecido, cierre limpio en el log. El banco se recupero solo en **7 segundos**: nuevo hub,
+`pulsenest_lab.py` con el control y `fleet_monitor.py` suscrito.
+
+Spec -> v1.67.

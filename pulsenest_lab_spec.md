@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.66
+# pulsenest_lab — Specification v1.67
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -905,6 +905,7 @@ the rest of the datagram = payload.
 | `@TO <ip>\r\n<payload>` | payload → `<ip>:UDP_CMD_PORT` (controller only) · `@REFUSED TO not-controller` |
 | `@STATUS` | `@STATUS` + one line per board and per subscriber |
 | `@RELEASE` · `@UNSUB` | `@OK RELEASE` · (nothing) |
+| `@STOP` (v1.67) | `@OK STOP` · `@REFUSED STOP local-only` |
 | | **`@FROM <ip>\r\n<original datagram, verbatim>`** — the data plane |
 
 The subscriber is known by the source address of its own messages and the hub answers **there**,
@@ -971,6 +972,23 @@ the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_
 first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
 gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;
 it cannot touch a board, and runs on the bench PC or on another one with `--hub <bench-pc-ip>`.
+
+**Stopping it by hand: `python pulsenest_hub.py --stop` (v1.67).** The running hub is detached
+and has no window, so there is no Ctrl+C and no console to close, and `taskkill /IM python.exe`
+would take the monitor and every other tool with it — the only alternative was hunting its PID by
+command line, which is the kind of incantation nobody remembers. `--stop` sends `@STOP` over the
+data port and the hub exits through its normal shutdown (the log shows `stop requested by …` then
+`hub stopped`, not a kill). **Local addresses only**, and deliberately not opened up by
+`--allow-remote-control`: that flag is about commanding boards, and whoever administers the bench
+PC already has a shell on it. Whatever is still subscribed starts a new hub within seconds, as it
+does after any hub death — measured 2026-09-18: 7 s from the stop to a new hub with both the lab
+and the monitor back on it.
+
+The reporting distinguishes three outcomes, which the first version did not: stopped, nothing
+answered, and *something answered and said no*. That third case appeared immediately — a hub
+started before this flag existed replies `@REFUSED @STOP unknown-verb`, and reporting that as
+"no hub answered" would deny what the user can plainly see running, so the message now quotes
+the reply and, for that specific case, prints the one-off PID command to get past it.
 
 **The auto-started hub shuts itself down after 5 minutes with nobody subscribed (v1.65).**
 Found by Alex: the hub `launch_hub()` starts has no CLI flags of its own, so it always ran with
@@ -2474,6 +2492,17 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.67 — 2026-09-18
+
+**`python pulsenest_hub.py --stop` (§4.11).** The hub runs detached, without a window: until now
+the only way to stop it by hand was a PowerShell line filtering processes by command line. It
+answers `@STOP` from a local address now and exits cleanly through `serve_forever()`. The flag
+reports three distinct outcomes — stopped, nobody answered, or a hub answered and refused — the
+last because a hub predating the flag replies `unknown-verb`, and calling that "nothing to stop"
+while one is visibly running is worse than saying nothing. `tools/hub_test.py`: 35/35 (four new:
+non-local refusal driven through the handler, the acknowledged stop, the empty port, and a socket
+that answers a refusal).
 
 ### v1.66 — 2026-09-18
 
