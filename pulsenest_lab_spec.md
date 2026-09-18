@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.68
+# pulsenest_lab — Specification v1.69
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -975,6 +975,27 @@ it cannot touch a board, and runs on the bench PC or on another one with `--hub 
 Every numeric cell goes through `fit()`, which **guarantees** the column width (v1.68): a value
 too long drops decimals rather than shifting every column to its right, and one that still does
 not fit shows `#####` rather than a truncated digit string, which would be a different number.
+
+**`tools/fleet_ppg_viewer.py` (v1.69)** is the second purpose-built subscriber and the first with
+a GUI: one live `PPG_DISP` band per board, stacked, for the question the numbers answer slowly —
+*has a probe moved?* Read-only like the monitor, and deliberately narrow: no capture, no commands,
+no algorithms, no configuration. One Y axis per band (amplitudes differ by orders of magnitude
+between boards, a shared axis would flatten all but the largest); a common X in **seconds-ago from
+the arrival time at this PC**, the only clock comparable across boards, so a board that stops
+leaves a growing gap at the right edge; decimated 1-in-10 to ~50 Hz; identity by MAC so a new DHCP
+lease keeps its band; title and colour by `ProbeState` (green `APPLIED`, red otherwise, `LOST`
+after 2 s). Single-threaded — a 20 ms drain timer and a 100 ms redraw — because all it does per
+datagram is decimate and append, so there are no locks and no cross-thread Qt calls.
+
+**It is also the controlled experiment `project_signals2_crash_investigation_task` has been
+waiting for since 2026-09-10.** The lab sets `useOpenGL=True`, the one untested suspect in its 28
+paint segfaults; this viewer starts with OpenGL **off**, takes `--opengl` to turn it on for
+comparison, and writes its own `fleet_ppg_viewer_faulthandler.log`. Being a separate process off
+the hub, it can crash as often as it likes without costing a capture — which is exactly what makes
+it usable as the test vehicle. Verified by `tools/fleet_ppg_viewer_test.py` (20 offline checks,
+no hub and no board: the field it reads, decimation, trimming by time rather than by point count,
+state colouring, LOST, one band per MAC across a lease change, malformed lines never raising, and
+the real window built offscreen with a band and a fed curve per board).
 
 **Stopping it by hand: `python pulsenest_hub.py --stop` (v1.67).** The running hub is detached
 and has no window, so there is no Ctrl+C and no console to close, and `taskkill /IM python.exe`
@@ -2495,6 +2516,16 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.69 — 2026-09-18
+
+**`tools/fleet_ppg_viewer.py`: one live PPG band per board (§4.11).** The window you open to see
+whether a probe has moved — read-only subscriber, one `PPG_DISP` trace per board with its own Y
+axis, a common seconds-ago X from arrival time, decimated to 50 Hz, coloured by `ProbeState`, one
+band per MAC. It doubles as the deferred `useOpenGL` experiment: OpenGL off by default, `--opengl`
+to compare, its own faulthandler log, and nothing to lose if it crashes.
+`tools/fleet_ppg_viewer_test.py`: 20/20 offline. Live against three boards: subscribed, ~11k
+datagrams in, no crash.
 
 ### v1.68 — 2026-09-18
 

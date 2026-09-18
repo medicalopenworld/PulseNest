@@ -23231,3 +23231,47 @@ escribirlo y **el error era mio, no del codigo**: afirmaba que `100.00` no apare
 pero HR1 tambien valia 100.00 y ahi si cabe (columna de 6). Corregida la asercion para comprobar
 justo eso: SpO2 suelta el decimal, las columnas mas anchas lo conservan. Verificado en vivo con
 una placa a 100.0 y las otras dos alineadas.
+
+## Sesion 2026-09-18 (4) - `tools/fleet_ppg_viewer.py`: una banda de PPG en vivo por placa (v1.69)
+
+Alex elige el visor multitarjeta de la PPG de la lista de pendientes. Antes, dos cosas menores:
+arreglado el desplazamiento de columnas del monitor con SpO2=100 (v1.68), y elegido el nombre
+— descarto `fleet_scope` ("scope tiene mas significados y es ambiguo"); entre sus dos
+candidatos me quedo con **`fleet_ppg_viewer.py`**: `fleet_ppg.py` a secas se lee como un modulo
+de datos, no como un programa, y `_viewer` lo deja inequivoco, que es su propio criterio.
+
+### Diseno
+Suscriptor de solo lectura, una banda `PPG_DISP` (campo `p[9]`) por placa. Decisiones y por que:
+- **Un eje Y por banda, nunca compartido**: las amplitudes entre placas difieren en ordenes de
+  magnitud y un eje comun aplastaria todas menos la mayor.
+- **Eje X comun en segundos-hacia-atras, por hora de llegada al PC**: cada placa tiene su reloj y
+  su contador, la llegada es lo unico comparable (el mismo razonamiento que `host_t_us` en F3).
+  Una placa que calla deja un hueco creciente por la derecha, que ya es la senal de que algo pasa.
+- **Decimado 1 de 10** (~50 Hz): la forma del pulso no necesita mas y el repintado sale barato,
+  que dado lo que este programa esta probando no es un detalle menor.
+- **Identidad por MAC** y color/titulo por `ProbeState` (verde APPLIED, rojo el resto, LOST a los
+  2 s), igual que el monitor.
+- **Un solo hilo**: temporizador de drenaje a 20 ms y repintado a 100 ms. Por datagrama solo
+  decima y anade, asi que no hay cerrojos ni llamadas a Qt desde otro hilo.
+
+### Y es el experimento que faltaba
+Arranca con **`useOpenGL=False`** y `--opengl` para compararlo, con su propio
+`fleet_ppg_viewer_faulthandler.log`. Es el vehiculo que `project_signals2_crash_investigation_task`
+llevaba esperando desde el 10-09: al ser un proceso aparte colgado del hub, puede caerse las veces
+que quiera sin costar una captura.
+
+### Dos cosas que corregi sobre la marcha
+- La primera version definia la clase de la ventana **dentro de `Viewer.__new__`** para que el
+  test pudiera importar el modelo de datos sin construir Qt. Listillo sin motivo: reescrito como
+  clase normal de modulo, con Qt importado arriba como hace el lab, y el test poniendo
+  `QT_QPA_PLATFORM=offscreen` antes de importar, como ya hacen los demas.
+- El test imprimia **cero lineas** con salida redirigida: `os._exit()` no vacia los buffers.
+  `udp_multiboard_test.py` ya hacia el `flush()` antes; este no. Anadido.
+
+### Estado
+`tools/fleet_ppg_viewer_test.py` **20/20** offline (campo leido, decimado, recorte por TIEMPO y
+no por numero de puntos, colores, LOST, una banda por MAC tras cambio de lease, lineas corruptas
+que no revientan, y la ventana real construida offscreen con su banda y su curva por placa).
+En vivo contra las tres placas: suscrito como `fleet_ppg_viewer.py`, ~11 000 datagramas
+recibidos, faulthandler de 0 bytes. **Falta que Alex mire la ventana**: que los datos llegan y no
+se cae lo he verificado yo, pero si la onda se ve bien solo lo puede decir el.
