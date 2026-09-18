@@ -9,10 +9,10 @@ repository, which is why nobody could find it. This file is the authoritative li
 | `10:51:DB:50:7F:AC` | V15 | 15.A | `sdkconfig.board.V15` | Feb–Mar 2026 | IN3ATOR, the first board. Possibly damaged, out of use since 2026-09-09 |
 | `10:51:DB:50:48:F8` | V16 | 16.A | `sdkconfig.board.V16` | Apr 2026 | **DEAD — 2026-09-11.** Probably incorrect power supply; smoke was seen. Was the main working board until then |
 | `10:20:BA:14:75:60` | V17 | 17.A | `sdkconfig.board.V17` | — | Dropped off the WiFi three times on 2026-09-09/10 while still powered; cause not established |
-| `10:51:DB:50:88:50` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-10 | Flashed and verified 2026-09-10 |
+| `10:51:DB:50:88:50` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-18 | OTA 2026-09-18 to `build=7770c6c`, `elfsha=a60928ae2b710aab`. Previously flashed and verified 2026-09-10 |
 | `10:51:DB:50:87:B8` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-10 | **RETURNED TO THE WORKSHOP — 2026-09-18.** Not on the bench any more; do not target it for OTA. Flashed and verified 2026-09-10. It was the board carrying the non-default build with the `Serial.print()` guard for the 500 Hz acquisition stall, so that experiment lost its subject when it left |
-| `10:51:DB:50:87:A4` | V18 | 18.A | `sdkconfig.board.V18` | not recorded | Third V18, first seen 2026-09-18 on COM19. Flashed and verified that day: `board=incunest_V18`, fw 0.13, lib 0.93, build `6e6d036`. The revision is Alex's reading of the silkscreen, not measured — this firmware cannot tell V16/V17/V18 apart (see below) |
-| `10:51:DB:50:82:5C` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-18 | Fourth V18, new board flashed 2026-09-18 on COM20. Chip: ESP32-S3 QFN56 rev v0.2, USB-Serial/JTAG. Verified: `board=incunest_V18`, fw 0.13, lib 0.93, build `6e6d036-dirty` (documentation-only changes in the tree, see *Provenance* below) |
+| `10:51:DB:50:87:A4` | V18 | 18.A | `sdkconfig.board.V18` | not recorded | Third V18, first seen 2026-09-18 on COM19. Flashed and verified that day: `board=incunest_V18`, fw 0.13, lib 0.93, build `6e6d036`. The revision is Alex's reading of the silkscreen, not measured — this firmware cannot tell V16/V17/V18 apart (see below). OTA 2026-09-18 to `build=7770c6c`, `elfsha=a60928ae2b710aab` |
+| `10:51:DB:50:82:5C` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-18 | Fourth V18, new board flashed 2026-09-18 on COM20. Chip: ESP32-S3 QFN56 rev v0.2, USB-Serial/JTAG. Verified: `board=incunest_V18`, fw 0.13, lib 0.93, build `6e6d036-dirty` (documentation-only changes in the tree, see *Provenance* below). OTA 2026-09-18 to `build=7770c6c`, `elfsha=a60928ae2b710aab` |
 | `98:88:E0:11:CC:64` | — | — | — | — | Display HMI. Not a PulseNest target. Its own WiFi client: MQTT, OTA, web, mDNS |
 
 **The silkscreen marks the revision, not the unit.** `18.A` is printed on the board so you can tell
@@ -39,9 +39,31 @@ say what changed**. On 2026-09-18 the board `87:A4` was flashed as `6e6d036` and
 `82:5C` as `6e6d036-dirty`, with identical firmware: in between, only `docs/boards.md` and
 `conversation_log.md` had been edited. Same binary, different provenance label.
 
-So `-dirty` is a question, not a verdict: it warrants checking `git status` before trusting or
-discarding a capture, and it is worth committing documentation before a flashing session so the
-label stays meaningful.
+So `-dirty` was a question, not a verdict.
+
+**Fixed on 2026-09-18 (lab v1.66), and these same three boards are the proof.** Three things
+changed:
+
+- `build=` now hashes **only the paths that end up inside the image** (`main/`, the root
+  `CMakeLists.txt`, `sdkconfig.defaults`, `sdkconfig.board.*`, this partition CSV), so editing a
+  `.md`, the lab script or `tools/` no longer moves it and no longer marks it `-dirty`. The same
+  applies to `libsha` against the library's own repository, where the spec sits next to the code.
+- The build is reproducible: `CONFIG_APP_REPRODUCIBLE_BUILD=y`, plus the removal of
+  `__DATE__`/`__TIME__` from the firmware's startup banner, which a byte-diff proved was the only
+  remaining source of non-determinism (68 bytes between two clean builds of identical sources).
+  Two builds from scratch now produce byte-identical images.
+- `$CFG` carries **`elfsha=`**, the first 8 bytes of the image's own ELF SHA-256, and `idfver=`.
+
+What that buys, and it is the point: after the OTA round of 2026-09-18 the three boards report
+`build=7770c6c` **and `elfsha=a60928ae2b710aab`, all three identical**, matching the
+`ELF file SHA256` that `esptool image-info build_V18/pulsenest.bin` prints for the file on disk.
+`build=` says which commit; `elfsha=` says whether two boards run the same binary — which no
+repository hash can, because `build_V18/sdkconfig` is not versioned and `include/wifi_config.h`
+is gitignored, and both compile in. Moving the bench to another network edits that header and
+produces a different image under an unchanged `build=`; `elfsha` is what notices.
+
+Still worth committing documentation before a flashing session — but now only because a tidy
+history is easier to read, not because the label depends on it.
 
 There is also a second per-unit identifier that Alex has seen, whose origin is not yet established
 (2026-09-10). One lead, unconfirmed: IncuNest's motherBoard firmware carries a serial number

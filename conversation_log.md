@@ -23150,3 +23150,31 @@ Compila limpio bajo `-Wall -Wextra -Werror`. Tests: fleet_monitor 19/19, hub 30/
 **Pendiente: reflashear las tres placas** — hasta entonces los consumidores muestran `?`, que es
 el comportamiento correcto ante firmware antiguo. No lo he hecho: es accion fisica sobre hardware
 compartido y la pido antes.
+
+
+### Reflasheo de las tres placas y verificacion de extremo a extremo
+Alex: "flashea las tres placas". Antes de nada, comprobado el inventario (`docs/boards.md`, regla
+obligatoria antes de cualquier OTA): las tres que estan emitiendo son **V18**
+(`87:A4`=.128, `82:5C`=.139, `88:50`=.230), asi que un solo preset. La V17 con el simulador MS100
+no esta en la red ahora mismo.
+
+Recompilado con el arbol ya limpio -> `build=7770c6c` (sin `-dirty`, y es el hash acotado: el
+commit que toco firmware). `esptool image-info` del `.bin`: `ELF file SHA256 a60928ae2b710aab...`.
+
+Tres OTA raw, HTTP 200 en 3,2 / 3,4 / 4,0 s. Resultado:
+
+    .128  87:A4  build=7770c6c  elfsha=a60928ae2b710aab  idfver=v6.0.1
+    .139  82:5C  build=7770c6c  elfsha=a60928ae2b710aab  idfver=v6.0.1
+    .230  88:50  build=7770c6c  elfsha=a60928ae2b710aab  idfver=v6.0.1
+
+**Las tres identicas, y el `elfsha` coincide con el del `.bin` en disco.** Es la verificacion de
+extremo a extremo de toda la tarea: el problema que la origino (tres `build=` distintos para el
+mismo firmware) ahora da una sola respuesta, y ademas se puede afirmar que las tres corren
+exactamente la imagen que tengo aqui — cosa que ningun hash de repositorio podia decir.
+
+Antes del OTA los tres mostraban `elfsha=?` / `idfver=?`: el comportamiento correcto de los
+consumidores nuevos ante firmware antiguo, comprobado sin querer.
+
+`docs/boards.md`: las tres filas anotadas con la fecha y el `elfsha`, y la seccion *Provenance*
+cerrada — describia el defecto porque se escribio antes del arreglo; ahora describe el arreglo,
+con estas mismas placas como prueba.
