@@ -23333,3 +23333,21 @@ El visor anterior estuvo suscrito **desde las 15:22 hasta las 22:09 sin una sola
 (~6 h 47 min; el hub lo habria expulsado a los 10 s si hubiera muerto, y el log no tiene ningun
 left/joined intermedio). `fleet_ppg_viewer_faulthandler.log`: **0 bytes**. Con `useOpenGL=False`.
 No es prueba todavia —28 caidas en dos meses es tasa baja— pero es el primer tramo largo limpio.
+
+### El panel de numeros pasa de tres lineas a dos
+Alex: no hay sitio vertical y a veces se descoloca; propone quitar la etiqueta pequena de encima
+y cambiar la unidad `%` por `% SpO2`. Y corrige un dato mio: la unidad no sale "al lado" del
+numero sino debajo.
+
+**Tenia razon, y la causa explica lo otro**: la unidad estaba escrita en linea, pensada para ir
+al lado, pero con digitos de 44 pt no cabia en los 190 px del panel y **envolvia** a la linea
+siguiente. Lo que se veia debajo era un desbordamiento, no un diseno — y esa tercera linea por
+bloque era justo la que agotaba el espacio vertical.
+
+Aplicadas sus dos propuestas: **dos lineas por medida** (digitos y debajo la unidad), y la linea
+de unidad **lleva la identidad**: `% SpO2` y `bpm HR3`. Asi no se pierde nada al quitar la
+etiqueta. Ahora el salto de linea es deliberado, no un accidente de ancho.
+
+Un check del test fallo al escribirlo: contaba `<div>` y **conte mal** (son 7, no 5) mientras el
+HTML era correcto. Cambiado por algo que dice lo que importa y no se rompe al tocar el marcado:
+un bloque de 44 pt y uno de 12 pt por medida, y ni rastro del 11 pt de la etiqueta vieja. 30/30.

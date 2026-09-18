@@ -90,8 +90,13 @@ check(">98<" in html or ">97<" in html, "SpO2 shown as whole digits", html[:200]
 check(">61<" in html, "HR3 shown as whole digits")
 check(V.SPO2_COLOUR in html and V.HR_COLOUR in html,
       "both bright: each SQI is above the 0.9 threshold")
-check("%SpO2" in html and "HR3" in html and "bpm" in html,
-      "labelled the way a bedside monitor labels them")
+check("% SpO2" in html and "bpm HR3" in html,
+      "the unit line names the measurement, so no separate label is needed", html[:200])
+# Counting <div>s was the first version of this check and it counted wrong (7, not 5) while
+# the HTML was right. Assert the thing that matters instead: one big line and one unit line
+# per measurement, and no trace of the 11pt label that used to sit above them.
+check(html.count("44pt") == 2 and html.count("12pt") == 2 and "11pt" not in html,
+      "two lines per measurement, not three: the small label above is gone", html[:200])
 
 # A firmware -1.00 is not a measurement: a monitor shows --, never the sentinel and never the
 # last good value.
@@ -155,7 +160,7 @@ xs = win.bands["192.168.137.1"][1].getData()[0]
 check(all(x <= 0 for x in xs), "x is seconds AGO: never positive", str(xs[:3]))
 titles = [b[0].titleLabel.text for b in win.bands.values()]
 check(all("APPLIED" in t for t in titles), "the band titles carry the probe state", str(titles))
-check(all("%SpO2" in b[2].item.toHtml() for b in win.bands.values()),
+check(all("SpO2" in b[2].item.toHtml() for b in win.bands.values()),
       "every band got its numbers panel next to the plot")
 win.close()
 

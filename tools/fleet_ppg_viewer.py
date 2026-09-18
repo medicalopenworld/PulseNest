@@ -36,9 +36,11 @@ What it draws, and why those choices:
 - **Title and frame coloured by ProbeState** (green APPLIED, red anything else, and LOST after
   2 s of silence). The state often names the problem before the waveform shows it.
 - **Two large numbers beside each band**, in the idiom of a bedside oximeter (Masimo, Nellcor,
-  Philips): SpO2 in cyan, pulse rate in green, a small label above each and the unit small
-  beside the digits. Three conventions from those machines are worth copying exactly, because
-  they are about not misleading the person reading across the room:
+  Philips): SpO2 in cyan, pulse rate in green, each as digits over a small unit line that also
+  names the measurement (`% SpO2`, `bpm HR3`) — two lines, not three, because with a separate
+  label above them the panel ran out of vertical room and pushed the rows out of line. Three
+  conventions from those machines are worth copying exactly, because they are about not
+  misleading the person reading across the room:
   * an invalid reading shows **`--`**, never the last good number and never a sentinel. The
     firmware sends `-1.00`; showing that would read as a measurement.
   * the digits **dim** when the measurement's own SQI is below 0.9 — the same threshold SIGNAL
@@ -179,21 +181,27 @@ class BoardTrace:
     def numbers_html(self, now):
         """The panel beside the band. Built here, not in the widget, so the offline test can
         read exactly what a person would see without constructing a window."""
-        def block(label, value, sqi, unit, bright, dim):
+        def block(value, sqi, unit, bright, dim):
             invalid = value is None or value <= 0 or self.is_lost(now)
             if invalid:
                 text, colour = "--", DASH_COLOUR
             else:
                 text = f"{value:.0f}"
                 colour = bright if (sqi is not None and sqi > SQI_GOOD) else dim
-            return (f"<div style='margin-bottom:6px;'>"
-                    f"<span style='font-size:11pt; color:#AAAAAA;'>{label}</span><br/>"
-                    f"<span style='font-size:44pt; font-weight:bold; color:{colour};'>{text}</span>"
-                    f"<span style='font-size:12pt; color:{colour};'> {unit}</span></div>")
+            # Two lines, digits then unit. There used to be a third, a small label above, and
+            # between the three of them and 44pt digits the panel ran out of vertical room and
+            # pushed the rows out of line. The unit line carries the identity instead — "% SpO2"
+            # rather than "%" — so nothing is lost by dropping the label. (The unit was written
+            # inline, meant to sit beside the digits; at this size it never fitted the panel
+            # width and wrapped. It reads better underneath, so now it is deliberate.)
+            return (f"<div style='margin-bottom:2px;'>"
+                    f"<div style='font-size:44pt; font-weight:bold; color:{colour}; "
+                    f"line-height:100%;'>{text}</div>"
+                    f"<div style='font-size:12pt; color:{colour};'>{unit}</div></div>")
 
         return ("<div style='text-align:right;'>"
-                + block("%SpO2", self.spo2, self.spo2_sqi, "%", SPO2_COLOUR, SPO2_DIM)
-                + block("HR3", self.hr3, self.hr3_sqi, "bpm", HR_COLOUR, HR_DIM)
+                + block(self.spo2, self.spo2_sqi, "% SpO2", SPO2_COLOUR, SPO2_DIM)
+                + block(self.hr3, self.hr3_sqi, "bpm HR3", HR_COLOUR, HR_DIM)
                 + "</div>")
 
     def title(self, now):
