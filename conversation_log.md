@@ -23370,3 +23370,10 @@ con 2 digitos, con 3 y con `--`**. 32/32.
 
 Y otro fallo mio en el test: comprobaba el "100" **despues** del bucle, cuando el caso invalido
 ya lo habia sobrescrito, asi que afirmaba "100" contra "--". Corregido leyendo dentro del bucle.
+
+### Atenuado mas atenuado, y derivado en vez de elegido a mano
+Alex: el color atenuado, mas atenuado. Hecho, pero cambiando tambien como se obtiene: en vez de
+un segundo hex elegido a ojo (`#00697F`, `#0A7A3A`, que venian a ser el 50 %), ahora se deriva
+del color brillante con `dim(colour, DIM_FACTOR)` al **30 %** -> `#003E4C` y `#004C1F`. Asi los
+dos colores no pueden separarse al tocar uno, y queda **una sola perilla** que girar la proxima
+vez que no atenue bastante.

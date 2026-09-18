@@ -82,13 +82,30 @@ PROBE_STATES = {"0": "DISCONNECTED", "1": "OT_HIGH", "2": "APPLIED",
                 "3": "AMB_SAT", "4": "ONLY_LED_SAT"}
 APPLIED      = "APPLIED"
 GREEN, RED, GREY = "#44FF88", "#FF4444", "#888888"
-# Bedside-monitor palette: SpO2 cyan, pulse rate green, as on Masimo/Philips/Nellcor. In the lab
-# green means "firmware" (project_color_convention), but every number in this window comes from
-# the firmware, so there is nothing for the colour to disambiguate here.
-SPO2_COLOUR, SPO2_DIM = "#00D0FF", "#00697F"
-HR_COLOUR,   HR_DIM   = "#00FF6A", "#0A7A3A"
+# Bedside-monitor palette: SpO2 cyan, pulse rate green. That pairing is the de facto convention
+# of the multiparameter monitors (Philips IntelliVue, GE CARESCAPE) rather than anything
+# standardised — no standard assigns colours to numerics. What IS standardised is the alarm
+# palette (IEC 60601-1-8: red high priority, yellow medium, cyan low/informational), which is
+# the reason a normal reading is never painted red on these machines, and why the dashes below
+# are grey rather than red. In the lab green means "firmware" (project_color_convention), but
+# every number in this window comes from the firmware, so the colour disambiguates nothing here.
+SPO2_COLOUR  = "#00D0FF"
+HR_COLOUR    = "#00FF6A"
 DASH_COLOUR  = "#666666"
 SQI_GOOD     = 0.9    # same threshold SIGNAL STATS uses to call a reading trustworthy
+DIM_FACTOR   = 0.30   # how far a below-threshold reading fades. One knob: it was 0.5-ish by
+                      # hand-picked hex and did not read as clearly "do not trust this".
+
+
+def dim(colour, factor=DIM_FACTOR):
+    """-> the same hue at `factor` of its brightness. Derived rather than a second hand-picked
+    hex, so the two colours cannot drift apart and there is one number to turn."""
+    r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+    return "#%02X%02X%02X" % (int(r * factor), int(g * factor), int(b * factor))
+
+
+SPO2_DIM = dim(SPO2_COLOUR)
+HR_DIM = dim(HR_COLOUR)
 BIG_PT       = 44     # the digits
 SMALL_PT     = 12     # the unit line under them
 WIDEST_VALUE = "000"      # three digits: SpO2 reaches 100, and the rate can pass it too
