@@ -23419,3 +23419,103 @@ colapsa a altura cero, asi que no cuesta nada visualmente.
 **Comprobado que el test caza el fallo**, no solo que pasa: revirtiendo SOLO el arreglo (no el
 test — el primer intento con `git stash` revirtio los dos ficheros y no demostraba nada), las
 filas usadas salen `[0, 2, 2, 3]`, dos bandas en la 2, y el check falla. Con el arreglo, 37/37.
+
+
+### Tabla de estadisticas en fleet_ppg_viewer.py (spec v1.71)
+Alex pide, a la derecha de cada banda, una tabla con los valores principales al estilo de SIGNAL
+STATS. Antes de eso deja **en pausa** la decision sobre el promediado del SQI de los numeros
+grandes (bloque anterior): de momento no se cambia nada ahi.
+
+**Como quedo.** Por senal: **media, SD, min y max** sobre el ultimo segundo, siempre las cuatro.
+Las 24 senales del `$M4`, ordenadas por el orden en que se consultan cuando algo va mal (PPG, PI,
+R, SpO2, HR1-3 y sus SQI; luego la cadena analogica V_TIA/OT/I_PD; y al final los codigos crudos
+del convertidor, que son los que se reconstruyen con las filas de arriba). El panel dibuja las
+que caben en la altura de la banda y dice cuantas se deja.
+
+**Lo que se probo y se retiro el mismo dia.** La primera version tenia un boton compacta/completa
+(8 filas x 2 columnas frente a 24 x 4), y en modo completo las bandas crecian y la ventana hacia
+scroll. Alex: *"No veo ninguna fila en las tres tablas. El boton no me gusta. Quitalo y pon los
+cuatro estadisticos siempre."*
+
+**Por que no se veia nada** (vale la pena anotarlo, es un mecanismo que muerde otra vez):
+las columnas de los paneles son de ancho FIJO, y un `QGraphicsGridLayout` que no puede cumplir su
+minimo **no encoge: desborda**, y lo que queda pasado el borde de la vista sencillamente no se
+pinta. Al pedir un ancho minimo de 1272 px para el layout en una ventana de 1200, la tabla quedo
+fuera por la derecha. Meterlo en un `QScrollArea` solo la escondio detras de una barra horizontal,
+que es la misma invisibilidad con asa.
+
+**Tres cosas lo hacen inalcanzable, no solo detectable:**
+1. El **minimo lo lleva la ventana** (paneles + 300 px), no el layout: la ventana se niega a ser
+   mas estrecha que sus propios paneles.
+2. **Cada item de la fila lleva un minimo explicito** (el PlotItem pedia 350 px y mas segun el
+   texto del titulo; la etiqueta de estadisticas, su documento entero de 25 lineas), asi que el
+   minimo de la rejilla es uno que la ventana sabe satisfacer.
+3. El `<pre>` **ya no nombra la fuente en CSS**: se le pone al item la misma `QFont` con la que se
+   midio el ancho. Nombrarla en CSS dejaba que Qt resolviera otra y el texto salia mas ancho que
+   su columna (688 px medidos frente a 458 calculados) — la causa raiz del desbordamiento. Por si
+   acaso, un ancho maximo hace que el panel recorte su ultima columna (local y visible) en vez de
+   arrastrar el layout fuera de pantalla.
+
+**Medidas en la pantalla del banco** (~190 dpi efectivos): una linea de tabla ocupa 28 px a 9 pt,
+por eso la tabla bajo a **8 pt y columnas de 8 caracteres** = 498 px de ancho (antes 603). Con la
+ventana a 1200x1499 y tres placas: onda 393 px, numeros 249, tabla 498, y se ven 21 de las 24
+filas. Con una o dos placas caben todas.
+
+**Ventana de promediado: 1 s, y NO la del repintado (100 ms).** Es justo la distincion que quedo
+abierta en la pregunta anterior de Alex: cada cuanto se *juzga* un numero no es lo mismo que cada
+cuanto se *ensena*. Cuentan todas las muestras, antes del diezmado (la curva se diezma 1 de cada
+10 para el ojo; la estadistica describe la senal a 500 Hz). SD poblacional (/n) como SIGNAL STATS,
+por Welford: las filas de ADC crudo llegan a ~2e6 y elevarlas al cuadrado gasta la precision justo
+donde la SD es pequena.
+
+**Verificacion.** `tools/fleet_ppg_viewer_test.py` **61/61** (antes 37). Dos fallos fueron mios y
+de las aserciones, no del codigo: `split()[1:]` sobre etiquetas que llevan espacio ("PI %",
+"OT1 ppm") y esperar `12.35` de un `1.2345e-05` que cae justo en el borde de redondeo. El test que
+caza el desbordamiento mide el borde derecho de cada panel contra el ancho de la ventana, y hubo
+que anadirle un `show()`: una ventana que nunca se muestra no pasa por el layout y todas las
+geometrias son las de antes de colocar nada.
+
+### La misma tabla, tres correcciones de Alex
+1. *"utiliza el font (no el tamano) de SIGNAL STATS"*. El lab pide `font-family: monospace` en
+   su hoja de estilo, y Qt resuelve eso aqui a **MS Shell Dlg 2**, que **no es de paso fijo**. En
+   el lab da igual porque un `QTableWidget` alinea por celdas; mi panel alineaba con espacios, y
+   en una fuente proporcional un espacio no es un ancho de caracter. Asi que el panel pasa a ser
+   una **tabla HTML de verdad**, con anchos de columna medidos una vez de las metricas reales
+   (la celda mas ancha que puede imprimir cualquier fila: un codigo ADC de 24 bits con signo).
+   De paso coge tambien los colores de SIGNAL STATS (#111111 / #E0E0E0, cabecera #1E1E2E).
+2. *"la altura de cada plot ha cambiado entre ellos"*. Era un **bucle de realimentacion**: la
+   etiqueta pedia al layout la altura de su documento, el documento se recortaba a lo que cabia
+   en el plot, y la altura del plot salia de la fila — asi que una banda un pixel mas alta metia
+   una fila mas, pedia mas altura, y metia otra. **Medido: 497/497/445 px** con tres placas
+   identicas (el layout satisface las alturas preferidas por orden y la ultima fila se queda con
+   el resto). Con la altura preferida del panel a cero y el mismo factor de estiramiento en todas
+   las filas: **480/480/480**.
+3. *"las filas que no caben se deberian ver mediante barra de scroll"*. El panel deja de ser una
+   etiqueta dibujada y pasa a ser un **`QTextEdit` de solo lectura dentro de un
+   `QGraphicsProxyWidget`**. Un widget trae barra de scroll de verdad, se recorta a si mismo (no
+   puede pintarse fuera de la ventana, que fue el fallo de la version anterior) y, con minimo y
+   preferido a cero, su contenido no opina sobre la altura de la banda. Las 24 filas estan
+   siempre en el documento. La barra va estilizada en oscuro y **la posicion de scroll se
+   conserva** entre refrescos.
+
+**Ademas**: la tabla se reescribe **una vez por segundo**, no diez. El repintado sigue a 100 ms,
+pero las estadisticas solo cambian al cerrarse la ventana de promediado; reescribir el documento
+al ritmo del repintado costaria diez veces el trabajo para la misma tabla y pelearia con la barra
+de scroll del que esta leyendo.
+
+**Medidas en la ventana de 1200x1499 con tres placas**: tabla 523 px, numeros 249, onda 368.
+Si se ensancha la ventana, todo lo que se anada se lo lleva la onda.
+`tools/fleet_ppg_viewer_test.py` **66/66**.
+
+### Estetica de la tabla (a peticion de Alex, para probar)
+Tres ajustes, todos en un bloque de constantes para que la siguiente vuelta de "un poco mas / un
+poco menos" sean cuatro valores en un sitio: **texto atenuado** (#E0E0E0 -> #B4B4B4; 24 filas a
+plena intensidad competian con los dos numeros grandes de al lado), **filas alternas** levantadas
+del negro puro (#1D1D1D -> #262626 -> #2E2E2E en tres vueltas: bastante mas
+claro de lo que parecia necesario mirando el codigo, para seguir una fila a lo largo de cuatro columnas) y **cabecera en
+negrita sobre fondo mas brillante** (#1E1E2E -> #33395A) para que se lea como cabecera y no como
+la primera fila de datos.
+
+**Detalle que costo un intento**: el fondo va en **cada celda**, no en el `<tr>`. El motor de
+texto enriquecido de Qt pinta el fondo de una fila solo donde una celda lo pide, asi que la
+banda puesta en la fila sale punteada (los huecos entre celdas se quedan negros).

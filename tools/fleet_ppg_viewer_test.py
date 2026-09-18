@@ -10,6 +10,7 @@ Covers what the viewer promises: PPG read from the right field, decimation, the 
 TIME (not by a point count), identity and colour by ProbeState, LOST after 2 s of silence, one
 band per MAC across a DHCP change, and that a malformed line never raises.
 """
+import math
 import os
 import sys
 import time
@@ -40,14 +41,22 @@ def check(cond, msg, detail=""):
 
 
 def frame(ppg, probe="2", mode="M4", spo2="97.5", spo2_sqi="0.99",
-          hr3="61.0", hr3_sqi="0.99"):
-    """A $M4 with the fields this viewer reads at their spec positions, junk elsewhere."""
+          hr3="61.0", hr3_sqi="0.99", extra=None):
+    """A $M4 with the fields this viewer reads at their spec positions, junk elsewhere.
+
+    `extra` is {field index: text} for the statistics rows, which read the whole frame.
+    """
     p = [mode, "1000", "0"] + ["0"] * 33
     p[V.PPG_FIELD] = ppg
     p[V.PROBE_FIELD] = probe
     p[V.SPO2_FIELD], p[V.SPO2_SQI_FIELD] = spo2, spo2_sqi
     p[V.HR3_FIELD], p[V.HR3_SQI_FIELD] = hr3, hr3_sqi
+    for idx, text in (extra or {}).items():
+        p[idx] = text
     return ("$" + ",".join(p) + "*00\r\n").encode()
+
+
+PI_FIELD = 13          # spec §4.2, the field the statistics test drives
 
 
 CFG = (b"$CFG,sr=500,board=incunest_V18,mac=10:51:DB:50:87:A4,fw=0.13,lib=0.93*00\r\n")
@@ -124,6 +133,69 @@ check(V.SPO2_DIM in html and V.HR_COLOUR in html,
 check(num.numbers_html(now + 9).count("--") == 2,
       "once LOST, both numbers go to --")
 
+# ── the statistics panel ──────────────────────────────────────────────────────────────────
+st = V.BoardTrace("192.168.137.70", now)
+st.feed(CFG, now)
+for i in range(V.DECIM):                       # a ramp 1..10 in PI, one full decimation group
+    st.feed(frame("1.0e-05", extra={PI_FIELD: f"{i + 1}.0"}), now)
+check(st.stats_shot == {} and st.stats_rows_text()[1][1:] == ["---"] * 4,
+      "before the first window closes there is no statistic, and the panel says ---",
+      str(st.stats_rows_text()[1]))
+check(st.maybe_snapshot(now + 0.5) is False, "the window does not close early", "0.5 s")
+check(st.maybe_snapshot(now + V.STATS_WINDOW_S) is True,
+      f"it closes after STATS_WINDOW_S ({V.STATS_WINDOW_S} s), on its own clock and not the redraw")
+mean, sd, lo, hi = st.stats_shot[PI_FIELD]
+# The point of doing this before the decimation gate: 10 samples went in, 1 point reached the
+# curve, and the statistic must describe the signal, not the 50 Hz picture of it.
+check(abs(mean - 5.5) < 1e-9 and lo == 1.0 and hi == 10.0 and len(st.y) == 1,
+      "mean/min/max come from every sample, not from the decimated ones",
+      f"mean={mean} min={lo} max={hi} points={len(st.y)}")
+check(abs(sd - math.sqrt(sum((v - 5.5) ** 2 for v in range(1, 11)) / 10)) < 1e-9,
+      "SD is the population one (/n), as SIGNAL STATS computes it", str(sd))
+check(st.stats[PI_FIELD].n == 0, "and the accumulator restarts for the next window")
+
+# Nothing arrives in the next window: the panel must go back to --- rather than keep showing a
+# second-old mean as if it were current. This is what a silent board looks like.
+st.maybe_snapshot(now + 2 * V.STATS_WINDOW_S)
+check(all(row[1:] == ["---"] * 4 for row in st.stats_rows_text()[1:]),
+      "a window with no samples shows ---, never the previous one",
+      str(st.stats_rows_text()[1]))
+
+# One table, always the four statistics.
+for i in range(4):
+    st.feed(frame("1.0e-05", extra={PI_FIELD: "2.0", 4: "1048576", 31: "1.2300e-05"}), now)
+st.maybe_snapshot(now + 3 * V.STATS_WINDOW_S)
+full = st.stats_rows_text()
+check(len(full) == len(V.STATS_ROWS) + 1,
+      f"one table with all {len(V.STATS_ROWS)} signals (plus a header), no mode to choose",
+      str(len(full) - 1))
+check(full[0] == ["signal", "mean", "sd", "min", "max"],
+      "mean, SD, min and max, always the four", repr(full[0]))
+check(len({len(row) for row in full}) == 1,
+      "every row has the same cells", str(sorted({len(row) for row in full})))
+check(all(len(c) <= len(V.VAL_CHARS) for row in full[1:] for c in row[1:]),
+      "and no cell is longer than the width its column was measured for",
+      str([c for row in full[1:] for c in row[1:] if len(c) > len(V.VAL_CHARS)]))
+by_label = {row[0]: row[1:] for row in full}
+check(by_label["PI %"] == ["2.00", "0.00", "2.00", "2.00"],
+      "a steady signal reads mean=min=max and SD 0", str(by_label["PI %"]))
+check(by_label["OT1 ppm"][0] == "12.30", "OT is shown in ppm, as the lab does",
+      str(by_label["OT1 ppm"]))
+check(by_label["LED1"][0] == "1048576", "raw ADC rows keep every digit",
+      str(by_label["LED1"]))
+
+# The markup: a real <table>, because the font SIGNAL STATS asks for is proportional here and
+# padded spaces do not align in a proportional font.
+label_w, value_w = 90, 70
+html = st.stats_html(label_w, value_w)
+check(html.count("<tr") == len(V.STATS_ROWS) + 1 and "<pre" not in html,
+      "every signal is a table row, not a padded line", html[:80])
+check(html.count(f"width='{value_w}'") == 4 * (len(V.STATS_ROWS) + 1)
+      and html.count("align='right'") == 4 * (len(V.STATS_ROWS) + 1),
+      "the four value columns are a measured width and right-aligned")
+check(V.STATS_HEAD_BG in html and V.STATS_BODY in html,
+      "and it wears SIGNAL STATS's colours")
+
 # ── one band per MAC across a DHCP change ─────────────────────────────────────────────────
 traces = {}
 a = traces["192.168.137.7"] = V.BoardTrace("192.168.137.7", now - 30)
@@ -147,7 +219,7 @@ for bad in (b"$M4,broken\r\n", b"$M4," + b"," * 40 + b"\r\n", b"$M4,1,2,3,x,y,z*
 check(True, "malformed lines are skipped, never raised")
 
 # ── the real window, offscreen: a band per board, curves fed ──────────────────────────────
-from PyQt5 import QtWidgets  # noqa: E402
+from PyQt5 import QtCore, QtWidgets  # noqa: E402
 
 app = QtWidgets.QApplication([])
 V.HubClient.connect = lambda self, timeout=1.0: False      # no hub in a test
@@ -211,15 +283,66 @@ del win.traces["192.168.137.3"], win.traces["192.168.137.4"]
 for ip in ("192.168.137.3", "192.168.137.4"):
     win.drop_band(ip)
 
+# ── the statistics panel in the real window ───────────────────────────────────────────────
+check(all("signal" in b[3].widget().toPlainText() for b in win.bands.values()),
+      "every band got a statistics panel too")
+check(all(b[3].widget().isReadOnly() for b in win.bands.values()),
+      "and it is read-only, like everything else in this window")
+# Alex: the rows that do not fit must be reachable, not dropped. The panel is a widget with a
+# real scrollbar, so every row is always in the document whatever the band's height.
+check(all(b[3].widget().toPlainText().count("RSQI") == 1 for b in win.bands.values()),
+      "every row is in the panel, however short the band -- the scrollbar reaches them")
+check(all(b[3].widget().verticalScrollBarPolicy() == QtCore.Qt.ScrollBarAsNeeded
+          for b in win.bands.values()),
+      "with a vertical scrollbar when there is more table than band")
+# Alex: the bands stopped being equal once the tables appeared. They must not depend on what
+# their panel contains -- that was a feedback loop (taller band -> one more row -> taller band).
+heights = [round(b[0].geometry().height()) for b in win.bands.values()]
+check(max(heights) - min(heights) <= 1, "and every band is the same height", str(heights))
+# Reported by Alex: no rows in any of the three tables. The content was there -- the column
+# was. Claiming a minimum width for the layout (panel + 4 columns + a floor for the waveform,
+# 1272 px) put the statistics past the right edge of a 1200 px window, behind a horizontal
+# scrollbar, which reads as an empty panel. Nothing may claim a width the window has to scroll.
+check(win.centralWidget() is win.layout_widget,
+      "the plots are the central widget: nothing to scroll, nothing hidden behind a bar")
+check(win.layout_widget.minimumWidth() == 0 and win.layout_widget.minimumHeight() == 0,
+      "the layout claims nothing: no scrollbar can hide a panel behind it",
+      f"{win.layout_widget.minimumWidth()}x{win.layout_widget.minimumHeight()}")
+# The panel columns are fixed width, so a window narrower than they are does not squeeze them
+# -- it overflows, and what is past the edge is simply not drawn. The WINDOW carries the
+# minimum instead, which makes that state unreachable rather than merely detectable.
+check(win.minimumWidth() >= V.panel_width() + V.stats_width(),
+      "the window cannot be made narrower than its own panels",
+      f"min {win.minimumWidth()} px vs panels {V.panel_width() + V.stats_width()} px")
+win.resize(400, 900)                     # refused down to the minimum
+win.show()                               # a window that was never shown has no layout pass,
+app.processEvents()                      # and then every geometry below is the pre-layout one
+win.redraw()
+right_edge = max(b[3].geometry().right() for b in win.bands.values())   # the proxy item
+check(right_edge <= win.layout_widget.width() + 1,
+      "every statistics panel ends inside the window, at any size",
+      f"panel right {right_edge:.0f} px, window {win.layout_widget.width()} px")
+check(all(b[0].geometry().width() > 100 for b in win.bands.values()),
+      "and the waveform still has room to be a waveform",
+      str([round(b[0].geometry().width()) for b in win.bands.values()]))
+# What a squeezed panel loses must be what a reader can reconstruct: LED1 = LED1_SUB + ALED1.
+tail = [r[0] for r in V.STATS_ROWS[-4:]]
+check(tail == ["LED1", "LED2", "ALED1", "ALED2"],
+      "the raw converter codes are last, so they are the first rows to go", str(tail))
+heights = [round(b[0].geometry().height()) for b in win.bands.values()]
+check(max(heights) - min(heights) <= 1,
+      "still equal after a resize, with the panels unchanged", str(heights))
+
 # ── the settings file: a first run sizes itself, and the choice survives ──────────────────
 check(win.height() > 400, "a first run takes its height from the screen, not a fixed 800 px",
       f"{win.width()}x{win.height()}")
-win.resize(900, 1234)
+win.resize(1400, 1234)
+app.processEvents()
 win.close()                      # closeEvent writes the geometry
 check(os.path.exists(V.SETTINGS_FILE), "closing writes the settings file")
 
 again = V.Viewer(("127.0.0.1", 15999), 15.0)
-check(again.height() == 1234 and again.width() == 900,
+check(again.height() == 1234 and again.width() == 1400,
       "and the next run comes up the size it was left",
       f"{again.width()}x{again.height()}")
 again.close()

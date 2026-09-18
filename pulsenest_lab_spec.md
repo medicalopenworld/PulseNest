@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.70
+# pulsenest_lab — Specification v1.71
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -976,7 +976,8 @@ Every numeric cell goes through `fit()`, which **guarantees** the column width (
 too long drops decimals rather than shifting every column to its right, and one that still does
 not fit shows `#####` rather than a truncated digit string, which would be a different number.
 
-**`tools/fleet_ppg_viewer.py` (v1.69)** is the second purpose-built subscriber and the first with
+**`tools/fleet_ppg_viewer.py` (v1.69, statistics panel v1.71)** is the second purpose-built
+subscriber and the first with
 a GUI: one live `PPG_DISP` band per board, stacked, for the question the numbers answer slowly —
 *has a probe moved?* Read-only like the monitor, and deliberately narrow: no capture, no commands,
 no algorithms, no configuration. One Y axis per band (amplitudes differ by orders of magnitude
@@ -992,9 +993,75 @@ waiting for since 2026-09-10.** The lab sets `useOpenGL=True`, the one untested 
 paint segfaults; this viewer starts with OpenGL **off**, takes `--opengl` to turn it on for
 comparison, and writes its own `fleet_ppg_viewer_faulthandler.log`. Being a separate process off
 the hub, it can crash as often as it likes without costing a capture — which is exactly what makes
-it usable as the test vehicle. Verified by `tools/fleet_ppg_viewer_test.py` (20 offline checks,
-no hub and no board: the field it reads, decimation, trimming by time rather than by point count,
-state colouring, LOST, one band per MAC across a lease change, malformed lines never raising, and
+it usable as the test vehicle.
+
+**A statistics panel on the right of each band (v1.71)** — the same table SIGNAL STATS shows in
+the lab, down to its font family: per signal, **mean, SD, min and max** over the last second,
+always the four, with no mode to choose. Its colours start from SIGNAL STATS's and were then
+tuned on the bench (all four in one block of constants): the body text a step dimmer so a wall
+of 24 rows does not compete with the two large numbers beside it, alternate rows lifted off pure
+black so the eye can follow one across four columns, and the header bold on a brighter ground so
+it reads as a heading and not as the first row of data. The background is set on every **cell**,
+not on the row: Qt's rich text paints a row background only where a cell asks for one, so a
+stripe set on the `<tr>` alone comes out dotted. All 24 signals of the `$M4` frame are
+always in the panel, ordered by how often they answer the question in front of you (PPG, PI, R,
+SpO2, HR1–HR3 and their SQIs, then the analog chain `V_TIA`/OT/`I_PD`, then the raw converter
+codes, which a reader can reconstruct from the rows above); the panel is as tall as its band and
+**scrolls** to the rest.
+
+It is a read-only `QTextEdit` in a `QGraphicsProxyWidget`, not a drawn label, for three reasons
+that were each learned on the bench. A widget brings a real scrollbar, which is how the rows
+that do not fit stay reachable instead of being dropped with a notice. It clips itself, so no
+part of it can be painted outside the window. And with its minimum *and preferred* heights at
+zero, its content has no say in how tall the band is — when it did, the bands stopped being
+equal (measured: 497/497/445 px for three identical boards, because the layout satisfies
+preferred heights in order and the last row takes what is left; at zero, 480/480/480). Every
+band row also carries the same stretch factor.
+
+The panel is an HTML **table**, never padded text, and that follows from the font: SIGNAL STATS
+asks for `monospace`, which Qt resolves here to a **proportional** face (MS Shell Dlg 2). In the
+lab that is invisible because a `QTableWidget` aligns by cells; a panel that aligned by spaces
+would have come apart. Column widths are measured once from the real font metrics of the widest
+cell any row can print (a signed 24-bit ADC code), and every value goes through the monitor's
+`fit()` so it cannot exceed that.
+
+Three more properties are deliberate:
+
+- **The averaging window is 1 s and is NOT the redraw period.** The panel repaints ten times a
+  second; a mean over 100 ms is 50 samples and reads as noise. How often a statistic is *judged*
+  and how often it is *shown* are different questions, and tying them together is exactly what
+  makes SIGNAL STATS, the fleet monitor and this viewer disagree about the same board (the big
+  numbers' SQI dimming still reads a single sample — open, 2026-09-19).
+- **Every sample counts, before the decimation gate.** The curve is decimated 1-in-10 for the
+  eye; the statistics describe the 500 Hz signal, not the 50 Hz picture of it. SD is the
+  population one (÷n), as SIGNAL STATS computes it, by Welford rather than sum-of-squares —
+  the raw ADC rows run to ~2·10⁶ and squaring them spends the precision where the SD is small.
+- **Nothing may claim room the window does not have.** The panel columns are fixed width, and a
+  `QGraphicsGridLayout` that cannot meet its minimum does not shrink — it overflows past the edge
+  of the view, where what does not fit is simply not drawn. That is how the first version of this
+  panel reached the bench: the table was off the right edge and all three bands read as *empty*
+  (a `QScrollArea` around it only moved the table behind a horizontal bar, which is the same
+  invisibility with a handle). Three things make the state unreachable rather than detectable:
+  the **window** carries a minimum width of panels + 300 px; every item in a band row carries an
+  explicit minimum, so the grid's minimum is one the window is known to satisfy; and the panel
+  widget carries the very `QFont` its column widths were measured with — naming a family in CSS
+  let Qt resolve a different one and render wider than measured, which was the root cause.
+- **The table is rewritten once a second, not ten times.** The redraw runs at 100 ms, but the
+  statistics only change when the averaging window closes, and rewriting the document at the
+  redraw rate would cost ten times the work for the same table *and* fight the reader's
+  scrollbar. The scroll position is preserved across the rewrite.
+
+`fit()` is imported from the monitor, not copied, so the rule that was argued out there cannot
+drift here. On the bench display (≈190 dpi effective) the panel is 523 px wide at 8 pt, leaving
+a 1200 px window about 370 px of waveform with three boards — widen the window and the waveform
+takes everything that is added.
+
+Verified by `tools/fleet_ppg_viewer_test.py` (66 offline checks, no hub and no board: the field it
+reads, decimation, trimming by time rather than by point count, state colouring, LOST, one band
+per MAC across a lease change, malformed lines never raising, the bedside numbers, the statistics
+arithmetic and its window, the four columns and that no cell can outgrow the width it was
+measured for, the table markup and its colours, that every row is in the panel whatever the
+band's height, that the bands stay equal, that no panel ends outside the window at any size, and
 the real window built offscreen with a band and a fed curve per board).
 
 **Stopping it by hand: `python pulsenest_hub.py --stop` (v1.67).** The running hub is detached
@@ -2516,6 +2583,36 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.71 — 2026-09-19
+
+**A statistics panel beside each PPG band (§4.11).** Asked for by Alex: the main values next to
+each trace, in the idiom of SIGNAL STATS, in two sizes. Per signal, mean and SD over the last
+second: mean, SD, min and max, always the four, computed from every sample rather than from the
+decimated ones, with the population SD the lab uses so the two panels compare digit for digit.
+All 24 signals of the `$M4` frame, ordered by how often they answer the question in front of you,
+and the panel draws as many as fit the band and says how many it left out.
+
+Two decisions worth recording. **The 1 s averaging window does not follow the 100 ms redraw**:
+how often a number is judged is not how often it is shown, and conflating the two is the reason
+the lab, the monitor and the viewer can disagree about the same board.
+
+And the one the bench taught, three times in one session: **nothing may claim room the window
+does not have.** The first version shipped a compact/full toggle whose expanded panel claimed a
+minimum width for the layout; the columns are fixed width, a `QGraphicsGridLayout` that cannot
+meet its minimum overflows instead of shrinking, and Alex saw three empty tables — the content
+was there, the column was past the right edge. A `QScrollArea` around it only moved the table
+behind a horizontal bar. The toggle is gone at his request (four statistics, always), the
+minimum now lives on the **window**, and every item in a band row carries an explicit minimum.
+
+Then three more of his observations closed it. The panel now uses **SIGNAL STATS's font family**
+— which forced it to become a real HTML table, because Qt resolves that family here to a
+*proportional* face and a panel aligned by padded spaces would have come apart. The rows that do
+not fit are reachable by **scrollbar**, so the panel became a read-only `QTextEdit` in a proxy
+item instead of a drawn label. And the **bands are equal again**: they had stopped being so
+because the label asked the layout for its document's height (measured 497/497/445 for three
+identical boards; 480/480/480 once the panel's preferred height is zero and every row carries
+the same stretch). `tools/fleet_ppg_viewer_test.py` 66/66; live against the three boards.
 
 ### v1.70 — 2026-09-18
 

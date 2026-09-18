@@ -7,7 +7,8 @@ that slips shows up as the shape going wrong at a glance — usually before any 
 
     python tools/fleet_ppg_viewer.py [--hub IP[:PORT]] [--window 15] [--opengl]
 
-The window size and the seconds on screen are remembered in `tools/fleet_ppg_viewer.ini`
+The window size, the seconds on screen and the size of the statistics panel are remembered in
+`tools/fleet_ppg_viewer.ini`
 (per machine, not versioned), so the first-run defaults — a size taken from the screen rather
 than a fixed number of pixels that cannot know how many bands there will be — only ever matter
 once.
@@ -55,17 +56,52 @@ What it draws, and why those choices:
   The rate is labelled **HR3**, not "PR": this is a bench tool with three heart-rate algorithms
   running side by side, and hiding which one produced the number would be the wrong kind of
   faithfulness to the commercial idiom.
+- **A statistics panel on the right of each band** — the same table SIGNAL STATS shows in the
+  lab, down to its font and its colours: per signal, **mean, SD, min and max** over the last
+  second, always the four. All 24 signals of the frame are always there, ordered by how often
+  they answer the question in front of you (PPG, PI, R, SpO2, HR1-3 and their SQIs, then the
+  analog chain, then the raw converter codes); the panel is as tall as its band and **scrolls**
+  to the rows that do not fit.
+
+  It is a read-only `QTextEdit` in a proxy item rather than a drawn label, for three reasons
+  that were all learned the hard way. A widget brings a real scrollbar. It clips itself, so
+  nothing can end up painted outside the window. And its content has no say in how tall the
+  band is — when it did, the bands stopped being equal: the label asked for its document's
+  height, the document was truncated to what fit the plot, and the plot's height came from the
+  row, so a band one pixel taller fitted one more row, asked for more height, and fitted
+  another. Every band row now carries the same stretch factor, and the loop cannot come back.
+
+  The font is SIGNAL STATS's (`monospace` as the lab asks for it) at this panel's own smaller
+  size. Note what that means here: Qt resolves that family to a **proportional** face, which is
+  invisible in the lab because a `QTableWidget` aligns by cells — so this panel aligns by table
+  columns too, never by padding spaces.
+
+  **The averaging window is one second and does NOT follow the redraw.** The window redraws ten
+  times a second; a statistic over 100 ms is mostly noise, and SIGNAL STATS averages over its
+  own interval (1 s by default). Keeping the two cadences separate is deliberate — how often a
+  number is *judged* is not the same question as how often it is *shown*. (The big numbers'
+  SQI dimming still reads a single sample; aligning that is an open decision, 2026-09-19.)
 """
 import argparse
 import faulthandler
+import math
 import os
 import sys
 import time
 from collections import deque
+from html import escape
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, banner, script_name  # noqa: E402
 from pulsenest_hub_client import HubClient                    # noqa: E402
+# fit() belongs to the fleet monitor, which is the table tool and where the rule was argued out
+# and debugged (a cell must never widen its column; it drops decimals, then gives up with
+# '#####' rather than print a truncated digit string, which is a different number). Imported
+# rather than copied: two implementations of that rule would drift. Here the column is a real
+# table column measured for VAL_CHARS, so fit() is asked for that many characters and its job
+# is the same one: keep a cell from making its column wider than it was measured to be.
+from fleet_monitor import fit                                 # noqa: E402
 import pyqtgraph as pg                                        # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                    # noqa: E402
 
@@ -82,6 +118,7 @@ LOST_S       = 2.0
 WINDOW_S     = 15.0
 REDRAW_MS    = 100
 DRAIN_MS     = 20
+MIN_PLOT_W   = 300    # the window refuses to be narrower than its panels plus this
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "fleet_ppg_viewer.ini")
 ID_KEYS      = ("mac", "board")
@@ -118,6 +155,106 @@ SMALL_PT     = 12     # the unit line under them
 WIDEST_VALUE = "000"      # three digits: SpO2 reaches 100, and the rate can pass it too
 WIDEST_UNIT  = "bpm HR3"
 
+# ── the statistics panel ────────────────────────────────────────────────────────────────────
+# One second, and NOT the redraw period. The panel repaints every REDRAW_MS (100 ms), but a mean
+# over 100 ms is 50 samples of a 500 Hz stream and reads as noise; SIGNAL STATS uses its own
+# interval (1 s by default) and so does the fleet monitor. How often a statistic is computed is
+# a different question from how often it is shown, and tying them together is what makes those
+# two tools disagree about the same board.
+STATS_WINDOW_S = 1.0
+# 8 pt and 8-character columns: on this display (about 190 dpi effective) that is a 40-character
+# table ~480 px wide, against the 603 px the same table took at 9 pt with 9-wide columns. The
+# panel has to leave the waveform room to be a waveform; 8 characters still hold a signed
+# seven-digit ADC code, which is the widest thing any row can print.
+STATS_PT   = 8
+# The family SIGNAL STATS asks for in its stylesheet, so both tables read as the same object.
+# Qt resolves it here to a PROPORTIONAL face (MS Shell Dlg 2), which is why this panel is an
+# HTML table and not padded text: spaces do not align in a proportional font.
+STATS_FAMILY = "monospace"
+VAL_CHARS  = "-8388608"   # the widest cell any row can print: a signed 24-bit ADC code
+# SIGNAL STATS's colours (pulsenest_lab.py, stats_table stylesheet) as the starting point, then
+# tuned on the bench: the body text a step down from #E0E0E0 so a wall of 24 rows does not
+# compete with the two large numbers beside it, alternate rows lifted off pure black so the eye
+# can follow one across four columns, and the header brighter and bold so it reads as a heading
+# rather than as the first row of data. Four values, all here.
+STATS_BG   = "#111111"
+STATS_BODY = "#B4B4B4"      # was #E0E0E0
+STATS_ROW_ALT = "#2E2E2E"   # every other row, lifted off the background
+STATS_HEAD = "#C8CEE0"
+STATS_HEAD_BG = "#33395A"   # was #1E1E2E
+# (label, field index in the $M* frame, display scale, decimals), in the order they are read
+# when something looks wrong -- which is also the order in which a short band keeps them.
+# Field positions are spec §4.2, the same table fleet_monitor.py reads. Scales follow the lab's
+# display conventions: OT and PPG_DISP in ppm, photodiode current in µA, everything else raw.
+STATS_ROWS = [
+    ("PPG ppm",   9, 1e6, 2),
+    ("PI %",     13, 1.0, 2),
+    ("R",        12, 1.0, 4),
+    ("SpO2 %",   10, 1.0, 2),
+    ("SpO2 SQI", 11, 1.0, 3),
+    ("HR1 bpm",  14, 1.0, 1),
+    ("HR1 SQI",  15, 1.0, 3),
+    ("HR2 bpm",  16, 1.0, 1),
+    ("HR2 SQI",  17, 1.0, 3),
+    ("HR3 bpm",  18, 1.0, 1),
+    ("HR3 SQI",  19, 1.0, 3),
+    ("RSQI",     20, 1.0, 2),
+    # Then the analog chain, in the order it is consulted when a reading looks wrong: is the
+    # TIA near its rail, is the tissue transmitting, how much current is the photodiode giving,
+    # and only last the raw converter codes — which are the rows a reader can reconstruct from
+    # the others (LED1 = LED1_SUB + ALED1), and therefore the right ones to lose first.
+    ("V_TIA1 V", 23, 1.0, 3),
+    ("V_TIA2 V", 24, 1.0, 3),
+    ("OT1 ppm",  31, 1e6, 2),
+    ("OT2 ppm",  32, 1e6, 2),
+    ("I_PD1 µA", 27, 1e6, 3),
+    ("I_PD2 µA", 28, 1e6, 3),
+    ("LED1_SUB",  8, 1.0, 0),
+    ("LED2_SUB",  7, 1.0, 0),
+    ("LED1",      4, 1.0, 0),
+    ("LED2",      3, 1.0, 0),
+    ("ALED1",     6, 1.0, 0),
+    ("ALED2",     5, 1.0, 0),
+]
+STATS_FIELDS = tuple(sorted({row[1] for row in STATS_ROWS}))
+STATS_COLS   = ("mean", "sd", "min", "max")
+
+
+class Stat:
+    """Running mean / SD / min / max of one signal over the current window.
+
+    Welford rather than sum-of-squares: the raw ADC rows run to ~2e6 and squaring them spends
+    the precision exactly where the SD is small, which is the case worth seeing (a channel that
+    has gone quiet). SD is the population one (÷n), as SIGNAL STATS computes it, so the two
+    panels can be compared digit for digit.
+    """
+
+    __slots__ = ("n", "mean", "m2", "lo", "hi")
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.n = 0
+        self.mean = self.m2 = 0.0
+        self.lo = self.hi = None
+
+    def add(self, v):
+        self.n += 1
+        d = v - self.mean
+        self.mean += d / self.n
+        self.m2 += d * (v - self.mean)
+        if self.lo is None or v < self.lo:
+            self.lo = v
+        if self.hi is None or v > self.hi:
+            self.hi = v
+
+    def snapshot(self):
+        """-> (mean, sd, min, max), or None if nothing arrived in the window."""
+        if not self.n:
+            return None
+        return (self.mean, math.sqrt(self.m2 / self.n), self.lo, self.hi)
+
 
 class BoardTrace:
     """The data behind one band: a time-windowed ring of PPG samples, plus who the board is.
@@ -137,6 +274,9 @@ class BoardTrace:
         self.samples = 0          # samples seen, before decimation
         self._decim = 0
         self.moved_from = None    # previous IP of the same MAC
+        self.stats = {idx: Stat() for idx in STATS_FIELDS}
+        self.stats_shot = {}      # field -> the last CLOSED window's (mean, sd, min, max)
+        self._stats_t0 = now
 
     @property
     def mac(self):
@@ -174,6 +314,17 @@ class BoardTrace:
                 return None
         self.spo2, self.spo2_sqi = number(SPO2_FIELD), number(SPO2_SQI_FIELD)
         self.hr3, self.hr3_sqi = number(HR3_FIELD), number(HR3_SQI_FIELD)
+        # Every sample feeds the statistics, before the decimation gate: the panel says what the
+        # signal did, not what the 50 Hz picture of it did. Bounded by len(p) instead of catching
+        # IndexError because an $M3 frame is short by 13 fields and that would be 18k exceptions
+        # a second for nothing.
+        n_fields = len(p)
+        for idx in STATS_FIELDS:
+            if idx < n_fields:
+                try:
+                    self.stats[idx].add(float(p[idx]))
+                except ValueError:
+                    pass
         self._decim += 1
         if self._decim < DECIM:
             return
@@ -184,6 +335,61 @@ class BoardTrace:
             return            # $M1/$M2 carry PPG elsewhere or the field is junk: skip the sample
         self.t.append(now)
         self.y.append(value)
+
+    def maybe_snapshot(self, now):
+        """Close the averaging window if it is due. -> True if the displayed numbers changed.
+
+        Called from the redraw, but on its own clock (STATS_WINDOW_S): the panel repaints ten
+        times a second and the statistics behind it change once a second, which is also the only
+        rate at which four columns of digits are readable.
+        """
+        if now - self._stats_t0 < STATS_WINDOW_S:
+            return False
+        self.stats_shot = {idx: st.snapshot() for idx, st in self.stats.items()}
+        for st in self.stats.values():
+            st.reset()
+        self._stats_t0 = now
+        return True
+
+    def stats_rows_text(self):
+        """The panel as rows of text: [label, mean, sd, min, max] each. The offline test reads
+        this — it is exactly what the table shows, without the markup."""
+        out = [["signal", *STATS_COLS]]
+        for label, idx, scale, dec in STATS_ROWS:
+            shot = self.stats_shot.get(idx)
+            if shot is None:
+                cells = ["---"] * len(STATS_COLS)     # nothing arrived in the last window
+            else:
+                cells = [f"{v * scale:.{dec}f}" for v in shot]
+            out.append([label, *(fit(c, len(VAL_CHARS)).strip() for c in cells)])
+        return out
+
+    def stats_html(self, label_w, value_w):
+        """The rows as an HTML table, aligned by columns.
+
+        Not by padded spaces: the font is SIGNAL STATS's, which Qt resolves to a proportional
+        face, and in a proportional font a space is not a character width. Column widths come
+        from the caller, measured once from the real font metrics.
+        """
+        rows = self.stats_rows_text()
+        # The background goes on every cell, not on the <tr>: Qt's rich text paints a row
+        # background only where a cell asks for one, so striping set on the row alone leaves
+        # the gaps between cells black and the stripe comes out dotted.
+        def cells_of(row, style):
+            out = [f"<td width='{label_w}' style='{style}'>{escape(row[0])}</td>"]
+            out += [f"<td width='{value_w}' align='right' style='{style}'>{escape(c)}</td>"
+                    for c in row[1:]]
+            return "".join(out)
+
+        head_style = (f"background-color:{STATS_HEAD_BG}; color:{STATS_HEAD}; "
+                      f"font-weight:bold;")
+        html = [f"<table cellspacing='0' cellpadding='2' style='color:{STATS_BODY};'>",
+                f"<tr>{cells_of(rows[0], head_style)}</tr>"]
+        for n, row in enumerate(rows[1:], start=1):
+            stripe = f"background-color:{STATS_ROW_ALT};" if n % 2 == 0 else ""
+            html.append(f"<tr>{cells_of(row, stripe)}</tr>")
+        html.append("</table>")
+        return "".join(html)
 
     def trim(self, now):
         """Drop what fell out of the window. By time, not by a fixed length: a board streaming
@@ -275,8 +481,63 @@ def panel_width():
                QtGui.QFontMetrics(small).horizontalAdvance(WIDEST_UNIT)) + 24
 
 
+def stats_font():
+    """SIGNAL STATS's family at this panel's size. The same QFont is measured and painted."""
+    f = QtGui.QFont(STATS_FAMILY)
+    f.setPointSize(STATS_PT)
+    return f
+
+
+def stats_columns():
+    """-> (label column px, value column px), measured from the real font metrics."""
+    fm = QtGui.QFontMetrics(stats_font())
+    label_w = max(fm.horizontalAdvance(row[0]) for row in STATS_ROWS) + 8
+    value_w = max(fm.horizontalAdvance(VAL_CHARS),
+                  max(fm.horizontalAdvance(c) for c in STATS_COLS)) + 8
+    return label_w, value_w
+
+
+def stats_width():
+    """Width of the whole statistics panel, scrollbar included."""
+    label_w, value_w = stats_columns()
+    bar = QtWidgets.QApplication.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent)
+    return label_w + value_w * len(STATS_COLS) + bar + 12
+
+
+def make_stats_widget(width):
+    """The panel: a read-only QTextEdit in the band, not a drawn label.
+
+    A widget for three reasons. It brings a real scrollbar, which is how the rows that do not
+    fit stay reachable. It clips itself, so no part of it can be painted outside the window --
+    the failure that made three panels read as empty. And with its minimum height at zero its
+    content has no say in how tall the band is, which is what stopped the bands being equal.
+    """
+    edit = QtWidgets.QTextEdit()
+    edit.setReadOnly(True)
+    edit.setFont(stats_font())
+    edit.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+    edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+    edit.setFrameShape(QtWidgets.QFrame.NoFrame)
+    edit.setTextInteractionFlags(QtCore.Qt.NoTextInteraction)   # read-only means read-only
+    # The scrollbar is styled too: a native light-grey bar in the middle of a black window
+    # reads as a piece of some other application.
+    edit.setStyleSheet(
+        f"QTextEdit {{ background-color:{STATS_BG}; color:{STATS_BODY}; border:none; }}"
+        f"QScrollBar:vertical {{ background:{STATS_BG}; width:10px; margin:0; }}"
+        f"QScrollBar::handle:vertical {{ background:#3A3A3A; min-height:20px; border-radius:4px; }}"
+        f"QScrollBar::handle:vertical:hover {{ background:#585858; }}"
+        f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}"
+        f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:{STATS_BG}; }}")
+    edit.setFixedWidth(width)
+    edit.setMinimumHeight(0)
+    edit.document().setDocumentMargin(2)
+    return edit
+
+
 class Viewer(QtWidgets.QMainWindow):
-    """The window: one band per board, a drain timer and a redraw timer, nothing else."""
+    """The window: one band per board — waveform, bedside numbers, statistics — with a drain
+    timer and a redraw timer. Nothing else: no capture, no control."""
 
     def __init__(self, hub, window_s):
         super().__init__()
@@ -285,14 +546,25 @@ class Viewer(QtWidgets.QMainWindow):
         self._restore_geometry()
         self.window_s = window_s
         self.traces = {}
-        self.bands = {}          # ip -> (PlotItem, PlotDataItem, LabelItem)
+        self.bands = {}          # ip -> (PlotItem, PlotDataItem, LabelItem, LabelItem)
+        self.band_rows = {}      # ip -> its layout row, kept apart so drop_band() stays simple
         self._next_row = 0       # monotonic: see band_for()
         self._panel_w = panel_width()
+        self._stats_w = stats_width()
+        self._stats_cols = stats_columns()
         self.client = HubClient(script_name(__file__), hub=hub, control=False, log=print)
         self.client.connect()
 
         self.layout_widget = pg.GraphicsLayoutWidget()
         self.setCentralWidget(self.layout_widget)
+        # The WINDOW refuses to be narrower than its two panels plus a usable waveform. This is
+        # the lesson from the three empty tables: the panel columns are fixed width, so when the
+        # window is narrower than they are, the grid overflows to the right and what does not
+        # fit is simply not drawn — no scrollbar, no clue, just an empty panel. Putting the
+        # minimum on the window makes that state unreachable instead of detectable. (It is NOT
+        # on the layout widget: that was the first attempt, and a QScrollArea around it only
+        # moved the table behind a horizontal bar, which is the same invisibility with a handle.)
+        self.setMinimumWidth(self._panel_w + self._stats_w + MIN_PLOT_W + 24)   # + margins
         self._empty = self.layout_widget.addLabel("waiting for a board…", color="#888888",
                                                   size="14pt")
 
@@ -303,6 +575,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.redraw_timer.timeout.connect(self.redraw)
         self.redraw_timer.start(REDRAW_MS)
 
+    # ── the statistics panel ──────────────────────────────────────────────────────────────
     # ── settings ──────────────────────────────────────────────────────────────────────────
     def _restore_geometry(self):
         """The saved window, or on a first run a size taken from the screen.
@@ -350,8 +623,9 @@ class Viewer(QtWidgets.QMainWindow):
     # ── drawing ───────────────────────────────────────────────────────────────────────────
     def drop_band(self, ip):
         band = self.bands.pop(ip, None)
+        self.band_rows.pop(ip, None)
         if band is not None:
-            for item in band[:1] + band[2:]:   # the plot and the numbers; the curve lives in it
+            for item in band[:1] + band[2:]:   # plot, numbers, statistics; the curve is in the plot
                 self.layout_widget.removeItem(item)
 
     def band_for(self, ip):
@@ -369,26 +643,62 @@ class Viewer(QtWidgets.QMainWindow):
         row = self._next_row
         self._next_row += 1
         plot = self.layout_widget.addPlot(row=row, col=0)
+        # Explicit minima on every item in the row, so the grid's own minimum is something this
+        # window is known to satisfy. Left to their size hints, a PlotItem asks for room enough
+        # for its axes and title (350 px and up, and it grows with the title text) and the
+        # statistics label for its whole 25-line document — and a QGraphicsGridLayout that
+        # cannot meet its minimum does not shrink, it overflows past the edge of the view.
+        plot.setMinimumWidth(MIN_PLOT_W)
+        plot.setMinimumHeight(60)
         plot.showGrid(x=True, y=True, alpha=0.2)
         plot.setXRange(-self.window_s, 0, padding=0)
         plot.setLabel("bottom", "seconds ago")
         curve = plot.plot(pen=pg.mkPen("#44AAFF", width=1))
         numbers = self.layout_widget.addLabel("", row=row, col=1, justify="right")
         numbers.item.setTextWidth(self._panel_w)
-        # Fixed column, so the waveform's right edge does not move when a number gains a digit.
+        numbers.setMaximumWidth(self._panel_w)
+        numbers.setMinimumWidth(0)
+        numbers.setMinimumHeight(0)
+        stats = QtWidgets.QGraphicsProxyWidget()
+        stats.setWidget(make_stats_widget(self._stats_w))
+        stats.setMinimumSize(0, 0)
+        # The band's height is the plot's business, not the panel's. Both of these are needed
+        # and were measured: with the proxy's PREFERRED height left at the QTextEdit's own size
+        # hint (which follows the document, 25 rows of it), three bands came out 497/497/445 --
+        # the layout satisfies preferred heights in order and the last row takes the remainder.
+        # At zero, every row has the same preferred height (the plot's) and the same stretch,
+        # so they are equal: 480/480/480.
+        stats.setPreferredHeight(0)
+        stats.setMaximumWidth(self._stats_w)
+        self.layout_widget.ci.addItem(stats, row=row, col=2)
+        # Every band row stretches the same, so no band can grow because of what its panel
+        # happens to contain. That loop is what made the bands different heights.
+        self.layout_widget.ci.layout.setRowStretchFactor(row, 1)
+        # Fixed columns, so the waveform's right edge does not move when a number gains a digit
+        # and the statistics stay aligned down the window, band under band.
         self.layout_widget.ci.layout.setColumnFixedWidth(1, self._panel_w)
+        self.layout_widget.ci.layout.setColumnFixedWidth(2, self._stats_w)
         self.layout_widget.ci.layout.setColumnStretchFactor(0, 1)
-        self.bands[ip] = (plot, curve, numbers)
+        self.bands[ip] = (plot, curve, numbers, stats)
+        self.band_rows[ip] = row
         return self.bands[ip]
 
     def redraw(self):
         now = time.monotonic()
         for ip, tr in sorted(self.traces.items(), key=lambda kv: kv[1].first_seen):
             tr.trim(now)
-            plot, curve, numbers = self.band_for(ip)
+            fresh = tr.maybe_snapshot(now)
+            plot, curve, numbers, stats = self.band_for(ip)
             plot.setTitle(tr.title(now), color=tr.state_colour(now), size="11pt")
             curve.setData([t - now for t in tr.t], list(tr.y))
             numbers.item.setHtml(tr.numbers_html(now))
+            # Only when the second closed. Rewriting the document ten times a second would cost
+            # ten times the work for the same table, and it would fight the user's scrollbar.
+            if fresh or stats.widget().document().isEmpty():
+                bar = stats.widget().verticalScrollBar()
+                where = bar.value()
+                stats.widget().setHtml(tr.stats_html(*self._stats_cols))
+                bar.setValue(where)             # keep the reader where they scrolled to
 
     def closeEvent(self, event):
         self.drain_timer.stop()
