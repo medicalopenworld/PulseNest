@@ -23351,3 +23351,22 @@ etiqueta. Ahora el salto de linea es deliberado, no un accidente de ancho.
 Un check del test fallo al escribirlo: contaba `<div>` y **conte mal** (son 7, no 5) mientras el
 HTML era correcto. Cambiado por algo que dice lo que importa y no se rompe al tocar el marcado:
 un bloque de 44 pt y uno de 12 pt por medida, y ni rastro del 11 pt de la etiqueta vieja. 30/30.
+
+### El panel de numeros no puede cambiar de alto con el valor (100, o un ritmo de tres cifras)
+Alex: con SpO2=100 y con HR>=100 hacen falta dos lineas y se descoloca todo. Misma causa que
+antes y la ataco de raiz: el ancho del panel estaba **fijado a 190 px a ojo**, que daba para dos
+digitos. Dos cambios, los dos quitando una adivinanza:
+
+- **`<nobr>` en las dos lineas**: el panel no puede envolver, luego su ALTO ya no depende del
+  valor que muestra. Esa es la propiedad que hay que garantizar.
+- **El ancho se mide** con `QFontMetrics` para el peor caso ("000" a 44 pt y "bpm HR3" a 12 pt):
+  **207 px** en esta maquina. Y ademas la columna queda fija (`setColumnFixedWidth`), asi que el
+  borde derecho de la onda tampoco se mueve cuando un numero gana una cifra. Medirlo en vez de
+  adivinarlo lo hace correcto tambien en una pantalla con factor de escala distinto, donde un
+  numero en pixeles acertado en un monitor falla en el siguiente.
+
+El test comprueba justo la propiedad, no el marcado: el alto del panel renderizado es **el mismo
+con 2 digitos, con 3 y con `--`**. 32/32.
+
+Y otro fallo mio en el test: comprobaba el "100" **despues** del bucle, cuando el caso invalido
+ya lo habia sobrescrito, asi que afirmaba "100" contra "--". Corregido leyendo dentro del bucle.

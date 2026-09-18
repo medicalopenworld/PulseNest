@@ -158,6 +158,24 @@ check(all(len(b[1].getData()[0]) == 5 for b in win.bands.values()),
       str([len(b[1].getData()[0]) for b in win.bands.values()]))
 xs = win.bands["192.168.137.1"][1].getData()[0]
 check(all(x <= 0 for x in xs), "x is seconds AGO: never positive", str(xs[:3]))
+# Reported by Alex: at SpO2 100 and at a 3-digit rate the digits wrapped and the rows fell
+# out of line. The property to hold is that the panel's HEIGHT does not depend on the value.
+band = win.bands["192.168.137.1"]
+heights, shown = {}, {}
+for spo2, hr3 in (("97.0", "61.0"), ("100.0", "155.0"), ("-1.00", "-1.00")):
+    tr = win.traces["192.168.137.1"]
+    tr.feed(frame("1.0e-05", spo2=spo2, spo2_sqi="0.99", hr3=hr3, hr3_sqi="0.99"), time.monotonic())
+    win.redraw()
+    heights[(spo2, hr3)] = round(band[2].item.boundingRect().height(), 1)
+    shown[(spo2, hr3)] = band[2].item.toPlainText()
+check(len(set(heights.values())) == 1,
+      "the numbers panel is the same height at 2 digits, 3 digits and --", str(heights))
+# Read inside the loop: the first version of this check looked at the panel AFTER the loop,
+# by which point the invalid case had overwritten it, and asserted "100" against "--".
+check("100" in shown[("100.0", "155.0")] and "155" in shown[("100.0", "155.0")],
+      "and the three-digit values really are displayed",
+      repr(shown[("100.0", "155.0")]))
+
 titles = [b[0].titleLabel.text for b in win.bands.values()]
 check(all("APPLIED" in t for t in titles), "the band titles carry the probe state", str(titles))
 check(all("SpO2" in b[2].item.toHtml() for b in win.bands.values()),

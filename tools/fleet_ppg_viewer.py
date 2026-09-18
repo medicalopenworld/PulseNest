@@ -62,7 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, banner, script_name  # noqa: E402
 from pulsenest_hub_client import HubClient                    # noqa: E402
 import pyqtgraph as pg                                        # noqa: E402
-from PyQt5 import QtCore, QtWidgets                           # noqa: E402
+from PyQt5 import QtCore, QtGui, QtWidgets                    # noqa: E402
 
 _fault_log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fleet_ppg_viewer_faulthandler.log"), "a")
@@ -89,6 +89,10 @@ SPO2_COLOUR, SPO2_DIM = "#00D0FF", "#00697F"
 HR_COLOUR,   HR_DIM   = "#00FF6A", "#0A7A3A"
 DASH_COLOUR  = "#666666"
 SQI_GOOD     = 0.9    # same threshold SIGNAL STATS uses to call a reading trustworthy
+BIG_PT       = 44     # the digits
+SMALL_PT     = 12     # the unit line under them
+WIDEST_VALUE = "000"      # three digits: SpO2 reaches 100, and the rate can pass it too
+WIDEST_UNIT  = "bpm HR3"
 
 
 class BoardTrace:
@@ -194,10 +198,14 @@ class BoardTrace:
             # rather than "%" — so nothing is lost by dropping the label. (The unit was written
             # inline, meant to sit beside the digits; at this size it never fitted the panel
             # width and wrapped. It reads better underneath, so now it is deliberate.)
+            # <nobr> on both lines: at 100 the digits used to exceed the panel width, wrap,
+            # and add a third line that pushed every row out of alignment. The height of this
+            # panel must not depend on the value it is showing.
             return (f"<div style='margin-bottom:2px;'>"
-                    f"<div style='font-size:44pt; font-weight:bold; color:{colour}; "
-                    f"line-height:100%;'>{text}</div>"
-                    f"<div style='font-size:12pt; color:{colour};'>{unit}</div></div>")
+                    f"<div style='font-size:{BIG_PT}pt; font-weight:bold; color:{colour}; "
+                    f"line-height:100%;'><nobr>{text}</nobr></div>"
+                    f"<div style='font-size:{SMALL_PT}pt; color:{colour};'>"
+                    f"<nobr>{unit}</nobr></div></div>")
 
         return ("<div style='text-align:right;'>"
                 + block(self.spo2, self.spo2_sqi, "% SpO2", SPO2_COLOUR, SPO2_DIM)
@@ -227,6 +235,22 @@ def merge_by_mac(traces, trace):
     return None
 
 
+def panel_width():
+    """How wide the numbers panel has to be for its worst case, from the real font metrics.
+
+    It was a flat 190 px, which fitted two digits and wrapped at three — SpO2 reaching 100 was
+    enough to add a line and shift every row. Measuring it here also makes it right on a display
+    with a scaling factor, where a pixel guess made against one monitor is wrong on the next.
+    """
+    big = QtGui.QFont()
+    big.setPointSize(BIG_PT)
+    big.setBold(True)
+    small = QtGui.QFont()
+    small.setPointSize(SMALL_PT)
+    return max(QtGui.QFontMetrics(big).horizontalAdvance(WIDEST_VALUE),
+               QtGui.QFontMetrics(small).horizontalAdvance(WIDEST_UNIT)) + 24
+
+
 class Viewer(QtWidgets.QMainWindow):
     """The window: one band per board, a drain timer and a redraw timer, nothing else."""
 
@@ -237,7 +261,8 @@ class Viewer(QtWidgets.QMainWindow):
         self.resize(1100, 800)
         self.window_s = window_s
         self.traces = {}
-        self.bands = {}          # ip -> (PlotItem, PlotDataItem)
+        self.bands = {}          # ip -> (PlotItem, PlotDataItem, LabelItem)
+        self._panel_w = panel_width()
         self.client = HubClient(script_name(__file__), hub=hub, control=False, log=print)
         self.client.connect()
 
@@ -292,7 +317,9 @@ class Viewer(QtWidgets.QMainWindow):
         plot.setLabel("bottom", "seconds ago")
         curve = plot.plot(pen=pg.mkPen("#44AAFF", width=1))
         numbers = self.layout_widget.addLabel("", row=row, col=1, justify="right")
-        numbers.item.setTextWidth(190)          # fixed, so the waveform keeps the rest
+        numbers.item.setTextWidth(self._panel_w)
+        # Fixed column, so the waveform's right edge does not move when a number gains a digit.
+        self.layout_widget.ci.layout.setColumnFixedWidth(1, self._panel_w)
         self.layout_widget.ci.layout.setColumnStretchFactor(0, 1)
         self.bands[ip] = (plot, curve, numbers)
         return self.bands[ip]
