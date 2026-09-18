@@ -10,13 +10,38 @@ repository, which is why nobody could find it. This file is the authoritative li
 | `10:51:DB:50:48:F8` | V16 | 16.A | `sdkconfig.board.V16` | Apr 2026 | **DEAD — 2026-09-11.** Probably incorrect power supply; smoke was seen. Was the main working board until then |
 | `10:20:BA:14:75:60` | V17 | 17.A | `sdkconfig.board.V17` | — | Dropped off the WiFi three times on 2026-09-09/10 while still powered; cause not established |
 | `10:51:DB:50:88:50` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-10 | Flashed and verified 2026-09-10 |
-| `10:51:DB:50:87:B8` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-10 | Flashed and verified 2026-09-10 |
+| `10:51:DB:50:87:B8` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-10 | **RETURNED TO THE WORKSHOP — 2026-09-18.** Not on the bench any more; do not target it for OTA. Flashed and verified 2026-09-10. It was the board carrying the non-default build with the `Serial.print()` guard for the 500 Hz acquisition stall, so that experiment lost its subject when it left |
+| `10:51:DB:50:87:A4` | V18 | 18.A | `sdkconfig.board.V18` | not recorded | Third V18, first seen 2026-09-18 on COM19. Flashed and verified that day: `board=incunest_V18`, fw 0.13, lib 0.93, build `6e6d036`. The revision is Alex's reading of the silkscreen, not measured — this firmware cannot tell V16/V17/V18 apart (see below) |
+| `10:51:DB:50:82:5C` | V18 | 18.A | `sdkconfig.board.V18` | 2026-09-18 | Fourth V18, new board flashed 2026-09-18 on COM20. Chip: ESP32-S3 QFN56 rev v0.2, USB-Serial/JTAG. Verified: `board=incunest_V18`, fw 0.13, lib 0.93, build `6e6d036-dirty` (documentation-only changes in the tree, see *Provenance* below) |
 | `98:88:E0:11:CC:64` | — | — | — | — | Display HMI. Not a PulseNest target. Its own WiFi client: MQTT, OTA, web, mDNS |
 
 **The silkscreen marks the revision, not the unit.** `18.A` is printed on the board so you can tell
-it is a V18, and both V18 boards carry it — so it cannot name a unit. The same applies to `15.A`,
+it is a V18, and every V18 board carries it — so it cannot name a unit. The same applies to `15.A`,
 `16.A` and `17.A`; those read like unit names in earlier session logs only because there happened to
 be one board per revision. **A unit is identified by its MAC.**
+
+Session logs up to 2026-09-11 call the two V18 boards *18.A* and *18.B*; those are Alex's own
+suffixes for two units that both read `18.A` on the silkscreen, not markings. Four V18 boards have
+existed since 2026-09-18, so the suffixes have run out of usefulness: **use the last three bytes of
+the MAC**. On the bench today: `88:50`, `87:A4` and `82:5C` — `87:B8` went back to the workshop on
+2026-09-18.
+
+`87:B8` and `87:A4` differ by a single byte and are **different boards, not a typo for each other**.
+That still matters now that only one of the two is on the bench: the session log before 2026-09-18
+is full of `87:B8`, and reading one of those entries as the board in your hand would attribute its
+measurements to the wrong unit.
+
+## Provenance: what `build=` in a capture header really tells you
+
+Every `$CFG` frame carries `build=<git hash>`, and it reaches the header of every capture. A `-dirty`
+suffix means the working tree had uncommitted changes when the image was built — but **it does not
+say what changed**. On 2026-09-18 the board `87:A4` was flashed as `6e6d036` and, minutes later,
+`82:5C` as `6e6d036-dirty`, with identical firmware: in between, only `docs/boards.md` and
+`conversation_log.md` had been edited. Same binary, different provenance label.
+
+So `-dirty` is a question, not a verdict: it warrants checking `git status` before trusting or
+discarding a capture, and it is worth committing documentation before a flashing session so the
+label stays meaningful.
 
 There is also a second per-unit identifier that Alex has seen, whose origin is not yet established
 (2026-09-10). One lead, unconfirmed: IncuNest's motherBoard firmware carries a serial number

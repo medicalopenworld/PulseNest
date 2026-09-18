@@ -22981,3 +22981,56 @@ comandos desde el 16-09. Sin relanzarlo yo: queda pendiente ver si algo lo levan
 puesto — asi su propia fila en `@STATUS` dira por fin `file=pulsenest_hub.py`.
 
 Spec `pulsenest_lab_spec.md` -> v1.65 (Sec4.11 ampliada).
+
+
+### Por que las tres placas mostraban tres `build=` distintos (y por que no significaba nada)
+
+Alex pregunto por la columna `build` de `tools/fleet_monitor.py`, distinta en las tres placas
+conectadas:
+
+    88:50 -> cccf6ee          (flasheada el 16-09)
+    87:A4 -> 6e6d036          (flasheada hoy, arbol limpio)
+    82:5C -> 6e6d036-dirty    (flasheada hoy, minutos despues)
+
+**Las tres corrian el mismo codigo de firmware.** Entre `cccf6ee` y `6e6d036` hay 25 commits y
+`git diff --stat` no toca ni un fichero de `main/`: todo era `pulsenest_lab.py`, `pulsenest_hub.py`,
+`tools/` y documentacion -- el trabajo del hub y del monitor de flota, que vive en el PC. El
+`-dirty` de la tercera lo produjeron `docs/boards.md` y `conversation_log.md`, editados entre un
+flasheo y otro.
+
+Alex pregunto entonces dos cosas muy al grano: **como se sabria si los .bin son identicos**, y **si
+la razon para decir "mismo firmware" era que `fw=0.13` y `lib=0.93` coincidian**.
+
+La respuesta a la segunda es **no, y es importante**: `fw` y `lib` son macros escritas a mano, solo
+cambian cuando alguien se acuerda, y como evidencia valen poco. La razon real fue el diff (ningun
+fichero de `main/`) mas `libsha=dcf2a9c` identico en las tres, que cubre el repo de la libreria --
+al que el diff de PulseNest no llega, por entrar como componente via symlink. Aun asi, eso prueba
+**mismo codigo fuente, no mismo binario**, y quedan dos agujeros que git no cierra:
+`build_V18/sdkconfig` no esta versionado (un paso por `menuconfig` cambia el binario sin mover
+`build=`) y el toolchain no esta capturado en ninguna parte.
+
+**Correccion sobre la marcha:** al cerrar el turno anterior se ofrecio "recompilar `cccf6ee` y
+comparar el binario". No habria funcionado tal cual: `CONFIG_APP_REPRODUCIBLE_BUILD` esta
+desactivado (`build_V18/sdkconfig:670`), asi que cada compilacion embebe fecha y hora y dos builds
+del mismo fuente difieren byte a byte.
+
+### Decision: `$CFG` llevara una huella del binario (`elfsha`, `idfver`)
+Especificada la tarea a peticion de Alex, para que quien toque el codigo sepa que hacer. ESP-IDF ya
+embebe en toda imagen un `esp_app_desc_t` con `app_elf_sha256` e `idf_ver`, y **el firmware no lo lee
+en ningun sitio** (cero referencias a `esp_app_get_description()` en `main/` y `lib/`). Basta
+exponerlo en `$CFG`.
+
+El razonamiento de fondo: `build=` y `libsha=` son hashes de **repositorio**. El comentario que hay
+hoy en `send_cfg_frame()` dice que uno solo no identifica el firmware de una captura; lo que esta
+medicion añade es que **ni los dos juntos lo hacen**. Y de los dos errores posibles, el peligroso no
+es el `-dirty` sino el contrario: `build=` distinto con el mismo binario invita a buscar una
+diferencia de firmware inexistente y a descartar capturas que si eran comparables.
+
+Detalles verificados para la tarea: `send_cfg_frame()` esta en `main/pulsenest_main.cpp:756`, el
+buffer es `char buf[720]` con ~560 caracteres usados (los dos campos nuevos cuestan ~38 B, caben),
+y los consumidores a propagar son `pulsenest_lab.py:12198` y `:13631` (la linea de notas que acaba
+en la cabecera de cada CSV), `tools/fleet_monitor.py:49`, `tools/udp_fw_versions.py:26` y los tres
+tests que afirman sobre `build=`.
+
+Escrita en la memoria `project_binary_provenance_cfg_task` e indexada en MEMORY.md. **No se ha
+tocado el firmware**: la peticion era dejar la tarea especificada, no implementarla.
