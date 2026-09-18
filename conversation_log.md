@@ -23034,3 +23034,60 @@ tests que afirman sobre `build=`.
 
 Escrita en la memoria `project_binary_provenance_cfg_task` e indexada en MEMORY.md. **No se ha
 tocado el firmware**: la peticion era dejar la tarea especificada, no implementarla.
+
+
+### Correccion el mismo dia: `elfsha` NO arregla el problema de procedencia
+
+Alex pregunto que son `elfsha` e `idfver` y que se gana con ellos. Al mirar el binario real con
+`esptool image-info build_V18/pulsenest.bin` aparecio lo que invalidaba media tarea:
+
+    Project name:    pulsenest
+    App version:     hgac-phase1-checkpoint-150-g6e6     <- git describe, ya presente y sin usar
+    Compile time:    Sep 18 2026 00:49:58
+    ELF file SHA256: b072c1013187ac4f038fef713064eab0292db354165d6a8d95256317e8d38636
+    ESP-IDF:         v6.0.1
+
+**La hora de compilacion viaja dentro de la imagen.** Con `CONFIG_APP_REPRODUCIBLE_BUILD`
+desactivado, dos compilaciones del mismo fuente dan ELF distintos y por tanto `app_elf_sha256`
+distintos. En el caso medido de hoy las tres placas habrian dado tres `elfsha` distintos, igual que
+dieron tres `build=` distintos: **`elfsha` por si solo no contesta "corren el mismo firmware?"**.
+La tarea escrita antes decia que "para saber si dos placas corren la misma imagen, elfsha basta y
+no exige builds reproducibles" -- cierto para *la misma imagen*, falso para *el mismo firmware*,
+que era la pregunta. Sobrevendido.
+
+### El arreglo que si resuelve el problema: acotar el hash de git
+En vez de añadir una huella mas, atacar la causa: `scripts/gen_build_version.py` hace hoy
+`git rev-parse --short HEAD` del **repositorio entero**, y este repositorio contiene el script del
+laboratorio, las herramientas y la documentacion, que no viajan al chip. Que mire solo los ficheros
+que acaban dentro de la imagen:
+
+    git log -1 --format=%h -- main/ CMakeLists.txt sdkconfig.defaults sdkconfig.board.*
+
+**Verificado antes de escribirlo**: ese comando devuelve `364ad3a` ("fw 0.13: no measurement task
+calls the network stack", 15-09) tanto desde `HEAD` como desde `cccf6ee`. Es decir, las tres placas
+de hoy habrian reportado **`build=364ad3a` identico**, que es la respuesta correcta, y ademas
+coherente con `fw=0.13`. No toca el firmware ni el lado PC: el campo conserva nombre y formato.
+
+Se descubrio de paso que **`libsha` tiene el mismo defecto**: `incunest_afe4490_spec.md`,
+`incunest_afe4490_design_rationale.md`, `README.md` y `examples/` viven junto al codigo en la raiz
+del repo de la libreria, asi que editar la spec mueve `libsha` sin cambiar una linea de firmware --
+y la spec se edita en cada cambio de diseño por regla obligatoria del proyecto. Mismo tratamiento.
+
+### Tarea reescrita con tres cambios ordenados
+`project_binary_provenance_cfg_task` pasa de "añadir elfsha" a tres cambios con un orden que importa:
+
+1. **Acotar el hash de git** a lo que entra en el binario (PulseNest y libreria). Barato, no toca
+   firmware, resuelve el caso medido.
+2. **`CONFIG_APP_REPRODUCIBLE_BUILD`** (hoy off, `build_V18/sdkconfig:670`): quita fecha, hora y
+   rutas del binario. Sin esto, ninguna huella del binario distingue codigos, solo compilaciones.
+3. **`elfsha`/`idfver` en `$CFG`**: complemento. Lo que si gana, y no se puede hacer hoy de otro
+   modo sin USB, es responder *"esta placa lleva exactamente el .bin que tengo en disco?"* y
+   detectar lo que git no ve: un paso por `menuconfig` (`build_V18/sdkconfig` no esta versionado),
+   un cambio de toolchain, un OTA que respondio `OK` sin entrar.
+
+El orden es lo importante: el 2 y el 3 son inutiles para el problema original si no se hace el 1
+antes, porque `build_version.h` embebe el string de git dentro del propio binario y un `-dirty` por
+un `.md` seguiria moviendo cualquier huella.
+
+Indice de memoria actualizado para que la conclusion este en la linea, no solo dentro del fichero:
+antes decia "`$CFG` debe llevar elfsha/idfver", que es justo la lectura equivocada.
