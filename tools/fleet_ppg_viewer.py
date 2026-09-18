@@ -286,6 +286,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.window_s = window_s
         self.traces = {}
         self.bands = {}          # ip -> (PlotItem, PlotDataItem, LabelItem)
+        self._next_row = 0       # monotonic: see band_for()
         self._panel_w = panel_width()
         self.client = HubClient(script_name(__file__), hub=hub, control=False, log=print)
         self.client.connect()
@@ -359,7 +360,14 @@ class Viewer(QtWidgets.QMainWindow):
         if self._empty is not None:
             self.layout_widget.removeItem(self._empty)
             self._empty = None
-        row = len(self.bands)
+        # A counter, not len(self.bands). Dropping a band (a board back on a new DHCP lease,
+        # which happens daily here) leaves its row in the layout while shrinking the dict, so
+        # len() then names a row that is still occupied and pyqtgraph would place the next
+        # board's plot ON TOP of an existing one — GraphicsLayout.removeItem() clears its own
+        # rows[r][c] bookkeeping but the grid row stays. An emptied row collapses to no height,
+        # so never reusing one costs nothing visually.
+        row = self._next_row
+        self._next_row += 1
         plot = self.layout_widget.addPlot(row=row, col=0)
         plot.showGrid(x=True, y=True, alpha=0.2)
         plot.setXRange(-self.window_s, 0, padding=0)

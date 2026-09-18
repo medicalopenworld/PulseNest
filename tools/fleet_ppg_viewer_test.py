@@ -187,6 +187,30 @@ titles = [b[0].titleLabel.text for b in win.bands.values()]
 check(all("APPLIED" in t for t in titles), "the band titles carry the probe state", str(titles))
 check(all("SpO2" in b[2].item.toHtml() for b in win.bands.values()),
       "every band got its numbers panel next to the plot")
+# ── bands appear while running, and a dropped one must not free its row ──────────────────
+# Found by reading the code for Alex's question: rows were numbered len(self.bands), so after
+# a band was dropped the next board landed on a row that was still occupied and was drawn on
+# top of it. Boards change IP here daily, so this was reachable.
+rows_before = {id(b[0]): win.layout_widget.ci.items[b[0]][0][0] for b in win.bands.values()}
+third = win.traces["192.168.137.3"] = V.BoardTrace("192.168.137.3", time.monotonic())
+third.feed(CFG.replace(b"10:51:DB:50:87:A4", b"CC:CC:CC:CC:CC:03"), time.monotonic())
+third.feed(frame("1.0e-05"), time.monotonic())
+win.redraw()
+check(len(win.bands) == 3, "a board that appears while running gets its band, no restart",
+      str(len(win.bands)))
+
+win.drop_band("192.168.137.2")                       # as a DHCP merge would
+fourth = win.traces["192.168.137.4"] = V.BoardTrace("192.168.137.4", time.monotonic())
+fourth.feed(CFG.replace(b"10:51:DB:50:87:A4", b"DD:DD:DD:DD:DD:04"), time.monotonic())
+fourth.feed(frame("1.0e-05"), time.monotonic())
+win.redraw()
+used = [win.layout_widget.ci.items[b[0]][0][0] for b in win.bands.values()]
+check(len(used) == len(set(used)),
+      "after dropping one, a new board does not land on an occupied row", str(sorted(used)))
+del win.traces["192.168.137.3"], win.traces["192.168.137.4"]
+for ip in ("192.168.137.3", "192.168.137.4"):
+    win.drop_band(ip)
+
 # ── the settings file: a first run sizes itself, and the choice survives ──────────────────
 check(win.height() > 400, "a first run takes its height from the screen, not a fixed 800 px",
       f"{win.width()}x{win.height()}")

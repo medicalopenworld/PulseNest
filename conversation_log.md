@@ -23400,3 +23400,22 @@ asi. 35/35.
 offscreen`, cuya pantalla ficticia es 800x600, y me dio "480x528". Casi lo reporto como si fuera
 lo que veria Alex. Las medidas de pantalla NO valen en offscreen (la de fuentes tampoco, ya
 estaba anotado en `feedback_font_sizes`).
+
+### Las bandas son dinamicas — y al comprobarlo, un fallo latente de solapamiento
+Alex pregunta si el numero de graficas se fija al arrancar. **No**: `drain()` crea un
+`BoardTrace` para cada IP nueva y el siguiente `redraw()` (<=100 ms) le hace su banda. No hay
+que reiniciar nada. Solo se quita una banda en un caso: cuando una placa vuelve con IP nueva y
+se fusiona por MAC.
+
+**Pero leyendo el codigo para contestar aparecio un fallo real**: la fila se numeraba
+`row = len(self.bands)`. Al soltar una banda, `GraphicsLayout.removeItem()` limpia su propio
+`rows[r][c]` pero **la fila del grid sigue existiendo**, asi que `len()` pasa a nombrar una fila
+todavia ocupada y la siguiente placa se dibujaba **encima** de otra. Alcanzable en este banco:
+las placas cambian de IP a diario.
+
+Arreglado con un contador monotono (`_next_row`): una fila nunca se reutiliza, y una fila vacia
+colapsa a altura cero, asi que no cuesta nada visualmente.
+
+**Comprobado que el test caza el fallo**, no solo que pasa: revirtiendo SOLO el arreglo (no el
+test — el primer intento con `git stash` revirtio los dos ficheros y no demostraba nada), las
+filas usadas salen `[0, 2, 2, 3]`, dos bandas en la 2, y el check falla. Con el arreglo, 37/37.
