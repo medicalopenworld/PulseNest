@@ -24035,3 +24035,29 @@ ATRAS = **reinicio de placa**, no hueco. Ambos generan nota `@M`, aviso en `reco
 en `status` y campos en `session.json`. La comprobacion autoritativa por trama sigue siendo del
 escritor de CSV (R12a). **Esto cubre por test el caso de reinicio que no pude probar en el banco.**
 58/58.
+
+**Anadido (4e) - vocabulario y reinicio de placa probado en vivo.**
+
+*Vocabulario:* Alex pide **nombrar el script por su fichero** (`pulsenest_recorder.py`,
+`pulsenest_lab.py`, `pulsenest_hub.py`), nunca apodos como "el registrador": un apodo obliga a
+adivinar y no se puede buscar en el repo. Memoria `feedback_name_the_script`.
+
+*Reinicio en vivo:* con permiso de Alex se paro `pulsenest_lab.py` (tenia el control del hub desde
+las 15:42; el hub mantiene la concesion hasta que expira la suscripcion, unos segundos tras matar el
+proceso). Con el control tomado, `$RESET` a 192.168.137.62 (87:A4) a las **18:33:13**, en mitad de
+la sesion de `pulsenest_recorder.py` que seguia grabando. Capturado en el `.pnraw`:
+silencio de **3,82 s** (por debajo del umbral de 5 s, asi que no hubo nota de SILENT: correcto),
+dos `$CFG` de reanuncio a las 18:33:16.5/6, y el **contador de muestras 1 283 930 -> 1** a las
+18:33:17.791. La placa volvio con la MISMA IP, asi que el camino de "misma MAC, IP nueva" sigue
+cubierto solo por test. El proceso en marcha era anterior a `_watch_counter()` y por eso no anoto
+el reinicio, pero el dato quedo entero y el codigo nuevo lo detecta (test 58/58).
+**`pulsenest_lab.py` quedo parado.**
+
+**Anadido (4f) - resultado de la sesion larga de banco (25 min, 3 placas V18, `--raw full`).**
+Cerrada a las 18:37:22 con **0 errores de escritura**. Por placa: **3 partes, todas abiertas en
+18:12:22 / 18:20:00 / 18:30:00** (las tres placas en el mismo instante de reloj, dispersion 14 ms);
+`@D` 150 066-150 440 con **`seq` continuo** en las tres (el escritor no perdio ni un registro);
+~750 000 muestras y ~209 MB por placa (0,50 GB/h, lo estimado); 5 copias `@E` de los eventos en
+cada stream; `session.json` con deriva de reloj 0 us. Perdidas reales: **solo 82:5C, 1 hueco de 40
+muestras** (18:15:47, aire); 87:A4 con **1 reinicio** (el `$RESET` provocado). Es decir: en 25 min y
+2,25 millones de muestras, una unica rafaga perdida en una placa. Total 627 MB de `.pnraw`.
