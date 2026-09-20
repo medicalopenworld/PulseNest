@@ -14,7 +14,7 @@ What is checked (pulsenest_recorder_spec.md, sections in brackets):
     naming by MAC once $CFG arrives, unknown_<IP> after the wait, aux_vn_<IP> for $VN1; a board
     back on a new IP continues in the same file with an @M note; split by size
 [2.3] --raw exceptions keeps $CFG / # STAT / short frames and skips complete $M4 batches
-[6] events.csv header and rows; an @E copy in every open stream; REF_SPO2 range 50..100
+[6] session_events.csv header and rows; an @E copy in every open stream; REF_SPO2 range 50..100
 [7] session.json: sources with mac, ips, files, firmware, subject/probe_site; closed + drift
 [8] a write failure on one stream is counted and does not stop another; SESSION_END on close
 [9] the console commands
@@ -101,7 +101,7 @@ try:
     check("[3] session id = <YYYYMMDD>_<HHMM>_<SITE>, site sanitised",
           rec.session_id.endswith("_BENCH01") and len(rec.session_id) == len("20260926_0930_BENCH01"),
           rec.session_id)
-    check("[6] events.csv has the header and SESSION_START",
+    check("[6] session_events.csv has the header and SESSION_START",
           open(rec.events_path, encoding="utf-8").read().startswith(",".join(R.EVENTS_HEADER))
           and "SESSION_START" in open(rec.events_path, encoding="utf-8").read())
 
@@ -152,7 +152,7 @@ try:
     clk.advance(0.01)
     rec.feed("192.168.137.62", tricky, *clk())
 
-    # an event: events.csv row + @E in every open stream (A, B, C, V)
+    # an event: session_events.csv row + @E in every open stream (A, B, C, V)
     clk.advance(0.01)
     reply = rec.console("subject 7560 SUBJ01")
     check("[9] subject assignment by MAC suffix", reply.startswith("board_1020BA147560 -> SUBJ01"), reply)
@@ -184,7 +184,7 @@ try:
 
     rows = open(rec.events_path, encoding="utf-8").read().splitlines()
     ref = [r for r in rows if ",REF_SPO2," in r]
-    check("[6] events.csv REF_SPO2 row: subject, board mac, value, value2, source=keyboard",
+    check("[6] session_events.csv REF_SPO2 row: subject, board mac, value, value2, source=keyboard",
           len(ref) == 1 and ref[0].split(",")[5:10] == ["SUBJ01", "10:20:BA:14:75:60", "96", "142", "keyboard"],
           ref[0] if ref else "none")
 
@@ -379,8 +379,8 @@ try:
     rec3 = R.Recorder(tmp, "OFF", raw_mode="off", log=QuietLog(), clock=FakeClock())
     rec3.feed("10.0.0.2", CFG_A); rec3.feed("10.0.0.2", batch(1))
     rec3.close()
-    check("[2.3] raw off: no raw/ directory, events.csv and session.json still written",
-          not os.path.exists(os.path.join(rec3.dir, "raw")) and os.path.exists(os.path.join(rec3.dir, "events.csv")))
+    check("[2.3] raw off: no raw/ directory, session_events.csv and session.json still written",
+          not os.path.exists(os.path.join(rec3.dir, "raw")) and os.path.exists(os.path.join(rec3.dir, "session_events.csv")))
 
     # ── Part 2: real hub in-process, two fake boards, the recorder's I/O pieces ────────────
     import socket

@@ -264,7 +264,7 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   `cause=part` at `@row 0`** — every part is self-contained, a reader never opens the previous one
   to know the configuration; anchors prove the join.
 - **R34** Events `# @row N event: <text> smpcnt=<n> host_epoch_us=<t>` (R10a ordering); rich events
-  in `events.csv`.
+  in `session_events.csv`.
 - **R35** Board restart mid-file: **same file + event (decided, D4 → A)**; the reader offers to split.
 
 ## H. Compatibility and governance

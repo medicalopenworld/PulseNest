@@ -24080,3 +24080,13 @@ decir quien lo escribio. Ademas era el unico que se salia de la norma del repo (
 `fleet_ppg_viewer_faulthandler.log`). Cambiado en codigo, spec y guion; renombrado tambien en la
 sesion ya guardada `captures/sessions/20260920_1812_SOAK/`. 58/58. Memoria
 `feedback_name_the_script` ampliada: los ficheros que escribe un programa llevan su nombre.
+
+**Anadido (4i) - `events.csv` -> `session_events.csv`.** Alex pide propuestas de nombre; se le dan
+cuatro con sus pros y contras y se aplica la recomendada. Razones: empareja con `session.json` (todo
+lo de nivel de sesion comparte prefijo) y se lee como "LOS eventos de esta sesion", no "unos
+eventos". **La palabra `events` se conserva** porque ya es el vocabulario del registro `@E`, la
+columna `event_id`, `EVENT_KINDS` y la linea `# event @row N` del formato CSV; cambiarla por
+"annotations" romperia esa cadena sin ganar nada. **Descartado `<SESSION_ID>_events.csv`**: lo que
+se copia es el directorio entero (§3), y si algun dia los ficheros deben identificarse fuera de su
+carpeta, deben hacerlo los TRES, no uno. Cambiado en codigo, test, ambas specs y guion; renombrado
+tambien en `captures/sessions/20260920_1812_SOAK/`. 58/58.

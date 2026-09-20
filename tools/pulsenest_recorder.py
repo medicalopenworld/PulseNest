@@ -35,7 +35,7 @@ with no GUI at all):
 The same lines are accepted on a local UDP port (--event-port) so that a separate panel process
 can send them (§9, process isolation): if the panel dies, recording continues.
 
-Layout (§3): captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>/ with session.json, events.csv,
+Layout (§3): captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>/ with session.json, session_events.csv,
 pulsenest_recorder.log and raw/board_<MAC>_<NNNN>.pnraw. A source is named by its MAC as soon as its $CFG
 arrives (the hub replays the cached $CFG on subscription, so normally at once); until then its
 datagrams wait in memory for up to 3 s, after which they go to unknown_<IP>_<NNNN>.pnraw rather
@@ -44,7 +44,7 @@ than be dropped. A phone sending $VN1 frames is an auxiliary source, aux_vn_<IP>
 Design rules that are enforced here rather than promised:
 - The recorder never sends to a board: HubClient(control=False), and there is no code path that
   calls send_to_board().
-- Append only; flush every 1 s; fsync every 10 s, on split and on close; events.csv fsyncs on
+- Append only; flush every 1 s; fsync every 10 s, on split and on close; session_events.csv fsyncs on
   every row.
 - One writer per source, each write in its own try/except: a failure on one board's stream is
   logged and counted and does not touch the others.
@@ -376,7 +376,7 @@ class Recorder:
         os.makedirs(self.dir, exist_ok=True)
         self.log = log or self._make_logger()
         self._check_free_space(force=True)
-        self.events_path = os.path.join(self.dir, "events.csv")
+        self.events_path = os.path.join(self.dir, "session_events.csv")
         self._events_f = open(self.events_path, "a", newline="", encoding="utf-8")
         if os.path.getsize(self.events_path) == 0:
             self._events_f.write(",".join(EVENTS_HEADER) + "\n")
@@ -557,7 +557,7 @@ class Recorder:
     # ── events (section 6) ───────────────────────────────────────────────────────────────
     def event(self, kind, subject="*", board_mac="*", value="", value2="", source="keyboard",
               confidence="", note=""):
-        """One row in events.csv (flush + fsync at once) and an @E copy in every open stream."""
+        """One row in session_events.csv (flush + fsync at once) and an @E copy in every open stream."""
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind {kind!r}")
         t_mono_us, t_epoch_us = self.clock()

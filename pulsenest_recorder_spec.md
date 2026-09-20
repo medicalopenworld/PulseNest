@@ -120,7 +120,7 @@ survival is the whole point of the file.
 ```
 captures/sessions/<SESSION_ID>/
     session.json                  metadata, the only hand-edited file (§7)
-    events.csv                    operator marks and manual readings (§6)
+    session_events.csv            operator marks and manual readings (§6)
     pulsenest_recorder.log        the tool's own log: connections, errors, disk, splits
     T2_SUBJ01_RESTING_20260926_101500.csv   the live capture CSV, one per board (§2)
     raw/                          only when --raw is full or exceptions (§2.3)
@@ -259,7 +259,7 @@ times each was seen.
 
 ---
 
-## 6. `events.csv` — what only a person knows
+## 6. `session_events.csv` — what only a person knows
 
 The one file whose content exists nowhere else. Written with **flush + fsync on every row**
 (events are rare and each one is expensive to lose), and mirrored as an `@E` record into every
@@ -353,7 +353,7 @@ unparsed**, and also stays in the raw stream. It is a convenience, not a source 
 
 * **Append only.** No file is ever rewritten, truncated or reopened for writing.
 * **Flush** every 1 s; **fsync** every 10 s and on every split; **fsync immediately** for
-  `events.csv`.
+  `session_events.csv`.
 * **One writer per source, each with its own try/except.** An exception writing one board's
   stream must not stop the other two: it is logged, counted, and that source is retried.
 * **Free space** is checked at start (refuse to start below a configurable floor) and every
@@ -415,7 +415,7 @@ reference streams below.
 * **`ref_videonest.csv`**: `t_epoch_us, t_mono_us, seq, spo2, pr, conf, phone_ts_ms, drift_ms,
   checksum_ok` — one row per `$VN1` frame, with the NMEA checksum verified here (never at
   capture time) and the phone-to-host clock drift made explicit.
-* **`ref_manual.csv`**: `events.csv` filtered to `kind=REF_SPO2`, in the same column shape as
+* **`ref_manual.csv`**: `session_events.csv` filtered to `kind=REF_SPO2`, in the same column shape as
   `ref_videonest.csv`, so the two are directly comparable.
 * **A reconciliation report**: manual vs VideoNest at matching instants, which is what says
   whether the OCR can be trusted for the next campaign.
@@ -451,7 +451,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
 | D4 | Split period and alignment | **Closed 2026-09-20: 10 min on the local wall-clock boundary**, 256 MB ceiling. Reasoning in §5. |
-| D5 | Should `events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `pulsenest_recorder.log` already cover it. |
+| D5 | Should `session_events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `pulsenest_recorder.log` already cover it. |
 
 ---
 
@@ -495,6 +495,13 @@ What the implementation fixed in this document's wording, or added:
 * **A runbook for the person at the cot side**: `docs/hospital_runbook.md` — the order of
   commands at the start, what to type during the session, how to close it, and a table of what
   to do when something looks wrong.
+* **`session_events.csv`, not `events.csv`** (Alex, 2026-09-20). It pairs with `session.json`, so
+  everything at session level shares a prefix, and it reads as *the* events of this session rather
+  than some events. The word `events` stays, because it is already the vocabulary of the `@E`
+  record, the `event_id` column, `EVENT_KINDS` and the `# event @row N` line of the CSV format —
+  renaming it to "annotations" would break that chain for nothing. Deliberately **not**
+  `<SESSION_ID>_events.csv`: the directory is the unit that gets copied (§3), and if files ever
+  need to identify themselves outside it, all three must, not one.
 * **The log is named after the program that writes it**: `pulsenest_recorder.log`, not
   `recorder.log` (Alex, 2026-09-20), the convention `pulsenest_hub.log` and
   `fleet_ppg_viewer_faulthandler.log` already follow — inside a session directory the reader
@@ -512,7 +519,7 @@ What the implementation fixed in this document's wording, or added:
   `session.json`), `subject <MAC suffix> SUBJ01` (binds a board to a subject so a `REF_SPO2`
   carries its `board_mac`), `status`, `quit`. The same lines are accepted on `--event-port` (a
   local UDP port) for the panel process of §9; the panel itself is not written yet.
-* **`--raw off`** writes no `raw/` at all but still keeps `events.csv`, `session.json` and the
+* **`--raw off`** writes no `raw/` at all but still keeps `session_events.csv`, `session.json` and the
   log, so a bench run with the lab doing the CSV loses nothing of the operator's.
 * **`--raw exceptions`** judges a datagram as a whole: it is skipped only when every line is a
   `$M4` with exactly 36 tokens (tag included, the count `pulsenest_lab.py` checks); `$CFG`,
@@ -536,7 +543,7 @@ What the implementation fixed in this document's wording, or added:
   stderr with exit code 2 rather than a traceback — checked every minute,
   warns below twice the floor and stops cleanly below it (`SESSION_END reason=disk`).
 * Files are opened unbuffered (`buffering=0`), so §8's "flush every 1 s" is implicit; fsync
-  every 10 s, on every split and on close; `events.csv` fsyncs on every row.
+  every 10 s, on every split and on close; `session_events.csv` fsyncs on every row.
 
 Not yet: the live CSV (§2), the converter (§10), the panel process (§9), `--compress-on-close`
 (D2), and the hub-side classification of the phone (D1).

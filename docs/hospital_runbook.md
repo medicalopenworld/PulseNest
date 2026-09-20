@@ -61,7 +61,7 @@ Then, in order:
       filming type `anchor`. This is what ties the video to the recording without trusting that
       two devices agree.
 
-`help` lists every command. Everything typed here also lands in `events.csv` and inside each
+`help` lists every command. Everything typed here also lands in `session_events.csv` and inside each
 `.pnraw`, so the session is self-describing even if `session.json` is lost.
 
 ---
