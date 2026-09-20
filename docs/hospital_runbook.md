@@ -13,8 +13,8 @@ oximeter, the phone running VideoNest pointed at one monitor, one laptop.
 
 - [ ] **Boards flashed and verified.** `docs/boards.md` lists MAC, revision and last build. All
       three should report the same `fw`, `build` and `elfsha`.
-- [ ] **Disk**: a session costs **0,5 GB per board per hour** (`--raw full`). Three boards for
-      eight hours ≈ **12 GB**. Leave at least twice that free; the recorder refuses to start
+- [ ] **Disk**: a session costs **about 1 GB per board per hour** with `--raw full` and the live
+      CSV (0,5 GB of `.pnraw` + 0,5 GB of `.csv`). Three boards for eight hours ≈ **24 GB**. Leave at least twice that free; the recorder refuses to start
       below 2 GB and stops cleanly if it gets there.
 - [ ] **Laptop clock synchronised** (Windows: Settings → Time → Sync now). Everything is aligned
       afterwards through the host clock; a laptop that is ten minutes off makes the photos
@@ -98,6 +98,9 @@ Then, in order:
 
 - [ ] Type `quit` (or Ctrl+C). The tool writes `SESSION_END`, closes every file and prints the
       session directory and a per-board summary.
+- [ ] **Open one CSV in Flow CSV Viewer before leaving.** It is written live, one per board, and
+      renamed at close to `T2_SUBJ01_RESTING_<date>_<time>.csv`. This is the check that says the
+      session is good *here*, instead of a week later.
 - [ ] Check the summary: `dgrams` similar on the three boards, `write errors` zero.
 - [ ] **Copy the whole session directory** to a second disk before leaving. It is under
       `captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>/`.

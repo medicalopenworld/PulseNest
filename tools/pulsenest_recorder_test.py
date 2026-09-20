@@ -316,6 +316,24 @@ try:
           " ".join(r[3] for f in s5.stream.files
                    for r in R.read_pnraw(os.path.join(rec5.dir, f)) if r[0] == "M"), str(starts))
 
+    # the live capture CSV (section 2): written after the raw record, one per board
+    csv_files = [f for f in os.listdir(rec.dir) if f.endswith(".csv") and f != "session_events.csv"]
+    check("[2] one live CSV per board, none for a phone or an unnamed source",
+          len(csv_files) == 3 and all(any(f.startswith(mac_part) for f in csv_files)
+                                      for mac_part in ("1020BA147560", "1051DB508850")),
+          str(sorted(csv_files)))
+    check("[2] its rows are the data frames of the datagrams, non-data lines skipped",
+          a.csv.count > 0 and a.csv.skipped > 0, f"{a.csv.count} rows, {a.csv.skipped} skipped")
+    head = open(a.csv_path, encoding="cp1252").read().splitlines()
+    check("[2] pre-notes name the session and carry the board's $CFG verbatim",
+          head[0] == f"# session={rec.session_id}"
+          and any(l.startswith("# from-board: $CFG,") for l in head[:5]), head[:2])
+    check("[2] the header starts with the host clock, the one shared across boards",
+          head[4].startswith("HOST_T_US,FW_SmpCnt,"), head[4][:40])
+    n_before = a.csv.count
+    rec.feed("192.168.137.62", CFG_A, *clk())          # a $CFG must never become a row
+    check("[2] a $CFG on the stream adds no row", a.csv.count == n_before)
+
     # exceptions-mode classifier
     check("[2.3] complete $M4 batch is a plain measurement batch", R.is_plain_measurement_batch(batch(1)))
     short = b"$M4,1,2,3*00\r\n" + batch(2, 4)

@@ -74,6 +74,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 from pulsenest_net import UDP_DATA_PORT, script_name           # noqa: E402
 from pulsenest_hub_client import HubClient                      # noqa: E402
+from pulsenest_capture_csv import CaptureCsvWriter, col_spec_all  # noqa: E402
 
 RECORDER_VERSION = "0.1"
 FORMAT_TAG = b"@PNRAW1"
@@ -309,6 +310,8 @@ class Source:
         self.ident = {}                       # k=v pairs from the $CFG (board, fw, lib, build, ...)
         self.cfg_raw = None
         self.stream = None
+        self.csv = None                       # CaptureCsvWriter, for boards only (section 2)
+        self.csv_path = None
         self.pending = []                     # (t_mono_us, t_epoch_us, ip, data) until named
         self.first_mono_us = first_mono_us
         self.last_seen_mono = first_mono_us / 1e6
@@ -346,6 +349,8 @@ class Source:
              "vn_id": self.vn_id,
              "datagrams": self.dgrams, "datagrams_skipped": self.dgrams_skipped,
              "samples": self.samples, "gaps": self.gaps,
+             "csv": os.path.basename(self.csv_path) if self.csv_path else None,
+             "csv_rows": self.csv.count if self.csv else 0,
              "samples_lost": self.samples_lost, "restarts": self.restarts,
              "subject": self.subject, "probe_site": self.probe_site}
         if self.kind == "board":
@@ -364,11 +369,14 @@ class Source:
 # the recorder core -- no sockets in here, so the test can drive it directly
 # ============================================================================================
 class Recorder:
-    def __init__(self, out_root, site, operator="", raw_mode="full", hub_text="",
+    def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="on", hub_text="",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
+        if csv_mode not in ("on", "off"):
+            raise ValueError("csv_mode must be on | off")
+        self.csv_mode = csv_mode
         self.clock = clock
         self.raw_mode = raw_mode
         self.split_s = split_s
@@ -390,6 +398,7 @@ class Recorder:
         self.event_id = 0
         self.events_written = 0
         self.errors = 0
+        self.csv_errors = 0
         self.stopped = False
         self.stop_reason = None
         self.consent = "pending"     # section 11: must be `obtained` before anything leaves the laptop
@@ -464,6 +473,9 @@ class Recorder:
             self._record(src, t_mono_us, t_epoch_us, ip, data)
             if src.kind == "board":
                 self._watch_counter(src, data, t_mono_us, t_epoch_us)
+            # The CSV comes last and in its own guard: a malformed frame, an unexpected field
+            # count or a bug of ours costs rows HERE and leaves the .pnraw untouched.
+            self._csv_rows(src, data, t_epoch_us)
         except Exception as exc:                          # one source's failure stays its own
             self.errors += 1
             if src.stream is not None:
@@ -477,6 +489,16 @@ class Recorder:
             src.dgrams_skipped += 1
             return
         src.stream.datagram(t_mono_us, t_epoch_us, ip, data)
+
+    def _csv_rows(self, src, data, t_epoch_us):
+        """One datagram -> its data rows in the board's CSV. Never lets the CSV break the raw."""
+        if src.csv is None or not src.csv.active:
+            return
+        try:
+            src.csv.write_datagram(data, t_epoch_us)
+        except Exception as exc:
+            self.csv_errors += 1
+            self.log.error("csv row failed for %s: %r", src.label(), exc)
 
     def _watch_counter(self, src, data, t_mono_us, t_epoch_us):
         """Follow the firmware's sample counter to tell the operator what the raw file alone
@@ -586,6 +608,29 @@ class Recorder:
         src.cfg_raw = data.split(b"\n", 1)[0].rstrip(b"\r").decode("ascii", "replace")
         src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
 
+    def _open_csv(self, src, t_epoch_us):
+        """The live capture CSV of section 2, one per board, in the format every tool in this
+        project already reads -- Flow CSV Viewer included, which is the reason it cannot wait for
+        the v0.4 format and its column dictionary. Written AFTER the .pnraw record and inside its
+        own try/except (section 2.2), so a parsing bug costs rows here and nothing there.
+
+        The name is provisional: the subject is bound by a person seconds or minutes after the
+        board starts streaming, so the file opens as <MAC>_<date>_<time>.csv and is renamed at
+        close to the CAPTURE_SET_SPEC 2.4 shape once tier, subject and condition are known."""
+        if self.csv_mode == "off" or src.kind != "board":
+            return
+        stamp = _dt.datetime.fromtimestamp(t_epoch_us / 1e6).strftime("%Y%m%d_%H%M%S")
+        name = f"{mac_compact(src.mac) if src.mac else src.ip}_{stamp}.csv"
+        src.csv_path = os.path.join(self.dir, name)
+        src.csv = CaptureCsvWriter(src.csv_path, col_spec_all(), host_t_us=True,
+                                   label=src.mac or src.ip)
+        notes = [f"session={self.session_id}", f"writer=pulsenest_recorder/{RECORDER_VERSION}",
+                 f"source_ip={src.ip}"]
+        if src.cfg_raw:
+            notes.append(f"from-board: {src.cfg_raw}")
+        src.csv.open("\n".join(notes))
+        self.log.info("%s -> %s", src.label(), name)
+
     def _open_stream(self, src, t_mono_us, t_epoch_us):
         if self.raw_mode == "off":
             src.stream = _NullStream()
@@ -594,8 +639,10 @@ class Recorder:
         src.stream = RawStream(self.raw_dir, self.session_id, src.key(), src.label(), self.log,
                                self.split_s, self.split_bytes)
         src.stream.open_part(t_mono_us, t_epoch_us)
+        self._open_csv(src, t_epoch_us)
         for rec in src.pending:                       # what waited for the name, in order
             src.stream.datagram(*rec)
+            self._csv_rows(src, rec[3], rec[1])
         src.pending = []
         self.write_session_json()
 
@@ -639,6 +686,9 @@ class Recorder:
             text += " note=" + note.replace("\n", " ")
         for src in self._owners():
             self._note_event(src, t_mono_us, t_epoch_us, kind, text)
+            # The same event, in the CSV's own idiom: '# event @row N: ...' with the post-notes.
+            if src.csv is not None and src.csv.active:
+                src.csv.add_event(f"{kind} {text}")
         self.log.info("event %d %s %s", self.event_id, kind, text)
         return self.event_id
 
@@ -828,7 +878,8 @@ class Recorder:
                          f"skipped={s.dgrams_skipped:6d} {loss:18s} "
                          f"{('restarts=' + str(s.restarts) + ' ') if s.restarts else ''}"
                          f"bytes={(st.bytes if st else 0):10d} "
-                         f"subject={s.subject or '-'} last={time.monotonic() - s.last_seen_mono:5.1f}s "
+                         f"subject={s.subject or '-'} csv={(s.csv.count if s.csv else 0):7d} "
+                         f"last={time.monotonic() - s.last_seen_mono:5.1f}s "
                          f"{'SILENT ' if s.silent else ''}{files}")
         return "\n".join(lines) if lines else "(no sources yet)"
 
@@ -846,7 +897,7 @@ class Recorder:
                      "timezone": time.strftime("%Z"), "raw_mode": self.raw_mode},
             "sources": [s.to_json() for s in self._owners()],
             "events": self.events_written,
-            "write_errors": self.errors,
+            "write_errors": self.errors, "csv_errors": self.csv_errors,
             "consent": self.consent,
             "notes": "",
         }
@@ -861,6 +912,22 @@ class Recorder:
         os.replace(tmp, p)
 
     # ── stop ─────────────────────────────────────────────────────────────────────────────
+    def _name_csv(self, src):
+        """Rename the closed CSV to the CAPTURE_SET_SPEC 2.4 shape, now that the metadata typed
+        during the session is known. Provisional name kept when it is not."""
+        if not src.csv_path or not os.path.exists(src.csv_path):
+            return
+        if not (src.tier and src.subject and src.condition):
+            return
+        stamp = os.path.basename(src.csv_path).rsplit("_", 2)[-2:]
+        name = "_".join([src.tier, src.subject, src.condition.replace(" ", "-")] + stamp)
+        target = os.path.join(self.dir, name)
+        try:
+            os.replace(src.csv_path, target)
+            src.csv_path = target
+        except OSError as exc:
+            self.log.warning("could not rename %s: %r", os.path.basename(src.csv_path), exc)
+
     def stop(self, reason="operator"):
         if not self.stopped:
             self.stopped = True
@@ -876,6 +943,17 @@ class Recorder:
         except Exception as exc:
             self.log.error("SESSION_END failed: %r", exc)
         for src in self._owners():
+            if src.csv is not None and src.csv.active:
+                try:
+                    rows = src.csv.close(f"rows={src.csv.count} skipped={src.csv.skipped} "
+                                         f"gaps={src.gaps} samples_lost={src.samples_lost}")
+                    self._name_csv(src)
+                    self.log.info("%s csv: %d rows, %d non-data lines skipped -> %s",
+                                  src.label(), rows, src.csv.skipped,
+                                  os.path.basename(src.csv_path))
+                except Exception as exc:
+                    self.csv_errors += 1
+                    self.log.error("csv close failed for %s: %r", src.label(), exc)
             if src.stream is not None:
                 try:
                     src.stream.close()
@@ -1015,6 +1093,8 @@ def main(argv=None):
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"))
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
+    ap.add_argument("--csv", default="on", choices=("on", "off"),
+                    help="write the live capture CSV per board beside the .pnraw")
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT,
                     help="split the raw stream on this wall-clock period, in minutes")
     ap.add_argument("--split-mb", type=float, default=SPLIT_MB_DEFAULT)
@@ -1027,7 +1107,8 @@ def main(argv=None):
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
     try:
-        rec = Recorder(args.out, args.site, args.operator, args.raw, hub_text=f"{hub[0]}:{hub[1]}",
+        rec = Recorder(args.out, args.site, args.operator, args.raw, args.csv,
+                       hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9))
     except NotEnoughSpace as exc:

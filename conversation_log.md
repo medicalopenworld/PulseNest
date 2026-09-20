@@ -24337,3 +24337,43 @@ enfocaba la camara, esa diferencia merece una mirada antes de la campana.
 
 `pulsenest_recorder_test.py` **66 comprobaciones superadas de 66** (2 nuevas, con reloj falso, para
 los dos umbrales), `fleet_monitor_test.py` 36 de 36.
+
+## Sesion 2026-09-20 (11) - CSV en vivo en `pulsenest_recorder.py`
+
+Alex: **no puede esperar al conversor**, por dos motivos. Uno nuevo y decisivo: **Flow CSV Viewer,
+de las herramientas que mas usa, solo abre `.csv`, no `.pnraw`**. Y el que ya estaba en §2.1: no se
+puede volver al laboratorio para descubrir que las capturas fallaban. Ademas propone que el
+conversor sea la ultima de las cuatro tareas — correcto, y por una razon concreta: su prueba de
+aceptacion es ser identico byte a byte al escritor en vivo, asi que el escritor va primero.
+
+**Simplificacion que quita la tarea 1 del camino critico:** el CSV en vivo escribe **el formato de
+HOY, no el v0.4**. Flow ya lo abre, todas las herramientas lo leen, y el `.pnraw` conserva todo para
+regenerar un v0.4 despues. El diccionario de columnas deja de bloquear.
+
+**Hecho (1) - `pulsenest_capture_csv.py`, modulo nuevo.** `LabCaptureWriter` vivia dentro de
+`pulsenest_lab.py`, en la linea 11034 de un fichero de 16 346 lineas que importa Qt; el registrador
+existe precisamente para no tener Qt. Extraidos la clase (renombrada `CaptureCsvWriter`, con el
+nombre viejo re-exportado) y la tabla canonica de 35 columnas. **Esto es R3 del formato hecho
+realidad y no aspiracion**: laboratorio, registrador y conversor indexan la trama con la misma
+tabla, que es el unico sitio donde un error es silencioso — un indice mal escribe una fila bien
+formada de basura. `pulsenest_lab.py` baja a 16 174 lineas y sigue funcionando (verificado).
+`tools/capture_csv_test.py` nuevo: **15 comprobaciones**, incluidas las tres que importan: cada
+columna lee su campo, `$M1`/`$M2` caen a -1 o se remapean en vez de desplazarse, y un `$CFG` o un
+`# STAT` se rechazan en vez de convertirse en fila.
+
+**Hecho (2) - el registrador lo usa.** Un CSV por placa, con `HOST_T_US` + las 35 columnas,
+pre-notas con la sesion y el `$CFG` verbatim como `# from-board:`, los eventos del operador como
+`# event @row N:` y post-notas con filas y descartes. **Se escribe DESPUES del registro `.pnraw` y
+en su propio `try/except`** (§2.2): un fallo de analisis cuesta filas en el CSV y deja el bruto
+intacto; `csv_errors` se cuenta aparte. **Nombre provisional hasta el cierre**: una placa emite
+antes de que nadie la ate a un sujeto, asi que abre como `<MAC>_<fecha>_<hora>.csv` y **al cerrar se
+renombra** al canonico de CAPTURE_SET_SPEC §2.4. Verificado en banco: `T2_SUBJ01_RESTING_...csv`,
+`T2_SUBJ02_...`, `T2_SUBJ03_...`, 10 000 filas cada uno en 20 s (500/s exactos) y **24 lineas no-dato
+descartadas**, no convertidas en filas.
+
+**Coste medido:** 2,85 MB por placa cada 20 s = **~510 MB/h**, encima de los 0,5 GB/h del `.pnraw`:
+**~1 GB/h por placa**, 24 GB para tres placas y ocho horas. Es el argumento para pasar a
+`--raw exceptions` (240 kB/h) en cuanto la cadena se gane la confianza — y el CSV en vivo es
+justamente lo que la gana. `--csv off` lo desactiva.
+
+Suites: `capture_csv_test` 15/15, `pulsenest_recorder_test` **71/71**, laboratorio importa correcto.

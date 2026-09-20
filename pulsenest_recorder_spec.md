@@ -480,7 +480,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **66 offline and in-process checks**
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **71 offline and in-process checks**, plus the 15 of `tools/capture_csv_test.py`
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -523,6 +523,33 @@ What the implementation fixed in this document's wording, or added:
   ignored. And **the pulse rate field was 0 in every frame** while SpO2 read 96 at confidence
   0.98: whatever the camera was pointed at, PR was not being recognised. Worth settling before the
   campaign, since `value2` of a manual `REF_SPO2` is then the only pulse-rate reference.
+* **The live capture CSV is written (§2), and it writes TODAY's format, not v0.4** (Alex,
+  2026-09-20). The reason it could not wait: **Flow CSV Viewer, one of the tools used most here,
+  reads `.csv` and not `.pnraw`** — and §2.1's other argument held too, that a fault in a capture
+  must be visible at the bench, not a week later. Today's format is what Flow and every tool in
+  this project already read, and the `.pnraw` keeps everything needed to regenerate a v0.4 file
+  later, so the column dictionary leaves the critical path entirely.
+  The writer was **extracted** from `pulsenest_lab.py` into `pulsenest_capture_csv.py`
+  (`CaptureCsvWriter`, `CAPTURE_COLS`): it lived inside a 16 000-line module that imports Qt,
+  which the recorder exists to avoid. That is R3 of the CSV spec made true rather than
+  aspirational — the lab, the recorder and the converter now index the frame with the same table,
+  the one place where a mistake is silent. Checked by `tools/capture_csv_test.py`, 15 offline
+  checks of exactly that: each column reading its own field, `$M1`/`$M2` fallbacks, RF converted
+  to ohms from a closed table, and a `$CFG` or `# STAT` refused instead of written as a
+  well-formed row of garbage.
+  Per board: `HOST_T_US` plus all 35 columns, pre-notes naming the session and carrying the
+  board's `$CFG` verbatim as `# from-board:`, operator events as `# event @row N:`, and post-notes
+  with the row and skip counts. Written **after** the `.pnraw` record and in its own `try/except`
+  (§2.2): a parsing bug costs rows in the CSV and leaves the raw stream untouched, and
+  `csv_errors` counts them separately in `session.json`.
+  **The name is provisional until close**: a board starts streaming before a person has bound it
+  to a subject, so the file opens as `<MAC>_<date>_<time>.csv` and is renamed at close to
+  `CAPTURE_SET_SPEC` §2.4's `T2_SUBJ01_RESTING_<date>_<time>.csv` once tier, subject and condition
+  are known — verified on the bench, three boards, three canonical names.
+  **Cost, measured:** 2,85 MB per board per 20 s = **~510 MB/h**, on top of the 0,5 GB/h of
+  `.pnraw`: about **1 GB/h per board**, 24 GB for three boards over eight hours. That is the
+  argument for `--raw exceptions` (240 kB/h, §2.3) as soon as the pipeline is trusted — the live
+  CSV is precisely what earns that trust. `--csv off` turns it off.
 * **An auxiliary source is judged silent on its own timescale** (measured 2026-09-20, second
   rehearsal). A board emits 100 datagrams/s, so `SOURCE_SILENT_S = 5` is already 500 lost. A phone
   emits when its OCR has a reading: **0,81 Hz measured, median gap 0,9 s, p90 2,7 s, longest 6,5 s
