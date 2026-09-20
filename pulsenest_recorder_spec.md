@@ -218,7 +218,11 @@ A complete example file, with real frames and real lengths, is `docs/pnraw_examp
 read with `head`, searched with `grep` and repaired by hand if its tail is torn, which a binary
 container cannot. The length prefix buys exactness without giving that up.
 
-**Splitting into parts.** A new part every **15 minutes or 256 MB**, whichever comes first (D4). In Spanish *partir el fichero*; not "rotate", Unix log jargon that says nothing about what happens: the current part is closed (fsync) and the next one opened, recording never stops, `seq` continues. A closed part can
+**Splitting into parts.** A new part on every **10-minute boundary of the local wall clock** (10:30:00, 10:40:00 …), or at **256 MB**, whichever comes first (D4, closed 2026-09-20). In Spanish *partir el fichero*; not "rotate", Unix log jargon that says nothing about what happens: the current part is closed (fsync) and the next one opened, recording never stops, `seq` continues.
+
+**Why the boundary and not "N minutes after this part opened".** A part then *spans a readable stretch of the clock a person in the room reads*: part 0004 of any session covers 10:30 to 10:40, so a photo taken at 10:37 is found by filename with no index, and every board's parts line up with every other board's — which elapsed-time splitting does not give, since each board opens its first part whenever its first datagram arrives. Local, not UTC: the boundary has to match the clock on the wall, including the half-hour offsets some regions use.
+
+**Why 10 minutes.** Not a measured figure in v0.1 — it was 15 because 15 is a round number. What the period does *not* change is how much data a dying laptop costs: that is fixed by the 10 s fsync (§8), whatever the part size. What it does change is the unit of damage if one file is corrupted or copied badly, how soon a closed part is available to copy or compress, and the size of a file someone has to open or `grep`: **83 MB at 10 min against 125 MB at 15**, per board at 500 Hz. The cost of splitting is one fsync, one close and one open — about a millisecond, no frame lost, `seq` unbroken — and 144 files instead of 96 for three boards over 8 h. Ten also reads better than a quarter of an hour on a clock. The 256 MB ceiling stays as the net for a rate high enough to fill a part early; at 500 Hz it never fires. A closed part can
 be copied or compressed while the session runs, and a file lost to a bad write costs one part,
 not the session.
 
@@ -419,7 +423,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D1 | Should the hub recognise `$VN1` as an **auxiliary source** rather than treating the phone as a board (today it will ask the phone `$CFG?` three times and show it as a board in `fleet_monitor` / `fleet_ppg_viewer`)? | Yes — classify by first-datagram prefix, skip the `$CFG?` query, tag it in `@STATUS`. Small change, keeps the fleet tools honest. |
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
-| D4 | Split period: 15 min / 256 MB. | Under review 2026-09-20 (Alex leans to 10 min); see §13. |
+| D4 | Split period and alignment | **Closed 2026-09-20: 10 min on the local wall-clock boundary**, 256 MB ceiling. Reasoning in §5. |
 | D5 | Should `events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `recorder.log` already cover it. |
 
 ---
@@ -434,7 +438,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **40 offline and in-process checks**
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **44 offline and in-process checks**
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 and an 8 s session on the bench with the three V18 boards: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -442,6 +446,9 @@ board — the figure §2.3 estimated.
 
 What the implementation fixed in this document's wording, or added:
 
+* **Split period: 10 min, aligned to the local wall clock** (D4 closed, §5). `next_wall_boundary_us()`
+  computes the next multiple from the top of the hour, so a part that opens at 10:23:45 closes at
+  10:30:00, and every board's parts line up. `--split-min` changes it; `--split-mb` is the ceiling.
 * **Vocabulary: "split" / "part"**, never "rotate": in Spanish *partir el fichero* / *parte* (Alex, 2026-09-20). CLI `--split-min`, `--split-mb`; code `_split_if_due()`.
 * **`seq` continues across parts** within a source (it does not restart at 1 in part 0002): a
   gap in `seq` anywhere in a source's parts is a dropped record. §5's "per file from 1" meant

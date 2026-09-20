@@ -196,6 +196,37 @@ try:
           and a.stream.records >= 20)
     b.stream.f = open(b.stream.path(b.stream.part), "ab", buffering=0)   # heal it for close()
 
+    # wall-clock split boundaries (the helper alone, then a split driven by the fake clock)
+    import datetime as _dt
+    base = _dt.datetime(2026, 9, 26, 10, 23, 45).timestamp() * 1e6
+    b10 = R.next_wall_boundary_us(base, 600)
+    b15 = R.next_wall_boundary_us(base, 900)
+    check("[5] next wall boundary: 10:23:45 -> 10:30:00 at 10 min, 10:30:00 at 15 min",
+          _dt.datetime.fromtimestamp(b10 / 1e6).strftime("%H:%M:%S") == "10:30:00"
+          and _dt.datetime.fromtimestamp(b15 / 1e6).strftime("%H:%M:%S") == "10:30:00")
+    exact = _dt.datetime(2026, 9, 26, 10, 30, 0).timestamp() * 1e6
+    check("[5] a boundary instant moves to the NEXT one (strictly after), never loops",
+          _dt.datetime.fromtimestamp(R.next_wall_boundary_us(exact, 600) / 1e6).strftime("%H:%M:%S") == "10:40:00")
+
+    clk5 = FakeClock()
+    clk5.epoch = int(_dt.datetime(2026, 9, 26, 10, 29, 50).timestamp() * 1e6)   # 10 s before 10:30
+    rec5 = R.Recorder(tmp, "WALL", raw_mode="full", log=QuietLog(), clock=clk5)
+    rec5.feed("10.1.1.1", CFG_A, *clk5())
+    s5 = rec5.sources["10.1.1.1"]
+    for _ in range(4):                       # 5 s apart: crosses 10:30:00, then 10:40:00
+        clk5.advance(5); rec5.feed("10.1.1.1", batch(1), *clk5())
+    parts_after_first = s5.stream.part
+    clk5.advance(600); rec5.feed("10.1.1.1", batch(2), *clk5())
+    starts = [r[1]["started"][11:19] for f in s5.stream.files
+              for r in R.read_pnraw(os.path.join(rec5.dir, f)) if r[0] == "H"]
+    rec5.close()
+    check("[5] split happens AT the wall-clock boundary, not N min after opening",
+          parts_after_first == 2 and starts[1].startswith("10:30:0"), f"parts={parts_after_first} {starts}")
+    check("[5] each part starts on its boundary; a gap in traffic does not create empty parts",
+          len(starts) == 3 and starts[2].startswith("10:4") and "min boundary" in
+          " ".join(r[3] for f in s5.stream.files
+                   for r in R.read_pnraw(os.path.join(rec5.dir, f)) if r[0] == "M"), str(starts))
+
     # exceptions-mode classifier
     check("[2.3] complete $M4 batch is a plain measurement batch", R.is_plain_measurement_batch(batch(1)))
     short = b"$M4,1,2,3*00\r\n" + batch(2, 4)

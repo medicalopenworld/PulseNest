@@ -23962,3 +23962,17 @@ espanol "partir el fichero" / "parte"; ingles "split" / "part" (`--split-min`, `
 senal), "rollover" (misma jerga). 40/40 tras el renombrado. Memoria `feedback_split_not_rotate`.
 Alex quiere reflexionar el intervalo de particion: 15 min era una cifra redonda sin medida (D4);
 el prefiere 10. D4 marcada "en revision" en la spec.
+
+**Anadido (3d) - D4 cerrada: particion cada 10 min alineada al reloj de pared.** Alex prefiere 10
+min y acepta la recomendacion. Razonamiento (ahora en §5 de la spec): el intervalo NO decide cuantos
+datos cuesta una muerte del portatil (eso lo fija el fsync de 10 s); decide la unidad de dano si un
+fichero se corrompe, cuando esta disponible una parte cerrada para copiar, y el tamano del fichero
+que alguien abre (83 MB a 10 min vs 125 a 15, por placa a 500 Hz). Partir cuesta un fsync + cierre +
+apertura (~1 ms, sin perder tramas, `seq` intacto) y 144 ficheros en vez de 96 con 3 placas y 8 h.
+**Alineado al reloj local** (10:30:00, 10:40:00...) en vez de "N min desde que se abrio": asi la
+parte 0004 de cualquier sesion cubre 10:30-10:40 (una foto de las 10:37 se encuentra por el nombre,
+sin indice) y las partes de todas las placas coinciden entre si, cosa que el tiempo transcurrido no
+da porque cada placa abre su primera parte cuando llega su primer datagrama. Local y no UTC por los
+husos de media hora. Implementado con `next_wall_boundary_us()`; 4 comprobaciones nuevas (frontera
+10:23:45 -> 10:30:00, instante-frontera -> siguiente, corte real en la frontera con reloj falso,
+sin partes vacias tras un silencio). 44/44.

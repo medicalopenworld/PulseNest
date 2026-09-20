@@ -74,7 +74,7 @@ FSYNC_S = 10.0
 FREE_SPACE_CHECK_S = 60.0
 IDENTIFY_WAIT_S = 3.0            # how long a new IP's datagrams wait in memory for a $CFG (MAC)
 SOURCE_SILENT_S = 5.0            # after this much silence a source is noted as silent (@M)
-SPLIT_MIN_DEFAULT = 15
+SPLIT_MIN_DEFAULT = 10   # wall-clock aligned (see _split_if_due); 256 MB is the ceiling, not the usual trigger
 SPLIT_MB_DEFAULT = 256
 
 # --- what "a measurement frame the CSV represents" means for --raw exceptions -----------------
@@ -109,6 +109,21 @@ def mac_compact(mac):
     return mac.replace(":", "").upper()
 
 
+def next_wall_boundary_us(t_epoch_us, period_s):
+    """The next multiple of `period_s` on the LOCAL wall clock, strictly after t_epoch_us.
+    Local, not UTC, because the boundary has to match the clock a person in the room reads (and
+    the half-hour offsets some regions use, which a UTC-based multiple would miss). A period
+    that does not divide an hour just runs from the top of the hour."""
+    period_us = int(period_s * 1e6)
+    if period_us <= 0:
+        return t_epoch_us
+    t = _dt.datetime.fromtimestamp(t_epoch_us / 1e6)
+    hour = t.replace(minute=0, second=0, microsecond=0)
+    hour_us = int(hour.timestamp() * 1e6)
+    n = (t_epoch_us - hour_us) // period_us + 1
+    return hour_us + n * period_us
+
+
 # ============================================================================================
 # one raw stream (one source, split into parts)
 # ============================================================================================
@@ -131,7 +146,7 @@ class RawStream:
         self.seq = 0
         self.f = None
         self.part_bytes = 0
-        self.part_opened_mono = 0.0
+        self.part_due_epoch_us = 0      # wall-clock instant this part must close at
         self.files = []
         self.records = 0
         self.bytes = 0
@@ -150,7 +165,7 @@ class RawStream:
         os.makedirs(self.raw_dir, exist_ok=True)
         self.f = open(p, "ab", buffering=0)   # unbuffered: what was written is in the OS at once
         self.part_bytes = 0
-        self.part_opened_mono = time.monotonic()
+        self.part_due_epoch_us = next_wall_boundary_us(t_epoch_us, self.split_s)
         self.files.append(os.path.relpath(p, os.path.dirname(self.raw_dir)).replace(os.sep, "/"))
         header = (f"@PNRAW1 session={self.session_id} source={self.source_key} "
                   f"part={self.part:04d} started={iso_local(t_epoch_us)}\n").encode("ascii")
@@ -158,12 +173,17 @@ class RawStream:
         return p
 
     def _split_if_due(self, t_mono_us, t_epoch_us):
+        """Split on the WALL CLOCK boundary (10:30:00, 10:40:00 ... for a 10 min period), not N
+        minutes after this part happened to open. Decided 2026-09-20 with Alex: it makes a part's
+        span readable without an index -- part 0004 of any session covers 10:30 to 10:40, so a
+        photo taken at 10:37 is found by name -- and it lines every board's parts up with each
+        other, which N-minutes-since-open does not. The byte ceiling stays as the net for a rate
+        high enough to fill a part early (at 500 Hz it never fires: ~83 MB per 10 min)."""
         if self.f is None:
             return
-        elapsed = time.monotonic() - self.part_opened_mono
-        if elapsed >= self.split_s or self.part_bytes >= self.split_bytes:
-            why = (f"{int(self.split_s // 60)} min elapsed" if elapsed >= self.split_s
-                   else f"{self.part_bytes} B reached")
+        if t_epoch_us >= self.part_due_epoch_us or self.part_bytes >= self.split_bytes:
+            why = (f"{int(self.split_s // 60)} min boundary"
+                   if t_epoch_us >= self.part_due_epoch_us else f"{self.part_bytes} B reached")
             nxt = os.path.basename(self.path(self.part + 1))
             self.note(t_mono_us, t_epoch_us, f"part closed: {why} -> {nxt}")
             self.close_part()
@@ -789,7 +809,8 @@ def main(argv=None):
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"))
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
-    ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT)
+    ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT,
+                    help="split the raw stream on this wall-clock period, in minutes")
     ap.add_argument("--split-mb", type=float, default=SPLIT_MB_DEFAULT)
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--event-port", type=int, default=0,
