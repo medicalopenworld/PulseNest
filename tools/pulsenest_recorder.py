@@ -28,7 +28,7 @@ with no GUI at all):
                               seconds, and ITS probe site -- pre- vs postductal differ in a
                               neonate, and an unrecorded difference is read later as our error
     consent obtained          section 11: required before anything leaves the laptop
-    help                      this list
+    help [command]            the list, or the detail of one: `help mark`
     status                    one line per source: datagrams, bytes, last seen
     q | quit                  close the session (Ctrl+C does the same)
 
@@ -107,6 +107,128 @@ EXPECTED_TOKENS = {b"$M4": 36}
 # one), and reading its sequence number as our sample counter would invent gaps and
 # restarts out of nothing.
 BOARD_FRAME_TAGS = (b"$M1,", b"$M2,", b"$M3,", b"$M4,")
+
+# ============================================================================================
+# console help
+# ============================================================================================
+# One entry per command: (usage, one-line summary, the detail `help <command>` prints).
+# The detail is where the *reason* lives -- an operator at a cot side has no spec to hand, and
+# the two or three rules that protect a capture (read the monitor's own screen, never correct
+# for delay, name the baby) are worth having one keystroke away.
+COMMAND_HELP = {
+    "spo2": (
+        "spo2 SUBJ01 <spo2%> [pr]",
+        "a reading you took from the commercial monitor",
+        "Records what the commercial oximeter shows for that baby: SpO2 in per cent, and the\n"
+        "pulse rate too if the monitor shows one. Range 50-100, because a neonatal desaturation\n"
+        "goes below 60 and a value you cannot type ends up in a notebook and is lost.\n"
+        "\n"
+        "Two rules that protect this reference:\n"
+        "  * Read the number off the MONITOR's screen, never off ours. fleet_monitor.py shows\n"
+        "    VideoNest's SpO2, which is the same monitor read by OCR; copying it here would make\n"
+        "    the manual reading a copy of the automatic one instead of a check on it.\n"
+        "  * Do not correct for delay. The instant of the keystroke is what is recorded, and the\n"
+        "    monitor averages over seconds anyway. No correction is applied, and none should be\n"
+        "    invented later.\n"
+        "\n"
+        "The board bound to that subject is stamped on the event, so bind it first with `subject`.",
+    ),
+    "mark": (
+        "mark [SUBJ01] <text>",
+        "something happened; with no subject it is session-wide",
+        "A moment worth finding again: handling, a feed, a nappy change, an alarm on the monitor,\n"
+        "a probe that was moved. None of it can be reconstructed afterwards.\n"
+        "\n"
+        "Name the baby when it concerns one baby:  mark SUBJ02 nappy change\n"
+        "Leave it out when it concerns the room:   mark phototherapy lamp on\n"
+        "\n"
+        "A subject written inside the free text instead of its own field is a subject no query\n"
+        "will ever find. The first word is read as a subject only if it looks like SUBJ<digits>.\n"
+        "The mark is copied into every board's .pnraw and CSV whoever it names, so each file\n"
+        "stands alone.",
+    ),
+    "note": (
+        "note [SUBJ01] <text>",
+        "free text, same attribution rules as mark",
+        "Like `mark`, for anything longer or less of a single instant. No personal data, ever:\n"
+        "coded subjects only, no names, no ward, no room -- these files are health data and the\n"
+        "note travels inside every stream.",
+    ),
+    "anchor": (
+        "anchor",
+        "CLOCK_ANCHOR: type it while filming the laptop clock",
+        "Film the laptop's clock with the phone for a few seconds and type this while filming.\n"
+        "It is what ties the video to the recording without trusting that two devices agree on\n"
+        "the time -- and they do not: the phone's own timestamp was measured running 164-350 ms\n"
+        "behind arrival here.",
+    ),
+    "subject": (
+        "subject <MAC suffix> SUBJ01",
+        "bind a board to a baby",
+        "Ties one board to one coded subject, by the last four hex digits of its MAC (the `status`\n"
+        "line shows them). Do this first: a `spo2` reading carries the bound board's MAC, and the\n"
+        "CSV is renamed at close to T2_SUBJ01_RESTING_<date>_<time>.csv only when the subject,\n"
+        "the tier and the condition are all known.",
+    ),
+    "tier": (
+        "tier T2 [SUBJ01]",
+        "capture tier; no subject = every board",
+        "CAPTURE_SET_SPEC 2.2: T1 simulator, T2 human subject with a commercial reference, T3\n"
+        "human subject with no reference. A hospital campaign is T2.",
+    ),
+    "cond": (
+        "cond RESTING [SUBJ01]",
+        "condition; no subject = every board",
+        "What the baby is doing, in one word: RESTING, FEEDING, HANDLING. It becomes part of the\n"
+        "CSV filename, so keep it short and reuse the same words across sessions.",
+    ),
+    "site": (
+        "site SUBJ01 <text>",
+        "where OUR probe is on that baby",
+        "The site of the PulseNest probe: 'left foot', 'right foot'. Not the same field as the\n"
+        "commercial monitor's site, which is `ref SUBJ01 site` -- and the difference between the\n"
+        "two is exactly why both must be recorded: in a neonate with a patent ductus, preductal\n"
+        "(right hand) and postductal (foot) SpO2 genuinely differ by several points, and an\n"
+        "unrecorded difference is read later as OUR error.",
+    ),
+    "ref": (
+        "ref SUBJ01 model|avg|site|note <value>",
+        "the commercial monitor beside that baby",
+        "  ref SUBJ01 model Masimo Radical-7   make and model\n"
+        "  ref SUBJ01 avg 8                    its averaging window, in seconds\n"
+        "  ref SUBJ01 site right hand          where ITS probe is\n"
+        "  ref SUBJ01 note ...                 anything else\n"
+        "\n"
+        "`avg` and `site` are not bureaucracy. The averaging sets the window our own SpO2 has to\n"
+        "be averaged over before the two numbers can be compared at all; the site decides whether\n"
+        "a difference is physiology or error (see `help site`).",
+    ),
+    "consent": (
+        "consent obtained|pending|n/a",
+        "consent state for this session",
+        "Must be `obtained` before anything from this session leaves the laptop. `n/a` is for a\n"
+        "bench run with no human subject.",
+    ),
+    "status": (
+        "status",
+        "one line per source: datagrams, gaps, CSV rows, last seen",
+        "What to look at: every board you expect is listed; `dgrams` climbing; `last` under a\n"
+        "second; `gaps` at zero; `csv` climbing at about 500 rows per second per board. A source\n"
+        "marked SILENT has said nothing for 5 s (30 s for a phone, which speaks slowly).",
+    ),
+    "quit": (
+        "quit",
+        "close the session (Ctrl+C does the same)",
+        "Writes SESSION_END, closes every file, renames each CSV to its canonical name and prints\n"
+        "where everything is. Copy the whole session directory to a second disk before leaving.",
+    ),
+    "help": (
+        "help [command]",
+        "this list, or the detail of one command",
+        "`help` lists every command; `help mark` explains one.",
+    ),
+}
+
 
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
                "META", "SESSION_START", "SESSION_END")   # META: session metadata typed in (subject, tier, condition, reference monitor, consent)
@@ -802,10 +924,18 @@ class Recorder:
                 self.write_session_json()
                 return f"consent = {self.consent}"
             if cmd in ("help", "?"):
-                return ("spo2 SUBJ01 96 [pr] | mark [SUBJ01] [text] | note [SUBJ01] <text> | anchor | "
-                        "site SUBJ01 <text> | subject <MAC suffix> SUBJ01 | tier T2 [SUBJ01] | "
-                        "cond RESTING [SUBJ01] | ref SUBJ01 model|avg|site|note <value> | "
-                        "consent obtained | status | quit")
+                if args:
+                    what = args[0].lower().lstrip("-")
+                    entry = COMMAND_HELP.get(what)
+                    if entry is None:
+                        return (f"no command {what!r}. Known: "
+                                + ", ".join(sorted(COMMAND_HELP)))
+                    usage, summary, detail = entry
+                    return f"{usage}\n  {summary}\n\n{detail}"
+                width = max(len(u) for u, _, _ in COMMAND_HELP.values())
+                lines = [f"  {u:<{width}s}  {summary}"
+                         for u, summary, _ in COMMAND_HELP.values()]
+                return "\n".join(lines + ["", "  `help <command>` explains one of them."])
             if cmd == "status":
                 return self.status_text()
             return f"unknown command {cmd!r} — type `help`"

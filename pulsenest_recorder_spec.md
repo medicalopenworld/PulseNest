@@ -480,7 +480,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **75 offline and in-process checks**, plus the 15 of `tools/capture_csv_test.py`
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **80 offline and in-process checks**, plus the 15 of `tools/capture_csv_test.py`
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -523,6 +523,13 @@ What the implementation fixed in this document's wording, or added:
   ignored. And **the pulse rate field was 0 in every frame** while SpO2 read 96 at confidence
   0.98: whatever the camera was pointed at, PR was not being recognised. Worth settling before the
   campaign, since `value2` of a manual `REF_SPO2` is then the only pulse-rate reference.
+* **`help` lists the commands, `help <command>` explains one** (Alex, 2026-09-20). The detail is
+  where the *reason* lives, because an operator at a cot side has no spec to hand: `help spo2`
+  carries the two rules that protect that reference (read the monitor's own screen, never correct
+  for delay), `help site` explains why our probe site and the monitor's are different fields, and
+  `help mark` says that a subject in free text is a subject no query will find. A test walks the
+  `console()` source and fails if a command exists without an entry, or an entry without a
+  command — help that drifts from the code is worse than none.
 * **Who an event belongs to, and where its copies go** (Alex's question, 2026-09-20). Every
   event carries a `subject` and a `board_mac`. `spo2` and `site` always name a subject; `tier` and
   `cond` take an optional trailing one; `anchor` and `consent` are session-wide by nature. **`mark`

@@ -239,7 +239,32 @@ try:
     check("[7] consent is state, and only the three documented values",
           rec.console("consent obtained") == "consent = obtained" and rec.consent == "obtained"
           and rec.console("consent maybe").startswith("usage:"))
-    check("[9] help lists the commands", "ref SUBJ01" in rec.console("help"))
+    # help: the list, one command's detail, and the check that keeps the two in step
+    listed = rec.console("help")
+    check("[9] help lists every command with its usage and a summary",
+          all(c in listed for c in ("spo2", "mark", "ref", "consent", "status", "quit"))
+          and "help <command>" in listed, listed[:60])
+    one = rec.console("help mark")
+    check("[9] help <command> gives usage, summary and the reasoning behind it",
+          one.startswith("mark [SUBJ01] <text>") and "no query" in one, one[:60])
+    check("[9] help is case-insensitive and tolerates a leading dash",
+          rec.console("help MARK") == one and rec.console("help --mark") == one)
+    check("[9] an unknown command is answered with the list, not a traceback",
+          rec.console("help frobnicate").startswith("no command 'frobnicate'"))
+    # The one that matters: every command the console accepts must be documented, and every
+    # documented command must exist. A help text that drifts from the code is worse than none.
+    import re as _re
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "tools", "pulsenest_recorder.py"), encoding="utf-8").read()
+    body = src[src.index("    def console(self, line)"):src.index("    def _owners(self)")]
+    accepted = set(_re.findall(r'cmd == "(\w+)"', body))
+    accepted |= {c for grp in _re.findall(r'cmd in \(([^)]*)\)', body)
+                 for c in _re.findall(r'"(\w+)"', grp)}
+    aliases = {"q", "exit", "?"}
+    check("[9] every command the console accepts is documented in COMMAND_HELP",
+          (accepted - aliases) <= set(R.COMMAND_HELP), sorted((accepted - aliases) - set(R.COMMAND_HELP)))
+    check("[9] and every documented command is one the console accepts",
+          set(R.COMMAND_HELP) <= accepted, sorted(set(R.COMMAND_HELP) - accepted))
 
     rows = open(rec.events_path, encoding="utf-8").read().splitlines()
     check("[6] the header names session_id first",

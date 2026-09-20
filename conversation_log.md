@@ -24394,3 +24394,14 @@ asi que `mark subject moved` sigue siendo una nota de sesion.
 quien nombre. Un fichero que se sostiene solo vale mas que uno un poco mas corto: la fila dice a
 quien concierne, y quien lea la captura de una placa puede ver que se encendio la lampara, o que el
 bebe de al lado desaturo en ese mismo instante. 75/75 comprobaciones.
+
+**Anadido (11c) - `help <comando>`.** Alex: `help` no daba ayuda especifica por comando. Anadida
+tabla `COMMAND_HELP` con uso, resumen y **detalle** por comando; `help` lista los trece, `help mark`
+explica uno. El detalle es donde vive el PORQUE, porque el operador al lado de la cuna no tiene la
+spec a mano: `help spo2` lleva las dos reglas que protegen esa referencia (leer de la pantalla del
+monitor, nunca corregir el retardo), `help site` explica por que el sitio de nuestra sonda y el del
+monitor son campos distintos (ductus: preductal vs postductal), `help ref` por que el promediado no
+es burocracia. Tolera mayusculas y un guion delante; un comando desconocido responde con la lista.
+**Comprobacion que lo mantiene honesto:** el test recorre el codigo de `console()` y falla si existe
+un comando sin entrada o una entrada sin comando — una ayuda que se desincroniza del codigo es peor
+que ninguna. 80/80.
