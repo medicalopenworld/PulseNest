@@ -12,7 +12,7 @@ What is checked (pulsenest_recorder_spec.md, sections in brackets):
 [5] @PNRAW1 header; @D framing with exact <len>; a datagram containing a line that starts with
     '@' round-trips (the reader follows lengths, not prefixes); seq continues across parts;
     naming by MAC once $CFG arrives, unknown_<IP> after the wait, aux_vn_<IP> for $VN1; a board
-    back on a new IP continues in the same file with an @M note; rotation by size
+    back on a new IP continues in the same file with an @M note; split by size
 [2.3] --raw exceptions keeps $CFG / # STAT / short frames and skips complete $M4 batches
 [6] events.csv header and rows; an @E copy in every open stream; REF_SPO2 range 50..100
 [7] session.json: sources with mac, ips, files, firmware, subject/probe_site; closed + drift
@@ -93,7 +93,7 @@ try:
     # ── Part 1: the core ─────────────────────────────────────────────────────────────────────
     clk = FakeClock()
     log = QuietLog()
-    rec = R.Recorder(tmp, "bench-01", operator="AC", raw_mode="full", rotate_bytes=6000,
+    rec = R.Recorder(tmp, "bench-01", operator="AC", raw_mode="full", split_bytes=6000,
                      identify_wait_s=3.0, log=log, clock=clk)
 
     check("[3] session dir and session.json exist before any datagram",
@@ -169,11 +169,11 @@ try:
           len(ref) == 1 and ref[0].split(",")[5:10] == ["SUBJ01", "10:20:BA:14:75:60", "96", "142", "keyboard"],
           ref[0] if ref else "none")
 
-    # rotation by size on A (rotate_bytes=6000: each batch is ~1.4 kB)
+    # split by size on A (split_bytes=6000: each batch is ~1.4 kB)
     for i in range(12):
         clk.advance(0.01)
         rec.feed("192.168.137.62", batch(790000 + 5 * i), *clk())
-    check("[5] rotation by size produced several parts", a.stream.part >= 3 and len(a.stream.files) == a.stream.part,
+    check("[5] split by size produced several parts", a.stream.part >= 3 and len(a.stream.files) == a.stream.part,
           f"part={a.stream.part} files={len(a.stream.files)}")
 
     # board A comes back on a new IP: same file, @M note, ips list grows

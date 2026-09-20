@@ -35,7 +35,7 @@ than be dropped. A phone sending $VN1 frames is an auxiliary source, aux_vn_<IP>
 Design rules that are enforced here rather than promised:
 - The recorder never sends to a board: HubClient(control=False), and there is no code path that
   calls send_to_board().
-- Append only; flush every 1 s; fsync every 10 s, on rotation and on close; events.csv fsyncs on
+- Append only; flush every 1 s; fsync every 10 s, on split and on close; events.csv fsyncs on
   every row.
 - One writer per source, each write in its own try/except: a failure on one board's stream is
   logged and counted and does not touch the others.
@@ -74,8 +74,8 @@ FSYNC_S = 10.0
 FREE_SPACE_CHECK_S = 60.0
 IDENTIFY_WAIT_S = 3.0            # how long a new IP's datagrams wait in memory for a $CFG (MAC)
 SOURCE_SILENT_S = 5.0            # after this much silence a source is noted as silent (@M)
-ROTATE_MIN_DEFAULT = 15
-ROTATE_MB_DEFAULT = 256
+SPLIT_MIN_DEFAULT = 15
+SPLIT_MB_DEFAULT = 256
 
 # --- what "a measurement frame the CSV represents" means for --raw exceptions -----------------
 # Token count INCLUDING the tag, what pulsenest_lab.py checks (`len(row) < 36` for $M4). A batch
@@ -110,23 +110,23 @@ def mac_compact(mac):
 
 
 # ============================================================================================
-# one raw stream (one source, rotated into parts)
+# one raw stream (one source, split into parts)
 # ============================================================================================
 class RawStream:
     """Append-only `.pnraw` writer for ONE source. Owns the current part file, the record
-    sequence (continues across parts, so a gap in seq is a dropped record), rotation and the
+    sequence (continues across parts, so a gap in seq is a dropped record), splitting and the
     flush/fsync cadence. Every write is wrapped by the Recorder, not here: this class raises,
     the caller decides what a failure on one source means for the others."""
 
     def __init__(self, raw_dir, session_id, source_key, source_label, log,
-                 rotate_s=ROTATE_MIN_DEFAULT * 60, rotate_bytes=ROTATE_MB_DEFAULT * 1024 * 1024):
+                 split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024):
         self.raw_dir = raw_dir
         self.session_id = session_id
         self.source_key = source_key          # MAC or IP text, as the header's source=
         self.source_label = source_label      # file stem: board_<MAC> | unknown_<IP> | aux_vn_<IP>
         self.log = log
-        self.rotate_s = rotate_s
-        self.rotate_bytes = rotate_bytes
+        self.split_s = split_s
+        self.split_bytes = split_bytes
         self.part = 0
         self.seq = 0
         self.f = None
@@ -157,12 +157,12 @@ class RawStream:
         self._write(header)
         return p
 
-    def _rotate_if_due(self, t_mono_us, t_epoch_us):
+    def _split_if_due(self, t_mono_us, t_epoch_us):
         if self.f is None:
             return
         elapsed = time.monotonic() - self.part_opened_mono
-        if elapsed >= self.rotate_s or self.part_bytes >= self.rotate_bytes:
-            why = (f"{int(self.rotate_s // 60)} min elapsed" if elapsed >= self.rotate_s
+        if elapsed >= self.split_s or self.part_bytes >= self.split_bytes:
+            why = (f"{int(self.split_s // 60)} min elapsed" if elapsed >= self.split_s
                    else f"{self.part_bytes} B reached")
             nxt = os.path.basename(self.path(self.part + 1))
             self.note(t_mono_us, t_epoch_us, f"part closed: {why} -> {nxt}")
@@ -183,7 +183,7 @@ class RawStream:
         not unescaped, not validated (spec section 5)."""
         if self.f is None:
             self.open_part(t_mono_us, t_epoch_us)
-        self._rotate_if_due(t_mono_us, t_epoch_us)
+        self._split_if_due(t_mono_us, t_epoch_us)
         self.seq += 1
         head = f"@D {self.seq} {t_mono_us} {t_epoch_us} {ip} {len(data)}\n".encode("ascii")
         self._write(head + data + b"\n")
@@ -269,14 +269,14 @@ class Source:
 # ============================================================================================
 class Recorder:
     def __init__(self, out_root, site, operator="", raw_mode="full", hub_text="",
-                 rotate_s=ROTATE_MIN_DEFAULT * 60, rotate_bytes=ROTATE_MB_DEFAULT * 1024 * 1024,
+                 split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
         self.clock = clock
         self.raw_mode = raw_mode
-        self.rotate_s = rotate_s
-        self.rotate_bytes = rotate_bytes
+        self.split_s = split_s
+        self.split_bytes = split_bytes
         self.identify_wait_s = identify_wait_s
         self.min_free_bytes = min_free_bytes
         t_mono, t_epoch = self.clock()
@@ -420,7 +420,7 @@ class Recorder:
             src.pending = []
             return
         src.stream = RawStream(self.raw_dir, self.session_id, src.key(), src.label(), self.log,
-                               self.rotate_s, self.rotate_bytes)
+                               self.split_s, self.split_bytes)
         src.stream.open_part(t_mono_us, t_epoch_us)
         for rec in src.pending:                       # what waited for the name, in order
             src.stream.datagram(*rec)
@@ -789,8 +789,8 @@ def main(argv=None):
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"))
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
-    ap.add_argument("--rotate-min", type=float, default=ROTATE_MIN_DEFAULT)
-    ap.add_argument("--rotate-mb", type=float, default=ROTATE_MB_DEFAULT)
+    ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT)
+    ap.add_argument("--split-mb", type=float, default=SPLIT_MB_DEFAULT)
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--event-port", type=int, default=0,
                     help="local UDP port that accepts the console commands from a panel process")
@@ -800,7 +800,7 @@ def main(argv=None):
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
     rec = Recorder(args.out, args.site, args.operator, args.raw, hub_text=f"{hub[0]}:{hub[1]}",
-                   rotate_s=args.rotate_min * 60, rotate_bytes=int(args.rotate_mb * 1024 * 1024),
+                   split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                    min_free_bytes=int(args.min_free_gb * 1e9))
     log = rec.log
 

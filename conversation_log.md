@@ -23955,3 +23955,10 @@ accaa122c71f6108** (identico en las tres: build reproducible), 1500 datagramas `
 una, `Ts_us` coherente (0,6-1,0 min de uptime). `docs/boards.md` actualizado en las tres filas.
 Pendiente de la semana: banco de horas con el registrador (rotacion real a 15 min, silencio,
 reinicio de placa) y ensayo del protocolo de hospital.
+
+**Anadido (3c) - vocabulario.** Alex: "rotar" le resulta confuso. Sustituido en codigo, test y spec:
+espanol "partir el fichero" / "parte"; ingles "split" / "part" (`--split-min`, `--split-mb`,
+`_split_if_due()`, "Splitting into parts"). Descartados "segmento" (colisiona con segmentos de
+senal), "rollover" (misma jerga). 40/40 tras el renombrado. Memoria `feedback_split_not_rotate`.
+Alex quiere reflexionar el intervalo de particion: 15 min era una cifra redonda sin medida (D4);
+el prefiere 10. D4 marcada "en revision" en la spec.

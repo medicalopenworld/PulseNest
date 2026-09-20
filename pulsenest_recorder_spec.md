@@ -115,10 +115,10 @@ survival is the whole point of the file.
 captures/sessions/<SESSION_ID>/
     session.json                  metadata, the only hand-edited file (§7)
     events.csv                    operator marks and manual readings (§6)
-    recorder.log                  the tool's own log: connections, errors, disk, rotations
+    recorder.log                  the tool's own log: connections, errors, disk, splits
     T2_SUBJ01_RESTING_20260926_101500.csv   the live capture CSV, one per board (§2)
     raw/                          only when --raw is full or exceptions (§2.3)
-        board_<MAC>_0001.pnraw    one stream per board, rotated (§5)
+        board_<MAC>_0001.pnraw    one stream per board, split into parts (§5)
         board_<MAC>_0002.pnraw
         aux_vn_<IP>_0001.pnraw    VideoNest's $VN1 stream, same format
     derived/                      produced OFF-SITE by the converter, never during the session
@@ -167,7 +167,7 @@ then a newline:
 <len bytes, exactly as received>\n
 ```
 
-* `seq` counts records **per file** from 1 and never resets on rotation within a source (so a
+* `seq` counts records from 1 in a source's first part and never resets on a split within that source (so a
   gap in `seq` is a dropped record, which the recorder never does silently — it logs it).
 * `len` is the byte count of the datagram, so the reader never has to guess where it ends.
   This is what keeps the **5 measurements per datagram** invariant intact (spec §4.8): the
@@ -182,7 +182,7 @@ Two other record types share the file, so that a raw stream is self-contained:
 ```
 @E <t_mono_us> <t_epoch_us> <event_id> <kind> <text>\n     an operator event (§6), copied into
                                                             every open raw stream
-@M <t_mono_us> <t_epoch_us> <text>\n                        a recorder note: rotation, board lost,
+@M <t_mono_us> <t_epoch_us> <text>\n                        a recorder note: part split, board lost,
                                                             source back on a new IP, disk warning
 ```
 
@@ -218,7 +218,7 @@ A complete example file, with real frames and real lengths, is `docs/pnraw_examp
 read with `head`, searched with `grep` and repaired by hand if its tail is torn, which a binary
 container cannot. The length prefix buys exactness without giving that up.
 
-**Rotation.** A new part every **15 minutes or 256 MB**, whichever comes first. A closed part can
+**Splitting into parts.** A new part every **15 minutes or 256 MB**, whichever comes first (D4). In Spanish *partir el fichero*; not "rotate", Unix log jargon that says nothing about what happens: the current part is closed (fsync) and the next one opened, recording never stops, `seq` continues. A closed part can
 be copied or compressed while the session runs, and a file lost to a bad write costs one part,
 not the session.
 
@@ -324,7 +324,7 @@ unparsed**, and also stays in the raw stream. It is a convenience, not a source 
 ## 8. Durability, and how the recorder behaves when things go wrong
 
 * **Append only.** No file is ever rewritten, truncated or reopened for writing.
-* **Flush** every 1 s; **fsync** every 10 s and on every rotation; **fsync immediately** for
+* **Flush** every 1 s; **fsync** every 10 s and on every split; **fsync immediately** for
   `events.csv`.
 * **One writer per source, each with its own try/except.** An exception writing one board's
   stream must not stop the other two: it is logged, counted, and that source is retried.
@@ -419,7 +419,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D1 | Should the hub recognise `$VN1` as an **auxiliary source** rather than treating the phone as a board (today it will ask the phone `$CFG?` three times and show it as a board in `fleet_monitor` / `fleet_ppg_viewer`)? | Yes — classify by first-datagram prefix, skip the `$CFG?` query, tag it in `@STATUS`. Small change, keeps the fleet tools honest. |
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
-| D4 | Rotation period: 15 min / 256 MB. | Keep unless the disk budget says otherwise. |
+| D4 | Split period: 15 min / 256 MB. | Under review 2026-09-20 (Alex leans to 10 min); see §13. |
 | D5 | Should `events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `recorder.log` already cover it. |
 
 ---
@@ -442,6 +442,7 @@ board — the figure §2.3 estimated.
 
 What the implementation fixed in this document's wording, or added:
 
+* **Vocabulary: "split" / "part"**, never "rotate": in Spanish *partir el fichero* / *parte* (Alex, 2026-09-20). CLI `--split-min`, `--split-mb`; code `_split_if_due()`.
 * **`seq` continues across parts** within a source (it does not restart at 1 in part 0002): a
   gap in `seq` anywhere in a source's parts is a dropped record. §5's "per file from 1" meant
   "from 1 in the source's first file".
@@ -476,7 +477,7 @@ What the implementation fixed in this document's wording, or added:
 * **Free space**: refused at start below `--min-free-gb` (default 2 GB), checked every minute,
   warns below twice the floor and stops cleanly below it (`SESSION_END reason=disk`).
 * Files are opened unbuffered (`buffering=0`), so §8's "flush every 1 s" is implicit; fsync
-  every 10 s, on rotation and on close; `events.csv` fsyncs on every row.
+  every 10 s, on every split and on close; `events.csv` fsyncs on every row.
 
 Not yet: the live CSV (§2), the converter (§10), the panel process (§9), `--compress-on-close`
 (D2), and the hub-side classification of the phone (D1).
