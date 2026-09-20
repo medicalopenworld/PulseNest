@@ -338,6 +338,16 @@ try:
           s2.dgrams == 8 and s2.dgrams_skipped == 5 and s2.stream.records == 3, f"{s2.dgrams} {s2.dgrams_skipped} {s2.stream.records}")
     rec2.close()
 
+    # refusing to start below the floor: one line, no traceback, and NO directory left behind
+    nodisk = os.path.join(tmp, "nodisk")
+    try:
+        R.Recorder(nodisk, "FULL", min_free_bytes=10 ** 15, log=QuietLog(), clock=FakeClock())
+        refused = False
+    except R.NotEnoughSpace as exc:
+        refused = "floor is" in str(exc)
+    check("[8] refuses to start below the free-space floor, leaving no session directory",
+          refused and not os.path.exists(nodisk))
+
     # --raw off: no raw/ directory at all
     rec3 = R.Recorder(tmp, "OFF", raw_mode="off", log=QuietLog(), clock=FakeClock())
     rec3.feed("10.0.0.2", CFG_A); rec3.feed("10.0.0.2", batch(1))

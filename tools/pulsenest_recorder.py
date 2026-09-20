@@ -105,6 +105,26 @@ _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
 # ============================================================================================
 # clocks
 # ============================================================================================
+class NotEnoughSpace(RuntimeError):
+    """Refusing to start: less free space than the floor. Its own type so main() can report it as
+    one line rather than a traceback -- what an operator at a cot side needs to read."""
+
+
+def _free_bytes(path):
+    """Free bytes on the volume holding `path`, walking up to the first parent that exists (the
+    session directory has not been created yet when this is asked)."""
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    try:
+        return shutil.disk_usage(p).free
+    except OSError:
+        return None
+
+
 def now_us():
     """(t_mono_us, t_epoch_us): the two host clocks of spec section 4, taken together."""
     return int(time.monotonic() * 1e6), int(time.time() * 1e6)
@@ -340,12 +360,15 @@ class Recorder:
         self.free_bytes = None
 
         # The directory and session.json exist BEFORE the first datagram is recorded (section 3).
+        # Check the disk BEFORE creating anything: a refused start should leave no trace, not an
+        # empty session directory that looks like a session nobody recorded into.
+        self.free_bytes = _free_bytes(out_root)
+        if self.min_free_bytes and self.free_bytes is not None and self.free_bytes < self.min_free_bytes:
+            raise NotEnoughSpace(f"{self.free_bytes / 1e9:.1f} GB free on {os.path.abspath(out_root)}, "
+                                 f"floor is {self.min_free_bytes / 1e9:.1f} GB")
         os.makedirs(self.dir, exist_ok=True)
         self.log = log or self._make_logger()
         self._check_free_space(force=True)
-        if self.min_free_bytes and self.free_bytes is not None and self.free_bytes < self.min_free_bytes:
-            raise RuntimeError(f"refusing to start: {self.free_bytes / 1e9:.1f} GB free, floor is "
-                               f"{self.min_free_bytes / 1e9:.1f} GB")
         self.events_path = os.path.join(self.dir, "events.csv")
         self._events_f = open(self.events_path, "a", newline="", encoding="utf-8")
         if os.path.getsize(self.events_path) == 0:
@@ -891,9 +914,17 @@ def main(argv=None):
 
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
-    rec = Recorder(args.out, args.site, args.operator, args.raw, hub_text=f"{hub[0]}:{hub[1]}",
-                   split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
-                   min_free_bytes=int(args.min_free_gb * 1e9))
+    try:
+        rec = Recorder(args.out, args.site, args.operator, args.raw, hub_text=f"{hub[0]}:{hub[1]}",
+                       split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
+                       min_free_bytes=int(args.min_free_gb * 1e9))
+    except NotEnoughSpace as exc:
+        print(f"NOT STARTING: {exc}.", file=sys.stderr)
+        print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"NOT STARTING: cannot write to {args.out}: {exc}", file=sys.stderr)
+        return 2
     log = rec.log
 
     client = HubClient(script_name(__file__), hub=hub, control=False, log=log.info)

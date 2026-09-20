@@ -24009,3 +24009,16 @@ eventos `--event-port 5099` probado desde OTRO proceso: `status`, `subject`, `sp
 UDP, y si muere no afecta a la grabacion.
 
 **Vocabulario (ver anadido 3e):** decir `.pnraw`, no "bruto".
+
+**Anadido (4b) - `--raw exceptions` medido con placas reales.** 2 min, 3 V18: **11 999 de 12 037
+datagramas saltados por placa, 8 kB escritos = 240 kB/h frente a 500 MB/h** (factor ~2000). Lo que
+guarda es el trafico de diagnostico (`$TIMING`, `$TASK`, `$TASKS` ~1 cada 5 s, `# STAT`) y las tres
+tramas de configuracion; **ni una sola trama de medida**, o sea que el firmware de hoy emite
+siempre 36 campos exactos en `$M4` (dato util por si mismo). Spec §2.3 actualizada con la medida.
+**No pude reiniciar una placa para probar el reinicio a mitad de sesion: el lab tiene el control del
+hub desde las 15:42.** Queda para Alex (desenchufar 10 s o `$RESET` desde el lab).
+
+**Anadido (4c) - arranque rechazado con dignidad.** Probado el rechazo por disco: salia como traza
+de Python y dejaba un directorio de sesion vacio. Corregido: excepcion propia `NotEnoughSpace`, la
+comprobacion se hace ANTES de crear nada (un arranque rechazado no deja rastro), `main()` imprime
+dos lineas claras por stderr y devuelve **codigo 2**. Comprobado a mano y en el test. 53/53.

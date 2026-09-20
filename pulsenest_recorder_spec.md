@@ -86,7 +86,7 @@ per session:
 | Mode | What is written to `.pnraw` | Cost per board |
 |---|---|---|
 | `full` | every datagram | ≈ **0,5 GB/h** |
-| `exceptions` *(recommended once the pipeline is trusted)* | only what the CSV cannot represent: `$CFG`, `$ERR`, `# STAT`, unparseable or corrupt frames, and **any measurement frame whose field count is not the one expected** | **kilobytes/h** |
+| `exceptions` *(recommended once the pipeline is trusted)* | only what the CSV cannot represent: `$CFG`, `$TCFG`, `$LCFG`, `$TIMING`, `$TASK(S)`, `$ERR`, `# STAT`, unparseable or corrupt frames, and **any measurement frame whose field count is not the one expected** | **240 kB/h** (measured 2026-09-20, three V18, 2 min: 38 datagrams kept of 12 037) |
 | `off` | nothing; `raw/` is not created | 0 |
 
 `exceptions` is the mode this design is really aiming at, and the reason it works is worth
@@ -94,6 +94,12 @@ stating: with every column enabled, the capture CSV already carries **all 36 fie
 frame — everything but the frame tag and the checksum. The gigabytes are spent on measurement
 datagrams that the CSV represents perfectly well. What the CSV cannot represent is the rest, and
 the rest is a few kilobytes an hour.
+
+Measured on the bench 2026-09-20, `--raw exceptions` against the three V18 for two minutes:
+**11 999 of 12 037 datagrams skipped per board, 8 kB written — 240 kB/h against 500 MB/h**, a
+factor of about 2 000. What it kept was the diagnostic traffic (`$TIMING`, `$TASK`, `$TASKS` at
+about one every 5 s, `# STAT`, and the three configuration frames), and **not one measurement
+frame**: today's firmware emits exactly 36 tokens in every `$M4`, which is itself worth knowing.
 
 The field-count check is what makes `exceptions` safe against the failure that motivated raw in
 the first place. A firmware that grows a 37th field produces frames the CSV would quietly
@@ -438,7 +444,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **52 offline and in-process checks**
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **53 offline and in-process checks**
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -491,7 +497,9 @@ What the implementation fixed in this document's wording, or added:
 * **`session.json`** is rewritten atomically (temp file + `os.replace`) at open, whenever a
   stream opens or a subject/site changes, and at close with `closed{}` including
   `clock_drift_us` = (epoch − mono) at close minus at start.
-* **Free space**: refused at start below `--min-free-gb` (default 2 GB), checked every minute,
+* **Free space**: refused at start below `--min-free-gb` (default 2 GB) — checked *before* anything
+  is created, so a refused start leaves no empty session directory, and reported as two lines on
+  stderr with exit code 2 rather than a traceback — checked every minute,
   warns below twice the floor and stops cleanly below it (`SESSION_END reason=disk`).
 * Files are opened unbuffered (`buffering=0`), so §8's "flush every 1 s" is implicit; fsync
   every 10 s, on every split and on close; `events.csv` fsyncs on every row.
