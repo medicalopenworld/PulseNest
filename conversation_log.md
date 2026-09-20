@@ -23976,3 +23976,36 @@ da porque cada placa abre su primera parte cuando llega su primer datagrama. Loc
 husos de media hora. Implementado con `next_wall_boundary_us()`; 4 comprobaciones nuevas (frontera
 10:23:45 -> 10:30:00, instante-frontera -> siguiente, corte real en la frontera con reloj falso,
 sin partes vacias tras un silencio). 44/44.
+
+**Anadido (3e) - vocabulario.** Alex: no decir "bruto" (ambiguo: hay varias cosas sin procesar en el
+proyecto); decir **`.pnraw`**. Aplicado desde aqui; en ingles "raw stream" sigue valiendo.
+
+## Sesion 2026-09-20 (4) - Preparacion de la campana: metadatos por consola, guion de hospital, prueba larga en banco
+
+**Metadatos que solo sabe una persona, ahora se teclean en vez de editar `session.json` a mano**
+(spec §7). Comandos nuevos: `subject <sufijo MAC> SUBJnn` (ya existia), `tier T2 [SUBJnn]`,
+`cond RESTING [SUBJnn]` (sin sujeto = todas las placas), `ref SUBJnn model|avg|site|note <valor>`
+y `consent obtained|pending|n/a`; ademas `help`. Cada uno escribe un evento **`META`** (clase nueva
+en §6) ademas de actualizar `session.json`: asi el metadato es auditable y sobrevive dentro del
+`.pnraw` aunque se pierda el JSON. `ref` cubre el bloque que la spec llama no-negociable: modelo del
+monitor comercial, **promediado en segundos** y **sitio de SU sonda** (preductal mano derecha vs
+postductal pie: si no se anota, la diferencia fisiologica por ductus se lee luego como error
+nuestro). `consent` pasa de literal `"pending"` a estado de la sesion. 52/52 en el test.
+
+**`docs/hospital_runbook.md` (nuevo).** Guion para la persona al lado de la cuna, sin necesidad de
+leer ningun otro documento: vispera (placas flasheadas, disco - 0,5 GB/h/placa, 12 GB para 3 placas
+y 8 h -, reloj del portatil sincronizado, movil con sync de fotos APAGADO, codigos SUBJnn),
+arranque en orden (status -> subject -> tier/cond -> site -> ref -> consent -> ancla de reloj
+filmando el reloj del portatil), durante (lecturas `spo2` frecuentes, `mark`/`note` de todo lo que
+le pasa al bebe, vigilar SILENT), cierre (quit, revisar resumen, copiar el directorio a otro disco)
+y tabla de que hacer cuando algo va mal.
+
+**Prueba larga en banco (25 min, 3 placas V18, `--raw full`).** Confirmado lo que faltaba por ver:
+**las tres placas parten en el MISMO instante de reloj de pared** - 18:20:00.000, .008 y .014, una
+dispersion de 14 ms -, con su nota `@M part closed: 10 min boundary`. Partes de ~64 MB para los 8
+min de la primera (la parte completa de 10 min da ~80 MB, la estimacion era 83). El puerto de
+eventos `--event-port 5099` probado desde OTRO proceso: `status`, `subject`, `spo2`, `site`,
+`anchor`, `mark`, todos con respuesta - el panel de §9 puede ser cualquier cosa que mande una linea
+UDP, y si muere no afecta a la grabacion.
+
+**Vocabulario (ver anadido 3e):** decir `.pnraw`, no "bruto".

@@ -163,6 +163,25 @@ try:
     rec.console("site SUBJ01 left foot")
     rec.console("mark probe repositioned")
 
+    # session metadata only a person knows (spec section 7), typed instead of hand-edited
+    check("[7] tier with no subject applies to every board",
+          rec.console("tier T2").startswith("tier=T2 on") and a.tier == "T2" and b.tier == "T2")
+    check("[7] condition narrowed to one subject leaves the others alone",
+          rec.console("cond resting SUBJ01").startswith("cond=RESTING on")
+          and a.condition == "RESTING" and b.condition is None)
+    check("[7] ref needs a board bound to that subject",
+          rec.console("ref SUBJ99 site right hand") .startswith("no board bound to SUBJ99"))
+    rec.console("ref SUBJ01 model Masimo Radical-7")
+    rec.console("ref SUBJ01 avg 8")
+    rec.console("ref SUBJ01 site right hand")
+    check("[7] reference monitor: model, averaging (numeric) and ITS probe site",
+          a.reference == {"make_model": "Masimo Radical-7", "averaging_s": 8.0,
+                          "probe_site": "right hand", "notes": ""}, str(a.reference))
+    check("[7] consent is state, and only the three documented values",
+          rec.console("consent obtained") == "consent = obtained" and rec.consent == "obtained"
+          and rec.console("consent maybe").startswith("usage:"))
+    check("[9] help lists the commands", "ref SUBJ01" in rec.console("help"))
+
     rows = open(rec.events_path, encoding="utf-8").read().splitlines()
     ref = [r for r in rows if ",REF_SPO2," in r]
     check("[6] events.csv REF_SPO2 row: subject, board mac, value, value2, source=keyboard",
@@ -245,6 +264,13 @@ try:
     srcA = [s for s in sj["sources"] if s.get("mac") == "10:20:BA:14:75:60"][0]
     check("[7] session.json: schema, closed with drift, operator", sj["schema"] == "pulsenest_session/1"
           and sj["closed"] is not None and sj["closed"]["clock_drift_us"] == 0 and sj["operator"] == "AC")
+    check("[7] session.json carries the typed metadata and the consent state",
+          srcA["tier"] == "T2" and srcA["condition"] == "RESTING" and sj["consent"] == "obtained"
+          and srcA["reference_monitor"]["averaging_s"] == 8.0
+          and srcA["reference_monitor"]["probe_site"] == "right hand",
+          str(srcA.get("reference_monitor")))
+    check("[6] every metadata change is an auditable META event, not just a JSON edit",
+          sum(1 for r in rows if ",META," in r) >= 6, str(sum(1 for r in rows if ",META," in r)))
     check("[7] session.json source A: ips (2), files (parts), firmware, subject, probe_site",
           len(srcA["ips"]) == 2 and len(srcA["files"]) == a.stream.part and srcA["firmware"]["elfsha"] == "752b9e01df703576"
           and srcA["subject"] == "SUBJ01" and srcA["probe_site"] == "left foot" and srcA["board_rev"] == "incunest_V17")

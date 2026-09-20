@@ -438,9 +438,9 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **44 offline and in-process checks**
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **52 offline and in-process checks**
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
-and an 8 s session on the bench with the three V18 boards: identified by MAC at once from the
+a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
 board — the figure §2.3 estimated.
 
@@ -449,6 +449,16 @@ What the implementation fixed in this document's wording, or added:
 * **Split period: 10 min, aligned to the local wall clock** (D4 closed, §5). `next_wall_boundary_us()`
   computes the next multiple from the top of the hour, so a part that opens at 10:23:45 closes at
   10:30:00, and every board's parts line up. `--split-min` changes it; `--split-mb` is the ceiling.
+* **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`, `tier`,
+  `cond`, `ref SUBJnn model|avg|site|note` and `consent`. Each writes a **`META` event** (a kind
+  added to §6's list) as well as updating `session.json`, so the metadata is auditable and
+  survives in the `.pnraw` even if `session.json` is lost. `ref` covers the block §7 calls
+  non-negotiable: the commercial monitor's model, its averaging in seconds and **its** probe
+  site. `consent` is session state (`obtained | pending | n/a`), no longer the literal
+  `"pending"`.
+* **A runbook for the person at the cot side**: `docs/hospital_runbook.md` — the order of
+  commands at the start, what to type during the session, how to close it, and a table of what
+  to do when something looks wrong.
 * **Vocabulary: "split" / "part"**, never "rotate": in Spanish *partir el fichero* / *parte* (Alex, 2026-09-20). CLI `--split-min`, `--split-mb`; code `_split_if_due()`.
 * **`seq` continues across parts** within a source (it does not restart at 1 in part 0002): a
   gap in `seq` anywhere in a source's parts is a dropped record. §5's "per file from 1" meant

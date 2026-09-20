@@ -18,8 +18,17 @@ with no GUI at all):
     spo2 SUBJ01 96 [142]      a manual reading from the commercial monitor (value, optional PR)
     mark [text]               an operator mark, session-wide
     note <text>               a free-text note (no personal data -- coded subjects only)
-    site SUBJ01 <text>        probe site for a subject ("left foot")
+    site SUBJ01 <text>        probe site of OUR probe for a subject ("left foot")
     anchor                    CLOCK_ANCHOR: written when the laptop clock is being filmed
+    subject <MAC suffix> SUBJ01   bind a board to a subject (a REF_SPO2 then carries its MAC)
+    tier T2 [SUBJ01]          CAPTURE_SET_SPEC tier; no subject = every board
+    cond RESTING [SUBJ01]     condition; no subject = every board
+    ref SUBJ01 model|avg|site|note <value>
+                              the commercial monitor beside that baby: model, averaging in
+                              seconds, and ITS probe site -- pre- vs postductal differ in a
+                              neonate, and an unrecorded difference is read later as our error
+    consent obtained          section 11: required before anything leaves the laptop
+    help                      this list
     status                    one line per source: datagrams, bytes, last seen
     q | quit                  close the session (Ctrl+C does the same)
 
@@ -85,7 +94,7 @@ SPLIT_MB_DEFAULT = 256
 EXPECTED_TOKENS = {b"$M4": 36}
 
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
-               "SESSION_START", "SESSION_END")
+               "META", "SESSION_START", "SESSION_END")   # META: session metadata typed in (subject, tier, condition, reference monitor, consent)
 EVENTS_HEADER = ["event_id", "t_mono_us", "t_epoch_us", "iso_local", "kind", "subject",
                  "board_mac", "value", "value2", "source", "confidence", "note"]
 
@@ -260,6 +269,14 @@ class Source:
         self.dgrams_skipped = 0               # not written under --raw exceptions
         self.subject = None
         self.probe_site = None
+        self.tier = None                      # CAPTURE_SET_SPEC section 2.2: T1 | T2 | T3
+        self.condition = None                 # RESTING, FEEDING, ...
+        # The commercial monitor this baby is also wearing. Two of these are not bureaucracy
+        # (spec section 7): `probe_site`, because preductal (right hand) and postductal (foot)
+        # SpO2 genuinely differ in a neonate with a patent ductus and the difference would
+        # otherwise be read as OUR error; and `averaging_s`, which sets the window our own SpO2
+        # has to be averaged over before the two numbers can be compared at all.
+        self.reference = {"make_model": None, "averaging_s": None, "probe_site": None, "notes": ""}
 
     def label(self):
         if self.kind == "videonest":
@@ -277,6 +294,9 @@ class Source:
              "subject": self.subject, "probe_site": self.probe_site}
         if self.kind == "board":
             d["mac"] = self.mac
+            d["tier"] = self.tier
+            d["condition"] = self.condition
+            d["reference_monitor"] = self.reference
             d["board_rev"] = self.ident.get("board")
             d["firmware"] = {k: self.ident.get(k) for k in ("fw", "lib", "build", "libsha",
                                                               "elfsha", "idfver")}
@@ -315,6 +335,7 @@ class Recorder:
         self.errors = 0
         self.stopped = False
         self.stop_reason = None
+        self.consent = "pending"     # section 11: must be `obtained` before anything leaves the laptop
         self._last_free_check = 0.0
         self.free_bytes = None
 
@@ -545,11 +566,61 @@ class Recorder:
                 if s is None:
                     return f"no board matching {args[0]}"
                 s.subject = args[1].upper()
+                self.event("META", subject=s.subject, board_mac=s.mac or "*",
+                           note=f"subject={s.subject} board={s.label()}")
                 self.write_session_json()
                 return f"{s.label()} -> {s.subject}"
+            if cmd in ("tier", "cond"):
+                # `tier T2` / `cond RESTING` apply to every board; a trailing SUBJnn narrows it.
+                if not args:
+                    return f"usage: {cmd} <value> [SUBJ01]"
+                value = args[0].upper() if cmd == "tier" else " ".join(args).upper()
+                subj = None
+                if len(args) > 1 and args[-1].upper().startswith("SUBJ"):
+                    subj = args[-1].upper()
+                    value = args[0].upper() if cmd == "tier" else " ".join(args[:-1]).upper()
+                targets = [s for s in self._owners()
+                           if s.kind == "board" and (subj is None or s.subject == subj)]
+                if not targets:
+                    return f"no board {'for ' + subj if subj else 'yet'}"
+                for s in targets:
+                    setattr(s, "tier" if cmd == "tier" else "condition", value)
+                self.event("META", subject=subj or "*", note=f"{cmd}={value}")
+                self.write_session_json()
+                return f"{cmd}={value} on " + ", ".join(s.subject or s.label() for s in targets)
+            if cmd == "ref":
+                # The commercial monitor beside this baby (spec section 7).
+                if len(args) < 3 or args[1].lower() not in ("model", "avg", "site", "note"):
+                    return "usage: ref SUBJ01 model|avg|site|note <value...>"
+                subj, key, value = args[0].upper(), args[1].lower(), " ".join(args[2:])
+                targets = [s for s in self._owners() if s.subject == subj]
+                if not targets:
+                    return f"no board bound to {subj} (use: subject <MAC suffix> {subj})"
+                field = {"model": "make_model", "avg": "averaging_s", "site": "probe_site",
+                         "note": "notes"}[key]
+                if key == "avg":
+                    value = float(value)
+                for s in targets:
+                    s.reference[field] = value
+                self.event("META", subject=subj, board_mac=targets[0].mac or "*",
+                           note=f"reference_monitor.{field}={value}")
+                self.write_session_json()
+                return f"{subj} reference_monitor.{field} = {value}"
+            if cmd == "consent":
+                if not args or args[0].lower() not in ("obtained", "pending", "n/a"):
+                    return "usage: consent obtained|pending|n/a"
+                self.consent = args[0].lower()
+                self.event("META", note=f"consent={self.consent}")
+                self.write_session_json()
+                return f"consent = {self.consent}"
+            if cmd in ("help", "?"):
+                return ("spo2 SUBJ01 96 [pr] | mark [text] | note <text> | anchor | "
+                        "site SUBJ01 <text> | subject <MAC suffix> SUBJ01 | tier T2 [SUBJ01] | "
+                        "cond RESTING [SUBJ01] | ref SUBJ01 model|avg|site|note <value> | "
+                        "consent obtained | status | quit")
             if cmd == "status":
                 return self.status_text()
-            return f"unknown command {cmd!r} (spo2, mark, note, anchor, site, subject, status, quit)"
+            return f"unknown command {cmd!r} — type `help`"
         except Exception as exc:
             return f"error: {exc}"
 
@@ -641,7 +712,7 @@ class Recorder:
             "sources": [s.to_json() for s in self._owners()],
             "events": self.events_written,
             "write_errors": self.errors,
-            "consent": "pending",
+            "consent": self.consent,
             "notes": "",
         }
 
