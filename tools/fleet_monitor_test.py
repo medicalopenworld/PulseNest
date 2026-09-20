@@ -155,6 +155,41 @@ mixed_title = strip(F.render(mixed, _C(), ("127.0.0.1", 5005), now)).splitlines(
 check("P1 falls back to full addresses across subnets",
       "boards " not in mixed_title and hdr_m.startswith("IP" + " " * 13), hdr_m[:20])
 
+# ── the SOURCES block: a phone is shown, apart from the boards, never as one of them ────────
+VN1_B8 = b"$VN1,355,96,0.98,1789927310955*26\r\n"     # build 8: seq,spo2,conf,ts (no pr)
+now = time.monotonic()
+a = F.AuxView("192.168.1.143", "videonest")
+a.feed(VN1_B8, now)
+check("AuxView reads what it shows from a build-8 frame",
+      (a.seq, a.spo2, a.conf) == ("355", "96", "0.98"), f"{a.seq},{a.spo2},{a.conf}")
+a.feed(b"$VN1,356,97\r\n", now)          # truncated: must not raise, must not invent
+check("a truncated frame updates what it has and leaves the rest alone",
+      (a.seq, a.spo2, a.conf) == ("356", "97", "0.98"), f"{a.seq},{a.spo2},{a.conf}")
+a.feed(b"rubbish\r\n", now)
+check("a line that is not $VN1 is ignored", a.seq == "356")
+
+a = F.AuxView("192.168.1.143", "videonest")      # a fresh one: the frames above left it mid-edit
+a.feed(VN1_B8, now)
+one_board = {"192.168.137.62": F.BoardView("192.168.137.62")}
+one_board["192.168.137.62"].feed(
+    b"$CFG,sr=500,board=incunest_V18,mac=10:51:DB:50:87:A4,fw=0.14*00\r\n", now)
+txt = strip(F.render(one_board, _C(), ("127.0.0.1", 5005), now, aux={a.ip: a}))
+check("the phone gets its own SOURCES block, not a row in the board table",
+      "SOURCES (non-board)" in txt and "videonest" in txt
+      and "192.168.1.143" not in txt.split("SOURCES")[0], txt.splitlines()[3][:60])
+check("the SOURCES row shows the reference SpO2, the confidence and the rate",
+      any(l.startswith("videonest") and " 96" in l and "0.98" in l for l in txt.splitlines()),
+      [l for l in txt.splitlines() if l.startswith("videonest")])
+check("with no auxiliary source there is no SOURCES block at all",
+      "SOURCES" not in strip(F.render(one_board, _C(), ("127.0.0.1", 5005), now)))
+
+stale = F.AuxView("192.168.1.143", "videonest")
+stale.last_seen = now - 60
+txt_stale = strip(F.render(one_board, _C(), ("127.0.0.1", 5005), now, aux={stale.ip: stale}))
+check("a phone that went quiet reaches the alert line, like a silent board",
+      "!! SILENT:" in txt_stale and "videonest" in txt_stale.split("\n")[1],
+      txt_stale.splitlines()[1][:80])
+
 # An auxiliary source ($VN1: a phone doing OCR of the commercial monitor) is not a board and
 # must never get a row of its own -- the rule lives once, in pulsenest_hub.AUX_PREFIXES, and both
 # the hub and this tool read it from there.

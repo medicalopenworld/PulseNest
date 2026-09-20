@@ -24193,3 +24193,36 @@ resumenes, tablas y listas**, donde la tentacion de abreviar es mayor. (2) di ci
 ("registrador 60, hub 39") sin decir que contaban; Alex: "no soy adivino". Regla nueva en
 `feedback_general`: **todo numero lleva pegado su sustantivo o su unidad**, y si son varios van en
 tabla con cabecera.
+
+## Sesion 2026-09-20 (7) - Bloque SOURCES en `fleet_monitor.py`: el movil se ve, pero no como placa
+
+Alex pregunta si `fleet_monitor.py` deberia listar los moviles con VideoNest. **Mi exclusion de
+esta tarde era una sobrecorreccion y lo reconozco**: sacarlo de la TABLA DE PLACAS era correcto
+(no tiene MAC, ni firmware, ni RF, ni estado de sonda: seria una fila de guiones), sacarlo de la
+PANTALLA no. La herramienta existe para decir de un vistazo si todo lo que deberia medir esta
+vivo, y el movil es la fuente que mas facil se cae (bateria, app en segundo plano, camara movida).
+Esta misma tarde dejo de emitir 20 min y me entere preguntandole al hub.
+
+**Nombre:** `source`, que **ya es la palabra del proyecto** (`class Source` y `sources` en
+`pulsenest_recorder.py`, lista `"sources"` con `"kind"` en `session.json`). No se inventa un tercer
+vocabulario. Nota: en `pulsenest_hub.py` el diccionario se sigue llamando `boards` aunque ya guarda
+auxiliares; ese nombre se quedo corto, pendiente de renombrar.
+
+**Implementado:** clase `AuxView` + bloque `SOURCES (non-board)` bajo la tabla de placas, con
+KIND, IP, dg/s, SpO2, conf, seq y last; y **el movil callado entra en la linea roja de alerta**,
+igual que una placa. `AuxView` parsea solo lo que muestra, por posicion pero con tolerancia: una
+trama truncada no revienta ni inventa, y un build futuro con un campo mas no rompe la pantalla.
+
+**Riesgo declarado y matizado por Alex:** la SpO2 que muestra VideoNest ES la del monitor
+comercial; si el operador la copiara en la entrada manual, la tercera referencia dejaria de ser
+independiente. **Alex apunta que el riesgo es pequeno en la practica: nuestro texto es diminuto al
+lado de los digitos grandes del pulsioximetro, y probablemente el operario ni se de cuenta de que
+los tiene ahi.** De acuerdo; la mitigacion es una linea en el guion (leer del monitor, nunca de
+nuestra pantalla) y no mas mecanismos.
+
+**Verificado contra el banco:** las tres V18 en la tabla y dos fuentes en el bloque (el movil real
+y uno simulado). Y de paso, **VideoNest build 8 confirmado en el cable**:
+`$VN1,1074,96,0.98,1789931253809*02`, cuatro campos de datos, **checksum correcto sobre el cuerpo
+nuevo** en las tres tramas comprobadas. `fleet_monitor_test.py`: **32 comprobaciones superadas de
+32** (6 nuevas: lectura de build 8, trama truncada, linea no-$VN1, bloque aparte, valores en la
+fila, y movil callado en la alerta).

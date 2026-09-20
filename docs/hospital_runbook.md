@@ -72,6 +72,15 @@ Then, in order:
       (SpO2 and, if shown, pulse rate). Do not correct for delay; the instant of the keystroke
       is what is recorded. Aim for a reading per baby every few minutes, and always around
       anything interesting.
+      **Read the number off the monitor's own screen, never off ours.** `fleet_monitor.py` shows
+      VideoNest's SpO2 in its SOURCES block, and that number *is* the monitor's, read by OCR. If
+      it gets copied into a manual reading, the third reference stops being independent and
+      becomes a copy of the first. In practice the risk is small — our text is tiny beside the
+      oximeter's big digits, and the operator will probably not even notice it is there — but
+      the habit is what protects it.
+- [ ] **Check the SOURCES block too, not just the boards.** A phone that stops (battery, app
+      backgrounded, camera moved) is the likeliest failure of a session, and it shows up there
+      and in the red alert line.
 - [ ] **Mark what happens to the baby**: `mark handling` , `note probe repositioned on SUBJ02`.
       A desaturation, a feed, a nappy change, an alarm on the monitor — all of it is worth a
       line, and none of it can be reconstructed afterwards.
@@ -99,6 +108,7 @@ Then, in order:
 
 | What you see | What it means | What to do |
 |---|---|---|
+| The phone is missing, or `videonest` shows red in SOURCES | Battery, app backgrounded, camera moved, WiFi | Wake the phone and check VideoNest is running; recording of the boards is unaffected |
 | A board is missing from `status` | It is not reaching the laptop: power, WiFi, or a new DHCP lease that has not sent a `$CFG` yet | Wait a few seconds; then check the board's power and the hotspot |
 | `SILENT` beside a board | No datagram for 5 s | Usually the board rebooted or lost WiFi. It is recorded as a note and recording continues; when it comes back, **even on a new IP**, it continues in the same file |
 | `dgrams` climbing but the baby is not connected | Normal: the board streams with no probe | Nothing |

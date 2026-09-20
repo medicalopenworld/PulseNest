@@ -261,9 +261,53 @@ def dedupe_by_mac(boards, b):
             del boards[older.ip]
 
 
-def render(boards, client, hub, t_start, colors=False, t_last_any=None):
+class AuxView:
+    """One source that is not a board: today a phone running VideoNest, whose $VN1 frames carry
+    the commercial monitor's own reading. Kept apart from BoardView on purpose -- it shares
+    almost no column with a board -- but shown, because "is everything alive?" is what this tool
+    is for. Parses only what it displays, and never raises on a malformed frame."""
+
+    def __init__(self, ip, kind):
+        self.ip = ip
+        self.kind = kind
+        self.last_seen = time.monotonic()
+        self.dgrams = 0
+        self.seq = self.spo2 = self.conf = "?"
+        self.win_t, self.win_n, self.rate = time.monotonic(), 0, 0.0
+
+    def feed(self, data, now):
+        self.last_seen = now
+        self.dgrams += 1
+        self.win_n += 1
+        if now - self.win_t >= 2.0:
+            self.rate = self.win_n / (now - self.win_t)
+            self.win_t, self.win_n = now, 0
+        for raw in data.split(b"\n"):
+            line = raw.rstrip(b"\r")
+            if not line.startswith(b"$VN1"):
+                continue
+            # Build 8 (2026-09-20): $VN1,<seq>,<spo2>,<conf>,<ts_ms>*<cks> -- four fields, no pr.
+            # Read by position but tolerantly: a field that is not there stays as it was, and a
+            # future build that adds one cannot break this screen.
+            p = line.split(b",")
+            try:
+                if len(p) > 1:
+                    self.seq = p[1].decode("ascii", "replace")
+                if len(p) > 2:
+                    self.spo2 = p[2].decode("ascii", "replace")
+                if len(p) > 3:
+                    self.conf = p[3].decode("ascii", "replace")
+            except (ValueError, IndexError):
+                pass
+
+
+def render(boards, client, hub, t_start, colors=False, t_last_any=None, aux=None):
     now = time.monotonic()
     silent = sorted((b for b in boards.values() if now - b.last_seen > LOST_S), key=lambda x: x.ip)
+    # A phone that stops is the likeliest failure of a campaign (battery, app backgrounded, camera
+    # moved) and until 2026-09-20 nothing on this screen said so.
+    silent_aux = sorted(((aux or {}).values()), key=lambda x: x.ip)
+    silent_aux = [a for a in silent_aux if now - a.last_seen > LOST_S]
     prefix = ip_prefix(boards)
     out = [f"PulseNest {script_name(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
            f", read-only)" + (f"  boards {prefix}.*" if prefix else "")
@@ -274,9 +318,10 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
         since = now - (t_last_any if t_last_any is not None else t_start)
         alert = (f"!! NO BOARD RECEIVED for {since:.0f} s — boards powered? hotspot broadcasting? "
                  f"hub receiving? (its counters are below)")
-    elif silent:
-        alert = "!! SILENT: " + "   ".join(f"{b.ip} {b.ident.get('board', '?')} for {now - b.last_seen:.0f} s"
-                                          for b in silent)
+    elif silent or silent_aux:
+        alert = "!! SILENT: " + "   ".join(
+            [f"{b.ip} {b.ident.get('board', '?')} for {now - b.last_seen:.0f} s" for b in silent]
+            + [f"{a.ip} {a.kind} for {now - a.last_seen:.0f} s" for a in silent_aux])
     else:
         alert = ""
     out.append((RED_BG + alert + RESET) if (alert and colors) else alert)
@@ -314,6 +359,23 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None):
     if not boards:
         out.append("(no board seen yet)")
     out.append("")
+    # SOURCES: everything measuring that is not a board. `source` is the word the rest of the
+    # project already uses -- pulsenest_recorder.py has a Source class, session.json a "sources"
+    # list with a "kind" per entry -- so this screen does not invent a third vocabulary.
+    if aux:
+        out.append("SOURCES (non-board)")
+        ahdr = (f"{'KIND':12s} {'IP':15s} {'dg/s':>5s} {'SpO2':>5s} {'conf':>5s} {'seq':>7s} "
+                f"{'last':>5s}")
+        out.append(ahdr)
+        out.append("-" * len(ahdr))
+        for a in sorted(aux.values(), key=lambda x: x.ip):
+            silence = now - a.last_seen
+            lost = silence > LOST_S
+            arow = (f"{a.kind[:12]:12s} {a.ip:15s} {a.rate:5.1f} {fit(a.spo2, 5)} "
+                    f"{fit(a.conf, 5)} {fit(a.seq, 7)} "
+                    f"{(f'{silence:4.0f}s' if lost else 'live'):>5s}")
+            out.append((RED_BG + arow + RESET) if (colors and lost) else arow)
+        out.append("")
     if client.last_status:
         # Relabelled, not passed through raw: the wire format is "hub ..."/"sub <addr> <name> ...",
         # and Alex found that ambiguous to read cold -- was the hub identified by being first in
@@ -396,7 +458,7 @@ def main():
     client = HubClient(script_name(__file__), hub=hub, control=False, log=lambda m: None)
     client.connect()
     boards = {}
-    aux = set()                    # IPs classified as auxiliary sources (AUX_PREFIXES)
+    aux = {}                       # ip -> AuxView, the sources that are not boards
     t_start = time.monotonic()
     t_last_any = None
     next_draw = next_status = 0.0
@@ -408,11 +470,16 @@ def main():
             if item is not None:
                 ip, data = item
                 t_last_any = now
-                if ip in aux or (ip not in boards and data[:4] in AUX_PREFIXES):
-                    # A phone doing OCR of the commercial monitor ($VN1) is not a board: the hub
-                    # already refuses to query it and labels it `aux` in @STATUS (its D1), and a
-                    # row of dashes here would be one more thing to explain during a campaign.
-                    aux.add(ip)
+                kind = AUX_PREFIXES.get(data[:4])
+                if ip in aux or (ip not in boards and kind):
+                    # A phone doing OCR of the commercial monitor is not a board -- no MAC, no
+                    # firmware, no RF -- so it gets no row in the board table. It does get a line
+                    # of its own below it: this tool answers "is everything alive?", and the phone
+                    # is the thing most likely to stop.
+                    a = aux.get(ip)
+                    if a is None:
+                        a = aux[ip] = AuxView(ip, kind or "aux")
+                    a.feed(data, now)
                     continue
                 b = boards.get(ip)
                 if b is None:
@@ -425,7 +492,7 @@ def main():
             if now >= next_draw:
                 next_draw = now + args.refresh
                 screen.draw(render(boards, client, hub, t_start, colors=screen.enabled,
-                                   t_last_any=t_last_any))
+                                   t_last_any=t_last_any, aux=aux))
     except KeyboardInterrupt:
         pass
     finally:
