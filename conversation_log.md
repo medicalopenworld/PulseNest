@@ -24129,3 +24129,20 @@ lleva **la condicion primero** y el nombre despues, al reves que los demas tests
 
 Pendiente de la campana: prueba de VideoNest de extremo a extremo con el movil real, y el ensayo
 cronometrado con el guion. Ambas necesitan a Alex.
+
+**Anadido (5b) - VideoNest probado de extremo a extremo (primera vez).** Alex conecta la camara y
+apunta VideoNest a `192.168.1.140:5005`. Funciona sin tocar nada: **el hub escucha en todas las
+interfaces**, asi que el movil puede estar en la LAN (192.168.1.143) y las placas en el hotspot
+(192.168.137.x). El hub lo clasifica solo como `aux 192.168.1.143 videonest` (D1 validada con
+hardware real, no simulado) y `@PONG` dice `boards=3 aux=2` (el segundo es el movil falso de la
+prueba anterior, ya LOST). Grabados 30 s con `pulsenest_recorder.py`: fichero propio
+`raw/aux_vn_192.168.1.143_0001.pnraw`, **42 tramas (~1,4 Hz), 0 checksums NMEA malos, 0 saltos de
+seq**. Sesion guardada en `captures/sessions/20260920_2001_BENCH`.
+
+**Dos medidas que importan:**
+1. **Deriva movil->host: 164..350 ms, mediana 206.** No es solo desfase de reloj: incluye el OCR y
+   el envio. Es justo la columna `drift_ms` que pide §10 del spec. Para alinear con un fotograma de
+   video (precision de decenas de ms) **hay que corregirla, no ignorarla**.
+2. **El campo de pulso (PR) vale 0 en TODAS las tramas**, con SpO2=96 y confianza 0,98. Apunte al
+   monitor que apunte la camara, el pulso no se esta reconociendo. **Conviene resolverlo antes de
+   la campana**: si no, el unico pulso de referencia sera el `value2` que se teclee a mano.

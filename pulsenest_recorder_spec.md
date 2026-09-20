@@ -510,6 +510,18 @@ What the implementation fixed in this document's wording, or added:
 * **A runbook for the person at the cot side**: `docs/hospital_runbook.md` — the order of
   commands at the start, what to type during the session, how to close it, and a table of what
   to do when something looks wrong.
+* **VideoNest, measured end to end for the first time (2026-09-20).** The phone at
+  192.168.1.143 sending to the bench PC's LAN address on :5005 — the hub binds every interface, so
+  the phone does not have to be on the hotspot with the boards. 30 s recorded alongside the three
+  V18: **42 frames (≈1,4 Hz), 0 bad NMEA checksums, 0 sequence gaps**, classified `aux` by the hub
+  and written to `raw/aux_vn_192.168.1.143_0001.pnraw`. Frame seen:
+  `$VN1,314,96,0,0.98,1789927282311*23`.
+  Two numbers worth keeping. **The phone's timestamp runs 164–350 ms behind host arrival (median
+  206)** — that is clock offset *plus* OCR and send time, and it is exactly what §10's `drift_ms`
+  column is for; at the accuracy a video frame needs (tens of ms) it must be corrected, not
+  ignored. And **the pulse rate field was 0 in every frame** while SpO2 read 96 at confidence
+  0.98: whatever the camera was pointed at, PR was not being recognised. Worth settling before the
+  campaign, since `value2` of a manual `REF_SPO2` is then the only pulse-rate reference.
 * **`session_id` as the first column of `session_events.csv`** (§6), rather than a session-id
   prefix on every filename.
 * **`session_events.csv`, not `events.csv`** (Alex, 2026-09-20). It pairs with `session.json`, so
