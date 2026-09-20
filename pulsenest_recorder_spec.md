@@ -266,11 +266,12 @@ The one file whose content exists nowhere else. Written with **flush + fsync on 
 open raw stream so that each stream stands alone.
 
 ```csv
-event_id,t_mono_us,t_epoch_us,iso_local,kind,subject,board_mac,value,value2,source,confidence,note
+session_id,event_id,t_mono_us,t_epoch_us,iso_local,kind,subject,board_mac,value,value2,source,confidence,note
 ```
 
 | Field | Meaning |
 |---|---|
+| `session_id` | the session this row belongs to, repeated on every row — see below |
 | `event_id` | monotonic within the session; the join key for the `@E` copies |
 | `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `SESSION_START`, `SESSION_END` |
 | `subject` | `SUBJ01`… or `*` for a session-wide event |
@@ -280,6 +281,20 @@ event_id,t_mono_us,t_epoch_us,iso_local,kind,subject,board_mac,value,value2,sour
 | `source` | `keyboard` (manual), `videonest`, `photo`, `serial` — how the value was obtained |
 | `confidence` | free scale for automatic sources; empty for `keyboard` |
 | `note` | free text, **no personal data** (§11) |
+
+**Why `session_id` is a column and the filename is not prefixed** (Alex, 2026-09-20). This is the
+one file in a session directory that travels on its own: it gets opened in Excel, copied, and its
+rows pasted beside another session's to compare. It was also the only one that could not say where
+it came from — the `.pnraw` says so in its `@PNRAW1 session=…` header, `session.json` in its
+`session_id` field, `pulsenest_recorder.log` in its first line. Prefixing every filename with the
+session id was considered and rejected: it would have to reach the `.pnraw` too
+(`20260920_1812_SOAK_board_1051DB508850_0001.pnraw`), and it would not help the commonest case
+anyway, which is rows merged into one sheet where no filename survives. A column does. It costs
+~19 bytes on a file with a few dozen rows per session.
+
+*Files written before 2026-09-20 have no `session_id` column*; a reader takes the session from the
+directory name. Recorded files are not rewritten to add it — append-only applies to what was
+recorded, not only to the recording.
 
 `CLOCK_ANCHOR` is the event written when the operator films the laptop's clock (§7), so the
 video can be tied to `t_epoch_us` without trusting that two devices agree.
@@ -465,7 +480,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **58 offline and in-process checks**
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **60 offline and in-process checks**
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -495,6 +510,8 @@ What the implementation fixed in this document's wording, or added:
 * **A runbook for the person at the cot side**: `docs/hospital_runbook.md` — the order of
   commands at the start, what to type during the session, how to close it, and a table of what
   to do when something looks wrong.
+* **`session_id` as the first column of `session_events.csv`** (§6), rather than a session-id
+  prefix on every filename.
 * **`session_events.csv`, not `events.csv`** (Alex, 2026-09-20). It pairs with `session.json`, so
   everything at session level shares a prefix, and it reads as *the* events of this session rather
   than some events. The word `events` stays, because it is already the vocabulary of the `@E`

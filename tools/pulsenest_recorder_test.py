@@ -183,9 +183,14 @@ try:
     check("[9] help lists the commands", "ref SUBJ01" in rec.console("help"))
 
     rows = open(rec.events_path, encoding="utf-8").read().splitlines()
+    check("[6] the header names session_id first",
+          rows[0].startswith("session_id,event_id,"), rows[0])
+    check("[6] every row carries the session id, so merged sheets keep their origin",
+          all(r.startswith(rec.session_id + ",") for r in rows[1:]), rows[1][:40])
     ref = [r for r in rows if ",REF_SPO2," in r]
-    check("[6] session_events.csv REF_SPO2 row: subject, board mac, value, value2, source=keyboard",
-          len(ref) == 1 and ref[0].split(",")[5:10] == ["SUBJ01", "10:20:BA:14:75:60", "96", "142", "keyboard"],
+    check("[6] session_events.csv row starts with session_id, then subject, mac, value, value2, source",
+          len(ref) == 1 and ref[0].split(",")[0] == rec.session_id
+          and ref[0].split(",")[6:11] == ["SUBJ01", "10:20:BA:14:75:60", "96", "142", "keyboard"],
           ref[0] if ref else "none")
 
     # split by size on A (split_bytes=6000: each batch is ~1.4 kB)
@@ -304,7 +309,9 @@ try:
     check("[7] session.json lists the unidentified and the VideoNest source",
           any(s["kind"] == "videonest" for s in sj["sources"]) and any(s.get("mac") is None and s["kind"] == "board" for s in sj["sources"]))
     rows = open(rec.events_path, encoding="utf-8").read().splitlines()
-    check("[8] SESSION_END is the last event", rows[-1].split(",")[4] == "SESSION_END" and "reason=test" in rows[-1])
+    check("[8] SESSION_END is the last event",
+          rows[-1].split(",")[R.EVENTS_HEADER.index("kind")] == "SESSION_END"
+          and "reason=test" in rows[-1], rows[-1][:60])
 
     # read back every part of A and prove the round-trip
     all_recs = []

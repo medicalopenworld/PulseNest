@@ -24090,3 +24090,15 @@ columna `event_id`, `EVENT_KINDS` y la linea `# event @row N` del formato CSV; c
 se copia es el directorio entero (§3), y si algun dia los ficheros deben identificarse fuera de su
 carpeta, deben hacerlo los TRES, no uno. Cambiado en codigo, test, ambas specs y guion; renombrado
 tambien en `captures/sessions/20260920_1812_SOAK/`. 58/58.
+
+**Anadido (4j) - `session_id` como primera columna de `session_events.csv`.** Alex apunta que le
+gusta el prefijo de sesion en los tres ficheros, pero que entonces habria que ponerselo tambien a
+los `.pnraw` y saldrian demasiado largos; duda. Se le ofrece una tercera via y la acepta: **que el
+contenido diga de donde viene, en vez del nombre**. Los `.pnraw` YA lo hacen (cabecera `@PNRAW1
+session=...`), `session.json` tambien (campo `session_id`) y el log en su primera linea; el UNICO
+que no podia identificarse era precisamente el que mas viaja solo. Y un prefijo en el nombre no
+salvaria el caso mas frecuente: copiar sus filas a una hoja junto con las de otra sesion, donde el
+nombre del fichero desaparece. Una columna si. Coste ~19 B en un fichero de unas decenas de filas.
+**No se reescribe el `session_events.csv` ya grabado** (el de la sesion de 25 min): lo grabado no se
+edita; queda documentado que los ficheros anteriores a hoy no llevan la columna y el lector toma la
+sesion del nombre del directorio. Descartado formalmente el prefijo en los nombres. 60/60.

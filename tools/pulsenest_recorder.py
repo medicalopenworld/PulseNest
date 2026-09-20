@@ -95,8 +95,14 @@ EXPECTED_TOKENS = {b"$M4": 36}
 
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
                "META", "SESSION_START", "SESSION_END")   # META: session metadata typed in (subject, tier, condition, reference monitor, consent)
-EVENTS_HEADER = ["event_id", "t_mono_us", "t_epoch_us", "iso_local", "kind", "subject",
-                 "board_mac", "value", "value2", "source", "confidence", "note"]
+# `session_id` first, and it is not decoration (Alex, 2026-09-20). This is the one file in a
+# session directory that travels on its own -- it gets opened in Excel, copied, and its rows
+# pasted next to another session's to compare -- and it was the only one that could not say where
+# it came from: the `.pnraw` says so in its `@PNRAW1 session=...` header, `session.json` in its
+# `session_id` field, the log in its first line. A prefix on the FILENAME would not have helped
+# the commonest case anyway, which is rows merged into one sheet where no filename survives.
+EVENTS_HEADER = ["session_id", "event_id", "t_mono_us", "t_epoch_us", "iso_local", "kind",
+                 "subject", "board_mac", "value", "value2", "source", "confidence", "note"]
 
 _MAC_RE = re.compile(rb"[,\s]mac=([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})")
 _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
@@ -562,8 +568,8 @@ class Recorder:
             raise ValueError(f"unknown event kind {kind!r}")
         t_mono_us, t_epoch_us = self.clock()
         self.event_id += 1
-        row = [self.event_id, t_mono_us, t_epoch_us, iso_local(t_epoch_us), kind, subject,
-               board_mac, value, value2, source, confidence, note]
+        row = [self.session_id, self.event_id, t_mono_us, t_epoch_us, iso_local(t_epoch_us),
+               kind, subject, board_mac, value, value2, source, confidence, note]
         w = csv.writer(self._events_f, lineterminator="\n")
         w.writerow(row)
         self._events_f.flush()
