@@ -24239,3 +24239,36 @@ ningun bloque empieza con dos espacios y el de hub/suscriptores tiene cabecera y
 **Nota de proceso (tercera vez hoy):** volvi a parchear con heredoc y los escapes `\n` se
 corrompieron, dejando el fichero de test sin compilar. La regla
 `feedback_python_patch_via_file_not_heredoc` existe por esto; rehecho con fichero.
+
+## Sesion 2026-09-20 (8) - El movil se identifica: campo `<id>` al final de `$VN1`
+
+Alex pregunta si el hub reenvia las tramas `$VN1` a todos los suscriptores para que cada uno capture
+la que quiera. **Si, y ya estaba probado hoy con dos moviles a la vez** (el real y uno simulado):
+una fuente auxiliar se reenvia exactamente igual que una placa, con su `@FROM <ip>` delante, y
+`pulsenest_recorder.py` abrio un `.pnraw` por cada una.
+
+**Pero al contestar salio un agujero real: la identidad.** Una placa se identifica por su MAC, que
+viaja en su `$CFG`; un movil solo por su IP, porque `$VN1` no lleva ningun dato del aparato. Con
+varios moviles nada dice cual mira a que bebe, y si a uno le cambia la IP a mitad de sesion se le
+abre un SEGUNDO fichero sin nada que lo enlace con el primero — mientras que una placa en esa
+situacion continua en el mismo fichero porque la MAC coincide.
+
+Ofrecidas tres salidas (trama de identidad tipo `$CFG`; campo en `$VN1`; anotarlo a mano en
+`session.json`). **Alex elige la 2.** Contrato acordado, a implementar en VideoNest:
+
+    $VN1,<seq>,<spo2>,<conf>,<ts_ms>,<id>*<checksum>
+
+**Al final, nunca intercalado**: un lector escrito para build 8 sigue funcionando y los dos formatos
+conviven (la misma regla R18 que aplicamos a nuestro diccionario de columnas). `<id>` = etiqueta
+corta que **pone el operador en la app y se pega con cinta en la carcasa**, 1-8 caracteres ASCII;
+elegida por una persona y no derivada del hardware, porque se ve en el aparato y porque el
+identificador de hardware de un movil personal es dato sensible de un modo que la MAC de una placa
+no es (§11). Checksum, XOR del cuerpo nuevo.
+
+**Implementado aqui:** `pulsenest_recorder.py` nombra el flujo `aux_vn_<ID>`, **fusiona el mismo
+movil a traves de un cambio de IP** (nota `@M source moved ... vn_id=...`, igual que una placa por
+MAC) y guarda `vn_id` por fuente en `session.json`; `fleet_monitor.py` anade columna `ID` al bloque
+SOURCES, con `-` cuando la trama no lo trae. **Una trama sin id se sigue grabando**, nombrada por IP
+como hasta ahora. Specs y guion actualizados (el guion pide etiquetar los moviles la vispera).
+`pulsenest_recorder_test.py` **64 comprobaciones superadas de 64** (4 nuevas, incluida la del cambio
+de IP), `fleet_monitor_test.py` **36 de 36** (2 nuevas).

@@ -273,6 +273,7 @@ class AuxView:
         self.last_seen = time.monotonic()
         self.dgrams = 0
         self.seq = self.spo2 = self.conf = "?"
+        self.vn_id = ""                 # the phone's own label, when its frames carry one
         self.win_t, self.win_n, self.rate = time.monotonic(), 0, 0.0
 
     def feed(self, data, now):
@@ -289,7 +290,7 @@ class AuxView:
             # Build 8 (2026-09-20): $VN1,<seq>,<spo2>,<conf>,<ts_ms>*<cks> -- four fields, no pr.
             # Read by position but tolerantly: a field that is not there stays as it was, and a
             # future build that adds one cannot break this screen.
-            p = line.split(b",")
+            p = line.split(b"*")[0].split(b",")
             try:
                 if len(p) > 1:
                     self.seq = p[1].decode("ascii", "replace")
@@ -297,6 +298,9 @@ class AuxView:
                     self.spo2 = p[2].decode("ascii", "replace")
                 if len(p) > 3:
                     self.conf = p[3].decode("ascii", "replace")
+                if len(p) > 5:
+                    # Appended field: the phone's own id. Older frames simply do not have it.
+                    self.vn_id = p[5].decode("ascii", "replace")
             except (ValueError, IndexError):
                 pass
 
@@ -365,15 +369,15 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None, aux=None
     # list with a "kind" per entry -- so this screen does not invent a third vocabulary.
     if aux:
         out.append("SOURCES (non-board)")
-        ahdr = (f"{'KIND':12s} {'IP':15s} {'dg/s':>5s} {'SpO2':>5s} {'conf':>5s} {'seq':>7s} "
-                f"{'last':>5s}")
+        ahdr = (f"{'KIND':12s} {'ID':8s} {'IP':15s} {'dg/s':>5s} {'SpO2':>5s} {'conf':>5s} "
+                f"{'seq':>7s} {'last':>5s}")
         out.append(ahdr)
         out.append("-" * len(ahdr))
         for a in sorted(aux.values(), key=lambda x: x.ip):
             silence = now - a.last_seen
             lost = silence > LOST_S
-            arow = (f"{a.kind[:12]:12s} {a.ip:15s} {a.rate:5.1f} {fit(a.spo2, 5)} "
-                    f"{fit(a.conf, 5)} {fit(a.seq, 7)} "
+            arow = (f"{a.kind[:12]:12s} {(a.vn_id or '-')[:8]:8s} {a.ip:15s} {a.rate:5.1f} "
+                    f"{fit(a.spo2, 5)} {fit(a.conf, 5)} {fit(a.seq, 7)} "
                     f"{(f'{silence:4.0f}s' if lost else 'live'):>5s}")
             out.append((RED_BG + arow + RESET) if (colors and lost) else arow)
         out.append("")

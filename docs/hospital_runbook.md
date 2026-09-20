@@ -21,6 +21,9 @@ oximeter, the phone running VideoNest pointed at one monitor, one laptop.
       useless.
 - [ ] **Phone**: VideoNest installed and pointed at the right monitor, battery charged, **cloud
       photo sync OFF** (§11 of the spec: the photos are health data).
+- [ ] **Each phone has its id set in the app and taped to its case** (`VN01`, `VN02`…). That label
+      travels in every frame, names its `.pnraw`, and is what keeps one phone's stream together if
+      its address changes mid-session. Write down which phone watches which baby.
 - [ ] **Consent** status known for each subject.
 - [ ] Subject codes agreed in advance: `SUBJ01`, `SUBJ02`, `SUBJ03`. **Never a name**, anywhere,
       not even in a free-text note.

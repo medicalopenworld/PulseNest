@@ -523,6 +523,26 @@ What the implementation fixed in this document's wording, or added:
   ignored. And **the pulse rate field was 0 in every frame** while SpO2 read 96 at confidence
   0.98: whatever the camera was pointed at, PR was not being recognised. Worth settling before the
   campaign, since `value2` of a manual `REF_SPO2` is then the only pulse-rate reference.
+* **A phone names itself, and we treat that name as we treat a MAC** (agreed with Alex,
+  2026-09-20). The contract, for VideoNest to implement:
+
+      $VN1,<seq>,<spo2>,<conf>,<ts_ms>,<id>*<checksum>
+
+  `<id>` is **appended, never inserted**: a reader written for build 8 keeps working unchanged,
+  and the two shapes coexist — the same rule R18 of the CSV dictionary applies to its own columns.
+  It is a short label **the operator sets in the app and tapes to the phone's case**, 1–8 ASCII
+  letters, digits, `_` or `-`; a label a person chose beats one derived from the hardware, because
+  it is readable on the device and because a phone's hardware identifier is personal data in a way
+  a board's MAC is not (§11). The checksum is the XOR of the new body, as always.
+
+  **Why it matters, and it is not cosmetic:** until now a phone was identified by its IP alone.
+  With two or three phones, nothing said which one watched which baby except an address that is
+  valid for one session; and a phone whose lease changed mid-session started a *second* file with
+  nothing linking the two, where a board in the same situation continues in the same file because
+  its MAC matches. With the id, `pulsenest_recorder.py` names the stream `aux_vn_<ID>`, merges the
+  same phone across an IP change (`@M source moved … vn_id=…`), and records `vn_id` per source in
+  `session.json`; `fleet_monitor.py` shows an `ID` column in its SOURCES block. **A frame without
+  an id is still recorded**, named by IP exactly as before.
 * **VideoNest build 8 (2026-09-20) drops `pr` from the frame**: `$VN1,<seq>,<spo2>,<conf>,<ts_ms>`,
   four fields where there were five, and the NMEA checksum is over the new, shorter body. It read 0
   in every frame anyway (measured above). **Nothing in this repository had to change to keep

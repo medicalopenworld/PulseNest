@@ -147,6 +147,29 @@ try:
           v.kind == "videonest" and v.stream.files[0] == "raw/aux_vn_192.168.137.45_0001.pnraw"
           and v.stream.records == 1)
 
+    # a phone that names itself: file by ID, and the SAME file across a DHCP lease change --
+    # which is exactly what a board gets from its MAC, and what an IP-only phone could not have.
+    VN_ID = b"$VN1,900,96,0.98,1790000012000,VN01*00\r\n"
+    clk.advance(0.01)
+    rec.feed("192.168.137.46", VN_ID, *clk())
+    ph = rec.sources["192.168.137.46"]
+    check("[5] a phone's trailing id names its stream, not the IP",
+          ph.vn_id == "VN01" and ph.stream.files[0] == "raw/aux_vn_VN01_0001.pnraw",
+          str(ph.vn_id) + " " + str(ph.stream and ph.stream.files))
+    clk.advance(0.01)
+    rec.feed("192.168.137.62", batch(782090), *clk())   # unrelated board traffic in between
+    clk.advance(0.01)
+    rec.feed("192.168.1.77", VN_ID, *clk())             # same phone, new lease
+    check("[5] the same phone on a new IP continues in the same file",
+          rec.sources["192.168.1.77"] is ph and ph.ip == "192.168.1.77" and len(ph.ips) == 2
+          and ph.stream.records >= 2, f"{ph.ip} {len(ph.ips)} {ph.stream.records}")
+    notes_ph = [r[3] for r in R.read_pnraw(os.path.join(rec.dir, ph.stream.files[0])) if r[0] == "M"]
+    check("[5] and the move is noted in its own stream",
+          any("source moved" in n and "vn_id=VN01" in n for n in notes_ph), str(notes_ph))
+    check("[5] a phone with no id is still recorded, named by IP as before",
+          rec.sources["192.168.137.45"].vn_id is None
+          and rec.sources["192.168.137.45"].stream.files[0].endswith("aux_vn_192.168.137.45_0001.pnraw"))
+
     # a datagram whose payload has a line starting with '@' must round-trip: lengths, not prefixes
     tricky = b"$ERR,test\r\n@FROM 1.2.3.4\r\n# STAT x=1\r\n"
     clk.advance(0.01)

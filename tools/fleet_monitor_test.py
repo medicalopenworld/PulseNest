@@ -168,6 +168,17 @@ check("a truncated frame updates what it has and leaves the rest alone",
 a.feed(b"rubbish\r\n", now)
 check("a line that is not $VN1 is ignored", a.seq == "356")
 
+idd = F.AuxView("192.168.1.143", "videonest")
+idd.feed(b"$VN1,901,95,0.97,1790000012000,VN02*00\r\n", now)
+check("AuxView reads the phone's trailing id, and the fields before it are unmoved",
+      (idd.vn_id, idd.seq, idd.spo2, idd.conf) == ("VN02", "901", "95", "0.97"),
+      f"{idd.vn_id},{idd.seq},{idd.spo2},{idd.conf}")
+idd_txt = strip(F.render({}, _C(), ("127.0.0.1", 5005), now, aux={idd.ip: idd}))
+check("the SOURCES block has an ID column, and shows a dash when a frame carries none",
+      "ID" in idd_txt and "VN02" in idd_txt
+      and "-" in strip(F.render({}, _C(), ("127.0.0.1", 5005), now, aux={a.ip: a})).splitlines()[-1],
+      [l for l in idd_txt.splitlines() if "videonest" in l])
+
 a = F.AuxView("192.168.1.143", "videonest")      # a fresh one: the frames above left it mid-edit
 a.feed(VN1_B8, now)
 one_board = {"192.168.137.62": F.BoardView("192.168.137.62")}

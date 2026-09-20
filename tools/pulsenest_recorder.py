@@ -39,7 +39,8 @@ Layout (§3): captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>/ with session.json, ses
 pulsenest_recorder.log and raw/board_<MAC>_<NNNN>.pnraw. A source is named by its MAC as soon as its $CFG
 arrives (the hub replays the cached $CFG on subscription, so normally at once); until then its
 datagrams wait in memory for up to 3 s, after which they go to unknown_<IP>_<NNNN>.pnraw rather
-than be dropped. A phone sending $VN1 frames is an auxiliary source, aux_vn_<IP>.
+than be dropped. A phone sending $VN1 frames is an auxiliary source, aux_vn_<ID> when its
+frames carry a trailing id field and aux_vn_<IP> when they do not.
 
 Design rules that are enforced here rather than promised:
 - The recorder never sends to a board: HubClient(control=False), and there is no code path that
@@ -111,6 +112,13 @@ EVENTS_HEADER = ["session_id", "event_id", "t_mono_us", "t_epoch_us", "iso_local
 
 _MAC_RE = re.compile(rb"[,\s]mac=([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})")
 _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
+# A phone naming itself at the END of its frame:
+#     $VN1,<seq>,<spo2>,<conf>,<ts_ms>,<id>*<cks>
+# Appended, never inserted, so a frame without it still parses (and is still
+# recorded, named by IP as before). 1-8 ASCII letters/digits set by the operator in
+# the app and taped to the phone: identity that survives a DHCP lease, which is what
+# the MAC does for a board.
+_VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,8})\*")
 
 
 # ============================================================================================
@@ -289,6 +297,7 @@ class Source:
         self.ips = [{"ip": ip, "from": iso_local(first_epoch_us), "to": None}]
         self.mac = None
         self.kind = "board"                   # board | videonest
+        self.vn_id = None                     # a phone's self-declared id, if its frames carry one
         self.ident = {}                       # k=v pairs from the $CFG (board, fw, lib, build, ...)
         self.cfg_raw = None
         self.stream = None
@@ -316,16 +325,17 @@ class Source:
 
     def label(self):
         if self.kind == "videonest":
-            return f"aux_vn_{self.ip}"
+            return f"aux_vn_{self.vn_id or self.ip}"
         if self.mac:
             return f"board_{mac_compact(self.mac)}"
         return f"unknown_{self.ip}"
 
     def key(self):
-        return self.mac if self.mac else self.ip
+        return self.mac or self.vn_id or self.ip
 
     def to_json(self):
         d = {"kind": self.kind, "ips": self.ips, "files": self.stream.files if self.stream else [],
+             "vn_id": self.vn_id,
              "datagrams": self.dgrams, "datagrams_skipped": self.dgrams_skipped,
              "samples": self.samples, "gaps": self.gaps,
              "samples_lost": self.samples_lost, "restarts": self.restarts,
@@ -368,6 +378,7 @@ class Recorder:
         self.hub_text = hub_text
         self.sources = {}                     # ip -> Source
         self.by_mac = {}                      # mac -> Source (the one that owns the stream)
+        self.by_vn = {}                       # a phone's declared id -> Source, same idea
         self.event_id = 0
         self.events_written = 0
         self.errors = 0
@@ -428,6 +439,8 @@ class Recorder:
         src.last_seen_mono = t_mono_us / 1e6
         src.dgrams += 1
         try:
+            if src.kind == "videonest":
+                src = self._identify_phone(src, data, t_mono_us, t_epoch_us)
             if src.kind == "board" and src.mac is None:
                 self._try_identify(src, data, t_mono_us, t_epoch_us)
             elif src.kind == "board" and data.startswith(b"$CFG,"):
@@ -494,6 +507,34 @@ class Recorder:
                 self._note(src, t_mono_us, t_epoch_us,
                            f"gap: {lost} samples lost, counter {prev} -> {n}")
                 self.log.warning("%s gap: %d samples lost (%d -> %d)", src.label(), lost, prev, n)
+
+    def _identify_phone(self, src, data, t_mono_us, t_epoch_us):
+        """Read a phone's self-declared id and treat it the way a board's MAC is treated: the
+        same phone on a new DHCP lease continues in the SAME file. Returns the source that owns
+        the stream from here on (itself, or the one it was merged into)."""
+        if src.vn_id is not None:
+            return src
+        m = _VN_ID_RE.match(data.split(b"\n", 1)[0].rstrip(b"\r"))
+        if not m:
+            return src                        # a frame with no id: named by IP, as before
+        src.vn_id = m.group(1).decode("ascii")
+        owner = self.by_vn.get(src.vn_id)
+        if owner is not None and owner is not src:
+            owner.ips[-1]["to"] = iso_local(t_epoch_us)
+            owner.ips.append({"ip": src.ip, "from": iso_local(t_epoch_us), "to": None})
+            owner.dgrams += src.dgrams
+            old_ip, owner.ip = owner.ip, src.ip
+            self.sources[src.ip] = owner
+            for rec in src.pending:
+                owner.stream.datagram(*rec)
+            src.pending = []
+            self._note(owner, t_mono_us, t_epoch_us,
+                       f"source moved ip={old_ip} -> {src.ip} (vn_id={owner.vn_id})")
+            self.log.info("%s moved %s -> %s", owner.label(), old_ip, src.ip)
+            return owner
+        self.by_vn[src.vn_id] = src
+        self.log.info("phone %s identifies as %s", src.ip, src.vn_id)
+        return src
 
     def _try_identify(self, src, data, t_mono_us, t_epoch_us):
         m = _MAC_RE.search(data) if data.startswith(b"$CFG,") else None
