@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Documentación oficial de fabricantes PPG — apartados sobre medida en neonatos</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  html { font-size: 10.5pt; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: #1a1a1a; line-height: 1.5; margin: 0;
+  }
+  h1 { font-size: 19pt; line-height: 1.25; margin: 0 0 4px; border-bottom: 2px solid #1a4f8b; padding-bottom: 8px; }
+  .subtitle { color: #555; font-size: 9.5pt; margin: 0 0 22px; }
+  h2 { font-size: 13.5pt; color: #1a4f8b; margin: 26px 0 8px; padding-bottom: 3px; border-bottom: 1px solid #d0d7de;
+       page-break-after: avoid; break-after: avoid; }
+  h3 { font-size: 11pt; margin: 16px 0 6px; page-break-after: avoid; break-after: avoid; }
+  p { margin: 6px 0; }
+  ul { margin: 6px 0 6px 0; padding-left: 20px; }
+  li { margin: 4px 0; }
+  a { color: #0b5cad; text-decoration: none; border-bottom: 1px solid #b9d2ec; }
+  code, .mono { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt;
+                background: #f2f4f7; padding: 1px 4px; border-radius: 3px; }
+  blockquote { margin: 8px 0 8px 0; padding: 8px 12px; background: #f7f9fc;
+               border-left: 3px solid #1a4f8b; font-style: italic; color: #2c3e50; }
+  .callout { background: #fff8e6; border: 1px solid #e8d18a; border-left: 4px solid #d99e26;
+             padding: 10px 14px; margin: 12px 0; border-radius: 3px; }
+  .callout.key { background: #eef5ff; border-color: #a9c8ec; border-left-color: #1a4f8b; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #ccd3da; padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #eef2f6; font-weight: 600; }
+  .src { font-size: 9pt; color: #555; margin: 2px 0 8px; }
+  .avoid-break { page-break-inside: avoid; break-inside: avoid; }
+  footer { margin-top: 28px; padding-top: 10px; border-top: 1px solid #d0d7de;
+           font-size: 8.5pt; color: #666; }
+</style>
+</head>
+<body>
+
+<h1>Documentación oficial de fabricantes de sistemas PPG</h1>
+<p class="subtitle">Apartados de manuales, IFU y protocolos de validación referidos a la medida en neonatos &middot;
+Recopilación para el proyecto PulseNest (AFE4490 / IncuNest) &middot; 24 de agosto de 2026</p>
+
+<div class="callout key">
+<p style="margin-top:0"><strong>Conclusión</strong></p>
+<p>Todos los fabricantes declaran <strong>±3 % (A<sub>rms</sub>) en neonatos frente a ±2 % en adultos</strong>, y tres de ellos
+(Masimo, Mindray, Philips/Nellcor) explicitan que ese punto extra es un margen <em>añadido a mano</em> por la
+hemoglobina fetal, no un resultado medido. Solo Mindray, Masimo y Medtronic publican validación clínica en
+neonatos reales; Nihon Kohden y Nonin extrapolan de hipoxia inducida en adultos.</p>
+<p style="margin-bottom:0">Los fabricantes de silicio (TI, Analog Devices/Maxim) no publican <strong>nada</strong> específico
+de neonatos: el AFE4490 no tiene guía neonatal.</p>
+</div>
+
+<h2>1. Masimo</h2>
+
+<h3>RD SET Sensors — Directions for Use (LAB-9028A)</h3>
+<p class="src">Fuente: <a href="https://techdocs.masimo.com/contentassets/572bbdb5f9ef4a73a0f78e7e4ac6f653/lab-9028a.pdf">techdocs.masimo.com/…/lab-9028a.pdf</a> — el documento más útil de todos.</p>
+<ul>
+  <li><strong>Sección «Site Selection»</strong>, por peso: <code>RD SET Neo</code> &lt;3 kg → pie; alternativa palma/dorso de la mano.
+      <code>RD SET NeoPt</code> (pretérmino) &lt;1 kg → pie.</li>
+  <li><strong>Sección «For NEONATES (&lt;3 kg) and PRETERMS»</strong>: <em>«For fragile skin, the stickiness of the medical grade
+      adhesive can be diminished or eliminated by daubing the adhesive areas with a cotton ball or gauze»</em>. Cable hacia
+      el tobillo; sensor en la <strong>cara lateral del pie alineado con el 4.º dedo</strong>.</li>
+  <li><strong>Reattachment</strong>: pestañas adhesivas de doble cara, hasta 3 juegos apilados por ventana óptica.</li>
+  <li><strong>Advertencia ROP</strong>: <em>«High oxygen concentrations may predispose a premature infant to retinopathy.
+      Therefore, the upper alarm limit for the oxygen saturation must be carefully selected…»</em></li>
+</ul>
+<blockquote>Nota al pie 5 (clave): «The saturation accuracy of the Neonate and Preterm sensors were validated on adult
+volunteers and <strong>1 % was added</strong> to account for the properties of fetal hemoglobin.»</blockquote>
+
+<h3>Rad-57 Operator's Manual (LAB-9204A)</h3>
+<p class="src">Fuente: <a href="https://techdocs.masimo.com/globalassets/techdocs/pdf/lab-9204a.pdf">techdocs.masimo.com/…/lab-9204a.pdf</a></p>
+<blockquote>Nota 1 de especificaciones — única validación neonatal real de Masimo publicada: «SpO2 and SpMet accuracy was
+determined on <strong>16 neonatal NICU patients</strong> ranging in age from <strong>7 to 135 days</strong> and weighting between
+<strong>0.5 and 4.25 kg</strong>. <strong>79 data samples</strong> were collected over a range of 70–100 % SaO2… with a resultant
+accuracy of <strong>2.9 % SpO2</strong>.»</blockquote>
+<ul>
+  <li><strong>Troubleshooting «Low SIQ»</strong>: <em>«With neonates or infants, check that the peripheral blood flow to the sensor
+      site has not been interrupted. For example, as may occur while <strong>lifting or crossing their legs during a diaper
+      change</strong>.»</em></li>
+  <li>Tabla M-LNCS/LNCS: <em>Newborn</em> &lt;3 kg ±2 % sin movimiento / ±3 % con movimiento; <em>Neonatal</em> &lt;3 kg ±3 %.</li>
+  <li>Low Perfusion = el indicador PI no supera <strong>0.25</strong>.</li>
+</ul>
+
+<h3>RD SET Blue — eIFU (LAB-9521A)</h3>
+<p class="src">Fuente: <a href="https://techdocs.masimo.com/globalassets/techdocs/pdf/lab-9521a-eifu.pdf">techdocs.masimo.com/…/lab-9521a-eifu.pdf</a></p>
+<p>Único sensor con validación pediátrica/neonatal por debajo del 70 %:
+<em>«validated using convenience blood samples from neonatal, infant, and pediatric patients with light to dark
+pigmented skin diagnosed with congenital cyanotic cardiac lesions in the range of <strong>60–100 % SpO2</strong>».</em></p>
+
+<h3>rainbow SET IntelliVue Module (LAB-8486D)</h3>
+<p class="src">Fuente: <a href="https://techdocs.masimo.com/contentassets/69eaf746e9654d3299232b27cde9d55e/lab-8486d-master.pdf">techdocs.masimo.com/…/lab-8486d-master.pdf</a></p>
+<p>Defaults neonato: Desat 80, Low 85, High 95; PR 100–200 bpm; RRac 30–150 rpm; rango de ajuste de SpO2
+neonato/pediátrico 31–100 %.</p>
+
+<h2>2. Medtronic / Nellcor</h2>
+
+<h3>PM-1000N Service Manual</h3>
+<p class="src">Fuente: <a href="http://www.frankshospitalworkshop.com/equipment/documents/ecg/service_manuals/Covidien%20Nellcor%20PM-1000N%20Patient%20Monitor%20-%20Service%20manual.pdf">frankshospitalworkshop.com/…/Covidien Nellcor PM-1000N — Service manual.pdf</a></p>
+<ul>
+  <li><strong>Tabla 2-1 Accuracy</strong>: Adult 70–100 % ±2; <strong>Adult and Neonate Low Sat 60–80 % ±3</strong>;
+      <strong>Neonate 70–100 % ±2</strong>; con movimiento ±3; PR 20–250 bpm ±3.</li>
+  <li><strong>Nota 6</strong>: baja perfusión definida como <em>modulación de pulso IR detectada de 0.03 % a 1.5 %</em>.
+      Rango de perfusión del monitor: <strong>0.03 % a 20 %</strong>.</li>
+  <li><strong>Tabla 2-2</strong> (relevante para el límite de I<sub>LED</sub>): rojo ≈660 nm, IR ≈900 nm,
+      <strong>potencia óptica &lt;15 mW</strong>, <strong>disipación 52.5 mW</strong>.</li>
+  <li><strong>Modo Neonate</strong>: límites de alarma separados y —dato interesante—
+      <em>«the SPD alarm management parameter is not available for neonates»</em> (la detección de patrón de saturación
+      se desactiva en neonatos).</li>
+</ul>
+<blockquote>Nota 5 — validación neonatal: «Clinical functionality of the MAX-N sensor has been demonstrated on a
+population of hospitalized neonate patients. The observed SpO2 accuracy was <strong>2.5 %</strong> in a study of
+<strong>42 patients</strong> with ages of <strong>1 to 23 days</strong>, weight from <strong>750 to 4,100 grams</strong>, and 63 observations
+made spanning a range of <strong>85 % to 99 % SaO2</strong>.»</blockquote>
+
+<h3>Guía de sensores Nellcor</h3>
+<p class="src">Fuente: <a href="https://www.pharmamed.be/media/product_files/24917_Guide-UK.pdf">pharmamed.be/…/24917_Guide-UK.pdf</a> — «The right sensor for each patient»</p>
+<table class="avoid-break">
+  <tr><th>Sensor</th><th>Rango de peso</th><th>Exactitud 70–100 %</th><th>Exactitud 60–80 %</th></tr>
+  <tr><td>MAXN (neonatal/adulto)</td><td>&lt;3 kg o &gt;40 kg</td><td>±2</td><td>±3</td></tr>
+  <tr><td>MAXI (infant)</td><td>3–20 kg</td><td>±2</td><td>±3</td></tr>
+  <tr><td>SC-NEO</td><td>1.5–5 kg</td><td>±2</td><td>—</td></tr>
+  <tr><td>SC-PR (preterm)</td><td>&lt;1.5 kg</td><td>±2</td><td>—</td></tr>
+</table>
+
+<h2>3. Philips</h2>
+
+<h3>IntelliVue MP40/50/60/70/90 — Instructions for Use, cap. 9 «Monitoring SpO2»</h3>
+<p class="src">Fuente: <a href="http://www.frankshospitalworkshop.com/equipment/documents/ecg/user_manuals/Philips%20IntelliVue%20MP40,50,60,70,90%20Patient%20Monitor%20-%20User%20manual.pdf">frankshospitalworkshop.com/…/Philips IntelliVue MP40,50,60,70,90 — User manual.pdf</a></p>
+<ul>
+  <li><em>«When using the M1195A Infant Finger Sensor, select a finger or toe with a <strong>diameter of between 7 and 8 mm</strong>.
+      When applying a M1193A neonatal sensor <strong>do not overtighten the strap</strong>.»</em></li>
+  <li><strong>CAUTION</strong>: <em>«Do not use OxiCliq disposable sensors in a high humidity environment, such as in
+      <strong>neonatal incubators</strong>…»</em></li>
+  <li><strong>CAUTION «Humidity»</strong>: <em>«For neonatal patients, make sure that all sensor connectors and adapter cable
+      connectors are <strong>outside the incubator</strong>. The humid atmosphere inside can cause inaccurate measurements.»</em></li>
+  <li><strong>«Measuring SpO2», paso 1</strong>: <em>«Select the correct patient category setting (adult/pediatric and neonatal),
+      as this is used to <strong>optimize the calculation of the SpO2 and pulse numerics</strong>.»</em> → confirma que el algoritmo
+      cambia según la categoría de paciente.</li>
+  <li>Perfusión: <em>«ideally with a perfusion indicator value above 1.0»</em>.</li>
+  <li><strong>WARNING</strong>: inspeccionar el sitio <strong>cada 2–3 h</strong>; cambiarlo <strong>al menos cada 4 h</strong>.</li>
+  <li>Precisión por sensor: MAX-N (Neonate), SC-NEO, SC-PR, Oxiband OXI-A/N, OXI-P/I: <strong>3 %</strong> (70–100 %);
+      MAX-R y OxiCliq N (Neonate): <strong>3.5 %</strong>; Oxiband OXI-A/N (Neonate): <strong>4 %</strong>.</li>
+  <li>Defaults de alarma neonatal: PR baja 100 bpm, Brady 50, Tachy 240; Desat ajustable 30–100 % en Pedi/Neo.</li>
+</ul>
+
+<h3>White paper «Measure with confidence — Pulse oximetry in Philips IntelliVue patient monitors»</h3>
+<p class="src">Fuente: <a href="https://www.documents.philips.com/assets/20191031/c3ca0fdd20344125b018aaf7015bf571.pdf">documents.philips.com/…/c3ca0fdd20344125b018aaf7015bf571.pdf</a></p>
+<p>Sección <strong>«Meeting needs in the NICU»</strong>: OxyCRG (tendencias a 4 muestras/s sobre 6 min), histogramas de SpO2,
+Neonatal Event Review (apnea / bradicardia / desaturación),
+<strong>Dual SpO2 pre y post-ductal — «may differ by as much as 25 %»</strong> — y test CAR (Car safety seat Assessment Record)
+para prematuros de &lt;37 semanas de gestación o &lt;2500 g de peso al nacer.</p>
+
+<h2>4. Mindray — la mejor validación neonatal publicada</h2>
+<p class="src">Fuente: <a href="https://www.mindray.com/content/dam/xpace/en_gb/resources/downloads/education/education-nseries/operators-manual/BeneVision-N-Series-Operators-Manual.pdf">mindray.com/…/BeneVision-N-Series-Operators-Manual.pdf</a> — Apéndice A y capítulo 14</p>
+<blockquote>«One percent was added to the accuracies for neonatal sensors to account for accuracy variation due to
+properties of fetal hemoglobin. Studies were performed to validate the accuracy of Pulse Oximeter with neonatal
+SpO2 sensors by contrast with a CO-Oximeter. Some <strong>neonates aged from 1 day to 30 days with a gestation age of
+22 weeks to full term</strong> were involved in this study.»</blockquote>
+<table class="avoid-break">
+  <tr><th>Sensor</th><th>Neonatos</th><th>Pares de datos</th><th>A<sub>rms</sub></th></tr>
+  <tr><td>518B</td><td>97 (51 M / 46 F)</td><td>200</td><td><strong>2.38 %</strong></td></tr>
+  <tr><td>520N</td><td>122 (65 M / 57 F)</td><td>200</td><td><strong>2.88 %</strong></td></tr>
+</table>
+<ul>
+  <li>Módulo Mindray: 70–100 % ±2 % adulto/pediátrico, <strong>±3 % modo neonato</strong>; &lt;70 % no especificado.
+      Los módulos Nellcor y Masimo integrados declaran el mismo ±3 % en neonato.</li>
+  <li>PI: rango de medida <strong>0.05–20 %</strong> (Mindray) / <strong>0.02–20 %</strong> (Masimo).</li>
+  <li><strong>WARNING</strong> (cap. 14.2): <em>«Inspect the sensor site every two hours… Change the application site every four
+      hours. <strong>For neonates, or patients with poor peripheral blood circulation or sensitive skin, inspect the sensor
+      site more frequently.</strong>»</em></li>
+  <li>Existe una <strong>pantalla «SpO2 screen» destinada exclusivamente a pacientes neonatales</strong>.</li>
+  <li>Declara conformidad con <strong>ISO 80601-2-61</strong>.</li>
+</ul>
+
+<h2>5. Nihon Kohden</h2>
+<p class="src">Manuales de sonda:
+<a href="https://www.hamilton-medical.com/dam/jcr:4aa5b646-198c-4ef4-9c98-4908d3f1d14f/Nihon-kohden-spo2-probe-TL-271T-274T-TL-271T3-274T3_ifu_en_281951.pdf">TL-271T/274T</a> ·
+<a href="https://www.hamilton-medical.com/dam/jcr:05222e52-52c9-4475-a6d9-d18ccc33f262/Nihon-kohden-multi-site-y-probe-TL-260T-instructions-for-use-en-281955.pdf">TL-260T</a> ·
+<a href="https://www.hamilton-medical.com/dam/jcr:872df19b-58f2-4814-a9a3-da94f7b3f3cb/Nihon-Kohden-SpO2-multi-site-probe-ops-0604-019889J-TL220T.pdf">TL-220T</a></p>
+<ul>
+  <li><strong>Suitable Weight / Attachment Site</strong>: ≤3 kg neonato → <strong>empeine y planta del pie</strong> (<em>instep and sole</em>);
+      3–20 kg lactante → dedo del pie o de la mano. Instrucción concreta: <em>«Attach the center of the light emitter to
+      the little toe at the bottom of the foot where the toe joins the foot.»</em></li>
+  <li><strong>Tiempo máximo recomendado en un sitio: 4 horas.</strong> Y para el reutilizable TL-220T:
+      <em>«Do not use this probe for long term measurement. Use a disposable probe such as TL-271T…»</em></li>
+  <li><strong>Advertencia térmica</strong>: la temperatura en el sitio <em>«may increase at the attached site by 2 or 3 °C and cause
+      a burn»</em> — lista explícita de riesgo: fiebre, circulación periférica insuficiente, <strong>neonato</strong>,
+      paciente inconsciente, anciano.</li>
+  <li>Piel: <em>«Remove the probe carefully and slowly… <strong>especially when removing it from a neonate, pay attention to the
+      neonatal skin because it is delicate</strong>»</em>; la cinta quirúrgica <em>«may cause dermatopathy»</em> en neonatos.</li>
+  <li>Longitudes de onda: picos en <strong>650 y 950 nm</strong>.</li>
+  <li><strong>Precisión (rms)</strong>: 80–100 % ±2 %, 70–80 % ±3 %, &lt;70 % no especificado — <strong>validada solo en voluntarios
+      adultos sanos</strong> (21–34 años, 14 sujetos con pigmentaciones variadas) por hipoxia inducida según
+      ISO 80601-2-61:2011. <strong>No hay estudio neonatal.</strong></li>
+</ul>
+
+<h2>6. GE HealthCare — el protocolo de validación neonatal más detallado</h2>
+<p class="src">Fuente: <a href="https://cdn.clinicaltrials.gov/large-docs/57/NCT03383757/Prot_SAP_000.pdf">«U-TruSignal SpO2 Testing in Neonates» — protocolo GE MWS DOC1964061, Study 123.04-2017-GES-0002</a>
+(documento del fabricante, no de un tercero)</p>
+<ul>
+  <li><strong>Inclusión</strong>: &lt;29 días que ya requieran muestras de sangre arterial por estándar de cuidado.
+      <strong>Exclusión</strong>: cardiopatías (ductus arterioso persistente, hipertensión pulmonar persistente, defectos
+      septales, cardiopatía congénita), PAM &lt;20 mmHg, hernia diafragmática congénita, ventilación de alta frecuencia.</li>
+  <li><strong>Recogen hemoglobina fetal (g/L) y fracción de HbF (%)</strong>, además del tono de piel (escala Fitzpatrick
+      modificada).</li>
+  <li>Ventana de datos: <strong>5 s tras un retardo técnico de 12 s</strong> desde la toma de sangre.</li>
+  <li>Análisis según <strong>ISO 80601-2-61 Anexo EE</strong> y la FDA Guidance para pulsioxímetros (4-mar-2013).</li>
+  <li>Especificación TruSignal neonato: 70–100 % <strong>±3 dígitos</strong> sin movimiento y con movimiento clínico.</li>
+</ul>
+<div class="callout">
+<p style="margin:0"><strong>El problema metodológico, en sus propias palabras:</strong> ISO 80601-2-61:2011 exige ≥200 pares de
+≥10 sujetos distribuidos en 5 mesetas de 70–100 % para el test de desaturación en adultos.
+<em>«Unlike the invasive controlled desaturation test on adults in a laboratory environment in which the SaO2 can range
+from 70 % to 100 %, the SaO2 collected in this study is expected to be around 90 %. Since SaO2 values in this study may
+be clustered in 1 plateau around 90 %, <strong>a minimum of 50 data pairs is considered adequate</strong> to ensure proper
+function/clinical performance with neonates.»</em> Objetivo: 50–70 pares de 17–70 neonatos por sensor, máximo 3 pares por
+paciente.</p>
+</div>
+
+<h2>7. Nonin — módulos OEM, el caso más cercano a PulseNest</h2>
+<p class="src">Fuentes: <a href="https://www.nonin.com/wp-content/uploads/2018/09/OEM-III-Module-Specifications.pdf">OEM III Module Specification and Technical Information</a> ·
+<a href="https://www.nonin.com/wp-content/uploads/2018/09/Xpod-Operators-Manual.pdf">Xpod Operator's Manual</a></p>
+<table class="avoid-break">
+  <tr><th>Sensor</th><th>Adultos / Pediátricos</th><th>Neonatos</th></tr>
+  <tr><td>Finger clip reutilizable</td><td>±2</td><td>±3</td></tr>
+  <tr><td>Flex</td><td>±3</td><td>±3</td></tr>
+  <tr><td>Soft sensor</td><td>±2</td><td><strong>N/A</strong></td></tr>
+</table>
+<ul>
+  <li>Frecuencia de pulso 18–300 bpm: ±3 dígitos en ambas poblaciones.</li>
+  <li>Longitudes de onda: rojo 660 nm, IR <strong>910 nm @ 1.2 mW máximo de potencia media</strong>.</li>
+  <li>Sensores neonatales: <code>8001J</code> Neonatal Flex; <code>6000N</code> / <code>7000N</code> desechables de neonato.</li>
+  <li>Nota importante: <em>«Low perfusion <strong>does not apply</strong> to those sensors listed as N/A under the neonate column»</em>
+      — es decir, no garantizan comportamiento en baja perfusión con varios sensores en neonatos.</li>
+</ul>
+
+<h2>Lagunas y hallazgos negativos</h2>
+<ul>
+  <li><strong>Dräger</strong>: <span class="mono">draeger.com</span> no responde a descarga automatizada (timeout a 280 s, tres
+      intentos). Las IFU del Infinity M540 y del Babylog VN500 existen y son públicas; quedan pendientes de obtener por
+      otra vía.</li>
+  <li><strong>Texas Instruments / Analog Devices / Maxim</strong>: sin documentación específica de neonatos. Ni el datasheet del
+      AFE4490 ni las notas de aplicación de SpO2 (MAX3010x, MAX86141, MAXREFDES117/1043) mencionan la población neonatal,
+      ni la hemoglobina fetal, ni límites de irradiancia sobre piel de prematuro. La responsabilidad se traslada íntegra
+      al fabricante del equipo.</li>
+</ul>
+
+<h2>Lo que aplica directamente a PulseNest</h2>
+<ol>
+  <li><strong>El objetivo de exactitud debe ser ±3 % A<sub>rms</sub></strong>, no ±2 %, documentando que 1 punto es margen por HbF.
+      Alinea con la tarea de incertidumbre metrológica (ISO 80601-2-61 Anexo JJ).</li>
+  <li><strong>El sitio de medida es pie o mano, nunca dedo</strong>: cara lateral del pie alineada con el 4.º dedo (Masimo) o
+      empeine/planta (Nihon Kohden). Coherente con las dimensiones de pie de prematuro ya documentadas.</li>
+  <li><strong>Techo óptico y térmico</strong>: &lt;15 mW de potencia óptica y 52.5 mW de disipación total en el sensor (Nellcor);
+      +2–3 °C es el criterio de quemadura de Nihon Kohden. Es una referencia dura para la subida de corriente de LED de
+      20 a 50 mA: el freno térmico-piel está cuantificado por Nellcor.</li>
+  <li><strong>Umbrales de baja perfusión de la industria</strong>: Nellcor 0.03–1.5 % de modulación IR; Masimo PI &lt; 0.25;
+      Philips «idealmente PI &gt; 1.0»; rango PI declarado 0.02–20 %. Útil para la cota superior de PI en
+      <code>spo2_sqi</code> y para la estabilidad del PI.</li>
+  <li><strong>ISO 80601-2-61 Anexo EE no es aplicable literalmente a neonatos</strong>, y GE documenta la desviación aceptada
+      (≥50 pares en torno al 90 % en lugar de 200 en 5 mesetas). Es el precedente a citar si algún día se valida
+      clínicamente.</li>
+</ol>
+
+<footer>
+Recopilado el 24 de agosto de 2026 a partir de documentación pública de los fabricantes.
+Los enlaces apuntan a los PDF originales; las citas literales se reproducen en el idioma original del documento.
+Proyecto PulseNest — Medical Open World.
+</footer>
+
+</body>
+</html>
