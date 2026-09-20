@@ -24,7 +24,7 @@ Two planes on ONE socket, told apart by the first byte:
 Subscriber -> hub                     Hub -> subscriber
     @SUB <name>                           @OK SUB            then the cache: @FROM lines (below)
     @CTRL <name>                          @OK CTRL   |  @REFUSED CTRL <holder> <since>
-    @PING                                 @PONG boards=<n> subs=<n> ctrl=<name|-> up=<s>
+    @PING                                 @PONG boards=<n> aux=<n> subs=<n> ctrl=<name|-> up=<s>
     @STATUS                               @STATUS\\r\\n<one line per board and subscriber>
     @TO <ip>\\r\\n<payload>                 (payload -> <ip>:UDP_CMD_PORT) | @REFUSED TO <reason>
     @RELEASE                              @OK RELEASE
@@ -41,6 +41,10 @@ Rules.
   read-only by construction. Control is granted if nobody holds it or the holder expired, and
   only to a local address unless --allow-remote-control is given: writing to a medical device
   from another machine must be a deliberate choice, never the default.
+- A source whose FIRST datagram starts with a prefix in AUX_PREFIXES ($VN1, VideoNest's OCR of
+  the commercial monitor) is an AUXILIARY source: forwarded exactly like a board, never asked
+  "$CFG?" (it has no configuration and does not listen on the command port), and shown as `aux`
+  in @STATUS so the fleet tools do not draw a phone as a board.
 - The hub itself only ever asks a board for its identity: "$CFG?" when it first sees a board
   IP, and again when that board comes back after BOARD_LOST_S of silence (it may have rebooted
   into a new build -- an OTA is routine here). The query is UDP and can be lost, so it is
@@ -92,6 +96,13 @@ BOARD_LOST_S   = 2.0     # a board silent for this long is LOST: @STATUS says so
                          # return the hub replays its cache and asks $CFG? again
 CFG_RETRY_S    = 3.0     # gap between identity queries to a board that has not answered yet
 CFG_MAX_REQUESTS = 3     # ... and how many times in total, per appearance
+
+# Sources that are NOT boards, recognised by the prefix of their first datagram (D1 of
+# pulsenest_recorder_spec.md, closed 2026-09-20). An auxiliary source is forwarded exactly like a
+# board -- the hub still does not interpret anything -- but it is never asked "$CFG?", because it
+# has no configuration to give and the query would just land on a port it does not listen to, and
+# it is labelled `aux` in @STATUS so the fleet tools stop drawing a phone as if it were a board.
+AUX_PREFIXES = {b"$VN1": "videonest"}    # VideoNest: on-device OCR of the commercial monitor
 CFG_PREFIXES   = (b"$CFG,", b"$TCFG,", b"$LCFG,")
 RATE_WINDOW_S  = 2.0     # datagram rate window for @STATUS
 DEFAULT_IDLE_EXIT_MIN = 5.0   # the CLI's --idle-exit-min default (Hub.__init__'s own default
@@ -122,10 +133,11 @@ def is_loopback(ip):
 class Board:
     """One source IP that sent board-plane datagrams."""
     __slots__ = ("ip", "first_seen", "last_seen", "datagrams", "bytes", "cfg", "cfg_requests",
-                 "cfg_last_req", "_win_t", "_win_n", "rate")
+                 "cfg_last_req", "_win_t", "_win_n", "rate", "kind")
 
-    def __init__(self, ip, now):
+    def __init__(self, ip, now, kind="board"):
         self.ip = ip
+        self.kind = kind         # "board", or an AUX_PREFIXES value ("videonest"): never queried
         self.first_seen = self.last_seen = now
         self.datagrams = 0
         self.bytes = 0
@@ -264,10 +276,15 @@ class Hub:
         ip = addr[0]
         b = self.boards.get(ip)
         if b is None:
-            b = self.boards[ip] = Board(ip, now)
-            log.info("board %s seen for the first time — asking $CFG?", ip)
-            self._ask_cfg(b, now)
-        elif now - b.last_seen > BOARD_LOST_S:
+            kind = AUX_PREFIXES.get(data[:4], "board")
+            b = self.boards[ip] = Board(ip, now, kind)
+            if kind == "board":
+                log.info("board %s seen for the first time — asking $CFG?", ip)
+                self._ask_cfg(b, now)
+            else:
+                log.info("%s source %s seen for the first time — not asking $CFG? (auxiliary)",
+                         kind, ip)
+        elif b.kind == "board" and now - b.last_seen > BOARD_LOST_S:
             # Back after a silence. Two things: subscribers that joined meanwhile never got this
             # board's configuration (the join replay covers live boards only), so hand out what
             # we have; and a board that went away may have rebooted with a new build (an OTA is
@@ -423,8 +440,9 @@ class Hub:
     def _pong(self):
         ctrl = self.subs.get(self.controller).name if self.controller in self.subs else "-"
         up = time.monotonic() - self.started if self.started else 0.0
-        return (f"@PONG boards={len(self.boards)} subs={len(self.subs)} ctrl={ctrl} up={up:.0f}\r\n"
-                .encode("ascii", "replace"))
+        n_aux = sum(1 for b in self.boards.values() if b.kind != "board")
+        return (f"@PONG boards={len(self.boards) - n_aux} aux={n_aux} subs={len(self.subs)} "
+                f"ctrl={ctrl} up={up:.0f}\r\n").encode("ascii", "replace")
 
     def status_text(self):
         now = time.monotonic()
@@ -435,8 +453,12 @@ class Hub:
         for b in sorted(self.boards.values(), key=lambda x: x.first_seen):
             silence = now - b.last_seen
             state = "LOST" if silence > BOARD_LOST_S else "live"
-            lines.append(f"board {b.ip} {state} last={silence:.1f}s dgram/s={b.rate:.0f} "
-                         f"dgrams={b.datagrams} cfg={'yes' if b.cfg.get(b'$CFG,') else 'no'}")
+            if b.kind == "board":
+                lines.append(f"board {b.ip} {state} last={silence:.1f}s dgram/s={b.rate:.0f} "
+                             f"dgrams={b.datagrams} cfg={'yes' if b.cfg.get(b'$CFG,') else 'no'}")
+            else:
+                lines.append(f"aux {b.ip} {b.kind} {state} last={silence:.1f}s "
+                             f"dgram/s={b.rate:.0f} dgrams={b.datagrams}")
         for s in sorted(self.subs.values(), key=lambda x: x.joined):
             lines.append(f"sub {s.addr[0]}:{s.addr[1]} {s.name} ctrl={int(s.is_controller)} "
                          f"last={now - s.last_seen:.1f}s sent={s.sent}")
@@ -447,7 +469,8 @@ class Hub:
         """Retry unanswered identity queries; expire silent subscribers; idle exit.
         Returns True when the hub should exit."""
         for b in self.boards.values():
-            if (not b.cfg.get(b"$CFG,") and b.cfg_requests < CFG_MAX_REQUESTS
+            if (b.kind == "board" and not b.cfg.get(b"$CFG,")
+                    and b.cfg_requests < CFG_MAX_REQUESTS
                     and now - b.last_seen <= BOARD_LOST_S
                     and now - b.cfg_last_req > CFG_RETRY_S):
                 log.info("board %s has not answered $CFG? (%d) — asking again", b.ip, b.cfg_requests)

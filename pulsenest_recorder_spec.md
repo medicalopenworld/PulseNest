@@ -462,7 +462,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 
 | # | Question | Recommendation |
 |---|---|---|
-| D1 | Should the hub recognise `$VN1` as an **auxiliary source** rather than treating the phone as a board (today it will ask the phone `$CFG?` three times and show it as a board in `fleet_monitor` / `fleet_ppg_viewer`)? | Yes — classify by first-datagram prefix, skip the `$CFG?` query, tag it in `@STATUS`. Small change, keeps the fleet tools honest. |
+| D1 | Hub: `$VN1` as an auxiliary source | **Closed 2026-09-20: done.** `pulsenest_hub.AUX_PREFIXES` classifies on the first datagram; an aux source is forwarded like any other, never asked `$CFG?`, counted apart in `@PONG` and shown as `aux <kind>` in `@STATUS`. `fleet_monitor.py` and `fleet_ppg_viewer.py` import the same table and give it no row and no band. Verified against the three real boards plus a phone. |
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
 | D4 | Split period and alignment | **Closed 2026-09-20: 10 min on the local wall-clock boundary**, 256 MB ceiling. Reasoning in §5. |

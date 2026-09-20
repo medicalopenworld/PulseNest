@@ -96,6 +96,7 @@ from html import escape
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, banner, script_name  # noqa: E402
+from pulsenest_hub import AUX_PREFIXES           # noqa: E402  (one rule, one place)
 from pulsenest_hub_client import HubClient                    # noqa: E402
 # fit() belongs to the fleet monitor, which is the table tool and where the rule was argued out
 # and debugged (a cell must never widen its column; it drops decimals, then gives up with
@@ -582,6 +583,7 @@ class Viewer(QtWidgets.QMainWindow):
         self._restore_geometry()
         self.window_s = window_s
         self.traces = {}
+        self.aux = set()       # IPs classified as auxiliary sources (AUX_PREFIXES): no band
         self.bands = {}          # ip -> (PlotItem, PlotDataItem, LabelItem, LabelItem)
         self.band_rows = {}      # ip -> its layout row, kept apart so drop_band() stays simple
         self._next_row = 0       # monotonic: see band_for()
@@ -648,6 +650,10 @@ class Viewer(QtWidgets.QMainWindow):
             if item is None:
                 break
             ip, data = item
+            if ip in self.aux or (ip not in self.traces and data[:4] in AUX_PREFIXES):
+                # $VN1: a phone, not a board. No band for it (the hub's D1, one floor up).
+                self.aux.add(ip)
+                continue
             tr = self.traces.get(ip)
             if tr is None:
                 tr = self.traces[ip] = BoardTrace(ip, now, self.window_s)

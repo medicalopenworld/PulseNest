@@ -51,6 +51,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, script_name          # noqa: E402
 from pulsenest_hub_client import HubClient       # noqa: E402
+from pulsenest_hub import AUX_PREFIXES           # noqa: E402  (one rule, one place)
 
 # idfver is read but not shown: it is the same on every board of a fleet until a toolchain
 # change, and this table is width-constrained. tools/udp_fw_versions.py prints it.
@@ -395,6 +396,7 @@ def main():
     client = HubClient(script_name(__file__), hub=hub, control=False, log=lambda m: None)
     client.connect()
     boards = {}
+    aux = set()                    # IPs classified as auxiliary sources (AUX_PREFIXES)
     t_start = time.monotonic()
     t_last_any = None
     next_draw = next_status = 0.0
@@ -406,6 +408,12 @@ def main():
             if item is not None:
                 ip, data = item
                 t_last_any = now
+                if ip in aux or (ip not in boards and data[:4] in AUX_PREFIXES):
+                    # A phone doing OCR of the commercial monitor ($VN1) is not a board: the hub
+                    # already refuses to query it and labels it `aux` in @STATUS (its D1), and a
+                    # row of dashes here would be one more thing to explain during a campaign.
+                    aux.add(ip)
+                    continue
                 b = boards.get(ip)
                 if b is None:
                     b = boards[ip] = BoardView(ip)

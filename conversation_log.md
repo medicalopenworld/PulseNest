@@ -24102,3 +24102,30 @@ nombre del fichero desaparece. Una columna si. Coste ~19 B en un fichero de unas
 **No se reescribe el `session_events.csv` ya grabado** (el de la sesion de 25 min): lo grabado no se
 edita; queda documentado que los ficheros anteriores a hoy no llevan la columna y el lector toma la
 sesion del nombre del directorio. Descartado formalmente el prefijo en los nombres. 60/60.
+
+## Sesion 2026-09-20 (5) - D1 cerrada: el hub distingue fuentes auxiliares ($VN1 = VideoNest)
+
+Siguiente tarea tras la campana-preparacion: que `pulsenest_hub.py` deje de tratar al movil como
+una placa. Antes le pedia `$CFG?` **tres veces** a un puerto que no escucha y salia como placa en
+`fleet_monitor.py` y `fleet_ppg_viewer.py`; con la campana a la vuelta, eso es ruido y una fila
+vacia que explicar en las dos pantallas que se miran durante la sesion.
+
+**Hecho:** `pulsenest_hub.AUX_PREFIXES = {b"$VN1": "videonest"}`, **una sola tabla** que importan
+las tres herramientas. Clasificacion por el prefijo del PRIMER datagrama; una fuente auxiliar se
+reemite exactamente igual (el hub sigue sin interpretar nada), **nunca se le pregunta `$CFG?`**
+(tampoco en el reintento de `_housekeeping`), se cuenta aparte en `@PONG` (`boards=3 aux=1`) y sale
+como `aux <ip> videonest` en `@STATUS`. `fleet_monitor.py` y `fleet_ppg_viewer.py` no le dan fila
+ni banda.
+
+**Verificado con las tres placas reales + un movil simulado:** las tres siguen como `board ... cfg=yes`,
+el movil como `aux 127.0.0.1 videonest`, y `@PONG` dice `boards=3 aux=1`. Suites: hub **39/39**
+(4 comprobaciones nuevas, con un movil falso que cuenta las consultas que recibe: 0),
+`fleet_monitor` 25/25, `fleet_ppg_viewer` 73/73, `pulsenest_recorder` 60/60.
+
+**Nota de proceso:** volvi a parchear Python con heredoc y el caracter em-dash se corrompio al
+pasar por stdin; la regla del proyecto (`feedback_python_patch_via_file_not_heredoc`) existe
+justamente por esto. Rehecho con fichero `.py`. Ademas el `check()` de `fleet_ppg_viewer_test.py`
+lleva **la condicion primero** y el nombre despues, al reves que los demas tests.
+
+Pendiente de la campana: prueba de VideoNest de extremo a extremo con el movil real, y el ensayo
+cronometrado con el guion. Ambas necesitan a Alex.

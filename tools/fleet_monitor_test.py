@@ -155,5 +155,12 @@ mixed_title = strip(F.render(mixed, _C(), ("127.0.0.1", 5005), now)).splitlines(
 check("P1 falls back to full addresses across subnets",
       "boards " not in mixed_title and hdr_m.startswith("IP" + " " * 13), hdr_m[:20])
 
+# An auxiliary source ($VN1: a phone doing OCR of the commercial monitor) is not a board and
+# must never get a row of its own -- the rule lives once, in pulsenest_hub.AUX_PREFIXES, and both
+# the hub and this tool read it from there.
+check("$VN1 is an auxiliary prefix, shared with the hub",
+      F.AUX_PREFIXES.get(b"$VN1") == "videonest", str(F.AUX_PREFIXES))
+check("a measurement frame is not mistaken for one", b"$M4," [:4] not in F.AUX_PREFIXES)
+
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
 sys.exit(0 if all(ok) else 1)

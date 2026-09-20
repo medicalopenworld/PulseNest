@@ -3,7 +3,8 @@
 Two fake boards (127.0.0.2 / 127.0.0.3, the addresses tools/udp_multiboard_test.py uses), a hub
 on :15105, a controller client and a read-only client. Checks the contract the lab and the tools
 will rely on: origin tagging, datagram boundaries, cache replay, single controller, read-only
-enforcement, liveness (ping/pong), expiry, and the hub's bounded identity query ($CFG?, retried
+enforcement, liveness (ping/pong), expiry, auxiliary sources ($VN1: forwarded, never queried,
+labelled `aux`), and the hub's bounded identity query ($CFG?, retried
 while unanswered).
 No real bench involved; run any time:
 
@@ -273,6 +274,60 @@ def main():
     idle_hub.serve_forever()  # blocks -- no subscriber ever joins, so idle exit must fire
     check("a hub with idle_exit_s set exits on its own with nobody subscribed",
           time.monotonic() - t0 < 3.0, f"took {time.monotonic() - t0:.2f}s")
+
+    # ── an auxiliary source ($VN1) is forwarded but never queried (D1) ────────────────────
+    # VideoNest is a phone doing OCR of the commercial monitor. It has no configuration to give
+    # and does not listen on the command port, so a $CFG? aimed at it is noise three times over;
+    # and drawing it as a board in fleet_monitor during a campaign is worse than noise.
+    class FakePhone(threading.Thread):
+        def __init__(self, ip):
+            super().__init__(daemon=True)
+            self.ip = ip
+            self.data = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.data.bind((ip, 0))
+            self.cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.cmd.bind((ip, CMD_PORT))
+            self.cmd.settimeout(0.0)
+            self.queries = 0
+            self.seq = 0
+            self.stop = threading.Event()
+
+        def run(self):
+            while not self.stop.is_set():
+                try:
+                    self.cmd.recvfrom(1024)
+                    self.queries += 1
+                except (BlockingIOError, OSError):
+                    pass
+                self.seq += 1
+                frame = f"$VN1,{self.seq},96,142,0.91,1790000012000*3A".encode() + CRLF
+                self.data.sendto(frame, ("127.0.0.1", DATA_PORT))
+                time.sleep(0.05)
+
+    phone = FakePhone("127.0.0.5")
+    phone.start()
+    seen_vn1 = 0
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 1.5:
+        item = reader.recv(0.1)
+        if item and item[0] == "127.0.0.5":
+            seen_vn1 += 1
+    check("an auxiliary source is forwarded to subscribers like any other", seen_vn1 > 5,
+          f"{seen_vn1} datagrams")
+    check("the hub never sends $CFG? to an auxiliary source", phone.queries == 0,
+          f"{phone.queries} queries")
+    reader.request_status()
+    t0 = time.monotonic()
+    while reader.last_status is None and time.monotonic() - t0 < 2.0:
+        reader.recv(0.1)
+    st = reader.last_status or ""
+    check("@STATUS labels it `aux <kind>`, not `board`",
+          "aux 127.0.0.5 videonest" in st and "board 127.0.0.5" not in st,
+          [l for l in st.splitlines() if "127.0.0.5" in l])
+    check("@PONG counts boards and aux apart",
+          reader.last_pong and reader.last_pong.get(b"aux") == b"1",
+          str(reader.last_pong))
+    phone.stop.set()
 
     # ── no SO_REUSEADDR: a second hub on the same port must fail its bind ──────────────────
     dup = H.Hub(port=DATA_PORT, cmd_port=CMD_PORT)

@@ -358,6 +358,10 @@ check(again.height() == 1234 and again.width() == 1400,
       f"{again.width()}x{again.height()}")
 again.close()
 
+check(V.AUX_PREFIXES.get(b"$VN1") == "videonest" and b"$M4," [:4] not in V.AUX_PREFIXES,
+      "$VN1 is an auxiliary prefix, so a phone never gets a band of its own",
+      str(V.AUX_PREFIXES))
+
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
 # _exit skips Qt's teardown, which can hang on a window that never had an event loop — but it
 # also skips flushing, and redirected to a file that swallowed the whole report the first time.

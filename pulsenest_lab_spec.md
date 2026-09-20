@@ -972,6 +972,8 @@ the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_
 first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
 gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;
 it cannot touch a board, and runs on the bench PC or on another one with `--hub <bench-pc-ip>`.
+**Auxiliary sources (2026-09-20).** A source whose first datagram starts with a prefix in `pulsenest_hub.AUX_PREFIXES` — today `$VN1`, VideoNest's on-device OCR of the commercial monitor — is not a board: the hub forwards it like any other source but never asks it `$CFG?` (it has no configuration and does not listen on the command port), counts it apart in `@PONG` and shows it as `aux <kind>` in `@STATUS`; `fleet_monitor.py` and `fleet_ppg_viewer.py` read the same table and give it no row and no band. Without this a phone appeared as a board with empty columns, and took three `$CFG?` queries it could not answer.
+
 `tools/pulsenest_recorder.py` (2026-09-20) is the hospital recorder: a read-only subscriber with
 no Qt at all that appends every datagram, byte for byte and stamped with both host clocks, to one
 `.pnraw` stream per board, named by MAC; its own specification is `pulsenest_recorder_spec.md`.
