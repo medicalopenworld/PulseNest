@@ -201,6 +201,27 @@ try:
     rec.console("site SUBJ01 left foot")
     rec.console("mark probe repositioned")
 
+    # who a mark belongs to: session-wide by default, a subject when one is named
+    r_all = rec.console("mark phototherapy lamp on")
+    r_one = rec.console("mark SUBJ01 nappy change")
+    r_note = rec.console("note subj01 probe repositioned")
+    rows_m = open(rec.events_path, encoding="utf-8").read().splitlines()
+    cols = R.EVENTS_HEADER
+    marks = [r.split(",") for r in rows_m if ",MARK," in r or ",NOTE," in r]
+    wide = [m for m in marks if m[cols.index("subject")] == "*"]
+    mine = [m for m in marks if m[cols.index("subject")] == "SUBJ01"]
+    check("[6] a mark with no subject stays session-wide, as before",
+          "(session-wide)" in r_all and len(wide) >= 1
+          and wide[-1][cols.index("board_mac")] == "*", r_all)
+    check("[6] a mark naming a subject carries it AND that subject's board mac",
+          "MARK SUBJ01" in r_one and len(mine) >= 1
+          and mine[0][cols.index("board_mac")] == "10:20:BA:14:75:60", r_one)
+    check("[6] note takes a subject too, case-insensitively, and keeps the text separate",
+          "NOTE SUBJ01" in r_note
+          and any(m[cols.index("note")] == "probe repositioned" for m in mine), r_note)
+    check("[6] a text that merely starts with a word is not mistaken for a subject",
+          "(session-wide)" in rec.console("mark subject moved"), "")
+
     # session metadata only a person knows (spec section 7), typed instead of hand-edited
     check("[7] tier with no subject applies to every board",
           rec.console("tier T2").startswith("tier=T2 on") and a.tier == "T2" and b.tier == "T2")

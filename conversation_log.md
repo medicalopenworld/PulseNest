@@ -24377,3 +24377,20 @@ descartadas**, no convertidas en filas.
 justamente lo que la gana. `--csv off` lo desactiva.
 
 Suites: `capture_csv_test` 15/15, `pulsenest_recorder_test` **71/71**, laboratorio importa correcto.
+
+**Anadido (11b) - a quien pertenece un evento.** Pregunta de Alex: si se graban tres placas, ¿a
+quien le asigna `mark` lo que escribe? **Respuesta: a nadie, iba a la sesion entera** (`subject=*`,
+`board_mac=*`). Bien para "encendida la fototerapia", mal para "cambio de panal". La prueba de que
+era una carencia real esta en el primer ensayo: yo escribi `mark handling: nappy change SUBJ02`,
+metiendo el sujeto en el TEXTO LIBRE, donde ninguna consulta lo va a encontrar nunca.
+
+**Corregido:** `mark` y `note` aceptan un `SUBJnn` **delante**, como ya hacian `spo2` y `site`.
+`mark SUBJ02 cambio de panal` queda atribuido y arrastra la MAC de esa placa; `mark fototerapia
+encendida` sigue siendo de sesion. La primera palabra se lee como sujeto solo si casa `SUBJ<digitos>`,
+asi que `mark subject moved` sigue siendo una nota de sesion.
+
+**Lo que NO cambia, y es deliberado:** las copias no siguen a la atribucion. Un evento se copia como
+`@E` en **todos** los `.pnraw` abiertos (§6) y como `# event @row N:` en **todos** los CSV, nombre a
+quien nombre. Un fichero que se sostiene solo vale mas que uno un poco mas corto: la fila dice a
+quien concierne, y quien lea la captura de una placa puede ver que se encendio la lampara, o que el
+bebe de al lado desaturo en ese mismo instante. 75/75 comprobaciones.

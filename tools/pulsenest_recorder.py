@@ -16,8 +16,8 @@ While it runs, the console accepts one command per line (§9 says a session must
 with no GUI at all):
 
     spo2 SUBJ01 96 [142]      a manual reading from the commercial monitor (value, optional PR)
-    mark [text]               an operator mark, session-wide
-    note <text>               a free-text note (no personal data -- coded subjects only)
+    mark [SUBJ01] [text]      an operator mark; with no subject it is session-wide
+    note [SUBJ01] <text>      a free-text note (no personal data -- coded subjects only)
     site SUBJ01 <text>        probe site of OUR probe for a subject ("left foot")
     anchor                    CLOCK_ANCHOR: written when the laptop clock is being filmed
     subject <MAC suffix> SUBJ01   bind a board to a subject (a REF_SPO2 then carries its MAC)
@@ -127,6 +127,7 @@ _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
 # recorded, named by IP as before). 1-8 ASCII letters/digits set by the operator in
 # the app and taped to the phone: identity that survives a DHCP lease, which is what
 # the MAC does for a board.
+_SUBJ_RE = re.compile(r"^SUBJ\d+$", re.I)
 _VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,32})\*")
 
 
@@ -720,12 +721,18 @@ class Recorder:
                 mac = self._mac_for_subject(subj)
                 eid = self.event("REF_SPO2", subject=subj, board_mac=mac, value=val, value2=pr)
                 return f"event {eid}: REF_SPO2 {subj}={val}" + (f" PR={pr}" if pr != "" else "")
-            if cmd == "mark":
-                eid = self.event("MARK", note=" ".join(args))
-                return f"event {eid}: MARK"
-            if cmd == "note":
-                eid = self.event("NOTE", note=" ".join(args))
-                return f"event {eid}: NOTE"
+            if cmd in ("mark", "note"):
+                # An optional leading SUBJnn, exactly as `spo2` and `site` take one. Without it
+                # the event is session-wide, which is right for "phototherapy on" and wrong for
+                # "nappy change": before this (2026-09-20) the only way to say which baby a mark
+                # concerned was to write it in the free text, where no query will ever find it.
+                subj, text = "*", " ".join(args)
+                if args and _SUBJ_RE.match(args[0]):
+                    subj, text = args[0].upper(), " ".join(args[1:])
+                kind = "MARK" if cmd == "mark" else "NOTE"
+                eid = self.event(kind, subject=subj, board_mac=self._mac_for_subject(subj),
+                                 note=text)
+                return f"event {eid}: {kind}" + (f" {subj}" if subj != "*" else " (session-wide)")
             if cmd == "anchor":
                 eid = self.event("CLOCK_ANCHOR", note="laptop clock filmed")
                 return f"event {eid}: CLOCK_ANCHOR at {iso_local(self.clock()[1])}"
@@ -795,7 +802,7 @@ class Recorder:
                 self.write_session_json()
                 return f"consent = {self.consent}"
             if cmd in ("help", "?"):
-                return ("spo2 SUBJ01 96 [pr] | mark [text] | note <text> | anchor | "
+                return ("spo2 SUBJ01 96 [pr] | mark [SUBJ01] [text] | note [SUBJ01] <text> | anchor | "
                         "site SUBJ01 <text> | subject <MAC suffix> SUBJ01 | tier T2 [SUBJ01] | "
                         "cond RESTING [SUBJ01] | ref SUBJ01 model|avg|site|note <value> | "
                         "consent obtained | status | quit")
@@ -814,6 +821,8 @@ class Recorder:
         return out
 
     def _mac_for_subject(self, subj):
+        if subj == "*":
+            return "*"
         for s in self._owners():
             if s.subject == subj and s.mac:
                 return s.mac
@@ -1139,7 +1148,7 @@ def main(argv=None):
         ev_sock.setblocking(False)
         log.info("panel commands accepted on udp://127.0.0.1:%d", args.event_port)
 
-    print(f"recording into {rec.dir}  (commands: spo2 SUBJ01 96 [pr] | mark | note | anchor | "
+    print(f"recording into {rec.dir}  (commands: spo2 SUBJ01 96 [pr] | mark [SUBJ01] | note | anchor | "
           f"site | subject | status | quit)")
     t_end = time.monotonic() + args.duration if args.duration > 0 else None
     next_tick = 0.0

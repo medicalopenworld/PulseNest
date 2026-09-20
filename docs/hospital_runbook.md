@@ -84,9 +84,12 @@ Then, in order:
 - [ ] **Check the SOURCES block too, not just the boards.** A phone that stops (battery, app
       backgrounded, camera moved) is the likeliest failure of a session, and it shows up there
       and in the red alert line.
-- [ ] **Mark what happens to the baby**: `mark handling` , `note probe repositioned on SUBJ02`.
-      A desaturation, a feed, a nappy change, an alarm on the monitor — all of it is worth a
-      line, and none of it can be reconstructed afterwards.
+- [ ] **Mark what happens to the baby, and say which baby**: `mark SUBJ02 nappy change`,
+      `note SUBJ01 probe repositioned`. A desaturation, a feed, a nappy change, an alarm on the
+      monitor — all of it is worth a line, and none of it can be reconstructed afterwards.
+      **Leave the subject out only when it concerns the room**: `mark phototherapy lamp on`. A
+      subject written inside the free text instead of in its own field is a subject no query will
+      ever find.
 - [ ] **Glance at `status` now and then.** Watch for `SILENT`, and for `dgrams` not climbing.
 - [ ] The tool writes a new part on every **10-minute wall-clock boundary** (`…_0002.pnraw` at
       10:20, `…_0003` at 10:30). That is normal, and it is how a photo taken at 10:37 is later

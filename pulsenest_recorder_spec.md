@@ -273,7 +273,7 @@ session_id,event_id,t_mono_us,t_epoch_us,iso_local,kind,subject,board_mac,value,
 |---|---|
 | `session_id` | the session this row belongs to, repeated on every row — see below |
 | `event_id` | monotonic within the session; the join key for the `@E` copies |
-| `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `SESSION_START`, `SESSION_END` |
+| `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `META`, `SESSION_START`, `SESSION_END` |
 | `subject` | `SUBJ01`… or `*` for a session-wide event |
 | `board_mac` | the board this concerns, or `*` for all (a `MARK` is normally `*`) |
 | `value` | for `REF_SPO2`, the SpO2 % read on the commercial monitor; empty otherwise |
@@ -480,7 +480,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **71 offline and in-process checks**, plus the 15 of `tools/capture_csv_test.py`
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **75 offline and in-process checks**, plus the 15 of `tools/capture_csv_test.py`
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -523,6 +523,20 @@ What the implementation fixed in this document's wording, or added:
   ignored. And **the pulse rate field was 0 in every frame** while SpO2 read 96 at confidence
   0.98: whatever the camera was pointed at, PR was not being recognised. Worth settling before the
   campaign, since `value2` of a manual `REF_SPO2` is then the only pulse-rate reference.
+* **Who an event belongs to, and where its copies go** (Alex's question, 2026-09-20). Every
+  event carries a `subject` and a `board_mac`. `spo2` and `site` always name a subject; `tier` and
+  `cond` take an optional trailing one; `anchor` and `consent` are session-wide by nature. **`mark`
+  and `note` now take an optional LEADING `SUBJnn`** — `mark SUBJ02 nappy change` is attributed,
+  `mark phototherapy on` stays session-wide (`subject=*`, `board_mac=*`). Before this the only way
+  to say which baby a mark concerned was to write it in the free text, where no query will ever
+  find it: the first rehearsal contains a literal `mark handling: nappy change SUBJ02`, which is
+  the mistake this fixes. A first word is read as a subject only when it matches `SUBJ<digits>`,
+  so `mark subject moved` is still a session-wide note about a probe.
+  **The copies are deliberate and do not follow the attribution**: an event is mirrored into
+  *every* open `.pnraw` as `@E` (§6) and into *every* open CSV as `# event @row N:`, whoever it
+  names. A file that stands alone is worth more than a slightly shorter one — the row says whom it
+  concerns, and a reader of one board's capture can still see that the lamp went on, or that the
+  baby next door desaturated at the same instant.
 * **The live capture CSV is written (§2), and it writes TODAY's format, not v0.4** (Alex,
   2026-09-20). The reason it could not wait: **Flow CSV Viewer, one of the tools used most here,
   reads `.csv` and not `.pnraw`** — and §2.1's other argument held too, that a fault in a capture
