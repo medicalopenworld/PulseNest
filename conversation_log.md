@@ -23895,3 +23895,53 @@ adimensionales (`spo2_cal_a/b`), decidido con Alex.
 **Pendiente:** prerrequisito 6 (firmware avisa de los movimientos de RF de HGAC), 1b (el diccionario
 R18 antes de escribir una sola instantanea), D2/D5/D6/D7/D8/D9 abiertas. Nada commiteado todavia:
 siguen sin subir el fleet viewer v1.72, las dos specs nuevas y este log.
+
+## Sesion 2026-09-20 (3) - Plan hacia la campana; `tools/pulsenest_recorder.py` v0.1 (bruto primero, 40/40 + banco real); firmware 0.14 (`%llu` en Ts_us)
+
+**Plan acordado ("adelante").** Manda la campana de hospital de la semana del 21. (1) Esta semana:
+registrador minimo EN BRUTO (`.pnraw`), sin CSV en vivo: los prerrequisitos del CSV v0.4
+(diccionario, escritor nuevo, aviso de HGAC en firmware) no caben antes del lunes, y el bruto guarda
+las tramas `$M4` completas con RF por muestra, asi que el conversor podra generar el CSV v0.4 con sus
+`afe:` despues, sin tocar firmware. Ademas `%llu` en `FW_Ts_us` + OTA, banco de horas con las 3
+placas, ensayo del protocolo de hospital. (2) Tras la campana: diccionario R18 -> conversor
+`.pnraw`->CSV v0.4 -> `LabCaptureWriter` -> `read_capture()`/runner -> fixture Flow. (3) Firmware:
+HGAC avisa al mover RF (solo para CSV en vivo y P0). (4) D7/D8 de Alex. (5) Triage del BACKLOG (~30
+entradas; la de "las notas deben registrar el estado de la libreria" la cubre `alg:`/el bruto).
+
+**Pregunta de Alex: "actualmente HGAC no avisa cuando cambia RF?"** Verificado en la lib:
+`_hgac_change_rf()` (incunest_afe4490.cpp:1416) escribe el registro y rearma el settling; ni
+printf, ni callback, ni flag propio. El valor SI viaja en cada muestra (`$M4` campos 34-35) y el bit
+`*_SWITCHED_RC_SETTLING` marca la transicion; asi lo detecta hoy el lab. Sin evento explicito: por
+eso la columna era el aviso, y al quitarla hace falta o (1) un frame nuevo desde el punto de HGAC o
+(2) que el escritor derive el salto del campo de `$M4`. La spec deja la eleccion al firmware.
+
+**`tools/pulsenest_recorder.py` v0.1 (nuevo, ~600 lineas, stdlib).** Implementa la spec del
+registrador §3-§8 y la consola de §9: suscriptor read-only del hub (`HubClient(control=False)`, sin
+ningun camino a `send_to_board`), un `.pnraw` por fuente nombrado por MAC (`board_<MAC>`), espera
+3 s el `$CFG` y si no llega `unknown_<IP>`, `$VN1` -> `aux_vn_<IP>`; `@D seq t_mono t_epoch ip len`
++ datagrama verbatim; `seq` continua entre partes; rotacion 15 min / 256 MB; `@E` en cada stream
+abierto y `events.csv` con fsync por fila; `@M` para identificado / parte cerrada / fuente movida
+de IP (misma MAC -> mismo fichero) / silencio >= 5 s; `session.json` atomico con ips[], files[],
+firmware{}, subject, probe_site, closed{clock_drift_us}; `--raw full|exceptions|off` (exceptions:
+salta solo datagramas cuyas lineas son TODAS `$M4` de 36 tokens); espacio libre al arrancar y cada
+minuto; ficheros sin buffer, fsync cada 10 s. Consola: `spo2 SUBJ01 96 [pr]` (50-100), `mark`,
+`note`, `anchor`, `site`, `subject <sufijo MAC> SUBJ01`, `status`, `quit`; las mismas lineas por
+`--event-port` UDP local para el panel futuro. `read_pnraw()` = semilla del conversor: sigue los
+`<len>`, rechaza fichero sin `@PNRAW1`, `@D` corto y ultima linea sin `\n` (cola rota).
+
+**Verificacion.** `tools/pulsenest_recorder_test.py`: 40/40 (nucleo con reloj falso + hub real
+en proceso en :15205 con dos placas falsas). Tres fallos iniciales: dos eran del test (longitud del
+session id; el "37o campo" lo habia puesto DETRAS del `*`), uno real: el lector no detectaba una
+ultima linea rota sin salto -> anadido. Banco real, 8 s, `--site BENCH`: las tres V18 (88:50,
+82:5C, 87:A4) identificadas por MAC al instante gracias al replay de cache del hub; 4005 muestras
+en 8,0 s = 500,3/s, 0 huecos de contador, 5 tramas por `@D`, seq continuo, 0,50 GB/h por placa
+(la cifra estimada en la spec §2.3). `$CFG/$TCFG/$LCFG/$TIMING/# STAT` capturados.
+
+**Specs.** `pulsenest_recorder_spec.md` §13 nueva (estado de implementacion, aclaraciones: seq
+entre partes, cola rota, comandos, off/exceptions, identidad, IP nueva, silencio, session.json
+atomico). `pulsenest_lab_spec.md` §4.11: el registrador listado entre los suscriptores.
+
+**Firmware 0.14.** `main/pulsenest_main.cpp`: `Ts_us` en `$M1..$M4` pasa de `%lu`+`(unsigned long)`
+a `%llu`+`(unsigned long long)` (long = 32 bits en ESP32-S3: daba la vuelta cada 71,6 min, F1).
+Version 0.13 -> 0.14. El runner offline no parsea Ts_us; Python no tiene el problema. Compilacion
+V18 lanzada; OTA a las tres placas del banco pendiente de que termine (se anota abajo).
