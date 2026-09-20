@@ -972,6 +972,9 @@ the holder if the lab has it (close the lab; the hub may stay up). `tools/fleet_
 first purpose-built subscriber: one console line per board — identity, build, dgram/s, frame mode,
 gaps, probe state, RSQI, DiagCode, SpO2, HR1, RF, `$ERR` count, last seen — plus the hub's `@STATUS`;
 it cannot touch a board, and runs on the bench PC or on another one with `--hub <bench-pc-ip>`.
+`tools/pulsenest_recorder.py` (2026-09-20) is the hospital recorder: a read-only subscriber with
+no Qt at all that appends every datagram, byte for byte and stamped with both host clocks, to one
+`.pnraw` stream per board, named by MAC; its own specification is `pulsenest_recorder_spec.md`.
 Every numeric cell goes through `fit()`, which **guarantees** the column width (v1.68): a value
 too long drops decimals rather than shifting every column to its right, and one that still does
 not fit shows `#####` rather than a truncated digit string, which would be a different number.

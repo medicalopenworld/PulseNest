@@ -421,3 +421,62 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
 | D4 | Rotation period: 15 min / 256 MB. | Keep unless the disk budget says otherwise. |
 | D5 | Should `events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `recorder.log` already cover it. |
+
+---
+
+## 13. Implementation status — `tools/pulsenest_recorder.py` v0.1 (2026-09-20)
+
+The first implementation, written for the campaign of the week of 2026-09-21. **Raw stream
+first**: it implements §3, §4, §5, §6, §7, §8 and the console half of §9, and defers the live
+capture CSV (§2) and the converter (§10). The reasoning: the CSV that will be written is now the
+v0.4 format of `capture_csv_format_spec.md`, whose prerequisites (the column and key dictionary,
+a new writer, a firmware notice when HGAC moves RF) do not fit before the campaign — while the
+raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
+the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
+
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **40 offline and in-process checks**
+(a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
+and an 8 s session on the bench with the three V18 boards: identified by MAC at once from the
+hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
+board — the figure §2.3 estimated.
+
+What the implementation fixed in this document's wording, or added:
+
+* **`seq` continues across parts** within a source (it does not restart at 1 in part 0002): a
+  gap in `seq` anywhere in a source's parts is a dropped record. §5's "per file from 1" meant
+  "from 1 in the source's first file".
+* **A torn tail is reported, not returned as data.** `read_pnraw()` — the reader the converter
+  will build on — follows every `@D`'s `<len>`, and refuses a file whose last line has no
+  newline (`truncated tail`) or whose last `@D` is short (`truncated @D <seq>`), as well as a
+  file that does not start with `@PNRAW1`.
+* **Console commands** (§9, no GUI): `spo2 SUBJ01 96 [pr]` (range 50–100 enforced), `mark
+  [text]`, `note <text>`, `anchor` (CLOCK_ANCHOR), `site SUBJ01 <text>` (PROBE_SITE, also into
+  `session.json`), `subject <MAC suffix> SUBJ01` (binds a board to a subject so a `REF_SPO2`
+  carries its `board_mac`), `status`, `quit`. The same lines are accepted on `--event-port` (a
+  local UDP port) for the panel process of §9; the panel itself is not written yet.
+* **`--raw off`** writes no `raw/` at all but still keeps `events.csv`, `session.json` and the
+  log, so a bench run with the lab doing the CSV loses nothing of the operator's.
+* **`--raw exceptions`** judges a datagram as a whole: it is skipped only when every line is a
+  `$M4` with exactly 36 tokens (tag included, the count `pulsenest_lab.py` checks); `$CFG`,
+  `$TCFG`, `$LCFG`, `$TIMING`, `# STAT`, `$ERR`, a short frame, a 37th field or a frame mode
+  other than `$M4` keep the whole datagram. `session.json` counts what was skipped per source.
+* **Identity**: the MAC is taken from the first `$CFG` of an IP; the identity fields (`board`,
+  `fw`, `lib`, `build`, `libsha`, `elfsha`, `idfver`) and the `$CFG` line verbatim land in
+  `session.json` under `firmware`. A later `$CFG` from the same IP refreshes them (an OTA
+  mid-session). `$VN1` as first datagram makes the source `videonest` (§12 D1 still open on the
+  hub's side: the recorder classifies on its own).
+* **A board back on a new IP** (same MAC) is merged into the owner source: its datagrams
+  continue in the same part, `ips[]` in `session.json` gets the new lease with `from`/`to`
+  times, and an `@M source moved ip=… -> …` note marks the row.
+* **Silence** ≥ 5 s is noted once (`@M source silent for 5 s`) and its end too (`source back
+  after silence`). Neither stops anything (§8).
+* **`session.json`** is rewritten atomically (temp file + `os.replace`) at open, whenever a
+  stream opens or a subject/site changes, and at close with `closed{}` including
+  `clock_drift_us` = (epoch − mono) at close minus at start.
+* **Free space**: refused at start below `--min-free-gb` (default 2 GB), checked every minute,
+  warns below twice the floor and stops cleanly below it (`SESSION_END reason=disk`).
+* Files are opened unbuffered (`buffering=0`), so §8's "flush every 1 s" is implicit; fsync
+  every 10 s, on rotation and on close; `events.csv` fsyncs on every row.
+
+Not yet: the live CSV (§2), the converter (§10), the panel process (§9), `--compress-on-close`
+(D2), and the hub-side classification of the phone (D1).

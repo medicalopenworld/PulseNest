@@ -1,0 +1,868 @@
+"""pulsenest_recorder -- the robust, headless recorder for hospital sessions (raw stream first).
+
+Subscribes to the hub read-only and appends every datagram, byte for byte, to one `.pnraw`
+stream per source, with the host's two clocks stamped at reception. No Qt, no third-party
+package, nothing that paints: pyqtgraph has killed pulsenest_lab.py 28 times, and this tool
+exists so that a bad paint never costs a capture again. Format and behaviour are specified in
+`pulsenest_recorder_spec.md`; this file is that spec's first implementation and covers §3, §4,
+§5, §6, §7, §8 and the console half of §9. The live capture CSV (§2) and the converter (§10)
+come later: the raw stream carries every `$M4` field, RF included, so nothing is lost by
+recording raw first and converting off-site.
+
+    python tools/pulsenest_recorder.py --site HOSP01 [--operator AC] [--raw full|exceptions]
+                                       [--hub 127.0.0.1[:5005]] [--out captures/sessions]
+
+While it runs, the console accepts one command per line (§9 says a session must be possible
+with no GUI at all):
+
+    spo2 SUBJ01 96 [142]      a manual reading from the commercial monitor (value, optional PR)
+    mark [text]               an operator mark, session-wide
+    note <text>               a free-text note (no personal data -- coded subjects only)
+    site SUBJ01 <text>        probe site for a subject ("left foot")
+    anchor                    CLOCK_ANCHOR: written when the laptop clock is being filmed
+    status                    one line per source: datagrams, bytes, last seen
+    q | quit                  close the session (Ctrl+C does the same)
+
+The same lines are accepted on a local UDP port (--event-port) so that a separate panel process
+can send them (§9, process isolation): if the panel dies, recording continues.
+
+Layout (§3): captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>/ with session.json, events.csv,
+recorder.log and raw/board_<MAC>_<NNNN>.pnraw. A source is named by its MAC as soon as its $CFG
+arrives (the hub replays the cached $CFG on subscription, so normally at once); until then its
+datagrams wait in memory for up to 3 s, after which they go to unknown_<IP>_<NNNN>.pnraw rather
+than be dropped. A phone sending $VN1 frames is an auxiliary source, aux_vn_<IP>.
+
+Design rules that are enforced here rather than promised:
+- The recorder never sends to a board: HubClient(control=False), and there is no code path that
+  calls send_to_board().
+- Append only; flush every 1 s; fsync every 10 s, on rotation and on close; events.csv fsyncs on
+  every row.
+- One writer per source, each write in its own try/except: a failure on one board's stream is
+  logged and counted and does not touch the others.
+- Free space is checked at start (refuse below --min-free-gb) and every minute (stop cleanly
+  rather than fill the disk).
+
+`read_pnraw()` at the bottom is the reader the converter will build on; the test uses it to
+prove that what was written round-trips exactly.
+"""
+import argparse
+import csv
+import datetime as _dt
+import io
+import json
+import logging
+import os
+import platform
+import re
+import shutil
+import socket
+import sys
+import threading
+import time
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+from pulsenest_net import UDP_DATA_PORT, script_name           # noqa: E402
+from pulsenest_hub_client import HubClient                      # noqa: E402
+
+RECORDER_VERSION = "0.1"
+FORMAT_TAG = b"@PNRAW1"
+
+# --- durability knobs (spec section 8) -------------------------------------------------------
+FLUSH_S = 1.0
+FSYNC_S = 10.0
+FREE_SPACE_CHECK_S = 60.0
+IDENTIFY_WAIT_S = 3.0            # how long a new IP's datagrams wait in memory for a $CFG (MAC)
+SOURCE_SILENT_S = 5.0            # after this much silence a source is noted as silent (@M)
+ROTATE_MIN_DEFAULT = 15
+ROTATE_MB_DEFAULT = 256
+
+# --- what "a measurement frame the CSV represents" means for --raw exceptions -----------------
+# Token count INCLUDING the tag, what pulsenest_lab.py checks (`len(row) < 36` for $M4). A batch
+# datagram is skipped in `exceptions` mode only if EVERY line in it is a known measurement frame
+# with exactly this many tokens; anything else -- $CFG, $ERR, # STAT, a 37th field, a frame mode
+# nobody expected -- is written and counted.
+EXPECTED_TOKENS = {b"$M4": 36}
+
+EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
+               "SESSION_START", "SESSION_END")
+EVENTS_HEADER = ["event_id", "t_mono_us", "t_epoch_us", "iso_local", "kind", "subject",
+                 "board_mac", "value", "value2", "source", "confidence", "note"]
+
+_MAC_RE = re.compile(rb"[,\s]mac=([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})")
+_KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
+
+
+# ============================================================================================
+# clocks
+# ============================================================================================
+def now_us():
+    """(t_mono_us, t_epoch_us): the two host clocks of spec section 4, taken together."""
+    return int(time.monotonic() * 1e6), int(time.time() * 1e6)
+
+
+def iso_local(t_epoch_us):
+    return _dt.datetime.fromtimestamp(t_epoch_us / 1e6).astimezone().isoformat(timespec="milliseconds")
+
+
+def mac_compact(mac):
+    return mac.replace(":", "").upper()
+
+
+# ============================================================================================
+# one raw stream (one source, rotated into parts)
+# ============================================================================================
+class RawStream:
+    """Append-only `.pnraw` writer for ONE source. Owns the current part file, the record
+    sequence (continues across parts, so a gap in seq is a dropped record), rotation and the
+    flush/fsync cadence. Every write is wrapped by the Recorder, not here: this class raises,
+    the caller decides what a failure on one source means for the others."""
+
+    def __init__(self, raw_dir, session_id, source_key, source_label, log,
+                 rotate_s=ROTATE_MIN_DEFAULT * 60, rotate_bytes=ROTATE_MB_DEFAULT * 1024 * 1024):
+        self.raw_dir = raw_dir
+        self.session_id = session_id
+        self.source_key = source_key          # MAC or IP text, as the header's source=
+        self.source_label = source_label      # file stem: board_<MAC> | unknown_<IP> | aux_vn_<IP>
+        self.log = log
+        self.rotate_s = rotate_s
+        self.rotate_bytes = rotate_bytes
+        self.part = 0
+        self.seq = 0
+        self.f = None
+        self.part_bytes = 0
+        self.part_opened_mono = 0.0
+        self.files = []
+        self.records = 0
+        self.bytes = 0
+        self.errors = 0
+        self._dirty = False
+        self._last_flush = time.monotonic()
+        self._last_fsync = time.monotonic()
+
+    # ── parts ────────────────────────────────────────────────────────────────────────────
+    def path(self, part):
+        return os.path.join(self.raw_dir, f"{self.source_label}_{part:04d}.pnraw")
+
+    def open_part(self, t_mono_us, t_epoch_us):
+        self.part += 1
+        p = self.path(self.part)
+        os.makedirs(self.raw_dir, exist_ok=True)
+        self.f = open(p, "ab", buffering=0)   # unbuffered: what was written is in the OS at once
+        self.part_bytes = 0
+        self.part_opened_mono = time.monotonic()
+        self.files.append(os.path.relpath(p, os.path.dirname(self.raw_dir)).replace(os.sep, "/"))
+        header = (f"@PNRAW1 session={self.session_id} source={self.source_key} "
+                  f"part={self.part:04d} started={iso_local(t_epoch_us)}\n").encode("ascii")
+        self._write(header)
+        return p
+
+    def _rotate_if_due(self, t_mono_us, t_epoch_us):
+        if self.f is None:
+            return
+        elapsed = time.monotonic() - self.part_opened_mono
+        if elapsed >= self.rotate_s or self.part_bytes >= self.rotate_bytes:
+            why = (f"{int(self.rotate_s // 60)} min elapsed" if elapsed >= self.rotate_s
+                   else f"{self.part_bytes} B reached")
+            nxt = os.path.basename(self.path(self.part + 1))
+            self.note(t_mono_us, t_epoch_us, f"part closed: {why} -> {nxt}")
+            self.close_part()
+            self.open_part(t_mono_us, t_epoch_us)
+
+    def close_part(self):
+        if self.f is not None:
+            try:
+                os.fsync(self.f.fileno())
+            finally:
+                self.f.close()
+                self.f = None
+
+    # ── records ──────────────────────────────────────────────────────────────────────────
+    def datagram(self, t_mono_us, t_epoch_us, ip, data):
+        """`@D <seq> <t_mono_us> <t_epoch_us> <ip> <len>\\n<bytes>\\n` -- the datagram verbatim,
+        not unescaped, not validated (spec section 5)."""
+        if self.f is None:
+            self.open_part(t_mono_us, t_epoch_us)
+        self._rotate_if_due(t_mono_us, t_epoch_us)
+        self.seq += 1
+        head = f"@D {self.seq} {t_mono_us} {t_epoch_us} {ip} {len(data)}\n".encode("ascii")
+        self._write(head + data + b"\n")
+        self.records += 1
+
+    def event(self, t_mono_us, t_epoch_us, event_id, kind, text):
+        if self.f is None:
+            return
+        self._write(f"@E {t_mono_us} {t_epoch_us} {event_id} {kind} {text}\n".encode("utf-8"))
+
+    def note(self, t_mono_us, t_epoch_us, text):
+        if self.f is None:
+            return
+        self._write(f"@M {t_mono_us} {t_epoch_us} {text}\n".encode("utf-8"))
+
+    def _write(self, b):
+        self.f.write(b)
+        self.part_bytes += len(b)
+        self.bytes += len(b)
+        self._dirty = True
+
+    # ── cadence ──────────────────────────────────────────────────────────────────────────
+    def tick(self, now):
+        """Called often. fsync every FSYNC_S when something was written. (The file is opened
+        unbuffered, so 'flush' is implicit; the periodic fsync is what pushes it to the platter.)"""
+        if self.f is None or not self._dirty:
+            return
+        if now - self._last_fsync >= FSYNC_S:
+            os.fsync(self.f.fileno())
+            self._last_fsync = now
+            self._dirty = False
+
+    def close(self):
+        self.close_part()
+
+
+# ============================================================================================
+# a source: a board (by MAC), a not-yet-identified IP, or an auxiliary VideoNest phone
+# ============================================================================================
+class Source:
+    def __init__(self, ip, first_mono_us, first_epoch_us):
+        self.ip = ip
+        self.ips = [{"ip": ip, "from": iso_local(first_epoch_us), "to": None}]
+        self.mac = None
+        self.kind = "board"                   # board | videonest
+        self.ident = {}                       # k=v pairs from the $CFG (board, fw, lib, build, ...)
+        self.cfg_raw = None
+        self.stream = None
+        self.pending = []                     # (t_mono_us, t_epoch_us, ip, data) until named
+        self.first_mono_us = first_mono_us
+        self.last_seen_mono = first_mono_us / 1e6
+        self.silent = False
+        self.dgrams = 0
+        self.dgrams_skipped = 0               # not written under --raw exceptions
+        self.subject = None
+        self.probe_site = None
+
+    def label(self):
+        if self.kind == "videonest":
+            return f"aux_vn_{self.ip}"
+        if self.mac:
+            return f"board_{mac_compact(self.mac)}"
+        return f"unknown_{self.ip}"
+
+    def key(self):
+        return self.mac if self.mac else self.ip
+
+    def to_json(self):
+        d = {"kind": self.kind, "ips": self.ips, "files": self.stream.files if self.stream else [],
+             "datagrams": self.dgrams, "datagrams_skipped": self.dgrams_skipped,
+             "subject": self.subject, "probe_site": self.probe_site}
+        if self.kind == "board":
+            d["mac"] = self.mac
+            d["board_rev"] = self.ident.get("board")
+            d["firmware"] = {k: self.ident.get(k) for k in ("fw", "lib", "build", "libsha",
+                                                              "elfsha", "idfver")}
+            d["firmware"]["cfg_raw"] = self.cfg_raw
+        return d
+
+
+# ============================================================================================
+# the recorder core -- no sockets in here, so the test can drive it directly
+# ============================================================================================
+class Recorder:
+    def __init__(self, out_root, site, operator="", raw_mode="full", hub_text="",
+                 rotate_s=ROTATE_MIN_DEFAULT * 60, rotate_bytes=ROTATE_MB_DEFAULT * 1024 * 1024,
+                 identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us):
+        if raw_mode not in ("full", "exceptions", "off"):
+            raise ValueError("raw_mode must be full | exceptions | off")
+        self.clock = clock
+        self.raw_mode = raw_mode
+        self.rotate_s = rotate_s
+        self.rotate_bytes = rotate_bytes
+        self.identify_wait_s = identify_wait_s
+        self.min_free_bytes = min_free_bytes
+        t_mono, t_epoch = self.clock()
+        self.started = {"iso": iso_local(t_epoch), "t_mono_us": t_mono, "t_epoch_us": t_epoch}
+        stamp = _dt.datetime.fromtimestamp(t_epoch / 1e6)
+        self.site = re.sub(r"[^A-Za-z0-9]", "", site.upper())[:12] or "SITE"
+        self.session_id = f"{stamp:%Y%m%d_%H%M}_{self.site}"
+        self.dir = os.path.join(out_root, self.session_id)
+        self.raw_dir = os.path.join(self.dir, "raw")
+        self.operator = operator
+        self.hub_text = hub_text
+        self.sources = {}                     # ip -> Source
+        self.by_mac = {}                      # mac -> Source (the one that owns the stream)
+        self.event_id = 0
+        self.events_written = 0
+        self.errors = 0
+        self.stopped = False
+        self.stop_reason = None
+        self._last_free_check = 0.0
+        self.free_bytes = None
+
+        # The directory and session.json exist BEFORE the first datagram is recorded (section 3).
+        os.makedirs(self.dir, exist_ok=True)
+        self.log = log or self._make_logger()
+        self._check_free_space(force=True)
+        if self.min_free_bytes and self.free_bytes is not None and self.free_bytes < self.min_free_bytes:
+            raise RuntimeError(f"refusing to start: {self.free_bytes / 1e9:.1f} GB free, floor is "
+                               f"{self.min_free_bytes / 1e9:.1f} GB")
+        self.events_path = os.path.join(self.dir, "events.csv")
+        self._events_f = open(self.events_path, "a", newline="", encoding="utf-8")
+        if os.path.getsize(self.events_path) == 0:
+            self._events_f.write(",".join(EVENTS_HEADER) + "\n")
+            self._events_f.flush()
+            os.fsync(self._events_f.fileno())
+        self.write_session_json()
+        self.event("SESSION_START", note=f"recorder {RECORDER_VERSION} raw={raw_mode}")
+        self.log.info("session %s opened in %s (raw=%s)", self.session_id, self.dir, raw_mode)
+
+    def _make_logger(self):
+        lg = logging.getLogger(f"recorder.{self.session_id}")
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        fh = logging.FileHandler(os.path.join(self.dir, "recorder.log"), encoding="utf-8")
+        fh.setFormatter(fmt)
+        lg.addHandler(fh)
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        lg.addHandler(sh)
+        return lg
+
+    # ── datagrams ────────────────────────────────────────────────────────────────────────
+    def feed(self, ip, data, t_mono_us=None, t_epoch_us=None):
+        """One datagram from the hub (the @FROM line already stripped). Never raises: every
+        failure is logged and counted, and the other sources are not affected."""
+        if t_mono_us is None:
+            t_mono_us, t_epoch_us = self.clock()
+        src = self.sources.get(ip)
+        if src is None:
+            src = self.sources[ip] = Source(ip, t_mono_us, t_epoch_us)
+            if data.startswith(b"$VN1"):
+                src.kind = "videonest"
+            self.log.info("new source %s%s", ip, " (VideoNest)" if src.kind == "videonest" else "")
+        if src.silent:
+            src.silent = False
+            self._note(src, t_mono_us, t_epoch_us, f"source back after silence ip={ip}")
+        src.last_seen_mono = t_mono_us / 1e6
+        src.dgrams += 1
+        try:
+            if src.kind == "board" and src.mac is None:
+                self._try_identify(src, data, t_mono_us, t_epoch_us)
+            elif src.kind == "board" and data.startswith(b"$CFG,"):
+                self._refresh_ident(src, data)
+            if src.stream is None:
+                if src.kind == "videonest":
+                    self._open_stream(src, t_mono_us, t_epoch_us)
+                else:
+                    src.pending.append((t_mono_us, t_epoch_us, ip, data))
+                    if (t_mono_us - src.first_mono_us) / 1e6 >= self.identify_wait_s:
+                        self._note_unknown(src, t_mono_us, t_epoch_us)
+                    return
+            self._record(src, t_mono_us, t_epoch_us, ip, data)
+        except Exception as exc:                          # one source's failure stays its own
+            self.errors += 1
+            if src.stream is not None:
+                src.stream.errors += 1
+            self.log.error("write failed for %s: %r", src.label(), exc)
+
+    def _record(self, src, t_mono_us, t_epoch_us, ip, data):
+        if self.raw_mode == "off":
+            return
+        if self.raw_mode == "exceptions" and is_plain_measurement_batch(data):
+            src.dgrams_skipped += 1
+            return
+        src.stream.datagram(t_mono_us, t_epoch_us, ip, data)
+
+    def _try_identify(self, src, data, t_mono_us, t_epoch_us):
+        m = _MAC_RE.search(data) if data.startswith(b"$CFG,") else None
+        if not m:
+            return
+        mac = m.group(1).decode("ascii").upper()
+        src.mac = mac
+        src.cfg_raw = data.split(b"\n", 1)[0].rstrip(b"\r").decode("ascii", "replace")
+        src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
+        owner = self.by_mac.get(mac)
+        if owner is not None and owner is not src:
+            # The same board back on a new DHCP lease: continue in ITS file (section 5).
+            owner.ips[-1]["to"] = iso_local(t_epoch_us)
+            owner.ips.append({"ip": src.ip, "from": iso_local(t_epoch_us), "to": None})
+            owner.dgrams += src.dgrams
+            owner.cfg_raw, owner.ident = src.cfg_raw, src.ident
+            old_ip = owner.ip
+            owner.ip = src.ip
+            self.sources[src.ip] = owner
+            owner.pending.extend(src.pending)
+            self._note(owner, t_mono_us, t_epoch_us, f"source moved ip={old_ip} -> {src.ip}")
+            src.pending = []
+            for rec in owner.pending:
+                owner.stream.datagram(*rec)
+            owner.pending = []
+            self.log.info("%s moved %s -> %s", owner.label(), old_ip, src.ip)
+            # From here on this IP's datagrams are the owner's; the caller's `src` is stale,
+            # so redirect it before the caller records.
+            src.stream = owner.stream
+            src.mac = owner.mac
+            return
+        self.by_mac[mac] = src
+        self._open_stream(src, t_mono_us, t_epoch_us)
+        ident = " ".join(f"{k}={src.ident[k]}" for k in ("board", "fw", "lib", "build", "elfsha")
+                         if k in src.ident)
+        self._note(src, t_mono_us, t_epoch_us, f"identified: mac={mac} {ident}".rstrip())
+        self.log.info("identified %s as %s (%s)", src.ip, mac, ident)
+
+    def _refresh_ident(self, src, data):
+        src.cfg_raw = data.split(b"\n", 1)[0].rstrip(b"\r").decode("ascii", "replace")
+        src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
+
+    def _open_stream(self, src, t_mono_us, t_epoch_us):
+        if self.raw_mode == "off":
+            src.stream = _NullStream()
+            src.pending = []
+            return
+        src.stream = RawStream(self.raw_dir, self.session_id, src.key(), src.label(), self.log,
+                               self.rotate_s, self.rotate_bytes)
+        src.stream.open_part(t_mono_us, t_epoch_us)
+        for rec in src.pending:                       # what waited for the name, in order
+            src.stream.datagram(*rec)
+        src.pending = []
+        self.write_session_json()
+
+    def _note_unknown(self, src, t_mono_us, t_epoch_us):
+        self.log.warning("no $CFG from %s after %.0f s: recording as %s",
+                         src.ip, self.identify_wait_s, src.label())
+        self._open_stream(src, t_mono_us, t_epoch_us)
+        self._note(src, t_mono_us, t_epoch_us,
+                   f"unidentified: no $CFG within {self.identify_wait_s:.0f} s, named by ip")
+
+    def _note(self, src, t_mono_us, t_epoch_us, text):
+        if src.stream is not None:
+            try:
+                src.stream.note(t_mono_us, t_epoch_us, text)
+            except Exception as exc:
+                self.errors += 1
+                self.log.error("note failed for %s: %r", src.label(), exc)
+
+    # ── events (section 6) ───────────────────────────────────────────────────────────────
+    def event(self, kind, subject="*", board_mac="*", value="", value2="", source="keyboard",
+              confidence="", note=""):
+        """One row in events.csv (flush + fsync at once) and an @E copy in every open stream."""
+        if kind not in EVENT_KINDS:
+            raise ValueError(f"unknown event kind {kind!r}")
+        t_mono_us, t_epoch_us = self.clock()
+        self.event_id += 1
+        row = [self.event_id, t_mono_us, t_epoch_us, iso_local(t_epoch_us), kind, subject,
+               board_mac, value, value2, source, confidence, note]
+        w = csv.writer(self._events_f, lineterminator="\n")
+        w.writerow(row)
+        self._events_f.flush()
+        os.fsync(self._events_f.fileno())
+        self.events_written += 1
+        text = f"subject={subject} board={board_mac}"
+        if value != "":
+            text += f" value={value}"
+        if value2 != "":
+            text += f" value2={value2}"
+        text += f" source={source}"
+        if note:
+            text += " note=" + note.replace("\n", " ")
+        for src in self._owners():
+            self._note_event(src, t_mono_us, t_epoch_us, kind, text)
+        self.log.info("event %d %s %s", self.event_id, kind, text)
+        return self.event_id
+
+    def _note_event(self, src, t_mono_us, t_epoch_us, kind, text):
+        if src.stream is not None:
+            try:
+                src.stream.event(t_mono_us, t_epoch_us, self.event_id, kind, text)
+            except Exception as exc:
+                self.errors += 1
+                self.log.error("@E failed for %s: %r", src.label(), exc)
+
+    def console(self, line):
+        """A console / panel command (section 9). Returns a reply string; 'quit' stops."""
+        parts = line.strip().split()
+        if not parts:
+            return ""
+        cmd, args = parts[0].lower(), parts[1:]
+        try:
+            if cmd in ("q", "quit", "exit"):
+                self.stop("operator")
+                return "closing"
+            if cmd == "spo2":
+                if len(args) < 2:
+                    return "usage: spo2 SUBJ01 <spo2%> [pr]"
+                subj, val = args[0].upper(), int(args[1])
+                if not 50 <= val <= 100:
+                    return "SpO2 must be 50..100"
+                pr = int(args[2]) if len(args) > 2 else ""
+                mac = self._mac_for_subject(subj)
+                eid = self.event("REF_SPO2", subject=subj, board_mac=mac, value=val, value2=pr)
+                return f"event {eid}: REF_SPO2 {subj}={val}" + (f" PR={pr}" if pr != "" else "")
+            if cmd == "mark":
+                eid = self.event("MARK", note=" ".join(args))
+                return f"event {eid}: MARK"
+            if cmd == "note":
+                eid = self.event("NOTE", note=" ".join(args))
+                return f"event {eid}: NOTE"
+            if cmd == "anchor":
+                eid = self.event("CLOCK_ANCHOR", note="laptop clock filmed")
+                return f"event {eid}: CLOCK_ANCHOR at {iso_local(self.clock()[1])}"
+            if cmd == "site":
+                if len(args) < 2:
+                    return "usage: site SUBJ01 <probe site text>"
+                subj, text = args[0].upper(), " ".join(args[1:])
+                for s in self._owners():
+                    if s.subject == subj:
+                        s.probe_site = text
+                eid = self.event("PROBE_SITE", subject=subj, board_mac=self._mac_for_subject(subj),
+                                 note=text)
+                self.write_session_json()
+                return f"event {eid}: PROBE_SITE {subj} {text}"
+            if cmd == "subject":
+                if len(args) < 2:
+                    return "usage: subject <MAC or last 4 hex> SUBJ01"
+                s = self._source_for_mac(args[0])
+                if s is None:
+                    return f"no board matching {args[0]}"
+                s.subject = args[1].upper()
+                self.write_session_json()
+                return f"{s.label()} -> {s.subject}"
+            if cmd == "status":
+                return self.status_text()
+            return f"unknown command {cmd!r} (spo2, mark, note, anchor, site, subject, status, quit)"
+        except Exception as exc:
+            return f"error: {exc}"
+
+    def _owners(self):
+        seen, out = set(), []
+        for s in self.sources.values():
+            if id(s) not in seen:
+                seen.add(id(s))
+                out.append(s)
+        return out
+
+    def _mac_for_subject(self, subj):
+        for s in self._owners():
+            if s.subject == subj and s.mac:
+                return s.mac
+        return "*"
+
+    def _source_for_mac(self, text):
+        t = text.upper().replace(":", "")
+        for s in self._owners():
+            if s.mac and mac_compact(s.mac).endswith(t):
+                return s
+        return None
+
+    # ── housekeeping (section 8) ─────────────────────────────────────────────────────────
+    def tick(self, now=None):
+        """Call a few times a second: fsync cadence, silence notes, disk check."""
+        now = time.monotonic() if now is None else now
+        t_mono_us, t_epoch_us = self.clock()
+        for src in self._owners():
+            if src.stream is None and src.pending and src.kind == "board":
+                if (t_mono_us - src.first_mono_us) / 1e6 >= self.identify_wait_s:
+                    try:
+                        self._note_unknown(src, t_mono_us, t_epoch_us)
+                    except Exception as exc:
+                        self.errors += 1
+                        self.log.error("could not open stream for %s: %r", src.ip, exc)
+            if src.stream is not None:
+                try:
+                    src.stream.tick(now)
+                except Exception as exc:
+                    self.errors += 1
+                    self.log.error("fsync failed for %s: %r", src.label(), exc)
+                if not src.silent and now - src.last_seen_mono >= SOURCE_SILENT_S:
+                    src.silent = True
+                    self._note(src, t_mono_us, t_epoch_us,
+                               f"source silent for {SOURCE_SILENT_S:.0f} s")
+                    self.log.warning("%s silent", src.label())
+        if now - self._last_free_check >= FREE_SPACE_CHECK_S:
+            self._check_free_space()
+
+    def _check_free_space(self, force=False):
+        self._last_free_check = time.monotonic()
+        try:
+            self.free_bytes = shutil.disk_usage(self.dir).free
+        except OSError:
+            self.free_bytes = None
+            return
+        if self.min_free_bytes and self.free_bytes < self.min_free_bytes and not force:
+            self.log.error("free space %.1f GB below floor %.1f GB: stopping cleanly",
+                           self.free_bytes / 1e9, self.min_free_bytes / 1e9)
+            self.stop("disk")
+        elif self.min_free_bytes and self.free_bytes < 2 * self.min_free_bytes:
+            self.log.warning("free space %.1f GB", self.free_bytes / 1e9)
+
+    def status_text(self):
+        lines = []
+        for s in self._owners():
+            st = s.stream
+            files = st.files[-1] if st is not None and st.files else "-"
+            lines.append(f"{s.label():28s} ip={s.ip:15s} dgrams={s.dgrams:7d} "
+                         f"skipped={s.dgrams_skipped:6d} bytes={(st.bytes if st else 0):10d} "
+                         f"subject={s.subject or '-'} last={time.monotonic() - s.last_seen_mono:5.1f}s "
+                         f"{'SILENT ' if s.silent else ''}{files}")
+        return "\n".join(lines) if lines else "(no sources yet)"
+
+    # ── session.json (section 7) ─────────────────────────────────────────────────────────
+    def session_dict(self, closed=None):
+        return {
+            "schema": "pulsenest_session/1",
+            "session_id": self.session_id,
+            "site_code": self.site,
+            "operator": self.operator,
+            "started": self.started,
+            "closed": closed,
+            "host": {"hostname": platform.node(), "recorder_version": RECORDER_VERSION,
+                     "hub": self.hub_text, "python": platform.python_version(),
+                     "timezone": time.strftime("%Z"), "raw_mode": self.raw_mode},
+            "sources": [s.to_json() for s in self._owners()],
+            "events": self.events_written,
+            "write_errors": self.errors,
+            "consent": "pending",
+            "notes": "",
+        }
+
+    def write_session_json(self, closed=None):
+        p = os.path.join(self.dir, "session.json")
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.session_dict(closed), f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+
+    # ── stop ─────────────────────────────────────────────────────────────────────────────
+    def stop(self, reason="operator"):
+        if not self.stopped:
+            self.stopped = True
+            self.stop_reason = reason
+
+    def close(self):
+        """SESSION_END, every stream fsynced and closed, session.json updated. Idempotent."""
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        try:
+            self.event("SESSION_END", note=f"reason={self.stop_reason or 'operator'}")
+        except Exception as exc:
+            self.log.error("SESSION_END failed: %r", exc)
+        for src in self._owners():
+            if src.stream is not None:
+                try:
+                    src.stream.close()
+                except Exception as exc:
+                    self.errors += 1
+                    self.log.error("close failed for %s: %r", src.label(), exc)
+        t_mono, t_epoch = self.clock()
+        drift = (t_epoch - t_mono) - (self.started["t_epoch_us"] - self.started["t_mono_us"])
+        closed = {"iso": iso_local(t_epoch), "t_mono_us": t_mono, "t_epoch_us": t_epoch,
+                  "clock_drift_us": drift}
+        self.write_session_json(closed)
+        try:
+            self._events_f.flush()
+            os.fsync(self._events_f.fileno())
+            self._events_f.close()
+        except OSError:
+            pass
+        self.log.info("session %s closed (%s); %d events, %d write errors -> %s",
+                      self.session_id, self.stop_reason, self.events_written, self.errors, self.dir)
+
+
+class _NullStream:
+    """--raw off: a source still needs somewhere for its bookkeeping, and nothing on disk."""
+    files = []
+    bytes = 0
+    errors = 0
+    records = 0
+
+    def datagram(self, *a):
+        pass
+
+    def event(self, *a):
+        pass
+
+    def note(self, *a):
+        pass
+
+    def tick(self, now):
+        pass
+
+    def close(self):
+        pass
+
+
+# ============================================================================================
+# frame classification for --raw exceptions
+# ============================================================================================
+def is_plain_measurement_batch(data):
+    """True when every line of the datagram is a known measurement frame with exactly the
+    expected token count -- i.e. a datagram the capture CSV represents completely. A batch is
+    judged as a whole: one odd line and the whole datagram is kept."""
+    lines = [ln for ln in data.split(b"\n") if ln.strip(b"\r")]
+    if not lines:
+        return False
+    for ln in lines:
+        ln = ln.rstrip(b"\r")
+        tag, _, _ = ln.partition(b",")
+        want = EXPECTED_TOKENS.get(tag)
+        if want is None:
+            return False
+        body = ln.split(b"*", 1)[0]
+        if body.count(b",") + 1 != want:
+            return False
+    return True
+
+
+# ============================================================================================
+# reader -- the converter's seed, and the test's proof of round-trip
+# ============================================================================================
+def read_pnraw(path):
+    """Yield the records of one `.pnraw` file as tuples:
+        ("H", header_fields_dict)
+        ("D", seq, t_mono_us, t_epoch_us, ip, data_bytes)
+        ("E", t_mono_us, t_epoch_us, event_id, kind, text)
+        ("M", t_mono_us, t_epoch_us, text)
+    Follows the <len> of every @D, so a source line that happened to start with '@' could not
+    fool it. Refuses a file whose first line is not @PNRAW1 (spec section 5)."""
+    with open(path, "rb") as f:
+        first = f.readline()
+        if not first.startswith(FORMAT_TAG + b" "):
+            raise ValueError(f"{path}: not a PNRAW1 file (first line {first[:20]!r})")
+        hdr = dict(kv.split("=", 1) for kv in first[len(FORMAT_TAG) + 1:].decode().split()
+                   if "=" in kv)
+        yield ("H", hdr)
+        while True:
+            line = f.readline()
+            if not line:
+                return
+            if not line.endswith(b"\n"):
+                # A recorder line without its newline is a torn tail (the laptop died mid-write),
+                # not a shorter record: say so instead of handing back half a line as data.
+                raise ValueError(f"{path}: truncated tail, last line {line[:40]!r}")
+            if line.startswith(b"@D "):
+                p = line.split(b" ", 5)
+                n = int(p[5])
+                data = f.read(n)
+                if len(data) != n:
+                    raise ValueError(f"{path}: truncated @D {p[1].decode()} ({len(data)}/{n} B)")
+                nl = f.read(1)
+                if nl not in (b"\n", b""):
+                    raise ValueError(f"{path}: @D {p[1].decode()} not followed by newline")
+                yield ("D", int(p[1]), int(p[2]), int(p[3]), p[4].decode(), data)
+            elif line.startswith(b"@E "):
+                p = line.rstrip(b"\n").split(b" ", 5)
+                yield ("E", int(p[1]), int(p[2]), int(p[3]), p[4].decode(),
+                       p[5].decode("utf-8", "replace") if len(p) > 5 else "")
+            elif line.startswith(b"@M "):
+                p = line.rstrip(b"\n").split(b" ", 3)
+                yield ("M", int(p[1]), int(p[2]), p[3].decode("utf-8", "replace") if len(p) > 3 else "")
+            else:
+                raise ValueError(f"{path}: unexpected line outside a record: {line[:40]!r}")
+
+
+# ============================================================================================
+# main loop -- the only place that touches sockets
+# ============================================================================================
+class _ConsoleReader(threading.Thread):
+    """stdin lines -> queue. A thread because stdin has no timeout; daemon so it never blocks
+    the exit."""
+
+    def __init__(self, sink):
+        super().__init__(daemon=True)
+        self.sink = sink
+
+    def run(self):
+        try:
+            for line in sys.stdin:
+                self.sink(line)
+        except (OSError, ValueError):
+            pass
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--site", required=True, help="short site code for the session id (HOSP01, BENCH)")
+    ap.add_argument("--operator", default="", help="initials or role, never a full name")
+    ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
+    ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"))
+    ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
+    ap.add_argument("--rotate-min", type=float, default=ROTATE_MIN_DEFAULT)
+    ap.add_argument("--rotate-mb", type=float, default=ROTATE_MB_DEFAULT)
+    ap.add_argument("--min-free-gb", type=float, default=2.0)
+    ap.add_argument("--event-port", type=int, default=0,
+                    help="local UDP port that accepts the console commands from a panel process")
+    ap.add_argument("--duration", type=float, default=0.0, help="seconds; 0 = until quit")
+    args = ap.parse_args(argv)
+
+    host, _, port = args.hub.partition(":")
+    hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
+    rec = Recorder(args.out, args.site, args.operator, args.raw, hub_text=f"{hub[0]}:{hub[1]}",
+                   rotate_s=args.rotate_min * 60, rotate_bytes=int(args.rotate_mb * 1024 * 1024),
+                   min_free_bytes=int(args.min_free_gb * 1e9))
+    log = rec.log
+
+    client = HubClient(script_name(__file__), hub=hub, control=False, log=log.info)
+    if not client.connect():
+        log.warning("no hub yet at %s:%d -- will keep trying", *hub)
+
+    lines = []
+    lock = threading.Lock()
+
+    def sink(line):
+        with lock:
+            lines.append(line)
+
+    _ConsoleReader(sink).start()
+    ev_sock = None
+    if args.event_port:
+        ev_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ev_sock.bind(("127.0.0.1", args.event_port))
+        ev_sock.setblocking(False)
+        log.info("panel commands accepted on udp://127.0.0.1:%d", args.event_port)
+
+    print(f"recording into {rec.dir}  (commands: spo2 SUBJ01 96 [pr] | mark | note | anchor | "
+          f"site | subject | status | quit)")
+    t_end = time.monotonic() + args.duration if args.duration > 0 else None
+    next_tick = 0.0
+    try:
+        while not rec.stopped:
+            item = client.recv(0.1)
+            if item is not None:
+                ip, data = item
+                rec.feed(ip, data)
+            if ev_sock is not None:
+                try:
+                    while True:
+                        d, addr = ev_sock.recvfrom(4096)
+                        reply = rec.console(d.decode("utf-8", "replace"))
+                        if reply:
+                            ev_sock.sendto(reply.encode("utf-8"), addr)
+                except (BlockingIOError, OSError):
+                    pass
+            with lock:
+                pending, lines = lines, []
+            for ln in pending:
+                reply = rec.console(ln)
+                if reply:
+                    print(reply)
+            now = time.monotonic()
+            if now >= next_tick:
+                next_tick = now + 0.25
+                rec.tick(now)
+            if t_end is not None and now >= t_end:
+                rec.stop("duration")
+    except KeyboardInterrupt:
+        rec.stop("SIGINT")
+    finally:
+        client.close()
+        rec.close()
+        print(rec.status_text())
+        print(f"session closed -> {rec.dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
