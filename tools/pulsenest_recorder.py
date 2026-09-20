@@ -92,6 +92,11 @@ SPLIT_MB_DEFAULT = 256
 # with exactly this many tokens; anything else -- $CFG, $ERR, # STAT, a 37th field, a frame mode
 # nobody expected -- is written and counted.
 EXPECTED_TOKENS = {b"$M4": 36}
+# The frame tags that carry a sample counter in field 1. Matched in full, never as a bare
+# `$M` prefix: another source on this wire may legitimately use a `$Mn` tag (VideoNest has
+# one), and reading its sequence number as our sample counter would invent gaps and
+# restarts out of nothing.
+BOARD_FRAME_TAGS = (b"$M1,", b"$M2,", b"$M3,", b"$M4,")
 
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
                "META", "SESSION_START", "SESSION_END")   # META: session metadata typed in (subject, tier, condition, reference monitor, consent)
@@ -463,7 +468,7 @@ class Recorder:
         will do the authoritative per-frame check (`# gap`, capture_csv_format_spec R12a); this
         is situational awareness at the cot side, and a count in `session.json`."""
         for ln in data.split(b"\n"):
-            if not ln.startswith(b"$M"):
+            if ln[:4] not in BOARD_FRAME_TAGS:
                 continue
             try:
                 n = int(ln.split(b",", 2)[1])

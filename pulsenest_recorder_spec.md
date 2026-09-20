@@ -427,7 +427,7 @@ reference streams below.
   annotation from a message. Named per
   `CAPTURE_SET_SPEC` §2.4 (`<TIER>_<SUBJECT>_<CONDITION>_<params>_<date>_<time>.csv`) from
   `session.json`, so nobody types a long filename in a hospital.
-* **`ref_videonest.csv`**: `t_epoch_us, t_mono_us, seq, spo2, pr, conf, phone_ts_ms, drift_ms,
+* **`ref_videonest.csv`**: `t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms,
   checksum_ok` — one row per `$VN1` frame, with the NMEA checksum verified here (never at
   capture time) and the phone-to-host clock drift made explicit.
 * **`ref_manual.csv`**: `session_events.csv` filtered to `kind=REF_SPO2`, in the same column shape as
@@ -515,13 +515,27 @@ What the implementation fixed in this document's wording, or added:
   the phone does not have to be on the hotspot with the boards. 30 s recorded alongside the three
   V18: **42 frames (≈1,4 Hz), 0 bad NMEA checksums, 0 sequence gaps**, classified `aux` by the hub
   and written to `raw/aux_vn_192.168.1.143_0001.pnraw`. Frame seen:
-  `$VN1,314,96,0,0.98,1789927282311*23`.
+  `$VN1,314,96,0,0.98,1789927282311*23` (the build-7 shape; **build 8 dropped the `pr` field**,
+  see below).
   Two numbers worth keeping. **The phone's timestamp runs 164–350 ms behind host arrival (median
   206)** — that is clock offset *plus* OCR and send time, and it is exactly what §10's `drift_ms`
   column is for; at the accuracy a video frame needs (tens of ms) it must be corrected, not
   ignored. And **the pulse rate field was 0 in every frame** while SpO2 read 96 at confidence
   0.98: whatever the camera was pointed at, PR was not being recognised. Worth settling before the
   campaign, since `value2` of a manual `REF_SPO2` is then the only pulse-rate reference.
+* **VideoNest build 8 (2026-09-20) drops `pr` from the frame**: `$VN1,<seq>,<spo2>,<conf>,<ts_ms>`,
+  four fields where there were five, and the NMEA checksum is over the new, shorter body. It read 0
+  in every frame anyway (measured above). **Nothing in this repository had to change to keep
+  working**: the hub matches the four-byte tag and never parses the body, the recorder classifies on
+  the same prefix, and the checksum is verified by the converter, which does not exist yet — the
+  decision in §5 not to interpret what is recorded is what made a wire-format change a
+  documentation task. What did change: the fixtures, `ref_videonest.csv`'s columns (§10, no `pr`),
+  and one defensive fix — `_watch_counter` matched any `$M` tag when reading a board's sample
+  counter and now matches `$M1,`…`$M4,` in full, because **another source on this wire may use a
+  `$Mn` tag** (build 8 names one `M5`) and reading its sequence number as our sample counter would
+  invent gaps and restarts. Open: whether a frame tagged `$M5` actually reaches the wire, in which
+  case it needs either an entry in `AUX_PREFIXES` or a tag outside the boards' `$Mn` space —
+  `$M5` was also a name our own firmware had considered.
 * **`session_id` as the first column of `session_events.csv`** (§6), rather than a session-id
   prefix on every filename.
 * **`session_events.csv`, not `events.csv`** (Alex, 2026-09-20). It pairs with `session.json`, so

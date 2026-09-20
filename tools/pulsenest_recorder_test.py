@@ -81,7 +81,7 @@ CFG_A = (b"$CFG,sr=500,board=incunest_V17,mac=10:20:BA:14:75:60,fw=0.13,lib=0.93
          b"elfsha=752b9e01df703576,idfver=v6.0.1*00\r\n")
 CFG_B = b"$CFG,sr=500,board=incunest_V18,mac=10:51:DB:50:88:50,fw=0.13,lib=0.93,build=7770c6c*00\r\n"
 STAT = b"# STAT frame_dropped=0 udp_tx=100 spi_mean=230 spi_max=412\r\n"
-VN1 = b"$VN1,1234,96,142,0.91,1790000012000*3A\r\n"
+VN1 = b"$VN1,1234,96,0.91,1790000012000*08\r\n"   # build 8 (2026-09-20): seq,spo2,conf,ts -- no pr
 
 
 def batch(start, n=5, tag=M4):

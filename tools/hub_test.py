@@ -300,7 +300,7 @@ def main():
                 except (BlockingIOError, OSError):
                     pass
                 self.seq += 1
-                frame = f"$VN1,{self.seq},96,142,0.91,1790000012000*3A".encode() + CRLF
+                frame = f"$VN1,{self.seq},96,0.91,1790000012000*00".encode() + CRLF   # build 8: no pr
                 self.data.sendto(frame, ("127.0.0.1", DATA_PORT))
                 time.sleep(0.05)
 

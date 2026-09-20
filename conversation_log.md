@@ -24146,3 +24146,32 @@ seq**. Sesion guardada en `captures/sessions/20260920_2001_BENCH`.
 2. **El campo de pulso (PR) vale 0 en TODAS las tramas**, con SpO2=96 y confianza 0,98. Apunte al
    monitor que apunte la camara, el pulso no se esta reconociendo. **Conviene resolverlo antes de
    la campana**: si no, el unico pulso de referencia sera el `value2` que se teclee a mano.
+
+## Sesion 2026-09-20 (6) - VideoNest build 8: la trama `$VN1` pierde el campo `pr`
+
+Alex avisa del cambio: `$VN1,seq,spo2,conf,ts*cks`, cuatro campos donde habia cinco (fuera `pr`,
+que siempre valia 0 — medido en la sesion anterior), checksum NMEA sobre el cuerpo nuevo, y lo
+mismo en las variantes JSON y CSV_RAW.
+
+**Impacto real en el repo: ninguno funcional.** Nada aqui parsea `$VN1` por posicion: el hub casa
+los cuatro bytes del prefijo y nunca mira el cuerpo, `pulsenest_recorder.py` clasifica por el mismo
+prefijo, y **el checksum no lo verifica nadie todavia** (lo hara el conversor, que no existe). La
+decision de §5 de no interpretar lo que se graba es lo que convirtio un cambio de formato de cable
+en una tarea de documentacion. Actualizados: los fixtures de los tests, las columnas de
+`ref_videonest.csv` (§10, sin `pr`) y la spec.
+
+**Lo importante del aviso no era el formato, era `$M5`.** El mensaje menciona "VN1 / M5". Varias
+herramientas clasifican por el prefijo de DOS bytes `$M`: `udp_fw_versions.py:62`,
+`udp_cmd_latency.py:41`, `tia_linearity_sweep.py:96` y — la peor — `_watch_counter()` de
+`pulsenest_recorder.py`, que habria leido el `seq` de VideoNest como contador de muestras e
+inventado huecos y reinicios. Y el hub NO lo clasificaria como auxiliar (`AUX_PREFIXES` solo tiene
+`$VN1`): el movil volveria a salir como placa y a recibir tres `$CFG?`. Ademas `$M5` es un nombre
+que nuestro propio firmware tenia considerado (trama con ILED/RG/AMBDAC por muestra).
+**Arreglo defensivo aplicado:** `BOARD_FRAME_TAGS = ($M1, $M2, $M3, $M4)` casados ENTEROS en
+`_watch_counter()`, nunca el prefijo `$M` suelto. **Pregunta abierta a Alex:** ¿sale una trama
+`$M5` por el cable, o "M5" es solo el nombre del modo dentro de la app? Si sale, hay que decidir
+entre anadirla a `AUX_PREFIXES` o pedir que VideoNest no use el espacio `$Mn`, que es de las placas.
+
+Suites tras el cambio: recorder 60/60, hub 39/39, fleet_monitor 25/25, fleet_ppg_viewer 73/73.
+No se pudo verificar la trama build 8 contra el movil real: dejo de emitir hace ~20 min
+(`aux 192.168.1.143 videonest LOST`), probablemente por la actualizacion.
