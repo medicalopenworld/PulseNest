@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.13"
+#define PULSENEST_FW_VERSION "0.14"   // 0.14: Ts_us printed as %llu in $M1-$M4 (was %lu: wrapped every 71,6 min)
 
 // ── Pin definitions ────────────────────────────────────────────────────────────────────
 // From Kconfig (main/Kconfig.projbuild, menu "PulseNest board"): one build directory per board,
@@ -559,9 +559,9 @@ void Incunest_Task(void *pvParameters) {
                     // $M1,SmpCnt,Ts_us,PPG_DISP*XX  (PPG_DISP: OT domain [A/A] since v0.69, was ADC counts)
                     char buf[128];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M1,%lu,%lu,%.4e",
+                        "$M1,%lu,%llu,%.4e",
                         (unsigned long)incunest_sample_count,
-                        (unsigned long)esp_timer_get_time(),
+                        (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
                         data.ppg_disp);
                     if (frame_finish(buf, sizeof(buf), n, "M1")) {
                         if (!g_wifi_ready) Serial_print_locked(buf);
@@ -572,9 +572,9 @@ void Incunest_Task(void *pvParameters) {
                     // (PPG_DISP: OT domain [A/A] since v0.69, was ADC counts)
                     char buf[192];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M2,%lu,%lu,%.4e,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
+                        "$M2,%lu,%llu,%.4e,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
                         (unsigned long)incunest_sample_count,
-                        (unsigned long)esp_timer_get_time(),
+                        (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
                         data.ppg_disp,
                         data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
                         data.spo2_sqi,
@@ -593,9 +593,9 @@ void Incunest_Task(void *pvParameters) {
                     // (PPG_DISP: OT domain [A/A] since v0.69, was ADC counts)
                     char buf[384];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M3,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
+                        "$M3,%lu,%llu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d",
                         (unsigned long)incunest_sample_count,
-                        (unsigned long)esp_timer_get_time(),
+                        (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
                         (long)data.led2,       (long)data.led1,
                         (long)data.aled2,      (long)data.aled1,
                         (long)data.led2_sub,   (long)data.led1_sub,
@@ -634,11 +634,11 @@ void Incunest_Task(void *pvParameters) {
                     // PPG_DISP: OT domain [A/A] since v0.69, was ADC counts.
                     char buf[512];
                     int n = snprintf(buf, sizeof(buf) - 6,
-                        "$M4,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
+                        "$M4,%lu,%llu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
                         ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%04X"
                         ",%s,%s",
                         (unsigned long)incunest_sample_count,
-                        (unsigned long)esp_timer_get_time(),
+                        (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
                         (long)data.led2,       (long)data.led1,
                         (long)data.aled2,      (long)data.aled1,
                         (long)data.led2_sub,   (long)data.led1_sub,
