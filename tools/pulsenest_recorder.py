@@ -83,7 +83,15 @@ FLUSH_S = 1.0
 FSYNC_S = 10.0
 FREE_SPACE_CHECK_S = 60.0
 IDENTIFY_WAIT_S = 3.0            # how long a new IP's datagrams wait in memory for a $CFG (MAC)
-SOURCE_SILENT_S = 5.0            # after this much silence a source is noted as silent (@M)
+# How long a source may stay quiet before it is called silent. Two values, because the sources
+# have nothing in common in this respect: a board emits 100 datagrams/s, so 5 s of nothing is
+# already 500 lost; a phone doing OCR emits when it has a reading, measured 2026-09-20 at 0,81 Hz
+# with a median gap of 0,9 s, a p90 of 2,7 s and a longest of 6,5 s -- and its sequence numbers
+# were CONTINUOUS throughout, so nothing was lost, it simply speaks slowly. At 5 s the phone
+# tripped the alarm three times in four minutes for behaving normally, and an alarm that cries
+# wolf is worse than no alarm: the one time the phone is really dead, nobody will look.
+SOURCE_SILENT_S = 5.0            # boards
+AUX_SILENT_S = 30.0              # auxiliary sources: ~4x the longest gap measured
 SPLIT_MIN_DEFAULT = 10   # wall-clock aligned (see _split_if_due); 256 MB is the ceiling, not the usual trigger
 SPLIT_MB_DEFAULT = 256
 
@@ -118,7 +126,7 @@ _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
 # recorded, named by IP as before). 1-8 ASCII letters/digits set by the operator in
 # the app and taped to the phone: identity that survives a DHCP lease, which is what
 # the MAC does for a board.
-_VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,8})\*")
+_VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,32})\*")
 
 
 # ============================================================================================
@@ -787,10 +795,11 @@ class Recorder:
                 except Exception as exc:
                     self.errors += 1
                     self.log.error("fsync failed for %s: %r", src.label(), exc)
-                if not src.silent and now - src.last_seen_mono >= SOURCE_SILENT_S:
+                quiet_s = SOURCE_SILENT_S if src.kind == "board" else AUX_SILENT_S
+                if not src.silent and now - src.last_seen_mono >= quiet_s:
                     src.silent = True
                     self._note(src, t_mono_us, t_epoch_us,
-                               f"source silent for {SOURCE_SILENT_S:.0f} s")
+                               f"source silent for {quiet_s:.0f} s")
                     self.log.warning("%s silent", src.label())
         if now - self._last_free_check >= FREE_SPACE_CHECK_S:
             self._check_free_space()

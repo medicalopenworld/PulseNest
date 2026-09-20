@@ -24305,3 +24305,35 @@ Las 33 copias `@E` aparecen dentro de cada `.pnraw`, los tres ficheros se releen
 llegado; si el movil no emite, no hay linea que lo diga, porque el registrador no puede saber que
 se le esperaba. Propuesta para despues: declarar las fuentes esperadas (p. ej. `expect VN01`) y que
 `status` y el resumen de cierre las muestren como ausentes.
+
+## Sesion 2026-09-20 (10) - Segundo ensayo, con el movil: los cuatro elementos a la vez
+
+Alex conecta el movil y **VideoNest ya emite el identificador**. Primer tropiezo, mio: la trama trae
+`95bd68ce1ca0a72d`, **16 hexadecimales**, y mi expresion regular aceptaba como mucho 8 caracteres
+porque yo habia propuesto una etiqueta corta puesta por el operador. La app genera el suyo. Ampliado
+a 1-32 caracteres y la columna `ID` de `fleet_monitor.py` a 16. Verificado con el movil real: el
+flujo se llama ya `aux_vn_95bd68ce1ca0a72d_0001.pnraw`.
+
+**Ensayo completo, sesion `captures/sessions/20260920_2227_BENCH`, 22:27:44 -> 22:31:59**, con los
+cuatro elementos y tecleando **a ritmo humano** (2 s entre ordenes) para que el tiempo signifique
+algo: **puesta en marcha 30 s** para 15 ordenes. 22 eventos, **0 errores de escritura**, deriva de
+reloj 1 us. Y esta vez **SI cruzo frontera de particion**: las CUATRO fuentes partieron a las
+**22:30:00.003 / .006 / .009 / .146** — las tres placas en 6 ms, el movil 143 ms despues, que es
+simplemente cuando le tocaba emitir a 0,8 Hz.
+
+**Hallazgo 1 - el movil emite despacio e irregular, pero NO pierde nada.** Medido sobre sus 189
+tramas: **0,81 Hz de media, mediana 0,9 s, p90 2,7 s, maximo 6,5 s**, y la **secuencia es continua**
+(124..312, sin saltos). Es decir: los huecos son de EMISION, no de transmision.
+
+**Hallazgo 2, consecuencia del anterior: mi umbral de silencio estaba mal para esta fuente.** Los
+5 s estan ajustados a una placa que emite 100 veces por segundo; en una fuente de ~1 Hz saltaba con
+comportamiento normal — tres veces en cuatro minutos. **Corregido:** `AUX_SILENT_S = 30` en
+`pulsenest_recorder.py` y `AUX_LOST_S = 30` en `fleet_monitor.py`, unas cuatro veces el hueco normal
+mas largo. El motivo no es cosmetico: una alarma que avisa en falso se deja de leer, y el dia que el
+movil este muerto de verdad nadie mirara.
+
+**Hallazgo 3, para Alex:** el OCR devolvio **SpO2 = 68 y 89** en la misma sesion. Sea lo que sea que
+enfocaba la camara, esa diferencia merece una mirada antes de la campana.
+
+`pulsenest_recorder_test.py` **66 comprobaciones superadas de 66** (2 nuevas, con reloj falso, para
+los dos umbrales), `fleet_monitor_test.py` 36 de 36.

@@ -57,6 +57,10 @@ from pulsenest_hub import AUX_PREFIXES           # noqa: E402  (one rule, one pl
 # change, and this table is width-constrained. tools/udp_fw_versions.py prints it.
 ID_KEYS = ("mac", "board", "fw", "lib", "build", "elfsha", "idfver")
 LOST_S = 2.0
+# An auxiliary source is judged on its own timescale: a phone emits when its OCR has a reading
+# (0,81 Hz measured, longest normal gap 6,5 s), so the board threshold would paint it red for
+# behaving normally -- and an alert that cries wolf stops being read.
+AUX_LOST_S = 30.0
 # enum class ProbeState in incunest_afe4490.h, minus the PROBE_ prefix -- the same names the lab
 # shows (SIGNAL STATS / OT MONITOR). The first version of this table had invented labels AND the
 # numbering shifted by one (2 read "PARTIAL" while the board was saying APPLIED). Never again:
@@ -311,7 +315,7 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None, aux=None
     # A phone that stops is the likeliest failure of a campaign (battery, app backgrounded, camera
     # moved) and until 2026-09-20 nothing on this screen said so.
     silent_aux = sorted(((aux or {}).values()), key=lambda x: x.ip)
-    silent_aux = [a for a in silent_aux if now - a.last_seen > LOST_S]
+    silent_aux = [a for a in silent_aux if now - a.last_seen > AUX_LOST_S]
     prefix = ip_prefix(boards)
     out = [f"PulseNest {script_name(__file__)} — hub {hub[0]}:{hub[1]}  ({'connected' if client.connected else 'RECONNECTING'}"
            f", read-only)" + (f"  boards {prefix}.*" if prefix else "")
@@ -369,14 +373,14 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None, aux=None
     # list with a "kind" per entry -- so this screen does not invent a third vocabulary.
     if aux:
         out.append("SOURCES (non-board)")
-        ahdr = (f"{'KIND':12s} {'ID':8s} {'IP':15s} {'dg/s':>5s} {'SpO2':>5s} {'conf':>5s} "
+        ahdr = (f"{'KIND':12s} {'ID':16s} {'IP':15s} {'dg/s':>5s} {'SpO2':>5s} {'conf':>5s} "
                 f"{'seq':>7s} {'last':>5s}")
         out.append(ahdr)
         out.append("-" * len(ahdr))
         for a in sorted(aux.values(), key=lambda x: x.ip):
             silence = now - a.last_seen
-            lost = silence > LOST_S
-            arow = (f"{a.kind[:12]:12s} {(a.vn_id or '-')[:8]:8s} {a.ip:15s} {a.rate:5.1f} "
+            lost = silence > AUX_LOST_S
+            arow = (f"{a.kind[:12]:12s} {(a.vn_id or '-')[:16]:16s} {a.ip:15s} {a.rate:5.1f} "
                     f"{fit(a.spo2, 5)} {fit(a.conf, 5)} {fit(a.seq, 7)} "
                     f"{(f'{silence:4.0f}s' if lost else 'live'):>5s}")
             out.append((RED_BG + arow + RESET) if (colors and lost) else arow)

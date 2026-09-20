@@ -170,6 +170,21 @@ try:
           rec.sources["192.168.137.45"].vn_id is None
           and rec.sources["192.168.137.45"].stream.files[0].endswith("aux_vn_192.168.137.45_0001.pnraw"))
 
+    # silence thresholds: a phone speaking at ~1 Hz must not trip the board alarm
+    clk.advance(10)                      # 10 s: past the board threshold, inside the phone's
+    rec.tick(clk.mono / 1e6)             # tick() judges against last_seen_mono: same clock
+    check("[8] a phone quiet for 10 s is NOT called silent (boards would be, at 5 s)",
+          not ph.silent and R.AUX_SILENT_S > R.SOURCE_SILENT_S,
+          f"silent={ph.silent} {R.SOURCE_SILENT_S}/{R.AUX_SILENT_S}")
+    clk.advance(25)                      # now past AUX_SILENT_S too
+    rec.tick(clk.mono / 1e6)
+    ph_notes = [r[3] for r in R.read_pnraw(os.path.join(rec.dir, ph.stream.files[0]))
+                if r[0] == "M"]
+    check("[8] and it IS called silent once its own threshold passes, naming that threshold",
+          ph.silent and any("source silent for 30 s" in n for n in ph_notes),
+          str(ph_notes[-2:]))
+
+
     # a datagram whose payload has a line starting with '@' must round-trip: lengths, not prefixes
     tricky = b"$ERR,test\r\n@FROM 1.2.3.4\r\n# STAT x=1\r\n"
     clk.advance(0.01)

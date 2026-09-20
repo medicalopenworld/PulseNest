@@ -480,7 +480,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **60 offline and in-process checks**
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **66 offline and in-process checks**
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -523,6 +523,15 @@ What the implementation fixed in this document's wording, or added:
   ignored. And **the pulse rate field was 0 in every frame** while SpO2 read 96 at confidence
   0.98: whatever the camera was pointed at, PR was not being recognised. Worth settling before the
   campaign, since `value2` of a manual `REF_SPO2` is then the only pulse-rate reference.
+* **An auxiliary source is judged silent on its own timescale** (measured 2026-09-20, second
+  rehearsal). A board emits 100 datagrams/s, so `SOURCE_SILENT_S = 5` is already 500 lost. A phone
+  emits when its OCR has a reading: **0,81 Hz measured, median gap 0,9 s, p90 2,7 s, longest 6,5 s
+  — and its sequence numbers were continuous throughout**, so nothing was lost; it simply speaks
+  slowly and irregularly. At 5 s it tripped the alarm three times in four minutes for behaving
+  normally. `AUX_SILENT_S = 30` (about four times the longest normal gap) in
+  `pulsenest_recorder.py`, `AUX_LOST_S = 30` in `fleet_monitor.py`. The reasoning is not
+  cosmetic: an alert that cries wolf stops being read, and the one time the phone is really dead
+  nobody will look.
 * **A phone names itself, and we treat that name as we treat a MAC** (agreed with Alex,
   2026-09-20). The contract, for VideoNest to implement:
 
