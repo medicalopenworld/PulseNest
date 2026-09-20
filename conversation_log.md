@@ -24074,3 +24074,9 @@ identifica (interior/exterior, tipo de luz, fluorescentes) va en `notes` de `ses
 afecta al canal de ambiente. **Reconocido de paso: yo mismo use mal el campo esta tarde** (`SOAK`,
 `EXC`, `PRE`, `POST` describen el proposito, no el lugar); el escritor solo sanea, la disciplina es
 del operador. Queda abierta la propuesta de un `--tag` aparte para el proposito.
+
+**Anadido (4h) - `recorder.log` -> `pulsenest_recorder.log`.** Propuesta de Alex: el nombre debe
+decir quien lo escribio. Ademas era el unico que se salia de la norma del repo (`pulsenest_hub.log`,
+`fleet_ppg_viewer_faulthandler.log`). Cambiado en codigo, spec y guion; renombrado tambien en la
+sesion ya guardada `captures/sessions/20260920_1812_SOAK/`. 58/58. Memoria
+`feedback_name_the_script` ampliada: los ficheros que escribe un programa llevan su nombre.

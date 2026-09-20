@@ -36,7 +36,7 @@ The same lines are accepted on a local UDP port (--event-port) so that a separat
 can send them (§9, process isolation): if the panel dies, recording continues.
 
 Layout (§3): captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>/ with session.json, events.csv,
-recorder.log and raw/board_<MAC>_<NNNN>.pnraw. A source is named by its MAC as soon as its $CFG
+pulsenest_recorder.log and raw/board_<MAC>_<NNNN>.pnraw. A source is named by its MAC as soon as its $CFG
 arrives (the hub replays the cached $CFG on subscription, so normally at once); until then its
 datagrams wait in memory for up to 3 s, after which they go to unknown_<IP>_<NNNN>.pnraw rather
 than be dropped. A phone sending $VN1 frames is an auxiliary source, aux_vn_<IP>.
@@ -391,7 +391,7 @@ class Recorder:
         lg.setLevel(logging.INFO)
         lg.propagate = False
         fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-        fh = logging.FileHandler(os.path.join(self.dir, "recorder.log"), encoding="utf-8")
+        fh = logging.FileHandler(os.path.join(self.dir, "pulsenest_recorder.log"), encoding="utf-8")
         fh.setFormatter(fmt)
         lg.addHandler(fh)
         sh = logging.StreamHandler(sys.stdout)

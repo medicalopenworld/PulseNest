@@ -121,7 +121,7 @@ survival is the whole point of the file.
 captures/sessions/<SESSION_ID>/
     session.json                  metadata, the only hand-edited file (§7)
     events.csv                    operator marks and manual readings (§6)
-    recorder.log                  the tool's own log: connections, errors, disk, splits
+    pulsenest_recorder.log        the tool's own log: connections, errors, disk, splits
     T2_SUBJ01_RESTING_20260926_101500.csv   the live capture CSV, one per board (§2)
     raw/                          only when --raw is full or exceptions (§2.3)
         board_<MAC>_0001.pnraw    one stream per board, split into parts (§5)
@@ -451,7 +451,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
 | D4 | Split period and alignment | **Closed 2026-09-20: 10 min on the local wall-clock boundary**, 256 MB ceiling. Reasoning in §5. |
-| D5 | Should `events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `recorder.log` already cover it. |
+| D5 | Should `events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `pulsenest_recorder.log` already cover it. |
 
 ---
 
@@ -482,7 +482,7 @@ What the implementation fixed in this document's wording, or added:
   the counter of each measurement frame (**only** the counter: what lands in the `.pnraw` is still
   the datagram verbatim, §5, and an unparseable line is skipped) and keeps, per source, `samples`,
   `gaps`, `samples_lost` and `restarts`. A forward jump is a gap; a counter going **backwards** is
-  a **board restart**, not a gap. Both become `@M` notes, a warning in `recorder.log`, columns in
+  a **board restart**, not a gap. Both become `@M` notes, a warning in `pulsenest_recorder.log`, columns in
   `status` and fields in `session.json`. The authoritative per-frame check stays with the CSV
   writer (`capture_csv_format_spec` R12a); this is situational awareness at the cot side.
 * **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`, `tier`,
@@ -495,6 +495,10 @@ What the implementation fixed in this document's wording, or added:
 * **A runbook for the person at the cot side**: `docs/hospital_runbook.md` — the order of
   commands at the start, what to type during the session, how to close it, and a table of what
   to do when something looks wrong.
+* **The log is named after the program that writes it**: `pulsenest_recorder.log`, not
+  `recorder.log` (Alex, 2026-09-20), the convention `pulsenest_hub.log` and
+  `fleet_ppg_viewer_faulthandler.log` already follow — inside a session directory the reader
+  should not have to guess who wrote a file.
 * **Vocabulary: "split" / "part"**, never "rotate": in Spanish *partir el fichero* / *parte* (Alex, 2026-09-20). CLI `--split-min`, `--split-mb`; code `_split_if_due()`.
 * **`seq` continues across parts** within a source (it does not restart at 1 in part 0002): a
   gap in `seq` anywhere in a source's parts is a dropped record. §5's "per file from 1" meant
