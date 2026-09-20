@@ -24175,3 +24175,21 @@ entre anadirla a `AUX_PREFIXES` o pedir que VideoNest no use el espacio `$Mn`, q
 Suites tras el cambio: recorder 60/60, hub 39/39, fleet_monitor 25/25, fleet_ppg_viewer 73/73.
 No se pudo verificar la trama build 8 contra el movil real: dejo de emitir hace ~20 min
 (`aux 192.168.1.143 videonest LOST`), probablemente por la actualizacion.
+
+**Anadido (6b) - `$M5` cerrado y dos correcciones de estilo de Alex.**
+
+*`$M5`:* es una **opcion** de VideoNest para emitir esa etiqueta en vez de `$VN1`, y Alex no la
+usara. De acuerdo, y la regla que lo cierra merece quedar escrita: **`$Mn` es el espacio de nombres
+de las PLACAS** (`$M1`-`$M4` existen, `$M5` estaba considerado para una trama nuestra); una fuente
+que no es una placa no debe tomar un nombre de ahi. Si lo hiciera, el hub volveria a clasificar el
+movil como placa (su `AUX_PREFIXES` solo tiene `$VN1`), le pediria `$CFG?` tres veces y lo pintaria
+en las dos herramientas de flota; y anadir `$M5` a `AUX_PREFIXES` seria regalar permanentemente un
+nombre nuestro a algo que no es una placa. La guarda `BOARD_FRAME_TAGS` se queda igualmente: no
+cuesta nada y es sencillamente mas correcta.
+
+*Dos fallos mios, anotados en memoria:* (1) use "registrador, hub, monitor, visor" en un resumen, el
+mismo dia de escribir la regla de nombrar el script por su fichero — ampliada: **aplica tambien en
+resumenes, tablas y listas**, donde la tentacion de abreviar es mayor. (2) di cifras sueltas
+("registrador 60, hub 39") sin decir que contaban; Alex: "no soy adivino". Regla nueva en
+`feedback_general`: **todo numero lleva pegado su sustantivo o su unidad**, y si son varios van en
+tabla con cabecera.

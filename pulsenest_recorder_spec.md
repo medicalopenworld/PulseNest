@@ -533,9 +533,14 @@ What the implementation fixed in this document's wording, or added:
   and one defensive fix — `_watch_counter` matched any `$M` tag when reading a board's sample
   counter and now matches `$M1,`…`$M4,` in full, because **another source on this wire may use a
   `$Mn` tag** (build 8 names one `M5`) and reading its sequence number as our sample counter would
-  invent gaps and restarts. Open: whether a frame tagged `$M5` actually reaches the wire, in which
-  case it needs either an entry in `AUX_PREFIXES` or a tag outside the boards' `$Mn` space —
-  `$M5` was also a name our own firmware had considered.
+  invent gaps and restarts. **Closed the same day**: `$M5` is an option in VideoNest to send that tag instead of
+  `$VN1`, and it will not be used. The rule it settles is worth stating once: **`$Mn` is the
+  boards' namespace** — `$M1`…`$M4` exist, `$M5` was a name our own firmware had considered —
+  and a source that is not a board must not take a name from it. If one ever did, the hub
+  would classify the phone as a board again (its `AUX_PREFIXES` holds `$VN1` only), query it
+  three times, and draw it in both fleet tools; adding `$M5` to `AUX_PREFIXES` instead would
+  permanently hand a name of ours to something that is not a board. The guard in
+  `BOARD_FRAME_TAGS` stays regardless: it costs nothing and it is simply more correct.
 * **`session_id` as the first column of `session_events.csv`** (§6), rather than a session-id
   prefix on every filename.
 * **`session_events.csv`, not `events.csv`** (Alex, 2026-09-20). It pairs with `session.json`, so
