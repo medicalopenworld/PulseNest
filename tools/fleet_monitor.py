@@ -331,6 +331,7 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None, aux=None
            f"{'dg/s':>5s} {'mode':>4s} {'gaps':>5s} {'probe':>{PROBE_W}s} {'RSQI':>4s} {'diag':>5s} "
            f"{'SpO2':>5s} {'HR1':>6s} {'HR2':>6s} {'HR3':>6s} "
            f"{'RF1':>4s} {'TIA1':>4s} {'RF2':>4s} {'TIA2':>4s} {'ERR':>3s} {'last':>5s}")
+    out.append("BOARDS")
     out.append(hdr)
     out.append("-" * len(hdr))
     for b in sorted(boards.values(), key=lambda x: x.ip):
@@ -383,23 +384,35 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None, aux=None
         # says its role in a column of its own (hub / subscriber) and the file that is running it
         # (script_name(), same as every window title and console banner in this project), with
         # the rest of the fields passed through unchanged.
+        rows = []
         for line in client.last_status.splitlines()[1:]:
             if line.startswith("hub "):
                 m = re.search(r"file=(\S+)", line)
                 fname = m.group(1) if m else "?"
                 rest = re.sub(r"\bfile=\S+\s*", "", line[len("hub "):]).strip()
-                out.append(f"  {'hub':<10s} {fname:<20s} {rest}")
+                rows.append(f"{'hub':<10s} {fname:<22s} {'':21s} {rest}")
             elif line.startswith("sub "):
                 _, addr, remainder = line.split(" ", 2)
                 fname, _, rest = remainder.partition(" ")
-                out.append(f"  {'subscriber':<10s} {fname:<20s} {addr} {rest}")
-    notes = [f"  {b.ip} is {b.ident.get('board', '?')} {b.ident.get('mac', '?')} back on a new "
+                rows.append(f"{'subscriber':<10s} {fname:<22s} {addr:21s} {rest}")
+        if rows:
+            # A heading and a rule, like the board table and SOURCES: these lines were indented
+            # under nothing, which read as a continuation of the block above rather than as a
+            # table of their own (Alex, 2026-09-20).
+            hhdr = f"{'ROLE':<10s} {'FILE':<22s} {'ADDRESS':21s} {'COUNTERS'}"
+            out.append("HUB AND SUBSCRIBERS")
+            out.append(hhdr)
+            out.append("-" * len(hhdr))
+            out.extend(rows)
+    notes = [f"{b.ip} is {b.ident.get('board', '?')} {b.ident.get('mac', '?')} back on a new "
              f"lease (was {b.moved_from}) — one row, counters carried"
              for b in sorted(boards.values(), key=lambda x: x.ip) if b.moved_from]
-    notes += [f"  last $ERR {b.ip}: {b.last_err}"
+    notes += [f"last $ERR {b.ip}: {b.last_err}"
               for b in sorted(boards.values(), key=lambda x: x.ip) if b.last_err]
     if notes:
         out.append("")
+        out.append("NOTES")
+        out.append("-" * max(len(n) for n in notes + ["NOTES"]))
         out.extend(notes)
     return "\n".join(out)
 

@@ -193,6 +193,24 @@ check("a phone that went quiet reaches the alert line, like a silent board",
 # An auxiliary source ($VN1: a phone doing OCR of the commercial monitor) is not a board and
 # must never get a row of its own -- the rule lives once, in pulsenest_hub.AUX_PREFIXES, and both
 # the hub and this tool read it from there.
+class _CS(_C):
+    last_status = ("@STATUS\n"
+                   "hub file=pulsenest_hub.py port=5005 up=12s board_dgrams=9 fanout=9\n"
+                   "sub 127.0.0.1:5123 fleet_monitor.py ctrl=0 last=0.1s sent=9")
+
+
+one = {"192.168.137.62": F.BoardView("192.168.137.62")}
+scr = strip(F.render(one, _CS(), ("127.0.0.1", 5005), time.monotonic()))
+check("every block carries a heading, so none reads as a continuation of the one above",
+      "BOARDS" in scr and "HUB AND SUBSCRIBERS" in scr
+      and all(not l.startswith("  ") for l in scr.splitlines()),
+      [l for l in scr.splitlines() if l.startswith("  ")][:2])
+hub_block = scr[scr.find("HUB AND SUBSCRIBERS"):].split("\n")
+check("the hub and its subscribers are a table with its own header and rule",
+      len(hub_block) > 3 and hub_block[1].startswith("ROLE")
+      and set(hub_block[2]) == {"-"} and hub_block[3].startswith("hub "),
+      hub_block[:4])
+
 check("$VN1 is an auxiliary prefix, shared with the hub",
       F.AUX_PREFIXES.get(b"$VN1") == "videonest", str(F.AUX_PREFIXES))
 check("a measurement frame is not mistaken for one", b"$M4," [:4] not in F.AUX_PREFIXES)

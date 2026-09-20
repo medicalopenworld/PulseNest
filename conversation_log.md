@@ -24226,3 +24226,16 @@ y uno simulado). Y de paso, **VideoNest build 8 confirmado en el cable**:
 nuevo** en las tres tramas comprobadas. `fleet_monitor_test.py`: **32 comprobaciones superadas de
 32** (6 nuevas: lectura de build 8, trama truncada, linea no-$VN1, bloque aparte, valores en la
 fila, y movil callado en la alerta).
+
+**Anadido (7b) - maquetacion de `fleet_monitor.py`: tres bloques, tres titulos.** Alex: las lineas
+del hub y los suscriptores quedaban indentadas y sin titulo ni barra, lo que se leia como
+continuacion del bloque de arriba en vez de como tabla propia. Corregido: bloque
+**`HUB AND SUBSCRIBERS`** con cabecera `ROLE / FILE / ADDRESS / COUNTERS` y su barra, sin
+indentacion. Y como la tabla principal era entonces la unica sin titulo, se le pone **`BOARDS`**;
+las notas del pie pasan a **`NOTES`** con su barra. Comprobacion nueva que fija la maquetacion:
+ningun bloque empieza con dos espacios y el de hub/suscriptores tiene cabecera y barra.
+**34 comprobaciones superadas de 34** en `fleet_monitor_test.py`.
+
+**Nota de proceso (tercera vez hoy):** volvi a parchear con heredoc y los escapes `\n` se
+corrompieron, dejando el fichero de test sin compilar. La regla
+`feedback_python_patch_via_file_not_heredoc` existe por esto; rehecho con fichero.
