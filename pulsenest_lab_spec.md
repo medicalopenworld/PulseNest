@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.71
+# pulsenest_lab — Specification v1.72
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -976,7 +976,7 @@ Every numeric cell goes through `fit()`, which **guarantees** the column width (
 too long drops decimals rather than shifting every column to its right, and one that still does
 not fit shows `#####` rather than a truncated digit string, which would be a different number.
 
-**`tools/fleet_ppg_viewer.py` (v1.69, statistics panel v1.71)** is the second purpose-built
+**`tools/fleet_ppg_viewer.py` (v1.69, statistics panel v1.71, numbers panel v1.72)** is the second purpose-built
 subscriber and the first with
 a GUI: one live `PPG_DISP` band per board, stacked, for the question the numbers answer slowly —
 *has a probe moved?* Read-only like the monitor, and deliberately narrow: no capture, no commands,
@@ -994,6 +994,29 @@ paint segfaults; this viewer starts with OpenGL **off**, takes `--opengl` to tur
 comparison, and writes its own `fleet_ppg_viewer_faulthandler.log`. Being a separate process off
 the hub, it can crash as often as it likes without costing a capture — which is exactly what makes
 it usable as the test vehicle.
+
+**The bedside numbers beside each band (v1.72).** SpO2 in cyan and the rate in green, each
+as **a small unit line over large digits** — `% SpO2` and `bpm HR3`, the unit carrying the
+identity so that no third line is needed (with a separate label as well the panel ran out of
+vertical room and pushed the rows out of line). The unit sits **above** its digits, where it
+reads as their heading. A small red **heart** (U+2665 at 18 pt, not the U+2764 that Windows
+paints as a colour emoji and would ignore the CSS) sits to the left of the rate, as on the
+machines this borrows from, riding at the **top** of the digits rather than on their
+baseline. That lift is why the rate line is a one-row **table** and not a span: Qt accepts
+`vertical-align:top` into the character format — it really does become
+`QTextCharFormat::AlignTop` — and then paints the glyph on the baseline anyway, which the
+document cannot tell you and only a pixel measurement can. A table **cell's** `valign` it does
+honour. The table is floated with `align='right'` because `text-align` cannot move a table;
+the alternative, a full-width spacer cell, narrows the digit cell until the rate wraps at three
+digits. Measured on the real font backend: heart 13 px above the top of the digits, panel height
+368 px at two digits, at three and at `--`, right edge on the same column as the SpO2 block.
+It follows the same colour code as the digits — bright when the
+SQI clears 0.9, dimmed below it, grey when the reading is `--` — so it never beats beside a
+number that is not there. Both lines are `<nobr>` and the heart's separating space lives inside
+its own `<span>`: outside it the space renders at 44 pt, which is wider than `panel_width()`
+measures and makes the rate wrap at three digits, adding a line and breaking the alignment of
+every row. **The height of this panel must not depend on the value it is showing**, and the test
+holds it to that at two digits, at three and at `--`.
 
 **A statistics panel on the right of each band (v1.71)** — the same table SIGNAL STATS shows in
 the lab, down to its font family: per signal, **mean, SD, min and max** over the last second,
@@ -1056,7 +1079,7 @@ drift here. On the bench display (≈190 dpi effective) the panel is 523 px wide
 a 1200 px window about 370 px of waveform with three boards — widen the window and the waveform
 takes everything that is added.
 
-Verified by `tools/fleet_ppg_viewer_test.py` (66 offline checks, no hub and no board: the field it
+Verified by `tools/fleet_ppg_viewer_test.py` (70 offline checks, no hub and no board: the field it
 reads, decimation, trimming by time rather than by point count, state colouring, LOST, one band
 per MAC across a lease change, malformed lines never raising, the bedside numbers, the statistics
 arithmetic and its window, the four columns and that no cell can outgrow the width it was
@@ -2583,6 +2606,27 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.72 — 2026-09-19
+
+**The fleet viewer's bedside numbers, two changes asked for by Alex.** The unit line moves
+**above** its digits (it was underneath), and a small red **heart** appears to the left of the
+rate, riding at the top of the digits rather than on their baseline. Getting it up there
+cost the session's one real lesson: `vertical-align:top` on a span **parses** (the fragment's
+char format comes back `AlignTop`) and **paints on the baseline regardless**, so the document is
+not a witness to its own appearance — the answer came from rendering to a `QImage` and reading
+the rows the red pixels occupy. Under `QT_QPA_PLATFORM=offscreen` that render is blank (the
+platform lays text out but rasterises no glyphs), so the measurement has to run on the real
+backend. The heart is a top-aligned **table cell** instead. The heart is U+2665
+rather than U+2764, which Windows renders as a colour emoji immune to
+the CSS, and it is coloured by the same rule as the digits rather than a fixed red: a bright
+heart beside a `--` would announce a beat that is not there. The bench lesson came from the test
+that guards the panel's height — with the separating `&nbsp;` written outside the heart's
+`<span>` it rendered at 44 pt instead of 18, exceeded the width `panel_width()` had measured, and
+the rate wrapped at three digits (188 → 258 px, every row out of line). Moving the space inside
+the span fixed it, and `panel_width()` now measures the rate line as heart-plus-digits.
+`tools/fleet_ppg_viewer_test.py` 70/70, with four new checks: the unit above the digits, a heart
+to the left of the rate, no heart beside the SpO2, and the heart red while the reading is good.
 
 ### v1.71 — 2026-09-19
 

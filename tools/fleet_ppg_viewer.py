@@ -42,9 +42,11 @@ What it draws, and why those choices:
 - **Title and frame coloured by ProbeState** (green APPLIED, red anything else, and LOST after
   2 s of silence). The state often names the problem before the waveform shows it.
 - **Two large numbers beside each band**, in the idiom of a bedside oximeter (Masimo, Nellcor,
-  Philips): SpO2 in cyan, pulse rate in green, each as digits over a small unit line that also
-  names the measurement (`% SpO2`, `bpm HR3`) — two lines, not three, because with a separate
-  label above them the panel ran out of vertical room and pushed the rows out of line. Three
+  Philips): SpO2 in cyan, pulse rate in green, each as digits under a small unit line that
+  also names the measurement (`% SpO2`, `bpm HR3`) — two lines, not three, because with a
+  separate label as well the panel ran out of vertical room and pushed the rows out of line.
+  A small red heart sits to the left of the rate, as on the machines this borrows from, and it
+  follows the same colour code as the digits so that it never beats beside a `--`. Three
   conventions from those machines are worth copying exactly, because they are about not
   misleading the person reading across the room:
   * an invalid reading shows **`--`**, never the last good number and never a sentinel. The
@@ -150,8 +152,14 @@ def dim(colour, factor=DIM_FACTOR):
 
 SPO2_DIM = dim(SPO2_COLOUR)
 HR_DIM = dim(HR_COLOUR)
+RED_DIM = dim(RED)
 BIG_PT       = 44     # the digits
-SMALL_PT     = 12     # the unit line under them
+SMALL_PT     = 12     # the unit line above them
+# The heart beside the rate. U+2665 (BLACK HEART SUIT) deliberately, not U+2764: the latter
+# renders as a colour emoji on Windows, which would ignore the CSS that dims it along with the
+# reading. Small enough not to compete with the digits, large enough to read across the room.
+HEART        = "\u2665"
+HEART_PT     = 18
 WIDEST_VALUE = "000"      # three digits: SpO2 reaches 100, and the rate can pass it too
 WIDEST_UNIT  = "bpm HR3"
 
@@ -415,31 +423,53 @@ class BoardTrace:
     def numbers_html(self, now):
         """The panel beside the band. Built here, not in the widget, so the offline test can
         read exactly what a person would see without constructing a window."""
-        def block(value, sqi, unit, bright, dim):
+        def block(value, sqi, unit, bright, dim, heart=False):
             invalid = value is None or value <= 0 or self.is_lost(now)
+            good = sqi is not None and sqi > SQI_GOOD
             if invalid:
                 text, colour = "--", DASH_COLOUR
             else:
                 text = f"{value:.0f}"
-                colour = bright if (sqi is not None and sqi > SQI_GOOD) else dim
-            # Two lines, digits then unit. There used to be a third, a small label above, and
+                colour = bright if good else dim
+            # Two lines, unit then digits. There used to be a third, a small label above, and
             # between the three of them and 44pt digits the panel ran out of vertical room and
             # pushed the rows out of line. The unit line carries the identity instead — "% SpO2"
-            # rather than "%" — so nothing is lost by dropping the label. (The unit was written
-            # inline, meant to sit beside the digits; at this size it never fitted the panel
-            # width and wrapped. It reads better underneath, so now it is deliberate.)
+            # rather than "%" — so nothing is lost by dropping the label. It sits ABOVE the
+            # digits, where it reads as their heading rather than as an afterthought.
             # <nobr> on both lines: at 100 the digits used to exceed the panel width, wrap,
             # and add a third line that pushed every row out of alignment. The height of this
             # panel must not depend on the value it is showing.
-            return (f"<div style='margin-bottom:2px;'>"
-                    f"<div style='font-size:{BIG_PT}pt; font-weight:bold; color:{colour}; "
-                    f"line-height:100%;'><nobr>{text}</nobr></div>"
-                    f"<div style='font-size:{SMALL_PT}pt; color:{colour};'>"
-                    f"<nobr>{unit}</nobr></div></div>")
+            digits = (f"font-size:{BIG_PT}pt; font-weight:bold; color:{colour}; "
+                      f"line-height:100%;")
+            if heart:
+                # The heart follows the reading's own colour code rather than staying a fixed
+                # red: a bright heart beside "--" would announce a beat that is not there.
+                hue = DASH_COLOUR if invalid else (RED if good else RED_DIM)
+                # A TABLE, not a span, and the reason is worth keeping. Qt accepts
+                # `vertical-align:top` into the char format (it really does become
+                # QTextCharFormat::AlignTop) and then paints the glyph on the baseline anyway;
+                # measured in pixels, the heart had not moved. A table CELL's `valign` it does
+                # honour: the heart's top then lands within 1 px of the digits' top.
+                # `align='right'` floats the table, which is what keeps the line flush right --
+                # text-align cannot move a table, and the alternative (a full-width spacer
+                # cell) narrows the digit cell enough to wrap at three digits, the one thing
+                # this panel must never do. Nothing follows this block, so the float has
+                # nothing to overlap. The separating space rides inside the heart's own cell,
+                # where it is a space at HEART_PT: at 44pt it would be wider than
+                # panel_width() measured and the rate would wrap.
+                value = (f"<table cellspacing='0' cellpadding='0' border='0' align='right'>"
+                         f"<tr><td valign='top' style='font-size:{HEART_PT}pt; color:{hue};'>"
+                         f"{HEART}&nbsp;</td>"
+                         f"<td style='{digits}'><nobr>{text}</nobr></td></tr></table>")
+            else:
+                value = f"<div style='{digits}'><nobr>{text}</nobr></div>"
+            return (f"<div style='margin-bottom:6px;'>"
+                    f"<div style='font-size:{SMALL_PT}pt; color:{colour}; "
+                    f"line-height:100%;'><nobr>{unit}</nobr></div>{value}</div>")
 
         return ("<div style='text-align:right;'>"
                 + block(self.spo2, self.spo2_sqi, "% SpO2", SPO2_COLOUR, SPO2_DIM)
-                + block(self.hr3, self.hr3_sqi, "bpm HR3", HR_COLOUR, HR_DIM)
+                + block(self.hr3, self.hr3_sqi, "bpm HR3", HR_COLOUR, HR_DIM, heart=True)
                 + "</div>")
 
     def title(self, now):
@@ -477,7 +507,13 @@ def panel_width():
     big.setBold(True)
     small = QtGui.QFont()
     small.setPointSize(SMALL_PT)
-    return max(QtGui.QFontMetrics(big).horizontalAdvance(WIDEST_VALUE),
+    heart = QtGui.QFont()
+    heart.setPointSize(HEART_PT)
+    # The widest line is the rate: heart, space, three digits. Measuring the digits alone would
+    # hand back exactly the wrapping this function exists to prevent.
+    value_w = (QtGui.QFontMetrics(big).horizontalAdvance(WIDEST_VALUE)
+               + QtGui.QFontMetrics(heart).horizontalAdvance(HEART + " "))
+    return max(value_w,
                QtGui.QFontMetrics(small).horizontalAdvance(WIDEST_UNIT)) + 24
 
 

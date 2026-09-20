@@ -103,11 +103,22 @@ num.feed(CFG, now)
 num.feed(frame("1.0e-05", spo2="97.5", spo2_sqi="0.99", hr3="61.4", hr3_sqi="0.95"), now)
 html = num.numbers_html(now)
 check(">98<" in html or ">97<" in html, "SpO2 shown as whole digits", html[:200])
-check(">61<" in html, "HR3 shown as whole digits")
+check("61</nobr>" in html, "HR3 shown as whole digits")
 check(V.SPO2_COLOUR in html and V.HR_COLOUR in html,
       "both bright: each SQI is above the 0.9 threshold")
 check("% SpO2" in html and "bpm HR3" in html,
       "the unit line names the measurement, so no separate label is needed", html[:200])
+check(html.index("bpm HR3") < html.index("61</nobr>"),
+      "the unit line sits above its digits, not under them", html[:200])
+# The heart is beside the rate and nowhere else: SpO2 has no pulse to announce.
+check(V.HEART in html and html.index(V.HEART) < html.index("61</nobr>"),
+      "a heart to the left of the rate", html[:200])
+check(V.HEART not in html.split("bpm HR3")[0], "and no heart beside the SpO2")
+check(V.RED in html, "the heart is red while the reading is good")
+# A table cell's valign, not a span's vertical-align: Qt accepts the latter into the char
+# format and paints the glyph on the baseline regardless (measured in pixels, 2026-09-19).
+check("valign='top'" in html, "and it rides at the top of the digits, not on the baseline")
+check("align='right'" in html, "its table is floated right, or the line stops being flush")
 # Counting <div>s was the first version of this check and it counted wrong (7, not 5) while
 # the HTML was right. Assert the thing that matters instead: one big line and one unit line
 # per measurement, and no trace of the 11pt label that used to sit above them.
