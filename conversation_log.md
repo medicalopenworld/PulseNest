@@ -23945,3 +23945,13 @@ atomico). `pulsenest_lab_spec.md` §4.11: el registrador listado entre los suscr
 a `%llu`+`(unsigned long long)` (long = 32 bits en ESP32-S3: daba la vuelta cada 71,6 min, F1).
 Version 0.13 -> 0.14. El runner offline no parsea Ts_us; Python no tiene el problema. Compilacion
 V18 lanzada; OTA a las tres placas del banco pendiente de que termine (se anota abajo).
+
+**Anadido (3b) - OTA hecha.** Commit primero para una procedencia limpia (el primer build salio
+`7770c6c-dirty`): `26c4f55` firmware 0.14, `84f104c` registrador v0.1, `899b736` log. Recompilado
+V18 -> `build=26c4f55`. IPs del banco confirmadas con el propio registrador (4 s): 88:50 = .246,
+82:5C = .73, 87:A4 = .62, las tres con `7770c6c`. OTA raw a las tres: OK, OK, OK. Verificacion con
+el registrador 15 s tras el reinicio: las tres anuncian **fw 0.14, build 26c4f55, elfsha
+accaa122c71f6108** (identico en las tres: build reproducible), 1500 datagramas `$M4` en 15 s cada
+una, `Ts_us` coherente (0,6-1,0 min de uptime). `docs/boards.md` actualizado en las tres filas.
+Pendiente de la semana: banco de horas con el registrador (rotacion real a 15 min, silencio,
+reinicio de placa) y ensayo del protocolo de hospital.
