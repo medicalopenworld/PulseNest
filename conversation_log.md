@@ -24272,3 +24272,36 @@ SOURCES, con `-` cuando la trama no lo trae. **Una trama sin id se sigue graband
 como hasta ahora. Specs y guion actualizados (el guion pide etiquetar los moviles la vispera).
 `pulsenest_recorder_test.py` **64 comprobaciones superadas de 64** (4 nuevas, incluida la del cambio
 de IP), `fleet_monitor_test.py` **36 de 36** (2 nuevas).
+
+## Sesion 2026-09-20 (9) - Ensayo completo del guion de hospital
+
+Ejecutado `docs/hospital_runbook.md` de principio a fin contra el banco, conduciendo
+`pulsenest_recorder.py` **por su puerto UDP de eventos**, que es el camino que usaria el panel de
+§9 (asi se prueba de paso el aislamiento entre procesos). Sesion
+`captures/sessions/20260920_2213_BENCH`, 22:13:42 -> 22:19:04.
+
+**Vispera:** 86 GB libres (hacen falta ~12 para 3 placas y 8 h), las tres V18 con fw 0.14,
+`build=26c4f55` y el mismo `elfsha=accaa122c71f6108`. El reloj del portatil lo sincroniza el
+operador a mano.
+
+**Resultado, todo correcto:** 34 eventos, **0 errores de escritura**, deriva de reloj 1 us, 3
+placas atadas a SUBJ01/02/03 con tier, condicion, sitio de nuestra sonda y bloque completo del
+monitor comercial (modelo, promediado y sitio de SU sonda). ~160 775 muestras por placa,
+**0 huecos, 0 perdidas, 0 reinicios**. 129 MB en 5 min con tres placas, coherente con 0,5 GB/h/placa.
+Las 33 copias `@E` aparecen dentro de cada `.pnraw`, los tres ficheros se releen sin un solo error
+(96 750 registros `@D`), y `session_events.csv` lleva `session_id` en todas las filas.
+
+**Tres cosas que el ensayo NO demostro, y conviene no dar por buenas:**
+1. **El movil no aparecio.** VideoNest no emitia; se pidio arrancarlo y no llego a hacerlo dentro de
+   la ventana. La tercera fuente de referencia sigue sin probarse DENTRO de una sesion completa
+   (aunque si se grabo por separado esta tarde, 42 tramas, 0 checksums malos).
+2. **El tiempo de puesta en marcha medido (0 s) no significa nada**: mi guion dispara los 21
+   comandos de golpe. Lo que se valido es la SECUENCIA y la herramienta, no cuanto tarda una
+   persona tecleando. Esa medida necesita a Alex delante del teclado.
+3. **No cruzo frontera de particion** (22:13:42-22:19:04, un minuto corto de las 22:20), asi que
+   el corte no se ejercito aqui; ya se habia verificado en la sesion larga de las 18:12.
+
+**Hallazgo real: una fuente que se espera y no llega es invisible.** `status` lista lo que ha
+llegado; si el movil no emite, no hay linea que lo diga, porque el registrador no puede saber que
+se le esperaba. Propuesta para despues: declarar las fuentes esperadas (p. ej. `expect VN01`) y que
+`status` y el resumen de cierre las muestren como ausentes.
