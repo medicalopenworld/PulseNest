@@ -1,0 +1,423 @@
+# pulsenest_recorder — Specification v0.3 (draft for review)
+
+What the robust recorder writes to disk: file types, formats, contents and metadata. Written
+2026-09-19, before the tool exists, because the files outlive the tool and are the part that
+cannot be fixed afterwards.
+
+Part of the **PulseNest** project — Medical Open World.
+
+Related: `captures/CAPTURE_SET_SPEC.md` (what a capture must contain to be usable),
+`pulsenest_lab_spec.md` §4.11 (the hub and its subscribers), `docs/boards.md` (board inventory).
+
+---
+
+## 1. What this is for
+
+A hospital campaign with **three boards on three babies at once**, each baby also wearing a
+commercial pulse oximeter. The recorder runs headless for hours on the bench laptop, subscribed
+to the hub, and must not lose data because a window painted badly. `pulsenest_lab.py` is not a
+candidate: pyqtgraph's paint code has killed it 28 times.
+
+Three independent sources of commercial-oximeter truth, by design — the first campaign is the
+worst moment to depend on any single one of them:
+
+| | Source | Rate | Written by |
+|---|---|---|---|
+| **1** | **VideoNest** `$VN1` frames over UDP (on-device OCR of the monitor screen) | 1–5 Hz | the phone, over the hub |
+| **2** | VideoNest's periodic photos | per its own setting | the phone, locally |
+| **3** | **Manual entry**: SpO2 combo (see §9) + `RECORD` in the recorder | when the operator looks | the recorder |
+
+They are not redundant copies of one number. 1 is dense but can be wrong (the OCR is new and
+still misreads); 3 is sparse but is a person reading a screen; 2 is the evidence that settles a
+disagreement between the two. **All three are recorded, none is trusted over the others at
+capture time**, and reconciling them is an offline job.
+
+---
+
+## 2. Two streams per board, and which one is the truth
+
+The recorder writes **both**, live, in this order:
+
+1. **`.pnraw`** — every datagram appended byte for byte with a host timestamp (§5).
+2. **The capture CSV** — produced by `LabCaptureWriter`, the code the lab already uses, in the
+   format every tool in this project reads.
+
+**The CSV is the deliverable. The raw stream is a safety net, and it is optional (§2.3).**
+
+### 2.1 Why both, when either alone would do
+
+Writing only the CSV means every field is interpreted **on site, once**. A column table that is
+wrong, a firmware field added last week, a frame mode nobody expected, a `$ERR` worth reading —
+these are silently absent, or present as a well-formed row of garbage, which
+`LabCaptureWriter`'s own docstring warns about. Nothing can be recovered afterwards, and the
+discovery happens a week later, with the babies long gone.
+
+Writing only the raw stream defers **all** verification. Bytes on disk that nobody has converted
+are not yet known to be usable data; they are a promise that a tool — one that does not exist
+yet — will read them. It is also unreadable by anyone outside this project, which in a hospital
+is a real cost: a CSV can be opened by a colleague, by Excel, by the clinical team.
+
+Together they cost little and cover each other. Two properties come out of the pairing that
+neither has alone:
+
+* **The live CSV is a test of the whole pipeline, running in front of you.** If it looks right at
+  the bench, the session is known-good on the spot, not next week.
+* **The two must agree.** Converting the raw stream offline must reproduce the live CSV **byte for
+  byte**. If they differ, either the converter has a bug or the live writer dropped rows — a
+  real-data regression test that needs no fixture and can be run on a bench session before the
+  campaign.
+
+### 2.2 Order of writing, and who may break whom
+
+The raw record is written **first**, then the CSV row is attempted inside its own `try/except`,
+per board. If parsing raises — a malformed frame, an unexpected field count, a bug of ours —
+that board loses CSV rows and **the raw stream does not notice**. The priority lives in the order
+of the statements, not in a comment.
+
+When raw is off (§2.3) the CSV writer is the only writer, so it also becomes the only thing that
+can fail: it keeps the same `try/except`, and every line it could not turn into a row is counted
+and logged, never discarded silently.
+
+### 2.3 `--raw` : full | exceptions | off
+
+The raw stream is expensive and, most days, never read again. It is therefore a **mode**, chosen
+per session:
+
+| Mode | What is written to `.pnraw` | Cost per board |
+|---|---|---|
+| `full` | every datagram | ≈ **0,5 GB/h** |
+| `exceptions` *(recommended once the pipeline is trusted)* | only what the CSV cannot represent: `$CFG`, `$ERR`, `# STAT`, unparseable or corrupt frames, and **any measurement frame whose field count is not the one expected** | **kilobytes/h** |
+| `off` | nothing; `raw/` is not created | 0 |
+
+`exceptions` is the mode this design is really aiming at, and the reason it works is worth
+stating: with every column enabled, the capture CSV already carries **all 36 fields** of an `$M4`
+frame — everything but the frame tag and the checksum. The gigabytes are spent on measurement
+datagrams that the CSV represents perfectly well. What the CSV cannot represent is the rest, and
+the rest is a few kilobytes an hour.
+
+The field-count check is what makes `exceptions` safe against the failure that motivated raw in
+the first place. A firmware that grows a 37th field produces frames the CSV would quietly
+truncate; comparing the field count against the expected one turns that silent truncation into a
+recorded exception plus a log line, at the cost of one `len()` per frame.
+
+**Default: `full` for the first campaigns**, while the pipeline has not yet been exercised on
+real hospital data, then `exceptions`. `off` exists for the bench.
+
+Compression is **not** applied while recording — only when the session is closed (D2). A plain
+append-only file is the thing most likely to survive a laptop dying mid-session, and that
+survival is the whole point of the file.
+
+---
+
+## 3. One directory per session
+
+```
+captures/sessions/<SESSION_ID>/
+    session.json                  metadata, the only hand-edited file (§7)
+    events.csv                    operator marks and manual readings (§6)
+    recorder.log                  the tool's own log: connections, errors, disk, rotations
+    T2_SUBJ01_RESTING_20260926_101500.csv   the live capture CSV, one per board (§2)
+    raw/                          only when --raw is full or exceptions (§2.3)
+        board_<MAC>_0001.pnraw    one stream per board, rotated (§5)
+        board_<MAC>_0002.pnraw
+        aux_vn_<IP>_0001.pnraw    VideoNest's $VN1 stream, same format
+    derived/                      produced OFF-SITE by the converter, never during the session
+        T2_SUBJ01_RESTING_20260926_101500.csv   rebuilt from raw; must equal the live one
+        ref_videonest.csv
+        ref_manual.csv
+```
+
+`SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>` with `SITE` a short code typed at start
+(`HOSP01`, `BENCH`). No names, no ward, no room — see §11.
+
+**The directory is created and `session.json` is written before the first datagram is recorded.**
+A session directory that exists but is empty is a sound state; data without metadata is not.
+
+---
+
+## 4. Clocks
+
+Three clocks are recorded, never one:
+
+| Field | Source | Property | Use |
+|---|---|---|---|
+| `t_mono_us` | `time.monotonic()` | never jumps, never goes back; arbitrary origin | ordering and intervals **within** a session, aligning boards with each other |
+| `t_epoch_us` | `time.time()` | absolute, can jump (NTP, DST, manual change) | aligning with photos, with `$VN1`'s own stamp, with the monitor's clock |
+| `t_src` | inside the datagram | the source's own clock (`Ts_us` on a board, `timestamp_ms` on `$VN1`) | source-side gaps, and phone-clock drift |
+
+Both host clocks are stamped on **every** datagram, at reception. The reason to carry both is
+that they fail differently: a laptop that resyncs its clock mid-session leaves `t_epoch_us` with
+a step in it, and only `t_mono_us` still says what happened before what.
+
+`host_t_us` in today's multi-board capture (`pulsenest_lab.py:14622`) is monotonic with an
+arbitrary origin — enough to align boards on the bench, **not** enough here, where the whole
+point is to line our signal up against a photograph of someone else's screen.
+
+`session.json` records the offset between the two at start and at close, so a drift is visible.
+
+---
+
+## 5. `.pnraw` — the raw stream format
+
+Append-only. One record per datagram. A record is a header line, then the datagram verbatim,
+then a newline:
+
+```
+@D <seq> <t_mono_us> <t_epoch_us> <ip> <len>\n
+<len bytes, exactly as received>\n
+```
+
+* `seq` counts records **per file** from 1 and never resets on rotation within a source (so a
+  gap in `seq` is a dropped record, which the recorder never does silently — it logs it).
+* `len` is the byte count of the datagram, so the reader never has to guess where it ends.
+  This is what keeps the **5 measurements per datagram** invariant intact (spec §4.8): the
+  batching is part of the data, not an accident of line breaks.
+* The datagram is **not** unescaped, reordered, validated or checksum-checked. A corrupt frame
+  is data about the session.
+* `@FROM` is stripped: the hub's tag is redundant with the header's `<ip>` field, and keeping
+  both invites them to disagree.
+
+Two other record types share the file, so that a raw stream is self-contained:
+
+```
+@E <t_mono_us> <t_epoch_us> <event_id> <kind> <text>\n     an operator event (§6), copied into
+                                                            every open raw stream
+@M <t_mono_us> <t_epoch_us> <text>\n                        a recorder note: rotation, board lost,
+                                                            source back on a new IP, disk warning
+```
+
+File header, first line of every file:
+
+```
+@PNRAW1 session=<SESSION_ID> source=<MAC|IP> part=<NNNN> started=<ISO8601 local, with offset>\n
+```
+
+`PNRAW1` is the format version. A reader that does not recognise it must refuse to convert
+rather than guess.
+
+**Who wrote a line: `@` is the answer.** The authoritative rule is structural — the `<len>`
+bytes after a `@D` are the source's, everything outside those blocks is the recorder's — and a
+reader that follows the lengths is never in doubt. But the reason this format is text at all is
+that a person can `head` it and `grep` it, and by that reading `#PNRAW1` (the tool) and
+`# STAT ...` (the firmware) looked alike. Hence the header starts with `@` like every other line
+the recorder writes:
+
+| Starts with | Written by | Examples |
+|---|---|---|
+| `@` | **the recorder** | `@PNRAW1`, `@D`, `@E`, `@M` |
+| anything else | **the source, verbatim** | `$M4`, `$CFG`, `$ERR`, `# STAT`, `$VN1` |
+
+`#` is therefore left to the firmware, which already uses it. `@` does not collide: neither the
+firmware nor VideoNest emits it, and the hub's own `@FROM`/`@STATUS` never reach the file.
+A grep-level rule, not a guarantee — a source that one day emitted a line starting with `@`
+would fool the eye but not a length-following reader, which is the one that converts.
+
+A complete example file, with real frames and real lengths, is `docs/pnraw_example.pnraw`.
+
+**Why a text framing and not a binary one.** Everything on this wire is ASCII; a text file can be
+read with `head`, searched with `grep` and repaired by hand if its tail is torn, which a binary
+container cannot. The length prefix buys exactness without giving that up.
+
+**Rotation.** A new part every **15 minutes or 256 MB**, whichever comes first. A closed part can
+be copied or compressed while the session runs, and a file lost to a bad write costs one part,
+not the session.
+
+**Naming by MAC, not IP.** Identity is the MAC everywhere in this project (IPs change daily). The
+hub asks a new source for `$CFG?` immediately, so the MAC normally arrives within milliseconds:
+the recorder **buffers up to 3 s in memory** waiting for it, then opens `board_<MAC>_0001.pnraw`.
+If no `$CFG` arrives, it opens `unknown_<IP>_0001.pnraw` and keeps buffering nothing — data is
+never dropped for want of a name — and `session.json` records the `ip → mac` mapping with the
+times each was seen.
+
+---
+
+## 6. `events.csv` — what only a person knows
+
+The one file whose content exists nowhere else. Written with **flush + fsync on every row**
+(events are rare and each one is expensive to lose), and mirrored as an `@E` record into every
+open raw stream so that each stream stands alone.
+
+```csv
+event_id,t_mono_us,t_epoch_us,iso_local,kind,subject,board_mac,value,value2,source,confidence,note
+```
+
+| Field | Meaning |
+|---|---|
+| `event_id` | monotonic within the session; the join key for the `@E` copies |
+| `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `SESSION_START`, `SESSION_END` |
+| `subject` | `SUBJ01`… or `*` for a session-wide event |
+| `board_mac` | the board this concerns, or `*` for all (a `MARK` is normally `*`) |
+| `value` | for `REF_SPO2`, the SpO2 % read on the commercial monitor; empty otherwise |
+| `value2` | optional second number (pulse rate, if the operator also read it) |
+| `source` | `keyboard` (manual), `videonest`, `photo`, `serial` — how the value was obtained |
+| `confidence` | free scale for automatic sources; empty for `keyboard` |
+| `note` | free text, **no personal data** (§11) |
+
+`CLOCK_ANCHOR` is the event written when the operator films the laptop's clock (§7), so the
+video can be tied to `t_epoch_us` without trusting that two devices agree.
+
+Manual readings land here with `source=keyboard`. VideoNest's `$VN1` frames do **not**: they are
+raw stream data, and the converter turns them into `derived/ref_videonest.csv`. The rule is the
+one from §2 — in the hospital the recorder writes what arrived, and only what arrived.
+
+---
+
+## 7. `session.json` — the metadata
+
+Written at start, updated at close, hand-editable afterwards (it is the `truth.csv` of a
+session: the part no machine can produce). Proposed shape:
+
+```jsonc
+{
+  "schema": "pulsenest_session/1",
+  "session_id": "20260926_0930_HOSP01",
+  "site_code": "HOSP01",
+  "operator": "AC",                     // initials or role, never a full name
+  "started": { "iso": "2026-09-26T09:30:12+02:00", "t_mono_us": 812345678,
+               "t_epoch_us": 1790000000000000 },
+  "closed":  { "iso": "...", "t_mono_us": 0, "t_epoch_us": 0,
+               "clock_drift_us": 0 },   // (epoch-mono) at close minus at start
+  "host": { "hostname": "...", "recorder_version": "0.1", "hub_version": "...",
+            "python": "3.13.x", "timezone": "Europe/Madrid" },
+  "sources": [
+    {
+      "kind": "board",
+      "mac": "10:20:BA:14:75:60",
+      "ips": [ { "ip": "192.168.137.62", "from": "...", "to": "..." } ],
+      "board_rev": "V17",               // from docs/boards.md
+      "firmware": { "build": "7770c6c", "elfsha": "a60928ae2b710aab", "lib": "v0.93",
+                    "cfg_raw": "$CFG,..." },   // verbatim, as cached by the hub
+      "subject": "SUBJ01",
+      "tier": "T2",                     // CAPTURE_SET_SPEC §2.2
+      "condition": "RESTING",
+      "probe_site": "left foot",
+      "files": [ "raw/board_1020BA147560_0001.pnraw", "..." ],
+      "reference_monitor": {
+        "make_model": "unknown (first visit)",
+        "averaging_s": null,            // Masimo defaults to 8 s; Nellcor normal/fast
+        "probe_site": "right hand",     // pre- vs post-ductal matters, see below
+        "notes": ""
+      }
+    },
+    { "kind": "videonest", "ips": [...], "app_version": "...", "frame_format": "VN1",
+      "watching_subject": "SUBJ01", "files": [ "raw/aux_vn_192.168.137.45_0001.pnraw" ] }
+  ],
+  "consent": "pending",                 // pending | obtained | n/a  (CAPTURE_SET_SPEC §2.7)
+  "notes": ""
+}
+```
+
+Two fields are not bureaucracy and should be filled even when everything else is rushed:
+
+* **`probe_site` for both probes.** In a neonate with a patent ductus arteriosus, preductal
+  (right hand) and postductal (foot) SpO2 differ by several points. If the two sites are not
+  recorded, that physiological difference will be read later as *our* error.
+* **`averaging_s` of the commercial monitor.** It sets the window our own SpO2 has to be averaged
+  over before the two numbers can be compared at all.
+
+Everything about the boards that the firmware already knows (`$CFG`) is copied in **verbatim and
+unparsed**, and also stays in the raw stream. It is a convenience, not a source of truth:
+`CAPTURE_SET_SPEC` §2.3 ranks per-sample columns above any header, and this file is a header.
+
+---
+
+## 8. Durability, and how the recorder behaves when things go wrong
+
+* **Append only.** No file is ever rewritten, truncated or reopened for writing.
+* **Flush** every 1 s; **fsync** every 10 s and on every rotation; **fsync immediately** for
+  `events.csv`.
+* **One writer per source, each with its own try/except.** An exception writing one board's
+  stream must not stop the other two: it is logged, counted, and that source is retried.
+* **Free space** is checked at start (refuse to start below a configurable floor) and every
+  minute (warn loudly, then stop cleanly rather than fill the disk).
+* **A source going silent is normal** (a board reboots, the phone locks) and is recorded as an
+  `@M` note, never as an error that stops anything. A board returning on a new IP continues in
+  the same file if its MAC matches.
+* **The recorder never writes to the boards.** Read-only subscriber (`HubClient(control=False)`),
+  so no `$SET` and no `$MODE` can leave it by construction. Configuration is done beforehand from
+  the lab.
+* **Stopping** is explicit (a key, or SIGINT), writes `SESSION_END`, closes every file, updates
+  `session.json` and prints where everything is.
+
+---
+
+## 9. The manual-entry panel
+
+A numeric SpO2 selector and a `RECORD` button, per the third system. Details worth fixing now:
+
+* **Range 50–100 %**, step 1, not 60–100: a neonatal desaturation goes below 60, and a value the
+  operator cannot enter is a value that gets written in a notebook and lost. An optional pulse
+  rate field beside it (`value2`), skippable.
+* **Which board/subject the reading belongs to** is chosen on the panel — with three babies, an
+  unattributed reading is nearly worthless. Default: the last one used.
+* **The panel must not show our own SpO2.** A person reading a screen while a second number sits
+  next to it does not record the first one — they record the difference they expect. Keeping our
+  estimate off the panel is the cheapest thing that can be done for the quality of this reference,
+  and it costs nothing.
+* **The timestamp is the instant of the click.** The monitor averages over seconds, so the lag
+  between reading and clicking is irrelevant; no correction is applied, and none should be
+  invented later.
+* **Process isolation.** The panel is a separate process from the writer, and sends its events to
+  the recorder over local UDP. If the panel dies or is closed, **recording continues**; if the
+  recorder dies, the panel says so instead of silently accepting clicks. The headless core also
+  accepts the same events typed on its own console, so a session can run with no GUI at all.
+
+---
+
+## 10. What the converter produces (off-site)
+
+Run after the session, never during it. Input: a session directory. Output: `derived/`.
+With the live CSV in place (§2) the converter is no longer on the critical path: its first job is
+to **verify** — rebuild each board's CSV from raw and compare it byte for byte with the live one —
+and only then to produce what the live writer could not. With `--raw exceptions` there is nothing
+to rebuild and it reports on the exceptions instead; with `--raw off` it only handles the
+reference streams below.
+
+* **One CSV per board**, in the existing capture format — the same columns, the same
+  `# ...` note lines, the same `# event @row N: ...` lines that `LabCaptureWriter` writes, so
+  every tool that reads a capture today reads these unchanged.
+  **The board's own `#` lines are labelled.** In a capture CSV, `#` has so far meant "written by
+  a person about this capture" (pre-notes, `# event @row N:`, post-notes). The firmware also
+  emits lines beginning with `#` (`# STAT frame_dropped=...`), and dropping those in raw would
+  make the two indistinguishable — the same ambiguity as the `.pnraw` header, one floor down.
+  So the converter writes them as **`# from-board: # STAT ...`**, and any consumer can tell an
+  annotation from a message. Named per
+  `CAPTURE_SET_SPEC` §2.4 (`<TIER>_<SUBJECT>_<CONDITION>_<params>_<date>_<time>.csv`) from
+  `session.json`, so nobody types a long filename in a hospital.
+* **`ref_videonest.csv`**: `t_epoch_us, t_mono_us, seq, spo2, pr, conf, phone_ts_ms, drift_ms,
+  checksum_ok` — one row per `$VN1` frame, with the NMEA checksum verified here (never at
+  capture time) and the phone-to-host clock drift made explicit.
+* **`ref_manual.csv`**: `events.csv` filtered to `kind=REF_SPO2`, in the same column shape as
+  `ref_videonest.csv`, so the two are directly comparable.
+* **A reconciliation report**: manual vs VideoNest at matching instants, which is what says
+  whether the OCR can be trusted for the next campaign.
+
+**Acceptance test for the converter**: feed it a raw stream recorded from a board and compare its
+CSV byte for byte with what `LabCaptureWriter` produces from the same datagrams. Equal, or the
+converter is wrong.
+
+---
+
+## 11. Personal data
+
+Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §2.7).
+
+* Coded subject identifiers only (`SUBJ01`), in every file, including free-text notes. The
+  mapping to real people lives **outside** this repository.
+* `captures/` is not committed (`.gitignore`), and **session directories are not committed
+  either** — not even `session.json`, which names sites and operators.
+* VideoNest's photos are part of the same body of data: same storage rules, and the phone's
+  cloud sync must be off before the campaign.
+* `consent` is recorded per session and must be `obtained` before any capture leaves the laptop.
+
+---
+
+## 12. Open decisions
+
+| # | Question | Recommendation |
+|---|---|---|
+| D1 | Should the hub recognise `$VN1` as an **auxiliary source** rather than treating the phone as a board (today it will ask the phone `$CFG?` three times and show it as a board in `fleet_monitor` / `fleet_ppg_viewer`)? | Yes — classify by first-datagram prefix, skip the `$CFG?` query, tag it in `@STATUS`. Small change, keeps the fleet tools honest. |
+| D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
+| D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
+| D4 | Rotation period: 15 min / 256 MB. | Keep unless the disk budget says otherwise. |
+| D5 | Should `events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `recorder.log` already cover it. |
