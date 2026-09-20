@@ -23519,3 +23519,379 @@ la primera fila de datos.
 **Detalle que costo un intento**: el fondo va en **cada celda**, no en el `<tr>`. El motor de
 texto enriquecido de Qt pinta el fondo de una fila solo donde una celda lo pide, asi que la
 banda puesta en la fila sale punteada (los huecos entre celdas se quedan negros).
+
+---
+
+## Sesion 2026-09-19 - Referencia comercial para la campana de hospital; identidad de git de la libreria; numeros del fleet viewer (lab v1.72)
+
+Tres temas, el primero de diseno y sin codigo.
+
+### 1. Como apuntar las medidas de los pulsioximetros comerciales (campana de hospital)
+
+Contexto: la semana que viene, primera visita al hospital con **tres tarjetas y varios bebes a la
+vez**, cada uno con su pulsioximetro comercial instalado. Hace falta registrar lo que marca ese
+monitor para poder comparar. Alex no puede contestar todavia que modelo de monitor hay, si dejan
+grabar ni cuanta gente habra: **es la primera vez que va**. Eso, mas que un bloqueo, fija el
+diseno: lo que se lleve tiene que decidirse alli en cinco minutos y degradar sin perderlo todo.
+
+Vias propuestas: **A** teclado (entrada manual estructurada en el registrador), **B** camara
+(B1 fotos a mano, B2 fotos/video periodicos con el movil fijo, B3 reconocimiento de digitos en el
+movil en tiempo real), **C** salida digital del monitor (RS-232 en Masimo/Nellcor, MEDIBUS en
+Drager; 1 Hz, mismo reloj, con PI e indicadores de calidad), **D** oximetro propio con salida de
+datos, **E** grafica de enfermeria.
+
+**Decidido: B2 si, B3 no, B1 como complemento, A siempre, C oportunista cuando se sepa el modelo.**
+
+- **B3 descartado por principio**: reconocer los digitos en el campo **descarta el pixel**. Si
+  falla (reflejo, alarma que cambia el color, digito parpadeando), el dato no se recupera. Es la
+  misma regla que "bruto + conversor" para las tarjetas: **lo que se graba en el hospital tiene
+  que ser irreversiblemente rico; el procesado va en casa, donde se puede repetir y corregir**.
+- **B2 mejor que B1 por el encuadre fijo**, no por la frecuencia. Con el movil en soporte, los
+  digitos caen siempre en la misma region, tamano y color: leerlos es recortar y comparar con
+  plantillas, casi infalible. A mano cada foto tiene perspectiva distinta y el reconocimiento
+  generico se atraganta justo con lo que muestran estos monitores (siete segmentos sobre negro).
+- **Sin desarrollar ninguna app**: video 1080p continuo con el movil fijo (el instante de cada
+  fotograma se reconstruye exacto: hora de inicio del fichero + posicion del fotograma), en tramos
+  de ~30 min, cargador enchufado. Time-lapse no: comprime y muchos moviles usan intervalo
+  adaptativo sin dejar constancia del instante de cada fotograma. Escribir una app Android que
+  debe funcionar a la primera, en un sitio al que se va por primera vez, es riesgo puro.
+
+**Un movil, tres bebes** -- el problema practico que no estaba planteado. Salidas por orden:
+(1) una toma ancha en **4K que abarque los monitores contiguos** y tres recortes por software;
+(2) un movil viejo como segunda camara; (3) aceptar asimetria -- un bebe con referencia densa y
+los otros dos a mano, que para una primera visita ya es buen resultado. Webcams USB al portatil
+(una por cama, capturadas por el propio registrador con el mismo reloj que la senal) es
+tecnicamente lo mejor y elimina toda sincronizacion, pero son cables por una UCI neonatal y
+hardware sin probar: para la segunda visita.
+
+**Mejoras acordadas**: *ancla de reloj* (enfocar 10 s la pantalla del portatil con un reloj
+grande al empezar y al acabar, que convierte "las horas coinciden" en dato medido -- y la
+tolerancia aqui es de **segundos**, no de milisegundos, porque el monitor promedia 8 s); *grabar
+denso y transcribir selectivo* (guardar un fotograma cada 5 s es gratis, transcribir 720 imagenes
+por bebe no); *foto de la configuracion al empezar* (marca, modelo, modo de promediado, tipo de
+sonda y **donde esta puesta cada sonda**); *hoja de papel impresa de reserva*; y la entrada por
+teclado del registrador de todos modos, porque hay cosas que ninguna camara da (el bebe se ha
+movido, han entrado a hacer cuidados, han recolocado la sonda, ha sonado una alarma).
+
+**Riesgos de la primera vez**: permiso explicito antes de sacar el movil; los monitores muestran
+el nombre del paciente en la cabecera (encuadrar solo los numericos); y **desactivar la
+sincronizacion con la nube del movil antes de ir** -- si no, fotos con datos de salud de menores
+se suben solas a una cuenta personal.
+
+**La visita es tambien reconocimiento**: traerse apuntado marca y modelo exactos de los monitores,
+si tienen conector serie libre, si exportan tendencias a USB, como estan dispuestas las cunas y
+cual es la politica de moviles. Con eso, la segunda visita puede ir a por la salida digital (C),
+que es la referencia buena de verdad.
+
+Queda abierta (Alex la contestara mas adelante) la decision de **bruto + conversor vs CSV directo**
+para el flujo de las tarjetas, y con ella el formato de los ficheros del registrador.
+
+### 2. Identidad de git: `incunest_afe4490` firmaba con la cuenta personal
+
+Alex pregunto si `acuesta-mow` y `acuesta@medicalopenworld.org` son lo mismo. Son dos cosas
+distintas que apuntan a la misma persona (login de GitHub y correo de los commits), y GitHub
+atribuye **por el correo**. Comprobado contra la API: los dos repos son homogeneos al 100 % en
+toda su historia, pero **con identidades distintas**:
+
+| Repo | name | email | Cuenta GitHub | Commits |
+|---|---|---|---|---|
+| PulseNest | `acuesta-mow` | `acuesta@medicalopenworld.org` | `acuesta-mow` | 354 |
+| incunest_afe4490 | `AlexCuestaMartin` | `alexcuestamartin@gmail.com` | `AlexCuestaMartin` | 139 |
+
+La libreria -- la pieza reutilizable que consume IncuNest y que Pablo integra -- figuraba
+publicada por una cuenta personal de Gmail. **Aplicado a peticion de Alex, solo en la libreria**
+(no el `includeIf` para todo `C:/PRJ/MOW/`, que queda pendiente de decidir): config local del repo
+a `acuesta-mow <acuesta@medicalopenworld.org>`, verificado con `git var GIT_AUTHOR_IDENT`, que es
+lo que usara el proximo commit de verdad. Solo afecta a commits nuevos; los 139 anteriores se
+quedan como estan (reescribir la historia cambiaria los 139 hashes y rompe el clon de Pablo).
+**Ojo: `.git/config` no se versiona**, asi que al clonar en otra maquina hay que repetirlo.
+
+### 3. `tools/fleet_ppg_viewer.py`: la unidad encima del numero y un corazon junto al ritmo (v1.72)
+
+Dos cambios pedidos por Alex. La linea de unidad (`% SpO2`, `bpm HR3`) pasa de estar **debajo** de
+los digitos a estar **encima**, donde se lee como su encabezado; y aparece un pequeno **corazon
+rojo** a la izquierda del ritmo, a 18 pt frente a los 44 pt de los digitos.
+
+Dos decisiones de implementacion:
+- **U+2665 (♥), no U+2764 (❤)**: Windows pinta el segundo como emoji de color, que ignora el CSS
+  y no se podria tenir ni atenuar.
+- El corazon **sigue el mismo codigo de color que el numero** (rojo vivo con SQI > 0.9, atenuado
+  por debajo, gris cuando la lectura es `--`) en vez de un rojo fijo: un corazon rojo brillante al
+  lado de un `--` anunciaria un latido que no existe.
+
+**Lo cazo el test que vigila que el panel mida siempre lo mismo**, y la causa merece quedar
+escrita: el `&nbsp;` que separa el corazon estaba **fuera** del `<span>`, asi que se pintaba a
+44 pt y no a los 18 con los que lo habia medido `panel_width()`. A tres digitos la linea del ritmo
+desbordaba el ancho del panel, envolvia y anadia una linea: **188 -> 258 px**, todas las filas
+desalineadas -- exactamente el fallo que ese invariante existe para impedir. Con el espacio dentro
+del span y `panel_width()` midiendo ya la linea como corazon + digitos, **70/70 checks** (cuatro
+nuevos: unidad encima de los digitos, corazon a la izquierda del ritmo, sin corazon en la SpO2, y
+rojo mientras la lectura es buena). Spec a **v1.72**: el panel de numeros no tenia parrafo propio
+y ahora lo tiene.
+
+Pendiente: verificarlo **en pantalla real**. Todo esto esta comprobado offscreen, donde las
+metricas de fuente no son de fiar.
+
+**Ajuste inmediato (misma sesion)**: *"sube el corazon a la parte de arriba del numero al que
+acompana"*. Resuelto con `vertical-align:top` en el `<span>`, despues de **comprobar que el
+subconjunto CSS de Qt lo entiende**: se traduce a `QTextCharFormat::AlignTop`, conserva los 18 pt
+y no cambia ni la altura de linea ni el ancho (78 px / 241 px medidos con y sin el). `text-top`,
+en cambio, **no se entiende**: se queda en `AlignNormal` y el corazon vuelve a la linea base sin
+avisar — de ahi que el test fije el valor literal. 71/71.
+
+**Correccion (misma sesion)**: *"el corazon sigue alineado con la parte de abajo de los digitos"*.
+Tenia razon, y la leccion merece quedar escrita: **`vertical-align:top` en un `<span>` se parsea
+pero no se pinta**. El fragmento devuelve `QTextCharFormat::AlignTop` \u2014 por eso di el cambio
+por bueno \u2014 y Qt lo dibuja igualmente sobre la linea base. **El documento no es testigo de su
+propio aspecto.** La respuesta salio de renderizar a un `QImage` y mirar que filas ocupan los
+pixeles rojos: `span top` 92-120 y `super` 83-100, ambos abajo, frente a `<td valign='top'>`
+23-51 con los digitos en 36-122.
+
+Detalle del metodo que costo un rato: **bajo `QT_QPA_PLATFORM=offscreen` el render sale en
+blanco**. La plataforma maqueta el texto (mide, da alturas y anchos correctos) pero **no
+rasteriza glifos**: una linea de control dibujada con el mismo `QPainter` si aparecia y el
+documento no. Hay que medir con el backend real de Windows, que pinta sobre `QImage` sin abrir
+ninguna ventana.
+
+Asi que la linea del ritmo pasa a ser una **tabla de una fila**: celda del corazon con
+`valign='top'`, celda de los digitos, y `align='right'` en la tabla porque **`text-align` no
+mueve una tabla**. La alternativa sin flotar (celda espaciadora al 100 %) estrecha la celda de
+los digitos y **vuelve a envolver a tres digitos** (altura 188 -> 329 px medidos), que es
+justo lo que el panel no puede permitirse; el flotado no tiene nada debajo con lo que solaparse,
+porque el ritmo es el ultimo bloque. Verificado sobre la salida real de `numbers_html()`:
+etiqueta 192-221, **corazon 242-270**, digitos 255-341 (13 px por encima del tope), altura
+**368 px identica** con 2 digitos, 3 digitos y `--`, y borde derecho en la columna 286 igual que
+el bloque de SpO2. 72/72.
+
+---
+
+## Sesion 2026-09-19 (2) - Especificacion de los ficheros del registrador robusto (`pulsenest_recorder_spec.md` v0.1)
+
+Alex ha escrito **VideoNest** (app Android propia, `C:\PRJ\MOW\VideoNest`): OCR on-device de la
+pantalla del pulsioximetro comercial con ML Kit, emite `$VN1,<seq>,<spo2>,<pr>,<conf>,<ts_ms>*<cks
+NMEA>` por UDP al **5005** (el puerto del hub), graba fotos periodicas y CSV local. Todavia falla
+bastante. Con eso, la referencia comercial pasa a tener **tres sistemas independientes**: `$VN1`
+(denso, poco fiable aun), fotos (evidencia que arbitra), y **entrada manual** en el registrador
+(combo de SpO2 + boton RECORD) — que es la unica que es una persona leyendo la pantalla.
+
+Antes de escribir el registrador, Alex pidio **especificar tipo/formato/contenido/metadatos de los
+ficheros**. Escrita `pulsenest_recorder_spec.md` v0.1 (borrador para revision). Lo esencial:
+
+- **Bruto + conversor, decidido** (era la pregunta pendiente del 17-09, que Alex dijo no entender
+  del todo): el registrador **anade cada datagrama byte a byte** con sello del host; el CSV se
+  fabrica despues, fuera del hospital. Razon principal: con CSV directo, un campo nuevo, un modo
+  de trama inesperado o una tabla de columnas mal puesta **se pierden en silencio o se escriben
+  como una fila bien formada de basura** (lo dice el propio docstring de `LabCaptureWriter`); con
+  bruto, todo lo que llego esta en disco, un fallo del conversor cuesta una re-ejecucion, se
+  puede **verificar byte a byte contra `LabCaptureWriter`**, y la sesion es **reinyectable** en un
+  hub. Coste medido: ~0,5 GB/h/placa (500 tramas/s x 274 B), ~6 GB por sesion de 4 h con tres.
+- **Tres relojes, no uno**: `t_mono_us` (nunca salta: ordena y alinea placas entre si),
+  `t_epoch_us` (absoluto: alinea con fotos y con el reloj del monitor comercial) y el reloj de la
+  fuente. Fallan distinto — si el portatil resincroniza por NTP a mitad, solo el monotono sigue
+  diciendo que paso antes de que. El `host_t_us` de hoy es monotono de origen arbitrario: no basta.
+- **`.pnraw`**: `@D <seq> <t_mono> <t_epoch> <ip> <len>` + el datagrama verbatim. Longitud
+  explicita para no adivinar el final y **preservar el invariante de 5 medidas/datagrama**. Texto,
+  no binario, para poder repararlo a mano si se trunca la cola. Rotacion 15 min / 256 MB.
+  Nombre por **MAC** (3 s de buffer esperando el `$CFG` que el hub pide solo).
+- **`events.csv`** con fsync por fila, y cada evento **copiado como `@E` dentro de cada `.pnraw`**
+  para que cada flujo se sostenga solo; el conversor los convierte en las lineas
+  `# event @row N:` que ya usa el formato de capturas.
+- **`session.json`**: metadatos por fuente (MAC, revision, build/elfsha, sujeto, tier, **sitio de
+  la sonda**) y del monitor comercial (marca/modelo, **modo de promediado**, sitio de su sonda).
+  Esos dos ultimos no son burocracia: pre/postductal difiere varios puntos en un neonato con
+  ductus, y sin el promediado del monitor los dos numeros no son comparables.
+
+Tres cosas que salieron al especificar y no estaban en la peticion:
+
+1. **El combo debe ser 50-100, no 60-100**: una desaturacion neonatal baja de 60, y un valor que
+   no se puede teclear acaba en una libreta y se pierde.
+2. **El panel de entrada manual NO debe mostrar nuestra SpO2.** Una persona que lee una pantalla
+   con otro numero al lado no apunta el primero: apunta la diferencia que espera. Sesgo de
+   expectativa, gratis de evitar.
+3. **El hub tratara al movil como si fuera una placa** (`_on_board_datagram`): le pedira `$CFG?`
+   tres veces a su puerto 5006 y saldra como placa en `fleet_monitor` y en el visor. Propuesto
+   clasificarlo como **fuente auxiliar** por el prefijo `$VN1` (D1 de la spec).
+
+Pendiente: que Alex revise la spec (§12 lista 5 decisiones abiertas) antes de escribir codigo.
+
+## Sesion 2026-09-19 (3) - Requisitos del CSV de captura (`capture_csv_format_spec.md` v0.1, borrador para revision)
+
+Alex: "quiero que el .CSV cumpla una lista de requisitos, pero la definicion de dicha lista es muy
+relevante para el futuro y no podemos fallar", con doce puntos de partida (un formato para todas
+las campanas IncuNest/PulseNest, poco espacio, sin canales redundantes, frecuencia y cuatro
+medidas originales, metadatos, fecha-hora en el nombre, cabecera con toda la info, `#` para lo que
+no es dato, nombres de columna estables, contador y timestamp, seis columnas minimas, "el header
+decide, no la posicion"). Se paso a Fable para esta tarea.
+
+**Antes de redactar se midio lo que hay** (todo en §0 de la spec):
+- **`FW_Ts_us` da la vuelta cada 71 min 35 s**: `main.cpp:637` imprime `(unsigned long)
+  esp_timer_get_time()` con `%lu`, y `__SIZEOF_LONG__` es 4 en el toolchain del ESP32-S3
+  (comprobado con `xtensa-esp32s3-elf-gcc -dM -E`). El maximo visto en capturas es 67,7 min: en el
+  banco nunca se llego; en una sesion de hospital de horas es seguro. **Bloqueante para la
+  campana: corregir a `%llu` antes.**
+- **Dos vocabularios en produccion**: `LED1/ALED1/LED1_SUB` (78 ficheros, el lab) e
+  `IR/IR_Amb/IR_Sub` (23 ficheros; los UNICOS nombres que acepta el offline runner). 24 cabeceras
+  distintas en 121 CSV. La docstring del lab dice que es compatible con el runner y no lo es.
+- 72 de 121 ficheros en **cp1252** (`open(..., encoding="cp1252")`); 25 filas de 12 ficheros con
+  `FW_SmpCnt=-1` (tramas no-dato escritas como fila); 87 reinicios de placa dentro de capturas.
+- `LED*_SUB == LED - ALED` en 75 000 de 75 000 filas; `V_TIA/I_PD/OT` son formula cerrada de
+  codigo + RF, RG, AMBDAC, ILED (lib .cpp:1267). Solo RF va por muestra; ILED/RG/AMBDAC solo
+  cambian por `$SET`, y cada `$SET` emite un `$CFG` nuevo (main:1138). HGAC solo toca RF.
+- Tamano a 500 Hz (kk.csv, 75 000 filas): 35 columnas 264 B/fila = **476 MB/h** (gzip x4,2);
+  las seis minimas 44 B/fila = **79 MB/h** (gzip x2,6). Trama `$M4` 274 B en slot de 288: 14 B de
+  margen para campos nuevos.
+- **Flow CSV Viewer no publica documentacion del formato** que acepta: hay que probarlo con un
+  fixture, no suponerlo.
+
+**Que se corrigio de los doce puntos:**
+- 2.1: no hay dos clases de columna sino tres. Brutas; configuracion por muestra (RF hoy);
+  derivadas, y estas en dos subclases: aritmeticas sin estado (`_SUB`, `V_TIA`, `I_PD`, `OT`:
+  fuera del perfil por defecto, se recalculan exactas) y **salidas algoritmicas con estado**
+  (`R`, `PI`, `SpO2`, `HR1-3`, SQIs...): NO son "facilmente calculables" — dependen de la version
+  de la libreria y del estado inicial (placa 55 min caliente vs runner que arranca frio) y son la
+  salida del dispositivo bajo prueba, justo lo que en T2 se compara con el monitor comercial.
+  De ahi el perfil `witness` para el hospital.
+- 7: cabecera al principio si, pero **solo lo generado automaticamente** (`$CFG`/`$TCFG`/`$LCFG`
+  literales), nunca pegado a mano (CAPTURE_SET_SPEC §2.3), y cada `$CFG` que llegue a mitad se
+  escribe como `# @row N $CFG,...` — configuracion por muestra reconstruible a coste de kilobytes.
+- 10/11: `FW_SmpCnt` y `FW_Ts_us` pasan de opcionales a **obligatorias**; el nombre es `FW_Ts_us`
+  (no `FW_TS_us`). A las seis minimas se anaden `FW_RF1_OHM/FW_RF2_OHM`: sin ellas LED1/LED2 no
+  son interpretables.
+- 8: `#` si, y ademas UTF-8 sin BOM, coma, punto, LF, sin lineas en blanco, sin fila de unidades.
+
+**Anadidos** (41 requisitos en ocho grupos): contenedor + diccionario por dominio (R1); un fichero
+= una fuente (R2); escritor unico y lector unico (R3/R4); tres valores especiales distintos —
+centinela de la fuente, **celda vacia** para "no disponible" (hoy `-1`, ambiguo: es un codigo ADC
+valido), `nan/inf` tal cual (R9); primera linea `# format=incunest_csv/1` (R11); canal vs longitud
+de onda (`LED1=IR` es convencion de placa+sonda, la cabecera lo declara, R23); nombre con `<SITE>`
+y `<BOARD>` (3 bytes de MAC) para varias placas por bebe (R16); datos personales fuera del fichero
+y del nombre (R27); compresion solo en reposo (R29); usable truncado, partes con `FW_SmpCnt`
+continuo (R32/R33); retrocompatibilidad con los 121 ficheros via sinonimos (R37); alinear el
+runner (R38); fixture canonico en `docs/` (R39); versionado del formato (R41).
+
+**Decisiones abiertas** (tabla al final de la spec): D1 tiempo de host — columna `HOST_EPOCH_US`
+por fila (A, recomendada en hospital) / anclas `# clock` (B, banco) / ambas; D2 congelar nombres
+actuales (A, recomendada) o canon nuevo en mayusculas (B); D3 composicion de `witness`; D4
+reinicio de placa en el mismo fichero (A) o fichero nuevo; D5 la spec vive en PulseNest (A); D6
+prefijo `0x` y celda vacia, a decidir con el fixture en Flow.
+
+Pendiente: revision de Alex de la lista; despues, la spec del formato propiamente dicha, el
+diccionario de columnas y los cambios en `LabCaptureWriter` y firmware.
+
+## Sesion 2026-09-20 - Requisitos del CSV, segunda vuelta: fila = muestra, sin tiempo de host por fila, OT entero, y el defecto lo decide el campo (`capture_csv_format_spec.md` v0.2)
+
+Cuatro rondas de preguntas de Alex sobre el borrador v0.1, todas contestadas midiendo sobre
+`captures/`:
+
+**Contador y timestamp fuera de las columnas (decidido).** Desde junio de 2026 **no falta ni una
+muestra en 1 165 942 filas** (los 8 huecos reales y 60 saltos estructurales son de abril, escritor
+roto). `FW_Ts_us` se estampa al leer, no al convertir (dt 730/2000/5345 us en un fichero sano), asi
+que por muestra no dice la verdad; lo que si dice (frecuencia, deriva, paradas) es lento. Las dos
+columnas eran 19 de los 44 B/fila del perfil minimo (43 %). Se sustituyen por: comprobacion en vivo
+del escritor (`Δcnt == 1` -> `# gap`; `filas/Δt ≈ PRF` -> `# stall`, que es lo unico que caza las 10
+paradas con contador contiguo — la peor 87,6 ms), **anclas** `# clock row smpcnt fw_ts_us
+host_epoch_us` cada 10 s (~25 kB/h) y resumen `# end rows gaps stalls`. Con las anclas la vuelta de
+`FW_Ts_us` a los 71 min deja de afectar al CSV: sigue siendo defecto de firmware, ya no bloqueante.
+
+**Tiempo de host: solo anclas (D1 -> B).** Deriva medida del cristal del ESP32 contra el host: +3…+42
+ppm en V17/V18 (<= 0,15 s/h), residuo 55-75 ms (jitter UDP). Un ancla cada 10 s da cualquier fila con
+error < 1 ms; las referencias necesitan segundos (monitor que promedia 8 s) o decenas de ms
+(fotograma de VideoNest). Retirada la recomendacion A de v0.1.
+
+**OT1/OT2 en vez de los cuatro codigos: medido, no opinado.** La propuesta de Alex (OT como entero
+en unidades de 1e-10, sin exponente) cuesta **14,0 B/fila** (gz 5,4) — identico al byte a
+`LED1_SUB,LED2_SUB` porque ES la resta reescalada: 1 unidad = 0,87 codigos, ida y vuelta exacta
+(±0,44 codigos), 4579 valores distintos igual que el codigo. La objecion de resolucion de la
+respuesta anterior solo valia para el `%.4e` del firmware (2648 valores). Y `OT+ALED` = 24,6 B = los
+cuatro codigos: **el sistema de coordenadas es gratis; lo unico con precio es el ambiente,
+`ALED1,ALED2`: 10,6 B/fila en plano (19 MB/h por placa), 4,0 gz (7 MB/h)**. Todas las correcciones
+a OT (RF real vs nominal ±7 %, ILED cuantizado, Ri/RG) son multiplicativas dado RF por muestra +
+`$CFG`: el "modelo congelado" no es perdida real. Lista completa de lo que solo-OT NO permite en el
+Apendice A de la spec (interferente luminoso, residuo de la resta, saturacion de ambiente/sonda
+ausente, rango ADC/TIA, replay de HGAC, estudios del front-end, causa de un cambio, trazabilidad al
+dato bruto) y lo que conserva (todo lo fisiologico y algoritmico; bloques N, R, S, H2 del set; se
+pierden I y H1).
+
+**Autocritica pedida por Alex y reconocida:** sesgo hacia "bruto antes que derivado" argumentado
+desde el principio en vez de costeado; uso de ensayos concretos (I1-I3) para justificar el formato
+de miles de ficheros; no haber intentado hacer OT compacto. Corregido en v0.2.
+
+**Reformulacion de Alex (lo importante de la sesion):** el contenido *por defecto* no lo escribe una
+persona con un portatil: lo escribiran **cientos de incubadoras, solas, durante anos, con ancho de
+banda caro y escaso** (paises en desarrollo). **Ningun ensayo concreto decide el defecto**; los
+ensayos amplian mediante perfiles declarados. Consecuencias en v0.2:
+- Dos poblaciones de ficheros, un contenedor, un diccionario, **perfiles por proposito** (§I): P0
+  campo (defecto, `OT1,OT2` enteros + salidas a 1 Hz), P1 validacion contra referencia (hospital:
+  codigos + ambiente + RF + salidas del firmware + anclas), P2 desarrollo de algoritmos, P3
+  diagnostico analogico (los 36 campos), P4 regresion. Cada fichero declara `# profile=`.
+- **La campana de la semana que viene es P1, no el defecto**: la discusion codigos-vs-OT se
+  desacopla del defecto de campo.
+- En campo la palanca no son 24,6 vs 14 B/fila sino **si el defecto lleva onda a 500 Hz**: 600/230
+  MB/dia por incubadora (plano/gz), 125 Hz 150/60, solo salidas a 1 Hz 2,2/<1, ventanas de onda por
+  evento ~100 kB. **D7 (ruta de datos en campo y presupuesto diario) y D8 (escalon de onda de P0)
+  pendientes de Alex.** D9: P0 con o sin ambiente.
+- El contenedor debe poder escribirlo un ESP32: enteros, `#`, `key=value` — a favor del OT entero.
+
+Cerradas D1 (anclas) y D4 (reinicio en el mismo fichero). Abiertas D2, D5, D6, D7, D8, D9.
+
+## Sesion 2026-09-20 (2) - CSV de captura v0.3 y v0.4: RF como evento (no ancla), gramatica unica `@row N`, y la configuracion como registro propio del fichero
+
+**Que se hizo.** Tres vueltas sobre `capture_csv_format_spec.md`, todas a partir de preguntas o
+propuestas de Alex; la spec pasa de v0.2 a v0.4 en la misma sesion.
+
+**1. RF fuera de las columnas (v0.3, D10 cerrada).** Propuesta de Alex: dos columnas para RF1/RF2 son
+caras; enviarlas "como anclas". Opinion dada: la direccion es correcta pero la palabra no. RF es
+constante a tramos (solo la mueven `$SET` o HGAC, y HGAC impone un cooldown de 3xtau_fast ~0,3 s),
+no deriva de forma continua como el reloj; su forma es la de un EVENTO de cambio (R24), no la de un
+ANCLA (R12b). Coste peor caso, HGAC cazando: un evento cada ~150 filas frente a 13 B/fila; dos
+ordenes de magnitud menos en plano, que es lo que ve el presupuesto de campo (compresion solo en
+reposo, R29). **Bloqueo real encontrado leyendo el firmware:** `send_cfg_frame()` solo se llama desde
+`$SET` y `$CFG?` (`main/pulsenest_main.cpp:1138,1236`); el lazo de HGAC no emite nada al mover RF. Sin
+un punto de emision nuevo, quitar la columna perderia justo lo que HGAC produce. Prerrequisito 6.
+ILED/RG/AMBDAC no se ven afectados: solo cambian por `$SET`.
+
+**2. Gramatica unica (R10a) y el numero de `@row` (v0.3).** Alex: raro que el ancla no lleve caracter
+especial tras `#`, y no entiende el numero tras `@row`. Tenia razon en lo primero: habia tres estilos
+(`# clock row=N ...`, `# gap @row N: ...`, `# @row N $CFG,...`) y en el ejemplo yo habia inventado un
+cuarto (`# @row 3 $SET ...`). Unificado: toda linea especial es `# @row N <tipo>: key=value ...`;
+sin `@row` solo las claves de fichero (R26), `# note:` y `# from-board:`. **`N` = filas de datos ya
+escritas cuando se emite la linea = indice (desde 0) de la fila siguiente, que aun no esta en disco.**
+Ejemplo del Apendice B ampliado a tres partes: apertura, `$SET` de un umbral de HGAC (que vive en
+`$LCFG`, no en `$CFG`), hueco (`gap: missing=2`, el contador salta 3), parada (`stall: dt=87600us`,
+contador contiguo, el peor caso medido en F6), HGAC baja RF1 (fila 13), HGAC baja RF2 (fila 2500),
+ancla periodica (fila 5000) y cierre (fila 5010, `end: gaps=1 stalls=1` + ancla). Verificado con un
+script: marcadores `@row` = filas reales, 8 columnas por fila, aritmetica de smpcnt/fw_ts/host
+consistente. Se encontraron y corrigieron antes de entregar: una fila que faltaba en el primer
+bloque y 2000 us arrastrados en las tres anclas finales (error de calculo manual: el valor "tras
+escribir la fila 14" era 119600, no 117600). Detalle fisico deliberado en el ejemplo: al bajar RF a la
+mitad, ALED (codigo bruto) cae a la mitad y OT casi no se mueve, porque OT = V_TIA/RF cancela la
+ganancia: la invariancia de R de O10, visible en los numeros.
+
+**3. La configuracion como registro propio del fichero (v0.4, D11 cerrada).** Propuesta de Alex: en
+la fila 0 y en cada cambio, una linea con TODA la configuracion del AFE, en un formato propio e
+independiente de como se comunican placas y consumidores. De acuerdo, y con mas motivo tras leer el
+`$CFG` real (F13): 447-491 B que mezclan AFE, algoritmo/pantalla, identidad y procedencia, imprimen
+cada registro dos o tres veces (`tia1=50k` + `rf1_ohm=50000`; `cf1` + `cf1_pF`), y reparten el resto
+entre `$TCFG` (28 registros crudos) y `$LCFG` (`%.4e`). Un lector que dependa de eso depende de tres
+frames y de como los imprime PulseNest; la incubadora que escribe P0 no tiene ninguno. Diseno
+adoptado (R24/R24a/R24b): **tres lineas por dominio, cada una COMPLETA dentro de su dominio**
+(`afe:` 220 B, `timing:` 430 B, `alg:` 300 B), nombres del diccionario (R18 cubre ahora tambien
+claves), enteros en unidad natural, una representacion por registro (la fisica, nunca el codigo),
+`cause=open|set|hgac|restart|part`. Completa tambien para HGAC: el lector guarda solo la ultima linea
+de cada dominio (R32/R33: cada parte arranca autonoma) y gana una comprobacion gratis: una `afe:`
+con `cause=hgac` solo puede diferir de la anterior en RF; el script del Apendice B lo verifica
+(fila 13: solo `afe_rf1_ohm`; fila 2500: solo `afe_rf2_ohm`). Identidad y procedencia pasan a claves
+R26 (`board, fw, lib, build, libsha, elfsha, idfver`). El frame verbatim se degrada a
+`# from-board:` opcional, informativo; si discrepa, gana la instantanea y la discrepancia es un
+hallazgo. Desaparece el caso especial de R10a (la primera configuracion es `# @row 0 afe: cause=open`).
+
+**Pregunta de Alex: por que evitamos reales.** Respondido y recogido en R30: las magnitudes del AFE
+estan cuantizadas, el entero es exacto y el real una copia redondeada (F9: `%.4e` deja 2648 de 4579
+valores); un entero tiene una grafia, un real una por lenguaje y locale (R3 byte a byte; leccion
+cp1252 de F3); la comprobacion de `cause=hgac` exige igualdad exacta; la unidad va en el nombre. No
+es prohibicion: reales donde la fuente los produce (R8/R9) y en `alg:` para coeficientes
+adimensionales (`spo2_cal_a/b`), decidido con Alex.
+
+**Pendiente:** prerrequisito 6 (firmware avisa de los movimientos de RF de HGAC), 1b (el diccionario
+R18 antes de escribir una sola instantanea), D2/D5/D6/D7/D8/D9 abiertas. Nada commiteado todavia:
+siguen sin subir el fleet viewer v1.72, las dos specs nuevas y este log.
