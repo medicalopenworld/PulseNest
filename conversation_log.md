@@ -24061,3 +24061,16 @@ Cerrada a las 18:37:22 con **0 errores de escritura**. Por placa: **3 partes, to
 cada stream; `session.json` con deriva de reloj 0 us. Perdidas reales: **solo 82:5C, 1 hueco de 40
 muestras** (18:15:47, aire); 87:A4 con **1 reinicio** (el `$RESET` provocado). Es decir: en 25 min y
 2,25 millones de muestras, una unica rafaga perdida en una placa. Total 627 MB de `.pnraw`.
+
+**Anadido (4g) - codigo de sitio.** Pregunta de Alex: que `<SITE>` poner al medir a una persona en
+un lugar cualquiera. Decidido y escrito en `pulsenest_recorder_spec.md` §3/§11,
+`capture_csv_format_spec.md` R16/R27 y el guion: **el sitio es un CODIGO, no una descripcion**,
+misma regla que §2.7 de CAPTURE_SET_SPEC aplica a las personas, porque lugar + fecha + sujeto
+identifica a alguien aunque no se escriba ningun nombre. Tres prefijos: `BENCH` (nuestro banco, sin
+sujeto o un adulto del equipo), `HOSP01/02...` (sitios clinicos), **`SITE01/02...` (cualquier otro
+lugar: una casa, una oficina)**. Nada de planta, habitacion, ciudad o calle. La correspondencia
+codigo->lugar vive en el fichero privado, junto a la de `SUBJnn`. El contexto de medida que NO
+identifica (interior/exterior, tipo de luz, fluorescentes) va en `notes` de `session.json`, porque
+afecta al canal de ambiente. **Reconocido de paso: yo mismo use mal el campo esta tarde** (`SOAK`,
+`EXC`, `PRE`, `POST` describen el proposito, no el lugar); el escritor solo sanea, la disciplina es
+del operador. Queda abierta la propuesta de un `--tag` aparte para el proposito.

@@ -35,7 +35,10 @@ Open one terminal in `C:\PRJ\MOW\PulseNest` and run:
 python tools/pulsenest_recorder.py --site HOSP01 --operator AC
 ```
 
-`--site` is a short code that names the session directory; `--operator` is initials or a role.
+`--site` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`, `HOSP02`…
+for clinical sites, `SITE01`, `SITE02`… for anywhere else (a home, an office). A place plus a date
+plus a subject identifies a person even with no name written anywhere; what the code means lives
+in the private mapping file, beside the `SUBJnn` one. `--operator` is initials or a role.
 The hub starts on its own if it is not already running. Add `--event-port 5099` if a panel
 process will send events.
 

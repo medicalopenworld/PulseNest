@@ -134,6 +134,9 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
 - **R16 — Filename** `<TIER>_<SUBJECT>_<SITE>_<BOARD>_<CONDITION>[_<params>]_<YYYYMMDD>_<HHMMSS>[_pNN].csv`,
   local time; offset and start epoch in the header; `<BOARD>` = last three MAC bytes; `<SITE>` = probe
   site. P0 filenames are the incubator's business (device id + local date/time) and follow the same rule.
+  **`<SITE>` is a coded place, never a described one**: `BENCH`, `HOSP01`, `SITE01` (recorder spec
+  §3). A place plus a date plus a subject identifies a person with no name written anywhere; the
+  code→place mapping lives outside the repository, beside the `SUBJnn` one (R27).
 - **R17 — Source identity and provenance inside the file, as file-level keys** (v0.4, was "the
   `$CFG` verbatim"): `source_mac`, `board`, `fw`, `lib`, `build`, `libsha`, `elfsha`, `idfver` in the
   R26 header. They never change within a file except across a board restart, which is an event
@@ -235,7 +238,10 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   t0_smpcnt, subject, site, tier, condition, session_id, part, prev, decimation, led1, led2, probe`.
   All ASCII, one per line, before the first `@row` line.
 - **R27 — No personal data**, anywhere in the file or its name — doubly so for P0, written in
-  hospitals worldwide by devices nobody supervises: device id and coded patient id only.
+  hospitals worldwide by devices nobody supervises: device id and coded patient id only. **The
+  site is coded like the subject** (`BENCH` / `HOSP01` / `SITE01`, R16): no ward, no room, no
+  city. Measurement context that identifies nobody — indoors or out, the lighting — belongs in a
+  note, not in the site code.
 
 ## F. Size
 

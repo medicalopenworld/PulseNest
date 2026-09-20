@@ -133,8 +133,26 @@ captures/sessions/<SESSION_ID>/
         ref_manual.csv
 ```
 
-`SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>` with `SITE` a short code typed at start
-(`HOSP01`, `BENCH`). No names, no ward, no room — see §11.
+`SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>` with `SITE` a short code typed at start.
+
+**`SITE` is a code, not a description** (decided 2026-09-20, the same rule §2.7 of
+`CAPTURE_SET_SPEC` already applies to people). A place name plus a date plus "a baby" identifies
+a person even when no name is written anywhere, so the site is coded and what it means lives
+**outside the repository**, in the private file that maps `SUBJnn` to a person. Three prefixes,
+and nothing else:
+
+| Code | When |
+|---|---|
+| `BENCH` | our own bench: no subject, or an adult from the team. Identifies nobody |
+| `HOSP01`, `HOSP02` … | clinical sites, numbered in the order they appear |
+| `SITE01`, `SITE02` … | anywhere else: a home, an office, someone's flat |
+
+No names, no ward, no room, no city, no street — see §11. What *is* worth recording, because it
+is measurement context and identifies nobody, goes in `session.json`'s `notes`: indoors or out,
+the kind of lighting, fluorescent tubes overhead, anything that shapes the ambient channel.
+
+The writer only sanitises (upper case, letters and digits, 12 characters, `SITE` if what is left
+is empty); the discipline is the operator's.
 
 **The directory is created and `session.json` is written before the first datagram is recorded.**
 A session directory that exists but is empty is a sound state; data without metadata is not.
@@ -414,6 +432,9 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 
 * Coded subject identifiers only (`SUBJ01`), in every file, including free-text notes. The
   mapping to real people lives **outside** this repository.
+* **Coded site identifiers too** (`BENCH`, `HOSP01`, `SITE01` — §3): the same reasoning, since a
+  place and a date narrow down a person as effectively as a name. The code→place mapping lives in
+  the same private file as the subject mapping.
 * `captures/` is not committed (`.gitignore`), and **session directories are not committed
   either** — not even `session.json`, which names sites and operators.
 * VideoNest's photos are part of the same body of data: same storage rules, and the phone's
