@@ -287,6 +287,11 @@ class Source:
         self.silent = False
         self.dgrams = 0
         self.dgrams_skipped = 0               # not written under --raw exceptions
+        self.samples = 0                      # measurement frames seen (counter followed, not parsed)
+        self.last_smpcnt = None
+        self.gaps = 0                         # counter jumps forward: datagrams lost on the air
+        self.samples_lost = 0
+        self.restarts = 0                     # counter went backwards: the board rebooted
         self.subject = None
         self.probe_site = None
         self.tier = None                      # CAPTURE_SET_SPEC section 2.2: T1 | T2 | T3
@@ -311,6 +316,8 @@ class Source:
     def to_json(self):
         d = {"kind": self.kind, "ips": self.ips, "files": self.stream.files if self.stream else [],
              "datagrams": self.dgrams, "datagrams_skipped": self.dgrams_skipped,
+             "samples": self.samples, "gaps": self.gaps,
+             "samples_lost": self.samples_lost, "restarts": self.restarts,
              "subject": self.subject, "probe_site": self.probe_site}
         if self.kind == "board":
             d["mac"] = self.mac
@@ -423,6 +430,8 @@ class Recorder:
                         self._note_unknown(src, t_mono_us, t_epoch_us)
                     return
             self._record(src, t_mono_us, t_epoch_us, ip, data)
+            if src.kind == "board":
+                self._watch_counter(src, data, t_mono_us, t_epoch_us)
         except Exception as exc:                          # one source's failure stays its own
             self.errors += 1
             if src.stream is not None:
@@ -436,6 +445,44 @@ class Recorder:
             src.dgrams_skipped += 1
             return
         src.stream.datagram(t_mono_us, t_epoch_us, ip, data)
+
+    def _watch_counter(self, src, data, t_mono_us, t_epoch_us):
+        """Follow the firmware's sample counter to tell the operator what the raw file alone
+        would not: **this board is losing packets**, or **this board rebooted**. Added
+        2026-09-20 after a 25 min bench session lost 40 samples on one board at 18:15:47 — real
+        WiFi loss, four minutes away from any split — with nothing on screen to say so.
+
+        It reads the counter and nothing else: what goes into the `.pnraw` is still the datagram
+        verbatim (§5), and a line it cannot parse is skipped rather than raising. The CSV writer
+        will do the authoritative per-frame check (`# gap`, capture_csv_format_spec R12a); this
+        is situational awareness at the cot side, and a count in `session.json`."""
+        for ln in data.split(b"\n"):
+            if not ln.startswith(b"$M"):
+                continue
+            try:
+                n = int(ln.split(b",", 2)[1])
+            except (IndexError, ValueError):
+                continue
+            src.samples += 1
+            prev = src.last_smpcnt
+            src.last_smpcnt = n
+            if prev is None:
+                continue
+            if n == prev + 1:
+                continue
+            if n < prev:
+                # The counter only goes backwards when the board restarted (§8: normal, noted).
+                src.restarts += 1
+                self._note(src, t_mono_us, t_epoch_us,
+                           f"board restarted: sample counter {prev} -> {n}")
+                self.log.warning("%s restarted (counter %d -> %d)", src.label(), prev, n)
+            else:
+                lost = n - prev - 1
+                src.gaps += 1
+                src.samples_lost += lost
+                self._note(src, t_mono_us, t_epoch_us,
+                           f"gap: {lost} samples lost, counter {prev} -> {n}")
+                self.log.warning("%s gap: %d samples lost (%d -> %d)", src.label(), lost, prev, n)
 
     def _try_identify(self, src, data, t_mono_us, t_epoch_us):
         m = _MAC_RE.search(data) if data.startswith(b"$CFG,") else None
@@ -451,6 +498,7 @@ class Recorder:
             owner.ips[-1]["to"] = iso_local(t_epoch_us)
             owner.ips.append({"ip": src.ip, "from": iso_local(t_epoch_us), "to": None})
             owner.dgrams += src.dgrams
+            owner.samples += src.samples
             owner.cfg_raw, owner.ident = src.cfg_raw, src.ident
             old_ip = owner.ip
             owner.ip = src.ip
@@ -714,8 +762,11 @@ class Recorder:
         for s in self._owners():
             st = s.stream
             files = st.files[-1] if st is not None and st.files else "-"
+            loss = (f"gaps={s.gaps} lost={s.samples_lost}" if s.gaps else "gaps=0")
             lines.append(f"{s.label():28s} ip={s.ip:15s} dgrams={s.dgrams:7d} "
-                         f"skipped={s.dgrams_skipped:6d} bytes={(st.bytes if st else 0):10d} "
+                         f"skipped={s.dgrams_skipped:6d} {loss:18s} "
+                         f"{('restarts=' + str(s.restarts) + ' ') if s.restarts else ''}"
+                         f"bytes={(st.bytes if st else 0):10d} "
                          f"subject={s.subject or '-'} last={time.monotonic() - s.last_seen_mono:5.1f}s "
                          f"{'SILENT ' if s.silent else ''}{files}")
         return "\n".join(lines) if lines else "(no sources yet)"

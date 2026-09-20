@@ -215,6 +215,33 @@ try:
           and a.stream.records >= 20)
     b.stream.f = open(b.stream.path(b.stream.part), "ab", buffering=0)   # heal it for close()
 
+    # packet loss and board restart, seen through the firmware's sample counter
+    clk6 = FakeClock()
+    log6 = QuietLog()
+    rec6 = R.Recorder(tmp, "LOSS", raw_mode="full", log=log6, clock=clk6)
+    rec6.feed("10.2.2.2", CFG_A, *clk6())
+    s6 = rec6.sources["10.2.2.2"]
+    clk6.advance(0.01); rec6.feed("10.2.2.2", batch(100), *clk6())      # 100..104
+    clk6.advance(0.01); rec6.feed("10.2.2.2", batch(145), *clk6())      # 40 lost
+    check("[8] a jump in the sample counter is counted as a gap and noted, not silently kept",
+          s6.gaps == 1 and s6.samples_lost == 40
+          and any("gap: 40 samples lost" in l for l in log6.lines), f"{s6.gaps} {s6.samples_lost}")
+    clk6.advance(0.01); rec6.feed("10.2.2.2", batch(0), *clk6())        # counter back to 0
+    check("[8] a counter going backwards is a restart, not a gap",
+          s6.restarts == 1 and s6.gaps == 1 and any("restarted" in l for l in log6.lines))
+    check("[8] status shows the loss where the operator will see it",
+          "gaps=1 lost=40" in rec6.status_text() and "restarts=1" in rec6.status_text(),
+          rec6.status_text())
+    notes6 = [r[3] for r in R.read_pnraw(os.path.join(rec6.dir, s6.stream.files[0])) if r[0] == "M"]
+    rec6.close()
+    sj6 = json.load(open(os.path.join(rec6.dir, "session.json"), encoding="utf-8"))
+    check("[5] gap and restart are @M notes in the stream, and counters land in session.json",
+          any("gap: 40 samples lost" in n for n in notes6) and any("board restarted" in n for n in notes6)
+          and sj6["sources"][0]["samples_lost"] == 40 and sj6["sources"][0]["restarts"] == 1)
+    check("[8] counting never alters what was written: the datagrams round-trip verbatim",
+          [d[5] for d in R.read_pnraw(os.path.join(rec6.dir, s6.stream.files[0])) if d[0] == "D"]
+          == [CFG_A, batch(100), batch(145), batch(0)])
+
     # wall-clock split boundaries (the helper alone, then a split driven by the fake clock)
     import datetime as _dt
     base = _dt.datetime(2026, 9, 26, 10, 23, 45).timestamp() * 1e6

@@ -444,7 +444,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **53 offline and in-process checks**
+Verified 2026-09-20: `tools/pulsenest_recorder_test.py`, **58 offline and in-process checks**
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -455,6 +455,15 @@ What the implementation fixed in this document's wording, or added:
 * **Split period: 10 min, aligned to the local wall clock** (D4 closed, §5). `next_wall_boundary_us()`
   computes the next multiple from the top of the hour, so a part that opens at 10:23:45 closes at
   10:30:00, and every board's parts line up. `--split-min` changes it; `--split-mb` is the ceiling.
+* **The sample counter is followed, so the operator learns what the file alone would not.**
+  A 25 min bench session on 2026-09-20 lost **40 samples on one board at 18:15:47** — real WiFi
+  loss, four minutes away from any split — and nothing on screen said so. The recorder now reads
+  the counter of each measurement frame (**only** the counter: what lands in the `.pnraw` is still
+  the datagram verbatim, §5, and an unparseable line is skipped) and keeps, per source, `samples`,
+  `gaps`, `samples_lost` and `restarts`. A forward jump is a gap; a counter going **backwards** is
+  a **board restart**, not a gap. Both become `@M` notes, a warning in `recorder.log`, columns in
+  `status` and fields in `session.json`. The authoritative per-frame check stays with the CSV
+  writer (`capture_csv_format_spec` R12a); this is situational awareness at the cot side.
 * **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`, `tier`,
   `cond`, `ref SUBJnn model|avg|site|note` and `consent`. Each writes a **`META` event** (a kind
   added to §6's list) as well as updating `session.json`, so the metadata is auditable and

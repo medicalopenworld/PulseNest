@@ -24022,3 +24022,16 @@ hub desde las 15:42.** Queda para Alex (desenchufar 10 s o `$RESET` desde el lab
 de Python y dejaba un directorio de sesion vacio. Corregido: excepcion propia `NotEnoughSpace`, la
 comprobacion se hace ANTES de crear nada (un arranque rechazado no deja rastro), `main()` imprime
 dos lineas claras por stderr y devuelve **codigo 2**. Comprobado a mano y en el test. 53/53.
+
+**Anadido (4d) - hallazgo del banco: la sesion larga perdio 40 muestras, y el operador no se
+enteraba.** Verificacion de las partes 0001+0002 de la sesion de 25 min: `seq` continuo en las tres
+placas (el registrador no perdio ni un registro) y 0 huecos de contador en dos de ellas; la tercera
+(82:5C) perdio **40 muestras (80 ms) a las 18:15:47**, CUATRO MINUTOS antes del corte de las 18:20:
+no es defecto del corte, es perdida de UDP en el aire. Nada en pantalla lo decia.
+**Anadido `_watch_counter()`**: sigue el contador de muestras (SOLO el contador; lo que se escribe
+en el `.pnraw` sigue siendo el datagrama verbatim, y una linea ilegible se salta) y lleva por
+fuente `samples`, `gaps`, `samples_lost`, `restarts`. Salto hacia delante = hueco; contador hacia
+ATRAS = **reinicio de placa**, no hueco. Ambos generan nota `@M`, aviso en `recorder.log`, columnas
+en `status` y campos en `session.json`. La comprobacion autoritativa por trama sigue siendo del
+escritor de CSV (R12a). **Esto cubre por test el caso de reinicio que no pude probar en el banco.**
+58/58.
