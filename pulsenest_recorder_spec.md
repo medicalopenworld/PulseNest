@@ -400,10 +400,35 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
 * **The timestamp is the instant of the click.** The monitor averages over seconds, so the lag
   between reading and clicking is irrelevant; no correction is applied, and none should be
   invented later.
-* **Process isolation.** The panel is a separate process from the writer, and sends its events to
-  the recorder over local UDP. If the panel dies or is closed, **recording continues**; if the
-  recorder dies, the panel says so instead of silently accepting clicks. The headless core also
-  accepts the same events typed on its own console, so a session can run with no GUI at all.
+* **Process isolation — decided the other way, 2026-09-21.** The first draft put the panel in a
+  separate process talking to the recorder over local UDP, so that a GUI crash could not stop a
+  recording. Built instead as **`tools/pulsenest_recorder_gui.py`, in-process**: the window
+  imports `Recorder` and feeds it from a Qt timer, and every control ends in `rec.console(...)`,
+  the same call the headless console makes. Why: a local channel adds the failure of believing a
+  click arrived when it did not, and a second window is exactly the kind of thing an operator
+  alone at a cot side loses track of. The cost is stated in the file's docstring: the waveform is
+  pyqtgraph, and a crash there stops the recording. Mitigations: the `.pnraw` is flushed per
+  datagram, a `PLOTS` button removes the waveform, and the 10-minute parts make a restart a
+  continuation. The headless console remains, so a session can still run with no GUI at all.
+* **What the window holds (phase 1, c147310).** One row per board that folds to its header
+  line (title coloured by ProbeState, subject or `UNBOUND`, datagrams, gaps, CSV rows, part, and
+  an amber/red warning field: no subject, no condition, gaps, SILENT, restarts). The body:
+  waveform, SIGNAL STATS, then the **session values** (SUBJECT, REFERENCES as five tick boxes,
+  CONDITION, NOTE) and the **reading entry** (SpO2 spinbox 50–100, optional PR, `RECORD`). Every
+  control but SUBJECT is disabled until a subject is bound, which is the `UNBOUND` guard rail in
+  its cheapest form. The session bar carries LOCATION (the coded site, asked once at start-up),
+  OPERATOR, CONSENT, free disk, `CLOCK ANCHOR`, `PLOTS` and `STOP SESSION`, which asks before
+  closing; so does the window's close button, and Ctrl+C no longer exists. Pending for phase 2:
+  the annotation list with edit and delete, implemented as *correcting events* over the
+  append-only files (an edit writes a new `REF_SPO2` that names the event it supersedes; a delete
+  writes a retraction), so the operator sees the effective list and the file keeps both.
+* **References, not classes (Alex, 2026-09-21).** The operator ticks *which references exist*
+  for a baby — `simulator`, `videonest_udp`, `videonest_csv`, `videonest_pictures`, `operator` —
+  and never sees a T-code. The console form is `refs SUBJ01 <src>[,<src>...]|none`, stored in
+  `session.json` as `truth_sources`; the `truth` class is derived (any reference beside the baby
+  → T2, a simulator alone → T1, none → T0) because `CAPTURE_SET_SPEC` §2.4 and
+  `build_capture_index.py` read it from the filename. `truth` can still be forced, for the one
+  class no tick box can claim (T3, arterial).
 
 ---
 
@@ -544,6 +569,7 @@ What the implementation fixed in this document's wording, or added:
   names. A file that stands alone is worth more than a slightly shorter one — the row says whom it
   concerns, and a reader of one board's capture can still see that the lamp went on, or that the
   baby next door desaturated at the same instant.
+* **References ticked, class derived — see §9.** `refs SUBJ01 videonest_udp,operator` (2026-09-21).
 * **`tier` is now `truth`, and the scale climbs** (Alex, 2026-09-21). "Tier" said nothing about
   what it measured. The command records *what the capture can be checked against*, so it takes the
   word the rest of the project already uses for that: `truth`, as in `truth.csv` and

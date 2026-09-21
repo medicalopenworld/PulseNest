@@ -24431,3 +24431,31 @@ evidencia). Nada estaba archivado bajo T0/T3, asi que no rompe ficheros. El coma
 codigo, rechaza valores desconocidos, y un sitio `HOSPnn` arranca en T2 (el comando corrige, no se
 recuerda). Renombrado el campo en `session.json`, cabecera CSV (R26), columna de `truth.csv`,
 `capture_set.py`, `build_capture_index.py`, las tres specs y el guion. 83/83.
+
+## 2026-09-21 (tarde) - `pulsenest_recorder_gui.py`, fase 1
+
+Alex interrumpe la consola TUI para pedir **una alternativa grafica** a `pulsenest_recorder.py`
+que reduzca el fallo humano. Consignas: nombre claro; partir de `fleet_ppg_viewer.py` sin los
+numeros grandes (SpO2/HR3/corazon); controles a la derecha de cada tabla; filas plegables; grupo
+1 = valores fijos de sesion (LOCATION, referencias no excluyentes, sujeto, condicion, notas);
+grupo 2 = SpO2 spinbox + RECORD + DELETE LAST + lista de anotaciones editable.
+
+**Decisiones.** Nombre `pulsenest_recorder_gui.py` (mismo tronco que el motor). **Una cara, el
+mismo motor**: la ventana importa `Recorder` y cada boton es `rec.console(...)`; un solo camino de
+codigo y los mismos ficheros; las 85 comprobaciones siguen valiendo. Se abandona el aislamiento por
+proceso de la spec §9 (canal local = creer que un click llego cuando no; mas ventanas) y se dice el
+coste: pyqtgraph en el mismo proceso; mitigado por flush por datagrama, boton PLOTS y partes de
+10 min. **Referencias en vez de clases**: Alex: "T0..T3 no aportan casi nada; lo que aporta son
+las referencias y no son excluyentes". Nuevo `refs SUBJ01 videonest_udp,operator`; la clase T se
+deriva sola (cualquier referencia T2, simulador T1, nada T0) porque el nombre de fichero la lleva.
+LOCATION sustituye a BENCH como campo de sesion (valor codificado). PR opcional (`--`).
+Edicion/borrado de anotaciones sobre ficheros append-only: **eventos de correccion** (fase 2).
+
+**Hecho (c147310):** ventana con barra de sesion, filas plegables, grupo 1 completo, entrada
+SpO2/PR con RECORD. Probada offscreen y en el banco con las tres V18 (tres `.pnraw` y tres CSV
+abiertos). Pendiente fase 2: DELETE LAST y lista editable; guion y spec del CSV.
+
+**Dos fallos mios que anoto.** Volvi a parchear Python por heredoc (funciono por suerte; la regla
+sigue siendo fichero `.py`). Y tome una captura de pantalla completa para revisar la ventana y
+salio la videollamada de Alex; borrada al instante. Regla nueva: nunca capturar la pantalla
+completa; solo la ventana propia, y solo si Alex lo pide.
