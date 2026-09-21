@@ -283,6 +283,44 @@ try:
         refused = True
     check("[3] --subject refuses anything that is not a subject code", refused)
 
+    # VideoNest's readings, in a file of their own (Alex, 2026-09-21). Until this they were
+    # recorded and never read: the frames existed only as raw bytes in the aux .pnraw, and not
+    # even there under --raw off, so the automatic reference was write-only.
+    import tempfile as _tf2
+    recV = R.Recorder(_tf2.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
+    GOOD = b"$VN1,7,96.0,0.93,1789927282311,J6plusACM*4A\n"
+    body = GOOD.strip()[1:GOOD.strip().rindex(b"*")]
+    GOOD = b"$VN1,7,96.0,0.93,1789927282311,J6plusACM*%02X\n" % R.nmea_checksum(body)
+    for i in range(3):
+        recV.feed("10.0.0.9", GOOD)
+    recV.feed("10.0.0.9", b"$VN1,8,97.0,0.90,1789927283311,J6plusACM*00\n")   # bad checksum
+    recV.feed("10.0.0.9", b"$VN1,not,a,frame*ZZ\n")                          # unparseable
+    vn = [x for x in recV.owners() if x.kind == "videonest"][0]
+    recV.stop("t")
+    recV.close()
+    name = os.path.basename(vn.vn_path or "")
+    check("[2] the phone's file is named for the device id in its own frames",
+          name == "VideoNest_J6plusACM.csv", name)
+    lines = open(vn.vn_path, encoding="utf-8").read().splitlines()
+    notes = [l for l in lines if l.startswith("#")]
+    # By content, never by counting: the closing `# rows=` note is a comment too, so counting
+    # them walks one line past the header -- the same trap as the board CSV's header check.
+    body = [l for l in lines if l and not l.startswith("#")]
+    header, rows = body[0], body[1:]
+    check("[2] one row per frame, with the columns the spec names",
+          header.split(",") == R.VN_COLS and len(rows) == 4, f"{header[:40]} / {len(rows)}")
+    check("[2] a frame that fails its checksum is written and FLAGGED, never dropped",
+          rows[0].endswith(",1") and rows[3].endswith(",0") and vn.vn_bad == 2,
+          f"{rows[3][-20:]} bad={vn.vn_bad}")
+    check("[2] an unparseable frame is counted, and breaks nothing",
+          len(rows) == 4 and vn.vn_rows == 4)
+    check("[2] the drift between the phone's clock and arrival here is made explicit",
+          rows[0].split(",")[6] == str(1789927282311 - int(rows[0].split(",")[0]) // 1000),
+          rows[0].split(",")[6])
+    check("[2] the notes say where the photographs are, since they never reach this machine",
+          any("device_id=J6plusACM" in n for n in notes)
+          and any("VideoNest_frame_" in n for n in notes) and "rows=4" in notes[-1], notes[-1])
+
     # the live CSV splits with the .pnraw, or a four-hour session ends in a 2 GB file
     check("[2] the live CSV is written in parts, numbered from p01",
           os.path.basename(a.csv_paths[0]).endswith("_p01.csv") and a.csv_part >= 1,
@@ -445,8 +483,9 @@ try:
                    for r in R.read_pnraw(os.path.join(rec5.dir, f)) if r[0] == "M"), str(starts))
 
     # the live capture CSV (section 2): written after the raw record, one per board
-    csv_files = [f for f in os.listdir(rec.dir) if f.endswith(".csv") and f != "session_events.csv"]
-    check("[2] one live CSV per board, none for a phone or an unnamed source",
+    all_csv = [f for f in os.listdir(rec.dir) if f.endswith(".csv") and f != "session_events.csv"]
+    csv_files = [f for f in all_csv if not f.startswith("VideoNest_")]
+    check("[2] one live CAPTURE CSV per board, and never one for a phone",
           len(csv_files) == 3 and all(any(f.startswith(mac_part) for f in csv_files)
                                       for mac_part in ("1020BA147560", "1051DB508850")),
           str(sorted(csv_files)))

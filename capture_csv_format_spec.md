@@ -526,7 +526,7 @@ Three homes were considered:
 |---|---|
 | Columns in the board CSV | The phone speaks at ~0,8 Hz and irregularly, the board at 500 Hz. 624 of every 625 rows would be empty or forward-filled, and forward-filling **invents data**. It also couples two independent sources, so a phone dropout damages the board's file |
 | Rows in `session_events.csv` | ~2 900 rows an hour would drown the handful of things a person typed, and change that file's character from "what someone said" to "a data stream" |
-| **Its own `ref_videonest.csv`, live** | **Recommended.** Same columns §10 already defines (`t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms, checksum_ok`), one row per frame, written during the session so the cot side can see it. Opens in the same viewer as everything else |
+| **Its own file, live** | **Done, 2026-09-21.** `VideoNest_<DeviceID>.csv` — named after the id the phone puts in its own frames, which is also what its photographs are named after, so the file, the frames and the JPGs all carry the same word and two phones cannot be confused. Columns as §10 defines them: `t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms, checksum_ok`. **Not split into parts** — at ~0,8 Hz four hours is some 11 500 rows and about 1 MB; parts exist because a 2 GB CSV cannot be opened, and this one can. The NMEA checksum is verified as it is written, and a frame that fails it is **written and flagged**, never dropped: a bad link should not look like a quiet one |
 
 **Decided 2026-09-21: its own file, written live.** Alex's reason is better than the one above —
 a file of its own is what lets the operator **review and correct** the readings afterwards against

@@ -24752,3 +24752,20 @@ por hora ahogarian lo poco que escribe una persona).
 **El plan de v0.4 queda en cuatro pasos**, escrito en `capture_csv_format_spec.md`: el diccionario
 R18 primero porque todo lo demas nombra desde el; plegar `session.json` en la cabecera (y por que
 `session_events.csv` y `pulsenest_recorder.log` se quedan); donde va VideoNest; y el formato en si.
+
+## 2026-09-21 - `VideoNest_<DeviceID>.csv` en vivo
+
+Implementado. Nombre propuesto por Alex: el identificador que el propio movil mete en la trama
+(`J6plusACM`), que es ademas el que llevan sus fotos, asi que fichero, tramas y JPG comparten
+palabra y dos moviles no se confunden. Columnas las que ya definia §10. **Sin partes**: a 0,8 Hz
+cuatro horas son ~11.500 filas y ~1 MB, y las partes existen porque un CSV de 2 GB no se abre.
+El checksum NMEA se verifica al escribir y una trama que falla **se escribe marcada**, nunca se
+descarta: un enlace malo no debe parecer un enlace callado. Una trama ilegible se cuenta y no
+rompe nada. Las notas de cabecera dicen como se llaman las fotos, que nunca llegan a esta maquina.
+104 comprobaciones.
+
+**Dos fallos mios en el camino, los dos por no aplicar lo que ya habia aprendido.** El primer
+parche reemplazo dos cosas, fallo en la tercera y **no escribio nada**, dejando en el fichero unas
+llamadas cuyos metodos nunca se anadieron; el guion pasa ahora a validar todas las anclas antes de
+tocar el fichero. Y el test volvio a contar lineas para encontrar la cabecera, cuando la nota de
+cierre `# rows=` tambien empieza por `#`: se busca por contenido, nunca por posicion.

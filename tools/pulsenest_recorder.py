@@ -328,6 +328,19 @@ def safe_condition(text):
     t = re.sub(r"[^A-Za-z0-9-]+", "-", (text or "").strip().upper()).strip("-")
     return t[:24]
 _VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,32})\*")
+# $VN1,<seq>,<spo2>,<conf>,<ts_ms>,<id>*<checksum>   (build 8; build 7 had a `pr` after spo2)
+_VN_FRAME_RE = re.compile(
+    rb"^\$VN1,(\d+),(-?[\d.]+),(-?[\d.]+),(\d+),([A-Za-z0-9_-]{1,32})\*([0-9A-Fa-f]{2})\s*$")
+VN_COLS = ["t_epoch_us", "t_mono_us", "seq", "spo2", "conf", "phone_ts_ms", "drift_ms",
+           "checksum_ok"]
+
+
+def nmea_checksum(body):
+    """XOR of every byte between `$` and `*`, which is what the phone computed."""
+    c = 0
+    for b in body:
+        c ^= b
+    return c
 
 
 # ============================================================================================
@@ -517,6 +530,10 @@ class Source:
         self.csv_stamp = ""                   # <date>_<time> of the FIRST part: every part shares it
         self.csv_due_epoch_us = 0             # wall-clock instant this part must close at
         self.csv_rows_total = 0               # rows across parts; src.csv.count is this part's
+        self.vn_f = None                      # VideoNest_<id>.csv, for a phone only
+        self.vn_path = None
+        self.vn_rows = 0
+        self.vn_bad = 0                       # frames that did not parse, or failed the checksum
         self.pending = []                     # (t_mono_us, t_epoch_us, ip, data) until named
         self.first_mono_us = first_mono_us
         self.last_seen_mono = first_mono_us / 1e6
@@ -557,6 +574,8 @@ class Source:
              "samples": self.samples, "gaps": self.gaps,
              "csv": os.path.basename(self.csv_path) if self.csv_path else None,
              "csv_files": [os.path.basename(p) for p in self.csv_paths],
+             "vn_csv": os.path.basename(self.vn_path) if self.vn_path else None,
+             "vn_rows": self.vn_rows, "vn_bad": self.vn_bad,
              # `active`, not a null check: close() returns the part's count and leaves it in
              # place, so after the Recorder has added it to csv_rows_total a plain `self.csv.count`
              # counts the last part twice (measured: 122 410 reported against 95 065 written).
@@ -702,6 +721,8 @@ class Recorder:
             self._record(src, t_mono_us, t_epoch_us, ip, data)
             if src.kind == "board":
                 self._watch_counter(src, data, t_mono_us, t_epoch_us)
+            else:
+                self._vn_rows(src, data, t_mono_us, t_epoch_us)
             # The CSV comes last and in its own guard: a malformed frame, an unexpected field
             # count or a bug of ours costs rows HERE and leaves the .pnraw untouched.
             self._csv_rows(src, data, t_epoch_us)
@@ -894,6 +915,62 @@ class Recorder:
                                 if self.split_s else 0)
         self.log.info("%s -> %s", src.label(), name)
 
+    def _open_vn_csv(self, src):
+        """`VideoNest_<DeviceID>.csv`: one row per $VN1 frame, written as the session runs.
+
+        Its own file, not columns in the board's CSV and not rows in session_events.csv. The
+        phone speaks at ~0,8 Hz against the board's 500, so as columns 624 of every 625 rows
+        would be forward-filled, which invents data; as events it would drown the handful of
+        things a person typed. And a file of its own is what lets the operator review and correct
+        these readings against the photographs before anything is calibrated against them.
+
+        NOT split into parts: ~11 500 rows in four hours, about 1 MB. Parts exist because a 2 GB
+        CSV cannot be opened; this one can.
+        """
+        if self.csv_mode == "off" or src.kind != "videonest" or src.vn_f is not None:
+            return
+        src.vn_path = os.path.join(self.dir, f"VideoNest_{src.vn_id or src.ip}.csv")
+        src.vn_f = open(src.vn_path, "a", buffering=1, encoding="utf-8", newline="")
+        if os.path.getsize(src.vn_path) == 0:
+            src.vn_f.write(f"# session={self.session_id}\n")
+            src.vn_f.write(f"# writer=pulsenest_recorder/{RECORDER_VERSION}\n")
+            src.vn_f.write(f"# source_ip={src.ip}\n")
+            src.vn_f.write(f"# device_id={src.vn_id or '?'}\n")
+            # The photographs stay on the phone and never pass through the hub; this says how to
+            # find one, since the name carries the same id and the phone's own clock.
+            src.vn_f.write("# photos=VideoNest_frame_<device_id>_<YYYYMMDD>_<HHMMSS>_<ms>.jpg "
+                           "(on the phone, phone clock)\n")
+            src.vn_f.write(",".join(VN_COLS) + "\n")
+        self.log.info("%s -> %s", src.label(), os.path.basename(src.vn_path))
+
+    def _vn_rows(self, src, data, t_mono_us, t_epoch_us):
+        """One datagram -> its $VN1 rows. Like the board CSV, it may never break the raw stream."""
+        if src.vn_f is None:
+            return
+        try:
+            for raw in data.split(b"\n"):
+                line = raw.strip()
+                if not line.startswith(b"$VN1,"):
+                    continue
+                m = _VN_FRAME_RE.match(line)
+                if m is None:
+                    src.vn_bad += 1
+                    continue
+                seq, spo2, conf, ts_ms, _id, cks = m.groups()
+                body = line[1:line.rindex(b"*")]
+                ok = 1 if nmea_checksum(body) == int(cks, 16) else 0
+                if not ok:
+                    # Written anyway, flagged. A frame that failed its checksum is evidence about
+                    # the link, and dropping it would make a bad link look like a quiet one.
+                    src.vn_bad += 1
+                drift_ms = int(ts_ms) - t_epoch_us // 1000
+                src.vn_f.write(f"{t_epoch_us},{t_mono_us},{seq.decode()},{spo2.decode()},"
+                               f"{conf.decode()},{ts_ms.decode()},{drift_ms},{ok}\n")
+                src.vn_rows += 1
+        except Exception as exc:
+            self.csv_errors += 1
+            self.log.error("VideoNest csv row failed for %s: %r", src.label(), exc)
+
     def _split_csv_if_due(self, src, t_epoch_us):
         """Close this part and open the next, on the SAME wall-clock boundary as the .pnraw.
 
@@ -929,9 +1006,15 @@ class Recorder:
         # stream off used to take the live CSV with it, silently -- twenty seconds of a board at
         # 500 Hz produced a 13 KB directory of nothing but metadata.
         self._open_csv(src, t_epoch_us)
+        self._open_vn_csv(src)                        # a phone's own file; a no-op for a board
         for rec in src.pending:                       # what waited for the name, in order
             src.stream.datagram(*rec)
-            self._csv_rows(src, rec[3], rec[1])
+            if src.kind == "board":
+                self._csv_rows(src, rec[3], rec[1])
+            else:
+                # rec = (t_mono_us, t_epoch_us, ip, data). The frames that arrived before the
+                # phone declared its id belong in the file too, in order.
+                self._vn_rows(src, rec[3], rec[0], rec[1])
         src.pending = []
         self.write_session_json()
 
@@ -1355,6 +1438,18 @@ class Recorder:
                 except Exception as exc:
                     self.csv_errors += 1
                     self.log.error("csv close failed for %s: %r", src.label(), exc)
+            if src.vn_f is not None:
+                try:
+                    src.vn_f.write(f"# rows={src.vn_rows} bad_frames={src.vn_bad}\n")
+                    src.vn_f.flush()
+                    os.fsync(src.vn_f.fileno())
+                    src.vn_f.close()
+                    self.log.info("%s VideoNest csv: %d rows, %d bad frames -> %s",
+                                  src.label(), src.vn_rows, src.vn_bad,
+                                  os.path.basename(src.vn_path))
+                except OSError as exc:
+                    self.csv_errors += 1
+                    self.log.error("VideoNest csv close failed for %s: %r", src.label(), exc)
             if src.stream is not None:
                 try:
                     src.stream.close()
