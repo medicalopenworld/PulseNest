@@ -312,6 +312,28 @@ _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
 # the app and taped to the phone: identity that survives a DHCP lease, which is what
 # the MAC does for a board.
 _SUBJ_RE = re.compile(r"^SUBJ\d+$", re.I)
+
+
+def normalise_subject(text):
+    """`subj7` -> `SUBJ07`, `SUBJ12` -> `SUBJ12`, anything else -> None.
+
+    The subject code is the ONLY link between a capture and a person, and the mapping lives
+    outside this repository (section 11). A free-text subject is how a real name ends up in
+    session_events.csv, in every .pnraw, in every CSV header and in the filename -- so this is
+    checked where the value is SET, not only where it is quoted. Zero-padded to two digits so
+    `SUBJ7` and `SUBJ07` cannot become two babies.
+    """
+    t = (text or "").strip().upper()
+    if not _SUBJ_RE.match(t):
+        return None
+    digits = t[4:]
+    return "SUBJ" + (digits.zfill(2) if len(digits) < 2 else digits)
+
+
+def safe_condition(text):
+    """A condition ends up in a filename, so it may only hold what a filename can."""
+    t = re.sub(r"[^A-Za-z0-9-]+", "-", (text or "").strip().upper()).strip("-")
+    return t[:24]
 _VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,32})\*")
 
 
@@ -1037,7 +1059,12 @@ class Recorder:
                 s = self._source_for_mac(args[0])
                 if s is None:
                     return f"no board matching {args[0]}"
-                s.subject = args[1].upper()
+                subj = normalise_subject(args[1])
+                if subj is None:
+                    return (f"{args[1]!r} is not a subject code. It must be SUBJ followed by "
+                            f"digits (SUBJ01, SUBJ12) -- never a name, an initial or a bed "
+                            f"number: this code travels into every file of the session.")
+                s.subject = subj
                 self.event("META", subject=s.subject, board_mac=s.mac or "*",
                            note=f"subject={s.subject} board={s.label()}")
                 self.write_session_json()
@@ -1072,6 +1099,10 @@ class Recorder:
                 if len(args) > 1 and args[-1].upper().startswith("SUBJ"):
                     subj = args[-1].upper()
                     value = args[0].upper() if cmd == "truth" else " ".join(args[:-1]).upper()
+                if cmd == "cond":
+                    value = safe_condition(value)
+                    if not value:
+                        return "a condition must hold at least one letter or digit"
                 if cmd == "truth":
                     value = TRUTH_WORDS.get(value.lower(), value)
                     if value not in TRUTH_CLASSES:

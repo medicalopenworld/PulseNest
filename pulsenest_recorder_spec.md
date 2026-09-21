@@ -422,6 +422,19 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   the annotation list with edit and delete, implemented as *correcting events* over the
   append-only files (an edit writes a new `REF_SPO2` that names the event it supersedes; a delete
   writes a retraction), so the operator sees the effective list and the file keeps both.
+* **The subject code is validated where it is SET (2026-09-21).** Alex asked why the window's
+  SUBJECT box was a closed list while CONDITION accepted free text, and the answer uncovered two
+  holes. `_SUBJ_RE` guarded `mark`, `note` and `refs` but **not `subject` itself**, the one command
+  that assigns the value: `subject 7560 Maria` would have written a real first name into
+  `session_events.csv`, every `.pnraw`, every CSV header and the canonical filename — in the tool
+  whose first rule (§11) is coded identifiers in every file. And the window capped its list at
+  `SUBJ12` with no way to type, so a campaign could not have recorded its thirteenth baby at all.
+  Now: `normalise_subject()` accepts `SUBJ<digits>` only, zero-padded to two (`subj7` → `SUBJ07`,
+  so `SUBJ7` and `SUBJ07` cannot become two babies) and returns nothing for anything else; the
+  console refuses with a message naming what a subject code is; the window's box is **editable and
+  validated**, its menu a shortcut rather than a ceiling, and a refusal is said out loud instead of
+  swallowed. `safe_condition()` does the matching job for the condition, which reaches a filename
+  and was only upper-cased: `RESTING/FEEDING` made a path, not a name.
 * **Editing and deleting readings over append-only files (phase 2).** The GUI's annotation list
   offers *edit* and *delete*, and nothing on disk is ever rewritten: an edit writes a **`CORRECT`**
   event (`value`/`value2` = the new SpO2/PR, `note=corrects=<event_id>`) and a delete writes a

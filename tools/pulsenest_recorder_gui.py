@@ -47,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, script_name                     # noqa: E402
 from pulsenest_hub_client import HubClient                               # noqa: E402
 from pulsenest_recorder import (Recorder, NotEnoughSpace, TRUTH_SOURCES,  # noqa: E402
-                                mac_compact, SPLIT_MIN_DEFAULT)
+                                mac_compact, SPLIT_MIN_DEFAULT, normalise_subject)
 from fleet_ppg_viewer import (BoardTrace, make_stats_widget, stats_width,  # noqa: E402
                               stats_columns, MIN_PLOT_W, RED)
 import pyqtgraph as pg                                                   # noqa: E402
@@ -92,6 +92,8 @@ QScrollBar:vertical {{ background: #111111; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: #3A3A3A; min-height: 20px; border-radius: 4px; }}
 QMessageBox, QDialog {{ background-color: {BG}; color: {FG}; }}
 """
+# A menu for the common case, not a ceiling: the combo is editable, so a campaign that reaches
+# SUBJ13 types it. Twelve was a cap that would simply have blocked the thirteenth baby.
 SUBJECTS = [f"SUBJ{n:02d}" for n in range(1, 13)]
 CONDITIONS = ["RESTING", "FEEDING", "HANDLING", "KANGAROO", "PHOTOTHERAPY", "SLEEPING"]
 # Label the operator reads -> key the recorder stores. Same order as TRUTH_SOURCES.
@@ -171,15 +173,25 @@ class BoardRow(QtWidgets.QFrame):
         form = QtWidgets.QFormLayout(g)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         self.subject = QtWidgets.QComboBox()
+        self.subject.setEditable(True)
+        self.subject.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
         self.subject.addItem("")
         self.subject.addItems(SUBJECTS)
+        self.subject.lineEdit().setPlaceholderText("SUBJ01")
         self.subject.setToolTip("The coded subject this board is on. Codes only, never a name: "
                                 "the code-to-person list lives outside the repository. Everything "
                                 "else in this panel waits for this.\n\n"
                                 "This is the one value not to change mid-session: one capture file "
                                 "belongs to one baby. If the probe moves to another baby, stop the "
-                                "session and start a new one.")
-        self.subject.currentTextChanged.connect(self._subject_changed)
+                                "session and start a new one.\n\n"
+                                "The menu is a shortcut, not a limit -- type SUBJ13 and it is "
+                                "accepted. What is NOT accepted is anything that is not SUBJ "
+                                "followed by digits: no names, no initials, no bed numbers.")
+        # `activated` for a pick from the menu, `editingFinished` for a typed code plus Enter.
+        # NOT currentTextChanged: that fires on every keystroke, and "S", "SU", "SUB" are each a
+        # refusal the operator did not ask for.
+        self.subject.activated.connect(lambda _i: self._subject_changed())
+        self.subject.lineEdit().editingFinished.connect(self._subject_changed)
         form.addRow("SUBJECT", self.subject)
 
         refs_box = QtWidgets.QWidget()
@@ -310,11 +322,26 @@ class BoardRow(QtWidgets.QFrame):
                 w.setEnabled(on)
 
     # ── actions: every one is a console command, so there is one code path ──
-    def _subject_changed(self, text):
+    def _subject_changed(self, *_):
+        text = self.subject.currentText().strip()
         if not text or self.src is None or not self.src.mac:
             self._set_dependents_enabled(False)
             return
-        self.win.command(f"subject {suffix(self.src.mac)} {text}")
+        subj = normalise_subject(text)
+        if subj is None:
+            # Refused, and said out loud. The alternative -- silently accepting it -- is how a
+            # name or a bed number ends up in every file of the session.
+            self.win.log_line.setText(f"{text!r} is not a subject code: SUBJ01, SUBJ12, …")
+            self.subject.setCurrentText("")
+            self._set_dependents_enabled(False)
+            return
+        if self.subject.findText(subj) < 0:
+            self.subject.addItem(subj)          # a code beyond the menu, kept for the session
+        self.subject.setCurrentText(subj)
+        if self.src.subject == subj:
+            self._set_dependents_enabled(True)
+            return
+        self.win.command(f"subject {suffix(self.src.mac)} {subj}")
         self._set_dependents_enabled(True)
         # Re-apply what the operator may already have chosen while the subject was blank.
         self._refs_changed()

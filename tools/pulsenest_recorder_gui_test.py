@@ -43,6 +43,14 @@ print(f"== {os.path.basename(__file__)} ==  offscreen checks of the recorder win
 ok = []
 
 
+def type_subject(row, text):
+    """What an operator does: type into the box and press Enter. `setCurrentText` alone changes
+    the text without emitting `editingFinished`, so a test that used it was not exercising the
+    path the window actually runs."""
+    row.subject.setCurrentText(text)
+    row.subject.lineEdit().editingFinished.emit()
+
+
 def check(msg, cond, detail=""):
     ok.append(bool(cond))
     print(("PASS " if cond else "FAIL ") + msg + (f"  [{detail}]" if detail and not cond else ""))
@@ -92,9 +100,29 @@ check("the header says UNBOUND and warns, without anyone asking",
       row.counters.text() + " | " + row.warn.text())
 
 # ── binding a subject goes through the console, and opens the rest ───────────────────────────
-row.subject.setCurrentText("SUBJ01")
+type_subject(row, "SUBJ01")
 check("choosing a subject binds the board through the console command",
       rec.sources["192.168.1.50"].subject == "SUBJ01" and row.record.isEnabled())
+
+# The subject code is the only link between a capture and a person, so what the box REFUSES
+# matters more than what it accepts. A free-text subject is how a real name reaches every file.
+for bad in ("Maria", "bed 4", "SUBJ", "S01", "12"):
+    type_subject(row, bad)
+    if rec.sources["192.168.1.50"].subject != "SUBJ01":
+        break
+check("a name, a bed number or a malformed code is refused and changes nothing",
+      rec.sources["192.168.1.50"].subject == "SUBJ01" and row.subject.currentText() == "",
+      rec.sources["192.168.1.50"].subject)
+check("and the refusal says so instead of failing silently",
+      "not a subject code" in win.log_line.text(), win.log_line.text())
+type_subject(row, "subj7")
+check("a short code is normalised, so SUBJ7 and SUBJ07 cannot become two babies",
+      rec.sources["192.168.1.50"].subject == "SUBJ07", rec.sources["192.168.1.50"].subject)
+type_subject(row, "SUBJ13")
+check("the menu is not a ceiling: the thirteenth baby of a campaign can be typed",
+      rec.sources["192.168.1.50"].subject == "SUBJ13" and row.subject.findText("SUBJ13") >= 0
+      and len(G.SUBJECTS) == 12, str(len(G.SUBJECTS)))
+type_subject(row, "SUBJ01")
 
 # ── references: non-exclusive, and the T-class is derived, never typed ───────────────────────
 row.refs["videonest_udp"].setChecked(True)
@@ -231,9 +259,14 @@ check("and each one would have FAILED on the white the window used to inherit",
 # ── what actually reached the disk: the only evidence that matters ───────────────────────────
 rows = open(rec.events_path, encoding="utf-8").read().splitlines()
 kinds = [r.split(",")[5] for r in rows[1:]]
-check("every action of this test is one event in session_events.csv, in order",
-      kinds == ["SESSION_START"] + ["META"] * 9 + ["REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT",
-                "RETRACT", "RETRACT", "NOTE", "META", "SESSION_END"], kinds)
+# By shape, not by a count of METAs: every tick box and every subject is one META, so a magic
+# number breaks the day a check touches one more control -- for the wrong reason.
+check("the readings, their correction and their retractions are in the file, in order",
+      [k for k in kinds if k not in ("META", "SESSION_START", "SESSION_END")]
+      == ["REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT", "RETRACT", "RETRACT", "NOTE"], kinds)
+check("the session is bracketed by its start and end, and every change of a value is a META",
+      kinds[0] == "SESSION_START" and kinds[-1] == "SESSION_END"
+      and kinds.count("META") >= 9, kinds[:3])
 # Nine METAs for one subject, seven tick-box changes and one condition: every change of a session
 # value is its own event on purpose. The file is an audit trail, so "the operator ticked VideoNest
 # UDP, then thought better of it" is worth more than a tidy final state with no history.

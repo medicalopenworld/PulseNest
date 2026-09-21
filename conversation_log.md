@@ -24530,3 +24530,26 @@ Lo que no admite dos valores es el NOMBRE del fichero, que toma el ultimo. Renom
 debe cambiar en marcha es el SUJETO: un fichero de captura es de un bebe. **Propuesta no
 implementada:** que un cambio de CONDITION corte la parte del CSV, para que cada parte tenga una
 sola condicion en su nombre; la maquinaria de partes ya existe. Pendiente de decision de Alex.
+
+## 2026-09-21 - por que SUBJECT era lista cerrada y CONDITION no
+
+Alex pregunta por la asimetria. La respuesta destapa dos agujeros peores que la asimetria.
+
+**1. `subject` no validaba nada.** `_SUBJ_RE` guardaba `mark`, `note` y `refs`, pero no el comando
+que ASIGNA el valor: `s.subject = args[1].upper()`. Es decir, `subject 7560 Maria` habria escrito
+un nombre real en `session_events.csv`, en todos los `.pnraw`, en la cabecera de todos los CSV y
+en el nombre canonico del fichero, en la herramienta cuya primera regla es identificadores
+codificados en todos los ficheros. Nuevo `normalise_subject()`: solo `SUBJ<digitos>`, rellenado a
+dos (`subj7` -> `SUBJ07`, para que `SUBJ7` y `SUBJ07` no sean dos bebes), y rechazo con mensaje.
+
+**2. La ventana topaba en SUBJ12** y el combo no era editable, asi que la campana no habria podido
+grabar al decimotercer bebe. Ahora es editable y validado: el menu es un atajo, no un techo.
+
+**3. De paso, CONDITION.** Va al nombre del fichero y solo se pasaba a mayusculas, asi que
+`RESTING/FEEDING` construia una ruta y no un nombre. `safe_condition()` lo reduce a lo que un
+nombre de fichero admite: `SKIN-TO-SKIN`, `KANGAROO-CARE`.
+
+**Respuesta a la pregunta:** la asimetria era deliberada y sigue estandolo, pero mal ejecutada.
+El sujeto es el unico enlace entre una captura y una persona, y un error de tecleo parte los datos
+de un bebe en dos identidades, asi que su forma se valida. La condicion es vocabulario abierto
+que no puedo predecir en un hospital, asi que se acepta lo que escriban, solo saneado.
