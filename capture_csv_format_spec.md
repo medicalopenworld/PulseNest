@@ -474,6 +474,74 @@ Reading it in order:
 
 ---
 
+## The v0.4 work plan (2026-09-21)
+
+Everything below is designed and none of it is implemented: the live CSV still writes the 35
+columns inherited from `pulsenest_lab.py`. In the order the pieces depend on each other.
+
+### 1. The dictionary (R18) — first, because everything else names things from it
+
+Every column and every `# @row N <domain>:` key given a name, a unit, a type and a range, in one
+versioned file that the writer and the reader both read. Until it exists, "which columns" cannot
+be answered without inventing names twice.
+
+### 2. Fold `session.json` into the header
+
+Most of it is already in the CSV: `session=`, `writer=`, `source_ip=`, `part=`, `prev=`, and the
+board's whole `$CFG` verbatim, which carries board, MAC, firmware, library, build, `elfsha` and
+every AFE setting. What must be added as R26 keys: host, recorder version, hub, timezone, the
+start and close in wall clock, the clock drift, the IP history, and `subject`, `condition` and the
+reference set — which today live in the **filename** and nowhere inside the file.
+
+Repeating the block in every part is the point, not the cost: a few hundred bytes against ~87 MB,
+and it is what makes a part readable alone (R33). **The one thing that cannot fold**: facts known
+only at close that belong to the session rather than the part — the clock drift, the total row
+count, the list of parts. Part 1 cannot know them, and a session that dies has no last part to
+carry them. Measured 2026-09-21: a hard kill already loses them, so folding does not make that
+worse.
+
+**`session_events.csv` and `pulsenest_recorder.log` stay.** The events file is not redundant with
+the `# event @row N:` copies: it is the only home for events about sources that have no CSV (the
+phone), it opens alone in a spreadsheet instead of being scattered across twenty-four parts, and
+it is the index the `corrects=<id>` references point into. The log must survive the absence of a
+CSV — it is what records a board that never identified, a full disk, or a window that died before
+the first row. Three companion files become two.
+
+### 3. Where VideoNest's readings are recorded — **open, with a recommendation**
+
+**Today they are recorded nowhere that can be read.** Measured 2026-09-21: five `$VN1` frames fed
+to a session produced **zero events and zero rows**; they exist only as raw bytes inside
+`aux_vn_<id>_0001.pnraw`, and with `--raw off` they do not exist at all. The automatic reference —
+the whole reason VideoNest was built — is currently write-only.
+
+§10 of `pulsenest_recorder_spec.md` puts `ref_videonest.csv` in the converter, off-site, under the
+rule that in the hospital the recorder writes what arrived and only what arrived. **That rule was
+written before the live CSV existed**, and the argument that created the live CSV applies here
+word for word: you cannot wait until you are back in the lab to find out the reference failed. It
+already has — one session returned SpO2 68 and 89 from the same monitor.
+
+Three homes were considered:
+
+| Home | Why not / why |
+|---|---|
+| Columns in the board CSV | The phone speaks at ~0,8 Hz and irregularly, the board at 500 Hz. 624 of every 625 rows would be empty or forward-filled, and forward-filling **invents data**. It also couples two independent sources, so a phone dropout damages the board's file |
+| Rows in `session_events.csv` | ~2 900 rows an hour would drown the handful of things a person typed, and change that file's character from "what someone said" to "a data stream" |
+| **Its own `ref_videonest.csv`, live** | **Recommended.** Same columns §10 already defines (`t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms, checksum_ok`), one row per frame, written during the session so the cot side can see it. Opens in the same viewer as everything else |
+
+**The question this leaves, and it is a real one.** A `--board`-filtered session still records the
+phone — verified. So with one window per baby, three sessions each keep a copy of a reference that
+belongs to **one** baby, because the phone is pointed at one monitor. Whatever is decided about
+the file, the phone has to be attributable: either a `--videonest <id>` alongside `--board`, or a
+binding from phone id to subject. **Not decided.**
+
+### 4. Then the format itself
+
+R10a's `# @row N <type>:` grammar, R21's RF as a change event rather than two columns (blocked on
+the firmware announcing HGAC's RF moves), R24's three domain snapshots, and R16's filename. The
+acceptance test is unchanged: the converter's output must equal the live writer's, byte for byte.
+
+---
+
 ## Decisions
 
 | | Requirement | Status / recommendation |

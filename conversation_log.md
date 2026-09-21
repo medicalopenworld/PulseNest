@@ -24723,3 +24723,32 @@ interruptores independientes y la spec lo dice. La comprobacion que existia solo
 hubiera carpeta `raw/`, nunca si las filas seguian llegando, asi que el test le daba la razon al
 fallo. Arreglado y con comprobacion nueva. Verificado en el banco: 2,8 MB y 9.980 filas en 20 s,
 sin `raw/`. 98 comprobaciones.
+
+## 2026-09-21 - plan de v0.4, y donde se registra VideoNest
+
+Alex pide meter en el plan de v0.4 el plegado de `session.json` junto con las columnas, y pregunta
+donde se registran las lecturas de VideoNest. Responderlo exigio medirlo, y la medida saco dos
+huecos.
+
+**1. Hoy no se registran en ningun sitio legible.** Cinco tramas `$VN1` metidas en una sesion
+dieron **cero eventos y cero filas**: solo existen como bytes crudos dentro de
+`aux_vn_<id>_0001.pnraw`, y con `--raw off` ni eso. La referencia automatica, que es la razon de
+ser de VideoNest, es hoy de solo escritura.
+
+**2. Una sesion filtrada por `--board` sigue grabando el movil.** Verificado. Con una ventana por
+bebe, tres sesiones guardan copia de una referencia que pertenece a UNO, porque el movil apunta a
+un solo monitor. Queda como decision abierta: `--videonest <id>` junto a `--board`, o atar el id
+del movil a un sujeto.
+
+**Recomendacion escrita en el plan:** `ref_videonest.csv` **en vivo**, no en el conversor. La
+regla de la spec §10 ("en el hospital se escribe lo que llego y solo lo que llego") se escribio
+antes de que existiera el CSV en vivo, y el argumento que creo ese CSV vale aqui palabra por
+palabra: no se puede esperar a volver al laboratorio para descubrir que la referencia fallo. Ya
+fallo una vez, con SpO2 68 y 89 del mismo monitor en una sesion. Descartadas las otras dos casas:
+columnas en el CSV de la placa (0,8 Hz contra 500 Hz obliga a rellenar hacia delante, que es
+inventar dato, y acopla dos fuentes independientes) y filas en `session_events.csv` (2.900 filas
+por hora ahogarian lo poco que escribe una persona).
+
+**El plan de v0.4 queda en cuatro pasos**, escrito en `capture_csv_format_spec.md`: el diccionario
+R18 primero porque todo lo demas nombra desde el; plegar `session.json` en la cabecera (y por que
+`session_events.csv` y `pulsenest_recorder.log` se quedan); donde va VideoNest; y el formato en si.

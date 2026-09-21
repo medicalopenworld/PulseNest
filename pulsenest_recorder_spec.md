@@ -299,9 +299,13 @@ recorded, not only to the recording.
 `CLOCK_ANCHOR` is the event written when the operator films the laptop's clock (§7), so the
 video can be tied to `t_epoch_us` without trusting that two devices agree.
 
-Manual readings land here with `source=keyboard`. VideoNest's `$VN1` frames do **not**: they are
-raw stream data, and the converter turns them into `derived/ref_videonest.csv`. The rule is the
-one from §2 — in the hospital the recorder writes what arrived, and only what arrived.
+Manual readings land here with `source=keyboard`. VideoNest's `$VN1` frames do **not**, and as of
+2026-09-21 they land nowhere readable at all: measured, five frames produced zero events and zero
+rows, existing only as raw bytes in `aux_vn_<id>_0001.pnraw` — and not even there under
+`--raw off`. **Under review**: `capture_csv_format_spec.md`, "The v0.4 work plan" §3 recommends
+writing `ref_videonest.csv` **live** rather than leaving it to the converter, for the same reason
+the live board CSV exists, and raises the question the one-window-per-baby model created — the
+phone points at one monitor, but every session records it.
 
 ---
 
