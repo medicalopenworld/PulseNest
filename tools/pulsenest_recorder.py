@@ -921,11 +921,13 @@ class Recorder:
             self.log.info("%s -> %s (from --subject)", src.label(), src.subject)
         if self.raw_mode == "off":
             src.stream = _NullStream()
-            src.pending = []
-            return
-        src.stream = RawStream(self.raw_dir, self.session_id, src.key(), src.label(), self.log,
-                               self.split_s, self.split_bytes)
-        src.stream.open_part(t_mono_us, t_epoch_us)
+        else:
+            src.stream = RawStream(self.raw_dir, self.session_id, src.key(), src.label(),
+                                   self.log, self.split_s, self.split_bytes)
+            src.stream.open_part(t_mono_us, t_epoch_us)
+        # OUTSIDE the branch: `--raw` and `--csv` are independent switches. Turning the raw
+        # stream off used to take the live CSV with it, silently -- twenty seconds of a board at
+        # 500 Hz produced a 13 KB directory of nothing but metadata.
         self._open_csv(src, t_epoch_us)
         for rec in src.pending:                       # what waited for the name, in order
             src.stream.datagram(*rec)
@@ -1490,7 +1492,8 @@ def main(argv=None):
     ap.add_argument("--site", required=True, help="short site code for the session id (HOSP01, BENCH)")
     ap.add_argument("--operator", default="", help="initials or role, never a full name")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
-    ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"))
+    ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"), metavar="DIR",
+                    help="where session directories are created (default captures/sessions)")
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
     ap.add_argument("--csv", default="on", choices=("on", "off"),
                     help="write the live capture CSV per board beside the .pnraw")

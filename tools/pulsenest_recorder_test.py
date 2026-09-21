@@ -583,6 +583,11 @@ try:
     rec3.close()
     check("[2.3] raw off: no raw/ directory, session_events.csv and session.json still written",
           not os.path.exists(os.path.join(rec3.dir, "raw")) and os.path.exists(os.path.join(rec3.dir, "session_events.csv")))
+    csvs_off = [f for f in os.listdir(rec3.dir) if f.endswith(".csv") and "events" not in f]
+    rows_off = sum(sum(1 for ln in open(os.path.join(rec3.dir, f), encoding="cp1252")
+                       if ln and not ln.startswith("#")) - 1 for f in csvs_off)
+    check("[2.3] raw off leaves the live CSV alone: the two switches are independent",
+          len(csvs_off) >= 1 and rows_off > 0, f"{len(csvs_off)} files, {rows_off} rows")
 
     # ── Part 2: real hub in-process, two fake boards, the recorder's I/O pieces ────────────
     import socket

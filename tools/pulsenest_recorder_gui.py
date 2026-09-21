@@ -733,7 +733,17 @@ def main(argv=None):
     ap.add_argument("--location", default="", help="site CODE for the session id (BENCH, HOSP01); asked if absent")
     ap.add_argument("--operator", default="", help="initials or role, never a full name")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(_HERE), "captures", "sessions"))
+    ap.add_argument("--out", default=os.path.join(os.path.dirname(_HERE), "captures", "sessions"),
+                    metavar="DIR",
+                    help="where session directories are created (default captures/sessions). "
+                         "Point it at a second disk and the recording is written there directly, "
+                         "instead of being copied afterwards")
+    ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"),
+                    help="the .pnraw stream in raw/: `full` keeps every datagram verbatim, "
+                         "`exceptions` only the ones around a gap or a restart, `off` writes no "
+                         "raw/ directory at all. The CSV is unaffected. Off halves the ~17 MB per "
+                         "minute per board and gives up the only copy of what arrived on the wire, "
+                         "so a parsing bug found later can no longer be repaired from it")
     ap.add_argument("--board", default="", metavar="SUFFIX",
                     help="record ONLY the board whose MAC ends in this (any length: 8850, "
                          "508850). One window, one board, one baby")
@@ -758,7 +768,8 @@ def main(argv=None):
     if not location:
         return 1
     try:
-        rec = Recorder(args.out, location, operator, hub_text=f"{hub[0]}:{hub[1]}",
+        rec = Recorder(args.out, location, operator, raw_mode=args.raw,
+                       hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9),
                        board=args.board, subject=args.subject)

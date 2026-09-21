@@ -24710,3 +24710,16 @@ distinguen las siete placas de `docs/boards.md`; seis anaden un `50` compartido 
 nada). El directorio lleva el sujeto, `20260921_1656_HOSP01_SUBJ01`, porque tres ventanas lanzadas
 en el mismo minuto compartirian directorio. Probado en el banco: tres ventanas a la vez, tres
 directorios, ~20.000 filas cada uno, ninguna con mas fuente que la suya. 97 y 37 comprobaciones.
+
+## 2026-09-21 - `--raw off` se llevaba el CSV por delante
+
+Alex pregunta si se puede desactivar la carpeta `raw/`. El grabador tenia `--raw full|exceptions|
+off` desde la v0.1; la ventana no lo pasaba. Expuesto (y `--out` gana la ayuda que nunca tuvo).
+
+**Al probarlo salio un fallo real:** `--raw off` dejaba un directorio de 13 KB, sin `raw/` **y sin
+CSV**, tras veinte segundos de una placa a 500 Hz. `_open_stream` retorna pronto cuando el crudo
+esta apagado, y la llamada a `_open_csv` estaba despues de ese retorno. `--raw` y `--csv` son
+interruptores independientes y la spec lo dice. La comprobacion que existia solo miraba que no
+hubiera carpeta `raw/`, nunca si las filas seguian llegando, asi que el test le daba la razon al
+fallo. Arreglado y con comprobacion nueva. Verificado en el banco: 2,8 MB y 9.980 filas en 20 s,
+sin `raw/`. 98 comprobaciones.
