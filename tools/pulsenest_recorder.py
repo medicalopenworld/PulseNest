@@ -133,6 +133,21 @@ COMMAND_HELP = {
         "\n"
         "The board bound to that subject is stamped on the event, so bind it first with `subject`.",
     ),
+    "correct": (
+        "correct <event id> <spo2%> [pr]",
+        "fix a reading you mistyped; the original stays in the file",
+        "A mistyped reading is not erased -- nothing in a session is. A CORRECT event is written\n"
+        "naming the reading it fixes, and every consumer applies it. The reading keeps its own\n"
+        "time: the click happened when it happened, only the number was wrong. The event id is\n"
+        "the number printed when the reading was recorded (`event 41: REF_SPO2 ...`).",
+    ),
+    "retract": (
+        "retract <event id>",
+        "withdraw a reading; it stays in the file, marked retracted",
+        "For a reading that should not have been taken at all -- wrong baby, monitor was\n"
+        "alarming, you pressed twice. A RETRACT event names it; the effective list drops it, the\n"
+        "file keeps both, and an analysis can still see what was withdrawn and when.",
+    ),
     "mark": (
         "mark [SUBJ01] <text>",
         "something happened; with no subject it is session-wide",
@@ -272,7 +287,13 @@ TRUTH_WORDS = {"none": "T0", "simulator": "T1", "sim": "T1", "oximeter": "T2", "
                "reference": "T2", "arterial": "T3"}
 
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
-               "META", "SESSION_START", "SESSION_END")   # META: session metadata typed in (subject, truth, condition, reference monitor, consent)
+               "META", "CORRECT", "RETRACT", "SESSION_START", "SESSION_END")
+# CORRECT / RETRACT (2026-09-21): the operator can edit or delete a reading in the GUI, but every
+# file of a session is append-only and recorded evidence is never rewritten. So an edit is a new
+# event -- kind CORRECT, value/value2 = the new SpO2/PR, note `corrects=<event_id>` -- and a
+# delete is a RETRACT with note `retracts=<event_id>`. The reading keeps its ORIGINAL time: the
+# instant of the click is what was measured, only the number was mistyped. A consumer that wants
+# the effective list applies them in order; `Recorder.readings()` is that list, computed here.   # META: session metadata typed in (subject, truth, condition, reference monitor, consent)
 # `session_id` first, and it is not decoration (Alex, 2026-09-20). This is the one file in a
 # session directory that travels on its own -- it gets opened in Excel, copied, and its rows
 # pasted next to another session's to compare -- and it was the only one that could not say where
@@ -565,6 +586,7 @@ class Recorder:
         self.by_mac = {}                      # mac -> Source (the one that owns the stream)
         self.by_vn = {}                       # a phone's declared id -> Source, same idea
         self.event_id = 0
+        self._readings = []          # effective REF_SPO2 list, see readings()
         self.events_written = 0
         self.errors = 0
         self.csv_errors = 0
@@ -846,6 +868,8 @@ class Recorder:
         self._events_f.flush()
         os.fsync(self._events_f.fileno())
         self.events_written += 1
+        self._track_reading(kind, self.event_id, iso_local(t_epoch_us), t_epoch_us, subject,
+                            board_mac, value, value2, note)
         text = f"subject={subject} board={board_mac}"
         if value != "":
             text += f" value={value}"
@@ -861,6 +885,33 @@ class Recorder:
                 src.csv.add_event(f"{kind} {text}")
         self.log.info("event %d %s %s", self.event_id, kind, text)
         return self.event_id
+
+    def _track_reading(self, kind, eid, iso, t_epoch_us, subject, board_mac, value, value2, note):
+        if kind == "REF_SPO2":
+            self._readings.append({"id": eid, "iso": iso, "t_epoch_us": t_epoch_us,
+                                   "subject": subject, "board_mac": board_mac, "spo2": value,
+                                   "pr": value2, "corrected_by": None, "retracted_by": None})
+        elif kind in ("CORRECT", "RETRACT"):
+            ref = int(note.split("=", 1)[1])
+            for r in self._readings:
+                if r["id"] == ref:
+                    if kind == "CORRECT":
+                        r["spo2"], r["pr"], r["corrected_by"] = value, value2, eid
+                    else:
+                        r["retracted_by"] = eid
+
+    def _reading(self, eid):
+        for r in self._readings:
+            if r["id"] == eid and r["retracted_by"] is None:
+                return r
+        return None
+
+    def readings(self, subject=None, include_retracted=False):
+        """The effective list of commercial-monitor readings: REF_SPO2 with CORRECTs applied and
+        RETRACTs removed, in the order they were taken. For the GUI's annotation list."""
+        return [dict(r) for r in self._readings
+                if (subject is None or r["subject"] == subject)
+                and (include_retracted or r["retracted_by"] is None)]
 
     def _note_event(self, src, t_mono_us, t_epoch_us, kind, text):
         if src.stream is not None:
@@ -890,6 +941,28 @@ class Recorder:
                 mac = self._mac_for_subject(subj)
                 eid = self.event("REF_SPO2", subject=subj, board_mac=mac, value=val, value2=pr)
                 return f"event {eid}: REF_SPO2 {subj}={val}" + (f" PR={pr}" if pr != "" else "")
+            if cmd in ("correct", "retract"):
+                # `correct 41 97 [pr]` / `retract 41`: by the event id printed when it was recorded.
+                if not args or not args[0].isdigit():
+                    return f"usage: {cmd} <event id>" + (" <spo2%> [pr]" if cmd == "correct" else "")
+                target = self._reading(int(args[0]))
+                if target is None:
+                    return f"no reading with event id {args[0]} (or already retracted)"
+                if cmd == "retract":
+                    eid = self.event("RETRACT", subject=target["subject"], board_mac=target["board_mac"],
+                                     note=f"retracts={target['id']}")
+                    return f"event {eid}: RETRACT reading {target['id']} ({target['subject']}={target['spo2']})"
+                if len(args) < 2:
+                    return "usage: correct <event id> <spo2%> [pr]"
+                val = int(args[1])
+                if not 50 <= val <= 100:
+                    return "SpO2 must be 50..100"
+                pr = int(args[2]) if len(args) > 2 else ""
+                old = target["spo2"]          # event() applies the correction to this very dict
+                eid = self.event("CORRECT", subject=target["subject"], board_mac=target["board_mac"],
+                                 value=val, value2=pr, note=f"corrects={target['id']}")
+                return (f"event {eid}: CORRECT reading {target['id']} {target['subject']}"
+                        f" {old}->{val}" + (f" PR={pr}" if pr != "" else ""))
             if cmd in ("mark", "note"):
                 # An optional leading SUBJnn, exactly as `spo2` and `site` take one. Without it
                 # the event is session-wide, which is right for "phototherapy on" and wrong for

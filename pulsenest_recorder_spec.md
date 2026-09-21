@@ -491,6 +491,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
 | D4 | Split period and alignment | **Closed 2026-09-20: 10 min on the local wall-clock boundary**, 256 MB ceiling. Reasoning in §5. |
+| D6 | **Drop the T0–T3 class altogether?** Alex, 2026-09-21: "not sure it is useful, and the cost is considerable — a letter and a digit is a high cost in a human's memory". Kept for now only because the filename prefix (`CAPTURE_SET_SPEC` §2.4) and `build_capture_index.py` read it; the operator never sees it. If dropped, the prefix would come from `truth_sources` directly. | open |
 | D5 | Should `session_events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `pulsenest_recorder.log` already cover it. |
 
 ---

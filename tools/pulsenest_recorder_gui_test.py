@@ -1,0 +1,204 @@
+"""Offscreen checks for tools/pulsenest_recorder_gui.py — the window an operator actually uses.
+
+Builds the real Qt window against a real Recorder writing to a temporary directory, with a fake
+hub client, then drives the controls the way a person does and reads what reached the FILES.
+Needs neither a hub nor a board:
+
+    python tools/pulsenest_recorder_gui_test.py
+
+What it is checking, and why each one earns its place. The window's whole reason to exist is to
+reduce human error, so the checks are about the guard rails rather than about pixels:
+
+* **every control ends in a console command** — one code path with the headless recorder, which
+  is the design rule the window is built on. Verified by reading the events file, not by trusting
+  the button;
+* **nothing is enabled before a subject is bound**, because an unattributed reading is nearly
+  worthless with three babies in the room;
+* **an edit or a delete never rewrites a file**: the effective list changes, the file grows. A
+  CORRECT keeps the reading's own time, since the click happened when it happened;
+* **the header warns while something is wrong** (no subject, no condition, gaps, silence) rather
+  than only when someone asks;
+* **closing asks first**, and Ctrl+C is not a way out of a session.
+"""
+import os
+import sys
+import tempfile
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pulsenest_recorder_gui as G  # noqa: E402
+from PyQt5 import QtWidgets          # noqa: E402
+
+# Before a window exists: closeEvent saves geometry, and a test must never touch the real .ini.
+G.SETTINGS_FILE = os.path.join(tempfile.gettempdir(), "pulsenest_recorder_gui_test.ini")
+if os.path.exists(G.SETTINGS_FILE):
+    os.remove(G.SETTINGS_FILE)
+
+print(f"== {os.path.basename(__file__)} ==  offscreen checks of the recorder window")
+
+ok = []
+
+
+def check(msg, cond, detail=""):
+    ok.append(bool(cond))
+    print(("PASS " if cond else "FAIL ") + msg + (f"  [{detail}]" if detail and not cond else ""))
+
+
+class QuietLog:
+    def __getattr__(self, _):
+        return lambda *a, **k: None
+
+
+class FakeClient:
+    """The hub, absent. The window must not care: it feeds the recorder from what it receives."""
+
+    def recv(self, _):
+        return None
+
+    def connect(self):
+        return True
+
+    def close(self):
+        pass
+
+
+G.HubClient = lambda *a, **k: FakeClient()
+_answers = {"value": QtWidgets.QMessageBox.Yes}
+QtWidgets.QMessageBox.question = staticmethod(lambda *a, **k: _answers["value"])
+
+app = QtWidgets.QApplication([])
+out = tempfile.mkdtemp()
+rec = G.Recorder(out, "BENCH", "AC", log=QuietLog())
+win = G.RecorderWindow(rec, ("127.0.0.1", 15999))
+
+MAC = "10:20:BA:14:75:60"
+rec.feed("192.168.1.50", f"$CFG,mac={MAC},board=V18,fw=0.14\n".encode())
+win.traces["192.168.1.50"] = G.BoardTrace("192.168.1.50", 0.0, 15.0)
+win.redraw()
+row = list(win.rows.values())[0]
+
+# ── a row appears per board, keyed by MAC ────────────────────────────────────────────────────
+check("one row per board, keyed by its MAC once the board says who it is",
+      list(win.rows) == [MAC] and row.src is not None and row.src.mac == MAC, list(win.rows))
+check("nothing but SUBJECT is usable before a subject is bound",
+      row.subject.isEnabled() and not row.record.isEnabled()
+      and not row.condition.isEnabled() and not row.refs["operator"].isEnabled())
+check("the header says UNBOUND and warns, without anyone asking",
+      "UNBOUND" in row.counters.text() and "no subject" in row.warn.text(),
+      row.counters.text() + " | " + row.warn.text())
+
+# ── binding a subject goes through the console, and opens the rest ───────────────────────────
+row.subject.setCurrentText("SUBJ01")
+check("choosing a subject binds the board through the console command",
+      rec.sources["192.168.1.50"].subject == "SUBJ01" and row.record.isEnabled())
+
+# ── references: non-exclusive, and the T-class is derived, never typed ───────────────────────
+row.refs["videonest_udp"].setChecked(True)
+row.refs["operator"].setChecked(True)
+src = rec.sources["192.168.1.50"]
+check("references are a set, stored in the recorder's own order",
+      src.truth_sources == ["videonest_udp", "operator"], str(src.truth_sources))
+check("the truth class follows from the set and nobody types it", src.truth == "T2", str(src.truth))
+row.refs["videonest_udp"].setChecked(False)
+row.refs["operator"].setChecked(False)
+row.refs["simulator"].setChecked(True)
+check("unticking is a change too: a simulator alone is T1",
+      src.truth_sources == ["simulator"] and src.truth == "T1", str(src.truth))
+row.refs["simulator"].setChecked(False)
+row.refs["operator"].setChecked(True)
+
+# ── condition ────────────────────────────────────────────────────────────────────────────────
+row.condition.setCurrentIndex(1)
+row.condition.activated.emit(1)
+check("the condition reaches the recorder when it is chosen, not per keystroke",
+      src.condition == "RESTING", str(src.condition))
+win.redraw()          # the header is written by redraw(), ten times a second in a real session
+check("the header stops warning once subject and condition are known",
+      row.warn.text() == "" and "SUBJ01" in row.counters.text(), repr(row.warn.text()))
+
+# ── readings ─────────────────────────────────────────────────────────────────────────────────
+for spo2, pr in ((96, 140), (97, G.PR_NONE), (95, 138)):
+    row.spo2.setValue(spo2)
+    row.pr.setValue(pr)
+    row._record()
+check("the list holds every reading, newest first",
+      row.listing.rowCount() == 3 and row.listing.item(0, 1).text() == "95",
+      [row.listing.item(i, 1).text() for i in range(row.listing.rowCount())])
+check("an omitted pulse rate shows -- and is stored as empty, not as a zero",
+      row.listing.item(1, 2).text() == "--" and rec.readings("SUBJ01")[1]["pr"] == "")
+
+middle = int(row.listing.item(1, 3).text())
+taken_at = [r for r in rec.readings("SUBJ01") if r["id"] == middle][0]["t_epoch_us"]
+win.command(f"correct {middle} 93 120")
+row.refresh_listing()
+fixed = [r for r in rec.readings("SUBJ01") if r["id"] == middle][0]
+check("a corrected reading shows its new value, marked, and KEEPS ITS OWN TIME",
+      row.listing.item(1, 1).text() == "93 *" and row.listing.item(1, 2).text() == "120"
+      and fixed["t_epoch_us"] == taken_at, row.listing.item(1, 1).text())
+
+row._delete_last()
+check("DELETE LAST withdraws the newest reading of that subject",
+      row.listing.rowCount() == 2 and row.listing.item(0, 1).text() == "93 *")
+row.listing.selectRow(1)
+row._delete_selected()
+check("DELETE selected withdraws the one the operator picked", row.listing.rowCount() == 1)
+
+_answers["value"] = QtWidgets.QMessageBox.No
+row.listing.selectRow(0)
+row._delete_selected()
+check("answering No to the confirmation withdraws nothing", row.listing.rowCount() == 1)
+_answers["value"] = QtWidgets.QMessageBox.Yes
+
+check("the effective list drops the withdrawn readings; the recorder still has them all",
+      len(rec.readings("SUBJ01")) == 1 and len(rec.readings("SUBJ01", include_retracted=True)) == 3)
+
+# ── notes and the session bar ────────────────────────────────────────────────────────────────
+row.note.setText("probe on left foot")
+row._note_entered()
+check("a note is attributed to the subject and the box clears", row.note.text() == "")
+win.consent.setCurrentText("obtained")
+check("consent is a session value and reaches the recorder", rec.consent == "obtained")
+win.plots.setChecked(False)
+check("PLOTS off hides the waveform and leaves everything else recording",
+      not win.plots_on and not row.plot_w.isVisible())
+win.plots.setChecked(True)
+
+row.fold.setChecked(False)
+check("a row folds to its header line, and the header keeps updating",
+      not row.body.isVisible() and row.title.text() != "")
+win.redraw()
+row.fold.setChecked(True)
+
+# ── closing ──────────────────────────────────────────────────────────────────────────────────
+_answers["value"] = QtWidgets.QMessageBox.No
+win.close()
+check("closing asks first, and No keeps the session open",
+      not rec.stopped and not getattr(rec, "_closed", False))
+_answers["value"] = QtWidgets.QMessageBox.Yes
+win.close()
+check("Yes closes every file and writes SESSION_END", getattr(rec, "_closed", False))
+check("the geometry is remembered for the next session", os.path.exists(G.SETTINGS_FILE))
+
+# ── what actually reached the disk: the only evidence that matters ───────────────────────────
+rows = open(rec.events_path, encoding="utf-8").read().splitlines()
+kinds = [r.split(",")[5] for r in rows[1:]]
+check("every action of this test is one event in session_events.csv, in order",
+      kinds == ["SESSION_START"] + ["META"] * 9 + ["REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT",
+                "RETRACT", "RETRACT", "NOTE", "META", "SESSION_END"], kinds)
+# Nine METAs for one subject, seven tick-box changes and one condition: every change of a session
+# value is its own event on purpose. The file is an audit trail, so "the operator ticked VideoNest
+# UDP, then thought better of it" is worth more than a tidy final state with no history.
+check("nothing was ever rewritten: the retracted readings are still in the file",
+      sum(1 for r in rows if ",REF_SPO2," in r) == 3 and sum(1 for r in rows if ",RETRACT," in r) == 2)
+sj = open(os.path.join(rec.dir, "session.json"), encoding="utf-8").read()
+check("session.json carries the site code, the reference set and the derived class",
+      '"site_code": "BENCH"' in sj and '"truth_sources"' in sj and '"operator"' in sj)
+
+print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0 if all(ok) else 1)

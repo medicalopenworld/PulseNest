@@ -222,6 +222,29 @@ try:
     check("[6] a text that merely starts with a word is not mistaken for a subject",
           "(session-wide)" in rec.console("mark subject moved"), "")
 
+    # a reading can be corrected or retracted, by new events, never by rewriting the file
+    r1 = rec.console("spo2 SUBJ01 96 140")
+    id1 = int(r1.split()[1].rstrip(":"))
+    rec.console("spo2 SUBJ01 97")
+    before = len(rec.readings("SUBJ01"))
+    rc = rec.console(f"correct {id1} 98 142")
+    eff = [r for r in rec.readings("SUBJ01") if r["id"] == id1][0]
+    check("[6] correct: the effective reading shows the new values and keeps its own time and id",
+          rc.startswith("event") and "96->98" in rc and eff["spo2"] == 98 and eff["pr"] == 142
+          and eff["corrected_by"] is not None and len(rec.readings("SUBJ01")) == before, rc)
+    rr = rec.console(f"retract {id1}")
+    check("[6] retract: the reading leaves the effective list but not the file",
+          rr.startswith("event") and all(r["id"] != id1 for r in rec.readings("SUBJ01"))
+          and any(r["id"] == id1 and r["retracted_by"] for r in rec.readings("SUBJ01", include_retracted=True))
+          and f",RETRACT,SUBJ01," in open(rec.events_path, encoding="utf-8").read(), rr)
+    check("[6] a retracted or unknown reading cannot be corrected or retracted again",
+          rec.console(f"correct {id1} 90").startswith("no reading")
+          and rec.console("retract 99999").startswith("no reading")
+          and rec.console("correct x 90").startswith("usage"))
+    check("[6] the events file holds the original, the correction and the retraction, in order",
+          [ln.split(",")[5] for ln in open(rec.events_path, encoding="utf-8").read().splitlines()
+           if f",{id1}," in ln or f"={id1}" in ln][:3] == ["REF_SPO2", "CORRECT", "RETRACT"])
+
     # session metadata only a person knows (spec section 7), typed instead of hand-edited
     check("[7] truth with no subject applies to every board",
           rec.console("truth T2").startswith("truth=T2 on") and a.truth == "T2" and b.truth == "T2")
@@ -289,7 +312,7 @@ try:
           all(r.startswith(rec.session_id + ",") for r in rows[1:]), rows[1][:40])
     ref = [r for r in rows if ",REF_SPO2," in r]
     check("[6] session_events.csv row starts with session_id, then subject, mac, value, value2, source",
-          len(ref) == 1 and ref[0].split(",")[0] == rec.session_id
+          len(ref) >= 1 and ref[0].split(",")[0] == rec.session_id
           and ref[0].split(",")[6:11] == ["SUBJ01", "10:20:BA:14:75:60", "96", "142", "keyboard"],
           ref[0] if ref else "none")
 

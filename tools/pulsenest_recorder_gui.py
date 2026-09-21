@@ -201,23 +201,49 @@ class BoardRow(QtWidgets.QFrame):
         rb = self.record.font()
         rb.setBold(True)
         self.record.setFont(rb)
-        self.last = QtWidgets.QLabel("no reading yet")
-        self.last.setStyleSheet(f"color:{GREY};")
+        self.delete_last = QtWidgets.QPushButton("DELETE LAST")
+        self.delete_last.setToolTip("Withdraw the most recent reading of this subject -- you pressed "
+                                    "twice, or read the wrong monitor. Nothing is erased: a RETRACT "
+                                    "event is written and the list drops the reading.")
+        self.delete_last.clicked.connect(self._delete_last)
+        # The annotation list: every effective reading of this subject, newest first. Double-click
+        # a row to edit its numbers; select and DELETE to withdraw it. Both are new events on the
+        # append-only files, never a rewrite -- see pulsenest_recorder_spec.md section 9.
+        self.listing = QtWidgets.QTableWidget(0, 4)
+        self.listing.setHorizontalHeaderLabels(["time", "SpO2", "PR", "id"])
+        self.listing.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.listing.horizontalHeader().setStretchLastSection(True)
+        self.listing.verticalHeader().setVisible(False)
+        self.listing.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.listing.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.listing.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.listing.setMinimumWidth(260)
+        self.listing.setToolTip("Every reading recorded for this subject, newest first. "
+                                "Double-click to edit, select and DELETE to withdraw. An edited "
+                                "reading shows *; the file keeps the original and the correction.")
+        self.listing.doubleClicked.connect(self._edit_selected)
+        self.delete_sel = QtWidgets.QPushButton("DELETE selected")
+        self.delete_sel.clicked.connect(self._delete_selected)
+        self._listed = None            # signature of what the table shows, to redraw only on change
         lay.addWidget(QtWidgets.QLabel("SpO2"), 0, 0)
         lay.addWidget(self.spo2, 0, 1)
         lay.addWidget(QtWidgets.QLabel("PR"), 1, 0)
         lay.addWidget(self.pr, 1, 1)
         lay.addWidget(self.record, 2, 0, 1, 2)
-        lay.addWidget(self.last, 3, 0, 1, 2)
-        lay.setRowStretch(4, 1)
-        self.record.setEnabled(False)
+        lay.addWidget(self.delete_last, 3, 0, 1, 2)
+        lay.addWidget(self.listing, 0, 2, 4, 1)
+        lay.addWidget(self.delete_sel, 4, 2)
+        lay.setColumnStretch(2, 1)
+        for w in (self.record, self.delete_last, self.delete_sel):
+            w.setEnabled(False)
         return g
 
     def _set_dependents_enabled(self, on):
         for w in list(self.refs.values()) + [self.condition, self.note]:
             w.setEnabled(on)
         if hasattr(self, "record"):
-            self.record.setEnabled(on)
+            for w in (self.record, self.delete_last, self.delete_sel):
+                w.setEnabled(on)
 
     # ── actions: every one is a console command, so there is one code path ──
     def _subject_changed(self, text):
@@ -255,10 +281,87 @@ class BoardRow(QtWidgets.QFrame):
         if not subj:
             return
         pr = self.pr.value()
-        reply = self.win.command(f"spo2 {subj} {self.spo2.value()}" + (f" {pr}" if pr > PR_NONE else ""))
-        self.last.setText(f"{time.strftime('%H:%M:%S')}  {self.spo2.value()} %"
-                          + (f"  {pr} bpm" if pr > PR_NONE else "") + f"   {reply}")
-        self.last.setStyleSheet("color:#DDDDDD;")
+        self.win.command(f"spo2 {subj} {self.spo2.value()}" + (f" {pr}" if pr > PR_NONE else ""))
+        self.refresh_listing()
+
+    # ── the annotation list ──
+    def _readings(self):
+        subj = self.subject.currentText()
+        return list(reversed(self.win.rec.readings(subj))) if subj else []
+
+    def refresh_listing(self):
+        rows = self._readings()
+        sig = tuple((r["id"], r["spo2"], r["pr"], r["corrected_by"]) for r in rows)
+        if sig == self._listed:
+            return
+        self._listed = sig
+        self.listing.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            cells = [r["iso"][11:19], f"{r['spo2']}" + (" *" if r["corrected_by"] else ""),
+                     f"{r['pr']}" if r["pr"] != "" else "--", str(r["id"])]
+            for j, text in enumerate(cells):
+                item = QtWidgets.QTableWidgetItem(text)
+                item.setTextAlignment(QtCore.Qt.AlignCenter)
+                self.listing.setItem(i, j, item)
+
+    def _selected_id(self):
+        sel = self.listing.selectionModel().selectedRows()
+        return int(self.listing.item(sel[0].row(), 3).text()) if sel else None
+
+    def _delete_last(self):
+        rows = self._readings()
+        if rows and self._confirm_delete(rows[0]):
+            self.win.command(f"retract {rows[0]['id']}")
+            self.refresh_listing()
+
+    def _delete_selected(self):
+        eid = self._selected_id()
+        if eid is None:
+            self.win.log_line.setText("select a reading in the list first")
+            return
+        r = [x for x in self._readings() if x["id"] == eid]
+        if r and self._confirm_delete(r[0]):
+            self.win.command(f"retract {eid}")
+            self.refresh_listing()
+
+    def _confirm_delete(self, r):
+        return QtWidgets.QMessageBox.question(
+            self, "withdraw this reading?",
+            f"{r['iso'][11:19]}  SpO2 {r['spo2']}" + (f"  PR {r['pr']}" if r["pr"] != "" else "")
+            + f"  (event {r['id']})\n\nIt stays in the file marked as retracted.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No) == QtWidgets.QMessageBox.Yes
+
+    def _edit_selected(self, *_):
+        eid = self._selected_id()
+        r = [x for x in self._readings() if x["id"] == eid]
+        if not r:
+            return
+        r = r[0]
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(f"correct reading {eid} taken at {r['iso'][11:19]}")
+        form = QtWidgets.QFormLayout(dlg)
+        spo2 = QtWidgets.QSpinBox()
+        spo2.setRange(50, 100)
+        spo2.setValue(int(r["spo2"]))
+        pr = QtWidgets.QSpinBox()
+        pr.setRange(PR_NONE, 250)
+        pr.setSpecialValueText("--")
+        pr.setValue(int(r["pr"]) if r["pr"] != "" else PR_NONE)
+        form.addRow("SpO2 %", spo2)
+        form.addRow("PR (-- = none)", pr)
+        form.addRow(QtWidgets.QLabel("The time of the reading does not change: only the number "
+                                     "was mistyped.\nThe original stays in the file; a CORRECT "
+                                     "event is added."))
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            new_pr = pr.value()
+            if spo2.value() != r["spo2"] or (new_pr if new_pr > PR_NONE else "") != r["pr"]:
+                self.win.command(f"correct {eid} {spo2.value()}" + (f" {new_pr}" if new_pr > PR_NONE else ""))
+                self.refresh_listing()
 
     def _toggle(self, shown):
         self.body.setVisible(shown)
@@ -292,6 +395,7 @@ class BoardRow(QtWidgets.QFrame):
             self.warn.setStyleSheet(f"color:{RED if (src.silent or not src.subject) else AMBER}; "
                                     "font-weight:bold;")
         if self.body.isVisible():
+            self.refresh_listing()
             if plots_on:
                 self.curve.setData([t - now for t in tr.t], list(tr.y))
             if fresh or self.stats.document().isEmpty():
