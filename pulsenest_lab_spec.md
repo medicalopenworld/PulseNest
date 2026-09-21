@@ -2122,7 +2122,7 @@ Purpose: controlled capture with metadata for lab sessions.
 operator had left in the "Pre-capture notes" box, filled by pressing *Read chip config*, which
 pastes a snapshot of that instant. The text persists between captures, so changing RF, ILED or PRF
 without pressing the button again leaves a header confidently stating the *previous*
-configuration. Verified case: the four `SUBJ01_A57_RF100K/RF250k_20260823_*` captures all carry
+configuration. Verified case: the four `SUBJ01_RF100K/RF250k_20260823_*` captures all carry
 `TIA=250K` in the header while the mean `LED1` amplitude (357 k/369 k against 932 k/914 k, ratio
 2,54 ≈ 250 k/100 k) proves two were taken at 100 kΩ. **The header was the least reliable record in
 the file, precisely because it looked like the most reliable one.**

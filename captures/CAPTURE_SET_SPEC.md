@@ -243,8 +243,9 @@ pigmentation into the code itself (`SUBJ01_Y57WH`). The need is right and the st
 but not in the code, for three reasons:
 
 * **the code is published.** It is copied into every filename, every CSV header and every event
-  row, and `truth.csv` is committed. The legacy codes already demonstrate it: `SUBJ01_A57` …
-  `SUBJ07_A17` put **seven ages in the public repository, three of them minors**;
+  row, and `truth.csv` is committed. The old convention proved it: the subject captures carried
+  an `_A<age>` suffix, so seven ages — three of them minors — were published through that file
+  until they were renamed out of it on 2026-09-21. Git history still holds them;
 * **a join key must not change, and age does.** For a neonate it changes daily, so `SUBJ01_D02`
   and `SUBJ01_D03` would be two babies;
 * **race is not the variable.** ISO 80601-2-61:2026 measures *melanin* — it criticises the
@@ -262,14 +263,23 @@ So two files beside each other, both git-ignored:
 Ages are **banded** and recorded as at the first capture; for a neonate, gestational age in weeks,
 postnatal age in days and weight are the variables that matter and years say nothing.
 
-**Why pigmentation is not optional.** ISO 80601-2-61:2026 requires a study cohort with **at least
-25 % of participants in each of light (ITA > 30), medium (30 to −30) and dark (< −30)**, and makes
-*pigmentation differential bias* — the change in SpO2 bias over a 100° span of ITA — a reported
-figure in its own right (Annex CC). A capture set that cannot say where its subjects sit on that
-scale cannot support any claim about SpO2 accuracy. `capture_set.pigmentation_category()` answers
-it per subject, and returns **None when it is unknown**, never a default: a set that merely looks
-light-skinned because nobody measured is the exact gap the standard exists to close. Today that
-is **0 of 7**.
+**Why pigmentation is worth recording.** Melanin absorbs red light, which is one of the two
+wavelengths the ratio is built from, so skin pigmentation shifts the SpO2 reading itself — and it
+shifts it *more* at low saturation, where being wrong matters most. If every subject in a set has
+similar skin, a bias that depends on pigmentation is invisible in it: the set will look
+self-consistent and say nothing about half the babies it will meet.
+
+This is not a certification requirement here (PulseNest is not seeking one). It is borrowed from
+ISO 80601-2-61:2026 because that document had already thought about *how to record it*, and its
+answer is better than an ad-hoc one: measure the **Individual Typology Angle (ITA)** in degrees
+with a colorimeter, at the probe site, and use the **Monk Skin Tone scale** (A–J) as the
+by-eye fallback. It argues against Fitzpatrick explicitly, on the grounds that it represents
+darker skin badly — which is the kind of reasoning worth taking even when the requirement is not.
+The bands it uses, light above 30°, dark below −30°, are as good a split as any.
+
+`capture_set.pigmentation_category()` answers it per subject and returns **None when unknown**,
+never a default: a set that merely looks light-skinned because nobody measured is worse than one
+that admits the gap. Today that is **0 of 7**.
 
 > ⚠️ **`truth.csv` is committed and its `file` column lists every capture name.** Committing it
 > before the renaming of §2.7 is done would publish the full list of subject names and ages in one

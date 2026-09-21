@@ -24582,3 +24582,29 @@ afirmacion sobre exactitud de SpO2. Hoy: **0 de 7**.
 
 **Fallo mio corregido en el momento:** `if mst in "ABC"` daba "light" para un sujeto sin datos,
 porque la cadena vacia esta contenida en cualquier cadena. Con tuplas, y devuelve None.
+
+## 2026-09-21 - las normas son fuente, no mandato; y las edades, fuera
+
+**1. Correccion de Alex sobre las normas.** "Olvidate de las normas, solo las usamos si
+necesitamos respuestas o si podemos elegir entre diferentes opciones, no queremos seguirlas
+rigurosamente para un proceso de certificacion bajo norma." Yo habia justificado el diseno con
+"la norma exige >=25 % de la cohorte en cada categoria", que es lenguaje de certificacion.
+Reescrito el argumento en `CAPTURE_SET_SPEC.md` y en `capture_set.py` para que salga de la fisica:
+la melanina absorbe el rojo, que es una de las dos longitudes de onda con las que se construye la
+ratio, asi que la pigmentacion desplaza la lectura, y la desplaza mas cuanto menor es la
+saturacion. Un conjunto cuyos sujetos tienen toda la piel parecida no puede mostrar ese sesgo.
+La norma se cita solo porque ya habia pensado COMO registrarlo (ITA con colorimetro en el sitio de
+la sonda, Monk Skin Tone a ojo) y porque argumenta contra Fitzpatrick, no porque obligue.
+Memoria nueva: `feedback_standards_are_a_source_not_a_mandate`.
+
+**2. "Por que dices que decida si quitar las edades?"** Tenia razon: no habia nada que pesar. Me
+cubri las espaldas y lo disfrace de deferencia. **Hecho:** 24 capturas renombradas
+(`SUBJ01_A57_...` -> `SUBJ01_...`), y actualizados `truth.csv`, `index.csv`, `capture_set.py` y
+`pulsenest_lab_spec.md`. No se pierde nada: la edad esta en `captures/subjects.csv` en bandas.
+`SUBJECT_CODES.txt` pasa a llevar el codigo plano. **Autogol que corregi en el acto:** el texto
+que yo mismo habia escrito en `CAPTURE_SET_SPEC.md` citaba `SUBJ01_A57 ... SUBJ07_A17` como
+ejemplo, o sea publicaba justo lo que acababa de quitar. Memoria nueva:
+`feedback_dont_defer_a_decision_with_no_tradeoff`.
+
+**Lo que si es decision suya:** reescribir el historial de git. Las edades siguen en los commits
+anteriores. Sacarlas exige force-push y rompe los clones. Sin hacer.

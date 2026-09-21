@@ -100,10 +100,10 @@ def subjects(path=None):
     of this repository legitimately does not have one.
 
     The columns that decide what a capture can be compared with: `mst` (Monk Skin Tone, A-J) and
-    `ita_probe_deg` (Individual Typology Angle at the probe site, degrees). ISO 80601-2-61:2026
-    requires a study cohort spread across light (ITA > 30), medium (30 to -30) and dark (< -30),
-    at least 25 % in each -- so a set with no dark-skinned subjects cannot support a claim about
-    SpO2 accuracy, and this is the file that says whether it does.
+    `ita_probe_deg` (Individual Typology Angle at the probe site, degrees). Melanin absorbs red
+    light, one of the two wavelengths the ratio is built from, so pigmentation shifts the reading
+    -- and shifts it most at low saturation. A set whose subjects all have similar skin cannot
+    show that bias at all; this file is what says whether ours does.
     """
     path = path or SUBJECTS_PATH
     if not os.path.exists(path):
@@ -197,10 +197,10 @@ HR1_EXPERIMENT_SET = [
     "PHOTOTHERAPY_500HZ_SIMUL_60BPM_96SPO2_20260624_083336.csv",
     "PHOTOTHERAPY_ONOFF_60BPM_90SPO2_20260618_180045.csv",
     "PHOTOTHERAPY_400HZ_SIMUL_60BPM_96SPO2_20260624_083632.csv",
-    "SUBJ01_A57_RF100K_20260823_184201.csv",
-    "SUBJ01_A57_RF250k_20260823_184045.csv",
-    "SUBJ04_A19_AL_REVES_20260823_180835.csv",
-    "SUBJ06_A15_20260823_175947.csv",
+    "SUBJ01_RF100K_20260823_184201.csv",
+    "SUBJ01_RF250k_20260823_184045.csv",
+    "SUBJ04_AL_REVES_20260823_180835.csv",
+    "SUBJ06_20260823_175947.csv",
 ]
 
 
