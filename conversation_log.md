@@ -24405,3 +24405,29 @@ es burocracia. Tolera mayusculas y un guion delante; un comando desconocido resp
 **Comprobacion que lo mantiene honesto:** el test recorre el codigo de `console()` y falla si existe
 un comando sin entrada o una entrada sin comando — una ayuda que se desincroniza del codigo es peor
 que ninguna. 80/80.
+
+## 2026-09-21 - Robustez frente al error humano; `tier` -> `truth`
+
+**Critica de Alex (aceptada):** mi concepto de "aplicacion robusta" habia sido "aplicacion no grafica
+con el minimo interfaz". La suya es "aplicacion que cumple su objetivo con el minimo riesgo", y los
+riesgos que `pulsenest_recorder.py` deja abiertos son sobre todo humanos: no ver lo que falta (placa
+muda, movil sin enviar, huecos), grabar sin identidad (placa sin sujeto/condicion), teclear mal un
+codigo, perder la respuesta de un comando en el scroll, salir con Ctrl+C sin querer, no detectar un
+OCR malo de VideoNest en el momento, disco/reloj/errores de escritura que solo van al log.
+
+**Propuesta hecha (pendiente de decision):** una consola a pantalla completa (TUI, `prompt_toolkit`,
+no instalada) dentro de `pulsenest_recorder.py`: arriba la vista que se refresca sola (heredera de
+`fleet_monitor.py`), abajo la linea de comandos con completado de codigos, en medio los ultimos
+eventos y una linea de avisos persistente. Regla: la interfaz no posee estado; si falla, la
+grabacion sigue con la consola de lineas (`--plain`). Guardarrailes propuestos: `expect`, estado
+`UNBOUND`, rechazo de sujetos no asignados, `quit` con confirmacion, comparacion lectura manual vs
+VideoNest. Descartado: dos procesos (canal local + mas ventanas) y ventana Qt de tablas. Absorbe el
+panel de entrada manual previsto en Qt. Decisiones de Alex pendientes: dependencia y ubicacion.
+
+**`tier` -> `truth`, escala invertida (a5650ee).** "Tier" era ambiguo; lo que codifica es *contra
+que se puede comprobar la captura*, y el proyecto ya llama a eso `truth`. Alex pidio intercambiar
+T0 y T3: ahora T0 none, T1 simulator, T2 oximeter/ecg, T3 arterial (el numero crece con la
+evidencia). Nada estaba archivado bajo T0/T3, asi que no rompe ficheros. El comando acepta palabra o
+codigo, rechaza valores desconocidos, y un sitio `HOSPnn` arranca en T2 (el comando corrige, no se
+recuerda). Renombrado el campo en `session.json`, cabecera CSV (R26), columna de `truth.csv`,
+`capture_set.py`, `build_capture_index.py`, las tres specs y el guion. 83/83.
