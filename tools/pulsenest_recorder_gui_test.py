@@ -183,6 +183,19 @@ win.close()
 check("Yes closes every file and writes SESSION_END", getattr(rec, "_closed", False))
 check("the geometry is remembered for the next session", os.path.exists(G.SETTINGS_FILE))
 
+# ── the annotation list's columns fit their content ──────────────────────────────────────────
+# Relative, never in pixels: the offscreen platform has no fonts and falls back to Helvetica 12
+# at about 17 px per character, where the real desktop draws Segoe UI 9 at about 7. A pixel
+# figure measured here would be meaningless; the proportions are not.
+_head = row.listing.horizontalHeader()
+_w = [_head.sectionSize(i) for i in range(4)]
+check("PR is the narrowest column and id is narrower than SpO2's, as their contents are",
+      _w[2] < _w[1] and _w[3] <= _w[1] and _w[2] < _w[0], str(_w))
+check("only the time column stretches, so the id cannot swallow the leftover width",
+      not _head.stretchLastSection()
+      and _head.sectionResizeMode(0) == QtWidgets.QHeaderView.Stretch
+      and all(_head.sectionResizeMode(i) == QtWidgets.QHeaderView.Fixed for i in (1, 2, 3)))
+
 # ── the window is dark, and everything written on it can be read ─────────────────────────────
 def _luminance(hex_colour):
     """WCAG 2.1 relative luminance of an #rrggbb string."""

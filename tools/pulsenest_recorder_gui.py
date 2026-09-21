@@ -99,6 +99,7 @@ REF_LABELS = {"simulator": "simulator", "videonest_udp": "VideoNest UDP",
               "videonest_csv": "VideoNest CSV", "videonest_pictures": "VideoNest pictures",
               "operator": "operator annotation"}
 PR_NONE = 0     # the pulse-rate spinbox at its minimum reads "--": not recorded
+CELL_PAD = 14   # a table cell's own left+right margins, on top of the text it holds
 
 
 def suffix(mac):
@@ -164,7 +165,9 @@ class BoardRow(QtWidgets.QFrame):
 
     # ── the controls ──
     def _session_values_group(self):
-        g = QtWidgets.QGroupBox("Session values (do not change during the session)")
+        # NOT "values that do not change": they can all be changed, and each change is its own
+        # timestamped META event. What a later change cannot do is give the file two names.
+        g = QtWidgets.QGroupBox("This board: who, against what, doing what")
         form = QtWidgets.QFormLayout(g)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         self.subject = QtWidgets.QComboBox()
@@ -172,7 +175,10 @@ class BoardRow(QtWidgets.QFrame):
         self.subject.addItems(SUBJECTS)
         self.subject.setToolTip("The coded subject this board is on. Codes only, never a name: "
                                 "the code-to-person list lives outside the repository. Everything "
-                                "else in this panel waits for this.")
+                                "else in this panel waits for this.\n\n"
+                                "This is the one value not to change mid-session: one capture file "
+                                "belongs to one baby. If the probe moves to another baby, stop the "
+                                "session and start a new one.")
         self.subject.currentTextChanged.connect(self._subject_changed)
         form.addRow("SUBJECT", self.subject)
 
@@ -195,8 +201,12 @@ class BoardRow(QtWidgets.QFrame):
         self.condition.setEditable(True)
         self.condition.addItem("")
         self.condition.addItems(CONDITIONS)
-        self.condition.setToolTip("What the baby is doing, one word. It becomes part of the CSV "
-                                  "filename, so reuse the same words across sessions.")
+        self.condition.setToolTip("What the baby is doing, one word. Change it whenever it "
+                                  "changes -- each change is a timestamped event in the files, so "
+                                  "the history is kept. But the CSV FILENAME takes the last value "
+                                  "only, so if a baby goes from RESTING to FEEDING, the name will "
+                                  "say FEEDING for the whole capture. Reuse the same words across "
+                                  "sessions.")
         # `activated` is the operator picking from the list; `editingFinished` is a typed
         # word plus Enter. Not `currentTextChanged`: that is one command per keystroke.
         self.condition.activated.connect(self._condition_changed)
@@ -247,13 +257,31 @@ class BoardRow(QtWidgets.QFrame):
         # append-only files, never a rewrite -- see pulsenest_recorder_spec.md section 9.
         self.listing = QtWidgets.QTableWidget(0, 4)
         self.listing.setHorizontalHeaderLabels(["time", "SpO2", "PR", "id"])
-        self.listing.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        self.listing.horizontalHeader().setStretchLastSection(True)
+        head = self.listing.horizontalHeader()
+        # Measured, not guessed. `ResizeToContents` gave 143 px to a time of eight characters and
+        # 104 px to a two-digit id, because it takes a delegate's size hint plus Qt's cell
+        # margins rather than the width of the text. Each column is asked for the widest value it
+        # can ever hold, in the font it will actually be drawn in; only the time column stretches,
+        # so leftover width lands somewhere that can use it.
+        fm = QtGui.QFontMetrics(self.listing.font())
+
+        def wide_enough(*texts):
+            # The widest thing the column must ever hold -- its header, or its longest value --
+            # plus room for the cell's own margins. Not the header and the value together.
+            return max(fm.horizontalAdvance(t) for t in texts) + CELL_PAD
+        for col, texts in ((1, ("SpO2", "100 *")), (2, ("PR", "888")), (3, ("id", "8888"))):
+            head.setSectionResizeMode(col, QtWidgets.QHeaderView.Fixed)
+            self.listing.setColumnWidth(col, wide_enough(*texts))
+        # Only the time column stretches, so leftover width lands where it is harmless instead of
+        # being swallowed by the id, which is what `setStretchLastSection` was doing.
+        head.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        head.setStretchLastSection(False)
         self.listing.verticalHeader().setVisible(False)
         self.listing.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.listing.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.listing.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.listing.setMinimumWidth(260)
+        self.listing.setMinimumWidth(wide_enough("time", "88:88:88")
+                                     + sum(self.listing.columnWidth(c) for c in (1, 2, 3)))
         self.listing.setToolTip("Every reading recorded for this subject, newest first. "
                                 "Double-click to edit, select and DELETE to withdraw. An edited "
                                 "reading shows *; the file keeps the original and the correction.")
@@ -507,8 +535,13 @@ class RecorderWindow(QtWidgets.QMainWindow):
         h.addWidget(self.disk)
         h.addStretch(1)
         anchor = QtWidgets.QPushButton("CLOCK ANCHOR")
-        anchor.setToolTip("Press while filming this laptop's clock with the phone. It ties the "
-                          "video to the recording without trusting two clocks to agree.")
+        anchor.setToolTip("Only needed if you are FILMING or PHOTOGRAPHING the commercial monitor.\n\n"
+                          "Point the phone at this laptop's clock for a few seconds and press this "
+                          "while it is in shot. That puts the laptop's time inside the video and an "
+                          "event at the same instant in the recording, which is what lets a reading "
+                          "read off the video afterwards be placed on our timeline. Without it the "
+                          "two devices have to be trusted to agree, and they do not: the phone's "
+                          "own timestamps were measured running 164-350 ms behind arrival here.")
         anchor.clicked.connect(lambda: self.command("anchor"))
         h.addWidget(anchor)
         self.plots = QtWidgets.QPushButton("PLOTS")

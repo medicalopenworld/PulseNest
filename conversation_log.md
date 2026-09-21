@@ -24505,3 +24505,28 @@ dan 14,2 / 8,1 / 10,2 / 5,5. Tres comprobaciones nuevas en
 renderizador offscreen **no rasteriza texto** (una QLabel con "HELLO 123" se captura como un
 unico color uniforme): una imagen prueba la geometria y nada mas, la aritmetica si se puede
 comprobar.
+
+## 2026-09-21 - tres observaciones de Alex sobre la ventana
+
+**1. Columnas PR e id demasiado anchas.** Medido con Segoe UI 9 (la fuente real; el entorno
+offscreen no tiene fuentes y cae en Helvetica 12 a ~17 px por caracter, asi que cualquier medida
+absoluta hecha ahi miente). Antes: time 111, SpO2 59, PR 46, **id 263**. El culpable era
+`setStretchLastSection(True)`: la ultima columna se tragaba todo el ancho sobrante, y en la
+ventana real hay mucho mas sobrante que en la reproduccion. Ahora los tres numeros se fijan por
+metricas de fuente al mayor valor que pueden contener, y solo estira la hora: 114 / 79 / 53 / 66.
+PR pasa de 46 a 53 pero ya no cambia de ancho segun llegan valores. Dos comprobaciones nuevas,
+relativas y no en pixeles, por lo de la fuente.
+
+**2. Para que sirve CLOCK ANCHOR.** Solo hace falta si se filma o fotografia el monitor
+comercial. Mete la hora del portatil dentro del video y un evento en el mismo instante en la
+grabacion, que es lo que permite situar despues en nuestra linea de tiempo una lectura sacada del
+video. Sin eso habria que fiarse de que los dos relojes coinciden, y no coinciden: las marcas de
+tiempo del movil iban entre 164 y 350 ms por detras de la llegada aqui. Escrito en el tooltip.
+
+**3. "Session values (do not change during the session)" era una etiqueta falsa.** Todos se
+pueden cambiar y cada cambio escribe su propio evento META con hora, asi que el historial queda.
+Lo que no admite dos valores es el NOMBRE del fichero, que toma el ultimo. Renombrado el grupo a
+"This board: who, against what, doing what" y dicho en los tooltips. El unico valor que no se
+debe cambiar en marcha es el SUJETO: un fichero de captura es de un bebe. **Propuesta no
+implementada:** que un cambio de CONDITION corte la parte del CSV, para que cada parte tenga una
+sola condicion en su nombre; la maquinaria de partes ya existe. Pendiente de decision de Alex.
