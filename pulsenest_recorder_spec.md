@@ -122,15 +122,15 @@ captures/sessions/<SESSION_ID>/
     session.json                  metadata, the only hand-edited file (§7)
     session_events.csv            operator marks and manual readings (§6)
     pulsenest_recorder.log        the tool's own log: connections, errors, disk, splits
-    T2_SUBJ01_RESTING_20260926_101500.csv   the live capture CSV, one per board (§2)
+    SUBJ01_RESTING_20260926_101500_p01.csv  the live capture CSV, one per board, in parts (§2)
+    reference_spo2.csv            the commercial monitor's reading, by OCR and by hand (§10)
     raw/                          only when --raw is full or exceptions (§2.3)
         board_<MAC>_0001.pnraw    one stream per board, split into parts (§5)
         board_<MAC>_0002.pnraw
         aux_vn_<IP>_0001.pnraw    VideoNest's $VN1 stream, same format
     derived/                      produced OFF-SITE by the converter, never during the session
-        T2_SUBJ01_RESTING_20260926_101500.csv   rebuilt from raw; must equal the live one
-        ref_videonest.csv
-        ref_manual.csv
+        SUBJ01_RESTING_20260926_101500_p01.csv  rebuilt from raw; must equal the live one
+        reference_spo2.csv                      rebuilt from raw; must equal the live one
 ```
 
 `SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>` with `SITE` a short code typed at start.
@@ -302,10 +302,10 @@ video can be tied to `t_epoch_us` without trusting that two devices agree.
 Manual readings land here with `source=keyboard`. VideoNest's `$VN1` frames do **not**, and as of
 2026-09-21 they land nowhere readable at all: measured, five frames produced zero events and zero
 rows, existing only as raw bytes in `aux_vn_<id>_0001.pnraw` — and not even there under
-`--raw off`. **Under review**: `capture_csv_format_spec.md`, "The v0.4 work plan" §3 recommends
-writing `ref_videonest.csv` **live** rather than leaving it to the converter, for the same reason
-the live board CSV exists, and raises the question the one-window-per-baby model created — the
-phone points at one monitor, but every session records it.
+`--raw off`. **Resolved 2026-09-22**: they are rows of `reference_spo2.csv`, written live, beside
+the operator's own readings — see §10. Only the phone declared as this baby's reference
+(`videonest <id>`) contributes rows, because every phone on the wire reaches every session and one
+filming another cot is not a reference for this one.
 
 ---
 
@@ -335,7 +335,6 @@ session: the part no machine can produce). Proposed shape:
       "firmware": { "build": "7770c6c", "elfsha": "a60928ae2b710aab", "lib": "v0.93",
                     "cfg_raw": "$CFG,..." },   // verbatim, as cached by the hub
       "subject": "SUBJ01",
-      "truth": "T2",                    // CAPTURE_SET_SPEC §2.2: T0 none .. T3 arterial
       "condition": "RESTING",
       "probe_site": "left foot",
       "files": [ "raw/board_1020BA147560_0001.pnraw", "..." ],
@@ -442,7 +441,7 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   tied a session to the process, so three probes on three babies shared one session -- and since
   the three do not start or finish together, changing one baby meant stopping all three. Worse,
   rebinding the subject in place was silently wrong: measured, 500 rows of `SUBJ01` and 500 of
-  `SUBJ04` landed in **one file named `T2_SUBJ04_...`**, the first baby's rows relabelled as the
+  `SUBJ04` landed in **one file named `SUBJ04_...`**, the first baby's rows relabelled as the
   second's, with no warning. Wrong data, not missing data.
   So **one window per baby**: `--board <MAC suffix>` records only that board, `--subject SUBJnn`
   binds the code before the first row is written. The recorder already meant "session = process",
@@ -483,13 +482,13 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   with it the clock drift), each CSV's closing `# rows=… gaps=…` note, and the rename to canonical
   names — the files keep their provisional `<MAC>_…` names. A laptop that dies mid-session costs
   metadata, not data; the recovery is to note by hand which subject each MAC belonged to.
-* **References, not classes (Alex, 2026-09-21).** The operator ticks *which references exist*
-  for a baby — `simulator`, `videonest_udp`, `videonest_csv`, `videonest_pictures`, `operator` —
-  and never sees a T-code. The console form is `refs SUBJ01 <src>[,<src>...]|none`, stored in
-  `session.json` as `truth_sources`; the `truth` class is derived (any reference beside the baby
-  → T2, a simulator alone → T1, none → T0) because `CAPTURE_SET_SPEC` §2.4 and
-  `build_capture_index.py` read it from the filename. `truth` can still be forced, for the one
-  class no tick box can claim (T3, arterial).
+* **No reference class, no tick boxes (Alex, 2026-09-22).** For two days there was a T0–T3
+  class, first typed, then ticked as a set of references, then derived at close. Each step made it
+  smaller and it never earned its place: Alex asked what it meant twice, and the capture-set spec
+  turned out to hold cells from two incompatible orderings of the same four letters. Removed under
+  the project's rule — less is more. What replaces it is evidence, not a label: a simulator is the
+  subject `SIM`; a commercial oximeter is rows in `reference_spo2.csv`; the one control left on the
+  panel is the one that changes what this window records — `VideoNest UDP` and which phone.
 
 ---
 
@@ -511,13 +510,19 @@ reference streams below.
   make the two indistinguishable — the same ambiguity as the `.pnraw` header, one floor down.
   So the converter writes them as **`# from-board: # STAT ...`**, and any consumer can tell an
   annotation from a message. Named per
-  `CAPTURE_SET_SPEC` §2.4 (`<TRUTH>_<SUBJECT>_<CONDITION>_<params>_<date>_<time>.csv`) from
+  `CAPTURE_SET_SPEC` §2.4 (`<SUBJECT>_<CONDITION>_<params>_<date>_<time>_pNN.csv`) from
   `session.json`, so nobody types a long filename in a hospital.
-* **`ref_videonest.csv`**: `t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms,
-  checksum_ok` — one row per `$VN1` frame, with the NMEA checksum verified here (never at
-  capture time) and the phone-to-host clock drift made explicit.
-* **`ref_manual.csv`**: `session_events.csv` filtered to `kind=REF_SPO2`, in the same column shape as
-  `ref_videonest.csv`, so the two are directly comparable.
+* **`reference_spo2.csv`** — **written live since 2026-09-22, not by the converter**: what the
+  commercial monitor showed, read two ways, in one file. `source` is `videonest` (OCR) or
+  `operator` (typed); `id` is the device id or who typed; `kind` is `reading`, `correction` or
+  `retraction`, and `supersedes` names the event a correction refers to, so nothing is ever
+  rewritten. Columns: `t_epoch_us, iso_local, source, id, kind, spo2, pr, conf, seq, phone_ts,
+  drift_ms, checksum_ok, event_id, supersedes` — a column that does not apply to a source is
+  blank, never a zero. `phone_ts` is the phone's own clock **verbatim**, because that string is
+  also the timestamp in the photograph's filename. Phone rows come only from the phone declared
+  as this baby's reference. It is one measurement read twice, and the whole reason to have both
+  is to compare them: side by side, sorted by time, that is two columns. The converter rebuilds it
+  from the `.pnraw` and `session_events.csv` and must produce the same bytes.
 * **A reconciliation report**: manual vs VideoNest at matching instants, which is what says
   whether the OCR can be trusted for the next campaign.
 
@@ -556,7 +561,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
 | D4 | Split period and alignment | **Closed 2026-09-20: 10 min on the local wall-clock boundary**, 256 MB ceiling. Reasoning in §5. |
-| D6 | **Drop the T0–T3 class altogether?** Alex, 2026-09-21: "not sure it is useful, and the cost is considerable — a letter and a digit is a high cost in a human's memory". Kept for now only because the filename prefix (`CAPTURE_SET_SPEC` §2.4) and `build_capture_index.py` read it; the operator never sees it. If dropped, the prefix would come from `truth_sources` directly. | open |
+| D6 | ~~Drop the T0–T3 class altogether?~~ **Closed 2026-09-22: dropped.** Alex asked what it meant twice in two days; the capture-set spec held cells from two orderings of it. Filename is `<SUBJECT>_<CONDITION>_…`; a simulator is subject `SIM`; a commercial reference is rows in `reference_spo2.csv`. | closed |
 | D5 | Should `session_events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `pulsenest_recorder.log` already cover it. |
 
 ---
@@ -591,8 +596,8 @@ What the implementation fixed in this document's wording, or added:
   a **board restart**, not a gap. Both become `@M` notes, a warning in `pulsenest_recorder.log`, columns in
   `status` and fields in `session.json`. The authoritative per-frame check stays with the CSV
   writer (`capture_csv_format_spec` R12a); this is situational awareness at the cot side.
-* **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`, `truth`,
-  `cond`, `refs` and `ref SUBJnn model|avg|site|note`. Each writes a **`META` event** (a kind
+* **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`,
+  `cond`, `videonest <id>` and `ref SUBJnn model|avg|site|note`. Each writes a **`META` event** (a kind
   added to §6's list) as well as updating `session.json`, so the metadata is auditable and
   survives in the `.pnraw` even if `session.json` is lost. `ref` covers the block §7 calls
   non-negotiable: the commercial monitor's model, its averaging in seconds and **its** probe
@@ -622,8 +627,8 @@ What the implementation fixed in this document's wording, or added:
   `console()` source and fails if a command exists without an entry, or an entry without a
   command — help that drifts from the code is worse than none.
 * **Who an event belongs to, and where its copies go** (Alex's question, 2026-09-20). Every
-  event carries a `subject` and a `board_mac`. `spo2` and `site` always name a subject; `truth` and
-  `cond` take an optional trailing one; `anchor` is session-wide by nature. **`mark`
+  event carries a `subject` and a `board_mac`. `spo2` and `site` always name a subject;
+  `cond` takes an optional trailing one; `anchor` is session-wide by nature. **`mark`
   and `note` now take an optional LEADING `SUBJnn`** — `mark SUBJ02 nappy change` is attributed,
   `mark phototherapy on` stays session-wide (`subject=*`, `board_mac=*`). Before this the only way
   to say which baby a mark concerned was to write it in the free text, where no query will ever
@@ -635,16 +640,9 @@ What the implementation fixed in this document's wording, or added:
   names. A file that stands alone is worth more than a slightly shorter one — the row says whom it
   concerns, and a reader of one board's capture can still see that the lamp went on, or that the
   baby next door desaturated at the same instant.
-* **References ticked, class derived — see §9.** `refs SUBJ01 videonest_udp,operator` (2026-09-21).
-* **`tier` is now `truth`, and the scale climbs** (Alex, 2026-09-21). "Tier" said nothing about
-  what it measured. The command records *what the capture can be checked against*, so it takes the
-  word the rest of the project already uses for that: `truth`, as in `truth.csv` and
-  `truth_hr_bpm`. The scale was also reordered so the number grows with the quality of the
-  evidence — T0 none, T1 simulator, T2 commercial oximeter or ECG, T3 arterial CO-oximetry — the
-  original had them the other way round and nothing had been filed under T0 or T3 yet. A word is
-  accepted in place of the code (`truth oximeter`), an unknown value is refused rather than
-  stored, and a session whose site is `HOSPnn` **starts at T2**: there is a commercial monitor
-  beside every baby by construction, so the command exists to correct, not to be remembered.
+* **`tier` → `truth` → gone** (2026-09-21 → 2026-09-22). Renamed once, reordered once, ticked
+  once, derived once, then removed: see §9 and D6. The history is kept in `conversation_log.md`;
+  the spec records only the outcome.
 * **The live capture CSV is written (§2), and it writes TODAY's format, not v0.4** (Alex,
   2026-09-20). The reason it could not wait: **Flow CSV Viewer, one of the tools used most here,
   reads `.csv` and not `.pnraw`** — and §2.1's other argument held too, that a fault in a capture
@@ -666,7 +664,7 @@ What the implementation fixed in this document's wording, or added:
   `csv_errors` counts them separately in `session.json`.
   **The name is provisional until close**: a board starts streaming before a person has bound it
   to a subject, so the file opens as `<MAC>_<date>_<time>.csv` and is renamed at close to
-  `CAPTURE_SET_SPEC` §2.4's `T2_SUBJ01_RESTING_<date>_<time>.csv` once truth class, subject and condition
+  `CAPTURE_SET_SPEC` §2.4's `SUBJ01_RESTING_<date>_<time>_pNN.csv` once subject and condition
   are known — verified on the bench, three boards, three canonical names.
   **Cost, measured:** 2,85 MB per board per 20 s = **~510 MB/h**, on top of the 0,5 GB/h of
   `.pnraw`: about **1 GB/h per board**, 24 GB for three boards over eight hours. That is the
@@ -722,7 +720,7 @@ What the implementation fixed in this document's wording, or added:
   working**: the hub matches the four-byte tag and never parses the body, the recorder classifies on
   the same prefix, and the checksum is verified by the converter, which does not exist yet — the
   decision in §5 not to interpret what is recorded is what made a wire-format change a
-  documentation task. What did change: the fixtures, `ref_videonest.csv`'s columns (§10, no `pr`),
+  documentation task. What did change: the fixtures, the reference file's columns (§10, no `pr` from the phone),
   and one defensive fix — `_watch_counter` matched any `$M` tag when reading a board's sample
   counter and now matches `$M1,`…`$M4,` in full, because **another source on this wire may use a
   `$Mn` tag** (build 8 names one `M5`) and reading its sequence number as our sample counter would

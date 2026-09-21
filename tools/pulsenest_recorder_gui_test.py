@@ -144,8 +144,6 @@ check("unticking clears it: this baby has no VideoNest reference",
       rec.videonest_id is None, str(rec.videonest_id))
 row.vn_id.setCurrentText("J6plusACM")
 row.vn_on.setChecked(True)
-check("the class is not declared here at all -- it is derived at close from what arrived",
-      src.truth is None, str(src.truth))
 
 # ── condition ────────────────────────────────────────────────────────────────────────────────
 row.condition.setCurrentIndex(1)
@@ -287,6 +285,9 @@ check("the session is bracketed by its start and end, and every change of a valu
 check("nothing was ever rewritten: the retracted readings are still in the file",
       sum(1 for r in rows if ",REF_SPO2," in r) == 3 and sum(1 for r in rows if ",RETRACT," in r) == 2)
 sj = open(os.path.join(rec.dir, "session.json"), encoding="utf-8").read()
+check("reference_spo2.csv holds the readings the operator typed, and was written live",
+      os.path.exists(rec.ref_path)
+      and sum(1 for l in open(rec.ref_path, encoding="utf-8") if ",operator,AC,reading," in l) == 3)
 check("session.json carries the site code and which phone was this baby's reference",
       '"site_code": "BENCH"' in sj and '"videonest_id": "J6plusACM"' in sj
       and '"videonest_seen"' in sj, sj[:120])

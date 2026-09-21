@@ -131,7 +131,7 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   follow from the anchors at the accuracy the references need (seconds for an 8 s-averaging monitor,
   tens of ms for a VideoNest frame). `HOST_T_US` keeps its historical meaning (monotonic, arbitrary
   origin) as a legacy synonym.
-- **R16 — Filename** `<TRUTH>_<SUBJECT>_<SITE>_<BOARD>_<CONDITION>[_<params>]_<YYYYMMDD>_<HHMMSS>[_pNN].csv`,
+- **R16 — Filename** `<SUBJECT>_<SITE>_<BOARD>_<CONDITION>[_<params>]_<YYYYMMDD>_<HHMMSS>[_pNN].csv`,
   local time; offset and start epoch in the header; `<BOARD>` = last three MAC bytes; `<SITE>` = probe
   site. P0 filenames are the incubator's business (device id + local date/time) and follow the same rule.
   **`<SITE>` is a coded place, never a described one**: `BENCH`, `HOSP01`, `SITE01` (recorder spec
@@ -168,7 +168,7 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
 - **R21 — Three classes of column, RF reclassified (revised 2026-09-20).** Raw (`LED/ALED`);
   derived — stateless (`_SUB`, `V_TIA`, `I_PD`, `OT`: recomputable) versus stateful algorithm
   outputs (`SpO2`, `HR*`, `SQI*`, `PI`, `R`, `DiagCode`, `ProbeState`: **not** recomputable from a
-  cold start; they are the device's own output, what T2 compares against the reference). **RF is
+  cold start; they are the device's own output, what a reference session compares against the monitor). **RF is
   no longer a per-sample column in any profile** (previous cost: gzip 0, plain 13 B/row) — it moves
   to a change-event, R21a, alongside the rest of `$CFG`. RF is still needed to invert OT to codes
   and to correct real-versus-nominal RF (all OT corrections are multiplicative given RF and
@@ -235,7 +235,7 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   file the code↔person mapping. Header = evidence of what was believed; `truth.csv` wins on conflict.
 - **R26 — Machine keys `# key=value`**: `format, profile, writer, source_mac, board, fw, lib, build,
   libsha, elfsha, idfver` (identity and provenance, R17), `t0_iso, t0_epoch_us, t0_fw_ts_us,
-  t0_smpcnt, subject, site, truth, condition, session_id, part, prev, decimation, led1, led2, probe`.
+  t0_smpcnt, subject, site, condition, session_id, part, prev, decimation, led1, led2, probe`.
   All ASCII, one per line, before the first `@row` line.
 - **R27 — No personal data**, anywhere in the file or its name — doubly so for P0, written in
   hospitals worldwide by devices nobody supervises: device id and coded patient id only. **The
@@ -288,8 +288,8 @@ Every file declares `# profile=`. The dictionary is one; a profile is a selectio
 | Profile | Written by | Signal | Also | Rate | Cost |
 |---|---|---|---|---|---|
 | **P0 field** *(default)* | incubator firmware | `OT1,OT2` fixed-point | 1 Hz outputs: SpO2, PR, PI, SQI, probe state; `afe:`/`timing:`/`alg:` snapshots (R24; RF rides in `afe:`, R21a); device id; coded patient id; site | **OPEN (D8)**: 500 Hz / 125 Hz / 1 Hz-only + event windows | F12: 600/230 · 150/60 · 2,2/<1 MB per day |
-| **P1 validation against a reference** (hospital, T2) | recorder | `LED1,LED2,ALED1,ALED2` | firmware outputs (SpO2, HR1–3, SQIs, PI, RSQI, DiagCode, ProbeState), anchors, events, snapshots (R24), optional `from-board:` (R24b) | original | ≈ 120 B/row · 215 / 60 MB/h |
-| **P2 algorithm development** (bench, simulator, T1) | lab / recorder | as P1 | as P1 without host anchors | original | ≈ 110 B/row |
+| **P1 validation against a reference** (hospital, commercial oximeter) | recorder | `LED1,LED2,ALED1,ALED2` | firmware outputs (SpO2, HR1–3, SQIs, PI, RSQI, DiagCode, ProbeState), anchors, events, snapshots (R24), optional `from-board:` (R24b) | original | ≈ 120 B/row · 215 / 60 MB/h |
+| **P2 algorithm development** (bench, simulator) | lab / recorder | as P1 | as P1 without host anchors | original | ≈ 110 B/row |
 | **P3 analog diagnostics** (HGAC, TIA linearity, AMBDAC, interference) | lab | 34 remaining `$M4` fields (RF removed, R21a) | snapshots on every change incl. HGAC's own; `from-board:` kept | original | 264 B/row · 476 / 114 MB/h |
 | **P4 regression** | tests | what the test fixes (normally P2 frozen) | — | original | — |
 
@@ -514,7 +514,7 @@ to a session produced **zero events and zero rows**; they exist only as raw byte
 `aux_vn_<id>_0001.pnraw`, and with `--raw off` they do not exist at all. The automatic reference —
 the whole reason VideoNest was built — is currently write-only.
 
-§10 of `pulsenest_recorder_spec.md` puts `ref_videonest.csv` in the converter, off-site, under the
+§10 of `pulsenest_recorder_spec.md` used to put the phone's readings in the converter, off-site, under the
 rule that in the hospital the recorder writes what arrived and only what arrived. **That rule was
 written before the live CSV existed**, and the argument that created the live CSV applies here
 word for word: you cannot wait until you are back in the lab to find out the reference failed. It
@@ -526,7 +526,7 @@ Three homes were considered:
 |---|---|
 | Columns in the board CSV | The phone speaks at ~0,8 Hz and irregularly, the board at 500 Hz. 624 of every 625 rows would be empty or forward-filled, and forward-filling **invents data**. It also couples two independent sources, so a phone dropout damages the board's file |
 | Rows in `session_events.csv` | ~2 900 rows an hour would drown the handful of things a person typed, and change that file's character from "what someone said" to "a data stream" |
-| **Its own file, live** | **Done, 2026-09-21.** `VideoNest_<DeviceID>.csv` — named after the id the phone puts in its own frames, which is also what its photographs are named after, so the file, the frames and the JPGs all carry the same word and two phones cannot be confused. Columns as §10 defines them: `t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms, checksum_ok`. **Not split into parts** — at ~0,8 Hz four hours is some 11 500 rows and about 1 MB; parts exist because a 2 GB CSV cannot be opened, and this one can. The NMEA checksum is verified as it is written, and a frame that fails it is **written and flagged**, never dropped: a bad link should not look like a quiet one |
+| **One file for both references, live** | **Done, 2026-09-22: `reference_spo2.csv`** (Alex's design). It briefly was `VideoNest_<DeviceID>.csv`, phone only; Alex pointed out that the phone's readings and the operator's are **the same measurement read two ways**, and that side by side is how they get compared and how the phone's get reviewed against the photographs. So one file: `source` = videonest/operator, `id` = device id / who typed, `kind` = reading/correction/retraction, `supersedes` for corrections. Phone rows only from the phone declared for this baby. Not split into parts (~1 MB in four hours). Checksum verified as written; a failing frame is **written and flagged**, never dropped |
 
 **Decided 2026-09-21: its own file, written live.** Alex's reason is better than the one above —
 a file of its own is what lets the operator **review and correct** the readings afterwards against
@@ -534,7 +534,7 @@ the recorded photographs, and only once corrected are they fit to check or calib
 SpO2 estimate against.
 
 That review has a consequence worth fixing before a line is written: **the converter regenerates
-`ref_videonest.csv` from the `.pnraw`** (its acceptance test is byte-for-byte equality with the
+`reference_spo2.csv` from the `.pnraw` and `session_events.csv`** (its acceptance test is byte-for-byte equality with the
 live writer), so a correction written into that file is destroyed the first time anyone runs it.
 This is the `index.csv` / `truth.csv` split Alex designed on 2026-09-05, and the same rule applies:
 what a machine regenerates never shares a file with what a person authored. So corrections, **if

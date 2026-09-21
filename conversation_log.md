@@ -24838,3 +24838,31 @@ porque la derivacion de la clase contaba **todas** las filas de VideoNest del ca
 enfoca un monitor; los otros dos bebes no tenian referencia automatica y su captura la reclamaba.
 Corregido: solo cuentan las filas del movil **declarado** como referencia de ese bebe. Re-ensayado:
 SUBJ01 T2, SUBJ02 y SUBJ03 T0, con las mismas 20 filas en el cable. 111 y 39 comprobaciones.
+
+## 2026-09-22 - fuera T0-T3, y `reference_spo2.csv`
+
+**Alex cierra el tema:** "olvida todo lo relacionado con T0-T1-T2-T3 (TRUTH, Tier, o lo que sea).
+No aporta casi nada, solo complejidad. Nuestro paradigma es la simplicidad (menos es mas): quitar
+lo que sobra, lo que no sirve, lo que distrae sin necesidad evidente." Guardado como
+`feedback_less_is_more`. En dos dias la clase se renombro, se reordeno, se marco con casillas, se
+derivo al cierre y se borro; cada paso la hizo mas pequena y nunca se gano el sitio.
+
+**El argumento mas fuerte lo encontre al borrarla:** tras la reordenacion del 21 (T0 none .. T3
+arterial), `CAPTURE_SET_SPEC.md` seguia con celdas de la escala ANTIGUA (T0 arterial .. T3 none):
+S3 decia T0 queriendo decir arterial mientras §4 decia "T3 only" queriendo decir lo mismo. Yo
+mismo, que habia cambiado la definicion, me deje la mitad de los usos. Nadie podia mantener esos
+codigos rectos. Las palabras no se intercambian por accidente.
+
+**Quitado de todo:** constantes, derivacion, comando `truth` y su ayuda, campo del Source y de
+`session.json`, prefijo del nombre de fichero (ahora `SUBJ01_RESTING_<fecha>_<hora>_pNN.csv`),
+columna `truth` del manifiesto (108 filas), `TIER_RE`, `truth_class` y el selector `truth=` de
+`capture_set.py`, y las 97 menciones de las specs, cada codigo sustituido por lo que SIGNIFICABA en
+esa linea. `SIM` se acepta como sujeto: es la palabra que §2.4 ya usaba para el simulador en esa
+casilla, y sin la clase no queda otro sitio para el hecho. 105 y 38 comprobaciones.
+
+**`reference_spo2.csv`** (diseno de Alex): las lecturas del movil y las del operario en UN fichero,
+porque son la misma medida leida de dos maneras y la razon de tener ambas es compararlas.
+`source` = videonest/operator, `id` = device id / quien teclea, `kind` = reading/correction/
+retraction, `supersedes` para las correcciones. Filas del movil solo del declarado con `videonest
+<id>`. Sustituye a `VideoNest_<DeviceID>.csv`, que duro un dia. Probado con el movil real: 33
+filas videonest, cabecera y cierre correctos. 108 comprobaciones.

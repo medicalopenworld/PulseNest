@@ -236,7 +236,7 @@ try:
     check("[6] retract: the reading leaves the effective list but not the file",
           rr.startswith("event") and all(r["id"] != id1 for r in rec.readings("SUBJ01"))
           and any(r["id"] == id1 and r["retracted_by"] for r in rec.readings("SUBJ01", include_retracted=True))
-          and f",RETRACT,SUBJ01," in open(rec.events_path, encoding="utf-8").read(), rr)
+          and ",RETRACT,SUBJ01," in open(rec.events_path, encoding="utf-8").read(), rr)
     check("[6] a retracted or unknown reading cannot be corrected or retracted again",
           rec.console(f"correct {id1} 90").startswith("no reading")
           and rec.console("retract 99999").startswith("no reading")
@@ -283,91 +283,72 @@ try:
         refused = True
     check("[3] --subject refuses anything that is not a subject code", refused)
 
-    # The class is derived at close from what actually arrived, never declared. It used to come
-    # from tick boxes, and with `operator annotation` permanently on every session came out T2 --
-    # including one in which nobody ever typed a reading.
-    recT = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
-    recT.feed("10.0.0.1", CFG_8850)
-    recT.feed("10.0.0.1", M4)
-    recT.console("subject 8850 SUBJ01")
-    recT.console("cond resting SUBJ01")
-    recT.stop("t"); recT.close()
-    q = [x for x in recT.owners() if x.kind == "board"][0]
-    check("[3] a HOSP session where no reference ever arrived is T0, not T2",
-          q.truth == "T0" and recT.site.startswith("HOSP"), str(q.truth))
-    recU = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
-    recU.feed("10.0.0.1", CFG_8850)
-    recU.feed("10.0.0.1", M4)
-    recU.console("subject 8850 SUBJ01")
-    recU.console("spo2 SUBJ01 96")
-    recU.stop("t"); recU.close()
-    q2 = [x for x in recU.owners() if x.kind == "board"][0]
-    check("[3] one manual reading is enough to make it T2", q2.truth == "T2", str(q2.truth))
+    check("[3] SIM is accepted as a subject: the spec's own word for the simulator",
+          R.normalise_subject("sim") == "SIM" and R.normalise_subject("SIMULATOR") is None)
 
-    # A phone filming ANOTHER cot is not this baby's reference. Every phone on the wire reaches
-    # every session, so without this three windows and one phone came out T2 three times.
-    recW = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
-    recW.feed("10.0.0.1", CFG_8850)
-    recW.feed("10.0.0.1", M4)
-    recW.console("subject 8850 SUBJ02")
-    recW.feed("10.0.0.9", b"$VN1,1,89,0.95,2026-09-22 00:21:26.261,J6plusACM*3D\n")
-    recW.stop("t"); recW.close()
-    q3 = [x for x in recW.owners() if x.kind == "board"][0]
-    check("[3] a phone nobody declared as this baby's reference does not make it T2",
-          q3.truth == "T0" and any(x.vn_rows > 0 for x in recW.owners() if x.kind == "videonest"),
-          str(q3.truth))
-    check("[3] and `truth` still forces the two a recording cannot show by itself",
-          R.truth_from_recorded(0, 0) == "T0" and R.truth_from_recorded(0, 5) == "T2"
-          and "T1" in R.TRUTH_WORDS.values() and "T3" in R.TRUTH_WORDS.values())
-
-    # VideoNest's readings, in a file of their own (Alex, 2026-09-21). Until this they were
-    # recorded and never read: the frames existed only as raw bytes in the aux .pnraw, and not
-    # even there under --raw off, so the automatic reference was write-only.
+    # reference_spo2.csv (Alex, 2026-09-22): what the commercial monitor showed, read by OCR and
+    # read by a person, one file, side by side. Phone rows only from the DECLARED phone.
     import tempfile as _tf2
-    recV = R.Recorder(_tf2.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
+    recV = R.Recorder(_tf2.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock(),
+                      videonest="J6plusACM")
+    recV.feed("10.0.0.1", CFG_8850)
+    recV.feed("10.0.0.1", M4)
+    recV.console("subject 8850 SUBJ01")
     # The real phone's shape, copied off the wire 2026-09-22: the fourth field is LOCAL TIME as
-    # text, not the epoch milliseconds an older build sent and the spec described. A fixture
-    # invented by the same hand as the parser proves nothing -- every frame of the first real
-    # recording was rejected, 14 of 14, while the synthetic one passed.
-    def vn(seq, spo2, conf, ts):
-        body = b"VN1,%d,%s,%s,%s,J6plusACM" % (seq, spo2, conf, ts)
+    # text. A fixture invented by the same hand as the parser proves nothing -- every frame of
+    # the first real recording was rejected, 14 of 14, while the synthetic one passed.
+    def vn(seq, spo2, conf, ts, dev=b"J6plusACM"):
+        body = b"VN1,%d,%s,%s,%s,%s" % (seq, spo2, conf, ts, dev)
         return b"$" + body + b"*%02X\n" % R.nmea_checksum(body)
     for _ in range(3):
         recV.feed("10.0.0.9", vn(7, b"89", b"0.95", b"2026-09-22 00:21:26.261"))
     recV.feed("10.0.0.9", b"$VN1,8,97.0,0.90,2026-09-22 00:21:27.831,J6plusACM*00\n")  # bad cks
-    recV.feed("10.0.0.9", b"$VN1,not,a,frame*ZZ\n")                          # unparseable
-    vn = [x for x in recV.owners() if x.kind == "videonest"][0]
+    recV.feed("10.0.0.9", b"$VN1,not,a,frame*ZZ\n")                                    # junk
+    recV.feed("10.0.0.8", vn(1, b"92", b"0.99", b"2026-09-22 00:21:28.000", b"OtherPhone"))
+    r_id = int(recV.console("spo2 SUBJ01 96 140").split()[1].rstrip(":"))
+    recV.console(f"correct {r_id} 97")
+    phone = [x for x in recV.owners() if x.kind == "videonest" and x.vn_id == "J6plusACM"][0]
+    other = [x for x in recV.owners() if x.kind == "videonest" and x.vn_id == "OtherPhone"][0]
     recV.stop("t")
     recV.close()
-    name = os.path.basename(vn.vn_path or "")
-    check("[2] the phone's file is named for the device id in its own frames",
-          name == "VideoNest_J6plusACM.csv", name)
-    lines = open(vn.vn_path, encoding="utf-8").read().splitlines()
+    check("[2] one reference file per session, named for what it holds",
+          os.path.basename(recV.ref_path) == "reference_spo2.csv" and os.path.exists(recV.ref_path))
+    lines = open(recV.ref_path, encoding="utf-8").read().splitlines()
     notes = [l for l in lines if l.startswith("#")]
-    # By content, never by counting: the closing `# rows=` note is a comment too, so counting
-    # them walks one line past the header -- the same trap as the board CSV's header check.
-    body = [l for l in lines if l and not l.startswith("#")]
-    header, rows = body[0], body[1:]
-    check("[2] one row per frame, with the columns the spec names",
-          header.split(",") == R.VN_COLS and len(rows) == 4, f"{header[:40]} / {len(rows)}")
+    body = [l for l in lines if l and not l.startswith("#")]        # by content, never by count
+    header, rows = body[0], [r.split(",") for r in body[1:]]
+    col = {c: k for k, c in enumerate(header.split(","))}
+    check("[2] the columns are the union of both sources, source and id first among them",
+          header.split(",") == R.REF_COLS and col["source"] == 2 and col["id"] == 3, header[:60])
+    vrows = [r for r in rows if r[col["source"]] == "videonest"]
+    orows = [r for r in rows if r[col["source"]] == "operator"]
+    check("[2] the declared phone's frames are rows, id = its device id; the other phone's are not",
+          len(vrows) == 4 and all(r[col["id"]] == "J6plusACM" for r in vrows)
+          and other.vn_rows == 0 and phone.vn_rows == 4, f"{len(vrows)} rows, other={other.vn_rows}")
     check("[2] a frame that fails its checksum is written and FLAGGED, never dropped",
-          rows[0].endswith(",1") and rows[3].endswith(",0") and vn.vn_bad == 2,
-          f"{rows[3][-20:]} bad={vn.vn_bad}")
-    check("[2] an unparseable frame is counted, and breaks nothing",
-          len(rows) == 4 and vn.vn_rows == 4)
-    check("[2] the phone's timestamp is written verbatim -- it is the photograph's name too",
-          rows[0].split(",")[5] == "2026-09-22 00:21:26.261", rows[0].split(",")[5])
-    check("[2] the drift between the phone's clock and arrival here is made explicit",
-          rows[0].split(",")[6] == str((R.phone_epoch_us("2026-09-22 00:21:26.261")
-                                        - int(rows[0].split(",")[0])) // 1000),
-          rows[0].split(",")[6])
+          vrows[0][col["checksum_ok"]] == "1" and vrows[3][col["checksum_ok"]] == "0"
+          and phone.vn_bad == 2, f"bad={phone.vn_bad}")
+    check("[2] the phone's timestamp is verbatim -- it is the photograph's name too",
+          vrows[0][col["phone_ts"]] == "2026-09-22 00:21:26.261", vrows[0][col["phone_ts"]])
+    check("[2] the drift between the phone's clock and arrival here is explicit",
+          vrows[0][col["drift_ms"]] == str((R.phone_epoch_us("2026-09-22 00:21:26.261")
+                                            - int(vrows[0][col["t_epoch_us"]])) // 1000))
     check("[2] both shapes of that field are read: local time, and older builds' epoch ms",
           R.phone_epoch_us("1789927282311") == 1789927282311000
-          and R.phone_epoch_us("2026-09-22 00:21:26.261") is not None
           and R.phone_epoch_us("not a time") is None)
-    check("[2] the notes say where the photographs are, since they never reach this machine",
-          any("device_id=J6plusACM" in n for n in notes)
-          and any("VideoNest_frame_" in n for n in notes) and "rows=4" in notes[-1], notes[-1])
+    check("[2] the operator's reading is a row too: id = who, kind = reading, with its event id",
+          len(orows) == 2 and orows[0][col["id"]] == "AC" and orows[0][col["kind"]] == "reading"
+          and orows[0][col["spo2"]] == "96" and orows[0][col["pr"]] == "140"
+          and orows[0][col["event_id"]] == str(r_id), str(orows[:1]))
+    check("[2] a correction is a later row that names what it supersedes, never a rewrite",
+          orows[1][col["kind"]] == "correction" and orows[1][col["spo2"]] == "97"
+          and orows[1][col["supersedes"]] == str(r_id), str(orows[1]))
+    check("[2] a column that does not apply to a source is blank, never a zero",
+          orows[0][col["conf"]] == "" and orows[0][col["phone_ts"]] == ""
+          and vrows[0][col["pr"]] == "" and vrows[0][col["event_id"]] == "")
+    check("[2] the closing note counts both sources and the bad frames",
+          "videonest=4" in notes[-1] and "operator=2" in notes[-1] and "bad_frames=2" in notes[-1],
+          notes[-1])
 
     # the live CSV splits with the .pnraw, or a four-hour session ends in a 2 GB file
     check("[2] the live CSV is written in parts, numbered from p01",
@@ -378,14 +359,6 @@ try:
           or any("part=1" in ln for ln in open(a.csv_paths[0], encoding="utf-8").read().split("\n")[:8]))
 
     # session metadata only a person knows (spec section 7), typed instead of hand-edited
-    check("[7] truth with no subject applies to every board",
-          rec.console("truth T2").startswith("truth=T2 on") and a.truth == "T2" and b.truth == "T2")
-    check("[7] truth takes a word and stores the code; the scale climbs with the evidence",
-          rec.console("truth none SUBJ01").startswith("truth=T0 on") and a.truth == "T0"
-          and R.TRUTH_WORDS["arterial"] == "T3" and R.TRUTH_WORDS["oximeter"] == "T2")
-    check("[7] an unknown truth class is refused, not stored",
-          rec.console("truth T7").startswith("truth must be one of") and a.truth == "T0")
-    rec.console("truth oximeter")
     # Which phone is filming THIS cot. It declares, it does not filter: every phone on the wire
     # reaches every session, and VideoNest_<id>.csv already keeps their rows apart by name.
     check("[7] videonest names the phone that is this baby's reference",
@@ -399,7 +372,6 @@ try:
     check("[7] with no argument it lists what has actually been heard",
           rec.console("videonest").startswith("usage: videonest"), rec.console("videonest"))
     rec.console("videonest J6plusACM")
-    rec.console("truth oximeter")
     check("[7] condition narrowed to one subject leaves the others alone",
           rec.console("cond resting SUBJ01").startswith("cond=RESTING on")
           and a.condition == "RESTING" and b.condition is None)
@@ -414,7 +386,7 @@ try:
     # help: the list, one command's detail, and the check that keeps the two in step
     listed = rec.console("help")
     check("[9] help lists every command with its usage and a summary",
-          all(c in listed for c in ("spo2", "mark", "ref", "truth", "status", "quit"))
+          all(c in listed for c in ("spo2", "mark", "ref", "cond", "status", "quit"))
           and "help <command>" in listed, listed[:60])
     one = rec.console("help mark")
     check("[9] help <command> gives usage, summary and the reasoning behind it",
@@ -536,7 +508,7 @@ try:
 
     # the live capture CSV (section 2): written after the raw record, one per board
     all_csv = [f for f in os.listdir(rec.dir) if f.endswith(".csv") and f != "session_events.csv"]
-    csv_files = [f for f in all_csv if not f.startswith("VideoNest_")]
+    csv_files = [f for f in all_csv if f != "reference_spo2.csv"]
     check("[2] one live CAPTURE CSV per board, and never one for a phone",
           len(csv_files) == 3 and all(any(f.startswith(mac_part) for f in csv_files)
                                       for mac_part in ("1020BA147560", "1051DB508850")),

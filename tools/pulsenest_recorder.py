@@ -21,7 +21,6 @@ with no GUI at all):
     site SUBJ01 <text>        probe site of OUR probe for a subject ("left foot")
     anchor                    CLOCK_ANCHOR: written when the laptop clock is being filmed
     subject <MAC suffix> SUBJ01   bind a board to a subject (a REF_SPO2 then carries its MAC)
-    truth T2 [SUBJ01]         what the capture can be checked against (T0..T3 or a word)
     cond RESTING [SUBJ01]     condition; no subject = every board
     ref SUBJ01 model|avg|site|note <value>
                               the commercial monitor beside that baby: model, averaging in
@@ -181,21 +180,8 @@ COMMAND_HELP = {
         "bind a board to a baby",
         "Ties one board to one coded subject, by the last four hex digits of its MAC (the `status`\n"
         "line shows them). Do this first: a `spo2` reading carries the bound board's MAC, and the\n"
-        "CSV is renamed at close to T2_SUBJ01_RESTING_<date>_<time>.csv only when the subject,\n"
-        "the truth class and the condition are all known.",
-    ),
-    "truth": (
-        "truth T2|oximeter [SUBJ01]",
-        "what this capture can be checked against; no subject = every board",
-        "The class of reference that accompanies the capture, CAPTURE_SET_SPEC 2.2. It goes first\n"
-        "in the CSV filename so the analysis tools can tell what a capture is allowed to prove.\n"
-        "The scale climbs with the quality of the evidence:\n"
-        "  T0  none       a person and nothing to compare with -- morphology only\n"
-        "  T1  simulator  the MS100 at a programmed rate and SpO2\n"
-        "  T2  oximeter   a commercial pulse oximeter or an ECG beside the baby (also `ecg`)\n"
-        "  T3  arterial   arterial CO-oximetry; the only basis for an SpO2 calibration\n"
-        "A code or a word, either is accepted. A hospital campaign is T2, and a session whose\n"
-        "site is HOSPnn starts at T2 so the command is there to correct, not to remember.",
+        "CSV is renamed at close to SUBJ01_RESTING_<date>_<time>_pNN.csv once the subject and\n"
+        "the condition are both known.",
     ),
     "videonest": (
         "videonest <device id>|none",
@@ -258,20 +244,6 @@ COMMAND_HELP = {
 }
 
 
-# CAPTURE_SET_SPEC 2.2. The number climbs with the quality of the evidence (Alex, 2026-09-21:
-# the original scale had T0 = arterial and T3 = none, which reads backwards).
-TRUTH_CLASSES = ("T0", "T1", "T2", "T3")
-# Derived at close from what was RECORDED, never declared (Alex, 2026-09-22). The tick boxes that
-# used to declare it degenerated: with `operator annotation` permanently on -- it is the panel on
-# the right, always available -- every session came out T2, including one in which nobody typed a
-# reading. What a session can show by itself is whether a reference actually arrived; T1 (a
-# simulator was the subject) and T3 (an arterial study) it cannot, so those stay typed.
-def truth_from_recorded(manual_readings, videonest_rows):
-    return "T2" if (manual_readings or videonest_rows) else "T0"
-
-TRUTH_WORDS = {"none": "T0", "simulator": "T1", "sim": "T1", "oximeter": "T2", "ecg": "T2",
-               "reference": "T2", "arterial": "T3"}
-
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
                "META", "CORRECT", "RETRACT", "SESSION_START", "SESSION_END")
 # CORRECT / RETRACT (2026-09-21): the operator can edit or delete a reading in the GUI, but every
@@ -279,7 +251,7 @@ EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK
 # event -- kind CORRECT, value/value2 = the new SpO2/PR, note `corrects=<event_id>` -- and a
 # delete is a RETRACT with note `retracts=<event_id>`. The reading keeps its ORIGINAL time: the
 # instant of the click is what was measured, only the number was mistyped. A consumer that wants
-# the effective list applies them in order; `Recorder.readings()` is that list, computed here.   # META: session metadata typed in (subject, truth, condition, reference monitor, consent)
+# the effective list applies them in order; `Recorder.readings()` is that list, computed here.   # META: session metadata typed in (subject, condition, reference monitor, consent)
 # `session_id` first, and it is not decoration (Alex, 2026-09-20). This is the one file in a
 # session directory that travels on its own -- it gets opened in Excel, copied, and its rows
 # pasted next to another session's to compare -- and it was the only one that could not say where
@@ -310,6 +282,8 @@ def normalise_subject(text):
     `SUBJ7` and `SUBJ07` cannot become two babies.
     """
     t = (text or "").strip().upper()
+    if t == "SIM":
+        return "SIM"          # CAPTURE_SET_SPEC 2.4: the simulator goes in the subject slot as SIM
     if not _SUBJ_RE.match(t):
         return None
     digits = t[4:]
@@ -330,8 +304,14 @@ _VN_IDCHARS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 # timestamp in the photograph's filename, so the row already says which picture to open.
 _VN_FRAME_RE = re.compile(
     rb"^\$VN1,(\d+),(-?[\d.]+),(-?[\d.]+),([^,*]+),([A-Za-z0-9_-]{1,32})\*([0-9A-Fa-f]{2})\s*$")
-VN_COLS = ["t_epoch_us", "t_mono_us", "seq", "spo2", "conf", "phone_ts", "drift_ms",
-           "checksum_ok"]
+# reference_spo2.csv: the commercial monitor's reading, by OCR (videonest) and by a person
+# (operator), one row each, in one file. `source` says which; `id` is the device id or the
+# operator; `kind` is reading | correction | retraction, and `supersedes` names the event a
+# correction or retraction refers to. The phone-only and operator-only columns are simply blank
+# for the other source -- a sparse union is clearer than two files that have to be joined.
+REF_COLS = ["t_epoch_us", "iso_local", "source", "id", "kind", "spo2", "pr", "conf", "seq",
+            "phone_ts", "drift_ms", "checksum_ok", "event_id", "supersedes"]
+REF_KIND = {"REF_SPO2": "reading", "CORRECT": "correction", "RETRACT": "retraction"}
 
 
 def phone_epoch_us(text):
@@ -542,9 +522,7 @@ class Source:
         self.csv_stamp = ""                   # <date>_<time> of the FIRST part: every part shares it
         self.csv_due_epoch_us = 0             # wall-clock instant this part must close at
         self.csv_rows_total = 0               # rows across parts; src.csv.count is this part's
-        self.vn_f = None                      # VideoNest_<id>.csv, for a phone only
-        self.vn_path = None
-        self.vn_rows = 0
+        self.vn_rows = 0                      # rows this phone contributed to reference_spo2.csv
         self.vn_bad = 0                       # frames that did not parse, or failed the checksum
         self.pending = []                     # (t_mono_us, t_epoch_us, ip, data) until named
         self.first_mono_us = first_mono_us
@@ -559,7 +537,6 @@ class Source:
         self.restarts = 0                     # counter went backwards: the board rebooted
         self.subject = None
         self.probe_site = None
-        self.truth = None                     # CAPTURE_SET_SPEC section 2.2: T0 none .. T3 arterial
         self.condition = None                 # RESTING, FEEDING, ...
         # The commercial monitor this baby is also wearing. Two of these are not bureaucracy
         # (spec section 7): `probe_site`, because preductal (right hand) and postductal (foot)
@@ -585,7 +562,6 @@ class Source:
              "samples": self.samples, "gaps": self.gaps,
              "csv": os.path.basename(self.csv_path) if self.csv_path else None,
              "csv_files": [os.path.basename(p) for p in self.csv_paths],
-             "vn_csv": os.path.basename(self.vn_path) if self.vn_path else None,
              "vn_rows": self.vn_rows, "vn_bad": self.vn_bad,
              # `active`, not a null check: close() returns the part's count and leaves it in
              # place, so after the Recorder has added it to csv_rows_total a plain `self.csv.count`
@@ -595,7 +571,6 @@ class Source:
              "subject": self.subject, "probe_site": self.probe_site}
         if self.kind == "board":
             d["mac"] = self.mac
-            d["truth"] = self.truth
             d["condition"] = self.condition
             d["reference_monitor"] = self.reference
             d["board_rev"] = self.ident.get("board")
@@ -677,6 +652,21 @@ class Recorder:
             self._events_f.write(",".join(EVENTS_HEADER) + "\n")
             self._events_f.flush()
             os.fsync(self._events_f.fileno())
+        self.ref_path = os.path.join(self.dir, "reference_spo2.csv")
+        self._ref_f = None
+        self.ref_rows = {"videonest": 0, "operator": 0}
+        if self.csv_mode != "off":
+            self._ref_f = open(self.ref_path, "a", buffering=1, encoding="utf-8", newline="")
+            if os.path.getsize(self.ref_path) == 0:
+                self._ref_f.write(f"# session={self.session_id}\n")
+                self._ref_f.write(f"# writer=pulsenest_recorder/{RECORDER_VERSION}\n")
+                self._ref_f.write("# what the commercial monitor showed, read two ways: source="
+                                  "videonest (OCR, id=device) and source=operator (typed, id=who)\n")
+                # The photographs stay on the phone; the name carries the same device id and the
+                # phone's own clock, which is what phone_ts holds verbatim.
+                self._ref_f.write("# photos=VideoNest_frame_<id>_<YYYYMMDD>_<HHMMSS>_<ms>.jpg "
+                                  "(on the phone, phone clock = phone_ts)\n")
+                self._ref_f.write(",".join(REF_COLS) + "\n")
         self.write_session_json()
         self.event("SESSION_START", note=f"recorder {RECORDER_VERSION} raw={raw_mode}")
         self.log.info("session %s opened in %s (raw=%s)", self.session_id, self.dir, raw_mode)
@@ -898,7 +888,7 @@ class Recorder:
 
         The name is provisional: the subject is bound by a person seconds or minutes after the
         board starts streaming, so the file opens as <MAC>_<date>_<time>.csv and is renamed at
-        close to the CAPTURE_SET_SPEC 2.4 shape once truth, subject and condition are known."""
+        close to the CAPTURE_SET_SPEC 2.4 shape once subject and condition are known."""
         if self.csv_mode == "off" or src.kind != "board":
             return
         if not src.csv_stamp:
@@ -925,37 +915,21 @@ class Recorder:
                                 if self.split_s else 0)
         self.log.info("%s -> %s", src.label(), name)
 
-    def _open_vn_csv(self, src):
-        """`VideoNest_<DeviceID>.csv`: one row per $VN1 frame, written as the session runs.
-
-        Its own file, not columns in the board's CSV and not rows in session_events.csv. The
-        phone speaks at ~0,8 Hz against the board's 500, so as columns 624 of every 625 rows
-        would be forward-filled, which invents data; as events it would drown the handful of
-        things a person typed. And a file of its own is what lets the operator review and correct
-        these readings against the photographs before anything is calibrated against them.
-
-        NOT split into parts: ~11 500 rows in four hours, about 1 MB. Parts exist because a 2 GB
-        CSV cannot be opened; this one can.
-        """
-        if self.csv_mode == "off" or src.kind != "videonest" or src.vn_f is not None:
-            return
-        src.vn_path = os.path.join(self.dir, f"VideoNest_{src.vn_id or src.ip}.csv")
-        src.vn_f = open(src.vn_path, "a", buffering=1, encoding="utf-8", newline="")
-        if os.path.getsize(src.vn_path) == 0:
-            src.vn_f.write(f"# session={self.session_id}\n")
-            src.vn_f.write(f"# writer=pulsenest_recorder/{RECORDER_VERSION}\n")
-            src.vn_f.write(f"# source_ip={src.ip}\n")
-            src.vn_f.write(f"# device_id={src.vn_id or '?'}\n")
-            # The photographs stay on the phone and never pass through the hub; this says how to
-            # find one, since the name carries the same id and the phone's own clock.
-            src.vn_f.write("# photos=VideoNest_frame_<device_id>_<YYYYMMDD>_<HHMMSS>_<ms>.jpg "
-                           "(on the phone, phone clock)\n")
-            src.vn_f.write(",".join(VN_COLS) + "\n")
-        self.log.info("%s -> %s", src.label(), os.path.basename(src.vn_path))
+    def _ref_row(self, t_epoch_us, source, ident, kind, spo2="", pr="", conf="", seq="",
+                 phone_ts="", drift_ms="", checksum_ok="", event_id="", supersedes=""):
+        """One row of reference_spo2.csv. Blank is blank: a column that does not apply to this
+        source is empty, never a zero."""
+        self._ref_f.write(",".join(str(v) for v in (
+            t_epoch_us, iso_local(t_epoch_us), source, ident, kind, spo2, pr, conf, seq,
+            phone_ts, drift_ms, checksum_ok, event_id, supersedes)) + "\n")
+        self.ref_rows[source] += 1
 
     def _vn_rows(self, src, data, t_mono_us, t_epoch_us):
-        """One datagram -> its $VN1 rows. Like the board CSV, it may never break the raw stream."""
-        if src.vn_f is None:
+        """One datagram -> its $VN1 rows in reference_spo2.csv. Only from the phone DECLARED as
+        this baby's reference: every phone on the wire reaches every session, and one filming
+        another cot is not a reference for this one. Like the board CSV, it may never break the
+        raw stream."""
+        if self._ref_f is None or not src.vn_id or src.vn_id != self.videonest_id:
             return
         try:
             for raw in data.split(b"\n"):
@@ -978,8 +952,9 @@ class Recorder:
                 # How far the phone's clock is from arrival here. Blank rather than a zero when
                 # the field cannot be read: a missing measurement is not a drift of nothing.
                 drift = "" if phone_us is None else str((phone_us - t_epoch_us) // 1000)
-                src.vn_f.write(f"{t_epoch_us},{t_mono_us},{seq.decode()},{spo2.decode()},"
-                               f"{conf.decode()},{phone_txt},{drift},{ok}\n")
+                self._ref_row(t_epoch_us, "videonest", src.vn_id, "reading", spo2=spo2.decode(),
+                              conf=conf.decode(), seq=seq.decode(), phone_ts=phone_txt,
+                              drift_ms=drift, checksum_ok=ok)
                 src.vn_rows += 1
         except Exception as exc:
             self.csv_errors += 1
@@ -1020,7 +995,6 @@ class Recorder:
         # stream off used to take the live CSV with it, silently -- twenty seconds of a board at
         # 500 Hz produced a 13 KB directory of nothing but metadata.
         self._open_csv(src, t_epoch_us)
-        self._open_vn_csv(src)                        # a phone's own file; a no-op for a board
         for rec in src.pending:                       # what waited for the name, in order
             src.stream.datagram(*rec)
             if src.kind == "board":
@@ -1064,6 +1038,11 @@ class Recorder:
         self.events_written += 1
         self._track_reading(kind, self.event_id, iso_local(t_epoch_us), t_epoch_us, subject,
                             board_mac, value, value2, note)
+        if kind in REF_KIND and self._ref_f is not None:
+            # A correction names what it corrects (note=corrects=<id>), a retraction likewise.
+            sup = note.split("=", 1)[1] if note.startswith(("corrects=", "retracts=")) else ""
+            self._ref_row(t_epoch_us, "operator", self.operator or "operator", REF_KIND[kind],
+                          spo2=value, pr=value2, event_id=self.event_id, supersedes=sup)
         text = f"subject={subject} board={board_mac}"
         if value != "":
             text += f" value={value}"
@@ -1214,33 +1193,27 @@ class Recorder:
                 self.event("META", note=f"videonest={self.videonest_id or 'none'}")
                 self.write_session_json()
                 return f"videonest = {self.videonest_id or 'none'}"
-            if cmd in ("truth", "cond"):
-                # `truth T2` / `cond RESTING` apply to every board; a trailing SUBJnn narrows it.
+            if cmd == "cond":
+                # `cond RESTING` applies to every board; a trailing SUBJnn narrows it.
                 if not args:
-                    return f"usage: {cmd} <value> [SUBJ01]"
-                value = args[0].upper() if cmd == "truth" else " ".join(args).upper()
+                    return "usage: cond <value> [SUBJ01]"
+                value = " ".join(args).upper()
                 subj = None
                 if len(args) > 1 and args[-1].upper().startswith("SUBJ"):
                     subj = args[-1].upper()
-                    value = args[0].upper() if cmd == "truth" else " ".join(args[:-1]).upper()
-                if cmd == "cond":
-                    value = safe_condition(value)
-                    if not value:
-                        return "a condition must hold at least one letter or digit"
-                if cmd == "truth":
-                    value = TRUTH_WORDS.get(value.lower(), value)
-                    if value not in TRUTH_CLASSES:
-                        return ("truth must be one of " + ", ".join(TRUTH_CLASSES) + " or a word: "
-                                + ", ".join(sorted(TRUTH_WORDS)))
+                    value = " ".join(args[:-1]).upper()
+                value = safe_condition(value)
+                if not value:
+                    return "a condition must hold at least one letter or digit"
                 targets = [s for s in self._owners()
                            if s.kind == "board" and (subj is None or s.subject == subj)]
                 if not targets:
                     return f"no board {'for ' + subj if subj else 'yet'}"
                 for s in targets:
-                    setattr(s, "truth" if cmd == "truth" else "condition", value)
-                self.event("META", subject=subj or "*", note=f"{cmd}={value}")
+                    s.condition = value
+                self.event("META", subject=subj or "*", note=f"cond={value}")
                 self.write_session_json()
-                return f"{cmd}={value} on " + ", ".join(s.subject or s.label() for s in targets)
+                return f"cond={value} on " + ", ".join(s.subject or s.label() for s in targets)
             if cmd == "ref":
                 # The commercial monitor beside this baby (spec section 7).
                 if len(args) < 3 or args[1].lower() not in ("model", "avg", "site", "note"):
@@ -1398,12 +1371,12 @@ class Recorder:
         """Rename EVERY part of this source's CSV to the CAPTURE_SET_SPEC 2.4 shape, now that the
         metadata typed during the session is known. Provisional names kept when it is not.
 
-        All parts or none: a directory holding `T2_SUBJ01_RESTING_..._p01.csv` beside
+        All parts or none: a directory holding `SUBJ01_RESTING_..._p01.csv` beside
         `1051DB508850_..._p02.csv` would read as two different captures.
         """
-        if not (src.truth and src.subject and src.condition):
+        if not (src.subject and src.condition):
             return
-        stem = "_".join([src.truth, src.subject, src.condition.replace(" ", "-"), src.csv_stamp])
+        stem = "_".join([src.subject, src.condition.replace(" ", "-"), src.csv_stamp])
         renamed = []
         for path in src.csv_paths:
             if not os.path.exists(path):
@@ -1448,33 +1421,12 @@ class Recorder:
                 except Exception as exc:
                     self.csv_errors += 1
                     self.log.error("csv close failed for %s: %r", src.label(), exc)
-            if src.vn_f is not None:
-                try:
-                    src.vn_f.write(f"# rows={src.vn_rows} bad_frames={src.vn_bad}\n")
-                    src.vn_f.flush()
-                    os.fsync(src.vn_f.fileno())
-                    src.vn_f.close()
-                    self.log.info("%s VideoNest csv: %d rows, %d bad frames -> %s",
-                                  src.label(), src.vn_rows, src.vn_bad,
-                                  os.path.basename(src.vn_path))
-                except OSError as exc:
-                    self.csv_errors += 1
-                    self.log.error("VideoNest csv close failed for %s: %r", src.label(), exc)
             if src.stream is not None:
                 try:
                     src.stream.close()
                 except Exception as exc:
                     self.errors += 1
                     self.log.error("close failed for %s: %r", src.label(), exc)
-        # The class, from what actually arrived rather than from what anyone declared -- but only
-        # from THIS baby's reference. Every phone on the wire reaches every session, and one that
-        # is filming another cot is not a reference for this one: counting it made three windows
-        # with one phone come out T2 three times (rehearsal, 2026-09-22).
-        vn_rows = sum(x.vn_rows for x in self._owners()
-                      if x.kind == "videonest" and x.vn_id and x.vn_id == self.videonest_id)
-        for src in self._owners():
-            if src.kind == "board" and not src.truth:
-                src.truth = truth_from_recorded(len(self.readings(src.subject)), vn_rows)
         for src in self._owners():
             if src.csv_paths:
                 self._name_csv(src)
@@ -1489,6 +1441,19 @@ class Recorder:
             self._events_f.close()
         except OSError:
             pass
+        if self._ref_f is not None:
+            try:
+                bad = sum(x.vn_bad for x in self._owners() if x.kind == "videonest")
+                self._ref_f.write(f"# rows videonest={self.ref_rows['videonest']} "
+                                  f"operator={self.ref_rows['operator']} bad_frames={bad}\n")
+                self._ref_f.flush()
+                os.fsync(self._ref_f.fileno())
+                self._ref_f.close()
+                self.log.info("reference_spo2.csv: %d videonest rows, %d operator rows, %d bad frames",
+                              self.ref_rows["videonest"], self.ref_rows["operator"], bad)
+            except OSError as exc:
+                self.csv_errors += 1
+                self.log.error("reference_spo2.csv close failed: %r", exc)
         self.log.info("session %s closed (%s); %d events, %d write errors -> %s",
                       self.session_id, self.stop_reason, self.events_written, self.errors, self.dir)
 

@@ -93,24 +93,28 @@ For rhythm-transition captures (§3.2), ≥ 30 s **per stretch**. For artefact c
 
 ### 2.2 Ground truth
 
-Every capture carries a **truth class**: what it can be checked against. It is recorded in the
-manifest (§2.5, column `truth`) and echoed as the first token of the filename. The number climbs
-with the quality of the evidence (scale reordered 2026-09-21; nothing had been filed under the old
-T0/T3 yet):
+What a capture can be checked against decides what it can prove. Four cases, in words:
 
-| Truth | Source of truth | Enables |
+| Reference | Source of truth | Enables |
 |---|---|---|
-| **T0 — none** | Human subject with no reference | Only agreement between algorithms and dispersion |
-| **T1 — simulator** | The MS100 programmed to a known rate and SpO2 | Absolute HR error; SpO2 *regression* only, not calibration |
-| **T2 — reference device** | A commercial pulse oximeter, or a simultaneous ECG, recorded alongside | Error against a clinical reference; ECG gives per-beat truth (§2.6) |
-| **T3 — clinical reference** | Controlled desaturation study with arterial CO-oximetry (`SaO2`) | **The only valid basis for SpO2 calibration** — see §4 |
+| **none** | Human subject with no reference | Only agreement between algorithms and dispersion |
+| **simulator** | The MS100 programmed to a known rate and SpO2 | Absolute HR error; SpO2 *regression* only, not calibration |
+| **oximeter** (or ECG) | A commercial pulse oximeter, or a simultaneous ECG, recorded alongside | Error against a clinical reference; ECG gives per-beat truth (§2.6) |
+| **arterial** | Controlled desaturation study with arterial CO-oximetry (`SaO2`) | **The only valid basis for SpO2 calibration** — see §4 |
 
-T0 captures are still useful (they carry real waveform morphology, which no simulator reproduces)
-but **cannot settle a disagreement**. Do not build a calibration on T0 alone. The tools accept a
-word in place of the code: `none`, `simulator`, `oximeter` or `ecg`, `arterial`.
+Captures with no reference are still useful (they carry real waveform morphology, which no
+simulator reproduces) but **cannot settle a disagreement**. Do not build a calibration on them.
+
+**There is no code for this, and there was one until 2026-09-22.** A T0–T3 class lived in the
+filename, the manifest and the recorder for two days. Alex asked what it meant twice, and when
+the tables below were checked they carried cells from two incompatible orderings of the same four
+letters. Removed under the project's rule — less is more — and the fact is recorded by its
+evidence instead: a simulator is the subject `SIM` (§2.4); a commercial oximeter shows up as rows
+in the session's `reference_spo2.csv`; an arterial study would be a protocol, noted in
+`truth.csv`.
 
 > **The cheapest upgrade available: record ECG alongside.** A synchronised ECG turns a human capture
-> from T0 into T2 *with beat-level truth*, which is what a peak detector actually needs to be scored
+> from no reference into a per-beat one, which is what a peak detector actually needs to be scored
 > (§2.6). It is the only practical way to get real truth for the two blocks where the simulator
 > cannot help — neonatal morphology (§3.1) and motion artefact (§3.3, I4/I5) — because a simulator
 > reproduces neither. Worth solving before capturing N1–N3.
@@ -146,16 +150,16 @@ suggests: **per-sample columns > the signal itself > filename > `#` header.**
 ### 2.4 Naming
 
 ```
-<TRUTH>_<SUBJECT-or-SIM>_<CONDITION>_<key params>_<YYYYMMDD>_<HHMMSS>.csv
+<SUBJECT-or-SIM>_<CONDITION>_<key params>_<YYYYMMDD>_<HHMMSS>.csv
 ```
 
-`T1_SIM_PHOTOTHERAPY_60BPM_96SPO2_20260905_101500.csv`
+`SIM_PHOTOTHERAPY_60BPM_96SPO2_20260905_101500.csv`
 
 Rules that the tooling depends on:
 * the rate token ends in `BPM` and the SpO2 token in `SPO2` — `hr1_detector_experiment.py` parses
   the true rate from the filename;
-* the truth prefix must be the first token, so T0 captures can be excluded from error metrics
-  automatically;
+* a simulator capture's subject is `SIM`, so simulator captures are exactly the names that start
+  with `SIM_` and a script can pick them out without opening anything;
 * subject identifiers: **role or code, never a name** (`SUBJ07`, not a person). See §2.7.
 
 The filename is a convenience, not the source of truth. Anything a filename cannot express — a
@@ -216,9 +220,9 @@ condition block in §3 needs a declared tolerance, checked automatically. Starti
 |---|---|---|
 | HR, steady rhythm | within ± 3 BPM or ± 3 % of truth, whichever is greater | pulse-rate accuracy convention, ISO 80601-2-61 |
 | HR, after a transition | settles within the above in ≤ *T* s (T to be fixed; the estimator windows are 8 s HR2 / 10.24 s HR3, so T cannot be smaller) | §3.2 R4/R5 |
-| SpO2 | A<sub>rms</sub> ≤ 4 % over 70–100 % | ISO 80601-2-61 — **requires T0**, see §4 |
+| SpO2 | A<sub>rms</sub> ≤ 4 % over 70–100 % | ISO 80601-2-61 — **requires an arterial reference**, see §4 |
 | Peak detection | sensitivity and positive predictive value vs. the beat annotation | needs `truth_beats` |
-| Regression | bit-identical or within a declared epsilon of the previous build | any truth class |
+| Regression | bit-identical or within a declared epsilon of the previous build | any reference, or none |
 
 **Beat-level truth is a different thing from rate truth.** A detector can report the correct
 average rate while missing beats and inventing others in equal measure. Scoring a *detector* needs
@@ -302,11 +306,11 @@ that admits the gap. Today that is **0 of 7**.
 
 ### 3.1 Neonatal morphology — **the gap that blocks a decision today**
 
-| # | Condition | Truth | Duration | Purpose |
+| # | Condition | Reference | Duration | Purpose |
 |---|---|---|---|---|
-| N1 | Preterm foot, resting, good perfusion | T2 | 90 s | Reference morphology: notch position and depth |
-| N2 | Preterm foot, low perfusion (PI < 0.5 %) | T2 | 90 s | Detector behaviour at the edge of usable signal |
-| N3 | Term neonate, resting | T2 | 90 s | Contrast against N1 |
+| N1 | Preterm foot, resting, good perfusion | oximeter | 90 s | Reference morphology: notch position and depth |
+| N2 | Preterm foot, low perfusion (PI < 0.5 %) | oximeter | 90 s | Detector behaviour at the edge of usable signal |
+| N3 | Term neonate, resting | oximeter | 90 s | Contrast against N1 |
 
 Without N1–N3 the MA-versus-biquad decision and the detector choice stay unresolved: everything
 measured so far comes from adults and a simulator.
@@ -314,29 +318,29 @@ measured so far comes from adults and a simulator.
 > ⚠️ **This block is not a logistics item.** It is a measurement on human subjects of the most
 > vulnerable class, and it needs ethics-committee approval, informed parental consent, and a
 > protocol agreed with the clinical site before a single capture is taken. Plan it as a study, not
-> as a session with the probe. T2 (not T3) is specified deliberately: a capture of a neonate that
+> as a session with the probe. An oximeter reference (not none) is specified deliberately: a capture of a neonate that
 > cannot be used to compute error would spend that ethical cost for nothing.
 
 ### 3.2 Rhythm range — bradycardia is the untested corner
 
-| # | Condition | Truth | Duration | Purpose |
+| # | Condition | Reference | Duration | Purpose |
 |---|---|---|---|---|
-| R1 | 40 BPM steady | T1 | 65 s | Bottom of the accepted range; where the fixed refractory stops protecting against the notch |
-| R2 | 60 / 100 / 140 / 180 BPM steady | T1 | 65 s each | Coverage across the neonatal range |
-| R3 | 220 BPM steady | T1 | 65 s | Neonatal tachycardia, near `hr_max_bpm` = 260 |
-| R4 | Transition 140 → 60 BPM | T1 | 30 s + 30 s | Response time and overshoot of each estimator |
-| R5 | Transition 60 → 140 BPM | T1 | 30 s + 30 s | The same in the other direction |
+| R1 | 40 BPM steady | simulator | 65 s | Bottom of the accepted range; where the fixed refractory stops protecting against the notch |
+| R2 | 60 / 100 / 140 / 180 BPM steady | simulator | 65 s each | Coverage across the neonatal range |
+| R3 | 220 BPM steady | simulator | 65 s | Neonatal tachycardia, near `hr_max_bpm` = 260 |
+| R4 | Transition 140 → 60 BPM | simulator | 30 s + 30 s | Response time and overshoot of each estimator |
+| R5 | Transition 60 → 140 BPM | simulator | 30 s + 30 s | The same in the other direction |
 
 ### 3.3 Interference and artefact — the regime where everything fails today
 
-| # | Condition | Truth | Duration | Purpose |
+| # | Condition | Reference | Duration | Purpose |
 |---|---|---|---|---|
-| I1 | LED phototherapy on, steady | T1 | 90 s | The case where all three detectors give CV 12–30 % |
-| I2 | Phototherapy switching on/off | T1 | 90 s | Amplitude steps — what broke TERMA's global-mean threshold |
-| I3 | Mains-lit ambient (fluorescent/LED), **harmonics near PRF** | T1 | 65 s | See note below |
-| I4 | Motion artefact, gentle, isolated bursts | T2/T3 | 120 s | `project_hr_artefact_task`; long enough to include the 20 s running-max recovery |
-| I5 | Motion artefact, vigorous, isolated bursts | T2/T3 | 120 s | Detector rejection, SQI behaviour |
-| I6 | Probe partially detached | T3 | 65 s | RSQM `PROBE_NOT_APPLIED`, `project_limb_detection_task` |
+| I1 | LED phototherapy on, steady | simulator | 90 s | The case where all three detectors give CV 12–30 % |
+| I2 | Phototherapy switching on/off | simulator | 90 s | Amplitude steps — what broke TERMA's global-mean threshold |
+| I3 | Mains-lit ambient (fluorescent/LED), **harmonics near PRF** | simulator | 65 s | See note below |
+| I4 | Motion artefact, gentle, isolated bursts | oximeter or none | 120 s | `project_hr_artefact_task`; long enough to include the 20 s running-max recovery |
+| I5 | Motion artefact, vigorous, isolated bursts | oximeter or none | 120 s | Detector rejection, SQI behaviour |
+| I6 | Probe partially detached | none | 65 s | RSQM `PROBE_NOT_APPLIED`, `project_limb_detection_task` |
 
 > **I3 must target the right frequency.** At PRF 500 Hz the Nyquist limit is 250 Hz, so 100/120 Hz
 > mains ripple does **not** alias — it lands in band and is attenuated normally. The dangerous
@@ -346,11 +350,11 @@ measured so far comes from adults and a simulator.
 
 ### 3.4 SpO2 range
 
-| # | Condition | Truth | Duration | Purpose |
+| # | Condition | Reference | Duration | Purpose |
 |---|---|---|---|---|
-| S1 | 100 / 96 / 90 / 85 / 80 / 75 / 70 % SpO2, steady | T1 | 65 s each | **Regression and linearity only** — not calibration (§4) |
-| S2 | Desaturation 96 → 85 % | T1 | 60 s | Response time; ISO 80601-2-61 §201.12 requirements |
-| S3 | Controlled desaturation study, 70–100 % | **T0** | per protocol | The only valid source for `spo2_a`/`spo2_b` and for the declared A<sub>rms</sub> |
+| S1 | 100 / 96 / 90 / 85 / 80 / 75 / 70 % SpO2, steady | simulator | 65 s each | **Regression and linearity only** — not calibration (§4) |
+| S2 | Desaturation 96 → 85 % | simulator | 60 s | Response time; ISO 80601-2-61 §201.12 requirements |
+| S3 | Controlled desaturation study, 70–100 % | **arterial** | per protocol | The only valid source for `spo2_a`/`spo2_b` and for the declared A<sub>rms</sub> |
 
 The 70–75 % points were added because the accuracy of a pulse oximeter is declared over 70–100 %;
 stopping at 80 % leaves the bottom of the declared range unmeasured.
@@ -359,8 +363,8 @@ stopping at 80 % leaves the bottom of the declared range unmeasured.
 
 | # | Condition | Truth | Duration | Purpose |
 |---|---|---|---|---|
-| H1 | Same signal at RF 100 k / 250 k / 500 k | T1 | 65 s each | HGAC and gain-change transients |
-| H2 | Same signal at PRF 500 / 1000 Hz | T1 | 65 s each | The catalogue's second rate (spec §7.4) |
+| H1 | Same signal at RF 100 k / 250 k / 500 k | simulator | 65 s each | HGAC and gain-change transients |
+| H2 | Same signal at PRF 500 / 1000 Hz | simulator | 65 s each | The catalogue's second rate (spec §7.4) |
 
 H2 has a prerequisite: firmware ≥ v0.85, whose closed catalogue is what makes 1000 Hz a supported
 rate rather than an accident.
@@ -372,13 +376,14 @@ rate rather than an accident.
 Not every capture serves every purpose, and pretending otherwise is how a calibration ends up
 resting on the wrong data:
 
-* **Verification** (does it meet spec?) — T0/T1/T2, since it needs a known truth, and only against
-  the acceptance criteria of §2.6.
-* **HR calibration** (thresholds, refractory, filter cutoffs) — T0/T1/T2. **Never T3.**
-* **SpO2 calibration** (fitting `spo2_a`/`spo2_b`) — **T3 only.**
-* **Comparison between algorithms** — any truth class: a shared input is enough.
-* **Regression** (does today's build match yesterday's?) — any truth class, since the reference is the
-  previous result and not a truth.
+* **Verification** (does it meet spec?) — arterial, simulator or oximeter: anything with a known
+  truth, and only against the acceptance criteria of §2.6.
+* **HR calibration** (thresholds, refractory, filter cutoffs) — the same three. **Never a capture
+  with no reference.**
+* **SpO2 calibration** (fitting `spo2_a`/`spo2_b`) — **arterial only.**
+* **Comparison between algorithms** — any reference or none: a shared input is enough.
+* **Regression** (does today's build match yesterday's?) — any reference or none, since the
+  reference is the previous result and not a truth.
 
 > **Why a simulator cannot calibrate SpO2.** An optical simulator does not reproduce the physical
 > relationship between the ratio-of-ratios and arterial saturation; it emits an R that maps to a
@@ -398,11 +403,11 @@ resting on the wrong data:
 | §3.1 neonatal | — | **N1, N2, N3 — all of it** (blocked on ethics approval) |
 | §3.2 rhythm | 60 BPM (simulator) | R1, R3, R4, R5 |
 | §3.3 interference | phototherapy steady and on/off, ~90 s | I3, I4, I5, I6 |
-| §3.4 SpO2 | 90 %, 96 % | 100 %, 85 %, 80 %, 75 %, 70 %, S2, **S3 (T0)** |
+| §3.4 SpO2 | 90 %, 96 % | 100 %, 85 %, 80 %, 75 %, 70 %, S2, **S3 (arterial)** |
 | §3.5 hardware | RF sweeps | H2 (needs ≥ v0.85 firmware) |
 | Duration | Phototherapy 94 s ✓ | Finger captures are 20 s ✗ |
-| Naming | ad hoc | truth prefix absent everywhere |
-| Manifest (§2.5) | `index.csv` + `truth.csv` built 2026-09-05 | `truth.csv` is **93 empty rows** — every truth class and truth value to be filled by hand |
+| Naming | ad hoc | conventions of §2.4 applied to none |
+| Manifest (§2.5) | `index.csv` + `truth.csv` built 2026-09-05 | `truth.csv` is **93 empty rows** — every condition and truth value to be filled by hand |
 | Acceptance criteria (§2.6) | — | **not declared** |
 | Beat annotations (§2.6) | — | no capture has one |
 | Storage (§6) | local only, ignored by git | **no versioning, no checksums** |

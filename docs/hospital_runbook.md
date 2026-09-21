@@ -118,7 +118,7 @@ model, its averaging and its own probe site. Photographing its settings screen (
       recording. There is no Ctrl+C to get wrong.
 - [ ] **Open one CSV in Flow CSV Viewer before leaving.** This is the check that says the session
       is good *here* instead of a week later. Each part is about 87 MB.
-- [ ] At close each CSV is renamed to `T2_SUBJ01_RESTING_<date>_<time>_pNN.csv` — all parts or
+- [ ] At close each CSV is renamed to `SUBJ01_RESTING_<date>_<time>_pNN.csv` — all parts or
       none. A file still called `<MAC>_…` means the condition was never set.
 - [ ] **Copy the whole session directory** to a second disk before leaving. Each baby has its own,
       under `captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>_<SUBJnn>/`.
@@ -153,5 +153,6 @@ Off-site, the converter turns each `.pnraw` back into the capture CSV and report
 readings compared with what the operator typed. That tool is being written; until then, keep the
 session directories exactly as they are.
 
-`VideoNest_<device id>.csv` is already written during the session, one row per frame, so the
-phone's readings can be reviewed against the photographs without waiting for anything.
+`reference_spo2.csv` is already written during the session: the phone's readings and yours, one
+row each, side by side, so the phone's can be reviewed against the photographs — with what you
+typed at that same minute right beside them — without waiting for anything.

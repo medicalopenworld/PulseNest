@@ -20,7 +20,7 @@ window geometry.
 
 Layout, from fleet_ppg_viewer.py with three changes Alex asked for:
   * the bedside numbers (SpO2, HR3, the heart) between plot and table are gone -- the reference
-    numbers in a T2 session are read off the COMMERCIAL monitor, and a big number of our own
+    numbers in a session are read off the COMMERCIAL monitor, and a big number of our own
     beside the entry box invites copying it;
   * a control panel to the right of each SIGNAL STATS table: the values that do not change
     during the session (subject, references, condition, a note line), then the reading entry;

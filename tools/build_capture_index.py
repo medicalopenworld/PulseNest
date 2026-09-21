@@ -48,7 +48,7 @@ INDEX_FIELDS = [
 ]
 
 TRUTH_FIELDS = [
-    "file", "truth", "condition", "subject_code",
+    "file", "condition", "subject_code",
     "truth_hr_bpm", "truth_spo2_pct", "truth_beats",
     "usable_from_s", "consent", "notes", "name_hint",
 ]
@@ -184,7 +184,6 @@ def parse_capture(path):
 
 # ---------------------------------------------------------------- truth seeding
 
-TIER_RE = re.compile(r"^(T[0-3])_")
 BPM_RE = re.compile(r"(\d+)\s*BPM", re.IGNORECASE)
 SPO2_RE = re.compile(r"(\d+)\s*SPO2", re.IGNORECASE)
 
@@ -197,16 +196,13 @@ def seed_truth_row(fname):
     row["file"] = fname
 
     hints = []
-    m = TIER_RE.match(fname)
-    if m:
-        row["truth"] = m.group(1)          # only trusted when the convention was actually applied
     m = BPM_RE.search(fname)
     if m:
         hints.append("bpm=" + m.group(1))
     m = SPO2_RE.search(fname)
     if m:
         hints.append("spo2=" + m.group(1))
-    if "SIMUL" in fname.upper() or fname.upper().startswith("T1_SIM"):
+    if "SIMUL" in fname.upper() or fname.upper().startswith("SIM_"):
         hints.append("looks like simulator")
     if "PHOTOTHERAPY" in fname.upper():
         hints.append("phototherapy")
@@ -273,9 +269,9 @@ def main():
         if len(skipped) > 5:
             print("    ... and %d more" % (len(skipped) - 5))
 
-    missing = [r["file"] for r in out_rows if not r.get("truth")]
+    missing = [r["file"] for r in out_rows if not r.get("condition")]
     if missing:
-        print("\n%d captures still have no truth class -- fill truth.csv by hand:" % len(missing))
+        print("\n%d captures still have no condition -- fill truth.csv by hand:" % len(missing))
         for m in missing[:10]:
             print("   ", m)
         if len(missing) > 10:
