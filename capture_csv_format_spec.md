@@ -528,11 +528,31 @@ Three homes were considered:
 | Rows in `session_events.csv` | ~2 900 rows an hour would drown the handful of things a person typed, and change that file's character from "what someone said" to "a data stream" |
 | **Its own `ref_videonest.csv`, live** | **Recommended.** Same columns §10 already defines (`t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms, checksum_ok`), one row per frame, written during the session so the cot side can see it. Opens in the same viewer as everything else |
 
-**The question this leaves, and it is a real one.** A `--board`-filtered session still records the
-phone — verified. So with one window per baby, three sessions each keep a copy of a reference that
-belongs to **one** baby, because the phone is pointed at one monitor. Whatever is decided about
-the file, the phone has to be attributable: either a `--videonest <id>` alongside `--board`, or a
-binding from phone id to subject. **Not decided.**
+**Decided 2026-09-21: its own file, written live.** Alex's reason is better than the one above —
+a file of its own is what lets the operator **review and correct** the readings afterwards against
+the recorded photographs, and only once corrected are they fit to check or calibrate the library's
+SpO2 estimate against.
+
+That review has a consequence worth fixing before a line is written: **the converter regenerates
+`ref_videonest.csv` from the `.pnraw`** (its acceptance test is byte-for-byte equality with the
+live writer), so a correction written into that file is destroyed the first time anyone runs it.
+This is the `index.csv` / `truth.csv` split Alex designed on 2026-09-05, and the same rule applies:
+what a machine regenerates never shares a file with what a person authored. So corrections, **if
+they are ever needed** — Alex, 2026-09-21: "I hope it never is" — go in a separate hand-authored
+file holding only the rows that changed. Kept as a provision, not built. Two files then also give
+the OCR error rate for nothing, which is what decides whether VideoNest can be trusted next time.
+
+**Finding the photograph is manual and needs no machinery.** VideoNest names its frames
+`VideoNest_frame_<phone id>_<YYYYMMDD>_<HHMMSS>_<ms>.jpg` — the phone's own local clock to the
+millisecond — so a directory listing sorted by name is sorted by time and the operator finds the
+instant by eye. The photographs stay on the phone and never pass through the hub.
+
+**Still open.** A `--board`-filtered session records the phone anyway — verified — so with one
+window per baby, three sessions each keep a copy of a reference that belongs to **one** baby,
+since the phone points at one monitor. The phone has to become attributable: a `--videonest <id>`
+alongside `--board`, or a binding from phone id to subject. Also unfiled: VideoNest writes **its
+own CSV on the phone** (the `videonest_csv` reference), a third copy of the same readings that
+nothing here has yet had to reconcile.
 
 ### 4. Then the format itself
 
