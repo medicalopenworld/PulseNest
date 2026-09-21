@@ -6,7 +6,7 @@ Two files, deliberately separate (see captures/CAPTURE_SET_SPEC.md section 2.5):
   captures/index.csv   DERIVED  - everything readable from the capture itself (the '#' header,
                                   the row count, the file hash). Regenerated from scratch on
                                   every run. Never edit by hand; edits are lost.
-  captures/truth.csv   AUTHORED - everything only a person knows (truth class, condition, ground truth,
+  captures/truth.csv   AUTHORED - everything only a person knows (condition, ground truth,
                                   consent, notes). Rows are ADDED for new captures and existing
                                   rows are never modified, so manual work is safe across runs.
 

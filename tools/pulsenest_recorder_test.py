@@ -359,8 +359,8 @@ try:
           or any("part=1" in ln for ln in open(a.csv_paths[0], encoding="utf-8").read().split("\n")[:8]))
 
     # session metadata only a person knows (spec section 7), typed instead of hand-edited
-    # Which phone is filming THIS cot. It declares, it does not filter: every phone on the wire
-    # reaches every session, and VideoNest_<id>.csv already keeps their rows apart by name.
+    # Which phone is filming THIS cot. Every phone on the wire reaches every session; only the
+    # declared one writes rows into reference_spo2.csv, and its id is on every row.
     check("[7] videonest names the phone that is this baby's reference",
           rec.console("videonest J6plusACM") == "videonest = J6plusACM"
           and rec.videonest_id == "J6plusACM")

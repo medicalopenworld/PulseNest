@@ -191,7 +191,7 @@ COMMAND_HELP = {
         "says which one is this baby's reference; it goes into session.json and into an event.\n"
         "\n"
         "It declares, it does not filter: every phone's frames are still recorded, because\n"
-        "VideoNest_<id>.csv carries the device in its name so nothing can be mixed up, and\n"
+        "reference_spo2.csv carries the device id in every phone row, so nothing can be mixed up, and\n"
         "throwing away data already in hand to tidy a directory is the wrong trade.\n"
         "\n"
         "With no argument it lists the device ids seen so far.",
@@ -611,9 +611,9 @@ class Recorder:
         if subject and self.want_subject is None:
             raise ValueError(f"{subject!r} is not a subject code (SUBJ01, SUBJ12, ...)")
         self.ignored = set()          # IPs of boards this session is not recording
-        # Which phone is THIS baby's reference. Every phone on the wire is still recorded --
-        # VideoNest_<id>.csv carries the device in its name, so nothing can be mixed up -- but
-        # only one of them is pointed at this baby's monitor, and session.json has to say which.
+        # Which phone is THIS baby's reference. Every phone on the wire is still recorded raw,
+        # but only the declared one writes rows into reference_spo2.csv: one of them is pointed
+        # at this baby's monitor, and session.json has to say which.
         self.videonest_id = videonest or None
         # The tag is not decoration: three windows launched in the same minute would otherwise
         # share a directory and overwrite each other's session.json.

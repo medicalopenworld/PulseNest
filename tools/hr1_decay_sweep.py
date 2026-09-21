@@ -73,7 +73,7 @@ WARMUP_S   = 10.0
 HR_TOL_BPM = 3.0            # ISO 80601-2-61 accuracy limit
 
 # Truth rate in the filename. CAPTURE_SET_SPEC.md §2.4 specifies a token ending in BPM
-# ("T1_SIM_PHOTOTHERAPY_60BPM_96SPO2_..."); the earlier MS100 files use <N>HR. Accept both.
+# ("SIM_PHOTOTHERAPY_60BPM_96SPO2_..."); the earlier MS100 files use <N>HR. Accept both.
 TRUTH_RE   = r"_(\d+)(?:BPM|HR)_"
 
 TAU_GRID   = (1.0, 2.0, 3.0, 5.0, 8.0, 13.0, 20.0)
