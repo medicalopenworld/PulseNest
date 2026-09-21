@@ -102,9 +102,9 @@ def subjects(path=None):
 
     Returns {} when the file is absent, which a clone of this repository legitimately is.
 
-    `skin` is a Monk Skin Tone letter A-J. Melanin absorbs red light, one of the two wavelengths
-    the ratio is built from, so pigmentation shifts the reading -- most at low saturation. A set
-    whose subjects all have similar skin cannot show that bias at all.
+    `skin` is one of "light", "medium", "dark", or empty. Melanin absorbs red light, one of the
+    two wavelengths the ratio is built from, so pigmentation shifts the reading -- most at low
+    saturation. A set whose subjects all have similar skin cannot show that bias at all.
     """
     path = path or SUBJECTS_PATH
     if not os.path.exists(path):
@@ -125,22 +125,16 @@ def subjects(path=None):
 
 
 def pigmentation_category(subject_row):
-    """light | medium | dark, or None when nobody has looked yet.
+    """"light" | "medium" | "dark", or None when the column is blank or misspelled.
 
-    The three bands are the ones ISO 80601-2-61:2026 uses, borrowed because they are as good a
-    split as any and already thought through -- not because anything here is being certified.
+    Barely more than reading the field, and that is the point: the file holds the answer in
+    words, so there is nothing to look up and nothing to remember. What this adds is that a
+    typo comes back as None instead of silently becoming a category, and that unknown is never
+    quietly treated as light -- a set that merely looks light-skinned because nobody looked is
+    worse than one that admits the gap.
     """
-    mst = ((subject_row or {}).get("skin") or "").strip().upper()[:1]
-    # Tuples, not `in "ABC"`: the empty string is a substring of every string, so a subject with
-    # no pigmentation recorded came back "light" -- the worst possible default, since a set that
-    # looks light-skinned when it is simply unmeasured is exactly the gap ISO asks us to close.
-    if mst in ("A", "B", "C"):
-        return "light"
-    if mst in ("D", "E", "F", "G"):
-        return "medium"
-    if mst in ("H", "I", "J"):
-        return "dark"
-    return None
+    skin = ((subject_row or {}).get("skin") or "").strip().lower()
+    return skin if skin in ("light", "medium", "dark") else None
 
 
 def select(truth=None, condition=None, min_duration_s=None, requires_config=False,

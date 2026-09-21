@@ -24629,3 +24629,17 @@ la columna del nombre y la descarta, asi que ningun llamante puede sostenerla. V
 `code  person  age  skin`. `age` en anos para un adulto o `Nd` para dias de un recien nacido.
 `skin` una letra Monk Skin Tone A-J a ojo, que no necesita instrumento. Se cita el colorimetro
 solo por si algun dia aparece.
+
+## 2026-09-21 - consigna nueva y la piel en palabras
+
+**Consigna de Alex:** "no anadas o inventes datos/ficheros que no te he pedido a no ser que tengas
+un motivo muy claro y yo te de mi visto bueno". Viene de `subjects.csv`, creado y borrado en un
+dia. Cada fichero y cada columna que invento es mantenimiento suyo para siempre. Guardado en
+`feedback_no_unrequested_files_or_data`. Ojo a no confundirla con la anterior: si algo **pedido**
+no tiene contrapartida, hacerlo sin preguntar; lo que necesita visto bueno es lo **no pedido**.
+
+**La columna `skin` pasa de letra a palabra.** Alex: "no pienso esforzarme en recordar que
+significa cada letra". Tenia razon: la escala Monk son diez letras para un fichero que se edita
+dos veces al ano, y a ojo la resolucion honesta son tres niveles. Ahora `light | medium | dark`.
+`pigmentation_category()` queda casi trivial y esa es la idea; lo unico que aporta es que una
+errata devuelve None en vez de convertirse en categoria, y que en blanco nunca es "light".
