@@ -188,8 +188,6 @@ check("the effective list drops the withdrawn readings; the recorder still has t
 row.note.setText("probe on left foot")
 row._note_entered()
 check("a note is attributed to the subject and the box clears", row.note.text() == "")
-win.consent.setCurrentText("obtained")
-check("consent is a session value and reaches the recorder", rec.consent == "obtained")
 win.plots.setChecked(False)
 check("PLOTS off hides the waveform and leaves everything else recording",
       not win.plots_on and not row.plot_w.isVisible())

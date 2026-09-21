@@ -554,15 +554,6 @@ class RecorderWindow(QtWidgets.QMainWindow):
             return w
         field("LOCATION", self.rec.site)
         field("OPERATOR", self.rec.operator or "-")
-        h.addWidget(QtWidgets.QLabel("CONSENT"))
-        self.consent = QtWidgets.QComboBox()
-        self.consent.addItems(["pending", "obtained", "n/a"])
-        self.consent.setCurrentText(self.rec.consent)
-        self.consent.setToolTip("Must be `obtained` before anything from this session leaves the "
-                                "laptop. `n/a` is a bench run with no human subject.")
-        self.consent.currentTextChanged.connect(lambda t: self.command(f"consent {t}"))
-        h.addWidget(self.consent)
-        h.addSpacing(16)
         self.disk = QtWidgets.QLabel()
         h.addWidget(self.disk)
         h.addStretch(1)

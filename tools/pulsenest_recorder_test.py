@@ -283,13 +283,10 @@ try:
     check("[7] reference monitor: model, averaging (numeric) and ITS probe site",
           a.reference == {"make_model": "Masimo Radical-7", "averaging_s": 8.0,
                           "probe_site": "right hand", "notes": ""}, str(a.reference))
-    check("[7] consent is state, and only the three documented values",
-          rec.console("consent obtained") == "consent = obtained" and rec.consent == "obtained"
-          and rec.console("consent maybe").startswith("usage:"))
     # help: the list, one command's detail, and the check that keeps the two in step
     listed = rec.console("help")
     check("[9] help lists every command with its usage and a summary",
-          all(c in listed for c in ("spo2", "mark", "ref", "consent", "status", "quit"))
+          all(c in listed for c in ("spo2", "mark", "ref", "truth", "status", "quit"))
           and "help <command>" in listed, listed[:60])
     one = rec.console("help mark")
     check("[9] help <command> gives usage, summary and the reasoning behind it",
@@ -456,8 +453,8 @@ try:
               for p in a.csv_paths) == srcA["csv_rows"], str(srcA["csv_rows"]))
     check("[7] session.json: schema, closed with drift, operator", sj["schema"] == "pulsenest_session/1"
           and sj["closed"] is not None and sj["closed"]["clock_drift_us"] == 0 and sj["operator"] == "AC")
-    check("[7] session.json carries the typed metadata and the consent state",
-          srcA["truth"] == "T2" and srcA["condition"] == "RESTING" and sj["consent"] == "obtained"
+    check("[7] session.json carries the typed metadata",
+          srcA["truth"] == "T2" and srcA["condition"] == "RESTING"
           and srcA["reference_monitor"]["averaging_s"] == 8.0
           and srcA["reference_monitor"]["probe_site"] == "right hand",
           str(srcA.get("reference_monitor")))

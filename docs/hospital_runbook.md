@@ -64,7 +64,9 @@ Then, in order:
       `ref SUBJ01 model Masimo Radical-7`
       `ref SUBJ01 avg 8`
       `ref SUBJ01 site right hand`
-- [ ] **Consent**: `consent obtained`
+- [ ] **Consent**: obtained before the session, on paper, and written into the
+      `consent` column of `captures/truth.csv` afterwards. The recorder does not ask and
+      does not check.
 - [ ] **Clock anchor**: film the laptop clock with the phone for a few seconds, and while
       filming type `anchor`. This is what ties the video to the recording without trusting that
       two devices agree.

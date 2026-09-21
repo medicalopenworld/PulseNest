@@ -345,7 +345,6 @@ session: the part no machine can produce). Proposed shape:
     { "kind": "videonest", "ips": [...], "app_version": "...", "frame_format": "VN1",
       "watching_subject": "SUBJ01", "files": [ "raw/aux_vn_192.168.137.45_0001.pnraw" ] }
   ],
-  "consent": "pending",                 // pending | obtained | n/a  (CAPTURE_SET_SPEC §2.7)
   "notes": ""
 }
 ```
@@ -518,7 +517,11 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
   either** — not even `session.json`, which names sites and operators.
 * VideoNest's photos are part of the same body of data: same storage rules, and the phone's
   cloud sync must be off before the campaign.
-* `consent` is recorded per session and must be `obtained` before any capture leaves the laptop.
+* **Consent is not a field of this tool (removed 2026-09-21).** It was a session state with a
+  command and a dropdown, none of which enforced anything, and Alex had not asked for it. It lives
+  where he put it in the first place: the `consent` column of `captures/truth.csv`
+  (`CAPTURE_SET_SPEC` §2.5, §2.7), filled in by hand, away from the cot side. A dropdown nobody is
+  blocked by is a label that makes a tool look careful without making it careful.
 
 ---
 
@@ -566,11 +569,11 @@ What the implementation fixed in this document's wording, or added:
   `status` and fields in `session.json`. The authoritative per-frame check stays with the CSV
   writer (`capture_csv_format_spec` R12a); this is situational awareness at the cot side.
 * **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`, `truth`,
-  `cond`, `ref SUBJnn model|avg|site|note` and `consent`. Each writes a **`META` event** (a kind
+  `cond`, `refs` and `ref SUBJnn model|avg|site|note`. Each writes a **`META` event** (a kind
   added to §6's list) as well as updating `session.json`, so the metadata is auditable and
   survives in the `.pnraw` even if `session.json` is lost. `ref` covers the block §7 calls
   non-negotiable: the commercial monitor's model, its averaging in seconds and **its** probe
-  site. `consent` is session state (`obtained | pending | n/a`), no longer the literal
+  site. literal
   `"pending"`.
 * **A runbook for the person at the cot side**: `docs/hospital_runbook.md` — the order of
   commands at the start, what to type during the session, how to close it, and a table of what
@@ -597,7 +600,7 @@ What the implementation fixed in this document's wording, or added:
   command — help that drifts from the code is worse than none.
 * **Who an event belongs to, and where its copies go** (Alex's question, 2026-09-20). Every
   event carries a `subject` and a `board_mac`. `spo2` and `site` always name a subject; `truth` and
-  `cond` take an optional trailing one; `anchor` and `consent` are session-wide by nature. **`mark`
+  `cond` take an optional trailing one; `anchor` is session-wide by nature. **`mark`
   and `note` now take an optional LEADING `SUBJnn`** — `mark SUBJ02 nappy change` is attributed,
   `mark phototherapy on` stays session-wide (`subject=*`, `board_mac=*`). Before this the only way
   to say which baby a mark concerned was to write it in the free text, where no query will ever

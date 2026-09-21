@@ -27,7 +27,6 @@ with no GUI at all):
                               the commercial monitor beside that baby: model, averaging in
                               seconds, and ITS probe site -- pre- vs postductal differ in a
                               neonate, and an unrecorded difference is read later as our error
-    consent obtained          section 11: required before anything leaves the laptop
     help [command]            the list, or the detail of one: `help mark`
     status                    one line per source: datagrams, bytes, last seen
     q | quit                  close the session (Ctrl+C does the same)
@@ -237,12 +236,6 @@ COMMAND_HELP = {
         "`avg` and `site` are not bureaucracy. The averaging sets the window our own SpO2 has to\n"
         "be averaged over before the two numbers can be compared at all; the site decides whether\n"
         "a difference is physiology or error (see `help site`).",
-    ),
-    "consent": (
-        "consent obtained|pending|n/a",
-        "consent state for this session",
-        "Must be `obtained` before anything from this session leaves the laptop. `n/a` is for a\n"
-        "bench run with no human subject.",
     ),
     "status": (
         "status",
@@ -623,7 +616,6 @@ class Recorder:
         self.csv_errors = 0
         self.stopped = False
         self.stop_reason = None
-        self.consent = "pending"     # section 11: must be `obtained` before anything leaves the laptop
         self._last_free_check = 0.0
         self.free_bytes = None
 
@@ -1135,13 +1127,6 @@ class Recorder:
                            note=f"reference_monitor.{field}={value}")
                 self.write_session_json()
                 return f"{subj} reference_monitor.{field} = {value}"
-            if cmd == "consent":
-                if not args or args[0].lower() not in ("obtained", "pending", "n/a"):
-                    return "usage: consent obtained|pending|n/a"
-                self.consent = args[0].lower()
-                self.event("META", note=f"consent={self.consent}")
-                self.write_session_json()
-                return f"consent = {self.consent}"
             if cmd in ("help", "?"):
                 if args:
                     what = args[0].lower().lstrip("-")
@@ -1261,7 +1246,6 @@ class Recorder:
             "sources": [s.to_json() for s in self._owners()],
             "events": self.events_written,
             "write_errors": self.errors, "csv_errors": self.csv_errors,
-            "consent": self.consent,
             "notes": "",
         }
 

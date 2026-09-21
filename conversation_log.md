@@ -24669,3 +24669,19 @@ cometer y su castigo no deberia ser un proceso nuevo.
 
 Medido con sesion real de 25 s en el banco: **16 lineas de log**, cero fallos de envio, cero
 concentradores lanzados. Dos comprobaciones nuevas en el test (38).
+
+## 2026-09-21 - `consent` fuera de la herramienta
+
+Alex: "¿que es el consent? No me gusta que anadas cosas que no te he pedido sin avisarme".
+Rastreado: el **concepto es suyo**, de `captures/CAPTURE_SET_SPEC.md` commit cd99912 del 5 de
+septiembre (columna `consent` en `truth.csv` y la regla "record consent for any capture that
+leaves the lab"). **Lo mio era la forma**: estado de sesion con tres valores, comando de consola,
+evento META y desplegable en la barra. No lo anuncie: aparece en el log del 20 de septiembre
+enterrado en una lista de comandos, y enterrarlo en una lista no es avisar.
+
+**Quitado** de `pulsenest_recorder.py` y de `pulsenest_recorder_gui.py`: campo, comando, entrada
+de ayuda, clave de `session.json` y desplegable. **No tocada** la columna de `truth.csv` ni
+`build_capture_index.py`, que son suyos. El guion de hospital pasa a decir que el consentimiento
+se obtiene antes, en papel, y se escribe a mano en `truth.csv`; la herramienta ni pregunta ni
+comprueba. Un desplegable que no bloquea nada es una etiqueta que hace parecer cuidadosa a una
+herramienta sin hacerla cuidadosa. 92 y 37 comprobaciones.
