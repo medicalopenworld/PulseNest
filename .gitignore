@@ -81,3 +81,5 @@ tools/host_tests/build/
 # Faulthandler log of the PPG viewer (per machine, like faulthandler.log)
 tools/fleet_ppg_viewer_faulthandler.log
 tools/fleet_ppg_viewer.ini
+tools/pulsenest_recorder_gui.ini
+tools/pulsenest_recorder_gui_faulthandler.log

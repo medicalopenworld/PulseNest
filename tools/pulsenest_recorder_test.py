@@ -232,6 +232,15 @@ try:
           rec.console("truth T7").startswith("truth must be one of") and a.truth == "T0")
     check("[7] a bench session starts with no truth class at all", rec.default_truth is None)
     rec.console("truth oximeter")
+    check("[7] refs: the set is stored in order and the truth class follows from it",
+          rec.console("refs SUBJ01 operator,videonest_udp").startswith("refs=videonest_udp,operator truth=T2")
+          and a.truth_sources == ["videonest_udp", "operator"] and a.truth == "T2")
+    check("[7] refs: a simulator alone is T1, none is T0, an unknown word is refused",
+          rec.console("refs SUBJ01 simulator").endswith("truth=T1 on SUBJ01")
+          and rec.console("refs SUBJ01 none").startswith("refs=none truth=T0")
+          and rec.console("refs SUBJ01 photos").startswith("unknown reference photos")
+          and a.truth_sources == [])
+    rec.console("truth oximeter")
     check("[7] condition narrowed to one subject leaves the others alone",
           rec.console("cond resting SUBJ01").startswith("cond=RESTING on")
           and a.condition == "RESTING" and b.condition is None)

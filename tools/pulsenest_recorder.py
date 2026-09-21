@@ -183,6 +183,19 @@ COMMAND_HELP = {
         "A code or a word, either is accepted. A hospital campaign is T2, and a session whose\n"
         "site is HOSPnn starts at T2 so the command is there to correct, not to remember.",
     ),
+    "refs": (
+        "refs SUBJ01 <src>[,<src>...]|none",
+        "which references exist for that baby; the truth class follows",
+        "The set of references recorded beside that baby, any combination of:\n"
+        "  simulator           the MS100 is the subject\n"
+        "  videonest_udp       VideoNest is sending $VN1 frames to the hub\n"
+        "  videonest_csv       VideoNest is logging its own CSV on the phone\n"
+        "  videonest_pictures  the phone is photographing the monitor\n"
+        "  operator            you are typing `spo2` readings\n"
+        "The T-class is derived, never typed: any reference beside the baby is T2, a simulator\n"
+        "alone is T1, none is T0. `truth` still exists to force a class, e.g. T3 for an arterial\n"
+        "study, which no tick box can claim.",
+    ),
     "cond": (
         "cond RESTING [SUBJ01]",
         "condition; no subject = every board",
@@ -240,6 +253,21 @@ COMMAND_HELP = {
 # CAPTURE_SET_SPEC 2.2. The number climbs with the quality of the evidence (Alex, 2026-09-21:
 # the original scale had T0 = arterial and T3 = none, which reads backwards).
 TRUTH_CLASSES = ("T0", "T1", "T2", "T3")
+# What the operator actually knows and ticks (Alex, 2026-09-21: "the T codes add almost nothing;
+# what carries information is WHICH references exist, and they are not exclusive"). The class
+# is derived from the set, never typed: any reference beside the baby is T2, a simulator alone is
+# T1, nothing is T0. T3 (arterial) cannot come from this list -- it is a study, not a tick box.
+TRUTH_SOURCES = ("simulator", "videonest_udp", "videonest_csv", "videonest_pictures", "operator")
+
+
+def truth_from_sources(sources):
+    srcs = set(sources)
+    if srcs & {"videonest_udp", "videonest_csv", "videonest_pictures", "operator"}:
+        return "T2"
+    if "simulator" in srcs:
+        return "T1"
+    return "T0"
+
 TRUTH_WORDS = {"none": "T0", "simulator": "T1", "sim": "T1", "oximeter": "T2", "ecg": "T2",
                "reference": "T2", "arterial": "T3"}
 
@@ -462,6 +490,7 @@ class Source:
         self.subject = None
         self.probe_site = None
         self.truth = None                     # CAPTURE_SET_SPEC section 2.2: T0 none .. T3 arterial
+        self.truth_sources = []               # subset of TRUTH_SOURCES, in that order
         self.condition = None                 # RESTING, FEEDING, ...
         # The commercial monitor this baby is also wearing. Two of these are not bureaucracy
         # (spec section 7): `probe_site`, because preductal (right hand) and postductal (foot)
@@ -492,6 +521,7 @@ class Source:
         if self.kind == "board":
             d["mac"] = self.mac
             d["truth"] = self.truth
+            d["truth_sources"] = list(self.truth_sources)
             d["condition"] = self.condition
             d["reference_monitor"] = self.reference
             d["board_rev"] = self.ident.get("board")
@@ -897,6 +927,27 @@ class Recorder:
                            note=f"subject={s.subject} board={s.label()}")
                 self.write_session_json()
                 return f"{s.label()} -> {s.subject}"
+            if cmd == "refs":
+                # `refs SUBJ01 videonest_udp,operator` -- the set of references that exist for
+                # that baby; `refs SUBJ01 none` clears it. The T-class follows from the set.
+                if len(args) != 2 or not _SUBJ_RE.match(args[0]):
+                    return "usage: refs SUBJ01 <src>[,<src>...]|none   (" + ",".join(TRUTH_SOURCES) + ")"
+                subj = args[0].upper()
+                wanted = [] if args[1].lower() == "none" else args[1].lower().split(",")
+                bad = [w for w in wanted if w not in TRUTH_SOURCES]
+                if bad:
+                    return "unknown reference " + ", ".join(bad) + "; known: " + ", ".join(TRUTH_SOURCES)
+                targets = [t for t in self._owners() if t.kind == "board" and t.subject == subj]
+                if not targets:
+                    return f"no board for {subj}"
+                ordered = [x for x in TRUTH_SOURCES if x in wanted]
+                for t in targets:
+                    t.truth_sources = list(ordered)
+                    t.truth = truth_from_sources(ordered)
+                self.event("META", subject=subj, board_mac=self._mac_for_subject(subj),
+                           note=f"refs={','.join(ordered) or 'none'} truth={targets[0].truth}")
+                self.write_session_json()
+                return f"refs={','.join(ordered) or 'none'} truth={targets[0].truth} on {subj}"
             if cmd in ("truth", "cond"):
                 # `truth T2` / `cond RESTING` apply to every board; a trailing SUBJnn narrows it.
                 if not args:
@@ -963,6 +1014,11 @@ class Recorder:
             return f"unknown command {cmd!r} — type `help`"
         except Exception as exc:
             return f"error: {exc}"
+
+    def owners(self):
+        """Every distinct source, boards and phones, in first-seen order. Public: the GUI
+        draws from this and must not reach for a private name."""
+        return self._owners()
 
     def _owners(self):
         seen, out = set(), []
