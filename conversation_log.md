@@ -24816,3 +24816,25 @@ que no emite no aparece, que es la respuesta a "¿esta funcionando VideoNest?" s
 Probado en el banco: `videonest_id=J6plusACM`, 17.565 filas de placa, 30 de VideoNest, 0 malas, y
 la clase salio **T2 derivada**, sin marcar nada. 110 y 39 comprobaciones; las otras cuatro suites
 intactas.
+
+## 2026-09-22 - guion reescrito para la ventana por bebe
+
+Reescrito `docs/hospital_runbook.md` entero: mandaba lanzar `pulsenest_recorder.py --site HOSP01`,
+o sea la herramienta anterior con un parametro que ya no existe. Ahora son tres ventanas, una por
+bebe, con `--location --operator --board --subject --videonest`, y la seccion de arranque, la de
+durante y la de cierre describen los controles reales (RECORD, la lista de anotaciones, DELETE
+LAST, CLOCK ANCHOR, PLOTS, STOP SESSION). Verificado uno a uno que cada parametro y cada rotulo
+citado existe de verdad en el codigo.
+
+Cambios de contenido, no solo de nombres: el disco es **17 MB/min por placa medidos** (~1 GB/h);
+la etiqueta del movil ya no es un `VN01` inventado sino **el device id que el propio VideoNest
+pone en sus tramas y en sus fotos**; se anade fotografiar la pantalla de ajustes de SpO2 del
+monitor comercial, porque el promediado no queda registrado en ningun otro sitio y es lo que
+decide si las dos SpO2 se pueden comparar; y la tabla de averias incluye por primera vez la caida
+de pyqtgraph, que ahora solo se lleva a un bebe.
+
+**Ensayo del guion, y un fallo que destapo.** Tres ventanas y un movil: las tres salieron T2,
+porque la derivacion de la clase contaba **todas** las filas de VideoNest del cable. El movil
+enfoca un monitor; los otros dos bebes no tenian referencia automatica y su captura la reclamaba.
+Corregido: solo cuentan las filas del movil **declarado** como referencia de ese bebe. Re-ensayado:
+SUBJ01 T2, SUBJ02 y SUBJ03 T0, con las mismas 20 filas en el cable. 111 y 39 comprobaciones.

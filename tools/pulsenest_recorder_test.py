@@ -303,6 +303,19 @@ try:
     recU.stop("t"); recU.close()
     q2 = [x for x in recU.owners() if x.kind == "board"][0]
     check("[3] one manual reading is enough to make it T2", q2.truth == "T2", str(q2.truth))
+
+    # A phone filming ANOTHER cot is not this baby's reference. Every phone on the wire reaches
+    # every session, so without this three windows and one phone came out T2 three times.
+    recW = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
+    recW.feed("10.0.0.1", CFG_8850)
+    recW.feed("10.0.0.1", M4)
+    recW.console("subject 8850 SUBJ02")
+    recW.feed("10.0.0.9", b"$VN1,1,89,0.95,2026-09-22 00:21:26.261,J6plusACM*3D\n")
+    recW.stop("t"); recW.close()
+    q3 = [x for x in recW.owners() if x.kind == "board"][0]
+    check("[3] a phone nobody declared as this baby's reference does not make it T2",
+          q3.truth == "T0" and any(x.vn_rows > 0 for x in recW.owners() if x.kind == "videonest"),
+          str(q3.truth))
     check("[3] and `truth` still forces the two a recording cannot show by itself",
           R.truth_from_recorded(0, 0) == "T0" and R.truth_from_recorded(0, 5) == "T2"
           and "T1" in R.TRUTH_WORDS.values() and "T3" in R.TRUTH_WORDS.values())

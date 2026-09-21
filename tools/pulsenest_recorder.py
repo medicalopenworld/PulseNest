@@ -1466,8 +1466,12 @@ class Recorder:
                 except Exception as exc:
                     self.errors += 1
                     self.log.error("close failed for %s: %r", src.label(), exc)
-        # The class, from what actually arrived rather than from what anyone declared.
-        vn_rows = sum(x.vn_rows for x in self._owners() if x.kind == "videonest")
+        # The class, from what actually arrived rather than from what anyone declared -- but only
+        # from THIS baby's reference. Every phone on the wire reaches every session, and one that
+        # is filming another cot is not a reference for this one: counting it made three windows
+        # with one phone come out T2 three times (rehearsal, 2026-09-22).
+        vn_rows = sum(x.vn_rows for x in self._owners()
+                      if x.kind == "videonest" and x.vn_id and x.vn_id == self.videonest_id)
         for src in self._owners():
             if src.kind == "board" and not src.truth:
                 src.truth = truth_from_recorded(len(self.readings(src.subject)), vn_rows)
