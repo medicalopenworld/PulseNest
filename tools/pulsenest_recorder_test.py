@@ -223,8 +223,15 @@ try:
           "(session-wide)" in rec.console("mark subject moved"), "")
 
     # session metadata only a person knows (spec section 7), typed instead of hand-edited
-    check("[7] tier with no subject applies to every board",
-          rec.console("tier T2").startswith("tier=T2 on") and a.tier == "T2" and b.tier == "T2")
+    check("[7] truth with no subject applies to every board",
+          rec.console("truth T2").startswith("truth=T2 on") and a.truth == "T2" and b.truth == "T2")
+    check("[7] truth takes a word and stores the code; the scale climbs with the evidence",
+          rec.console("truth none SUBJ01").startswith("truth=T0 on") and a.truth == "T0"
+          and R.TRUTH_WORDS["arterial"] == "T3" and R.TRUTH_WORDS["oximeter"] == "T2")
+    check("[7] an unknown truth class is refused, not stored",
+          rec.console("truth T7").startswith("truth must be one of") and a.truth == "T0")
+    check("[7] a bench session starts with no truth class at all", rec.default_truth is None)
+    rec.console("truth oximeter")
     check("[7] condition narrowed to one subject leaves the others alone",
           rec.console("cond resting SUBJ01").startswith("cond=RESTING on")
           and a.condition == "RESTING" and b.condition is None)
@@ -399,7 +406,7 @@ try:
     check("[7] session.json: schema, closed with drift, operator", sj["schema"] == "pulsenest_session/1"
           and sj["closed"] is not None and sj["closed"]["clock_drift_us"] == 0 and sj["operator"] == "AC")
     check("[7] session.json carries the typed metadata and the consent state",
-          srcA["tier"] == "T2" and srcA["condition"] == "RESTING" and sj["consent"] == "obtained"
+          srcA["truth"] == "T2" and srcA["condition"] == "RESTING" and sj["consent"] == "obtained"
           and srcA["reference_monitor"]["averaging_s"] == 8.0
           and srcA["reference_monitor"]["probe_site"] == "right hand",
           str(srcA.get("reference_monitor")))

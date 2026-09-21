@@ -21,7 +21,7 @@ with no GUI at all):
     site SUBJ01 <text>        probe site of OUR probe for a subject ("left foot")
     anchor                    CLOCK_ANCHOR: written when the laptop clock is being filmed
     subject <MAC suffix> SUBJ01   bind a board to a subject (a REF_SPO2 then carries its MAC)
-    tier T2 [SUBJ01]          CAPTURE_SET_SPEC tier; no subject = every board
+    truth T2 [SUBJ01]         what the capture can be checked against (T0..T3 or a word)
     cond RESTING [SUBJ01]     condition; no subject = every board
     ref SUBJ01 model|avg|site|note <value>
                               the commercial monitor beside that baby: model, averaging in
@@ -168,13 +168,20 @@ COMMAND_HELP = {
         "Ties one board to one coded subject, by the last four hex digits of its MAC (the `status`\n"
         "line shows them). Do this first: a `spo2` reading carries the bound board's MAC, and the\n"
         "CSV is renamed at close to T2_SUBJ01_RESTING_<date>_<time>.csv only when the subject,\n"
-        "the tier and the condition are all known.",
+        "the truth class and the condition are all known.",
     ),
-    "tier": (
-        "tier T2 [SUBJ01]",
-        "capture tier; no subject = every board",
-        "CAPTURE_SET_SPEC 2.2: T1 simulator, T2 human subject with a commercial reference, T3\n"
-        "human subject with no reference. A hospital campaign is T2.",
+    "truth": (
+        "truth T2|oximeter [SUBJ01]",
+        "what this capture can be checked against; no subject = every board",
+        "The class of reference that accompanies the capture, CAPTURE_SET_SPEC 2.2. It goes first\n"
+        "in the CSV filename so the analysis tools can tell what a capture is allowed to prove.\n"
+        "The scale climbs with the quality of the evidence:\n"
+        "  T0  none       a person and nothing to compare with -- morphology only\n"
+        "  T1  simulator  the MS100 at a programmed rate and SpO2\n"
+        "  T2  oximeter   a commercial pulse oximeter or an ECG beside the baby (also `ecg`)\n"
+        "  T3  arterial   arterial CO-oximetry; the only basis for an SpO2 calibration\n"
+        "A code or a word, either is accepted. A hospital campaign is T2, and a session whose\n"
+        "site is HOSPnn starts at T2 so the command is there to correct, not to remember.",
     ),
     "cond": (
         "cond RESTING [SUBJ01]",
@@ -230,8 +237,14 @@ COMMAND_HELP = {
 }
 
 
+# CAPTURE_SET_SPEC 2.2. The number climbs with the quality of the evidence (Alex, 2026-09-21:
+# the original scale had T0 = arterial and T3 = none, which reads backwards).
+TRUTH_CLASSES = ("T0", "T1", "T2", "T3")
+TRUTH_WORDS = {"none": "T0", "simulator": "T1", "sim": "T1", "oximeter": "T2", "ecg": "T2",
+               "reference": "T2", "arterial": "T3"}
+
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
-               "META", "SESSION_START", "SESSION_END")   # META: session metadata typed in (subject, tier, condition, reference monitor, consent)
+               "META", "SESSION_START", "SESSION_END")   # META: session metadata typed in (subject, truth, condition, reference monitor, consent)
 # `session_id` first, and it is not decoration (Alex, 2026-09-20). This is the one file in a
 # session directory that travels on its own -- it gets opened in Excel, copied, and its rows
 # pasted next to another session's to compare -- and it was the only one that could not say where
@@ -448,7 +461,7 @@ class Source:
         self.restarts = 0                     # counter went backwards: the board rebooted
         self.subject = None
         self.probe_site = None
-        self.tier = None                      # CAPTURE_SET_SPEC section 2.2: T1 | T2 | T3
+        self.truth = None                     # CAPTURE_SET_SPEC section 2.2: T0 none .. T3 arterial
         self.condition = None                 # RESTING, FEEDING, ...
         # The commercial monitor this baby is also wearing. Two of these are not bureaucracy
         # (spec section 7): `probe_site`, because preductal (right hand) and postductal (foot)
@@ -478,7 +491,7 @@ class Source:
              "subject": self.subject, "probe_site": self.probe_site}
         if self.kind == "board":
             d["mac"] = self.mac
-            d["tier"] = self.tier
+            d["truth"] = self.truth
             d["condition"] = self.condition
             d["reference_monitor"] = self.reference
             d["board_rev"] = self.ident.get("board")
@@ -511,6 +524,9 @@ class Recorder:
         stamp = _dt.datetime.fromtimestamp(t_epoch / 1e6)
         self.site = re.sub(r"[^A-Za-z0-9]", "", site.upper())[:12] or "SITE"
         self.session_id = f"{stamp:%Y%m%d_%H%M}_{self.site}"
+        # A hospital session is T2 by construction (a commercial monitor beside every baby), so
+        # start there: the `truth` command exists to correct, not to be remembered under stress.
+        self.default_truth = "T2" if self.site.startswith("HOSP") else None
         self.dir = os.path.join(out_root, self.session_id)
         self.raw_dir = os.path.join(self.dir, "raw")
         self.operator = operator
@@ -570,6 +586,7 @@ class Recorder:
         src = self.sources.get(ip)
         if src is None:
             src = self.sources[ip] = Source(ip, t_mono_us, t_epoch_us)
+            src.truth = self.default_truth
             if data.startswith(b"$VN1"):
                 src.kind = "videonest"
             self.log.info("new source %s%s", ip, " (VideoNest)" if src.kind == "videonest" else "")
@@ -739,7 +756,7 @@ class Recorder:
 
         The name is provisional: the subject is bound by a person seconds or minutes after the
         board starts streaming, so the file opens as <MAC>_<date>_<time>.csv and is renamed at
-        close to the CAPTURE_SET_SPEC 2.4 shape once tier, subject and condition are known."""
+        close to the CAPTURE_SET_SPEC 2.4 shape once truth, subject and condition are known."""
         if self.csv_mode == "off" or src.kind != "board":
             return
         stamp = _dt.datetime.fromtimestamp(t_epoch_us / 1e6).strftime("%Y%m%d_%H%M%S")
@@ -880,21 +897,26 @@ class Recorder:
                            note=f"subject={s.subject} board={s.label()}")
                 self.write_session_json()
                 return f"{s.label()} -> {s.subject}"
-            if cmd in ("tier", "cond"):
-                # `tier T2` / `cond RESTING` apply to every board; a trailing SUBJnn narrows it.
+            if cmd in ("truth", "cond"):
+                # `truth T2` / `cond RESTING` apply to every board; a trailing SUBJnn narrows it.
                 if not args:
                     return f"usage: {cmd} <value> [SUBJ01]"
-                value = args[0].upper() if cmd == "tier" else " ".join(args).upper()
+                value = args[0].upper() if cmd == "truth" else " ".join(args).upper()
                 subj = None
                 if len(args) > 1 and args[-1].upper().startswith("SUBJ"):
                     subj = args[-1].upper()
-                    value = args[0].upper() if cmd == "tier" else " ".join(args[:-1]).upper()
+                    value = args[0].upper() if cmd == "truth" else " ".join(args[:-1]).upper()
+                if cmd == "truth":
+                    value = TRUTH_WORDS.get(value.lower(), value)
+                    if value not in TRUTH_CLASSES:
+                        return ("truth must be one of " + ", ".join(TRUTH_CLASSES) + " or a word: "
+                                + ", ".join(sorted(TRUTH_WORDS)))
                 targets = [s for s in self._owners()
                            if s.kind == "board" and (subj is None or s.subject == subj)]
                 if not targets:
                     return f"no board {'for ' + subj if subj else 'yet'}"
                 for s in targets:
-                    setattr(s, "tier" if cmd == "tier" else "condition", value)
+                    setattr(s, "truth" if cmd == "truth" else "condition", value)
                 self.event("META", subject=subj or "*", note=f"{cmd}={value}")
                 self.write_session_json()
                 return f"{cmd}={value} on " + ", ".join(s.subject or s.label() for s in targets)
@@ -1056,10 +1078,10 @@ class Recorder:
         during the session is known. Provisional name kept when it is not."""
         if not src.csv_path or not os.path.exists(src.csv_path):
             return
-        if not (src.tier and src.subject and src.condition):
+        if not (src.truth and src.subject and src.condition):
             return
         stamp = os.path.basename(src.csv_path).rsplit("_", 2)[-2:]
-        name = "_".join([src.tier, src.subject, src.condition.replace(" ", "-")] + stamp)
+        name = "_".join([src.truth, src.subject, src.condition.replace(" ", "-")] + stamp)
         target = os.path.join(self.dir, name)
         try:
             os.replace(src.csv_path, target)

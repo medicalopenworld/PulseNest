@@ -52,7 +52,9 @@ Then, in order:
       listed is not being recorded.
 - [ ] **Bind each board to its baby**, using the last four hex digits of the MAC:
       `subject 8850 SUBJ01`
-- [ ] **Say what kind of session it is**: `tier T2` then `cond RESTING` (no subject = all three).
+- [ ] **Say what the babies are doing**: `cond RESTING` (no subject = all three). The truth class
+      is already T2 because the site is `HOSPnn`; `status` shows it. Change it only if a baby has
+      no commercial monitor beside it: `truth none SUBJ02`.
 - [ ] **Our probe site, per baby**: `site SUBJ01 left foot`
 - [ ] **The commercial monitor beside each baby** — the two that matter are the averaging and
       ITS probe site:

@@ -1,4 +1,4 @@
-file,tier,condition,subject_code,truth_hr_bpm,truth_spo2_pct,truth_beats,usable_from_s,consent,notes,name_hint
+file,truth,condition,subject_code,truth_hr_bpm,truth_spo2_pct,truth_beats,usable_from_s,consent,notes,name_hint
 MS100_98SPO2_100HR_20260905_220259.csv,,,,,,,,,,spo2=98
 MS100_98SPO2_120HR_20260905_220436.csv,,,,,,,,,,spo2=98
 MS100_98SPO2_140HR_20260905_220609.csv,,,,,,,,,,spo2=98

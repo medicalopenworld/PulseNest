@@ -6,7 +6,7 @@ Two files, deliberately separate (see captures/CAPTURE_SET_SPEC.md section 2.5):
   captures/index.csv   DERIVED  - everything readable from the capture itself (the '#' header,
                                   the row count, the file hash). Regenerated from scratch on
                                   every run. Never edit by hand; edits are lost.
-  captures/truth.csv   AUTHORED - everything only a person knows (tier, condition, ground truth,
+  captures/truth.csv   AUTHORED - everything only a person knows (truth class, condition, ground truth,
                                   consent, notes). Rows are ADDED for new captures and existing
                                   rows are never modified, so manual work is safe across runs.
 
@@ -48,7 +48,7 @@ INDEX_FIELDS = [
 ]
 
 TRUTH_FIELDS = [
-    "file", "tier", "condition", "subject_code",
+    "file", "truth", "condition", "subject_code",
     "truth_hr_bpm", "truth_spo2_pct", "truth_beats",
     "usable_from_s", "consent", "notes", "name_hint",
 ]
@@ -199,7 +199,7 @@ def seed_truth_row(fname):
     hints = []
     m = TIER_RE.match(fname)
     if m:
-        row["tier"] = m.group(1)          # only trusted when the convention was actually applied
+        row["truth"] = m.group(1)          # only trusted when the convention was actually applied
     m = BPM_RE.search(fname)
     if m:
         hints.append("bpm=" + m.group(1))
@@ -273,9 +273,9 @@ def main():
         if len(skipped) > 5:
             print("    ... and %d more" % (len(skipped) - 5))
 
-    missing = [r["file"] for r in out_rows if not r.get("tier")]
+    missing = [r["file"] for r in out_rows if not r.get("truth")]
     if missing:
-        print("\n%d captures still have no tier -- fill truth.csv by hand:" % len(missing))
+        print("\n%d captures still have no truth class -- fill truth.csv by hand:" % len(missing))
         for m in missing[:10]:
             print("   ", m)
         if len(missing) > 10:

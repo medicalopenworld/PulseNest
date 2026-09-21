@@ -93,21 +93,24 @@ For rhythm-transition captures (§3.2), ≥ 30 s **per stretch**. For artefact c
 
 ### 2.2 Ground truth
 
-Every capture must be classifiable into one of four tiers, and the tier must be recorded in the
-manifest (§2.5) and echoed in the filename:
+Every capture carries a **truth class**: what it can be checked against. It is recorded in the
+manifest (§2.5, column `truth`) and echoed as the first token of the filename. The number climbs
+with the quality of the evidence (scale reordered 2026-09-21; nothing had been filed under the old
+T0/T3 yet):
 
-| Tier | Source of truth | Enables |
+| Truth | Source of truth | Enables |
 |---|---|---|
-| **T0 — clinical reference** | Controlled desaturation study with arterial CO-oximetry (`SaO2`) | **The only valid basis for SpO2 calibration** — see §4 |
+| **T0 — none** | Human subject with no reference | Only agreement between algorithms and dispersion |
 | **T1 — simulator** | The MS100 programmed to a known rate and SpO2 | Absolute HR error; SpO2 *regression* only, not calibration |
 | **T2 — reference device** | A commercial pulse oximeter, or a simultaneous ECG, recorded alongside | Error against a clinical reference; ECG gives per-beat truth (§2.6) |
-| **T3 — none** | Human subject with no reference | Only agreement between algorithms and dispersion |
+| **T3 — clinical reference** | Controlled desaturation study with arterial CO-oximetry (`SaO2`) | **The only valid basis for SpO2 calibration** — see §4 |
 
-T3 captures are still useful (they carry real waveform morphology, which no simulator reproduces)
-but **cannot settle a disagreement**. Do not build a calibration on T3 alone.
+T0 captures are still useful (they carry real waveform morphology, which no simulator reproduces)
+but **cannot settle a disagreement**. Do not build a calibration on T0 alone. The tools accept a
+word in place of the code: `none`, `simulator`, `oximeter` or `ecg`, `arterial`.
 
 > **The cheapest upgrade available: record ECG alongside.** A synchronised ECG turns a human capture
-> from T3 into T2 *with beat-level truth*, which is what a peak detector actually needs to be scored
+> from T0 into T2 *with beat-level truth*, which is what a peak detector actually needs to be scored
 > (§2.6). It is the only practical way to get real truth for the two blocks where the simulator
 > cannot help — neonatal morphology (§3.1) and motion artefact (§3.3, I4/I5) — because a simulator
 > reproduces neither. Worth solving before capturing N1–N3.
@@ -143,7 +146,7 @@ suggests: **per-sample columns > the signal itself > filename > `#` header.**
 ### 2.4 Naming
 
 ```
-<TIER>_<SUBJECT-or-SIM>_<CONDITION>_<key params>_<YYYYMMDD>_<HHMMSS>.csv
+<TRUTH>_<SUBJECT-or-SIM>_<CONDITION>_<key params>_<YYYYMMDD>_<HHMMSS>.csv
 ```
 
 `T1_SIM_PHOTOTHERAPY_60BPM_96SPO2_20260905_101500.csv`
@@ -151,7 +154,7 @@ suggests: **per-sample columns > the signal itself > filename > `#` header.**
 Rules that the tooling depends on:
 * the rate token ends in `BPM` and the SpO2 token in `SPO2` — `hr1_detector_experiment.py` parses
   the true rate from the filename;
-* the tier prefix must be the first token, so T3 captures can be excluded from error metrics
+* the truth prefix must be the first token, so T0 captures can be excluded from error metrics
   automatically;
 * subject identifiers: **role or code, never a name** (`SUBJ07`, not a person). See §2.7.
 
@@ -174,7 +177,7 @@ joined on `file`, built by `tools/build_capture_index.py`:
 | Produced by | regenerated from scratch every run | hand-edited |
 | Edit by hand | **never** — edits are overwritten | always |
 | Versioned in git | no (a cache) | **yes** (irreproducible) |
-| Fields | `sha256`, `bytes`, `n_samples`, `duration_s`, `prf_hz`, `numav`, `iled*_ma`, `rf_led*`, `cf_led*`, `stg2_led*`, `ambdac_ua`, `spo2_a/b`, `n_columns`, `has_analog_state`, `has_config_header` | `tier`, `condition`, `subject_code`, `truth_hr_bpm`, `truth_spo2_pct`, `truth_beats`, `usable_from_s`, `consent`, `notes` |
+| Fields | `sha256`, `bytes`, `n_samples`, `duration_s`, `prf_hz`, `numav`, `iled*_ma`, `rf_led*`, `cf_led*`, `stg2_led*`, `ambdac_ua`, `spo2_a/b`, `n_columns`, `has_analog_state`, `has_config_header` | `truth`, `condition`, `subject_code`, `truth_hr_bpm`, `truth_spo2_pct`, `truth_beats`, `usable_from_s`, `consent`, `notes` |
 
 `index.csv` is a **queryable cache**, like a database index: if it ever disagrees with a capture's
 header, the header wins and the index is rebuilt. Nothing in it is authoritative, so nothing is
@@ -215,7 +218,7 @@ condition block in §3 needs a declared tolerance, checked automatically. Starti
 | HR, after a transition | settles within the above in ≤ *T* s (T to be fixed; the estimator windows are 8 s HR2 / 10.24 s HR3, so T cannot be smaller) | §3.2 R4/R5 |
 | SpO2 | A<sub>rms</sub> ≤ 4 % over 70–100 % | ISO 80601-2-61 — **requires T0**, see §4 |
 | Peak detection | sensitivity and positive predictive value vs. the beat annotation | needs `truth_beats` |
-| Regression | bit-identical or within a declared epsilon of the previous build | any tier |
+| Regression | bit-identical or within a declared epsilon of the previous build | any truth class |
 
 **Beat-level truth is a different thing from rate truth.** A detector can report the correct
 average rate while missing beats and inventing others in equal measure. Scoring a *detector* needs
@@ -246,7 +249,7 @@ of minors. The repository is public (`github.com/medicalopenworld/PulseNest`).
 
 ### 3.1 Neonatal morphology — **the gap that blocks a decision today**
 
-| # | Condition | Tier | Duration | Purpose |
+| # | Condition | Truth | Duration | Purpose |
 |---|---|---|---|---|
 | N1 | Preterm foot, resting, good perfusion | T2 | 90 s | Reference morphology: notch position and depth |
 | N2 | Preterm foot, low perfusion (PI < 0.5 %) | T2 | 90 s | Detector behaviour at the edge of usable signal |
@@ -263,7 +266,7 @@ measured so far comes from adults and a simulator.
 
 ### 3.2 Rhythm range — bradycardia is the untested corner
 
-| # | Condition | Tier | Duration | Purpose |
+| # | Condition | Truth | Duration | Purpose |
 |---|---|---|---|---|
 | R1 | 40 BPM steady | T1 | 65 s | Bottom of the accepted range; where the fixed refractory stops protecting against the notch |
 | R2 | 60 / 100 / 140 / 180 BPM steady | T1 | 65 s each | Coverage across the neonatal range |
@@ -273,7 +276,7 @@ measured so far comes from adults and a simulator.
 
 ### 3.3 Interference and artefact — the regime where everything fails today
 
-| # | Condition | Tier | Duration | Purpose |
+| # | Condition | Truth | Duration | Purpose |
 |---|---|---|---|---|
 | I1 | LED phototherapy on, steady | T1 | 90 s | The case where all three detectors give CV 12–30 % |
 | I2 | Phototherapy switching on/off | T1 | 90 s | Amplitude steps — what broke TERMA's global-mean threshold |
@@ -290,7 +293,7 @@ measured so far comes from adults and a simulator.
 
 ### 3.4 SpO2 range
 
-| # | Condition | Tier | Duration | Purpose |
+| # | Condition | Truth | Duration | Purpose |
 |---|---|---|---|---|
 | S1 | 100 / 96 / 90 / 85 / 80 / 75 / 70 % SpO2, steady | T1 | 65 s each | **Regression and linearity only** — not calibration (§4) |
 | S2 | Desaturation 96 → 85 % | T1 | 60 s | Response time; ISO 80601-2-61 §201.12 requirements |
@@ -301,7 +304,7 @@ stopping at 80 % leaves the bottom of the declared range unmeasured.
 
 ### 3.5 Hardware sweep (regression, not physiology)
 
-| # | Condition | Tier | Duration | Purpose |
+| # | Condition | Truth | Duration | Purpose |
 |---|---|---|---|---|
 | H1 | Same signal at RF 100 k / 250 k / 500 k | T1 | 65 s each | HGAC and gain-change transients |
 | H2 | Same signal at PRF 500 / 1000 Hz | T1 | 65 s each | The catalogue's second rate (spec §7.4) |
@@ -319,9 +322,9 @@ resting on the wrong data:
 * **Verification** (does it meet spec?) — T0/T1/T2, since it needs a known truth, and only against
   the acceptance criteria of §2.6.
 * **HR calibration** (thresholds, refractory, filter cutoffs) — T0/T1/T2. **Never T3.**
-* **SpO2 calibration** (fitting `spo2_a`/`spo2_b`) — **T0 only.**
-* **Comparison between algorithms** — any tier: a shared input is enough.
-* **Regression** (does today's build match yesterday's?) — any tier, since the reference is the
+* **SpO2 calibration** (fitting `spo2_a`/`spo2_b`) — **T3 only.**
+* **Comparison between algorithms** — any truth class: a shared input is enough.
+* **Regression** (does today's build match yesterday's?) — any truth class, since the reference is the
   previous result and not a truth.
 
 > **Why a simulator cannot calibrate SpO2.** An optical simulator does not reproduce the physical
@@ -345,8 +348,8 @@ resting on the wrong data:
 | §3.4 SpO2 | 90 %, 96 % | 100 %, 85 %, 80 %, 75 %, 70 %, S2, **S3 (T0)** |
 | §3.5 hardware | RF sweeps | H2 (needs ≥ v0.85 firmware) |
 | Duration | Phototherapy 94 s ✓ | Finger captures are 20 s ✗ |
-| Naming | ad hoc | tier prefix absent everywhere |
-| Manifest (§2.5) | `index.csv` + `truth.csv` built 2026-09-05 | `truth.csv` is **93 empty rows** — every tier and truth value to be filled by hand |
+| Naming | ad hoc | truth prefix absent everywhere |
+| Manifest (§2.5) | `index.csv` + `truth.csv` built 2026-09-05 | `truth.csv` is **93 empty rows** — every truth class and truth value to be filled by hand |
 | Acceptance criteria (§2.6) | — | **not declared** |
 | Beat annotations (§2.6) | — | no capture has one |
 | Storage (§6) | local only, ignored by git | **no versioning, no checksums** |

@@ -131,7 +131,7 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   follow from the anchors at the accuracy the references need (seconds for an 8 s-averaging monitor,
   tens of ms for a VideoNest frame). `HOST_T_US` keeps its historical meaning (monotonic, arbitrary
   origin) as a legacy synonym.
-- **R16 — Filename** `<TIER>_<SUBJECT>_<SITE>_<BOARD>_<CONDITION>[_<params>]_<YYYYMMDD>_<HHMMSS>[_pNN].csv`,
+- **R16 — Filename** `<TRUTH>_<SUBJECT>_<SITE>_<BOARD>_<CONDITION>[_<params>]_<YYYYMMDD>_<HHMMSS>[_pNN].csv`,
   local time; offset and start epoch in the header; `<BOARD>` = last three MAC bytes; `<SITE>` = probe
   site. P0 filenames are the incubator's business (device id + local date/time) and follow the same rule.
   **`<SITE>` is a coded place, never a described one**: `BENCH`, `HOSP01`, `SITE01` (recorder spec
@@ -235,7 +235,7 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   file the code↔person mapping. Header = evidence of what was believed; `truth.csv` wins on conflict.
 - **R26 — Machine keys `# key=value`**: `format, profile, writer, source_mac, board, fw, lib, build,
   libsha, elfsha, idfver` (identity and provenance, R17), `t0_iso, t0_epoch_us, t0_fw_ts_us,
-  t0_smpcnt, subject, site, tier, condition, session_id, part, prev, decimation, led1, led2, probe`.
+  t0_smpcnt, subject, site, truth, condition, session_id, part, prev, decimation, led1, led2, probe`.
   All ASCII, one per line, before the first `@row` line.
 - **R27 — No personal data**, anywhere in the file or its name — doubly so for P0, written in
   hospitals worldwide by devices nobody supervises: device id and coded patient id only. **The

@@ -331,7 +331,7 @@ session: the part no machine can produce). Proposed shape:
       "firmware": { "build": "7770c6c", "elfsha": "a60928ae2b710aab", "lib": "v0.93",
                     "cfg_raw": "$CFG,..." },   // verbatim, as cached by the hub
       "subject": "SUBJ01",
-      "tier": "T2",                     // CAPTURE_SET_SPEC §2.2
+      "truth": "T2",                    // CAPTURE_SET_SPEC §2.2: T0 none .. T3 arterial
       "condition": "RESTING",
       "probe_site": "left foot",
       "files": [ "raw/board_1020BA147560_0001.pnraw", "..." ],
@@ -425,7 +425,7 @@ reference streams below.
   make the two indistinguishable — the same ambiguity as the `.pnraw` header, one floor down.
   So the converter writes them as **`# from-board: # STAT ...`**, and any consumer can tell an
   annotation from a message. Named per
-  `CAPTURE_SET_SPEC` §2.4 (`<TIER>_<SUBJECT>_<CONDITION>_<params>_<date>_<time>.csv`) from
+  `CAPTURE_SET_SPEC` §2.4 (`<TRUTH>_<SUBJECT>_<CONDITION>_<params>_<date>_<time>.csv`) from
   `session.json`, so nobody types a long filename in a hospital.
 * **`ref_videonest.csv`**: `t_epoch_us, t_mono_us, seq, spo2, conf, phone_ts_ms, drift_ms,
   checksum_ok` — one row per `$VN1` frame, with the NMEA checksum verified here (never at
@@ -500,7 +500,7 @@ What the implementation fixed in this document's wording, or added:
   a **board restart**, not a gap. Both become `@M` notes, a warning in `pulsenest_recorder.log`, columns in
   `status` and fields in `session.json`. The authoritative per-frame check stays with the CSV
   writer (`capture_csv_format_spec` R12a); this is situational awareness at the cot side.
-* **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`, `tier`,
+* **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`, `truth`,
   `cond`, `ref SUBJnn model|avg|site|note` and `consent`. Each writes a **`META` event** (a kind
   added to §6's list) as well as updating `session.json`, so the metadata is auditable and
   survives in the `.pnraw` even if `session.json` is lost. `ref` covers the block §7 calls
@@ -531,7 +531,7 @@ What the implementation fixed in this document's wording, or added:
   `console()` source and fails if a command exists without an entry, or an entry without a
   command — help that drifts from the code is worse than none.
 * **Who an event belongs to, and where its copies go** (Alex's question, 2026-09-20). Every
-  event carries a `subject` and a `board_mac`. `spo2` and `site` always name a subject; `tier` and
+  event carries a `subject` and a `board_mac`. `spo2` and `site` always name a subject; `truth` and
   `cond` take an optional trailing one; `anchor` and `consent` are session-wide by nature. **`mark`
   and `note` now take an optional LEADING `SUBJnn`** — `mark SUBJ02 nappy change` is attributed,
   `mark phototherapy on` stays session-wide (`subject=*`, `board_mac=*`). Before this the only way
@@ -544,6 +544,15 @@ What the implementation fixed in this document's wording, or added:
   names. A file that stands alone is worth more than a slightly shorter one — the row says whom it
   concerns, and a reader of one board's capture can still see that the lamp went on, or that the
   baby next door desaturated at the same instant.
+* **`tier` is now `truth`, and the scale climbs** (Alex, 2026-09-21). "Tier" said nothing about
+  what it measured. The command records *what the capture can be checked against*, so it takes the
+  word the rest of the project already uses for that: `truth`, as in `truth.csv` and
+  `truth_hr_bpm`. The scale was also reordered so the number grows with the quality of the
+  evidence — T0 none, T1 simulator, T2 commercial oximeter or ECG, T3 arterial CO-oximetry — the
+  original had them the other way round and nothing had been filed under T0 or T3 yet. A word is
+  accepted in place of the code (`truth oximeter`), an unknown value is refused rather than
+  stored, and a session whose site is `HOSPnn` **starts at T2**: there is a commercial monitor
+  beside every baby by construction, so the command exists to correct, not to be remembered.
 * **The live capture CSV is written (§2), and it writes TODAY's format, not v0.4** (Alex,
   2026-09-20). The reason it could not wait: **Flow CSV Viewer, one of the tools used most here,
   reads `.csv` and not `.pnraw`** — and §2.1's other argument held too, that a fault in a capture
@@ -565,7 +574,7 @@ What the implementation fixed in this document's wording, or added:
   `csv_errors` counts them separately in `session.json`.
   **The name is provisional until close**: a board starts streaming before a person has bound it
   to a subject, so the file opens as `<MAC>_<date>_<time>.csv` and is renamed at close to
-  `CAPTURE_SET_SPEC` §2.4's `T2_SUBJ01_RESTING_<date>_<time>.csv` once tier, subject and condition
+  `CAPTURE_SET_SPEC` §2.4's `T2_SUBJ01_RESTING_<date>_<time>.csv` once truth class, subject and condition
   are known — verified on the bench, three boards, three canonical names.
   **Cost, measured:** 2,85 MB per board per 20 s = **~510 MB/h**, on top of the 0,5 GB/h of
   `.pnraw`: about **1 GB/h per board**, 24 GB for three boards over eight hours. That is the
