@@ -684,7 +684,7 @@ What the implementation fixed in this document's wording, or added:
 * **A phone names itself, and we treat that name as we treat a MAC** (agreed with Alex,
   2026-09-20). The contract, for VideoNest to implement:
 
-      $VN1,<seq>,<spo2>,<conf>,<ts_ms>,<id>*<checksum>
+      $VN1,<seq>,<spo2>,<conf>,<phone time>,<id>*<checksum>
 
   `<id>` is **appended, never inserted**: a reader written for build 8 keeps working unchanged,
   and the two shapes coexist — the same rule R18 of the CSV dictionary applies to its own columns.
@@ -701,6 +701,21 @@ What the implementation fixed in this document's wording, or added:
   same phone across an IP change (`@M source moved … vn_id=…`), and records `vn_id` per source in
   `session.json`; `fleet_monitor.py` shows an `ID` column in its SOURCES block. **A frame without
   an id is still recorded**, named by IP exactly as before.
+* **The fourth field is the phone's LOCAL TIME as text, not epoch milliseconds (2026-09-22).**
+  Measured against the real phone: `$VN1,1,89,0.95,2026-09-22 00:21:26.261,J6plusACM*3D`. The
+  spec described `<ts_ms>` from an earlier build, and the first live recording rejected **every
+  frame, 14 of 14**, while the synthetic fixture passed — a fixture written by the same hand as
+  the parser proves nothing. Both shapes are read now (bare digits = epoch ms), and the field is
+  written to the CSV **verbatim**, because that string is also the timestamp in the photograph's
+  filename: the row already says which picture to open.
+* **The phone's clock runs about 2 s behind arrival here, and it is probably not the clock.**
+  34 frames: mean drift **−2 023 ms**, from −2 356 to −1 951, a spread of 405 ms. A clock offset
+  would be constant to the millisecond; 405 ms of spread says this is **elapsed time inside the
+  phone** — the instant stamped is when the picture was taken, and the OCR and the send happen
+  after. It matters: 2 s at 500 Hz is a thousand samples, so a reading placed on our timeline by
+  this stamp lands two seconds early. The earlier figure of 164–350 ms was measured on the old
+  epoch field and is not comparable. **Open**: whether to subtract a calibrated constant, or to
+  use arrival time and treat the phone stamp as the photograph's key only.
 * **VideoNest build 8 (2026-09-20) drops `pr` from the frame**: `$VN1,<seq>,<spo2>,<conf>,<ts_ms>`,
   four fields where there were five, and the NMEA checksum is over the new, shorter body. It read 0
   in every frame anyway (measured above). **Nothing in this repository had to change to keep

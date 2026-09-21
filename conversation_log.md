@@ -24769,3 +24769,24 @@ parche reemplazo dos cosas, fallo en la tercera y **no escribio nada**, dejando 
 llamadas cuyos metodos nunca se anadieron; el guion pasa ahora a validar todas las anclas antes de
 tocar el fichero. Y el test volvio a contar lineas para encontrar la cabecera, cuando la nota de
 cierre `# rows=` tambien empieza por `#`: se busca por contenido, nunca por posicion.
+
+## 2026-09-22 - el movil de verdad rechaza todas las tramas
+
+Primera grabacion contra el movil real: `VideoNest_J6plusACM.csv` creado, **0 filas y 14 tramas
+malas**. La cuarta columna no son milisegundos de epoca sino **la hora local del movil como
+texto**: `$VN1,1,89,0.95,2026-09-22 00:21:26.261,J6plusACM*3D`. La spec describia `<ts_ms>` de una
+build anterior. Mi fixture sintetico pasaba porque lo escribi yo con el mismo criterio que el
+parser: **un fixture escrito por la misma mano que el parser no demuestra nada**. Ahora el test
+usa la trama copiada del cable, y se aceptan las dos formas (digitos sueltos = epoca en ms).
+
+El campo se escribe **verbatim** porque esa cadena es tambien el sello de las fotos: la fila ya
+dice que imagen abrir, sin conversion.
+
+**Segunda grabacion: 34 filas, 0 tramas malas, checksums correctos, secuencia 95..128 continua,
+0,84 Hz.** SpO2 89 constante con confianza 0,98 (una trama a 0,50).
+
+**Hallazgo que hay que mirar: la deriva es de unos -2,0 s, no los 164-350 ms de antes.** Media
+-2.023 ms, entre -2.356 y -1.951, dispersion 405 ms. Un desfase de reloj seria constante al
+milisegundo; 405 ms de dispersion dice que es **tiempo transcurrido dentro del movil**: el
+instante sellado es cuando se tomo la foto, y el OCR y el envio ocurren despues. Importa, porque
+2 s a 500 Hz son mil muestras. Anotado como decision abierta en la spec.

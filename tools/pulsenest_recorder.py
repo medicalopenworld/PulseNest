@@ -328,11 +328,29 @@ def safe_condition(text):
     t = re.sub(r"[^A-Za-z0-9-]+", "-", (text or "").strip().upper()).strip("-")
     return t[:24]
 _VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,32})\*")
-# $VN1,<seq>,<spo2>,<conf>,<ts_ms>,<id>*<checksum>   (build 8; build 7 had a `pr` after spo2)
+# $VN1,<seq>,<spo2>,<conf>,<phone time>,<id>*<checksum>
+# The fourth field is the phone's own clock. Measured on the real phone 2026-09-22 it is LOCAL
+# TIME as text -- `2026-09-22 00:21:26.261` -- not the epoch milliseconds an earlier build sent
+# and the spec still described. Both are accepted: bare digits are epoch ms, anything else is
+# parsed as local time. It is written to the CSV verbatim, because that string is also the
+# timestamp in the photograph's filename, so the row already says which picture to open.
 _VN_FRAME_RE = re.compile(
-    rb"^\$VN1,(\d+),(-?[\d.]+),(-?[\d.]+),(\d+),([A-Za-z0-9_-]{1,32})\*([0-9A-Fa-f]{2})\s*$")
-VN_COLS = ["t_epoch_us", "t_mono_us", "seq", "spo2", "conf", "phone_ts_ms", "drift_ms",
+    rb"^\$VN1,(\d+),(-?[\d.]+),(-?[\d.]+),([^,*]+),([A-Za-z0-9_-]{1,32})\*([0-9A-Fa-f]{2})\s*$")
+VN_COLS = ["t_epoch_us", "t_mono_us", "seq", "spo2", "conf", "phone_ts", "drift_ms",
            "checksum_ok"]
+
+
+def phone_epoch_us(text):
+    """The phone's fourth field -> epoch microseconds, or None if it is neither shape."""
+    t = text.strip()
+    if t.isdigit():
+        return int(t) * 1000                      # epoch milliseconds, older builds
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return int(_dt.datetime.strptime(t, fmt).timestamp() * 1e6)
+        except ValueError:
+            pass
+    return None
 
 
 def nmea_checksum(body):
@@ -956,16 +974,20 @@ class Recorder:
                 if m is None:
                     src.vn_bad += 1
                     continue
-                seq, spo2, conf, ts_ms, _id, cks = m.groups()
+                seq, spo2, conf, phone_ts, _id, cks = m.groups()
                 body = line[1:line.rindex(b"*")]
                 ok = 1 if nmea_checksum(body) == int(cks, 16) else 0
                 if not ok:
                     # Written anyway, flagged. A frame that failed its checksum is evidence about
                     # the link, and dropping it would make a bad link look like a quiet one.
                     src.vn_bad += 1
-                drift_ms = int(ts_ms) - t_epoch_us // 1000
+                phone_txt = phone_ts.decode("ascii", "replace").strip()
+                phone_us = phone_epoch_us(phone_txt)
+                # How far the phone's clock is from arrival here. Blank rather than a zero when
+                # the field cannot be read: a missing measurement is not a drift of nothing.
+                drift = "" if phone_us is None else str((phone_us - t_epoch_us) // 1000)
                 src.vn_f.write(f"{t_epoch_us},{t_mono_us},{seq.decode()},{spo2.decode()},"
-                               f"{conf.decode()},{ts_ms.decode()},{drift_ms},{ok}\n")
+                               f"{conf.decode()},{phone_txt},{drift},{ok}\n")
                 src.vn_rows += 1
         except Exception as exc:
             self.csv_errors += 1
