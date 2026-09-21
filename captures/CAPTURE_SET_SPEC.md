@@ -238,6 +238,39 @@ of minors. The repository is public (`github.com/medicalopenworld/PulseNest`).
 * Adopt coded identifiers (`SUBJ01`…) with the mapping kept **outside** the repository, and record
   consent for any capture that leaves the lab.
 
+**The code carries nothing but identity (2026-09-21).** Alex proposed folding age and skin
+pigmentation into the code itself (`SUBJ01_Y57WH`). The need is right and the standard agrees —
+but not in the code, for three reasons:
+
+* **the code is published.** It is copied into every filename, every CSV header and every event
+  row, and `truth.csv` is committed. The legacy codes already demonstrate it: `SUBJ01_A57` …
+  `SUBJ07_A17` put **seven ages in the public repository, three of them minors**;
+* **a join key must not change, and age does.** For a neonate it changes daily, so `SUBJ01_D02`
+  and `SUBJ01_D03` would be two babies;
+* **race is not the variable.** ISO 80601-2-61:2026 measures *melanin* — it criticises the
+  Fitzpatrick scale by name for representing darker skin badly, and asks for the **Monk Skin Tone
+  scale** (A–J, subjective) and **ITA**, the Individual Typology Angle in degrees, measured with a
+  colorimeter **at the probe site** because that is the tissue the light crosses.
+
+So two files beside each other, both git-ignored:
+
+| File | Holds | Read by |
+|---|---|---|
+| `SUBJECT_CODES.txt` | code → person. Identity, nothing else | nobody; no program parses it |
+| `subjects.csv` | code → `role, age_band, gest_age_wk, postnatal_d, weight_g, mst, ita_probe_deg, ita_forehead_deg, probe_site` | `capture_set.subjects()` |
+
+Ages are **banded** and recorded as at the first capture; for a neonate, gestational age in weeks,
+postnatal age in days and weight are the variables that matter and years say nothing.
+
+**Why pigmentation is not optional.** ISO 80601-2-61:2026 requires a study cohort with **at least
+25 % of participants in each of light (ITA > 30), medium (30 to −30) and dark (< −30)**, and makes
+*pigmentation differential bias* — the change in SpO2 bias over a 100° span of ITA — a reported
+figure in its own right (Annex CC). A capture set that cannot say where its subjects sit on that
+scale cannot support any claim about SpO2 accuracy. `capture_set.pigmentation_category()` answers
+it per subject, and returns **None when it is unknown**, never a default: a set that merely looks
+light-skinned because nobody measured is the exact gap the standard exists to close. Today that
+is **0 of 7**.
+
 > ⚠️ **`truth.csv` is committed and its `file` column lists every capture name.** Committing it
 > before the renaming of §2.7 is done would publish the full list of subject names and ages in one
 > place — worse than the eight scattered lines in the experiment scripts. **Rename first, commit

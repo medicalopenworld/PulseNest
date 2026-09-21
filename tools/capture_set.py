@@ -25,6 +25,8 @@ import os
 CAPTURES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "captures")
 INDEX_PATH = os.path.join(CAPTURES_DIR, "index.csv")
 TRUTH_PATH = os.path.join(CAPTURES_DIR, "truth.csv")
+# Not committed, like SUBJECT_CODES.txt beside it: a clone legitimately has neither.
+SUBJECTS_PATH = os.path.join(CAPTURES_DIR, "subjects.csv")
 
 
 class Capture(object):
@@ -88,6 +90,58 @@ def load_all():
         raise RuntimeError(
             "No capture manifest. Run:  python tools/build_capture_index.py")
     return [Capture(n, index.get(n), truth.get(n)) for n in names]
+
+
+def subjects(path=None):
+    """`captures/subjects.csv` as {code: {column: value}} -- the covariates a measurement needs.
+
+    Never names: those live in SUBJECT_CODES.txt, which nothing reads programmatically and
+    nothing should. Returns {} when the file is absent, because it is not committed and a clone
+    of this repository legitimately does not have one.
+
+    The columns that decide what a capture can be compared with: `mst` (Monk Skin Tone, A-J) and
+    `ita_probe_deg` (Individual Typology Angle at the probe site, degrees). ISO 80601-2-61:2026
+    requires a study cohort spread across light (ITA > 30), medium (30 to -30) and dark (< -30),
+    at least 25 % in each -- so a set with no dark-skinned subjects cannot support a claim about
+    SpO2 accuracy, and this is the file that says whether it does.
+    """
+    path = path or SUBJECTS_PATH
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        rows = [ln for ln in f if not ln.lstrip().startswith("#")]
+    for row in csv.DictReader(rows):
+        code = (row.get("code") or "").strip()
+        if code:
+            out[code] = {k: (v or "").strip() for k, v in row.items()}
+    return out
+
+
+def pigmentation_category(subject_row):
+    """ISO 80601-2-61:2026 Table 201.102: light | medium | dark | None if unknown.
+
+    ITA wins over MST when the two disagree, which is what the standard says to do.
+    """
+    ita = (subject_row or {}).get("ita_probe_deg", "")
+    if ita:
+        try:
+            v = float(ita)
+        except ValueError:
+            v = None
+        if v is not None:
+            return "light" if v > 30 else ("dark" if v < -30 else "medium")
+    mst = ((subject_row or {}).get("mst") or "").strip().upper()[:1]
+    # Tuples, not `in "ABC"`: the empty string is a substring of every string, so a subject with
+    # no pigmentation recorded came back "light" -- the worst possible default, since a set that
+    # looks light-skinned when it is simply unmeasured is exactly the gap ISO asks us to close.
+    if mst in ("A", "B", "C"):
+        return "light"
+    if mst in ("D", "E", "F", "G"):
+        return "medium"
+    if mst in ("H", "I", "J"):
+        return "dark"
+    return None
 
 
 def select(truth=None, condition=None, min_duration_s=None, requires_config=False,

@@ -24553,3 +24553,32 @@ nombre de fichero admite: `SKIN-TO-SKIN`, `KANGAROO-CARE`.
 El sujeto es el unico enlace entre una captura y una persona, y un error de tecleo parte los datos
 de un bebe en dos identidades, asi que su forma se valida. La condicion es vocabulario abierto
 que no puedo predecir en un hospital, asi que se acepta lo que escriban, solo saneado.
+
+## 2026-09-21 - politica de codificacion de sujetos
+
+Alex pregunta por la politica y propone cambiar la sintaxis a `SUBJ01_Y57WH   ALEX_CUESTA_57`
+(edad y pigmentacion dentro del codigo). **La necesidad es correcta y la norma le da la razon; el
+sitio no.** Tres motivos:
+
+1. **El codigo se publica.** Va a todos los nombres de fichero, cabeceras de CSV y filas de
+   eventos, y `captures/truth.csv` **si esta commiteado**. Los codigos heredados ya lo demuestran:
+   `SUBJ01_A57` ... `SUBJ07_A17` publican siete edades, tres de menores. Alex decide si se
+   renombran las capturas; el historico de git ya las tiene de todos modos.
+2. **Una clave de union no puede cambiar, y la edad cambia.** En un neonato, cada dia.
+3. **La raza no es la variable.** ISO 80601-2-61:2026 mide MELANINA. Critica a Fitzpatrick por su
+   nombre por representar mal la piel oscura y pide **Monk Skin Tone** (A-J, subjetiva) e **ITA**
+   (Individual Typology Angle, grados, colorimetro) medido **en el sitio de la sonda**, que es el
+   tejido que atraviesa la luz.
+
+**Hecho:** dos ficheros, ambos fuera de git. `SUBJECT_CODES.txt` solo identidad; nuevo
+`captures/subjects.csv` con `role, age_band, gest_age_wk, postnatal_d, weight_g, mst,
+ita_probe_deg, ita_forehead_deg, probe_site`, edades en bandas y pigmentacion **en blanco** (no es
+mia para inventarla). Lector `capture_set.subjects()` y `pigmentation_category()`.
+
+**Por que la pigmentacion no es opcional:** la norma exige >=25 % de la cohorte en cada categoria
+(clara ITA > 30, media 30 a -30, oscura < -30) y convierte el *pigmentation differential bias* en
+una cifra reportada (Anexo CC). Un conjunto que no sabe donde caen sus sujetos no sostiene ninguna
+afirmacion sobre exactitud de SpO2. Hoy: **0 de 7**.
+
+**Fallo mio corregido en el momento:** `if mst in "ABC"` daba "light" para un sujeto sin datos,
+porque la cadena vacia esta contenida en cualquier cadena. Con tuplas, y devuelve None.
