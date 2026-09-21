@@ -260,7 +260,11 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
 ## G. Robustness and continuity
 
 - **R32** Usable when truncated; append-only; optional `# end …` on clean close; `sha256` in `index.csv`.
-- **R33** Parts: `# part=N`, `# prev=<file>`, same header, **and the three snapshots of R24 with
+- **R33** Parts: `# part=N`, `# prev=pNN` (**a part number, not a file name** — amended
+  2026-09-21: a live part opens under a provisional name, because the subject is bound by a
+  person minutes after the board starts streaming, and every part is renamed to the canonical
+  stem at close; a name written into the header at open would point at a file that no longer
+  exists. All parts of one capture share a stem, so the number is unambiguous), same header, **and the three snapshots of R24 with
   `cause=part` at `@row 0`** — every part is self-contained, a reader never opens the previous one
   to know the configuration; anchors prove the join.
 - **R34** Events `# @row N event: <text> smpcnt=<n> host_epoch_us=<t>` (R10a ordering); rich events

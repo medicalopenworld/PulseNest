@@ -273,7 +273,7 @@ session_id,event_id,t_mono_us,t_epoch_us,iso_local,kind,subject,board_mac,value,
 |---|---|
 | `session_id` | the session this row belongs to, repeated on every row — see below |
 | `event_id` | monotonic within the session; the join key for the `@E` copies |
-| `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `META`, `SESSION_START`, `SESSION_END` |
+| `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `META`, `CORRECT`, `RETRACT`, `SESSION_START`, `SESSION_END` |
 | `subject` | `SUBJ01`… or `*` for a session-wide event |
 | `board_mac` | the board this concerns, or `*` for all (a `MARK` is normally `*`) |
 | `value` | for `REF_SPO2`, the SpO2 % read on the commercial monitor; empty otherwise |
@@ -422,6 +422,32 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   the annotation list with edit and delete, implemented as *correcting events* over the
   append-only files (an edit writes a new `REF_SPO2` that names the event it supersedes; a delete
   writes a retraction), so the operator sees the effective list and the file keeps both.
+* **Editing and deleting readings over append-only files (phase 2).** The GUI's annotation list
+  offers *edit* and *delete*, and nothing on disk is ever rewritten: an edit writes a **`CORRECT`**
+  event (`value`/`value2` = the new SpO2/PR, `note=corrects=<event_id>`) and a delete writes a
+  **`RETRACT`** (`note=retracts=<event_id>`). The reading keeps its **original time** — the click
+  happened when it happened; only the number was mistyped. `Recorder.readings()` is the effective
+  list (corrections applied, retractions removed) and is what the GUI shows; a consumer of
+  `session_events.csv` must apply the same two rules, in file order. `DELETE LAST` retracts the
+  most recent effective reading of that subject. Console: `correct <id> <spo2> [pr]`,
+  `retract <id>`.
+* **The live CSV splits with the `.pnraw`, on the same wall-clock boundary (2026-09-21).** It did
+  not, and 48 minutes of three boards on the bench showed what that costs: `.pnraw` parts of
+  ~84 MB cut correctly at 12:10, 12:20 … beside **three CSVs of 412 MB that never split**. At
+  **8.7 MB per minute per board** a four-hour hospital session ends with a 2 GB CSV, which defeats
+  the only reason the live CSV exists — Flow CSV Viewer reads `.csv` and not `.pnraw`. Now each
+  part is `<MAC>_<date>_<time>_pNN.csv` (R16 already reserved `_pNN`), cut on the same instant as
+  the `.pnraw`, so part 3 of each covers the same ten minutes and the two pair without being read.
+  A 10-minute part is ~87 MB; `--split-min` is the knob, on the window as well as the console. At
+  close **every part is renamed** to the canonical stem, all of them or none: one canonical name
+  beside one provisional name in the same directory reads as two different captures.
+* **What a crash costs, measured (2026-09-21).** The 48-minute session above was killed outright
+  (`taskkill /F`) to find out. **Kept**: every `.pnraw` part and every CSV, both ending on a
+  complete record — the `.pnraw` is flushed per datagram and the CSV is line-buffered, so no
+  half-written row. **Lost**: the `SESSION_END` event, the `closed` block of `session.json` (and
+  with it the clock drift), each CSV's closing `# rows=… gaps=…` note, and the rename to canonical
+  names — the files keep their provisional `<MAC>_…` names. A laptop that dies mid-session costs
+  metadata, not data; the recovery is to note by hand which subject each MAC belonged to.
 * **References, not classes (Alex, 2026-09-21).** The operator ticks *which references exist*
   for a baby — `simulator`, `videonest_udp`, `videonest_csv`, `videonest_pictures`, `operator` —
   and never sees a T-code. The console form is `refs SUBJ01 <src>[,<src>...]|none`, stored in

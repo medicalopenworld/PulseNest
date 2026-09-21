@@ -245,6 +245,14 @@ try:
           [ln.split(",")[5] for ln in open(rec.events_path, encoding="utf-8").read().splitlines()
            if f",{id1}," in ln or f"={id1}" in ln][:3] == ["REF_SPO2", "CORRECT", "RETRACT"])
 
+    # the live CSV splits with the .pnraw, or a four-hour session ends in a 2 GB file
+    check("[2] the live CSV is written in parts, numbered from p01",
+          os.path.basename(a.csv_paths[0]).endswith("_p01.csv") and a.csv_part >= 1,
+          os.path.basename(a.csv_paths[0]))
+    check("[2] a part knows the session, its number, and what came before it",
+          "part=1" in open(a.csv_paths[0], encoding="utf-8").readline(4096)
+          or any("part=1" in ln for ln in open(a.csv_paths[0], encoding="utf-8").read().split("\n")[:8]))
+
     # session metadata only a person knows (spec section 7), typed instead of hand-edited
     check("[7] truth with no subject applies to every board",
           rec.console("truth T2").startswith("truth=T2 on") and a.truth == "T2" and b.truth == "T2")
@@ -410,11 +418,17 @@ try:
     check("[2] its rows are the data frames of the datagrams, non-data lines skipped",
           a.csv.count > 0 and a.csv.skipped > 0, f"{a.csv.count} rows, {a.csv.skipped} skipped")
     head = open(a.csv_path, encoding="cp1252").read().splitlines()
+    notes = [l for l in head if l.startswith("#")]
     check("[2] pre-notes name the session and carry the board's $CFG verbatim",
           head[0] == f"# session={rec.session_id}"
-          and any(l.startswith("# from-board: $CFG,") for l in head[:5]), head[:2])
+          and any(l.startswith("# from-board: $CFG,") for l in notes), notes[:3])
+    check("[2] part 1 says it is part 1 and claims no predecessor",
+          "# part=1" in notes and not any(l.startswith("# prev=") for l in notes), notes[:5])
+    # By content, not by line number: the pre-notes grow (a `part=`, a `prev=`) and a test that
+    # counts them fails for the wrong reason. The header is the first line that is not a note.
+    header_line = next(l for l in head if not l.startswith("#"))
     check("[2] the header starts with the host clock, the one shared across boards",
-          head[4].startswith("HOST_T_US,FW_SmpCnt,"), head[4][:40])
+          header_line.startswith("HOST_T_US,FW_SmpCnt,"), header_line[:40])
     n_before = a.csv.count
     rec.feed("192.168.137.62", CFG_A, *clk())          # a $CFG must never become a row
     check("[2] a $CFG on the stream adds no row", a.csv.count == n_before)
@@ -435,6 +449,11 @@ try:
     rec.close()
     sj = json.load(open(os.path.join(rec.dir, "session.json"), encoding="utf-8"))
     srcA = [s for s in sj["sources"] if s.get("mac") == "10:20:BA:14:75:60"][0]
+    # The count the operator will quote must be the count the files hold. It was not: the last
+    # part was added twice (122 410 reported against 95 065 written, on the bench).
+    check("[2] the row count in session.json is what the parts actually hold",
+          sum(sum(1 for ln in open(p, encoding="cp1252") if ln and not ln.startswith("#")) - 1
+              for p in a.csv_paths) == srcA["csv_rows"], str(srcA["csv_rows"]))
     check("[7] session.json: schema, closed with drift, operator", sj["schema"] == "pulsenest_session/1"
           and sj["closed"] is not None and sj["closed"]["clock_drift_us"] == 0 and sj["operator"] == "AC")
     check("[7] session.json carries the typed metadata and the consent state",

@@ -2,6 +2,7 @@
 a capture usable, beside the waveform that says whether the probe is still on the foot.
 
     python tools/pulsenest_recorder_gui.py [--location HOSP01] [--operator AC] [--hub IP[:PORT]]
+                                          [--split-min 10] [--duration S]
 
 Why this exists (Alex, 2026-09-21). A robust tool is not one with the least interface; it is one
 that reaches its goal with the least risk, and most of the risk in a hospital session is human:
@@ -42,9 +43,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, script_name                     # noqa: E402
 from pulsenest_hub_client import HubClient                               # noqa: E402
 from pulsenest_recorder import (Recorder, NotEnoughSpace, TRUTH_SOURCES,  # noqa: E402
-                                mac_compact, SOURCE_SILENT_S, AUX_SILENT_S)
+                                mac_compact, SPLIT_MIN_DEFAULT)
 from fleet_ppg_viewer import (BoardTrace, make_stats_widget, stats_width,  # noqa: E402
-                              stats_columns, MIN_PLOT_W, GREEN, RED, GREY)
+                              stats_columns, MIN_PLOT_W, RED, GREY)
 import pyqtgraph as pg                                                   # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                               # noqa: E402
 
@@ -409,9 +410,12 @@ class BoardRow(QtWidgets.QFrame):
 # the window
 # ============================================================================================
 class RecorderWindow(QtWidgets.QMainWindow):
-    def __init__(self, rec, hub):
+    def __init__(self, rec, hub, duration_s=0.0):
         super().__init__()
         self.rec = rec
+        # A timed run stops the RECORDER, and tick() then closes the window the same way a full
+        # disk does -- one path out of a session, not two.
+        self.end_at = time.monotonic() + duration_s if duration_s > 0 else None
         self.setWindowTitle(f"{script_name(__file__)} — {rec.session_id}  (hub {hub[0]}:{hub[1]})")
         self.rows = {}            # key (mac, or ip until identified) -> BoardRow
         self.traces = {}          # ip -> BoardTrace
@@ -521,10 +525,13 @@ class RecorderWindow(QtWidgets.QMainWindow):
 
     def tick(self):
         self.rec.tick()
+        if self.end_at is not None and time.monotonic() >= self.end_at:
+            self.rec.stop("duration")
         if self.rec.stopped and not self._closing:
-            QtWidgets.QMessageBox.critical(self, "recording stopped",
-                                           f"The recorder stopped itself: {self.rec.stop_reason}.\n"
-                                           f"See pulsenest_recorder.log in {self.rec.dir}.")
+            if self.rec.stop_reason != "duration":
+                QtWidgets.QMessageBox.critical(self, "recording stopped",
+                                               f"The recorder stopped itself: {self.rec.stop_reason}.\n"
+                                               f"See pulsenest_recorder.log in {self.rec.dir}.")
             self.close()
         fb = self.rec.free_bytes
         if fb is not None:
@@ -621,6 +628,14 @@ def main(argv=None):
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(_HERE), "captures", "sessions"))
     ap.add_argument("--min-free-gb", type=float, default=2.0)
+    ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT, metavar="MIN",
+                    help=f"split both the .pnraw and the live CSV on this wall-clock period "
+                         f"(default {SPLIT_MIN_DEFAULT:.0f}). At 500 Hz a board writes about "
+                         f"8.7 MB of CSV per minute, so 10 min is a part of roughly 87 MB -- "
+                         f"lower it if the tool that opens the CSV struggles")
+    ap.add_argument("--duration", type=float, default=0.0, metavar="S",
+                    help="close the session cleanly after this many seconds (0 = until the "
+                         "operator stops it). For an unattended bench soak")
     args = ap.parse_args(argv)
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
@@ -632,11 +647,12 @@ def main(argv=None):
         return 1
     try:
         rec = Recorder(args.out, location, operator, hub_text=f"{hub[0]}:{hub[1]}",
+                       split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9))
     except (NotEnoughSpace, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2
-    win = RecorderWindow(rec, hub)
+    win = RecorderWindow(rec, hub, duration_s=args.duration)
     win.show()
     return app.exec_()
 

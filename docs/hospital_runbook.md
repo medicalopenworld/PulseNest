@@ -52,6 +52,9 @@ Then, in order:
       listed is not being recorded.
 - [ ] **Bind each board to its baby**, using the last four hex digits of the MAC:
       `subject 8850 SUBJ01`
+- [ ] **Use the window, not the console**: `pulsenest_recorder_gui.py` is the tool for a session
+      with babies in the room. It asks for the LOCATION code and the operator, then shows one row
+      per board. A row whose header says `UNBOUND`, or warns in amber, is a row that needs you.
 - [ ] **Say what the babies are doing**: `cond RESTING` (no subject = all three). The truth class
       is already T2 because the site is `HOSPnn`; `status` shows it. Change it only if a baby has
       no commercial monitor beside it: `truth none SUBJ02`.

@@ -24459,3 +24459,33 @@ abiertos). Pendiente fase 2: DELETE LAST y lista editable; guion y spec del CSV.
 sigue siendo fichero `.py`). Y tome una captura de pantalla completa para revisar la ventana y
 salio la videollamada de Alex; borrada al instante. Regla nueva: nunca capturar la pantalla
 completa; solo la ventana propia, y solo si Alex lo pide.
+
+## 2026-09-21 (tarde, cont.) - GUI fase 2 y el CSV que no se partia
+
+**Fase 2 (d13de77).** DELETE LAST y la lista de anotaciones por sujeto (mas reciente arriba, las
+editadas con `*`), doble clic para corregir, borrado con confirmacion. Sobre ficheros que solo
+crecen: una edicion escribe `CORRECT` (`note=corrects=<id>`) y un borrado `RETRACT`; la lectura
+**conserva su hora original** porque el click ocurrio cuando ocurrio. `Recorder.readings()` es la
+lista efectiva y es la misma regla que debe aplicar cualquier consumidor de `session_events.csv`.
+Nuevo `tools/pulsenest_recorder_gui_test.py`: 26 comprobaciones offscreen que mueven la ventana
+real contra un `Recorder` real y leen los FICHEROS, no los widgets.
+
+**Hallazgo en el banco: el CSV en vivo no se partia.** 48 min de tres V18 con la ventana dieron
+`.pnraw` de ~84 MB cortados bien en 12:10, 12:20... y **tres CSV de 412 MB sin cortar**. Son
+8,7 MB por minuto y placa: una sesion de cuatro horas acaba en 2 GB por placa, justo lo que
+inutiliza Flow CSV Viewer, que es la unica razon de que el CSV en vivo exista. Arreglado: el CSV
+se parte en la misma frontera de reloj que el `.pnraw` (`_pNN`, que R16 ya reservaba), y al cerrar
+se renombran **todas** las partes o ninguna. Un corte real observado a las 13:00:00 exactas:
+p01 con 36560 filas y su nota `# rows=... split=wall-clock`, p02 con `part=2 prev=p01`.
+
+**Defecto que introduje y corregi en el momento:** `prev=` guardaba el nombre de fichero, que deja
+de existir al renombrar. Ahora es el numero de parte (`prev=p01`); R33 enmendada con el porque.
+
+**Que cuesta una caida, medido.** Mate la sesion con `taskkill /F` a proposito. Se conserva todo
+el `.pnraw` y todo el CSV, ambos terminando en un registro completo. Se pierde `SESSION_END`, el
+bloque `closed` de `session.json` (y la deriva de reloj), la nota de cierre de cada CSV y el
+renombrado: los ficheros se quedan con el nombre provisional `<MAC>_...`. Metadatos, no datos.
+
+**Anadido a la ventana:** `--split-min` (la palanca del tamano de parte) y `--duration` (una
+tirada de banco que se cierra sola en vez de morir matada). Alex duda de T0-T3: anotado como
+decision abierta D6 en la spec, no borrado todavia.

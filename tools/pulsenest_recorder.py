@@ -496,7 +496,12 @@ class Source:
         self.cfg_raw = None
         self.stream = None
         self.csv = None                       # CaptureCsvWriter, for boards only (section 2)
-        self.csv_path = None
+        self.csv_path = None                  # the part being written
+        self.csv_paths = []                   # every part of this source, in order
+        self.csv_part = 0
+        self.csv_stamp = ""                   # <date>_<time> of the FIRST part: every part shares it
+        self.csv_due_epoch_us = 0             # wall-clock instant this part must close at
+        self.csv_rows_total = 0               # rows across parts; src.csv.count is this part's
         self.pending = []                     # (t_mono_us, t_epoch_us, ip, data) until named
         self.first_mono_us = first_mono_us
         self.last_seen_mono = first_mono_us / 1e6
@@ -536,7 +541,11 @@ class Source:
              "datagrams": self.dgrams, "datagrams_skipped": self.dgrams_skipped,
              "samples": self.samples, "gaps": self.gaps,
              "csv": os.path.basename(self.csv_path) if self.csv_path else None,
-             "csv_rows": self.csv.count if self.csv else 0,
+             "csv_files": [os.path.basename(p) for p in self.csv_paths],
+             # `active`, not a null check: close() returns the part's count and leaves it in
+             # place, so after the Recorder has added it to csv_rows_total a plain `self.csv.count`
+             # counts the last part twice (measured: 122 410 reported against 95 065 written).
+             "csv_rows": self.csv_rows_total + (self.csv.count if (self.csv and self.csv.active) else 0),
              "samples_lost": self.samples_lost, "restarts": self.restarts,
              "subject": self.subject, "probe_site": self.probe_site}
         if self.kind == "board":
@@ -684,6 +693,8 @@ class Recorder:
 
     def _csv_rows(self, src, data, t_epoch_us):
         """One datagram -> its data rows in the board's CSV. Never lets the CSV break the raw."""
+        if src.csv is not None and src.csv.active:
+            self._split_csv_if_due(src, t_epoch_us)
         if src.csv is None or not src.csv.active:
             return
         try:
@@ -811,17 +822,48 @@ class Recorder:
         close to the CAPTURE_SET_SPEC 2.4 shape once truth, subject and condition are known."""
         if self.csv_mode == "off" or src.kind != "board":
             return
-        stamp = _dt.datetime.fromtimestamp(t_epoch_us / 1e6).strftime("%Y%m%d_%H%M%S")
-        name = f"{mac_compact(src.mac) if src.mac else src.ip}_{stamp}.csv"
+        if not src.csv_stamp:
+            src.csv_stamp = _dt.datetime.fromtimestamp(t_epoch_us / 1e6).strftime("%Y%m%d_%H%M%S")
+        prev = f"p{src.csv_part:02d}" if src.csv_part else ""   # the part that is closing, if any
+        src.csv_part += 1
+        name = (f"{mac_compact(src.mac) if src.mac else src.ip}_{src.csv_stamp}"
+                f"_p{src.csv_part:02d}.csv")
         src.csv_path = os.path.join(self.dir, name)
+        src.csv_paths.append(src.csv_path)
         src.csv = CaptureCsvWriter(src.csv_path, col_spec_all(), host_t_us=True,
                                    label=src.mac or src.ip)
         notes = [f"session={self.session_id}", f"writer=pulsenest_recorder/{RECORDER_VERSION}",
-                 f"source_ip={src.ip}"]
+                 f"source_ip={src.ip}", f"part={src.csv_part}"]
+        if prev:
+            # R33's `prev`, as a PART NUMBER and not a file name: a live part opens under a
+            # provisional name and every part is renamed at close, so a name written here would
+            # point at a file that no longer exists. All parts of a capture share a stem.
+            notes.append(f"prev={prev}")
         if src.cfg_raw:
             notes.append(f"from-board: {src.cfg_raw}")
         src.csv.open("\n".join(notes))
+        src.csv_due_epoch_us = (next_wall_boundary_us(t_epoch_us, self.split_s)
+                                if self.split_s else 0)
         self.log.info("%s -> %s", src.label(), name)
+
+    def _split_csv_if_due(self, src, t_epoch_us):
+        """Close this part and open the next, on the SAME wall-clock boundary as the .pnraw.
+
+        The same boundary is the point: part 3 of the CSV and part 3 of the .pnraw then cover the
+        same ten minutes, so the two can be paired without reading either. Aligned to the clock
+        rather than to the start of the session, for the reason in section 2.3: a person reading
+        a file name should be able to say what window it holds.
+        """
+        if not src.csv_due_epoch_us or t_epoch_us < src.csv_due_epoch_us:
+            return
+        try:
+            src.csv_rows_total += src.csv.close(f"rows={src.csv.count} skipped={src.csv.skipped} "
+                                                f"split=wall-clock")
+            self._open_csv(src, t_epoch_us)
+        except OSError as exc:
+            self.csv_errors += 1
+            self.log.error("csv split failed for %s: %r", src.label(), exc)
+            src.csv_due_epoch_us = 0          # stop trying; the current part keeps the rows
 
     def _open_stream(self, src, t_mono_us, t_epoch_us):
         if self.raw_mode == "off":
@@ -1203,20 +1245,31 @@ class Recorder:
 
     # ── stop ─────────────────────────────────────────────────────────────────────────────
     def _name_csv(self, src):
-        """Rename the closed CSV to the CAPTURE_SET_SPEC 2.4 shape, now that the metadata typed
-        during the session is known. Provisional name kept when it is not."""
-        if not src.csv_path or not os.path.exists(src.csv_path):
-            return
+        """Rename EVERY part of this source's CSV to the CAPTURE_SET_SPEC 2.4 shape, now that the
+        metadata typed during the session is known. Provisional names kept when it is not.
+
+        All parts or none: a directory holding `T2_SUBJ01_RESTING_..._p01.csv` beside
+        `1051DB508850_..._p02.csv` would read as two different captures.
+        """
         if not (src.truth and src.subject and src.condition):
             return
-        stamp = os.path.basename(src.csv_path).rsplit("_", 2)[-2:]
-        name = "_".join([src.truth, src.subject, src.condition.replace(" ", "-")] + stamp)
-        target = os.path.join(self.dir, name)
-        try:
-            os.replace(src.csv_path, target)
-            src.csv_path = target
-        except OSError as exc:
-            self.log.warning("could not rename %s: %r", os.path.basename(src.csv_path), exc)
+        stem = "_".join([src.truth, src.subject, src.condition.replace(" ", "-"), src.csv_stamp])
+        renamed = []
+        for path in src.csv_paths:
+            if not os.path.exists(path):
+                renamed.append(path)
+                continue
+            part = os.path.basename(path).rsplit("_", 1)[-1]        # 'pNN.csv'
+            target = os.path.join(self.dir, f"{stem}_{part}")
+            try:
+                os.replace(path, target)
+                renamed.append(target)
+            except OSError as exc:
+                self.log.warning("could not rename %s: %r", os.path.basename(path), exc)
+                renamed.append(path)
+        src.csv_paths = renamed
+        if renamed:
+            src.csv_path = renamed[-1]
 
     def stop(self, reason="operator"):
         if not self.stopped:
@@ -1237,10 +1290,11 @@ class Recorder:
                 try:
                     rows = src.csv.close(f"rows={src.csv.count} skipped={src.csv.skipped} "
                                          f"gaps={src.gaps} samples_lost={src.samples_lost}")
+                    src.csv_rows_total += rows
                     self._name_csv(src)
-                    self.log.info("%s csv: %d rows, %d non-data lines skipped -> %s",
-                                  src.label(), rows, src.csv.skipped,
-                                  os.path.basename(src.csv_path))
+                    self.log.info("%s csv: %d rows in %d part(s), %d non-data lines skipped -> %s",
+                                  src.label(), src.csv_rows_total, len(src.csv_paths),
+                                  src.csv.skipped, os.path.basename(src.csv_path))
                 except Exception as exc:
                     self.csv_errors += 1
                     self.log.error("csv close failed for %s: %r", src.label(), exc)
