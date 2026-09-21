@@ -209,6 +209,14 @@ check("closing asks first, and No keeps the session open",
 _answers["value"] = QtWidgets.QMessageBox.Yes
 win.close()
 check("Yes closes every file and writes SESSION_END", getattr(rec, "_closed", False))
+# The timers must be stopped BEFORE the socket, and the client must stay shut. Left running they
+# fired on a dead socket, and HubClient answered by launching a pulsenest_hub.py process while
+# logging once per iteration: 80 296 lines into a real session directory (2026-09-21).
+check("closing stops every timer, so none can fire on a closed socket",
+      win.timers and not any(t.isActive() for t in win.timers),
+      str([t.isActive() for t in win.timers]))
+check("and a redraw or a drain after closing is a no-op, not a reconnect",
+      (win.drain() or win.redraw() or win.tick()) is None and win._closing)
 check("the geometry is remembered for the next session", os.path.exists(G.SETTINGS_FILE))
 
 # ── the annotation list's columns fit their content ──────────────────────────────────────────

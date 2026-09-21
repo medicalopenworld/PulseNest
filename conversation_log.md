@@ -24643,3 +24643,29 @@ significa cada letra". Tenia razon: la escala Monk son diez letras para un fiche
 dos veces al ano, y a ojo la resolucion honesta son tres niveles. Ahora `light | medium | dark`.
 `pigmentation_category()` queda casi trivial y esa es la idea; lo unico que aporta es que una
 errata devuelve None en vez de convertirse en categoria, y que en blanco nunca es "light".
+
+## 2026-09-21 - columna FILE, y un fallo grave al cerrar la ventana
+
+**1. `fleet_monitor.py`: columna FILE.** Alex: no cabe `pulsenest_recorder_gui.py` (25 caracteres,
+la columna tenia 22 fijos). Ahora se calcula del nombre mas largo realmente conectado; un numero
+elegido hoy es un numero equivocado el dia que se bautice otro script. Verificado en vivo.
+
+**2. Lo que encontre mirando su sesion.** `20260921_1534_BENCH/pulsenest_recorder.log` tenia
+**80.296 copias** de `[HUB] sendto hub failed: [WinError 10038]`, escritas en los tres segundos
+posteriores al cierre, y despues `started a hub but it does not answer`.
+
+Causa: `RecorderWindow` creaba sus tres QTimer como locales. Sobrevivian por ser hijos de la
+ventana, pero yo no guardaba referencia, asi que `closeEvent` no podia pararlos. Cerraba el socket
+y los temporizadores volvian a disparar; `recv()` sobre un cliente desconectado intenta
+reconectar, `connect()` no encuentra concentrador (porque el socket cerrado es el suyo) y por
+tanto **lanza un proceso `pulsenest_hub.py`** y gira tres segundos reintentando, con una linea de
+log por iteracion, dentro del directorio de la captura.
+
+Dos arreglos, una causa. La ventana guarda sus temporizadores y los para **antes** de cerrar el
+socket, como ya hacia `fleet_ppg_viewer.py`, y cada callback vuelve en seguida si se esta
+cerrando. Y `HubClient.close()` pasa a ser definitivo: un cliente cerrado no reconecta y no lanza
+nada, porque "cerrar y llamar a recv una vez mas" es un error que cualquier llamante puede
+cometer y su castigo no deberia ser un proceso nuevo.
+
+Medido con sesion real de 25 s en el banco: **16 lineas de log**, cero fallos de envio, cero
+concentradores lanzados. Dos comprobaciones nuevas en el test (38).

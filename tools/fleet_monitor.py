@@ -392,22 +392,28 @@ def render(boards, client, hub, t_start, colors=False, t_last_any=None, aux=None
         # says its role in a column of its own (hub / subscriber) and the file that is running it
         # (script_name(), same as every window title and console banner in this project), with
         # the rest of the fields passed through unchanged.
-        rows = []
+        # Collected first, formatted second, so the FILE column is as wide as the widest name
+        # actually connected. It was a hard 22 and `pulsenest_recorder_gui.py` is 25, so that
+        # name pushed the columns out of line (Alex, 2026-09-21). A width chosen today is a
+        # width that is wrong the next time a script is named.
+        parts = []
         for line in client.last_status.splitlines()[1:]:
             if line.startswith("hub "):
                 m = re.search(r"file=(\S+)", line)
-                fname = m.group(1) if m else "?"
                 rest = re.sub(r"\bfile=\S+\s*", "", line[len("hub "):]).strip()
-                rows.append(f"{'hub':<10s} {fname:<22s} {'':21s} {rest}")
+                parts.append(("hub", m.group(1) if m else "?", "", rest))
             elif line.startswith("sub "):
                 _, addr, remainder = line.split(" ", 2)
                 fname, _, rest = remainder.partition(" ")
-                rows.append(f"{'subscriber':<10s} {fname:<22s} {addr:21s} {rest}")
+                parts.append(("subscriber", fname, addr, rest))
+        fw = max([len(p[1]) for p in parts] + [len("FILE")])
+        rows = [f"{role:<10s} {fname:<{fw}s} {addr:21s} {rest}"
+                for role, fname, addr, rest in parts]
         if rows:
             # A heading and a rule, like the board table and SOURCES: these lines were indented
             # under nothing, which read as a continuation of the block above rather than as a
             # table of their own (Alex, 2026-09-20).
-            hhdr = f"{'ROLE':<10s} {'FILE':<22s} {'ADDRESS':21s} {'COUNTERS'}"
+            hhdr = f"{'ROLE':<10s} {'FILE':<{fw}s} {'ADDRESS':21s} {'COUNTERS'}"
             out.append("HUB AND SUBSCRIBERS")
             out.append(hhdr)
             out.append("-" * len(hhdr))

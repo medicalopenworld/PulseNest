@@ -532,10 +532,15 @@ class RecorderWindow(QtWidgets.QMainWindow):
         v.addWidget(self.log_line)
         self._restore_geometry()
 
+        # Kept, not discarded: closeEvent has to STOP these. Left as locals they survived as
+        # children of the window and kept firing after the socket was shut, which cost 80 296 log
+        # lines and a spawned hub process in one real session (2026-09-21).
+        self.timers = []
         for ms, fn in ((DRAIN_MS, self.drain), (REDRAW_MS, self.redraw), (TICK_MS, self.tick)):
             t = QtCore.QTimer(self)
             t.timeout.connect(fn)
             t.start(ms)
+            self.timers.append(t)
 
     def _session_bar(self):
         bar = QtWidgets.QGroupBox("Session")
@@ -601,6 +606,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
 
     # ── network ──
     def drain(self):
+        if self._closing:
+            return
         now = time.monotonic()
         for _ in range(256):
             item = self.client.recv(0.0)
@@ -620,6 +627,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
             tr.feed(data, now)
 
     def tick(self):
+        if self._closing:
+            return
         self.rec.tick()
         if self.end_at is not None and time.monotonic() >= self.end_at:
             self.rec.stop("duration")
@@ -653,6 +662,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
         return row
 
     def redraw(self):
+        if self._closing:
+            return
         now = time.monotonic()
         for ip, tr in sorted(self.traces.items(), key=lambda kv: kv[1].first_seen):
             self._row_for(ip, tr).refresh(now, self.plots_on)
@@ -683,6 +694,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
                 return
             self.rec.stop("operator")
         self._closing = True
+        for t in self.timers:          # BEFORE the socket is closed, or they fire on a dead one
+            t.stop()
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("geometry", self.saveGeometry())
         self.client.close()
         self.rec.close()

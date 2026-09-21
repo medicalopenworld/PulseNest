@@ -105,11 +105,14 @@ class HubClient:
         self._missed = 0
         self._next_reconnect = 0.0
         self._lock = threading.Lock()              # guards sendto from several threads (belt)
+        self.closed = False                        # close() is final: see close()
 
     # ── connection ────────────────────────────────────────────────────────────────────────────
     def connect(self, timeout=CONNECT_TIMEOUT_S):
         """Subscribe (and claim control if asked). Returns True on @OK. On silence, launches a
-        local hub once and retries."""
+        local hub once and retries. Always False once close() has been called."""
+        if self.closed:
+            return False
         if self._hello(timeout):
             return True
         if self.autostart and AUTOSTART_ENABLED:
@@ -149,9 +152,17 @@ class HubClient:
         return False
 
     def close(self):
+        """Final. A closed client never reconnects and never launches a hub.
+
+        `closed` is not belt and braces: a caller that calls recv() once more after close() --
+        a GUI whose timer fires during shutdown, say -- used to reach connect(), find no hub
+        (its own socket being shut), and START a pulsenest_hub.py process, while logging a line
+        per iteration for three seconds. Measured once: 80 296 lines.
+        """
         if self.connected:
             self._send_hub(b"@UNSUB\r\n")
         self.connected = self.controller = self.hub_alive = False
+        self.closed = True
         try:
             self.sock.close()
         except OSError:
@@ -166,6 +177,8 @@ class HubClient:
     def recv(self, timeout=0.5):
         """-> (board_ip, datagram) for the next forwarded board datagram, or None after `timeout`.
         Pings, pongs and reconnection happen in here."""
+        if self.closed:
+            return None
         now = time.monotonic()
         if not self.connected:
             if now >= self._next_reconnect:
