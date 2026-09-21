@@ -24866,3 +24866,30 @@ porque son la misma medida leida de dos maneras y la razon de tener ambas es com
 retraction, `supersedes` para las correcciones. Filas del movil solo del declarado con `videonest
 <id>`. Sustituye a `VideoNest_<DeviceID>.csv`, que duro un dia. Probado con el movil real: 33
 filas videonest, cabecera y cierre correctos. 108 comprobaciones.
+
+## 2026-09-22 - ensayo completo del guion, banco, tres placas y movil
+
+Seguido `docs/hospital_runbook.md` de §1 a §6 con los comandos tal como estan escritos, tres
+ventanas reales (`--board 8850/825C/87A4`, `--subject SUBJ01..03`, `--videonest J6plusACM` solo
+en la primera), 150 s con partes de 1 min para ver el corte. Los pasos de raton, con el arnes
+offscreen sobre la ventana real (39/39).
+
+**Todo lo que el guion afirma se cumplio:** tres placas vivas con el mismo fw 0.14 / build 26c4f55
+/ elfsha accaa122c71f6108; movil vivo; 56 GB libres; tres directorios `<fecha>_<hora>_HOSP01_SUBJnn`
+con una sola placa cada uno; 3 partes de CSV y 3 de .pnraw por placa; 0 huecos; **17,2 / 16,8 /
+17,0 MB/min por placa**, la cifra del guion; `reference_spo2.csv` con 144 filas del movil solo en
+SUBJ01 y 0 en las otras dos; RECORD, correccion, DELETE, PLOTS y "cerrar pregunta" via arnes.
+
+**Dos hallazgos para Alex, no para el documento:**
+1. **El portatil no ha sincronizado nunca el reloj**: `w32tm /query /status` dice "Last Successful
+   Sync Time: unspecified". El guion manda sincronizar la vispera; la maquina dice que no se ha
+   hecho. Es el paso que alinea las fotos con la senal.
+2. **Los CSV quedaron con nombre provisional** `<MAC>_...` en las tres sesiones, porque la
+   condicion solo se puede poner desde la ventana y nadie hizo clic. El guion ya lo avisa ("A file
+   still called <MAC>_ means the condition was never set"), asi que el documento es honesto; pero
+   revela que un arranque por linea de mandato no puede producir nombres canonicos. Propuesta, sin
+   implementar: `--cond RESTING`, simetrico a `--subject`.
+
+**Lo que solo una mano puede ensayar:** hacer clic en la pantalla real, desenchufar una placa
+(SILENT), parar el movil (el id desaparece de la lista), el autoarranque del concentrador, abrir
+una parte en Flow CSV Viewer, copiar a un segundo disco.
