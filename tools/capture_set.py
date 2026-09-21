@@ -25,8 +25,8 @@ import os
 CAPTURES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "captures")
 INDEX_PATH = os.path.join(CAPTURES_DIR, "index.csv")
 TRUTH_PATH = os.path.join(CAPTURES_DIR, "truth.csv")
-# Not committed, like SUBJECT_CODES.txt beside it: a clone legitimately has neither.
-SUBJECTS_PATH = os.path.join(CAPTURES_DIR, "subjects.csv")
+# Not committed, and a clone of this repository legitimately does not have one.
+SUBJECTS_PATH = os.path.join(CAPTURES_DIR, "SUBJECT_CODES.txt")
 
 
 class Capture(object):
@@ -93,45 +93,44 @@ def load_all():
 
 
 def subjects(path=None):
-    """`captures/subjects.csv` as {code: {column: value}} -- the covariates a measurement needs.
+    """`captures/SUBJECT_CODES.txt` as {code: {"age": str, "skin": str}} -- WITHOUT the name.
 
-    Never names: those live in SUBJECT_CODES.txt, which nothing reads programmatically and
-    nothing should. Returns {} when the file is absent, because it is not committed and a clone
-    of this repository legitimately does not have one.
+    The file holds `code person age skin`, whitespace-separated. The person column is read and
+    dropped here and nowhere kept, so no caller can put a name in a plot title, a log line or a
+    shared notebook by accident. That is the whole reason this function exists rather than
+    callers opening the file themselves.
 
-    The columns that decide what a capture can be compared with: `mst` (Monk Skin Tone, A-J) and
-    `ita_probe_deg` (Individual Typology Angle at the probe site, degrees). Melanin absorbs red
-    light, one of the two wavelengths the ratio is built from, so pigmentation shifts the reading
-    -- and shifts it most at low saturation. A set whose subjects all have similar skin cannot
-    show that bias at all; this file is what says whether ours does.
+    Returns {} when the file is absent, which a clone of this repository legitimately is.
+
+    `skin` is a Monk Skin Tone letter A-J. Melanin absorbs red light, one of the two wavelengths
+    the ratio is built from, so pigmentation shifts the reading -- most at low saturation. A set
+    whose subjects all have similar skin cannot show that bias at all.
     """
     path = path or SUBJECTS_PATH
     if not os.path.exists(path):
         return {}
     out = {}
-    with open(path, encoding="utf-8") as f:
-        rows = [ln for ln in f if not ln.lstrip().startswith("#")]
-    for row in csv.DictReader(rows):
-        code = (row.get("code") or "").strip()
-        if code:
-            out[code] = {k: (v or "").strip() for k, v in row.items()}
+    with io.open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if not parts[0].upper().startswith("SUBJ"):
+                continue
+            #        [0] code   [1] person -- dropped   [2] age   [3] skin
+            out[parts[0].upper()] = {"age": parts[2] if len(parts) > 2 else "",
+                                     "skin": parts[3] if len(parts) > 3 else ""}
     return out
 
 
 def pigmentation_category(subject_row):
-    """ISO 80601-2-61:2026 Table 201.102: light | medium | dark | None if unknown.
+    """light | medium | dark, or None when nobody has looked yet.
 
-    ITA wins over MST when the two disagree, which is what the standard says to do.
+    The three bands are the ones ISO 80601-2-61:2026 uses, borrowed because they are as good a
+    split as any and already thought through -- not because anything here is being certified.
     """
-    ita = (subject_row or {}).get("ita_probe_deg", "")
-    if ita:
-        try:
-            v = float(ita)
-        except ValueError:
-            v = None
-        if v is not None:
-            return "light" if v > 30 else ("dark" if v < -30 else "medium")
-    mst = ((subject_row or {}).get("mst") or "").strip().upper()[:1]
+    mst = ((subject_row or {}).get("skin") or "").strip().upper()[:1]
     # Tuples, not `in "ABC"`: the empty string is a substring of every string, so a subject with
     # no pigmentation recorded came back "light" -- the worst possible default, since a set that
     # looks light-skinned when it is simply unmeasured is exactly the gap ISO asks us to close.

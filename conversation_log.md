@@ -24608,3 +24608,24 @@ ejemplo, o sea publicaba justo lo que acababa de quitar. Memoria nueva:
 
 **Lo que si es decision suya:** reescribir el historial de git. Las edades siguen en los commits
 anteriores. Sacarlas exige force-push y rompe los clones. Sin hacer.
+
+## 2026-09-21 - `subjects.csv` borrado el mismo dia que lo cree
+
+Alex: "no entiendo el motivo del fichero subjects.csv. Su mera existencia me da trabajo y me
+complica la arquitectura. Dame razones para no borrarlo." Solo habia una razon de verdad y no
+justificaba un fichero aparte.
+
+**Por que mi justificacion no valia:** dije que separaba identidad de covariables, pero los dos
+ficheros estaban igual de ignorados por git, en el mismo directorio y se copian juntos, asi que la
+separacion no protegia de nada. Ademas invente once columnas para datos que nadie tiene (edad
+gestacional, peso, ITA en la frente): esquema especulativo, o sea trabajo puro. Y dos ficheros
+pueden discrepar sobre que codigos existen.
+
+**La unica razon real:** un programa que lee un fichero con nombres puede colar un nombre en el
+titulo de una grafica o en un log. **Resuelta sin segundo fichero:** `capture_set.subjects()` lee
+la columna del nombre y la descarta, asi que ningun llamante puede sostenerla. Verificado.
+
+**Resultado:** un solo fichero, `captures/SUBJECT_CODES.txt`, con cuatro columnas:
+`code  person  age  skin`. `age` en anos para un adulto o `Nd` para dias de un recien nacido.
+`skin` una letra Monk Skin Tone A-J a ojo, que no necesita instrumento. Se cita el colorimetro
+solo por si algun dia aparece.

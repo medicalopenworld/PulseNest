@@ -248,20 +248,29 @@ but not in the code, for three reasons:
   until they were renamed out of it on 2026-09-21. Git history still holds them;
 * **a join key must not change, and age does.** For a neonate it changes daily, so `SUBJ01_D02`
   and `SUBJ01_D03` would be two babies;
-* **race is not the variable.** ISO 80601-2-61:2026 measures *melanin* — it criticises the
-  Fitzpatrick scale by name for representing darker skin badly, and asks for the **Monk Skin Tone
-  scale** (A–J, subjective) and **ITA**, the Individual Typology Angle in degrees, measured with a
-  colorimeter **at the probe site** because that is the tissue the light crosses.
+* **race is not the variable — melanin is.** Recorded with the **Monk Skin Tone scale**, A–J, by
+  eye against the printed scale, because that needs nothing but eyes. (ISO 80601-2-61:2026 uses an
+  instrument, the Individual Typology Angle in degrees from a colorimeter at the probe site, and
+  argues against the Fitzpatrick scale for representing darker skin badly. Worth knowing if a
+  colorimeter ever appears; the letter is enough meanwhile.)
 
-So two files beside each other, both git-ignored:
+So **one** file, git-ignored, with the columns the measurement needs beside the identity:
 
-| File | Holds | Read by |
-|---|---|---|
-| `SUBJECT_CODES.txt` | code → person. Identity, nothing else | nobody; no program parses it |
-| `subjects.csv` | code → `role, age_band, gest_age_wk, postnatal_d, weight_g, mst, ita_probe_deg, ita_forehead_deg, probe_site` | `capture_set.subjects()` |
+```
+# code      person                 age   skin
+SUBJ01      <who>                  57    C
+SUBJ08      <who>                  3d    F
+```
 
-Ages are **banded** and recorded as at the first capture; for a neonate, gestational age in weeks,
-postnatal age in days and weight are the variables that matter and years say nothing.
+`age` is years for an adult or `Nd` for a newborn's age in days; `skin` is a Monk Skin Tone
+letter, A (lightest) to J (darkest), judged by eye against the printed scale.
+
+There was briefly a second file, `subjects.csv`, holding the covariates apart from the names. It
+was deleted the same day: both files were git-ignored, in the same directory and copied together,
+so the split protected nothing, and it had eleven columns for data nobody has. The one real
+argument for it — that a program reading a file with names in it can leak one into a plot title
+or a log — is answered by `capture_set.subjects()`, which reads the person column and **drops
+it**, so no caller can hold a name. That is why callers use it instead of opening the file.
 
 **Why pigmentation is worth recording.** Melanin absorbs red light, which is one of the two
 wavelengths the ratio is built from, so skin pigmentation shifts the SpO2 reading itself — and it
