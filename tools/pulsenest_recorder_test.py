@@ -283,6 +283,30 @@ try:
         refused = True
     check("[3] --subject refuses anything that is not a subject code", refused)
 
+    # The class is derived at close from what actually arrived, never declared. It used to come
+    # from tick boxes, and with `operator annotation` permanently on every session came out T2 --
+    # including one in which nobody ever typed a reading.
+    recT = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
+    recT.feed("10.0.0.1", CFG_8850)
+    recT.feed("10.0.0.1", M4)
+    recT.console("subject 8850 SUBJ01")
+    recT.console("cond resting SUBJ01")
+    recT.stop("t"); recT.close()
+    q = [x for x in recT.owners() if x.kind == "board"][0]
+    check("[3] a HOSP session where no reference ever arrived is T0, not T2",
+          q.truth == "T0" and recT.site.startswith("HOSP"), str(q.truth))
+    recU = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock())
+    recU.feed("10.0.0.1", CFG_8850)
+    recU.feed("10.0.0.1", M4)
+    recU.console("subject 8850 SUBJ01")
+    recU.console("spo2 SUBJ01 96")
+    recU.stop("t"); recU.close()
+    q2 = [x for x in recU.owners() if x.kind == "board"][0]
+    check("[3] one manual reading is enough to make it T2", q2.truth == "T2", str(q2.truth))
+    check("[3] and `truth` still forces the two a recording cannot show by itself",
+          R.truth_from_recorded(0, 0) == "T0" and R.truth_from_recorded(0, 5) == "T2"
+          and "T1" in R.TRUTH_WORDS.values() and "T3" in R.TRUTH_WORDS.values())
+
     # VideoNest's readings, in a file of their own (Alex, 2026-09-21). Until this they were
     # recorded and never read: the frames existed only as raw bytes in the aux .pnraw, and not
     # even there under --raw off, so the automatic reference was write-only.
@@ -348,16 +372,20 @@ try:
           and R.TRUTH_WORDS["arterial"] == "T3" and R.TRUTH_WORDS["oximeter"] == "T2")
     check("[7] an unknown truth class is refused, not stored",
           rec.console("truth T7").startswith("truth must be one of") and a.truth == "T0")
-    check("[7] a bench session starts with no truth class at all", rec.default_truth is None)
     rec.console("truth oximeter")
-    check("[7] refs: the set is stored in order and the truth class follows from it",
-          rec.console("refs SUBJ01 operator,videonest_udp").startswith("refs=videonest_udp,operator truth=T2")
-          and a.truth_sources == ["videonest_udp", "operator"] and a.truth == "T2")
-    check("[7] refs: a simulator alone is T1, none is T0, an unknown word is refused",
-          rec.console("refs SUBJ01 simulator").endswith("truth=T1 on SUBJ01")
-          and rec.console("refs SUBJ01 none").startswith("refs=none truth=T0")
-          and rec.console("refs SUBJ01 photos").startswith("unknown reference photos")
-          and a.truth_sources == [])
+    # Which phone is filming THIS cot. It declares, it does not filter: every phone on the wire
+    # reaches every session, and VideoNest_<id>.csv already keeps their rows apart by name.
+    check("[7] videonest names the phone that is this baby's reference",
+          rec.console("videonest J6plusACM") == "videonest = J6plusACM"
+          and rec.videonest_id == "J6plusACM")
+    check("[7] videonest none clears it",
+          rec.console("videonest none") == "videonest = none" and rec.videonest_id is None)
+    check("[7] an id with characters a device id cannot hold is refused, and changes nothing",
+          rec.console("videonest a/b").startswith("'a/b' is not a device id")
+          and rec.videonest_id is None, rec.console("videonest a/b"))
+    check("[7] with no argument it lists what has actually been heard",
+          rec.console("videonest").startswith("usage: videonest"), rec.console("videonest"))
+    rec.console("videonest J6plusACM")
     rec.console("truth oximeter")
     check("[7] condition narrowed to one subject leaves the others alone",
           rec.console("cond resting SUBJ01").startswith("cond=RESTING on")
@@ -542,7 +570,7 @@ try:
     check("[7] session.json: schema, closed with drift, operator", sj["schema"] == "pulsenest_session/1"
           and sj["closed"] is not None and sj["closed"]["clock_drift_us"] == 0 and sj["operator"] == "AC")
     check("[7] session.json carries the typed metadata",
-          srcA["truth"] == "T2" and srcA["condition"] == "RESTING"
+          srcA["condition"] == "RESTING"
           and srcA["reference_monitor"]["averaging_s"] == 8.0
           and srcA["reference_monitor"]["probe_site"] == "right hand",
           str(srcA.get("reference_monitor")))

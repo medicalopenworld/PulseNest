@@ -197,18 +197,18 @@ COMMAND_HELP = {
         "A code or a word, either is accepted. A hospital campaign is T2, and a session whose\n"
         "site is HOSPnn starts at T2 so the command is there to correct, not to remember.",
     ),
-    "refs": (
-        "refs SUBJ01 <src>[,<src>...]|none",
-        "which references exist for that baby; the truth class follows",
-        "The set of references recorded beside that baby, any combination of:\n"
-        "  simulator           the MS100 is the subject\n"
-        "  videonest_udp       VideoNest is sending $VN1 frames to the hub\n"
-        "  videonest_csv       VideoNest is logging its own CSV on the phone\n"
-        "  videonest_pictures  the phone is photographing the monitor\n"
-        "  operator            you are typing `spo2` readings\n"
-        "The T-class is derived, never typed: any reference beside the baby is T2, a simulator\n"
-        "alone is T1, none is T0. `truth` still exists to force a class, e.g. T3 for an arterial\n"
-        "study, which no tick box can claim.",
+    "videonest": (
+        "videonest <device id>|none",
+        "which phone is pointed at THIS baby's monitor",
+        "With one window per baby and one phone per monitor, the recording cannot tell by itself\n"
+        "which phone is filming which cot -- every phone on the wire reaches every session. This\n"
+        "says which one is this baby's reference; it goes into session.json and into an event.\n"
+        "\n"
+        "It declares, it does not filter: every phone's frames are still recorded, because\n"
+        "VideoNest_<id>.csv carries the device in its name so nothing can be mixed up, and\n"
+        "throwing away data already in hand to tidy a directory is the wrong trade.\n"
+        "\n"
+        "With no argument it lists the device ids seen so far.",
     ),
     "cond": (
         "cond RESTING [SUBJ01]",
@@ -261,20 +261,13 @@ COMMAND_HELP = {
 # CAPTURE_SET_SPEC 2.2. The number climbs with the quality of the evidence (Alex, 2026-09-21:
 # the original scale had T0 = arterial and T3 = none, which reads backwards).
 TRUTH_CLASSES = ("T0", "T1", "T2", "T3")
-# What the operator actually knows and ticks (Alex, 2026-09-21: "the T codes add almost nothing;
-# what carries information is WHICH references exist, and they are not exclusive"). The class
-# is derived from the set, never typed: any reference beside the baby is T2, a simulator alone is
-# T1, nothing is T0. T3 (arterial) cannot come from this list -- it is a study, not a tick box.
-TRUTH_SOURCES = ("simulator", "videonest_udp", "videonest_csv", "videonest_pictures", "operator")
-
-
-def truth_from_sources(sources):
-    srcs = set(sources)
-    if srcs & {"videonest_udp", "videonest_csv", "videonest_pictures", "operator"}:
-        return "T2"
-    if "simulator" in srcs:
-        return "T1"
-    return "T0"
+# Derived at close from what was RECORDED, never declared (Alex, 2026-09-22). The tick boxes that
+# used to declare it degenerated: with `operator annotation` permanently on -- it is the panel on
+# the right, always available -- every session came out T2, including one in which nobody typed a
+# reading. What a session can show by itself is whether a reference actually arrived; T1 (a
+# simulator was the subject) and T3 (an arterial study) it cannot, so those stay typed.
+def truth_from_recorded(manual_readings, videonest_rows):
+    return "T2" if (manual_readings or videonest_rows) else "T0"
 
 TRUTH_WORDS = {"none": "T0", "simulator": "T1", "sim": "T1", "oximeter": "T2", "ecg": "T2",
                "reference": "T2", "arterial": "T3"}
@@ -328,6 +321,7 @@ def safe_condition(text):
     t = re.sub(r"[^A-Za-z0-9-]+", "-", (text or "").strip().upper()).strip("-")
     return t[:24]
 _VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,32})\*")
+_VN_IDCHARS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 # $VN1,<seq>,<spo2>,<conf>,<phone time>,<id>*<checksum>
 # The fourth field is the phone's own clock. Measured on the real phone 2026-09-22 it is LOCAL
 # TIME as text -- `2026-09-22 00:21:26.261` -- not the epoch milliseconds an earlier build sent
@@ -566,7 +560,6 @@ class Source:
         self.subject = None
         self.probe_site = None
         self.truth = None                     # CAPTURE_SET_SPEC section 2.2: T0 none .. T3 arterial
-        self.truth_sources = []               # subset of TRUTH_SOURCES, in that order
         self.condition = None                 # RESTING, FEEDING, ...
         # The commercial monitor this baby is also wearing. Two of these are not bureaucracy
         # (spec section 7): `probe_site`, because preductal (right hand) and postductal (foot)
@@ -603,7 +596,6 @@ class Source:
         if self.kind == "board":
             d["mac"] = self.mac
             d["truth"] = self.truth
-            d["truth_sources"] = list(self.truth_sources)
             d["condition"] = self.condition
             d["reference_monitor"] = self.reference
             d["board_rev"] = self.ident.get("board")
@@ -620,7 +612,7 @@ class Recorder:
     def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="on", hub_text="",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
-                 board=None, subject=None):
+                 board=None, subject=None, videonest=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
         if csv_mode not in ("on", "off"):
@@ -644,13 +636,14 @@ class Recorder:
         if subject and self.want_subject is None:
             raise ValueError(f"{subject!r} is not a subject code (SUBJ01, SUBJ12, ...)")
         self.ignored = set()          # IPs of boards this session is not recording
+        # Which phone is THIS baby's reference. Every phone on the wire is still recorded --
+        # VideoNest_<id>.csv carries the device in its name, so nothing can be mixed up -- but
+        # only one of them is pointed at this baby's monitor, and session.json has to say which.
+        self.videonest_id = videonest or None
         # The tag is not decoration: three windows launched in the same minute would otherwise
         # share a directory and overwrite each other's session.json.
         tag = self.want_subject or self.board_filter
         self.session_id = f"{stamp:%Y%m%d_%H%M}_{self.site}" + (f"_{tag}" if tag else "")
-        # A hospital session is T2 by construction (a commercial monitor beside every baby), so
-        # start there: the `truth` command exists to correct, not to be remembered under stress.
-        self.default_truth = "T2" if self.site.startswith("HOSP") else None
         self.dir = os.path.join(out_root, self.session_id)
         self.raw_dir = os.path.join(self.dir, "raw")
         self.operator = operator
@@ -712,7 +705,6 @@ class Recorder:
         src = self.sources.get(ip)
         if src is None:
             src = self.sources[ip] = Source(ip, t_mono_us, t_epoch_us)
-            src.truth = self.default_truth
             if data.startswith(b"$VN1"):
                 src.kind = "videonest"
             self.log.info("new source %s%s", ip, " (VideoNest)" if src.kind == "videonest" else "")
@@ -1207,27 +1199,21 @@ class Recorder:
                            note=f"subject={s.subject} board={s.label()}")
                 self.write_session_json()
                 return f"{s.label()} -> {s.subject}"
-            if cmd == "refs":
-                # `refs SUBJ01 videonest_udp,operator` -- the set of references that exist for
-                # that baby; `refs SUBJ01 none` clears it. The T-class follows from the set.
-                if len(args) != 2 or not _SUBJ_RE.match(args[0]):
-                    return "usage: refs SUBJ01 <src>[,<src>...]|none   (" + ",".join(TRUTH_SOURCES) + ")"
-                subj = args[0].upper()
-                wanted = [] if args[1].lower() == "none" else args[1].lower().split(",")
-                bad = [w for w in wanted if w not in TRUTH_SOURCES]
-                if bad:
-                    return "unknown reference " + ", ".join(bad) + "; known: " + ", ".join(TRUTH_SOURCES)
-                targets = [t for t in self._owners() if t.kind == "board" and t.subject == subj]
-                if not targets:
-                    return f"no board for {subj}"
-                ordered = [x for x in TRUTH_SOURCES if x in wanted]
-                for t in targets:
-                    t.truth_sources = list(ordered)
-                    t.truth = truth_from_sources(ordered)
-                self.event("META", subject=subj, board_mac=self._mac_for_subject(subj),
-                           note=f"refs={','.join(ordered) or 'none'} truth={targets[0].truth}")
+            if cmd == "videonest":
+                # Which phone is pointed at THIS baby's monitor. `videonest none` clears it.
+                want = args[0] if args else ""
+                if not want:
+                    seen = ", ".join(sorted(self.by_vn)) or "(none seen yet)"
+                    return f"usage: videonest <device id>|none   seen: {seen}"
+                if want.lower() == "none":
+                    self.videonest_id = None
+                else:
+                    if not _VN_IDCHARS_RE.match(want):
+                        return f"{want!r} is not a device id"
+                    self.videonest_id = want
+                self.event("META", note=f"videonest={self.videonest_id or 'none'}")
                 self.write_session_json()
-                return f"refs={','.join(ordered) or 'none'} truth={targets[0].truth} on {subj}"
+                return f"videonest = {self.videonest_id or 'none'}"
             if cmd in ("truth", "cond"):
                 # `truth T2` / `cond RESTING` apply to every board; a trailing SUBJnn narrows it.
                 if not args:
@@ -1384,6 +1370,8 @@ class Recorder:
             "session_id": self.session_id,
             "site_code": self.site,
             "board_filter": self.board_filter,
+            "videonest_id": self.videonest_id,
+            "videonest_seen": sorted(self.by_vn),
             "operator": self.operator,
             "started": self.started,
             "closed": closed,
@@ -1478,6 +1466,14 @@ class Recorder:
                 except Exception as exc:
                     self.errors += 1
                     self.log.error("close failed for %s: %r", src.label(), exc)
+        # The class, from what actually arrived rather than from what anyone declared.
+        vn_rows = sum(x.vn_rows for x in self._owners() if x.kind == "videonest")
+        for src in self._owners():
+            if src.kind == "board" and not src.truth:
+                src.truth = truth_from_recorded(len(self.readings(src.subject)), vn_rows)
+        for src in self._owners():
+            if src.csv_paths:
+                self._name_csv(src)
         t_mono, t_epoch = self.clock()
         drift = (t_epoch - t_mono) - (self.started["t_epoch_us"] - self.started["t_mono_us"])
         closed = {"iso": iso_local(t_epoch), "t_mono_us": t_mono, "t_epoch_us": t_epoch,
@@ -1626,6 +1622,8 @@ def main(argv=None):
     ap.add_argument("--subject", default="", metavar="SUBJnn",
                     help="bind this coded subject as soon as the board is identified, so the "
                          "session directory is named from the start")
+    ap.add_argument("--videonest", default="", metavar="ID",
+                    help="device id of the phone pointed at THIS baby's monitor")
     ap.add_argument("--duration", type=float, default=0.0, help="seconds; 0 = until quit")
     args = ap.parse_args(argv)
 
@@ -1636,7 +1634,7 @@ def main(argv=None):
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject)
+                       board=args.board, subject=args.subject, videonest=args.videonest)
     except NotEnoughSpace as exc:
         print(f"NOT STARTING: {exc}.", file=sys.stderr)
         print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)

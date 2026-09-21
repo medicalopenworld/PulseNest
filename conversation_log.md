@@ -24790,3 +24790,29 @@ dice que imagen abrir, sin conversion.
 milisegundo; 405 ms de dispersion dice que es **tiempo transcurrido dentro del movil**: el
 instante sellado es cuando se tomo la foto, y el OCR y el envio ocurren despues. Importa, porque
 2 s a 500 Hz son mil muestras. Anotado como decision abierta en la spec.
+
+## 2026-09-22 - una casilla de referencia en vez de cinco
+
+Alex: "quita los REFERENCES checkboxes: `operator annotation` es lo que esta a la derecha y
+siempre tiene que estar activo, y del resto solo sobrevive `VideoNest UDP`, acompanado de un
+control Device ID para elegir que smartphone enfoca al pulsioximetro correcto; los demas no
+afectan al registro que hace esta ventana". El principio es bueno y resuelve dos cosas de golpe.
+
+**1. Las casillas se degradaban.** Con `operator` siempre activo, la clase salia T2 en todas las
+sesiones, incluida una en la que nadie teclease una lectura. Asi que la clase **ya no se declara**:
+se **deriva al cerrar de lo que realmente llego** (cualquier lectura manual o cualquier fila de
+VideoNest la hace T2; nada la hace T0). `truth` sigue existiendo para forzar los dos casos que una
+grabacion no puede mostrar por si sola: T1 simulador y T3 arterial. **Quitado tambien el valor por
+defecto T2 de los sitios `HOSPnn`**, que era lo unico capaz de hacer mentir a esa derivacion.
+
+**2. El movil pasa a ser atribuible**, que era la pregunta abierta que creo una ventana por bebe.
+Nuevo comando `videonest <id>` y parametro `--videonest`. **Declara, no filtra**: se siguen
+grabando todos los moviles, porque `VideoNest_<id>.csv` ya lleva el aparato en el nombre y nada se
+puede mezclar, y tirar datos que ya tienes para ordenar un directorio es mal negocio.
+
+El desplegable de Device ID **se rellena solo con los moviles realmente oidos**, asi que un movil
+que no emite no aparece, que es la respuesta a "¿esta funcionando VideoNest?" sin ningun menu.
+
+Probado en el banco: `videonest_id=J6plusACM`, 17.565 filas de placa, 30 de VideoNest, 0 malas, y
+la clase salio **T2 derivada**, sin marcar nada. 110 y 39 comprobaciones; las otras cuatro suites
+intactas.

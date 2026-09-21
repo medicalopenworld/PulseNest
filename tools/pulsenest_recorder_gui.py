@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest_net import UDP_DATA_PORT, script_name                     # noqa: E402
 from pulsenest_hub_client import HubClient                               # noqa: E402
-from pulsenest_recorder import (Recorder, NotEnoughSpace, TRUTH_SOURCES,  # noqa: E402
+from pulsenest_recorder import (Recorder, NotEnoughSpace,                # noqa: E402
                                 mac_compact, SPLIT_MIN_DEFAULT, normalise_subject)
 from fleet_ppg_viewer import (BoardTrace, make_stats_widget, stats_width,  # noqa: E402
                               stats_columns, MIN_PLOT_W, RED)
@@ -96,10 +96,6 @@ QMessageBox, QDialog {{ background-color: {BG}; color: {FG}; }}
 # SUBJ13 types it. Twelve was a cap that would simply have blocked the thirteenth baby.
 SUBJECTS = [f"SUBJ{n:02d}" for n in range(1, 13)]
 CONDITIONS = ["RESTING", "FEEDING", "HANDLING", "KANGAROO", "PHOTOTHERAPY", "SLEEPING"]
-# Label the operator reads -> key the recorder stores. Same order as TRUTH_SOURCES.
-REF_LABELS = {"simulator": "simulator", "videonest_udp": "VideoNest UDP",
-              "videonest_csv": "VideoNest CSV", "videonest_pictures": "VideoNest pictures",
-              "operator": "operator annotation"}
 PR_NONE = 0     # the pulse-rate spinbox at its minimum reads "--": not recorded
 CELL_PAD = 14   # a table cell's own left+right margins, on top of the text it holds
 
@@ -194,20 +190,29 @@ class BoardRow(QtWidgets.QFrame):
         self.subject.lineEdit().editingFinished.connect(self._subject_changed)
         form.addRow("SUBJECT", self.subject)
 
-        refs_box = QtWidgets.QWidget()
-        refs = QtWidgets.QVBoxLayout(refs_box)
-        refs.setContentsMargins(0, 0, 0, 0)
-        refs.setSpacing(0)
-        self.refs = {}
-        for k in TRUTH_SOURCES:
-            cb = QtWidgets.QCheckBox(REF_LABELS[k])
-            cb.toggled.connect(self._refs_changed)
-            self.refs[k] = cb
-            refs.addWidget(cb)
-        refs_box.setToolTip("Every reference that exists for this baby -- tick all that apply. "
-                            "This is what an analysis can compare our SpO2 against; the T-class "
-                            "in the filename is derived from it, nobody types it.")
-        form.addRow("REFERENCES", refs_box)
+        # One reference control, not five (Alex, 2026-09-22). `operator annotation` was always on
+        # -- it is the panel to the right -- and `simulator`, `VideoNest CSV` and `VideoNest
+        # pictures` change nothing about what THIS window records, so they belonged in truth.csv
+        # and not here. What is left is the one thing this window cannot work out for itself:
+        # every phone on the wire reaches every session, so which one is filming THIS cot has to
+        # be said.
+        vn_box = QtWidgets.QWidget()
+        vn = QtWidgets.QHBoxLayout(vn_box)
+        vn.setContentsMargins(0, 0, 0, 0)
+        self.vn_on = QtWidgets.QCheckBox("VideoNest UDP")
+        self.vn_on.setToolTip("Tick when a phone running VideoNest is filming this baby's "
+                              "monitor and sending to the hub. Then choose which phone.")
+        self.vn_id = QtWidgets.QComboBox()
+        self.vn_id.setMinimumWidth(120)
+        self.vn_id.setToolTip("The device id the phone puts in its own frames -- the same word "
+                              "its photographs are named after. The list fills itself as phones "
+                              "are heard on the wire, so a phone that is not sending does not "
+                              "appear, which is itself the answer to 'is it working?'.")
+        self.vn_on.toggled.connect(self._videonest_changed)
+        self.vn_id.activated.connect(lambda _i: self._videonest_changed())
+        vn.addWidget(self.vn_on)
+        vn.addWidget(self.vn_id, 1)
+        form.addRow("REFERENCE", vn_box)
 
         self.condition = QtWidgets.QComboBox()
         self.condition.setEditable(True)
@@ -315,7 +320,7 @@ class BoardRow(QtWidgets.QFrame):
         return g
 
     def _set_dependents_enabled(self, on):
-        for w in list(self.refs.values()) + [self.condition, self.note]:
+        for w in [self.vn_on, self.vn_id, self.condition, self.note]:
             w.setEnabled(on)
         if hasattr(self, "record"):
             for w in (self.record, self.delete_last, self.delete_sel):
@@ -342,18 +347,33 @@ class BoardRow(QtWidgets.QFrame):
             self._set_dependents_enabled(True)
             return
         self.win.command(f"subject {suffix(self.src.mac)} {subj}")
+        self._videonest_changed()
         self._set_dependents_enabled(True)
         # Re-apply what the operator may already have chosen while the subject was blank.
-        self._refs_changed()
+        self._videonest_changed()
         self._condition_changed()
 
-    def _refs_changed(self, *_):
-        subj = self.subject.currentText()
-        if not subj or not self.refs["operator"].isEnabled():
+    def _videonest_changed(self, *_):
+        if not self.vn_on.isEnabled():
             return
-        ticked = [k for k, cb in self.refs.items() if cb.isChecked()]
-        if ticked or (self.src is not None and self.src.truth_sources):
-            self.win.command(f"refs {subj} {','.join(ticked) if ticked else 'none'}")
+        want = self.vn_id.currentText().strip() if self.vn_on.isChecked() else ""
+        if want == (self.win.rec.videonest_id or ""):
+            return
+        self.win.command(f"videonest {want or 'none'}")
+
+    def refresh_phones(self):
+        """The device list fills itself from the phones actually heard. A phone that is not
+        sending never appears, which is the answer to "is VideoNest working?" without a menu."""
+        seen = sorted(self.win.rec.by_vn)
+        if seen == [self.vn_id.itemText(i) for i in range(self.vn_id.count())]:
+            return
+        current = self.vn_id.currentText()
+        self.vn_id.clear()
+        self.vn_id.addItems(seen)
+        if current in seen:
+            self.vn_id.setCurrentText(current)
+        elif len(seen) == 1 and self.vn_on.isChecked():
+            self._videonest_changed()          # only one phone: it is the one
 
     def _condition_changed(self, *_):
         subj, cond = self.subject.currentText(), self.condition.currentText().strip()
@@ -486,6 +506,7 @@ class BoardRow(QtWidgets.QFrame):
             self.warn.setStyleSheet(f"color:{RED if (src.silent or not src.subject) else AMBER}; "
                                     "font-weight:bold;")
         if self.body.isVisible():
+            self.refresh_phones()
             self.refresh_listing()
             if plots_on:
                 self.curve.setData([t - now for t in tr.t], list(tr.y))
@@ -749,6 +770,8 @@ def main(argv=None):
                          "508850). One window, one board, one baby")
     ap.add_argument("--subject", default="", metavar="SUBJnn",
                     help="bind this coded subject as soon as the board is identified")
+    ap.add_argument("--videonest", default="", metavar="ID",
+                    help="device id of the phone pointed at THIS baby's monitor")
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT, metavar="MIN",
                     help=f"split both the .pnraw and the live CSV on this wall-clock period "
@@ -772,7 +795,7 @@ def main(argv=None):
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject)
+                       board=args.board, subject=args.subject, videonest=args.videonest)
     except (NotEnoughSpace, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2

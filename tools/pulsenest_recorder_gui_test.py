@@ -94,7 +94,7 @@ check("one row per board, keyed by its MAC once the board says who it is",
       list(win.rows) == [MAC] and row.src is not None and row.src.mac == MAC, list(win.rows))
 check("nothing but SUBJECT is usable before a subject is bound",
       row.subject.isEnabled() and not row.record.isEnabled()
-      and not row.condition.isEnabled() and not row.refs["operator"].isEnabled())
+      and not row.condition.isEnabled() and not row.vn_on.isEnabled())
 check("the header says UNBOUND and warns, without anyone asking",
       "UNBOUND" in row.counters.text() and "no subject" in row.warn.text(),
       row.counters.text() + " | " + row.warn.text())
@@ -124,20 +124,28 @@ check("the menu is not a ceiling: the thirteenth baby of a campaign can be typed
       and len(G.SUBJECTS) == 12, str(len(G.SUBJECTS)))
 type_subject(row, "SUBJ01")
 
-# ── references: non-exclusive, and the T-class is derived, never typed ───────────────────────
-row.refs["videonest_udp"].setChecked(True)
-row.refs["operator"].setChecked(True)
+# ── the one reference control: which phone is filming THIS cot ───────────────────────────────
+# Five tick boxes became one (Alex, 2026-09-22). `operator annotation` was always on -- it is the
+# panel to the right -- and the other three change nothing about what this window records.
 src = rec.sources["192.168.1.50"]
-check("references are a set, stored in the recorder's own order",
-      src.truth_sources == ["videonest_udp", "operator"], str(src.truth_sources))
-check("the truth class follows from the set and nobody types it", src.truth == "T2", str(src.truth))
-row.refs["videonest_udp"].setChecked(False)
-row.refs["operator"].setChecked(False)
-row.refs["simulator"].setChecked(True)
-check("unticking is a change too: a simulator alone is T1",
-      src.truth_sources == ["simulator"] and src.truth == "T1", str(src.truth))
-row.refs["simulator"].setChecked(False)
-row.refs["operator"].setChecked(True)
+check("the panel offers one reference control, not a list of things it does not record",
+      hasattr(row, "vn_on") and hasattr(row, "vn_id") and not hasattr(row, "refs"))
+rec.feed("192.168.1.99", b"$VN1,1,89,0.95,2026-09-22 00:21:26.261,J6plusACM*3D\n")
+row.refresh_phones()
+check("the device list fills itself from the phones actually heard, never from a fixed menu",
+      [row.vn_id.itemText(i) for i in range(row.vn_id.count())] == ["J6plusACM"],
+      str([row.vn_id.itemText(i) for i in range(row.vn_id.count())]))
+row.vn_id.setCurrentText("J6plusACM")
+row.vn_on.setChecked(True)
+check("ticking it names that phone as this baby's reference, through the console command",
+      rec.videonest_id == "J6plusACM", str(rec.videonest_id))
+row.vn_on.setChecked(False)
+check("unticking clears it: this baby has no VideoNest reference",
+      rec.videonest_id is None, str(rec.videonest_id))
+row.vn_id.setCurrentText("J6plusACM")
+row.vn_on.setChecked(True)
+check("the class is not declared here at all -- it is derived at close from what arrived",
+      src.truth is None, str(src.truth))
 
 # ── condition ────────────────────────────────────────────────────────────────────────────────
 row.condition.setCurrentIndex(1)
@@ -272,15 +280,16 @@ check("the readings, their correction and their retractions are in the file, in 
       == ["REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT", "RETRACT", "RETRACT", "NOTE"], kinds)
 check("the session is bracketed by its start and end, and every change of a value is a META",
       kinds[0] == "SESSION_START" and kinds[-1] == "SESSION_END"
-      and kinds.count("META") >= 9, kinds[:3])
+      and kinds.count("META") >= 6, f"{kinds.count('META')} METAs")
 # Nine METAs for one subject, seven tick-box changes and one condition: every change of a session
 # value is its own event on purpose. The file is an audit trail, so "the operator ticked VideoNest
 # UDP, then thought better of it" is worth more than a tidy final state with no history.
 check("nothing was ever rewritten: the retracted readings are still in the file",
       sum(1 for r in rows if ",REF_SPO2," in r) == 3 and sum(1 for r in rows if ",RETRACT," in r) == 2)
 sj = open(os.path.join(rec.dir, "session.json"), encoding="utf-8").read()
-check("session.json carries the site code, the reference set and the derived class",
-      '"site_code": "BENCH"' in sj and '"truth_sources"' in sj and '"operator"' in sj)
+check("session.json carries the site code and which phone was this baby's reference",
+      '"site_code": "BENCH"' in sj and '"videonest_id": "J6plusACM"' in sj
+      and '"videonest_seen"' in sj, sj[:120])
 
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
 sys.stdout.flush()
