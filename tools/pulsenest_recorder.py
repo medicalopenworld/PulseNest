@@ -582,7 +582,8 @@ class Source:
 class Recorder:
     def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="on", hub_text="",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
-                 identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us):
+                 identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
+                 board=None, subject=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
         if csv_mode not in ("on", "off"):
@@ -598,7 +599,18 @@ class Recorder:
         self.started = {"iso": iso_local(t_epoch), "t_mono_us": t_mono, "t_epoch_us": t_epoch}
         stamp = _dt.datetime.fromtimestamp(t_epoch / 1e6)
         self.site = re.sub(r"[^A-Za-z0-9]", "", site.upper())[:12] or "SITE"
-        self.session_id = f"{stamp:%Y%m%d_%H%M}_{self.site}"
+        # One session, one baby (Alex, 2026-09-21). `board` is a MAC suffix of any length, the
+        # same shape the `subject` command already takes; `subject` pre-binds the code so the
+        # directory is named from the start and there is no UNBOUND window.
+        self.board_filter = re.sub(r"[^0-9A-Fa-f]", "", board or "").upper() or None
+        self.want_subject = normalise_subject(subject) if subject else None
+        if subject and self.want_subject is None:
+            raise ValueError(f"{subject!r} is not a subject code (SUBJ01, SUBJ12, ...)")
+        self.ignored = set()          # IPs of boards this session is not recording
+        # The tag is not decoration: three windows launched in the same minute would otherwise
+        # share a directory and overwrite each other's session.json.
+        tag = self.want_subject or self.board_filter
+        self.session_id = f"{stamp:%Y%m%d_%H%M}_{self.site}" + (f"_{tag}" if tag else "")
         # A hospital session is T2 by construction (a commercial monitor beside every baby), so
         # start there: the `truth` command exists to correct, not to be remembered under stress.
         self.default_truth = "T2" if self.site.startswith("HOSP") else None
@@ -654,6 +666,8 @@ class Recorder:
 
     # ── datagrams ────────────────────────────────────────────────────────────────────────
     def feed(self, ip, data, t_mono_us=None, t_epoch_us=None):
+        if ip in self.ignored:
+            return
         """One datagram from the hub (the @FROM line already stripped). Never raises: every
         failure is logged and counted, and the other sources are not affected."""
         if t_mono_us is None:
@@ -788,6 +802,26 @@ class Recorder:
         if not m:
             return
         mac = m.group(1).decode("ascii").upper()
+        if self.board_filter:
+            compact = mac_compact(mac)
+            if not compact.endswith(self.board_filter):
+                # Not this session's baby. Forget it entirely: no files, no counters, no rows.
+                self.ignored.add(src.ip)
+                self.sources.pop(src.ip, None)
+                src.pending = []
+                self.log.info("ignoring %s (%s): this session records board *%s",
+                              src.ip, mac, self.board_filter)
+                return
+            other = next((o for o in self._owners()
+                          if o.kind == "board" and o.mac and o.mac != mac
+                          and mac_compact(o.mac).endswith(self.board_filter)), None)
+            if other is not None:
+                # Two boards match one suffix. Picking the first would record a baby nobody
+                # asked for, under another baby's name. Refuse and say both MACs.
+                self.log.error("board suffix %s is ambiguous: matches %s and %s -- stopping",
+                               self.board_filter, other.mac, mac)
+                self.stop("ambiguous board suffix")
+                return
         src.mac = mac
         src.cfg_raw = data.split(b"\n", 1)[0].rstrip(b"\r").decode("ascii", "replace")
         src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
@@ -880,6 +914,11 @@ class Recorder:
             src.csv_due_epoch_us = 0          # stop trying; the current part keeps the rows
 
     def _open_stream(self, src, t_mono_us, t_epoch_us):
+        # Every path to a first file passes through here, so this is where --subject takes hold:
+        # the CSV is then named for its baby from its first row, with no unbound window at all.
+        if self.want_subject and src.kind == "board" and src.subject is None:
+            src.subject = self.want_subject
+            self.log.info("%s -> %s (from --subject)", src.label(), src.subject)
         if self.raw_mode == "off":
             src.stream = _NullStream()
             src.pending = []
@@ -1237,6 +1276,7 @@ class Recorder:
             "schema": "pulsenest_session/1",
             "session_id": self.session_id,
             "site_code": self.site,
+            "board_filter": self.board_filter,
             "operator": self.operator,
             "started": self.started,
             "closed": closed,
@@ -1460,6 +1500,12 @@ def main(argv=None):
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--event-port", type=int, default=0,
                     help="local UDP port that accepts the console commands from a panel process")
+    ap.add_argument("--board", default="", metavar="SUFFIX",
+                    help="record ONLY the board whose MAC ends in this (any length: 8850, "
+                         "508850). One session, one baby. An ambiguous suffix is refused")
+    ap.add_argument("--subject", default="", metavar="SUBJnn",
+                    help="bind this coded subject as soon as the board is identified, so the "
+                         "session directory is named from the start")
     ap.add_argument("--duration", type=float, default=0.0, help="seconds; 0 = until quit")
     args = ap.parse_args(argv)
 
@@ -1469,7 +1515,8 @@ def main(argv=None):
         rec = Recorder(args.out, args.site, args.operator, args.raw, args.csv,
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
-                       min_free_bytes=int(args.min_free_gb * 1e9))
+                       min_free_bytes=int(args.min_free_gb * 1e9),
+                       board=args.board, subject=args.subject)
     except NotEnoughSpace as exc:
         print(f"NOT STARTING: {exc}.", file=sys.stderr)
         print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)

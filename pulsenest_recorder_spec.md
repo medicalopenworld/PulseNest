@@ -434,6 +434,25 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   validated**, its menu a shortcut rather than a ceiling, and a refusal is said out loud instead of
   swallowed. `safe_condition()` does the matching job for the condition, which reaches a filename
   and was only upper-cased: `RESTING/FEEDING` made a path, not a name.
+* **A session is one baby, not one run of the script (Alex, 2026-09-21).** The original model
+  tied a session to the process, so three probes on three babies shared one session -- and since
+  the three do not start or finish together, changing one baby meant stopping all three. Worse,
+  rebinding the subject in place was silently wrong: measured, 500 rows of `SUBJ01` and 500 of
+  `SUBJ04` landed in **one file named `T2_SUBJ04_...`**, the first baby's rows relabelled as the
+  second's, with no warning. Wrong data, not missing data.
+  So **one window per baby**: `--board <MAC suffix>` records only that board, `--subject SUBJnn`
+  binds the code before the first row is written. The recorder already meant "session = process",
+  so this is a filter rather than new cut-and-reopen machinery inside the writer, which is where a
+  bug costs data. It also isolates the pyqtgraph crash risk that this window adds: one crash now
+  stops one baby's recording instead of three.
+  Three details it has to get right, all tested: an **ambiguous suffix is refused**, not resolved
+  by taking the first match; a board that is not streaming yet is **waited for**, not an error;
+  and the session directory carries the subject (`20260923_1030_HOSP01_SUBJ01`) because three
+  windows launched in the same minute would otherwise share a directory and overwrite each other's
+  `session.json`. Verified on the bench: three windows, three boards, three directories, ~20 000
+  rows each and no source in any of them but its own.
+  **Room-wide events are not implemented and are not planned** -- Alex, same day: phototherapy is
+  per-baby, and so is everything else that happens at a cot.
 * **Editing and deleting readings over append-only files (phase 2).** The GUI's annotation list
   offers *edit* and *delete*, and nothing on disk is ever rewritten: an edit writes a **`CORRECT`**
   event (`value`/`value2` = the new SpO2/PR, `note=corrects=<event_id>`) and a delete writes a

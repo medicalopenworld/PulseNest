@@ -506,7 +506,10 @@ class RecorderWindow(QtWidgets.QMainWindow):
         # A timed run stops the RECORDER, and tick() then closes the window the same way a full
         # disk does -- one path out of a session, not two.
         self.end_at = time.monotonic() + duration_s if duration_s > 0 else None
-        self.setWindowTitle(f"{script_name(__file__)} — {rec.session_id}  (hub {hub[0]}:{hub[1]})")
+        self.hub_text = f"{hub[0]}:{hub[1]}"
+        waiting = f" — waiting for board *{rec.board_filter}" if rec.board_filter else ""
+        self.setWindowTitle(f"{script_name(__file__)} — {rec.session_id}{waiting}"
+                            f"  (hub {hub[0]}:{hub[1]})")
         self.rows = {}            # key (mac, or ip until identified) -> BoardRow
         self.traces = {}          # ip -> BoardTrace
         self.aux_ips = set()
@@ -523,7 +526,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
         self.rows_box = QtWidgets.QVBoxLayout()
         self.rows_box.setSpacing(4)
         v.addLayout(self.rows_box, 1)
-        self.empty = QtWidgets.QLabel("waiting for a board…")
+        self.empty = QtWidgets.QLabel(
+            f"waiting for board *{rec.board_filter}…" if rec.board_filter else "waiting for a board…")
         self.empty.setStyleSheet(f"color:{FG_DIM}; font-size:14pt;")
         self.empty.setAlignment(QtCore.Qt.AlignCenter)
         self.rows_box.addWidget(self.empty)
@@ -649,6 +653,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
                 self.empty = None
             row = self.rows[key] = BoardRow(self, key, tr)
             self.rows_box.addWidget(row)
+            self.setWindowTitle(f"{script_name(__file__)} — {self.rec.session_id}"
+                                f"  (hub {self.hub_text})")
         row.trace, row.src = tr, src
         return row
 
@@ -728,6 +734,11 @@ def main(argv=None):
     ap.add_argument("--operator", default="", help="initials or role, never a full name")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(_HERE), "captures", "sessions"))
+    ap.add_argument("--board", default="", metavar="SUFFIX",
+                    help="record ONLY the board whose MAC ends in this (any length: 8850, "
+                         "508850). One window, one board, one baby")
+    ap.add_argument("--subject", default="", metavar="SUBJnn",
+                    help="bind this coded subject as soon as the board is identified")
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT, metavar="MIN",
                     help=f"split both the .pnraw and the live CSV on this wall-clock period "
@@ -749,7 +760,8 @@ def main(argv=None):
     try:
         rec = Recorder(args.out, location, operator, hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60,
-                       min_free_bytes=int(args.min_free_gb * 1e9))
+                       min_free_bytes=int(args.min_free_gb * 1e9),
+                       board=args.board, subject=args.subject)
     except (NotEnoughSpace, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2

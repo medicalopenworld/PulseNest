@@ -24685,3 +24685,28 @@ de ayuda, clave de `session.json` y desplegable. **No tocada** la columna de `tr
 se obtiene antes, en papel, y se escribe a mano en `truth.csv`; la herramienta ni pregunta ni
 comprueba. Un desplegable que no bloquea nada es una etiqueta que hace parecer cuidadosa a una
 herramienta sin hacerla cuidadosa. 92 y 37 comprobaciones.
+
+## 2026-09-21 - una sesion es un bebe, no una ejecucion del script
+
+Alex: "he colocado las tres sondas en tres bebes y cuando termino con uno para pasar al siguiente
+¿cierro el script? Pensaba que una sesion era una campana de medidas sobre un bebe". Tenia razon y
+mi modelo estaba mal.
+
+**Lo que medi antes de responder, y es lo grave.** Grabe 500 muestras con SUBJ01, cambie el sujeto
+a SUBJ04 en la misma placa y grabe 500 mas: **un solo fichero, `T2_SUBJ04_..._p01.csv`, con 1000
+filas**. Las 500 del primer bebe quedan etiquetadas como del segundo, sin ningun aviso. Dato
+incorrecto, que es peor que dato ausente.
+
+**Opcion elegida: C, una ventana por bebe.** Yo la habia descartado de un plumazo y Alex pregunto
+por que; al mirarlo bien es la mejor: el grabador ya significa "sesion = proceso", asi que es un
+filtro y no maquinaria nueva de cortar y reabrir dentro del escritor, que es donde un fallo cuesta
+datos. Y aisla el riesgo de pyqtgraph: hoy una caida para las tres grabaciones, ahora para una.
+El unico coste real que le vi, los eventos de sala, **desaparece**: Alex aclara que la fototerapia
+es individual de cada bebe, y que de momento no se gestiona ningun evento de sala.
+
+**Implementado:** `--board <sufijo de MAC de longitud variable>` y `--subject SUBJnn`, los dos
+acordados. Sufijo ambiguo se rechaza en vez de resolverse tomando el primero (cuatro caracteres ya
+distinguen las siete placas de `docs/boards.md`; seis anaden un `50` compartido que no distingue
+nada). El directorio lleva el sujeto, `20260921_1656_HOSP01_SUBJ01`, porque tres ventanas lanzadas
+en el mismo minuto compartirian directorio. Probado en el banco: tres ventanas a la vez, tres
+directorios, ~20.000 filas cada uno, ninguna con mas fuente que la suya. 97 y 37 comprobaciones.

@@ -245,6 +245,44 @@ try:
           [ln.split(",")[5] for ln in open(rec.events_path, encoding="utf-8").read().splitlines()
            if f",{id1}," in ln or f"={id1}" in ln][:3] == ["REF_SPO2", "CORRECT", "RETRACT"])
 
+    # one session, one baby (Alex, 2026-09-21): --board and --subject
+    import tempfile as _tf
+    CFG_8850 = b"$CFG,mac=10:51:DB:50:88:50,board=incunest_V18\n"
+    CFG_825C = b"$CFG,mac=10:51:DB:50:82:5C,board=incunest_V18\n"
+    M4 = b"$M4,4,1,1," + b",".join([b"1"] * 20) + b",2\n"
+    recB = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock(),
+                      board="8850", subject="subj3")
+    recB.feed("10.0.0.1", CFG_8850)
+    recB.feed("10.0.0.2", CFG_825C)
+    for ip in ("10.0.0.1", "10.0.0.2"):
+        recB.feed(ip, M4)
+    kept = [x for x in recB.owners() if x.kind == "board"]
+    check("[3] --board records only the board whose MAC ends in the suffix",
+          len(kept) == 1 and kept[0].mac == "10:51:DB:50:88:50" and "10.0.0.2" in recB.ignored,
+          str([x.mac for x in kept]))
+    check("[3] --subject binds the baby before the first row, and normalises it",
+          kept[0].subject == "SUBJ03" and recB.want_subject == "SUBJ03", str(kept[0].subject))
+    check("[3] the session directory carries the subject, so three windows cannot collide",
+          recB.session_id.endswith("_SUBJ03"), recB.session_id)
+    recB.stop("t")
+    recB.close()
+
+    # An ambiguous suffix must be refused, never resolved by taking the first match: that would
+    # record a baby nobody asked for, under another baby's name.
+    recC = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock(),
+                      board="8850")
+    recC.feed("10.0.0.1", CFG_8850)
+    recC.feed("10.0.0.2", b"$CFG,mac=AA:BB:CC:DD:88:50,board=incunest_V18\n")
+    check("[3] a suffix matching two boards stops the session instead of picking one",
+          recC.stopped and recC.stop_reason == "ambiguous board suffix", str(recC.stop_reason))
+    recC.close()
+    try:
+        R.Recorder(_tf.mkdtemp(), "HOSP01", log=QuietLog(), clock=FakeClock(), subject="Maria")
+        refused = False
+    except ValueError:
+        refused = True
+    check("[3] --subject refuses anything that is not a subject code", refused)
+
     # the live CSV splits with the .pnraw, or a four-hour session ends in a 2 GB file
     check("[2] the live CSV is written in parts, numbered from p01",
           os.path.basename(a.csv_paths[0]).endswith("_p01.csv") and a.csv_part >= 1,
