@@ -183,6 +183,38 @@ win.close()
 check("Yes closes every file and writes SESSION_END", getattr(rec, "_closed", False))
 check("the geometry is remembered for the next session", os.path.exists(G.SETTINGS_FILE))
 
+# ── the window is dark, and everything written on it can be read ─────────────────────────────
+def _luminance(hex_colour):
+    """WCAG 2.1 relative luminance of an #rrggbb string."""
+    ch = []
+    for i in (1, 3, 5):
+        v = int(hex_colour[i:i + 2], 16) / 255.0
+        ch.append(v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+
+def contrast(fg, bg):
+    a, b = _luminance(fg), _luminance(bg)
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+check("the window sets the project's dark palette instead of inheriting the desktop's",
+      G.BG == "#121212" and G.FG == "#E0E0E0" and "QWidget" in G.DARK_QSS
+      and G.DARK_QSS in win.styleSheet(), G.BG)
+# Every colour this window paints text in, against the ground it is painted on. The APPLIED
+# green and the amber warning came from a dark-background tool; on the light default they were
+# at 1.5:1 and 1.9:1, which is why the window looked wrong before it looked inconsistent.
+worst = {}
+for name, colour in (("body", G.FG), ("dim", G.FG_DIM), ("warning amber", G.AMBER),
+                     ("alarm red", G.RED), ("probe applied green", "#44FF88")):
+    worst[name] = round(contrast(colour, G.BG), 1)
+check("every text colour clears 4.5:1 against the window's own background",
+      all(v >= 4.5 for v in worst.values()), str(worst))
+check("and each one would have FAILED on the white the window used to inherit",
+      contrast("#44FF88", "#FFFFFF") < 2.0 and contrast(G.AMBER, "#FFFFFF") < 3.0,
+      f"{contrast('#44FF88', '#FFFFFF'):.1f}, {contrast(G.AMBER, '#FFFFFF'):.1f}")
+
 # ── what actually reached the disk: the only evidence that matters ───────────────────────────
 rows = open(rec.events_path, encoding="utf-8").read().splitlines()
 kinds = [r.split(",")[5] for r in rows[1:]]

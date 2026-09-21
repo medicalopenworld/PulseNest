@@ -24489,3 +24489,19 @@ renombrado: los ficheros se quedan con el nombre provisional `<MAC>_...`. Metada
 **Anadido a la ventana:** `--split-min` (la palanca del tamano de parte) y `--duration` (una
 tirada de banco que se cierra sola en vez de morir matada). Alex duda de T0-T3: anotado como
 decision abierta D6 en la spec, no borrado todavia.
+
+## 2026-09-21 - el GUI era claro por descuido, no por criterio
+
+Alex: "si hasta ahora todos los gui tenian fondo oscuro y fonts claros, por que en esta
+herramienta has cambiado?". No lo cambie: no puse tema, y la ventana heredo el claro de Windows.
+Y encima pinte encima colores elegidos PARA fondo oscuro. Medido (ratio de contraste WCAG 2.1):
+el verde APPLIED y el texto de cuerpo quedaban en 1,3:1 sobre blanco, el ambar de aviso en 1,8:1.
+Un panel de avisos ilegible no es una inconsistencia de estilo, es un defecto.
+
+Arreglado con una hoja de estilos en la paleta de `pulsenest_lab.py` (`#121212` sobre `#E0E0E0`),
+aplicada tambien al dialogo de arranque y al fondo del plot. Sobre `#121212` los mismos colores
+dan 14,2 / 8,1 / 10,2 / 5,5. Tres comprobaciones nuevas en
+`tools/pulsenest_recorder_gui_test.py` (29 en total) que calculan el contraste, porque el
+renderizador offscreen **no rasteriza texto** (una QLabel con "HELLO 123" se captura como un
+unico color uniforme): una imagen prueba la geometria y nada mas, la aritmetica si se puede
+comprobar.

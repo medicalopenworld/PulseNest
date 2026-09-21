@@ -27,6 +27,10 @@ Layout, from fleet_ppg_viewer.py with three changes Alex asked for:
   * every row folds to a single header line, so three boards fit on a laptop screen and a row
     that needs no attention takes no room.
 
+Dark, in the palette pulsenest_lab.py uses (`#121212` on `#E0E0E0`), and stated in a stylesheet
+rather than left to the desktop: the plot and the statistics panel are dark whatever Windows says,
+and the state colours are chosen for a dark ground.
+
 The one risk this window adds, said plainly: the waveform is pyqtgraph, which has killed
 pulsenest_lab.py 28 times, and here a crash stops the recording. Two mitigations: the .pnraw is
 flushed datagram by datagram so nothing already written is lost, and PLOTS turns the waveform
@@ -45,7 +49,7 @@ from pulsenest_hub_client import HubClient                               # noqa:
 from pulsenest_recorder import (Recorder, NotEnoughSpace, TRUTH_SOURCES,  # noqa: E402
                                 mac_compact, SPLIT_MIN_DEFAULT)
 from fleet_ppg_viewer import (BoardTrace, make_stats_widget, stats_width,  # noqa: E402
-                              stats_columns, MIN_PLOT_W, RED, GREY)
+                              stats_columns, MIN_PLOT_W, RED)
 import pyqtgraph as pg                                                   # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                               # noqa: E402
 
@@ -57,6 +61,37 @@ SETTINGS_FILE = os.path.join(_HERE, "pulsenest_recorder_gui.ini")
 DRAIN_MS, REDRAW_MS, TICK_MS = 20, 100, 250
 WINDOW_S = 15.0
 AMBER = "#FFB000"
+# The project's dark palette, as pulsenest_lab.py sets it (`#121212` on `#E0E0E0`). Stated here
+# rather than left to the desktop theme: this window is read across a room, beside a plot and a
+# statistics panel that are dark whatever the desktop says, and its state colours (APPLIED green,
+# amber warnings) are chosen for a dark ground.
+BG, BG_RAISED, FG, FG_DIM = "#121212", "#1E1E1E", "#E0E0E0", "#AAAAAA"
+DARK_QSS = f"""
+QWidget {{ background-color: {BG}; color: {FG}; }}
+QGroupBox {{ color: {FG_DIM}; font-weight: bold; border: 1px solid #333333;
+             border-radius: 4px; margin-top: 8px; padding-top: 6px; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 3px; }}
+QFrame {{ border: 1px solid #2A2A2A; border-radius: 4px; }}
+QComboBox, QSpinBox, QLineEdit {{ background-color: {BG_RAISED}; color: {FG};
+                                  border: 1px solid #3A3A3A; border-radius: 3px; padding: 2px; }}
+QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {{ color: #666666;
+                                                             background-color: #181818; }}
+QComboBox QAbstractItemView {{ background-color: {BG_RAISED}; color: {FG};
+                               selection-background-color: #335577; }}
+QCheckBox:disabled {{ color: #666666; }}
+QPushButton {{ background-color: #2E2E2E; color: {FG}; border: 1px solid #4A4A4A;
+               border-radius: 4px; padding: 4px 10px; }}
+QPushButton:hover {{ background-color: #3A3A3A; }}
+QPushButton:pressed, QPushButton:checked {{ background-color: #4A4A4A; }}
+QPushButton:disabled {{ color: #666666; border-color: #2A2A2A; }}
+QTableWidget {{ background-color: #111111; color: {FG}; gridline-color: #2A2A2A;
+                border: 1px solid #2A2A2A; }}
+QHeaderView::section {{ background-color: #2A2A2A; color: {FG_DIM}; border: 0; padding: 2px; }}
+QToolButton {{ border: none; }}
+QScrollBar:vertical {{ background: #111111; width: 10px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: #3A3A3A; min-height: 20px; border-radius: 4px; }}
+QMessageBox, QDialog {{ background-color: {BG}; color: {FG}; }}
+"""
 SUBJECTS = [f"SUBJ{n:02d}" for n in range(1, 13)]
 CONDITIONS = ["RESTING", "FEEDING", "HANDLING", "KANGAROO", "PHOTOTHERAPY", "SLEEPING"]
 # Label the operator reads -> key the recorder stores. Same order as TRUTH_SOURCES.
@@ -112,7 +147,7 @@ class BoardRow(QtWidgets.QFrame):
         self.body = QtWidgets.QWidget()
         body = QtWidgets.QHBoxLayout(self.body)
         body.setContentsMargins(0, 0, 0, 0)
-        self.plot_w = pg.PlotWidget()
+        self.plot_w = pg.PlotWidget(background=BG)
         self.plot_w.setMinimumWidth(MIN_PLOT_W)
         self.plot_w.setMinimumHeight(120)
         self.plot_w.showGrid(x=True, y=True, alpha=0.2)
@@ -425,6 +460,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
         self.client = HubClient(script_name(__file__), hub=hub, control=False, log=rec.log.info)
         self.client.connect()
 
+        self.setStyleSheet(DARK_QSS)
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         v = QtWidgets.QVBoxLayout(central)
@@ -433,11 +469,11 @@ class RecorderWindow(QtWidgets.QMainWindow):
         self.rows_box.setSpacing(4)
         v.addLayout(self.rows_box, 1)
         self.empty = QtWidgets.QLabel("waiting for a board…")
-        self.empty.setStyleSheet(f"color:{GREY}; font-size:14pt;")
+        self.empty.setStyleSheet(f"color:{FG_DIM}; font-size:14pt;")
         self.empty.setAlignment(QtCore.Qt.AlignCenter)
         self.rows_box.addWidget(self.empty)
         self.log_line = QtWidgets.QLabel(f"recording into {rec.dir}")
-        self.log_line.setStyleSheet(f"color:{GREY};")
+        self.log_line.setStyleSheet(f"color:{FG_DIM};")
         v.addWidget(self.log_line)
         self._restore_geometry()
 
@@ -536,7 +572,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
         fb = self.rec.free_bytes
         if fb is not None:
             self.disk.setText(f"disk {fb / 1e9:.0f} GB free")
-            self.disk.setStyleSheet(f"color:{RED if fb < 2 * self.rec.min_free_bytes else GREY};")
+            self.disk.setStyleSheet(f"color:{RED if fb < 2 * self.rec.min_free_bytes else FG_DIM};")
 
     # ── rows: one per board, keyed by MAC once the board has said who it is ──
     def _row_for(self, ip, tr):
@@ -600,6 +636,7 @@ def ask_session(app, location, operator):
     if location:
         return location, operator
     dlg = QtWidgets.QDialog()
+    dlg.setStyleSheet(DARK_QSS)
     dlg.setWindowTitle("new recording session")
     form = QtWidgets.QFormLayout(dlg)
     loc = QtWidgets.QComboBox()
