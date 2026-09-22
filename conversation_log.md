@@ -25151,3 +25151,25 @@ nuevo y sella; N+1 ya va con el RF nuevo; 2 ms entre ambas, el proceso dura cien
 - Specs: plan fases 0-2 con estado y desvíos; apéndice B (`@row 5009`); recorder spec `--csv v04`.
 
 **Siguiente**: fase 3, `tools/pulsenest_convert.py` (.pnraw → CSV) con prueba de igualdad byte a byte.
+
+## 2026-09-22 (primera hora de la tarde) - Fase 3: `tools/pulsenest_convert.py`, igualdad byte a byte
+
+- **Diseño**: el conversor no reimplementa nada. Construye el mismo `Recorder` con un reloj que lee los
+  sellos del `.pnraw` (`session.json` → `started`, exacto), le da cada `@D` con `feed()` y reemite los
+  eventos del operador desde `session_events.csv` (el registro completo: un `@E` disparado antes de que
+  hubiera un flujo abierto no está en ningún `.pnraw`), reaplicando antes el estado que llevaban (sujeto,
+  condición, sonda, campos del monitor de referencia, id del móvil). `--raw off` siempre: el registro es la
+  entrada, nunca se reescribe. Salida en `<sesión>/derived/`.
+- **Aceptación**: `--csv on` compara con los CSV vivos: corpus de tres placas **3/3 idénticos al primer
+  intento**; la sesión con móvil difería por cuatro `# event @row 0` que en vivo se dispararon ANTES de
+  abrir el CSV (los metadatos de lanzamiento aplicados al vincular la placa). Solución de fondo, no
+  parche: `session.json` registra ahora `launch` (subject, note, probe, ref, videonest); el conversor se
+  los pasa al `Recorder`, que regenera esos eventos él mismo, en el mismo instante, y los del registro que
+  no llegaron a ningún flujo se omiten (o solo aportan estado si la sesión es anterior a `launch`).
+  Después: **10/10**, ambas sesiones del corpus idénticas, y una sesión sintética con comandos de consola,
+  hueco y `# STAT` idéntica en los dos formatos.
+- `--csv v04` sobre el corpus: 60 042 líneas por placa, cabecera desde el `$CFG` de la placa, sin `alg:`
+  porque esa sesión es anterior a D14 (el conversor no inventa).
+- Commits `3ba141a` (fases 1-2), `7509c7c` (fase 3). En marcha: grabación de 13 min en v0.4 de las tres
+  placas a `captures/v04_corpus/` cruzando un límite de 10 min (parte 2 con `cause=part`) para que Alex
+  abra un fichero v0.4 en Flow CSV Viewer: la comprobación de la que depende la fase 5.
