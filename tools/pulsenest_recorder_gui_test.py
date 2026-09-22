@@ -21,6 +21,7 @@ reduce human error, so the checks are about the guard rails rather than about pi
 * **closing asks first**, and Ctrl+C is not a way out of a session.
 """
 import os
+import re
 import sys
 import tempfile
 import time
@@ -163,6 +164,18 @@ check("a phone declared on the console appears ticked and named in the panel",
       row.vn_on.isChecked() and row.vn_id.currentText() == "J6plusACM")
 rec.console("subject 7560 SUBJ01")
 row.refresh(time.monotonic(), False)
+
+# ── CLOCK ANCHOR: the event, and the laptop clock on screen to be photographed ───────────────
+n_before = rec.event_id
+win._clock_anchor()
+dlg = win.clock_dialog
+check("CLOCK ANCHOR writes the CLOCK_ANCHOR event", rec.event_id == n_before + 1
+      and ",CLOCK_ANCHOR," in open(rec.events_path, encoding="utf-8").read())
+check("and shows the laptop clock with milliseconds, ticking",
+      re.fullmatch(r"\d\d:\d\d:\d\d\.\d\d\d", dlg.clock.text()) is not None and dlg.timer.isActive(),
+      dlg.clock.text())
+dlg.close()
+check("a click or Esc closes it and stops its timer", not dlg.timer.isActive())
 
 # ── condition ────────────────────────────────────────────────────────────────────────────────
 row.condition.setCurrentIndex(1)
@@ -330,7 +343,7 @@ kinds = [r.split(",")[5] for r in rows[1:]]
 # number breaks the day a check touches one more control -- for the wrong reason.
 check("the readings, their correction and their retractions are in the file, in order",
       [k for k in kinds if k not in ("META", "SESSION_START", "SESSION_END")]
-      == ["REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT", "RETRACT", "RETRACT", "NOTE",
+      == ["CLOCK_ANCHOR", "REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT", "RETRACT", "RETRACT", "NOTE",
           "ANOMALY_START", "ANOMALY_END"], kinds)
 check("the session is bracketed by its start and end, and every change of a value is a META",
       kinds[0] == "SESSION_START" and kinds[-1] == "SESSION_END"

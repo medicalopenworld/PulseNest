@@ -121,9 +121,12 @@ Then, in each window:
 - [ ] **NOTE**: where our probe is, e.g. `probe on left foot`. This matters more than it looks —
       in a baby with a patent ductus, a foot and a right hand genuinely read differently, and an
       unrecorded difference is read later as our error.
-- [ ] **Clock anchor**, only if you are filming or photographing a monitor: point the phone at the
-      laptop's clock for a few seconds and press `CLOCK ANCHOR` while it is in shot. That is what
-      places a reading taken from the video on our timeline without trusting two clocks to agree.
+- [ ] **Clock anchor**, once per session (twice — start and end — also measures drift): press
+      `CLOCK ANCHOR`; the window fills with the laptop's clock in big digits with milliseconds.
+      **Photograph that screen with the VideoNest phone**, then click to close. The digits in the
+      photo are the laptop's time; the photo's filename (`VideoNest_frame_<id>_<date>_<time>_<ms>.jpg`)
+      is the phone's; their difference is the offset between the two clocks, which is what places
+      every phone reading on our timeline. Nothing to type: the event is written when you press.
 - [ ] **MONITOR** shows what `--ref-*` recorded. If it says `(not set)`, either you did not pass
       those flags or something in them was wrong — correct it from the console tool rather than
       losing the reference for the whole session.

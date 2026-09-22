@@ -39,6 +39,7 @@ off for a long session. The 10-minute parts make reopening a session a continuat
 import argparse
 import faulthandler
 import os
+import datetime as _dt
 import sys
 import time
 import tomllib
@@ -621,6 +622,59 @@ class BoardRow(QtWidgets.QFrame):
                 bar.setValue(where)
 
 
+
+class ClockAnchorDialog(QtWidgets.QDialog):
+    """The laptop's clock, filling the window, with milliseconds -- what the phone photographs.
+
+    CLOCK ANCHOR used to write the event and nothing else, assuming the phone was already filming
+    some clock; the window showed none, so the operator had to find one (Alex, 2026-09-22: "no me
+    convence lo de fotografiar una página web"). Now the button writes the event AND puts the time
+    on screen, 20 ms refresh, until a click or Esc. Read the photo afterwards: the digits in the
+    picture are the laptop's clock, the photo's filename carries the phone's -- their difference is
+    the offset between the two clocks, which is what places every phone reading on our timeline.
+    """
+
+    def __init__(self, parent, session_id):
+        super().__init__(parent)
+        self.setWindowTitle("CLOCK ANCHOR -- photograph this screen")
+        self.setStyleSheet(f"background:{BG}; color:{FG};")
+        v = QtWidgets.QVBoxLayout(self)
+        self.clock = QtWidgets.QLabel("")
+        self.clock.setAlignment(QtCore.Qt.AlignCenter)
+        f = self.clock.font()
+        f.setPointSize(96)
+        f.setBold(True)
+        self.clock.setFont(f)
+        self.date = QtWidgets.QLabel("")
+        self.date.setAlignment(QtCore.Qt.AlignCenter)
+        f2 = self.date.font()
+        f2.setPointSize(24)
+        self.date.setFont(f2)
+        hint = QtWidgets.QLabel(f"laptop clock, local time  ·  {session_id}  ·  click or Esc to close")
+        hint.setAlignment(QtCore.Qt.AlignCenter)
+        hint.setStyleSheet(f"color:{FG_DIM};")
+        v.addStretch(1)
+        v.addWidget(self.clock)
+        v.addWidget(self.date)
+        v.addStretch(1)
+        v.addWidget(hint)
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(20)
+        self._tick()
+
+    def _tick(self):
+        now = _dt.datetime.now()
+        self.clock.setText(now.strftime("%H:%M:%S.%f")[:-3])
+        self.date.setText(now.strftime("%Y-%m-%d") + f"   {now.astimezone().strftime('%z')}")
+
+    def mousePressEvent(self, _ev):
+        self.close()
+
+    def closeEvent(self, ev):
+        self.timer.stop()
+        super().closeEvent(ev)
+
 # ============================================================================================
 # the window
 # ============================================================================================
@@ -687,14 +741,13 @@ class RecorderWindow(QtWidgets.QMainWindow):
         h.addWidget(self.disk)
         h.addStretch(1)
         anchor = QtWidgets.QPushButton("CLOCK ANCHOR")
-        anchor.setToolTip("Only needed if you are FILMING or PHOTOGRAPHING the commercial monitor.\n\n"
-                          "Point the phone at this laptop's clock for a few seconds and press this "
-                          "while it is in shot. That puts the laptop's time inside the video and an "
-                          "event at the same instant in the recording, which is what lets a reading "
-                          "read off the video afterwards be placed on our timeline. Without it the "
-                          "two devices have to be trusted to agree, and they do not: the phone's "
-                          "own timestamps were measured running 164-350 ms behind arrival here.")
-        anchor.clicked.connect(lambda: self.command("anchor"))
+        anchor.setToolTip("Press it, then photograph this screen with the phone: it fills the window "
+                          "with the laptop's clock (milliseconds) and writes a CLOCK_ANCHOR event at "
+                          "that instant. Afterwards, the digits in the photo are the laptop's time and "
+                          "the photo's filename is the phone's: their difference is the offset between "
+                          "the two clocks, which is what places every phone reading on our timeline. "
+                          "Once per session is enough; twice (start and end) also measures drift.")
+        anchor.clicked.connect(self._clock_anchor)
         h.addWidget(anchor)
         self.plots = QtWidgets.QPushButton("PLOTS")
         self.plots.setCheckable(True)
@@ -712,6 +765,11 @@ class RecorderWindow(QtWidgets.QMainWindow):
         return bar
 
     # ── one code path for every action ──
+    def _clock_anchor(self):
+        self.command("anchor")
+        self.clock_dialog = ClockAnchorDialog(self, self.rec.session_id)
+        self.clock_dialog.showMaximized()
+
     def command(self, line):
         reply = self.rec.console(line)
         self.log_line.setText(f"> {line}    {reply}")
