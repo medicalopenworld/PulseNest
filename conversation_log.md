@@ -24893,3 +24893,26 @@ SUBJ01 y 0 en las otras dos; RECORD, correccion, DELETE, PLOTS y "cerrar pregunt
 **Lo que solo una mano puede ensayar:** hacer clic en la pantalla real, desenchufar una placa
 (SILENT), parar el movil (el id desaparece de la lista), el autoarranque del concentrador, abrir
 una parte en Flow CSV Viewer, copiar a un segundo disco.
+
+## 2026-09-22 - `--cond`, `--ref-*` en linea de mandato mostrados en la ventana, y ABNORMAL CONDITION
+
+**Aclaracion:** Alex pregunto que significaba `--cond`, que yo habia propuesto el dia anterior sin
+implementarlo. No existia en el codigo. Aclarado y luego implementado.
+
+**Los cuatro campos del monitor comercial:** Alex habia rechazado ponerlos en el panel de la fila.
+Preguntado donde, eligio linea de mandato con visualizacion en la ventana: "para que el operador
+vea que los ha escrito correctamente". Implementado: `--cond`, `--ref-model`, `--ref-avg`,
+`--ref-site`, `--ref-note`, aplicados por el MISMO camino que un teclazo (`cond`/`ref` por
+consola) en cuanto el sujeto se conoce, y mostrados en una etiqueta `MONITOR` de solo lectura en
+el panel. Verificado en el banco: `SUBJ01_RESTING_...csv` con nombre canonico desde la primera
+fila, `reference_monitor` completo en `session.json`.
+
+**Boton "ABNORMAL CONDITION"**, pedido por Alex tras aceptar no poner pausa. Nuevo comando
+`flag on|off [SUBJ01]`, dos eventos nuevos `ANOMALY_START`/`ANOMALY_END`. Deliberadamente NO una
+pausa: convierte un hecho conocido en un hueco indistinguible de una caida, y su peor fallo
+(olvidar reanudar) pierde datos buenos. Un flag equivocado se deshace sin coste. Boton conmutable
+en morado en la cabecera de la fila, distinto del ambar de aviso porque es una decision del
+operario, no un problema del sistema.
+
+Guion de hospital actualizado: la linea de arranque lleva los siete parametros, el bloque de
+inicio explica MONITOR, y §3 anade ABNORMAL CONDITION. 112 y 44 comprobaciones.

@@ -61,6 +61,8 @@ SETTINGS_FILE = os.path.join(_HERE, "pulsenest_recorder_gui.ini")
 DRAIN_MS, REDRAW_MS, TICK_MS = 20, 100, 250
 WINDOW_S = 15.0
 AMBER = "#FFB000"
+FLAG_COLOUR = "#CC66FF"   # deliberately not red/amber: those mean "this needs fixing", this means
+                          # "the operator said so", a different kind of fact
 # The project's dark palette, as pulsenest_lab.py sets it (`#121212` on `#E0E0E0`). Stated here
 # rather than left to the desktop theme: this window is read across a room, beside a plot and a
 # statistics panel that are dark whatever the desktop says, and its state colours (APPLIED green,
@@ -136,10 +138,23 @@ class BoardRow(QtWidgets.QFrame):
         self.counters.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
         self.warn = QtWidgets.QLabel()
         self.warn.setStyleSheet(f"color:{AMBER}; font-weight:bold;")
+        # A toggle, not a click-and-forget button: its pressed state IS the flagged state, so the
+        # header can never disagree with what a person would remember pressing.
+        self.flag_btn = QtWidgets.QPushButton("ABNORMAL CONDITION")
+        self.flag_btn.setCheckable(True)
+        self.flag_btn.setEnabled(False)
+        self.flag_btn.setToolTip("Mark this stretch as questionable validity -- probe loosely\n"
+                                 "applied, motion, an alarm interfering. Recording never stops;\n"
+                                 "this writes a start/end pair so the marked stretch stays on disk\n"
+                                 "and an analysis can honour it or ignore it. Not a pause: a pause\n"
+                                 "risks forgetting to resume, which loses good data. Press again\n"
+                                 "to clear it -- a wrong flag costs nothing, a dropped stretch does.")
+        self.flag_btn.toggled.connect(self._flag_toggled)
         head.addWidget(self.fold)
         head.addWidget(self.title)
         head.addWidget(self.counters, 1)
         head.addWidget(self.warn)
+        head.addWidget(self.flag_btn)
         outer.addLayout(head)
 
         # ── body ──
@@ -234,6 +249,19 @@ class BoardRow(QtWidgets.QFrame):
         self.note.setPlaceholderText("free text, Enter to record. Coded subjects only, no names.")
         self.note.returnPressed.connect(self._note_entered)
         form.addRow("NOTE", self.note)
+
+        # Read-only, and typed on the command line (--ref-model etc.), not here (Alex, 2026-09-22):
+        # these four do not change during a session, so a live control for them would sit idle.
+        # Shown anyway, so a typo on the command line is visible instead of silently wrong.
+        self.ref_label = QtWidgets.QLabel("(not set)")
+        self.ref_label.setWordWrap(True)
+        self.ref_label.setStyleSheet(f"color:{FG_DIM};")
+        self.ref_label.setToolTip("The commercial monitor beside this baby: make and model, its\n"
+                                  "averaging window in seconds, where ITS probe is, and any note.\n"
+                                  "Set once, on the command line: --ref-model, --ref-avg,\n"
+                                  "--ref-site, --ref-note. Shown here read-only so you can see it\n"
+                                  "was typed correctly, not to be edited from the window.")
+        form.addRow("MONITOR", self.ref_label)
         self._set_dependents_enabled(False)
         return g
 
@@ -320,7 +348,7 @@ class BoardRow(QtWidgets.QFrame):
         return g
 
     def _set_dependents_enabled(self, on):
-        for w in [self.vn_on, self.vn_id, self.condition, self.note]:
+        for w in [self.vn_on, self.vn_id, self.condition, self.note, self.flag_btn]:
             w.setEnabled(on)
         if hasattr(self, "record"):
             for w in (self.record, self.delete_last, self.delete_sel):
@@ -352,6 +380,13 @@ class BoardRow(QtWidgets.QFrame):
         # Re-apply what the operator may already have chosen while the subject was blank.
         self._videonest_changed()
         self._condition_changed()
+
+    def _flag_toggled(self, on):
+        if not self.flag_btn.isEnabled():
+            return
+        subj = self.subject.currentText()
+        if subj:
+            self.win.command(f"flag {'on' if on else 'off'} {subj}")
 
     def _videonest_changed(self, *_):
         if not self.vn_on.isEnabled():
@@ -505,6 +540,25 @@ class BoardRow(QtWidgets.QFrame):
             self.warn.setText("   ".join(warns))
             self.warn.setStyleSheet(f"color:{RED if (src.silent or not src.subject) else AMBER}; "
                                     "font-weight:bold;")
+            ref = src.reference
+            bits = []
+            if ref.get("make_model"):
+                bits.append(ref["make_model"])
+            if ref.get("averaging_s") is not None:
+                bits.append(f"avg {ref['averaging_s']:.0f}s")
+            if ref.get("probe_site"):
+                bits.append(ref["probe_site"])
+            self.ref_label.setText(" \u00b7 ".join(bits) if bits else "(not set)")
+            if ref.get("notes"):
+                self.ref_label.setToolTip(self.ref_label.toolTip().split("\n\n")[0]
+                                          + f"\n\nNote: {ref['notes']}")
+            if self.flag_btn.isChecked() != src.flagged:
+                self.flag_btn.blockSignals(True)     # reflect state, do not re-fire the command
+                self.flag_btn.setChecked(src.flagged)
+                self.flag_btn.blockSignals(False)
+            self.flag_btn.setStyleSheet(
+                f"background-color:{FLAG_COLOUR}; color:#1A0B26; font-weight:bold;"
+                if src.flagged else "")
         if self.body.isVisible():
             self.refresh_phones()
             self.refresh_listing()
@@ -772,6 +826,12 @@ def main(argv=None):
                     help="bind this coded subject as soon as the board is identified")
     ap.add_argument("--videonest", default="", metavar="ID",
                     help="device id of the phone pointed at THIS baby's monitor")
+    ap.add_argument("--cond", default="", metavar="RESTING",
+                    help="the condition, applied once the subject is known")
+    ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
+    ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
+    ap.add_argument("--ref-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
+    ap.add_argument("--ref-note", default="", metavar="TEXT", help="commercial monitor: anything else")
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT, metavar="MIN",
                     help=f"split both the .pnraw and the live CSV on this wall-clock period "
@@ -795,7 +855,9 @@ def main(argv=None):
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject, videonest=args.videonest)
+                       board=args.board, subject=args.subject, videonest=args.videonest,
+                       cond=args.cond, ref_model=args.ref_model, ref_avg=args.ref_avg,
+                       ref_site=args.ref_site, ref_note=args.ref_note)
     except (NotEnoughSpace, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2

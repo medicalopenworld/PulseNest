@@ -199,6 +199,33 @@ check("PLOTS off hides the waveform and leaves everything else recording",
       not win.plots_on and not row.plot_w.isVisible())
 win.plots.setChecked(True)
 
+# ── ABNORMAL CONDITION: a toggle, not a pause ─────────────────────────────────────────────────
+row.flag_btn.setChecked(True)
+win.redraw()
+check("the toggle writes flag on through the console, and the recorder agrees",
+      rec.sources["192.168.1.50"].flagged and row.flag_btn.isChecked())
+row.flag_btn.setChecked(False)
+win.redraw()
+check("toggling it off clears the flag -- reversible, unlike a dropped interval",
+      not rec.sources["192.168.1.50"].flagged)
+check("both are on disk as a start/end pair, never a gap",
+      "ANOMALY_START" in open(rec.events_path, encoding="utf-8").read()
+      and "ANOMALY_END" in open(rec.events_path, encoding="utf-8").read())
+
+# ── the four monitor fields: read-only, typed on the command line ────────────────────────────
+check("with none set, the panel says so plainly",
+      row.ref_label.text() == "(not set)")
+rec.console("ref SUBJ01 model Masimo Radical-7")
+rec.console("ref SUBJ01 avg 8")
+rec.console("ref SUBJ01 site right hand")
+win.redraw()
+check("once set, the panel shows them -- a QLabel, so the window cannot type into it",
+      "Masimo Radical-7" in row.ref_label.text() and "avg 8s" in row.ref_label.text()
+      and "right hand" in row.ref_label.text()
+      and isinstance(row.ref_label, QtWidgets.QLabel),
+      row.ref_label.text())
+
+
 row.fold.setChecked(False)
 check("a row folds to its header line, and the header keeps updating",
       not row.body.isVisible() and row.title.text() != "")
@@ -275,7 +302,8 @@ kinds = [r.split(",")[5] for r in rows[1:]]
 # number breaks the day a check touches one more control -- for the wrong reason.
 check("the readings, their correction and their retractions are in the file, in order",
       [k for k in kinds if k not in ("META", "SESSION_START", "SESSION_END")]
-      == ["REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT", "RETRACT", "RETRACT", "NOTE"], kinds)
+      == ["REF_SPO2", "REF_SPO2", "REF_SPO2", "CORRECT", "RETRACT", "RETRACT", "NOTE",
+          "ANOMALY_START", "ANOMALY_END"], kinds)
 check("the session is bracketed by its start and end, and every change of a value is a META",
       kinds[0] == "SESSION_START" and kinds[-1] == "SESSION_END"
       and kinds.count("META") >= 6, f"{kinds.count('META')} METAs")

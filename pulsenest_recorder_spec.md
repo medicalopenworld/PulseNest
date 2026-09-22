@@ -489,6 +489,21 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   the project's rule — less is more. What replaces it is evidence, not a label: a simulator is the
   subject `SIM`; a commercial oximeter is rows in `reference_spo2.csv`; the one control left on the
   panel is the one that changes what this window records — `VideoNest UDP` and which phone.
+* **`--cond` and `--ref-*`, and `ABNORMAL CONDITION` (Alex, 2026-09-22).** Two more fields the
+  window used to have no way to set, resolved the same way: not a live control, because they do
+  not change during a session and a live control for them would sit idle. `--cond RESTING` and
+  `--ref-model`/`--ref-avg`/`--ref-site`/`--ref-note` are typed on the command line, applied once
+  the subject is known through the ordinary `cond`/`ref` console commands (so a value typed as a
+  flag is validated and event-logged exactly like one typed at the keyboard), and shown **MONITOR**
+  in the panel, read-only — visible so a typo is caught, not editable from the window. Without
+  `--cond` the CSV keeps its provisional `<MAC>_…` name until someone sets one, same as before.
+  A fifth control, `ABNORMAL CONDITION`, is the one Alex asked for after ruling out a pause
+  button: a toggle that writes `ANOMALY_START`/`ANOMALY_END` around a stretch of questionable
+  validity — probe loosely applied, motion, an alarm interfering — **without stopping the
+  recording**. The reasoning against a pause: it turns a known fact into a silent gap
+  indistinguishable from a crash, and its worst failure (forgetting to resume) loses data that was
+  fine. A wrong flag costs nothing to reverse; a dropped interval cannot be recovered. Console:
+  `flag on|off [SUBJ01]`.
 
 ---
 

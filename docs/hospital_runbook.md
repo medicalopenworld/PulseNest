@@ -47,9 +47,9 @@ board and writes its own session directory.
 Open one terminal in `C:\PRJ\MOW\PulseNest` and launch **one window per baby**:
 
 ```
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 825C --subject SUBJ02
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 87A4 --subject SUBJ03
+pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM --cond RESTING --ref-model "Masimo Radical-7" --ref-avg 8 --ref-site "right hand"
+pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 825C --subject SUBJ02 --cond RESTING --ref-model "Philips IntelliVue" --ref-avg 8 --ref-site "left foot"
+pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 87A4 --subject SUBJ03 --cond RESTING --ref-model "Nellcor N-600" --ref-avg 7 --ref-site "right foot"
 ```
 
 `--location` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`,
@@ -58,8 +58,16 @@ identifies a person even with no name written anywhere; what the code means live
 mapping file, beside the `SUBJnn` one.
 
 `--board` is a MAC suffix of any length. If it matches two boards the session refuses to start,
-rather than recording a baby nobody asked for. `--subject` and `--videonest` can be left out and
-chosen in the window instead.
+rather than recording a baby nobody asked for. `--subject`, `--videonest` and `--cond` can be
+left out and chosen in the window instead — `--cond` is worth typing here anyway, because a
+session with no condition keeps its CSV under a provisional name (`<MAC>_…`) until you set one.
+
+`--ref-model`, `--ref-avg`, `--ref-site` and `--ref-note` describe the commercial monitor beside
+that baby, from the photograph you took the day before (§1). They do not change during the
+session, so they are typed once here rather than in the window — the window shows them under
+**MONITOR**, read-only, so a typo is visible instead of silent. `--ref-avg` is the number that
+decides whether our SpO2 can be compared with theirs at all; leave it out and correct it later
+from the console tool (`ref SUBJ01 avg 8`) if you did not have the photo to hand yet.
 
 The hub starts on its own if it is not already running.
 
@@ -83,6 +91,9 @@ Then, in each window:
 - [ ] **Clock anchor**, only if you are filming or photographing a monitor: point the phone at the
       laptop's clock for a few seconds and press `CLOCK ANCHOR` while it is in shot. That is what
       places a reading taken from the video on our timeline without trusting two clocks to agree.
+- [ ] **MONITOR** shows what `--ref-*` recorded. If it says `(not set)`, either you did not pass
+      those flags or something in them was wrong — correct it from the console tool rather than
+      losing the reference for the whole session.
 
 ---
 
@@ -107,8 +118,11 @@ Then, in each window:
       `.pnraw` and the CSV (`…_p02.csv` at 10:20, `…_p03` at 10:30). That is normal, and it is
       what keeps a CSV small enough to open.
 
-Not on the window, and typed in the console tool or written on paper: the commercial monitor's
-model, its averaging and its own probe site. Photographing its settings screen (§1) covers it.
+- [ ] **`ABNORMAL CONDITION`**, if the data is briefly suspect — probe loosely applied, motion,
+      an alarm interfering — and not worth losing. Press it on; recording never stops. Press it
+      off again once it passes. **Never a pause**: a pause risks forgetting to resume, which loses
+      data that was perfectly good; a wrong flag costs nothing to undo. The button turns purple
+      while active, so it cannot be forgotten silently the way a paused recording could be.
 
 ---
 

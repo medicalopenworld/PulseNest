@@ -196,6 +196,19 @@ COMMAND_HELP = {
         "\n"
         "With no argument it lists the device ids seen so far.",
     ),
+    "flag": (
+        "flag on|off [SUBJ01]",
+        "mark this stretch as questionable validity, without pausing",
+        "For a probe loosely applied, motion, an alarm interfering, or anything else that makes\n"
+        "the data suspect without making it worth losing. Recording never stops: `flag on` and\n"
+        "`flag off` write ANOMALY_START / ANOMALY_END, so the marked stretch stays on disk and an\n"
+        "analysis can honour the flag or ignore it.\n"
+        "\n"
+        "Deliberately not a pause. A pause turns a known fact (the probe came off at 11:42, back\n"
+        "at 11:58) into a silent gap indistinguishable from a laptop crash or a lost network -- and\n"
+        "the one failure this cannot recover from is forgetting to unpause, which loses data that\n"
+        "was perfectly good. A wrong flag costs nothing: flag it off again.",
+    ),
     "cond": (
         "cond RESTING [SUBJ01]",
         "condition; no subject = every board",
@@ -245,7 +258,8 @@ COMMAND_HELP = {
 
 
 EVENT_KINDS = ("REF_SPO2", "MARK", "NOTE", "PROBE_SITE", "CARE", "ALARM", "CLOCK_ANCHOR",
-               "META", "CORRECT", "RETRACT", "SESSION_START", "SESSION_END")
+               "META", "CORRECT", "RETRACT", "ANOMALY_START", "ANOMALY_END",
+               "SESSION_START", "SESSION_END")
 # CORRECT / RETRACT (2026-09-21): the operator can edit or delete a reading in the GUI, but every
 # file of a session is append-only and recorded evidence is never rewritten. So an edit is a new
 # event -- kind CORRECT, value/value2 = the new SpO2/PR, note `corrects=<event_id>` -- and a
@@ -522,6 +536,7 @@ class Source:
         self.csv_stamp = ""                   # <date>_<time> of the FIRST part: every part shares it
         self.csv_due_epoch_us = 0             # wall-clock instant this part must close at
         self.csv_rows_total = 0               # rows across parts; src.csv.count is this part's
+        self._metadata_applied = False        # guards _apply_pending_metadata against re-identify
         self.vn_rows = 0                      # rows this phone contributed to reference_spo2.csv
         self.vn_bad = 0                       # frames that did not parse, or failed the checksum
         self.pending = []                     # (t_mono_us, t_epoch_us, ip, data) until named
@@ -538,6 +553,7 @@ class Source:
         self.subject = None
         self.probe_site = None
         self.condition = None                 # RESTING, FEEDING, ...
+        self.flagged = False                  # `flag on`: this stretch is of questionable validity
         # The commercial monitor this baby is also wearing. Two of these are not bureaucracy
         # (spec section 7): `probe_site`, because preductal (right hand) and postductal (foot)
         # SpO2 genuinely differ in a neonate with a patent ductus and the difference would
@@ -568,7 +584,7 @@ class Source:
              # counts the last part twice (measured: 122 410 reported against 95 065 written).
              "csv_rows": self.csv_rows_total + (self.csv.count if (self.csv and self.csv.active) else 0),
              "samples_lost": self.samples_lost, "restarts": self.restarts,
-             "subject": self.subject, "probe_site": self.probe_site}
+             "subject": self.subject, "probe_site": self.probe_site, "flagged": self.flagged}
         if self.kind == "board":
             d["mac"] = self.mac
             d["condition"] = self.condition
@@ -587,7 +603,8 @@ class Recorder:
     def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="on", hub_text="",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
-                 board=None, subject=None, videonest=None):
+                 board=None, subject=None, videonest=None, cond=None,
+                 ref_model=None, ref_avg=None, ref_site=None, ref_note=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
         if csv_mode not in ("on", "off"):
@@ -615,6 +632,14 @@ class Recorder:
         # but only the declared one writes rows into reference_spo2.csv: one of them is pointed
         # at this baby's monitor, and session.json has to say which.
         self.videonest_id = videonest or None
+        # The four commercial-monitor fields, typed once on the command line rather than in the
+        # panel (Alex, 2026-09-22: they do not change during the session, so a fixed control would
+        # sit idle). Applied through the same `cond`/`ref` console commands as a keystroke would
+        # use, the moment a subject is known -- see _apply_pending_metadata().
+        self.want_cond = safe_condition(cond) if cond else None
+        self.want_ref = {k: v for k, v in
+                         (("model", ref_model), ("avg", ref_avg), ("site", ref_site), ("note", ref_note))
+                         if v}
         # The tag is not decoration: three windows launched in the same minute would otherwise
         # share a directory and overwrite each other's session.json.
         tag = self.want_subject or self.board_filter
@@ -880,6 +905,19 @@ class Recorder:
         src.cfg_raw = data.split(b"\n", 1)[0].rstrip(b"\r").decode("ascii", "replace")
         src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
 
+    def _apply_pending_metadata(self, src):
+        """`--cond` and `--ref-*`, applied once a subject is known, through the ordinary `cond`
+        and `ref` console commands -- so a value typed on the command line is validated and
+        events-logged exactly like one typed at the keyboard. Guarded so a board re-identifying
+        (a new DHCP lease) does not repeat it."""
+        if getattr(src, "_metadata_applied", False):
+            return
+        src._metadata_applied = True
+        if self.want_cond:
+            self.console(f"cond {self.want_cond} {src.subject}")
+        for key, value in self.want_ref.items():
+            self.console(f"ref {src.subject} {key} {value}")
+
     def _open_csv(self, src, t_epoch_us):
         """The live capture CSV of section 2, one per board, in the format every tool in this
         project already reads -- Flow CSV Viewer included, which is the reason it cannot wait for
@@ -985,6 +1023,8 @@ class Recorder:
         if self.want_subject and src.kind == "board" and src.subject is None:
             src.subject = self.want_subject
             self.log.info("%s -> %s (from --subject)", src.label(), src.subject)
+        if src.kind == "board" and src.subject:
+            self._apply_pending_metadata(src)
         if self.raw_mode == "off":
             src.stream = _NullStream()
         else:
@@ -1174,6 +1214,7 @@ class Recorder:
                             f"digits (SUBJ01, SUBJ12) -- never a name, an initial or a bed "
                             f"number: this code travels into every file of the session.")
                 s.subject = subj
+                self._apply_pending_metadata(s)
                 self.event("META", subject=s.subject, board_mac=s.mac or "*",
                            note=f"subject={s.subject} board={s.label()}")
                 self.write_session_json()
@@ -1193,6 +1234,28 @@ class Recorder:
                 self.event("META", note=f"videonest={self.videonest_id or 'none'}")
                 self.write_session_json()
                 return f"videonest = {self.videonest_id or 'none'}"
+            if cmd == "flag":
+                # `flag on|off [SUBJ01]`, mirroring `cond`'s optional trailing subject. Never a
+                # pause: the recording keeps running, and this writes ANOMALY_START / ANOMALY_END
+                # so the stretch stays on disk, marked, and can be unmarked if the operator was
+                # wrong -- which a dropped interval never can be.
+                if not args or args[0].lower() not in ("on", "off"):
+                    return "usage: flag on|off [SUBJ01]"
+                state = args[0].lower() == "on"
+                subj = args[1].upper() if len(args) > 1 else None
+                targets = [s for s in self._owners()
+                           if s.kind == "board" and (subj is None or s.subject == subj)]
+                if not targets:
+                    return f"no board {'for ' + subj if subj else 'yet'}"
+                changed = [s for s in targets if s.flagged != state]
+                for s in changed:
+                    s.flagged = state
+                if changed:
+                    kind = "ANOMALY_START" if state else "ANOMALY_END"
+                    self.event(kind, subject=subj or "*", board_mac=changed[0].mac or "*")
+                self.write_session_json()
+                return f"flag={'on' if state else 'off'} on " + \
+                       ", ".join(s.subject or s.label() for s in targets)
             if cmd == "cond":
                 # `cond RESTING` applies to every board; a trailing SUBJnn narrows it.
                 if not args:
@@ -1593,6 +1656,12 @@ def main(argv=None):
                          "session directory is named from the start")
     ap.add_argument("--videonest", default="", metavar="ID",
                     help="device id of the phone pointed at THIS baby's monitor")
+    ap.add_argument("--cond", default="", metavar="RESTING",
+                    help="the condition, applied once the subject is known")
+    ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
+    ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
+    ap.add_argument("--ref-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
+    ap.add_argument("--ref-note", default="", metavar="TEXT", help="commercial monitor: anything else")
     ap.add_argument("--duration", type=float, default=0.0, help="seconds; 0 = until quit")
     args = ap.parse_args(argv)
 
@@ -1603,7 +1672,9 @@ def main(argv=None):
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject, videonest=args.videonest)
+                       board=args.board, subject=args.subject, videonest=args.videonest,
+                       cond=args.cond, ref_model=args.ref_model, ref_avg=args.ref_avg,
+                       ref_site=args.ref_site, ref_note=args.ref_note)
     except NotEnoughSpace as exc:
         print(f"NOT STARTING: {exc}.", file=sys.stderr)
         print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)

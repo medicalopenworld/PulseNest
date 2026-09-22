@@ -372,6 +372,20 @@ try:
     check("[7] with no argument it lists what has actually been heard",
           rec.console("videonest").startswith("usage: videonest"), rec.console("videonest"))
     rec.console("videonest J6plusACM")
+    # A pause without a pause button: `flag` marks a stretch as questionable without dropping it.
+    check("[7] flag on writes ANOMALY_START and marks the board, never pausing anything",
+          rec.console("flag on SUBJ01").startswith("flag=on on SUBJ01") and a.flagged
+          and ",ANOMALY_START,SUBJ01," in open(rec.events_path, encoding="utf-8").read())
+    check("[7] flag on again is a no-op: no second event for a state that has not changed",
+          open(rec.events_path, encoding="utf-8").read().count("ANOMALY_START") == 1
+          if rec.console("flag on SUBJ01") else True)
+    check("[7] flag off writes ANOMALY_END and clears it, and can be reversed at will",
+          rec.console("flag off SUBJ01").startswith("flag=off on SUBJ01") and not a.flagged
+          and ",ANOMALY_END,SUBJ01," in open(rec.events_path, encoding="utf-8").read())
+    check("[7] flag needs on or off, and a board to apply to",
+          rec.console("flag maybe").startswith("usage: flag on|off")
+          and rec.console("flag on SUBJ99").startswith("no board for SUBJ99"))
+
     check("[7] condition narrowed to one subject leaves the others alone",
           rec.console("cond resting SUBJ01").startswith("cond=RESTING on")
           and a.condition == "RESTING" and b.condition is None)
