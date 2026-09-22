@@ -146,6 +146,11 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
 ## D. Columns and dictionary
 
 - **R18 — A versioned canonical dictionary**, one for every profile, **covering columns and
+  configuration keys alike** — **exists since 2026-09-22: `tools/pulsenest_capture_dict.py`**, data only
+  (37 columns with every name ever written as a synonym, 92 keys across `id`/`session`/`clock`/`afe`/
+  `timing`/`alg` with their wire origin and scale), checked by `tools/pulsenest_capture_dict_test.py`
+  against `CAPTURE_COLS`, the firmware's three frame format strings (both directions, so a new wire
+  key fails the test until it is named) and Appendix B. *Original requirement:* covering columns and
   configuration keys alike** (v0.4): name, meaning, unit, type, range, sentinel, provenance
   (`fw measured` / `fw computed` / `host` / `derivable` / `config`), domain (`afe`, `timing`, `alg`
   for keys), version introduced. A name never changes meaning; renaming = adding a synonym; new
@@ -154,7 +159,10 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   prefix, unit suffix (`afe_rf1_ohm`, `afe_iled1_ua`, `afe_ambdac_ua`, `hgac_ema_fast_tau_ms`) —
   and the library's `AFE4490Config` field names are the natural source for them; the wire frame's
   `sr`, `led1`, `tia1` are not.
-- **R19 — Naming grammar. OPEN (D2).** `[<origin>_]<quantity>[_<channel>][_<unit or scale>]`.
+- **R19 — Naming grammar. Closed 2026-09-22 (D2): the lab's labels are the column canon, `FW_*` and
+  `IR*/RED*` synonyms; keys lower_snake with domain prefix and unit suffix; the fixed-point signal is
+  `OT1_E10`/`OT2_E10` (a scaled OT names its scale, the project's `_ppm` rule generalised).**
+  Grammar `[<origin>_]<quantity>[_<channel>][_<unit or scale>]`. The two options as they were put:
   **A** *(recommended)*: freeze existing names as they are; grammar for new names only.
   **B**: new all-caps canon with today's names as synonyms. New names needed now: `OT1`, `OT2` with
   their scale (`OT1_E10` = OT in units of 1e-10 A/A, or ppm with 4 decimals — +2 B, reads as a unit;
@@ -182,6 +190,9 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   500 Hz, against 13 B/row for that whole stretch — two-plus orders of magnitude cheaper in the
   *plain* file, which is the number the field budget sees (compression is at-rest only, R29). With
   an applied probe in steady state it is close to free.
+  **Prerequisite 6 — landed 2026-09-22 (lib v0.94 `hgacRfChangeCount()`, fw 0.15 `$CFG`
+  `cause=hgac ts_us=<move> hgac_rf_changes=<n>`; pending OTA to the campaign boards).** The
+  paragraph that follows is the analysis that led there, kept as written on 2026-09-20.
   **Blocking prerequisite** (prerequisite 6): `send_cfg_frame()` today fires only from `$SET` and
   `$CFG?` (`main/pulsenest_main.cpp:1138,1236`); HGAC's control loop, where it actually changes RF,
   calls neither (confirmed by reading the call sites — no `send_cfg_frame()` or equivalent from the
@@ -371,14 +382,14 @@ example for the timers.
 # from-board: $CFG,sr=500,numav=1,led1=25.00,led2=25.00,range=50,ensepgain=1,tia1=50k,rf1_ohm=50000,cf1=5p,cf1_pF=5,stg21=off,rg1_ohm=0,rg1_x=1.0000,stage2en1=0,tia2=50k,rf2_ohm=50000,cf2=5p,cf2_pF=5,stg22=off,rg2_ohm=0,rg2_x=1.0000,stage2en2=0,ambdac=0,ri_ohm=100000,ch=LED1,fl=0.50,fh=5.00,hr2l=0.50,hr2h=5.00,hr3h=8.00,spo2a=110.0000,spo2b=25.0000,board=V18,mac=10:20:BA:14:75:60,fw=0.13,lib=0.93,build=7770c6c,libsha=3f1c2a9,elfsha=a60928ae2b710aab,idfver=v6.0.1
 # @row 0 afe: cause=open afe_prf_hz=500 afe_numav=1 afe_iled1_ua=25000 afe_iled2_ua=25000 afe_iled_range_ma=50 afe_sep_gain=1 afe_rf1_ohm=50000 afe_cf1_pf=5 afe_rg1_ohm=0 afe_stg2en1=0 afe_rf2_ohm=50000 afe_cf2_pf=5 afe_rg2_ohm=0 afe_stg2en2=0 afe_ambdac_ua=0 afe_ri_ohm=100000
 # @row 0 timing: cause=open afe_led2stc=6050 afe_led2endc=7998 afe_led2ledstc=6000 afe_led2ledendc=7999 afe_aled2stc=50 afe_aled2endc=1998 afe_led1stc=2050 afe_led1endc=3998 afe_led1ledstc=2000 afe_led1ledendc=3999 afe_aled1stc=4050 afe_aled1endc=5998 afe_led2convst=4 afe_led2convend=1999 afe_aled2convst=2004 afe_aled2convend=3999 afe_led1convst=4004 afe_led1convend=5999 afe_aled1convst=6004 afe_aled1convend=7999 afe_adcrststct0=0 afe_adcrstendct0=3 afe_adcrststct1=2000 afe_adcrstendct1=2003 afe_adcrststct2=4000 afe_adcrstendct2=4003 afe_adcrststct3=6000 afe_adcrstendct3=6003 afe_prpcount=7999
-# @row 0 alg: cause=open hgac_enable=1 hgac_v_tia_high2=0.900 hgac_v_tia_high1=0.750 hgac_v_tia_low1=0.200 hgac_ema_fast_tau_ms=100 hgac_ema_slow_tau_ms=2000 hgac_ema_ambient_tau_ms=2000 rsqm_ot_thr_e10=1000000 rsqm_disconn_led_sub_thr=50 rsqm_disconn_i_pd_thr_pa=50000 rsqm_probe_state_min_ms=500 hr2_f_low_mhz=500 hr2_f_high_mhz=5000 hr3_f_high_mhz=8000 ppgdisp_channel=led1 ppgdisp_f_low_mhz=500 ppgdisp_f_high_mhz=5000 spo2_cal_a=110.0 spo2_cal_b=25.0
+# @row 0 alg: cause=open hgac_enable=1 hgac_v_tia_high2_mv=900 hgac_v_tia_high1_mv=750 hgac_v_tia_low1_mv=200 hgac_ema_fast_tau_ms=100 hgac_ema_slow_tau_ms=2000 hgac_ema_ambient_tau_ms=2000 rsqm_ot_thr_e10=1000000 rsqm_disconn_led_sub_thr=50 rsqm_disconn_i_pd_thr_pa=50000 rsqm_probe_state_min_ms=500 hr2_f_low_mhz=500 hr2_f_high_mhz=5000 hr3_f_high_mhz=8000 ppgdisp_channel=led1 ppgdisp_f_low_mhz=500 ppgdisp_f_high_mhz=5000 spo2_cal_a=110.0 spo2_cal_b=25.0
 # @row 0 clock: smpcnt=118402 fw_ts_us=41822193 host_epoch_us=1758352443102000
-OT1,OT2,ALED1,ALED2,SpO2,HR3,SQI,ProbeState
+OT1_E10,OT2_E10,ALED1,ALED2,SpO2,HR3,SQI,ProbeState
 1842301,1798234,812004,809912,98,142,1,APPLIED
 1842298,1798190,812010,809905,98,142,1,APPLIED
 1842305,1798250,812002,809920,98,142,1,APPLIED
 1842303,1798212,812005,809911,98,142,1,APPLIED
-# @row 4 alg: cause=set hgac_enable=1 hgac_v_tia_high2=0.900 hgac_v_tia_high1=0.780 hgac_v_tia_low1=0.200 hgac_ema_fast_tau_ms=100 hgac_ema_slow_tau_ms=2000 hgac_ema_ambient_tau_ms=2000 rsqm_ot_thr_e10=1000000 rsqm_disconn_led_sub_thr=50 rsqm_disconn_i_pd_thr_pa=50000 rsqm_probe_state_min_ms=500 hr2_f_low_mhz=500 hr2_f_high_mhz=5000 hr3_f_high_mhz=8000 ppgdisp_channel=led1 ppgdisp_f_low_mhz=500 ppgdisp_f_high_mhz=5000 spo2_cal_a=110.0 spo2_cal_b=25.0
+# @row 4 alg: cause=set hgac_enable=1 hgac_v_tia_high2_mv=900 hgac_v_tia_high1_mv=780 hgac_v_tia_low1_mv=200 hgac_ema_fast_tau_ms=100 hgac_ema_slow_tau_ms=2000 hgac_ema_ambient_tau_ms=2000 rsqm_ot_thr_e10=1000000 rsqm_disconn_led_sub_thr=50 rsqm_disconn_i_pd_thr_pa=50000 rsqm_probe_state_min_ms=500 hr2_f_low_mhz=500 hr2_f_high_mhz=5000 hr3_f_high_mhz=8000 ppgdisp_channel=led1 ppgdisp_f_low_mhz=500 ppgdisp_f_high_mhz=5000 spo2_cal_a=110.0 spo2_cal_b=25.0
 # @row 4 clock: smpcnt=118406 fw_ts_us=41830193 host_epoch_us=1758352443110000
 1842300,1798210,812006,809910,98,142,1,APPLIED
 1842303,1798222,812009,809902,98,142,1,APPLIED
@@ -671,14 +682,19 @@ header now follows it too, without waiting for the rest of the migration.
    the R26 identity/provenance keys parsed out of `$CFG`, the three snapshots of R24 built from
    `$CFG`/`$TCFG`/`$LCFG` at open and on every change (`from-board:` verbatim optional), live
    gap/stall checks, anchors, `# end` summary, fixed-point `OT1/OT2` computed from codes.
-   **1b. The dictionary (R18) must exist first**: every `afe_*`, `timing`, `alg` key named, with
+   **1b. DONE 2026-09-22 — `tools/pulsenest_capture_dict.py`.** The dictionary (R18) must exist first: every `afe_*`, `timing`, `alg` key named, with
    unit and type, before a single snapshot is written — a snapshot with unnamed keys is a wire
    frame again.
 2. Firmware: `FW_Ts_us` as 64-bit (F1) — no longer blocking, still a defect.
 3. Flow CSV Viewer fixture test (R36).
 4. Shared `read_capture()` with the synonym table and derived views (R4/R37); runner alignment (R38).
 5. For P0: a writer in the incubator firmware and the budget decision (D7/D8).
-6. **Firmware, new (2026-09-20, R21a/D10):** tell the host that HGAC moved RF — a `$CFG` (or a
+6. **DONE 2026-09-22 — lib v0.94 + fw 0.15 (OTA pending).** `_hgac_change_rf()` stamps and counts
+   the move; `Cmd_Task` polls `hgacRfChangeCount()` every 50 ms and emits a `$CFG` with
+   `cause=hgac,ts_us=<esp_timer at the move>,hgac_rf_changes=<n>` — Serial and UDP, so the hub
+   caches and replays it like any `$CFG`. `ts_us` lets the writer place the `afe:` snapshot on
+   the exact row; the count exposes moves that landed inside one tick. Original text:
+   **Firmware, new (2026-09-20, R21a/D10):** tell the host that HGAC moved RF — a `$CFG` (or a
    lighter frame carrying the new RF) emitted at the point where HGAC applies the move, not only
    from the `$SET` and `$CFG?` handlers that call `send_cfg_frame()` today
    (`main/pulsenest_main.cpp:1138,1236`). The CSV writer turns it into a full `afe:` snapshot

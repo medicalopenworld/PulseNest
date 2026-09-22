@@ -274,10 +274,18 @@ All emitted by the firmware asynchronously.
 $CFG,led1=<v>,led2=<v>,range=<v>,tia1=<v>,cf1=<v>,stg21=<v>,stage2en1=<v>,
      tia2=<v>,cf2=<v>,stg22=<v>,stage2en2=<v>,ambdac=<v>,sr=<v>,numav=<v>,
      ensepgain=<v>,...,board=<v>,mac=<v>,fw=<v>,lib=<v>,build=<v>,libsha=<v>,
-     elfsha=<v>,idfver=<v>*XX
+     elfsha=<v>,idfver=<v>,cause=<v>,ts_us=<v>,hgac_rf_changes=<v>*XX
 ```
 
-Emitted at startup, after `$SET`, and in response to `$CFG?`. Parsed by
+Emitted after `$SET` (`cause=set`), in response to `$CFG?` (`cause=query`) and — **fw 0.15,
+2026-09-22** — whenever HGAC has moved RF (`cause=hgac`): the library counts and timestamps
+each move (`hgacRfChangeCount()`, lib v0.94), and `Cmd_Task` turns every new count into a
+`$CFG` within its 50 ms tick, because no measurement task may call the network. `ts_us` is the
+instant the configuration became what the frame says (for `hgac`, the move itself, on the same
+`esp_timer` clock as the rows' `Ts_us`; otherwise the emission); `hgac_rf_changes` is the running
+count since boot — a jump of two between frames means two moves landed in one tick. Every
+consumer parses `$CFG` as `key=value` pairs and ignores unknown keys, so the three new keys
+break nothing. Parsed by
 `_on_cfg_frame_received()` → populates `_last_cfg` dict and updates `HWConfigWindow`.
 
 **Provenance fields (firmware change, 2026-09-05/06).** `fw` = PulseNest firmware version

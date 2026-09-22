@@ -45,6 +45,25 @@ void test_hgac_guard_descends_to_floor() {
     assert_rf1(afe, AFE4490RF::RF_10K);         // reached and held the RF floor
 }
 
+// ── v0.94: every HGAC move is counted and stamped; a manual RF change is not ──
+void test_hgac_rf_change_is_counted_and_stamped() {
+    INCUNEST_AFE4490 afe;
+    uint64_t ts = 123;
+    TEST_ASSERT_EQUAL_UINT32(0, afe.hgacRfChangeCount(&ts));
+    TEST_ASSERT_EQUAL_UINT64(0, ts);                     // nothing happened yet
+    afe.setTIAGainLED1(AFE4490RF::RF_50K);               // a $SET-style manual change...
+    TEST_ASSERT_EQUAL_UINT32(0, afe.hgacRfChangeCount()); // ...is not an HGAC move
+    afe.setHgacEnable(true);
+    feed(afe, SAT_CODE, 4000);                           // guard walks both colours to the floor
+    assert_rf1(afe, AFE4490RF::RF_10K);
+    TEST_ASSERT_EQUAL((int)AFE4490RF::RF_10K, (int)afe.test_hgac_rf_led2());
+    const uint32_t n = afe.hgacRfChangeCount(&ts);
+    TEST_ASSERT_EQUAL_UINT32(5, n);                      // IR 50K→25K→10K (2) + RED 100K→…→10K (3), one LUT level each
+    TEST_ASSERT_TRUE(ts > 0);                            // stamped with the host HAL's monotonic clock
+    feed(afe, SAT_CODE, 1000);                           // at the floor: nothing more to announce
+    TEST_ASSERT_EQUAL_UINT32(n, afe.hgacRfChangeCount());
+}
+
 // ── Warmup: nothing acts before the fast EMA matures (valid()==false → no action) ──
 void test_hgac_no_action_during_warmup() {
     INCUNEST_AFE4490 afe;
@@ -286,5 +305,6 @@ int main() {
     RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
     RUN_TEST(test_hgac_led_only_sat_is_probe_in_air);
+    RUN_TEST(test_hgac_rf_change_is_counted_and_stamped);
     return UNITY_END();
 }

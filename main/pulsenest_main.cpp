@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.14"   // 0.14: Ts_us printed as %llu in $M1-$M4 (was %lu: wrapped every 71,6 min)
+#define PULSENEST_FW_VERSION "0.15"   // 0.15: $CFG says why it exists (cause=boot|query|set|hgac, ts_us, hgac_rf_changes); one per HGAC RF move
 
 // ── Pin definitions ────────────────────────────────────────────────────────────────────
 // From Kconfig (main/Kconfig.projbuild, menu "PulseNest board"): one build directory per board,
@@ -754,8 +754,16 @@ static void send_tcfg_frame() {
 // Emit a $CFG frame with the current AFE4490 configuration.
 // Called from Cmd_Task (low priority) — safe to call Serial.print() here;
 // the UART hardware buffer serialises writes from all tasks.
-static void send_cfg_frame() {
+// cause: "query" ($CFG?), "set" (after a $SET), "hgac" (Cmd_Task saw HGAC move RF). ts_us is the
+// instant the configuration became what this frame says -- for "hgac" the library's stamp of the
+// move itself (same clock as the $M* rows), for the others the moment of emission -- so a host
+// can place the change on the exact sample. hgac_rf_changes is the running count of HGAC moves;
+// a jump of more than one between frames means moves landed inside one Cmd_Task tick (fw 0.15).
+static void send_cfg_frame(const char* cause) {
     AFE4490Config cfg = afe.getConfig();
+    uint64_t hgac_ts_us = 0;
+    const uint32_t hgac_rf_changes = afe.hgacRfChangeCount(&hgac_ts_us);
+    const uint64_t ts_us = (strcmp(cause, "hgac") == 0) ? hgac_ts_us : (uint64_t)esp_timer_get_time();
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     // Fingerprint of THIS image: the first 8 bytes of the ELF SHA-256 that ESP-IDF embeds in
@@ -791,7 +799,8 @@ static void send_cfg_frame() {
         // Provenance: which firmware produced this capture. Without it the FW_* columns of a
         // CSV become uninterpretable as soon as the algorithms change — see
         // captures/CAPTURE_SET_SPEC.md §2.3.
-        ",fw=%s,lib=%s,build=%s,libsha=%s,elfsha=%s,idfver=%s",
+        ",fw=%s,lib=%s,build=%s,libsha=%s,elfsha=%s,idfver=%s"
+        ",cause=%s,ts_us=%llu,hgac_rf_changes=%lu",
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_sep_tia_en ? 1 : 0,
@@ -820,7 +829,8 @@ static void send_cfg_frame() {
         // the image would make elfsha differ for identical sources.
         PULSENEST_FW_VERSION, INCUNEST_AFE4490_VERSION,
         PULSENEST_GIT_HASH, INCUNEST_GIT_HASH,
-        elf_sha8, app_desc->idf_ver);
+        elf_sha8, app_desc->idf_ver,
+        cause, (unsigned long long)ts_us, (unsigned long)hgac_rf_changes);
     // Fail loudly rather than emit a truncated frame the host would accept as valid.
     if (!frame_finish(buf, sizeof(buf), n, "CFG")) return;
     Serial_print_locked(buf);
@@ -1135,7 +1145,7 @@ static void apply_set_cmd(const char* key, const char* val) {
         Serial_printf("$ERR,%s,unknown key\r\n", key);
         return;
     }
-    send_cfg_frame();
+    send_cfg_frame("set");
 }
 
 // ── OTA web server ────────────────────────────────────────────────────────────
@@ -1233,7 +1243,7 @@ static void process_command(char* cmd_buf, int cmd_len) {
         else if (strcmp(mode, "M4") == 0) { g_incunest_frame_mode = IncunestFrameMode::M4; Serial_printf("# Frame mode: $M4 (debug)\n"); }
         else { Serial_printf("$ERR,MODE,invalid (M1/M2/M3/M4)\r\n"); }
     } else if (strcmp(cmd_buf, "$CFG?") == 0) {
-        send_cfg_frame();
+        send_cfg_frame("query");
     } else if (strcmp(cmd_buf, "$LCFG?") == 0) {
         send_lcfg_frame();
     } else if (strcmp(cmd_buf, "$DIAG?") == 0) {
@@ -1313,6 +1323,19 @@ void Cmd_Task(void *pvParameters) {
                     udp_cmd[n] = '\0';
                     process_command(udp_cmd, n);
                 }
+            }
+        }
+        // ── HGAC moved RF: announce it (fw 0.15) ─────────────────────────────
+        // The library only counts (it runs in the measurement task, which never calls the
+        // network -- fw 0.13 rule); this task may, so each new count becomes a $CFG within one
+        // 50 ms tick. Its ts_us is the instant of the move, not of this emission. Serial and
+        // UDP both, like every other $CFG, so the hub caches it and replays it to subscribers.
+        {
+            static uint32_t announced = 0;
+            const uint32_t n = afe.hgacRfChangeCount();
+            if (n != announced) {
+                announced = n;
+                send_cfg_frame("hgac");
             }
         }
         vTaskDelay(pdMS_TO_TICKS(50));
