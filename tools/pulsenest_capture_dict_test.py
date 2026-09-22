@@ -97,8 +97,7 @@ for domain, rest in lines:
                 check(re.fullmatch(r"-?\d+", v) is not None, f"Appendix B: {k}={v} should be an integer (R24a/R30)")
 snapshot_keys = {k.name for k in D.KEYS if k.domain in ("afe", "timing", "alg")}
 used = {tok.partition("=")[0] for _d, rest in lines for tok in rest.split()} - {"cause"}
-check(snapshot_keys - used == {"hgac_rf_changes"} or snapshot_keys <= used,
-      f"every snapshot key appears in Appendix B (except the fw 0.15 counter) -- unused {sorted(snapshot_keys - used)}")
+check(snapshot_keys <= used, f"every snapshot key appears in Appendix B -- unused {sorted(snapshot_keys - used)}")
 
 print(f"{n_ok}/{n_ok + n_bad} checks")
 sys.exit(1 if n_bad else 0)

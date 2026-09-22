@@ -919,6 +919,8 @@ def main(argv=None):
                     help="where session directories are created (default captures/sessions). "
                          "Point it at a second disk and the recording is written there directly, "
                          "instead of being copied afterwards")
+    ap.add_argument("--csv", default="on", choices=("on", "off", "v04"),
+                    help="live capture CSV per board: on = today's format, v04 = capture_csv_format_spec.md v0.4, off")
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"),
                     help="the .pnraw stream in raw/: `full` keeps every datagram verbatim, "
                          "`exceptions` only the ones around a gap or a restart, `off` writes no "
@@ -971,7 +973,7 @@ def main(argv=None):
     if not location:
         return 1
     try:
-        rec = Recorder(args.out, location, operator, raw_mode=args.raw,
+        rec = Recorder(args.out, location, operator, raw_mode=args.raw, csv_mode=args.csv,
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9),

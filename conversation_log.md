@@ -25117,3 +25117,37 @@ intermedio perdido, `hgac_rf_changes` salta de dos. Si algún día importa: un s
   corromper `\r\n` en un parche Python (regla `feedback_python_patch_via_file_not_heredoc`, otra vez).
 - La `…88:50` queda con RF1=500K (HGAC lo gobierna; antes estaba en 50K por decisión suya al arrancar).
 - `docs/boards.md`: tres filas con la OTA de hoy.
+
+## 2026-09-22 (mediodía) - Plan v0.4: fases 0, 1 y 2 hechas; D13/D14 por mis recomendaciones
+
+Alex: "Sigue con tus recomendaciones (tu plan es complejo y no puedo seguir cada detalle)". Pregunta: ¿el
+aviso de RF indica desde qué muestra aplica? Sí: `ts_us` está en el reloj de `Ts_us`; el cambio aplica desde
+la primera fila con `Ts_us > ts_us` (la muestra N se lee y sella, luego `_process_sample()` escribe el RF
+nuevo y sella; N+1 ya va con el RF nuevo; 2 ms entre ambas, el proceso dura cientos de µs).
+
+- **D14 cerrado** (`868807d`): el concentrador pide `$LCFG?` justo después de `$CFG?` (`_ask_cfg`); `$TCFG`
+  no hacía falta pedirlo, el firmware lo manda pegado a cada `$CFG`. hub_test 41/41.
+- **Fase 0 enmendada**: sin bandera nueva; `--csv on|off` ya era el carril y `v04` es su tercer valor.
+  Corpus congelado en `captures/v04_corpus/` (sesión 0219 con móvil + 120 s de tres placas a fw 0.15).
+- **Fase 1**: diccionario movido a la raíz (`pulsenest_capture_dict.py`, junto al escritor que lo importa);
+  `hgac_rf_changes` pasa al dominio `clock` (telemetría, nunca en una instantánea).
+- **Fase 2**: `CaptureCsvWriterV04`, segunda clase en `pulsenest_capture_csv.py`, la de hoy intacta.
+  Claves R26, `# from-board:` como evidencia, instantáneas `afe:/timing:/alg:` completas con nombres del
+  diccionario (enteros en unidades naturales), anclas `clock:` en la primera fila, cada 10 s de reloj del
+  firmware, en cada comprobación y al cierre; `gap:`/`stall:`/`event: board restarted`; sin columnas
+  SmpCnt/Ts_us/HOST/RF; celda vacía = no disponible. 39/39 checks (incluye repetir el corpus: 60 000 filas).
+  Decisiones al escribirlo: (a) RF fuera de las columnas ya (prerrequisito 6 cerrado hoy); (b) la PRIMERA
+  instantánea de un dominio dice `open|part` aunque llegue con filas escritas (un `$TCFG` tardío no cambió
+  nada); (c) el ancla de cierre va ligada a la última fila real, `@row N-1` (apéndice B corregido);
+  (d) `alg:` solo cuando se han visto `$CFG` y `$LCFG` (completa o nada); (e) `$M1` mapea su único valor a
+  PPG en vez de desplazarlo a LED2.
+- **Integración**: `--csv v04` en `pulsenest_recorder.py` y en la ventana (por defecto `on`); caché de las
+  tres tramas por placa (`Source.cfg_frames`) alimentada al escritor ANTES de abrir cada parte. Humo en el
+  banco: 4 intentos hasta la cabecera completa. Fallos míos por el camino: caché colocada después de la
+  identificación; `data[:6] in (b"$CFG,", …)` (seis bytes contra cinco); un heredoc corrompiendo `\r\n`
+  otra vez. Y uno heredado: `cond <nota> SIM` tomaba SIM como parte de la condición (`V04-SMOKE-SIM`) porque
+  solo reconocía `SUBJnn` → ahora `normalise_subject()`.
+- El concentrador en marcha llevaba el código antiguo (sin `$LCFG?`): reiniciado; el `alg:` apareció.
+- Specs: plan fases 0-2 con estado y desvíos; apéndice B (`@row 5009`); recorder spec `--csv v04`.
+
+**Siguiente**: fase 3, `tools/pulsenest_convert.py` (.pnraw → CSV) con prueba de igualdad byte a byte.

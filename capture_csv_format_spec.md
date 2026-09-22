@@ -146,7 +146,7 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
 ## D. Columns and dictionary
 
 - **R18 — A versioned canonical dictionary**, one for every profile, **covering columns and
-  configuration keys alike** — **exists since 2026-09-22: `tools/pulsenest_capture_dict.py`**, data only
+  configuration keys alike** — **exists since 2026-09-22: `pulsenest_capture_dict.py`**, data only
   (37 columns with every name ever written as a synonym, 92 keys across `id`/`session`/`clock`/`afe`/
   `timing`/`alg` with their wire origin and scale), checked by `tools/pulsenest_capture_dict_test.py`
   against `CAPTURE_COLS`, the firmware's three frame format strings (both directions, so a new wire
@@ -435,7 +435,7 @@ OT1_E10,OT2_E10,ALED1,ALED2,SpO2,HR3,SQI,ProbeState
 
 ```
 # @row 5010 end: gaps=1 stalls=1
-# @row 5010 clock: smpcnt=123414 fw_ts_us=51931793 host_epoch_us=1758352453211600
+# @row 5009 clock: smpcnt=123413 fw_ts_us=51929793 host_epoch_us=1758352453209600
 ```
 
 Reading it in order:
@@ -486,7 +486,9 @@ Reading it in order:
   excess). That is what R12b's "~10 s cadence" means: paced by the clock, not by a fixed row count.
 - **`@row 5010` — close.** `end: gaps=1 stalls=1` is the session's own tally, matching the one gap
   and one stall this file actually hit; the accompanying `clock` line is the last of R12b's
-  triggers, "at close", so a truncated read still ends on a provable instant.
+  triggers, "at close", so a truncated read still ends on a provable instant. It says `@row 5009`,
+  not `5010`: an anchor is a true (row, instant) pair, and row 5010 was never written — the
+  closing anchor ties the LAST row that exists to its counter and its clocks (writer, 2026-09-22).
 
 ---
 
@@ -541,7 +543,7 @@ seen**, never invented.
 
 ### Phase 1 — The dictionary, R18 (and it closes D2/R19)
 
-Deliverable: `tools/pulsenest_capture_dict.py` — data, no logic — one entry per column and per
+Deliverable: `pulsenest_capture_dict.py` — data, no logic — one entry per column and per
 configuration key: name, meaning, unit, type, range, sentinel, provenance (`fw measured` /
 `fw computed` / `host` / `derivable` / `config`), domain, version introduced. Columns: the 35 of
 `CAPTURE_COLS` under canonical names (R19 grammar `[<origin>_]<quantity>[_<channel>][_<unit>]`,
@@ -555,6 +557,20 @@ line resolves; no two entries share a name; the dictionary is what `header()` wi
 **This phase is pure data and touches no writer. It is the one to do first tonight.**
 
 ### Phase 2 — The writer, `CaptureCsvWriter` v0.4 (shared by lab, recorder, converter — R3)
+
+**Done 2026-09-22 as `CaptureCsvWriterV04`, a second class in `pulsenest_capture_csv.py`** (the
+legacy class is untouched — a second class was less risk than a mode switch inside every method),
+38 checks in `tools/capture_csv_v04_test.py`, replaying the frozen corpus too. Wired into
+`pulsenest_recorder.py` and the window as **`--csv v04`** (default still `on`); a 25 s bench
+session writes the header below, three snapshots, anchors every 10 s, `end:` on close. Departures
+from the list that follows, all deliberate: (a) **item 8 is void — RF left the columns**, because
+prerequisite 6 landed the same day (fw 0.15 `cause=hgac`); (b) a domain's FIRST snapshot says the
+open cause (`open`|`part`) whenever it becomes known — a `$TCFG` that lands three rows in did not
+*change* anything; (c) the closing anchor is tied to the last row written, `@row N-1` (Appendix B
+corrected); (d) `alg:` is written only once both `$CFG` and `$LCFG` have been seen — full or
+nothing (R24) — which is why D14 mattered; (e) `hgac_rf_changes` is telemetry about events and
+goes in no snapshot (an `alg:` line must not move when only RF did). Item 6's `stall` uses F6's
+10 ms; items 2, 5 and 7 as written. The original plan, kept for the record:
 
 Same class, new mode; `legacy` stays as the other branch of the same methods. In dependency order:
 1. **Header, R5–R8/R17/R26**: UTF-8 no BOM; `# format=incunest_csv/1`, `# profile=P1`, `# writer=`,
@@ -690,7 +706,7 @@ header now follows it too, without waiting for the rest of the migration.
    the R26 identity/provenance keys parsed out of `$CFG`, the three snapshots of R24 built from
    `$CFG`/`$TCFG`/`$LCFG` at open and on every change (`from-board:` verbatim optional), live
    gap/stall checks, anchors, `# end` summary, fixed-point `OT1/OT2` computed from codes.
-   **1b. DONE 2026-09-22 — `tools/pulsenest_capture_dict.py`.** The dictionary (R18) must exist first: every `afe_*`, `timing`, `alg` key named, with
+   **1b. DONE 2026-09-22 — `pulsenest_capture_dict.py`.** The dictionary (R18) must exist first: every `afe_*`, `timing`, `alg` key named, with
    unit and type, before a single snapshot is written — a snapshot with unnamed keys is a wire
    frame again.
 2. Firmware: `FW_Ts_us` as 64-bit (F1) — no longer blocking, still a defect.

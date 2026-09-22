@@ -192,7 +192,9 @@ KEYS = [
     Key("hgac_ema_fast_tau_ms", "alg", (LCFG, ("hgac_ema_fast_tau_s",),  1000), "guard EMA time constant (wire prints s)",           "ms",   "int",   CONFIG, "0.4"),
     Key("hgac_ema_slow_tau_ms", "alg", (LCFG, ("hgac_ema_slow_tau_s",),  1000), "leveling EMA time constant",                        "ms",   "int",   CONFIG, "0.4"),
     Key("hgac_ema_ambient_tau_ms", "alg", (LCFG, ("hgac_ema_ambient_tau_s",), 1000), "ambient EMA time constant",                    "ms",   "int",   CONFIG, "0.4"),
-    Key("hgac_rf_changes",      "alg", (CFG,  ("hgac_rf_changes",), 1), "RF moves HGAC has applied since boot (fw 0.15); a jump > 1 between snapshots means moves landed inside one 50 ms tick", "count", "int", FW_COMPUTED, "0.4"),
+    # telemetry about events, not a parameter: it rides on the $CFG that announces a move and is
+    # never written into a snapshot (an alg: line must not change when only RF moved, R24)
+    Key("hgac_rf_changes",      "clock", (CFG, ("hgac_rf_changes",), 1), "RF moves HGAC has applied since boot (fw 0.15); a jump > 1 between two $CFG means moves landed inside one 50 ms tick", "count", "int", FW_COMPUTED, "0.4"),
 ]
 
 # ── lookup tables (built once from the lists above; the only code in this file) ──────────────

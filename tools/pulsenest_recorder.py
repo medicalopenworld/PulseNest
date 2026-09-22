@@ -73,7 +73,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 from pulsenest_net import UDP_DATA_PORT, script_name           # noqa: E402
 from pulsenest_hub_client import HubClient                      # noqa: E402
-from pulsenest_capture_csv import CaptureCsvWriter, col_spec_all  # noqa: E402
+from pulsenest_capture_csv import CaptureCsvWriter, CaptureCsvWriterV04, col_spec_all  # noqa: E402
 
 RECORDER_VERSION = "0.1"
 FORMAT_TAG = b"@PNRAW1"
@@ -286,6 +286,7 @@ EVENTS_HEADER = ["session_id", "event_id", "t_mono_us", "t_epoch_us", "iso_local
                  "subject", "board_mac", "value", "value2", "source", "confidence", "note"]
 
 _MAC_RE = re.compile(rb"[,\s]mac=([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})")
+_CFG_HEADS = (b"$CFG,", b"$TCFG,", b"$LCFG,")   # first six bytes of a configuration datagram
 _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
 # A phone naming itself at the END of its frame:
 #     $VN1,<seq>,<spo2>,<conf>,<ts_ms>,<id>*<cks>
@@ -538,6 +539,7 @@ class Source:
         self.vn_id = None                     # a phone's self-declared id, if its frames carry one
         self.ident = {}                       # k=v pairs from the $CFG (board, fw, lib, build, ...)
         self.cfg_raw = None
+        self.cfg_frames = {}                  # b"$CFG" | b"$TCFG" | b"$LCFG" -> last line seen (str)
         self.stream = None
         self.csv = None                       # CaptureCsvWriter, for boards only (section 2)
         self.csv_path = None                  # the part being written
@@ -624,8 +626,8 @@ class Recorder:
                  ref_model=None, ref_avg=None, ref_probe_site=None, ref_note=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
-        if csv_mode not in ("on", "off"):
-            raise ValueError("csv_mode must be on | off")
+        if csv_mode not in ("on", "off", "v04"):
+            raise ValueError("csv_mode must be on | off | v04")
         self.csv_mode = csv_mode
         self.clock = clock
         self.raw_mode = raw_mode
@@ -752,6 +754,13 @@ class Recorder:
         try:
             if src.kind == "videonest":
                 src = self._identify_phone(src, data, t_mono_us, t_epoch_us)
+            if src.kind == "board" and data.startswith(_CFG_HEADS):
+                # The three configuration frames, remembered per board so that a CSV part
+                # opened by the identification below, or later, starts with the full picture (v0.4 snapshots at @row 0).
+                for ln in data.split(b"\n"):
+                    head = ln.split(b",", 1)[0]
+                    if head in (b"$CFG", b"$TCFG", b"$LCFG"):
+                        src.cfg_frames[head] = ln.rstrip(b"\r").decode("ascii", "replace")
             if src.kind == "board" and src.mac is None:
                 self._try_identify(src, data, t_mono_us, t_epoch_us)
             elif src.kind == "board" and data.startswith(b"$CFG,"):
@@ -967,6 +976,25 @@ class Recorder:
                 f"_p{src.csv_part:02d}.csv")
         src.csv_path = os.path.join(self.dir, name)
         src.csv_paths.append(src.csv_path)
+        if self.csv_mode == "v04":
+            # capture_csv_format_spec.md v0.4: keys instead of notes, snapshots from the frames
+            # this board has sent so far (fed BEFORE open, so @row 0 says cause=open|part and
+            # the header carries the board's identity), then the rows. The frames that arrive
+            # later reach the writer inside the datagrams and become snapshots on change.
+            keys = {"writer": f"pulsenest_recorder/{RECORDER_VERSION}", "session_id": self.session_id,
+                    "site": self.site, "subject": src.subject or "", "condition": src.condition or "",
+                    "part": src.csv_part, "prev": prev, "led1": "IR", "led2": "RED",
+                    "probe": src.probe_model or "", "t0_iso": iso_local(t_epoch_us),
+                    "t0_epoch_us": t_epoch_us}
+            src.csv = CaptureCsvWriterV04(src.csv_path, keys=keys, label=src.mac or src.ip)
+            for head in (b"$CFG", b"$TCFG", b"$LCFG"):
+                if head in src.cfg_frames:
+                    src.csv.config(src.cfg_frames[head])
+            src.csv.open("open" if src.csv_part == 1 else "part")
+            src.csv_due_epoch_us = (next_wall_boundary_us(t_epoch_us, self.split_s)
+                                    if self.split_s else 0)
+            self.log.info("%s -> %s (v0.4)", src.label(), name)
+            return
         src.csv = CaptureCsvWriter(src.csv_path, col_spec_all(), host_t_us=True,
                                    label=src.mac or src.ip)
         notes = [f"session={self.session_id}", f"writer=pulsenest_recorder/{RECORDER_VERSION}",
@@ -1044,7 +1072,8 @@ class Recorder:
         if not src.csv_due_epoch_us or t_epoch_us < src.csv_due_epoch_us:
             return
         try:
-            src.csv_rows_total += src.csv.close(f"rows={src.csv.count} skipped={src.csv.skipped} "
+            src.csv_rows_total += src.csv.close("" if self.csv_mode == "v04" else
+                                                f"rows={src.csv.count} skipped={src.csv.skipped} "
                                                 f"split=wall-clock")
             self._open_csv(src, t_epoch_us)
         except OSError as exc:
@@ -1130,7 +1159,7 @@ class Recorder:
             self._note_event(src, t_mono_us, t_epoch_us, kind, text)
             # The same event, in the CSV's own idiom: '# event @row N: ...' with the post-notes.
             if src.csv is not None and src.csv.active:
-                src.csv.add_event(f"{kind} {text}")
+                src.csv.add_event(f"{kind} {text}", t_epoch_us)
         self.log.info("event %d %s %s", self.event_id, kind, text)
         return self.event_id
 
@@ -1310,8 +1339,8 @@ class Recorder:
                     return "usage: cond <value> [SUBJ01]"
                 value = " ".join(args).upper()
                 subj = None
-                if len(args) > 1 and args[-1].upper().startswith("SUBJ"):
-                    subj = args[-1].upper()
+                if len(args) > 1 and normalise_subject(args[-1]):
+                    subj = normalise_subject(args[-1])      # SUBJnn or SIM, like everywhere else
                     value = " ".join(args[:-1]).upper()
                 value = safe_condition(value)
                 if not value:
@@ -1522,7 +1551,8 @@ class Recorder:
         for src in self._owners():
             if src.csv is not None and src.csv.active:
                 try:
-                    rows = src.csv.close(f"rows={src.csv.count} skipped={src.csv.skipped} "
+                    rows = src.csv.close("" if self.csv_mode == "v04" else     # v0.4: `end:` says it
+                                         f"rows={src.csv.count} skipped={src.csv.skipped} "
                                          f"gaps={src.gaps} samples_lost={src.samples_lost}")
                     src.csv_rows_total += rows
                     self._name_csv(src)
@@ -1688,8 +1718,9 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"), metavar="DIR",
                     help="where session directories are created (default captures/sessions)")
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
-    ap.add_argument("--csv", default="on", choices=("on", "off"),
-                    help="write the live capture CSV per board beside the .pnraw")
+    ap.add_argument("--csv", default="on", choices=("on", "off", "v04"),
+                    help="live capture CSV per board beside the .pnraw: on = today's format (what every "
+                         "tool reads), v04 = capture_csv_format_spec.md v0.4 (snapshots, anchors), off")
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT,
                     help="split the raw stream on this wall-clock period, in minutes")
     ap.add_argument("--split-mb", type=float, default=SPLIT_MB_DEFAULT)
