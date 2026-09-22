@@ -603,8 +603,8 @@ class Recorder:
     def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="on", hub_text="",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
-                 board=None, subject=None, videonest=None, cond=None,
-                 ref_model=None, ref_avg=None, ref_site=None, ref_note=None):
+                 board=None, subject=None, videonest=None, note=None,
+                 ref_model=None, ref_avg=None, ref_probe_site=None, ref_note=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
         if csv_mode not in ("on", "off"):
@@ -632,13 +632,16 @@ class Recorder:
         # but only the declared one writes rows into reference_spo2.csv: one of them is pointed
         # at this baby's monitor, and session.json has to say which.
         self.videonest_id = videonest or None
-        # The four commercial-monitor fields, typed once on the command line rather than in the
-        # panel (Alex, 2026-09-22: they do not change during the session, so a fixed control would
-        # sit idle). Applied through the same `cond`/`ref` console commands as a keystroke would
-        # use, the moment a subject is known -- see _apply_pending_metadata().
-        self.want_cond = safe_condition(cond) if cond else None
+        # Typed once on the command line rather than in the panel (Alex, 2026-09-22: they do not
+        # change during the session, so a fixed control would sit idle). Applied through the same
+        # `note`/`cond`/`ref` console commands a keystroke would use, once a subject is known --
+        # see _apply_pending_metadata(). `note` is deliberately the only free-text launch field:
+        # a short, sanitised `cond` was not worth a field of its own, so the launch-time note is
+        # written verbatim (nothing lost) AND seeds the initial condition from the same text --
+        # provisional, correctable in the window the moment it looks wrong or simply changes.
+        self.want_note = (note or "").strip() or None
         self.want_ref = {k: v for k, v in
-                         (("model", ref_model), ("avg", ref_avg), ("site", ref_site), ("note", ref_note))
+                         (("model", ref_model), ("avg", ref_avg), ("site", ref_probe_site), ("note", ref_note))
                          if v}
         # The tag is not decoration: three windows launched in the same minute would otherwise
         # share a directory and overwrite each other's session.json.
@@ -906,15 +909,22 @@ class Recorder:
         src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
 
     def _apply_pending_metadata(self, src):
-        """`--cond` and `--ref-*`, applied once a subject is known, through the ordinary `cond`
-        and `ref` console commands -- so a value typed on the command line is validated and
-        events-logged exactly like one typed at the keyboard. Guarded so a board re-identifying
-        (a new DHCP lease) does not repeat it."""
+        """`--note` and `--ref-*`, applied once a subject is known, through the ordinary `note`,
+        `cond` and `ref` console commands -- so a value typed on the command line is validated
+        and event-logged exactly like one typed at the keyboard. Guarded so a board re-identifying
+        (a new DHCP lease) does not repeat it.
+
+        `--note` does two things with the one string: written verbatim as a NOTE event (so
+        `mark SUBJ02 nappy change` if it were one line and `note SUBJ02 term neonate, resting
+        after a feed` if it were the other survive intact), and ALSO fed through `cond`'s own
+        sanitiser to seed the starting CONDITION -- the same short slug a keystroke would have
+        produced, just derived instead of typed twice."""
         if getattr(src, "_metadata_applied", False):
             return
         src._metadata_applied = True
-        if self.want_cond:
-            self.console(f"cond {self.want_cond} {src.subject}")
+        if self.want_note:
+            self.console(f"note {src.subject} {self.want_note}")
+            self.console(f"cond {self.want_note} {src.subject}")
         for key, value in self.want_ref.items():
             self.console(f"ref {src.subject} {key} {value}")
 
@@ -1656,11 +1666,13 @@ def main(argv=None):
                          "session directory is named from the start")
     ap.add_argument("--videonest", default="", metavar="ID",
                     help="device id of the phone pointed at THIS baby's monitor")
-    ap.add_argument("--cond", default="", metavar="RESTING",
-                    help="the condition, applied once the subject is known")
+    ap.add_argument("--note", default="", metavar="TEXT",
+                    help="a free-text note about this baby's session, applied once the subject "
+                         "is known: written verbatim as a NOTE event, and its sanitised form "
+                         "also seeds the starting CONDITION (correctable in the window)")
     ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
     ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
-    ap.add_argument("--ref-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
+    ap.add_argument("--ref-probe-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
     ap.add_argument("--ref-note", default="", metavar="TEXT", help="commercial monitor: anything else")
     ap.add_argument("--duration", type=float, default=0.0, help="seconds; 0 = until quit")
     args = ap.parse_args(argv)
@@ -1673,8 +1685,8 @@ def main(argv=None):
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),
                        board=args.board, subject=args.subject, videonest=args.videonest,
-                       cond=args.cond, ref_model=args.ref_model, ref_avg=args.ref_avg,
-                       ref_site=args.ref_site, ref_note=args.ref_note)
+                       note=args.note, ref_model=args.ref_model, ref_avg=args.ref_avg,
+                       ref_probe_site=args.ref_probe_site, ref_note=args.ref_note)
     except NotEnoughSpace as exc:
         print(f"NOT STARTING: {exc}.", file=sys.stderr)
         print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)

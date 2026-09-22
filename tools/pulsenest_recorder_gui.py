@@ -260,8 +260,8 @@ class BoardRow(QtWidgets.QFrame):
         self.ref_label.setToolTip("The commercial monitor beside this baby: make and model, its\n"
                                   "averaging window in seconds, where ITS probe is, and any note.\n"
                                   "Set once, on the command line: --ref-model, --ref-avg,\n"
-                                  "--ref-site, --ref-note. Shown here read-only so you can see it\n"
-                                  "was typed correctly, not to be edited from the window.")
+                                  "--ref-probe-site, --ref-note. Shown here read-only so you can\n"
+                                  "see it was typed correctly, not to be edited from the window.")
         form.addRow("MONITOR", self.ref_label)
         self._set_dependents_enabled(False)
         return g
@@ -802,8 +802,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
 # The ten fields a session file can set -- what a baby's session IS, never how the tool behaves
 # (--hub, --out, --raw, --split-min, --duration, --min-free-gb stay command-line only: they are
 # the same for all three cots and belong to the laptop, not the baby).
-CONFIG_FIELDS = ("location", "operator", "board", "subject", "videonest", "cond",
-                 "ref_model", "ref_avg", "ref_site", "ref_note")
+CONFIG_FIELDS = ("location", "operator", "board", "subject", "videonest", "note",
+                 "ref_model", "ref_avg", "ref_probe_site", "ref_note")
 
 
 def load_session_config(path):
@@ -817,12 +817,17 @@ def load_session_config(path):
         board     = "8850"
         subject   = "SUBJ01"
         videonest = "J6plusACM"
-        cond      = "RESTING"
+        note      = "term neonate, resting after a feed"
 
         [ref]
         model = "Masimo Radical-7"
         avg   = 8
-        site  = "right hand"
+        probe-site = "left thumb"
+
+    `note` is free text (written verbatim as a NOTE event) and its sanitised form also seeds the
+    starting CONDITION -- there is no separate `cond` field, because a short, controlled-vocabulary
+    word was not worth a launch parameter of its own when a note already says more and can be
+    corrected in the window the moment it changes.
 
     Raises OSError if the file cannot be read, tomllib.TOMLDecodeError if it is not valid TOML.
     Neither is caught here -- the caller decides how to report it.
@@ -836,9 +841,9 @@ def load_session_config(path):
     return {
         "location": text(data.get("location")), "operator": text(data.get("operator")),
         "board": text(data.get("board")), "subject": text(data.get("subject")),
-        "videonest": text(data.get("videonest")), "cond": text(data.get("cond")),
+        "videonest": text(data.get("videonest")), "note": text(data.get("note")),
         "ref_model": text(ref.get("model")), "ref_avg": text(ref.get("avg")),
-        "ref_site": text(ref.get("site")), "ref_note": text(ref.get("note")),
+        "ref_probe_site": text(ref.get("probe-site")), "ref_note": text(ref.get("note")),
     }
 
 
@@ -909,11 +914,13 @@ def main(argv=None):
                     help="bind this coded subject as soon as the board is identified")
     ap.add_argument("--videonest", default="", metavar="ID",
                     help="device id of the phone pointed at THIS baby's monitor")
-    ap.add_argument("--cond", default="", metavar="RESTING",
-                    help="the condition, applied once the subject is known")
+    ap.add_argument("--note", default="", metavar="TEXT",
+                    help="a free-text note about this baby's session, applied once the subject "
+                         "is known: written verbatim as a NOTE event, and its sanitised form "
+                         "also seeds the starting CONDITION (correctable in the window)")
     ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
     ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
-    ap.add_argument("--ref-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
+    ap.add_argument("--ref-probe-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
     ap.add_argument("--ref-note", default="", metavar="TEXT", help="commercial monitor: anything else")
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT, metavar="MIN",
@@ -948,8 +955,8 @@ def main(argv=None):
                        split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9),
                        board=args.board, subject=args.subject, videonest=args.videonest,
-                       cond=args.cond, ref_model=args.ref_model, ref_avg=args.ref_avg,
-                       ref_site=args.ref_site, ref_note=args.ref_note)
+                       note=args.note, ref_model=args.ref_model, ref_avg=args.ref_avg,
+                       ref_probe_site=args.ref_probe_site, ref_note=args.ref_note)
     except (NotEnoughSpace, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2

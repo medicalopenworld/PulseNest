@@ -24968,3 +24968,30 @@ alternativa explicita, nunca mezclado con el fichero.
 Probado en el banco de extremo a extremo: sesion HOSP01/SUBJ01 completa arrancada desde un solo
 fichero, `reference_monitor` y condicion correctos desde la primera fila. 60/60 en la ventana (10
 nuevas, una por cada campo que debe rechazarse si se repite fuera del fichero), 112 en el grabador.
+
+## 2026-09-22 (mañana, cont.) - repaso de Alex sobre --config: `note` sustituye a `cond`, `ref-probe-site` sustituye a `ref-site`
+
+Alex revisa el fichero TOML que acabamos de construir, tres comentarios.
+
+**1. `cond` no merece campo propio.** "no es suficientemente relevante, deberia ser una nota
+generica mas (de hecho la nota determinaria la condition inicial, ya que durante la medida podria
+cambiar)". `--cond`/`cond=` desaparece. Nuevo `--note`/`note=`: se escribe TEXTUAL como evento
+NOTE (nada se pierde, al contrario que `cond`, que truncaba a 24 caracteres saneados), y ademas su
+forma saneada alimenta la CONDITION inicial via el mismo comando `cond` de siempre — provisional,
+corregible en la ventana en cuanto cambie o quede fea. Medido con una nota larga: el nombre de
+fichero sale truncado, `TERM-NEONATE-RESTING-AFT` — feo pero funcional, y es exactamente lo que
+Alex acepto de antemano ("podria cambiar").
+
+**2. `site` (la sonda del monitor comercial) gana claridad**: `--ref-site` -> `--ref-probe-site`,
+`[ref].site` -> `[ref].probe-site` (guion valido en clave TOML). El comando de consola interno
+`ref SUBJ01 site ...` NO cambia, solo el nombre de lanzamiento. Ejemplo mejorado: "right hand" ->
+"left thumb", mas especifico, como pidio.
+
+Aplicado en las dos herramientas (`pulsenest_recorder.py` y `pulsenest_recorder_gui.py`),
+`apply_session_config`/`load_session_config`, la plantilla `docs/session_configs/example.toml`
+(recargada y verificada), el guion y la spec. Probado en el banco de extremo a extremo con nota
+larga y sitio especifico. 112 y 60 comprobaciones.
+
+**3. Videonest dentro de [ref]?** Pendiente de decidir con Alex, ver siguiente mensaje: analisis
+sin implementar, porque tocar esto de verdad (dos pulsioximetros fisicos en un mismo bebe) es una
+funcionalidad mayor, no una reestructuracion del TOML.

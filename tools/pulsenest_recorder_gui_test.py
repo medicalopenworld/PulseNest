@@ -376,12 +376,12 @@ operator  = "AC"
 board     = "8850"
 subject   = "SUBJ01"
 videonest = "J6plusACM"
-cond      = "RESTING"
+note      = "term neonate, resting after a feed"
 
 [ref]
 model = "Masimo Radical-7"
 avg   = 8
-site  = "right hand"
+probe-site = "left thumb"
 """)
 
 
@@ -393,8 +393,9 @@ ns = blank_args()
 G.apply_session_config(ns, cfg_path)
 check("--config fills all ten fields from the file, avg as a string like a typed flag would be",
       vars(ns) == {"location": "HOSP01", "operator": "AC", "board": "8850", "subject": "SUBJ01",
-                   "videonest": "J6plusACM", "cond": "RESTING", "ref_model": "Masimo Radical-7",
-                   "ref_avg": "8", "ref_site": "right hand", "ref_note": ""}, vars(ns))
+                   "videonest": "J6plusACM", "note": "term neonate, resting after a feed",
+                   "ref_model": "Masimo Radical-7", "ref_avg": "8", "ref_probe_site": "left thumb",
+                   "ref_note": ""}, vars(ns))
 
 for field in G.CONFIG_FIELDS:
     conflicting = blank_args()

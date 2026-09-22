@@ -58,7 +58,7 @@ pythonw tools/pulsenest_recorder_gui.py --config subj02.toml
 pythonw tools/pulsenest_recorder_gui.py --config subj03.toml
 ```
 
-`--config` reads `location`, `operator`, `board`, `subject`, `videonest`, `cond` and the four
+`--config` reads `location`, `operator`, `board`, `subject`, `videonest`, `note` and the four
 `ref.*` fields in one go — the ten things a session needs to say who it is about, as opposed to
 `--hub`/`--out`/`--raw`/`--split-min`/`--duration`, which are how the tool behaves and are the
 same for all three cots. **Full substitution**: typing any of those ten on the command line
@@ -70,7 +70,7 @@ oximeter arrived — edit the file, or drop `--config` for that window and type 
 Without a prepared file, the equivalent by hand is:
 
 ```
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM --cond RESTING --ref-model "Masimo Radical-7" --ref-avg 8 --ref-site "right hand"
+pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM --note "term neonate, resting after a feed" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
 ```
 
 `--location` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`,
@@ -79,12 +79,16 @@ identifies a person even with no name written anywhere; what the code means live
 mapping file, beside the `SUBJnn` one.
 
 `--board` is a MAC suffix of any length. If it matches two boards the session refuses to start,
-rather than recording a baby nobody asked for. `--subject`, `--videonest` and `--cond` can be
-left out and chosen in the window instead — `--cond` is worth typing here anyway, because a
-session with no condition keeps its CSV under a provisional name (`<MAC>_…`) until you set one.
+rather than recording a baby nobody asked for. `--subject`, `--videonest` and `--note` can be
+left out and chosen in the window instead. `--note` is worth typing here anyway: it is written
+verbatim as a NOTE event **and** its sanitised form seeds the starting CONDITION, so a session
+launched with `--note` already has a canonical CSV name instead of the provisional `<MAC>_…` one
+— though for a long note that name can come out truncated and ugly (`TERM-NEONATE-RESTING-AFT`,
+measured), which is fine: it is only a starting point, fix it in the window's CONDITION field the
+moment it looks wrong.
 
-`--ref-model`, `--ref-avg`, `--ref-site` and `--ref-note` describe the commercial monitor beside
-that baby, from the photograph you took the day before (§1). They do not change during the
+`--ref-model`, `--ref-avg`, `--ref-probe-site` and `--ref-note` describe the commercial monitor
+beside that baby, from the photograph you took the day before (§1). They do not change during the
 session, so they are typed once, in the file or on the command line, rather than in the window —
 the window shows them under **MONITOR**, read-only, so a typo is visible instead of silent.
 `--ref-avg` is the number that

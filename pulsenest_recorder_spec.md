@@ -489,14 +489,21 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   the project's rule — less is more. What replaces it is evidence, not a label: a simulator is the
   subject `SIM`; a commercial oximeter is rows in `reference_spo2.csv`; the one control left on the
   panel is the one that changes what this window records — `VideoNest UDP` and which phone.
-* **`--cond` and `--ref-*`, and `ABNORMAL CONDITION` (Alex, 2026-09-22).** Two more fields the
+* **`--note` and `--ref-*`, and `ABNORMAL CONDITION` (Alex, 2026-09-22).** Two more fields the
   window used to have no way to set, resolved the same way: not a live control, because they do
-  not change during a session and a live control for them would sit idle. `--cond RESTING` and
-  `--ref-model`/`--ref-avg`/`--ref-site`/`--ref-note` are typed on the command line, applied once
-  the subject is known through the ordinary `cond`/`ref` console commands (so a value typed as a
-  flag is validated and event-logged exactly like one typed at the keyboard), and shown **MONITOR**
-  in the panel, read-only — visible so a typo is caught, not editable from the window. Without
-  `--cond` the CSV keeps its provisional `<MAC>_…` name until someone sets one, same as before.
+  not change during a session and a live control for them would sit idle. First built as `--cond
+  RESTING` (a short, sanitised word); the same day, reviewing it, Alex judged a controlled-vocab
+  condition was not important enough to deserve its own launch flag, and that a free-text note
+  should determine the starting condition instead. So **`--note`**: written verbatim as a real
+  `NOTE` event (nothing is lost past 24 characters the way `--cond` used to lose it), and its
+  sanitised form *also* seeds the starting CONDITION through the ordinary `cond` console command —
+  provisional, and correctable in the window the moment it looks wrong (a long note can truncate
+  into an ugly slug, measured: `TERM-NEONATE-RESTING-AFT`). `--ref-model`/`--ref-avg`/
+  `--ref-probe-site`/`--ref-note` (renamed from `--ref-site`, clearer about what it names) are
+  typed on the command line the same way, applied once the subject is known through the ordinary
+  `ref` console command, and shown **MONITOR** in the panel, read-only — visible so a typo is
+  caught, not editable from the window. Without `--note` the CSV keeps its provisional `<MAC>_…`
+  name until someone sets a condition, same as before.
   A fifth control, `ABNORMAL CONDITION`, is the one Alex asked for after ruling out a pause
   button: a toggle that writes `ANOMALY_START`/`ANOMALY_END` around a stretch of questionable
   validity — probe loosely applied, motion, an alarm interfering — **without stopping the
@@ -506,8 +513,8 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   `flag on|off [SUBJ01]`.
 * **`--config <file>.toml` (Alex, 2026-09-22).** The ten fields above are typed once, per baby,
   the night before a campaign, not on the day at the cot side. `load_session_config()` /
-  `apply_session_config()` read `location, operator, board, subject, videonest, cond` and a
-  `[ref]` sub-table (`model, avg, site, note`) — `docs/session_configs/example.toml` is the
+  `apply_session_config()` read `location, operator, board, subject, videonest, note` and a
+  `[ref]` sub-table (`model, avg, probe-site, note`) — `docs/session_configs/example.toml` is the
   template. Deliberately **not** `--hub`/`--out`/`--raw`/`--split-min`/`--duration`: those are how
   the tool behaves, identical across all three cots, not who a session is about.
   **Full substitution, refused rather than merged**: typing any of the ten alongside `--config`

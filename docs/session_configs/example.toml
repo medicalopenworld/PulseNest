@@ -11,11 +11,15 @@ operator  = "AC"             # initials or role, never a full name
 board     = "8850"           # last hex digits of this cot's board MAC (docs/boards.md)
 subject   = "SUBJ01"         # coded subject, never a name
 videonest = "J6plusACM"      # device id of the phone filming THIS cot -- omit if none
-cond      = "RESTING"        # what the baby is doing; can still be changed in the window
+note      = "term neonate, resting after a feed"
+# ^ free text, written verbatim as a NOTE event, AND its sanitised form seeds the starting
+# CONDITION -- there is no separate "cond" field: a short, controlled word was not worth a launch
+# parameter of its own. Correct CONDITION in the window at any time if the derived slug looks
+# wrong or the baby's state simply changes.
 
 # The commercial monitor beside this baby, from the photo taken the day before (runbook section 1).
 # Every line here is optional; leave the table out entirely if there is no reference monitor.
 [ref]
 model = "Masimo Radical-7"
 avg   = 8                    # its averaging window, in seconds -- decides if the two SpO2 compare at all
-site  = "right hand"         # where ITS probe is, not ours
+probe-site = "left thumb"    # where ITS probe is, not ours -- as specific as the photo lets you be
