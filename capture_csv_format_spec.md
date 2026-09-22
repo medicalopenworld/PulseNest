@@ -479,93 +479,135 @@ Reading it in order:
 
 ---
 
-## The v0.4 work plan (2026-09-21)
+## The v0.4 work plan — decided 2026-09-22: implement it
 
-Everything below is designed and none of it is implemented: the live CSV still writes the 35
-columns inherited from `pulsenest_lab.py`. In the order the pieces depend on each other.
+Alex, 2026-09-22: "me da miedo ir mañana al hospital sin haberlo implementado; vamos a implementar
+v0.4, prepara un plan." The concern raised before that decision stands and shapes the order below:
+**two of v0.4's pieces cannot exist before the campaign** — the RF-as-event rule R21a needs a
+firmware change (prerequisite 6: the board must announce HGAC's RF moves; today only `$SET` and
+`$CFG?` produce a `$CFG`), and the dictionary R18 does not exist yet and every other piece names
+things from it. So the plan builds everything that does not depend on those two, in an order that
+never puts the live capture path at risk, and keeps today's writer one flag away at all times.
 
-### 1. The dictionary (R18) — first, because everything else names things from it
+What makes the risk acceptable: **the `.pnraw` is the record**, verbatim datagrams, append-only,
+and the converter regenerates any CSV from it. A CSV format can be wrong and fixed later; a lost
+datagram cannot.
 
-Every column and every `# @row N <domain>:` key given a name, a unit, a type and a range, in one
-versioned file that the writer and the reader both read. Until it exists, "which columns" cannot
-be answered without inventing names twice.
+### What the recorder can actually see — the constraint that shapes Phase 2
 
-### 2. Fold `session.json` into the header
+The recorder is read-only by construction (`HubClient(control=False)`, nothing ever calls
+`send_to_board()`), so it can only write what reaches it on the wire. Measured in the code:
 
-Most of it is already in the CSV: `session=`, `writer=`, `source_ip=`, `part=`, `prev=`, and the
-board's whole `$CFG` verbatim, which carries board, MAC, firmware, library, build, `elfsha` and
-every AFE setting. What must be added as R26 keys: host, recorder version, hub, timezone, the
-start and close in wall clock, the clock drift, the IP history, and `subject`, `condition` and the
-reference set — which today live in the **filename** and nowhere inside the file.
+| Frame | Who asks for it | Reaches the recorder? | Feeds |
+|---|---|---|---|
+| `$CFG` | the hub, on first sight and on return (`_ask_cfg`) | **yes, always** | R17/R26 identity keys; `afe:` snapshot; `alg:` in part (`fl fh hr2l hr2h hr3h spo2a spo2b`) |
+| `$TCFG` (`t1`..`t28`) | nobody, unless `pulsenest_lab.py` asks | only if the lab happened to ask, or the hub replays a cached one | `timing:` snapshot |
+| `$LCFG` (`rsqm_*`, `hgac_*`) | nobody, unless the lab asks `$LCFG?` | same | the rest of `alg:` |
 
-Repeating the block in every part is the point, not the cost: a few hundred bytes against ~87 MB,
-and it is what makes a part readable alone (R33). **The one thing that cannot fold**: facts known
-only at close that belong to the session rather than the part — the clock drift, the total row
-count, the list of parts. Part 1 cannot know them, and a session that dies has no last part to
-carry them. Measured 2026-09-21: a hard kill already loses them, so folding does not make that
-worse.
+The hub already caches and replays all three prefixes (`CFG_PREFIXES`, `_replay_board`), it just
+never *asks* for the last two. **D14 below**: the smallest fix is the hub asking `$TCFG?` and
+`$LCFG?` right after `$CFG?` on first sight and on return — the same class of action it already
+takes, in the one component that is allowed to speak to a board. Until D14 is decided, Phase 2
+writes `# @row 0 afe:` from `$CFG` and emits `timing:`/`alg:` **only when the frame has been
+seen**, never invented.
 
-**`session_events.csv` and `pulsenest_recorder.log` stay.** The events file is not redundant with
-the `# event @row N:` copies: it is the only home for events about sources that have no CSV (the
-phone), it opens alone in a spreadsheet instead of being scattered across twenty-four parts, and
-it is the index the `corrects=<id>` references point into. The log must survive the absence of a
-CSV — it is what records a board that never identified, a full disk, or a window that died before
-the first row. Three companion files become two.
+### Phase 0 — Safety rails (before anything else, half an hour)
 
-### 3. Where VideoNest's readings are recorded — **open, with a recommendation**
+* `--csv-format legacy|v04` on both `pulsenest_recorder.py` and `pulsenest_recorder_gui.py`,
+  default **`legacy`** until Phase 5 flips it. The 117+63 checks keep guarding `legacy` unchanged.
+  Whatever happens at the hospital, one flag returns to the writer that has been rehearsed.
+* Freeze a **bench corpus** now: three `.pnraw` parts from the rehearsals (one per board) plus a
+  phone stream, copied under `captures/v04_corpus/` (git-ignored, like every capture). Every later
+  phase is tested against the same bytes, and the acceptance test of Phase 3 needs them.
 
-**Today they are recorded nowhere that can be read.** Measured 2026-09-21: five `$VN1` frames fed
-to a session produced **zero events and zero rows**; they exist only as raw bytes inside
-`aux_vn_<id>_0001.pnraw`, and with `--raw off` they do not exist at all. The automatic reference —
-the whole reason VideoNest was built — is currently write-only.
+### Phase 1 — The dictionary, R18 (and it closes D2/R19)
 
-§10 of `pulsenest_recorder_spec.md` used to put the phone's readings in the converter, off-site, under the
-rule that in the hospital the recorder writes what arrived and only what arrived. **That rule was
-written before the live CSV existed**, and the argument that created the live CSV applies here
-word for word: you cannot wait until you are back in the lab to find out the reference failed. It
-already has — one session returned SpO2 68 and 89 from the same monitor.
+Deliverable: `tools/pulsenest_capture_dict.py` — data, no logic — one entry per column and per
+configuration key: name, meaning, unit, type, range, sentinel, provenance (`fw measured` /
+`fw computed` / `host` / `derivable` / `config`), domain, version introduced. Columns: the 35 of
+`CAPTURE_COLS` under canonical names (R19 grammar `[<origin>_]<quantity>[_<channel>][_<unit>]`,
+project naming rules: domain prefix, unit suffix, `adc_code` never `count`) with today's names as
+**synonyms**, so nothing that reads a legacy file breaks (R37). Keys: every `$CFG` field mapped
+to `afe_*`/`alg_*` with R24a's one-representation rule (`tia1=100K`+`rf1_ohm=100000`+`cf1=100p`+
+`cf1_pF=100` collapse to `afe_rf1_ohm=100000 afe_cf1_pf=100`), `t1..t28` to `afe_<register>` names
+from the datasheet, `$LCFG` to `rsqm_*`/`hgac_*` with unit suffixes (`_s` → `_ms` integers where the
+value is a time). Test: every `CAPTURE_COLS` entry and every field of a real `$CFG`/`$TCFG`/`$LCFG`
+line resolves; no two entries share a name; the dictionary is what `header()` will read.
+**This phase is pure data and touches no writer. It is the one to do first tonight.**
 
-Three homes were considered:
+### Phase 2 — The writer, `CaptureCsvWriter` v0.4 (shared by lab, recorder, converter — R3)
 
-| Home | Why not / why |
-|---|---|
-| Columns in the board CSV | The phone speaks at ~0,8 Hz and irregularly, the board at 500 Hz. 624 of every 625 rows would be empty or forward-filled, and forward-filling **invents data**. It also couples two independent sources, so a phone dropout damages the board's file |
-| Rows in `session_events.csv` | ~2 900 rows an hour would drown the handful of things a person typed, and change that file's character from "what someone said" to "a data stream" |
-| **One file for both references, live** | **Done, 2026-09-22: `reference_spo2.csv`** (Alex's design). It briefly was `VideoNest_<DeviceID>.csv`, phone only; Alex pointed out that the phone's readings and the operator's are **the same measurement read two ways**, and that side by side is how they get compared and how the phone's get reviewed against the photographs. So one file: `source` = videonest/operator, `id` = device id / who typed, `kind` = reading/correction/retraction, `supersedes` for corrections. Phone rows only from the phone declared for this baby. Not split into parts (~1 MB in four hours). Checksum verified as written; a failing frame is **written and flagged**, never dropped |
+Same class, new mode; `legacy` stays as the other branch of the same methods. In dependency order:
+1. **Header, R5–R8/R17/R26**: UTF-8 no BOM; `# format=incunest_csv/1`, `# profile=P1`, `# writer=`,
+   `# source_mac= board= fw= lib= build= libsha= elfsha= idfver=` **parsed from `$CFG`**, then
+   `# led1=IR led2=RED probe=<model>` (R23; `probe` operator-entered, D12), `# subject= site=
+   condition= session_id= part= prev=` (R33), `# from-board: $CFG,…` demoted to evidence (R24b).
+   Everything `session.json` holds that R26 lists moves here (plan §2 as it was: host, recorder
+   version, hub, timezone, start; the close-only facts stay in the `# end` line).
+2. **Anchors, R12b**: `# @row 0 clock: smpcnt=C fw_ts_us=T host_epoch_us=H` at open, then every
+   1 000 rows, at every part boundary and at close. The host clock leaves the data columns (R12,
+   `HOST_T_US` goes; R15 decided anchors only).
+3. **Snapshots, R24/R24a**: `# @row 0 afe:` from `$CFG`; `# @row 0 timing:` from `$TCFG` and
+   `# @row 0 alg:` from `$LCFG` **when seen**; `cause=open`. Integers in natural units, reals only in
+   `alg:` (R30). A later `$CFG`/`$TCFG`/`$LCFG` on the wire (a `$SET` from the lab, a board back after
+   a restart) → a new snapshot with `cause=set|restart`, and a `# from-board:` copy.
+4. **Grammar, R10a**: every special line `# @row N <type>:` with N = data rows already written.
+5. **Events, R34/R35**: `# @row N event: <text> smpcnt=<n> host_epoch_us=<t>`; restart = same file +
+   event (D4).
+6. **Live checks, R12a**: `Δcnt == 1`, field count, monotonic clock — a failed check is a line, never
+   a dropped row.
+7. **Close, R32**: `# end rows=… skipped=… gaps=… lost=… restarts=…`; parts R33 unchanged.
+8. **RF — the documented deviation**: **R21 keeps `RF1_OHM`/`RF2_OHM` as per-sample columns in v0.4
+   until prerequisite 6 lands.** With HGAC on, the board moves RF without telling anyone; the
+   columns are today the only record of those moves, and R21a-as-event would silently lose them.
+   The header says so: `# rf_as_columns=1 reason=fw-prereq-6`. When the firmware announces RF, the
+   flag flips and the columns go, exactly as R21a specifies.
+Tests: extend `tools/capture_csv_test.py` — one fixture per special line; the Appendix B example
+regenerated from the writer, byte for byte, so the spec's example is the test's expected output.
 
-**Decided 2026-09-21: its own file, written live.** Alex's reason is better than the one above —
-a file of its own is what lets the operator **review and correct** the readings afterwards against
-the recorded photographs, and only once corrected are they fit to check or calibrate the library's
-SpO2 estimate against.
+### Phase 3 — The converter, `tools/pulsenest_convert.py` (.pnraw → v0.4 CSV)
 
-That review has a consequence worth fixing before a line is written: **the converter regenerates
-`reference_spo2.csv` from the `.pnraw` and `session_events.csv`** (its acceptance test is byte-for-byte equality with the
-live writer), so a correction written into that file is destroyed the first time anyone runs it.
-This is the `index.csv` / `truth.csv` split Alex designed on 2026-09-05, and the same rule applies:
-what a machine regenerates never shares a file with what a person authored. So corrections, **if
-they are ever needed** — Alex, 2026-09-21: "I hope it never is" — go in a separate hand-authored
-file holding only the rows that changed. Kept as a provision, not built. Two files then also give
-the OCR error rate for nothing, which is what decides whether VideoNest can be trusted next time.
+Reads with `read_pnraw()` (already in `pulsenest_recorder.py`), replays every `("D", …)` record
+through the Phase 2 writer, honours `@E`/`@M` as events, splits on the same wall-clock boundaries,
+writes `reference_spo2.csv` from `$VN1` records and `session_events.csv` (the same `_ref_row`
+logic, imported not copied). **Acceptance test, unchanged from §10 of the recorder spec: its output
+equals the live writer's, byte for byte**, on the Phase 0 corpus. Until Phase 5 the live writer is
+`legacy`, so this test runs the converter in both modes: `legacy` must equal the live files bit
+for bit; `v04` must equal the Appendix B shape.
+**This is what makes v0.4 available for every campaign file regardless of what was written live** —
+the campaign is not "without v0.4" if the converter exists, even if the flag never flips.
 
-**Finding the photograph is manual and needs no machinery.** VideoNest names its frames
-`VideoNest_frame_<phone id>_<YYYYMMDD>_<HHMMSS>_<ms>.jpg` — the phone's own local clock to the
-millisecond — so a directory listing sorted by name is sorted by time and the operator finds the
-instant by eye. The photographs stay on the phone and never pass through the hub.
+### Phase 4 — Readers (R4/R36/R37/R38)
 
-**Still open.** A `--board`-filtered session records the phone anyway — verified — so with one
-window per baby, three sessions each keep a copy of a reference that belongs to **one** baby,
-since the phone points at one monitor. The phone has to become attributable: a `--videonest <id>`
-alongside `--board`, or a binding from phone id to subject. Also unfiled: VideoNest writes **its
-own CSV on the phone** (the `videonest_csv` reference), a third copy of the same readings that
-nothing here has yet had to reconcile.
+`read_capture()` in one place: resolves names through the dictionary's synonyms, falls back to
+cp1252 for the 121 legacy files, exposes derived views (`_SUB`, OT from codes). `capture_set.py`,
+`build_capture_index.py`, `hr1_detector_experiment.py` and the runner read through it, not through
+their own header parsing. **Flow CSV Viewer fixture (R36/F11)**: one v0.4 file opened by hand in
+Flow and the result recorded in `docs/` — that is the check the whole live-CSV decision rests on,
+and it has never been done for the new shape.
 
-### 4. Then the format itself
+### Phase 5 — Flip the live writer (only after 3 and 4 are green on the bench)
 
-R10a's `# @row N <type>:` grammar, R21's RF as a change event rather than two columns (blocked on
-the firmware announcing HGAC's RF moves), R24's three domain snapshots, and R16's filename. The
-acceptance test is unchanged: the converter's output must equal the live writer's, byte for byte.
+Default `--csv-format v04` in both tools; `legacy` stays available; runbook says which flag to
+type if a v0.4 file will not open on site. **Not before a bench session of at least one full
+10-minute part in `v04`, opened in Flow, with the converter reproducing it byte for byte.**
 
-### 5. Why today's headers differ between the two live writers (analysed, 2026-09-22)
+### Phase 6 — Deferred, by dependency not by choice
+
+* **R21a / prerequisite 6**: firmware emits a `$CFG` (or a lighter RF frame) where HGAC applies a
+  move. Library + firmware work, OTA to three boards, verification. Then `rf_as_columns` goes.
+* **P0** (incubator writer, D7/D8) — the field budget decision is Alex's and nothing here needs it.
+* `session.json` retired in favour of the header — only once Phase 5 has run for a while.
+
+### Before the hospital: what is realistic
+
+Tonight: Phase 0 and Phase 1 entirely, Phase 2 items 1–4 and 8 (header, anchors, `afe:`
+snapshot, grammar, RF flag), Phase 3 for the `D` records. That yields a converter that turns any
+campaign `.pnraw` into a v0.4 CSV, tested against the bench corpus — and a live path that has not
+moved. Items 2.5–2.7, Phase 4's readers and the Flow fixture, and Phase 5's flip are the next day
+or after the campaign; none of them is needed for the data to come home v0.4-ready.
+
+### 7. Why today's headers differ between the two live writers (analysed, 2026-09-22)
 
 Alex asked why the `#` lines at the top of a capture differ between `pulsenest_lab.py` and
 `tools/pulsenest_recorder(_gui).py`, and whether v0.4 is meant for both. Both questions have
@@ -609,7 +651,7 @@ header now follows it too, without waiting for the rest of the migration.
 | | Requirement | Status / recommendation |
 |---|---|---|
 | D1 | R15 host time | **Closed 2026-09-19: anchors only (B)** |
-| D2 | R19 names: freeze existing (A) or new canon (B) | open — A recommended |
+| D2 | R19 names: freeze existing (A) or new canon (B) | **Closed 2026-09-22 by the plan: new canon (B) in the dictionary, today's names kept as synonyms (R37)** — nothing that reads a legacy file breaks |
 | D3 | ~~witness composition~~ | replaced by §I profile table |
 | D4 | R35 restart | **Closed: same file + event (A)** |
 | D5 | R40 where the spec lives | open — PulseNest recommended |
@@ -619,6 +661,8 @@ header now follows it too, without waiting for the rest of the migration.
 | D9 | P0 signal representation: `OT1,OT2` only, or `OT1,OT2 + ALED1,ALED2` (+10,6 B/row plain, +4,0 gz) | open; Appendix A lists what the ambient buys |
 | **D10** | **R21: RF as column or as change-event** | **Closed 2026-09-20: change-event (R21a), everywhere, not just P0** — recorded as a full `afe:` snapshot (R24, v0.4); blocked on prerequisite 6 (firmware) |
 | **D11** | **R24: configuration record — wire frame verbatim, or the file's own snapshot** | **Closed 2026-09-20 (Alex): own snapshot, full, three domains, integers; wire frame demoted to `from-board:` evidence.** Reals admitted in `alg:` only, for dimensionless coefficients |
+| D13 | **v0.4 first in the converter (post-processing `.pnraw`) or in the live writer?** | **Plan: converter first, live writer behind `--csv-format` defaulting to `legacy` until Phase 5.** The `.pnraw` makes v0.4 available for every campaign file either way; the live path that was rehearsed stays untouched until the converter reproduces it byte for byte |
+| D14 | `timing:`/`alg:` snapshots need `$TCFG`/`$LCFG`, which nobody asks for — hub asks on first sight, or the recorder writes only `afe:`? | **needed from Alex.** Recommended: the hub asks `$TCFG?` and `$LCFG?` right after `$CFG?` (same class of action, the one component allowed to speak to a board; ~10 lines, `hub_test.py` extended). Until then: `afe:` always, the other two only when seen |
 | D12 | R23's `probe=<model>` key — read from `$CFG`, or operator-entered? | **Closed 2026-09-22 (Alex): always operator-entered.** ISO 80601-2-61 calibrates a monitor+probe pair; nothing electrical distinguishes one probe model from another, unlike every other R26 identity key. `pulsenest_recorder.py`'s `probe`/`--probe` now write it |
 
 ## Prerequisites this list creates
