@@ -50,6 +50,7 @@ class FakeBoard(threading.Thread):
         self.cmd.settimeout(0.0)
         self.cnt = 0
         self.cfg_requests = 0
+        self.lcfg_requests = 0
         self.cmds = []
         self.stop = threading.Event()
 
@@ -75,6 +76,10 @@ class FakeBoard(threading.Thread):
                         self.cfg_requests += 1
                         if self.answer_cfg:
                             self.data.sendto(self.cfg(), dst)
+                    elif req.strip() == b"$LCFG?":
+                        self.lcfg_requests += 1
+                        if self.answer_cfg:
+                            self.data.sendto(b"$LCFG,rsqm_ot_thr=1.0000e-04,hgac_enable=0*00\r\n", dst)
             except (BlockingIOError, OSError):
                 pass
             time.sleep(self.period)
@@ -110,6 +115,11 @@ def main():
           f"{a.cfg_requests},{b.cfg_requests}")
     check("hub cached a $CFG line per board",
           all(bd.cfg.get(b"$CFG,") for bd in hub.boards.values()))
+    # D14: the alg: snapshot of the v0.4 CSV comes from $LCFG, which nobody else asks for
+    check("hub asked each board $LCFG? alongside $CFG?", (a.lcfg_requests, b.lcfg_requests) == (1, 1),
+          f"{a.lcfg_requests},{b.lcfg_requests}")
+    check("hub cached a $LCFG line per board",
+          all(bd.cfg.get(b"$LCFG,") for bd in hub.boards.values()))
     check("hub forwarded nothing while nobody subscribed", hub.n_fanout == 0, str(hub.n_fanout))
 
     # ── controller joins ───────────────────────────────────────────────────────────────────

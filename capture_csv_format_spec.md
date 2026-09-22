@@ -522,14 +522,22 @@ takes, in the one component that is allowed to speak to a board. Until D14 is de
 writes `# @row 0 afe:` from `$CFG` and emits `timing:`/`alg:` **only when the frame has been
 seen**, never invented.
 
-### Phase 0 — Safety rails (before anything else, half an hour)
+### Phase 0 — Safety rails (done 2026-09-22, amended)
 
-* `--csv-format legacy|v04` on both `pulsenest_recorder.py` and `pulsenest_recorder_gui.py`,
-  default **`legacy`** until Phase 5 flips it. The 117+63 checks keep guarding `legacy` unchanged.
-  Whatever happens at the hospital, one flag returns to the writer that has been rehearsed.
-* Freeze a **bench corpus** now: three `.pnraw` parts from the rehearsals (one per board) plus a
-  phone stream, copied under `captures/v04_corpus/` (git-ignored, like every capture). Every later
-  phase is tested against the same bytes, and the acceptance test of Phase 3 needs them.
+* **No new flag.** The plan proposed `--csv-format legacy|v04`; both tools already have `--csv on|off`,
+  and `on` *is* the rehearsed writer. Adding a second switch that can only say "legacy" until Phase 2
+  is dead code with a runbook line attached — so instead `v04` becomes a **third value of `--csv`**
+  when Phase 2 lands (`--csv on|off|v04`, default `on` until Phase 5 flips it). The 117+63 checks
+  keep guarding `on` unchanged; whatever happens at the hospital, the default is the writer that was
+  rehearsed.
+* **Bench corpus frozen: `captures/v04_corpus/`** (git-ignored like every capture). Two sessions:
+  `20260922_0219_BENCH_SUBJ01` (one board + the phone's `$VN1` stream, copied from the rehearsal)
+  and a 120 s three-board session recorded at fw 0.15 / lib 0.94, so its `$CFG` frames carry
+  `cause=`/`ts_us=`/`hgac_rf_changes=`. Every later phase is tested against these bytes; the
+  acceptance test of Phase 3 needs them.
+* **D14 closed the same day** (below): the hub now asks `$LCFG?` right after `$CFG?`, so the
+  `alg:` snapshot has a source on every board the hub sees; `$TCFG` never needed asking — the
+  firmware sends it glued to every `$CFG` (`send_cfg_frame()` → `send_tcfg_frame()`).
 
 ### Phase 1 — The dictionary, R18 (and it closes D2/R19)
 
@@ -673,7 +681,7 @@ header now follows it too, without waiting for the rest of the migration.
 | **D10** | **R21: RF as column or as change-event** | **Closed 2026-09-20: change-event (R21a), everywhere, not just P0** — recorded as a full `afe:` snapshot (R24, v0.4); blocked on prerequisite 6 (firmware) |
 | **D11** | **R24: configuration record — wire frame verbatim, or the file's own snapshot** | **Closed 2026-09-20 (Alex): own snapshot, full, three domains, integers; wire frame demoted to `from-board:` evidence.** Reals admitted in `alg:` only, for dimensionless coefficients |
 | D13 | **v0.4 first in the converter (post-processing `.pnraw`) or in the live writer?** | **Plan: converter first, live writer behind `--csv-format` defaulting to `legacy` until Phase 5.** The `.pnraw` makes v0.4 available for every campaign file either way; the live path that was rehearsed stays untouched until the converter reproduces it byte for byte |
-| D14 | `timing:`/`alg:` snapshots need `$TCFG`/`$LCFG`, which nobody asks for — hub asks on first sight, or the recorder writes only `afe:`? | **needed from Alex.** Recommended: the hub asks `$TCFG?` and `$LCFG?` right after `$CFG?` (same class of action, the one component allowed to speak to a board; ~10 lines, `hub_test.py` extended). Until then: `afe:` always, the other two only when seen |
+| D14 | `timing:`/`alg:` snapshots need `$TCFG`/`$LCFG`, which nobody asked for | **Closed 2026-09-22: the hub asks `$LCFG?` right after `$CFG?`** (`pulsenest_hub.py` `_ask_cfg`, `hub_test.py` 41/41). `$TCFG` needed no request: the firmware sends it with every `$CFG`. So the recorder sees all three frames for every board the hub identifies, and Phase 2 writes the three snapshots at `@row 0` without inventing anything |
 | D12 | R23's `probe=<model>` key — read from `$CFG`, or operator-entered? | **Closed 2026-09-22 (Alex): always operator-entered.** ISO 80601-2-61 calibrates a monitor+probe pair; nothing electrical distinguishes one probe model from another, unlike every other R26 identity key. `pulsenest_recorder.py`'s `probe`/`--probe` now write it |
 
 ## Prerequisites this list creates

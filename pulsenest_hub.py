@@ -308,6 +308,12 @@ class Hub:
         b.cfg_requests += 1
         b.cfg_last_req = now
         self._send((b.ip, self.cmd_port), b"$CFG?\n")
+        # D14 (2026-09-22): the v0.4 CSV writes an alg: snapshot from $LCFG, and nothing else on
+        # the network ever asks for it -- the lab only when its LIBConfigWindow is open. The hub
+        # is the one component allowed to speak to a board, so it asks here, once per $CFG?.
+        # $TCFG needs no request: the firmware sends it glued to every $CFG. Retries stay keyed
+        # on the $CFG answer (identity); a lost $LCFG is asked again with the next retry only.
+        self._send((b.ip, self.cmd_port), b"$LCFG?\n")
 
     def _fanout(self, ip, data):
         payload = b"@FROM " + ip.encode("ascii") + b"\r\n" + data
