@@ -24916,3 +24916,21 @@ operario, no un problema del sistema.
 
 Guion de hospital actualizado: la linea de arranque lleva los siete parametros, el bloque de
 inicio explica MONITOR, y §3 anade ABNORMAL CONDITION. 112 y 44 comprobaciones.
+
+## 2026-09-22 - `--board` filtraba el grabador, no la ventana
+
+Alex: `--board 8850` sigue mostrando las tres placas. Reproducido: `pulsenest_recorder.py` filtraba
+bien (`rec.feed()` ignora una placa que no casa y la borra de `rec.sources`), pero `drain()` de la
+ventana construye sus trazas directamente del cable, mirando `rec.sources.get(ip)` sin preguntar
+nunca por `rec.ignored`. Como una placa ignorada esta AUSENTE de `rec.sources` (borrada, no solo
+marcada), la comprobacion "src is not None and src.kind != board" tambien es falsa para ella, y
+cae directa a tener su propia fila.
+
+Peor: incluso la placa que si casa muestra brevemente las otras dos, porque los primeros datagramas
+llegan antes de que se analice su `$CFG`; las tres crean traza y fila provisional por IP durante un
+instante, y solo las dos equivocadas se retiran al identificarse.
+
+**Arreglado:** `drain()` comprueba `rec.ignored` primero y desmonta traza y fila de cualquier IP
+que resulte no ser de esta ventana, con `_forget_ip()`. Verificado con el comando exacto de Alex
+en el banco: una sola placa grabada. Prueba nueva y permanente que alimenta una ventana real a
+traves del `drain()` de verdad (no `.feed()` a mano, que no veia el fallo). 46 comprobaciones.

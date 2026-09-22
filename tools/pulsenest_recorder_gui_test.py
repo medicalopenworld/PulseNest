@@ -320,6 +320,50 @@ check("session.json carries the site code and which phone was this baby's refere
       '"site_code": "BENCH"' in sj and '"videonest_id": "J6plusACM"' in sj
       and '"videonest_seen"' in sj, sj[:120])
 
+# ── --board must filter what the WINDOW shows, not only what the recorder writes ─────────────
+# Alex, 2026-09-22: `--board 8850` on the bench still showed three rows. rec.feed() was already
+# correct -- an ignored board is popped from rec.sources -- but drain() built its trace and row
+# straight off the wire, checking rec.sources.get(ip) without ever asking rec.ignored. A separate
+# Recorder/window here, fed through the REAL drain() (a queued FakeClient, not manual .feed()
+# calls), because that is exactly the path the bug lived in and manual feeding would not see it.
+class QueuedClient:
+    def __init__(self):
+        self.queue = []
+
+    def recv(self, _):
+        return self.queue.pop(0) if self.queue else None
+
+    def connect(self):
+        return True
+
+    def close(self):
+        pass
+
+
+qc = QueuedClient()
+G.HubClient = lambda *a, **k: qc
+recF = G.Recorder(tempfile.mkdtemp(), "ACMHOME", "AC", log=QuietLog(), board="8850")
+winF = G.RecorderWindow(recF, ("127.0.0.1", 15998))
+for ip, mac in (("10.0.0.1", "10:51:DB:50:88:50"), ("10.0.0.2", "10:51:DB:50:82:5C"),
+               ("10.0.0.3", "10:51:DB:50:87:A4")):
+    qc.queue.append((ip, f"$CFG,mac={mac},board=V18\n".encode()))
+winF.drain()
+winF.redraw()
+check("--board shows only the matching board, not all three seen on the wire",
+      list(winF.traces) == ["10.0.0.1"] and list(winF.rows) == ["10:51:DB:50:88:50"],
+      f"traces={list(winF.traces)} rows={list(winF.rows)}")
+# More traffic from the wrong boards must not resurrect anything already torn down.
+qc.queue.append(("10.0.0.2", b"$M4,4,1,1," + b",".join([b"1"] * 20) + b",2\n"))
+qc.queue.append(("10.0.0.3", b"$M4,4,1,1," + b",".join([b"1"] * 20) + b",2\n"))
+winF.drain()
+winF.redraw()
+check("and stays that way as the wrong boards keep talking",
+      list(winF.rows) == ["10:51:DB:50:88:50"], list(winF.rows))
+winF._closing = True
+recF.stop("test")
+winF.client.close()
+recF.close()
+
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
 sys.stdout.flush()
 sys.stderr.flush()

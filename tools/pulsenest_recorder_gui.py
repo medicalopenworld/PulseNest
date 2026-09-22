@@ -685,6 +685,14 @@ class RecorderWindow(QtWidgets.QMainWindow):
                 break
             ip, data = item
             self.rec.feed(ip, data)
+            if ip in self.rec.ignored:
+                # Not this window's baby (--board matched someone else, or matched nobody yet).
+                # A board's first datagrams arrive before its $CFG is parsed, so a trace or a row
+                # can already exist here for an ip that only just turned out to be the wrong one
+                # -- torn down rather than left on screen (Alex, 2026-09-22: three boards showed
+                # with --board 8850).
+                self._forget_ip(ip)
+                continue
             if ip in self.aux_ips:
                 continue
             src = self.rec.sources.get(ip)
@@ -714,6 +722,19 @@ class RecorderWindow(QtWidgets.QMainWindow):
             self.disk.setStyleSheet(f"color:{RED if fb < 2 * self.rec.min_free_bytes else FG_DIM};")
 
     # ── rows: one per board, keyed by MAC once the board has said who it is ──
+    def _forget_ip(self, ip):
+        self.traces.pop(ip, None)
+        row = self.rows.pop(ip, None)
+        if row is not None:
+            row.setParent(None)
+            row.deleteLater()
+        if not self.rows and self.empty is None:
+            self.empty = QtWidgets.QLabel(
+                f"waiting for board *{self.rec.board_filter}…" if self.rec.board_filter else "waiting for a board…")
+            self.empty.setStyleSheet(f"color:{FG_DIM}; font-size:14pt;")
+            self.empty.setAlignment(QtCore.Qt.AlignCenter)
+            self.rows_box.addWidget(self.empty)
+
     def _row_for(self, ip, tr):
         src = self.rec.sources.get(ip)
         key = src.mac if (src is not None and src.mac) else ip
