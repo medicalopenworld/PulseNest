@@ -25173,3 +25173,23 @@ nuevo y sella; N+1 ya va con el RF nuevo; 2 ms entre ambas, el proceso dura cien
 - Commits `3ba141a` (fases 1-2), `7509c7c` (fase 3). En marcha: grabación de 13 min en v0.4 de las tres
   placas a `captures/v04_corpus/` cruzando un límite de 10 min (parte 2 con `cause=part`) para que Alex
   abra un fichero v0.4 en Flow CSV Viewer: la comprobación de la que depende la fase 5.
+
+## 2026-09-22 (tarde) - Corpus de 13 min en v0.4, fixture para Flow; sin retrocompatibilidad (decisión de Alex)
+
+- Grabadas dos partes de 10 min de tres placas en v0.4 (`captures/v04_corpus/20260922_1245_BENCH_SIM/`).
+  El conversor en `--csv v04` reproduce **p02 idéntico byte a byte**; p01 difiere en tres líneas de
+  evento en `@row 0`. Causa real, no del conversor: al vincular una placa, sus eventos de metadatos
+  (`--note`/`--probe`) se emiten a TODOS los CSV abiertos, y con tres placas casi simultáneas el CSV en
+  que caen depende del entrelazado de datagramas entre placas, que NO se puede reconstruir (cada placa
+  tiene su `.pnraw`; el orden global no se guarda). Con una ventana por bebé (una placa por proceso, el
+  diseño de la campaña) no hay fuga y la igualdad es exacta: verificado en convert_test (10/10) y humo de
+  una placa; p02 (todas ya vinculadas) idéntico. Defecto de fondo del escritor: un evento de una placa no
+  debería ir al fichero de otra; acotarlo por placa lo arreglaría y haría exacta también la multiplaca
+  -- cambio de comportamiento, diferido (no la víspera sin OK).
+- **Alex: sin retrocompatibilidad con los ficheros existentes** (son pocos; si hiciera falta leerlos se
+  convertirían a v0.4). La fase 4 se recorta: fuera el lector común con cp1252 para los 121 antiguos y el
+  refactor de cuatro scripts; los sinónimos se quedan en el diccionario (datos gratis); migración de una
+  vez solo si se necesita. Queda de la fase 4 solo el fixture de Flow.
+- **Fixture para Flow (fase 5 depende de ello, manual/Alex)**:
+  `captures/v04_corpus/20260922_1245_BENCH_SIM/SIM_V04-TEN-MINUTE-PART-FOR-_20260922_124541_p02.csv`
+  (129 351 filas, parte completa, `cause=part`, reproducida por el conversor).

@@ -614,7 +614,15 @@ same corpus writes the v0.4 container: 60 042 lines per board, header off the bo
 `afe:`/`timing:` at `@row 0` (no `alg:` — that session predates D14, so no `$LCFG` is in its
 record: the converter invents nothing), anchors every 10 s. Byte-equality in `v04` is between the
 live `--csv v04` file and the converted one; against the *legacy* live file the check is the one
-above. The original plan, kept:
+above. **Known limit (2026-09-22):** byte-equality is exact for the campaign's shape — one
+board per recorder process. With several boards in ONE process, a board's launch-metadata
+events (`--note`/`--probe`) are broadcast to every open CSV, so which sibling file they land
+in depends on the cross-board datagram interleave — and that interleave is not recoverable
+(each board has its own `.pnraw`; the global order is stored nowhere). Part 2 and every
+single-board file reproduce exactly; a multi-board part 1 can differ by those event lines
+only. The underlying wart is the broadcast itself (one baby's event in another baby's file);
+scoping each event to its own board would remove both the wart and the divergence — a
+live-writer change, deferred. The original plan, kept:
 
 Reads with `read_pnraw()` (already in `pulsenest_recorder.py`), replays every `("D", …)` record
 through the Phase 2 writer, honours `@E`/`@M` as events, splits on the same wall-clock boundaries,
@@ -628,12 +636,18 @@ the campaign is not "without v0.4" if the converter exists, even if the flag nev
 
 ### Phase 4 — Readers (R4/R36/R37/R38)
 
-`read_capture()` in one place: resolves names through the dictionary's synonyms, falls back to
-cp1252 for the 121 legacy files, exposes derived views (`_SUB`, OT from codes). `capture_set.py`,
-`build_capture_index.py`, `hr1_detector_experiment.py` and the runner read through it, not through
-their own header parsing. **Flow CSV Viewer fixture (R36/F11)**: one v0.4 file opened by hand in
-Flow and the result recorded in `docs/` — that is the check the whole live-CSV decision rests on,
-and it has never been done for the new shape.
+**Cut back 2026-09-22 (Alex): no backward compatibility with the existing files.** They are few;
+if any is ever needed it will be *converted* to v0.4 (header and names to the dictionary), not
+read through a synonym-resolving reader. So the reader work of R37 — one `read_capture()` with a
+cp1252 fallback for the 121 legacy files and their 24 header shapes, threaded through
+`capture_set.py`, `build_capture_index.py`, `hr1_detector_experiment.py` and the runner — is
+**dropped**. The dictionary keeps the synonyms (they are free data and record where each name came
+from), and a one-shot migration script is written only if and when an old file is actually needed.
+What remains of Phase 4 is the one check that matters: **the Flow CSV Viewer fixture (R36/F11)** —
+a v0.4 file opened by hand in Flow, the result recorded in `docs/`. That is what the live-CSV
+decision (Phase 5) rests on, and it has never been done for the new shape. Fixture ready:
+`captures/v04_corpus/20260922_1245_BENCH_SIM/SIM_V04-TEN-MINUTE-PART-FOR-_20260922_124541_p02.csv`
+(129 351 rows, a full 10-minute part, `cause=part`, converter-reproduced byte for byte).
 
 ### Phase 5 — Flip the live writer (only after 3 and 4 are green on the bench)
 
