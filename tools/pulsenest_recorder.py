@@ -1483,6 +1483,12 @@ class Recorder:
             "session_id": self.session_id,
             "site_code": self.site,
             "board_filter": self.board_filter,
+            # What the session was launched with (2026-09-22): the metadata the Recorder applies
+            # ITSELF at the moment a board is bound -- so the converter can hand it the same
+            # values and let it regenerate those events, instead of replaying them from the
+            # log at a moment that no longer exists (they fired before the CSV opened).
+            "launch": {"subject": self.want_subject, "note": self.want_note, "probe": self.want_probe,
+                       "ref": dict(self.want_ref), "videonest": self.videonest_id},
             "videonest_id": self.videonest_id,
             "videonest_seen": sorted(self.by_vn),
             "operator": self.operator,

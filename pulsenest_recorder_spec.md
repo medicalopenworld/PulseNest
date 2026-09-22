@@ -552,6 +552,14 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
 
 ## 10. What the converter produces (off-site)
 
+**Exists since 2026-09-22: `tools/pulsenest_convert.py <session dir> [--csv on|v04] [--out DIR]`.**
+It is not a second implementation of anything: it constructs the same `Recorder` with a clock
+that reads the `.pnraw` stamps, feeds it the recorded datagrams and re-issues the events of
+`session_events.csv`, so the CSVs it writes are the live writer's output by construction. `--csv
+on` (default) rebuilds today's format and compares each board CSV with the live one byte for
+byte — verified on the frozen bench corpus, 3/3 identical — and `--csv v04` turns any session
+into the v0.4 container of `capture_csv_format_spec.md`. Output under `<session>/derived/`.
+
 Run after the session, never during it. Input: a session directory. Output: `derived/`.
 With the live CSV in place (§2) the converter is no longer on the critical path: its first job is
 to **verify** — rebuild each board's CSV from raw and compare it byte for byte with the live one —

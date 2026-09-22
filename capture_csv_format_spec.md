@@ -602,6 +602,20 @@ regenerated from the writer, byte for byte, so the spec's example is the test's 
 
 ### Phase 3 — The converter, `tools/pulsenest_convert.py` (.pnraw → v0.4 CSV)
 
+**Done 2026-09-22.** `tools/pulsenest_convert.py <session>` replays every `@D` record, with its
+recorded stamps, through the same `Recorder` that wrote the session live (`Recorder(clock=…)`,
+`raw_mode="off"`), re-issuing the operator's events from `session_events.csv` (the complete log —
+an `@E` fired before a stream opened is in no `.pnraw`) and re-applying the state they carried
+(subject binding, condition, probe, reference fields, phone id). **Acceptance test met**: with
+`--csv on` the three live CSVs of the frozen corpus (3 × 20 000 rows, three boards) come back
+**byte for byte identical**, and so does a scripted session with console commands, a gap and a
+`# STAT` line, in both formats (`tools/pulsenest_convert_test.py`, 10 checks). `--csv v04` on the
+same corpus writes the v0.4 container: 60 042 lines per board, header off the board's own `$CFG`,
+`afe:`/`timing:` at `@row 0` (no `alg:` — that session predates D14, so no `$LCFG` is in its
+record: the converter invents nothing), anchors every 10 s. Byte-equality in `v04` is between the
+live `--csv v04` file and the converted one; against the *legacy* live file the check is the one
+above. The original plan, kept:
+
 Reads with `read_pnraw()` (already in `pulsenest_recorder.py`), replays every `("D", …)` record
 through the Phase 2 writer, honours `@E`/`@M` as events, splits on the same wall-clock boundaries,
 writes `reference_spo2.csv` from `$VN1` records and `session_events.csv` (the same `_ref_row`
