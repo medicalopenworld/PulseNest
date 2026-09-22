@@ -200,7 +200,10 @@ check("a later part: `# part=2`, `# prev=p01`, and its own snapshots with cause=
 # ── 7. the frozen bench corpus, if present: replay one .pnraw part through the writer ───────
 corpus = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "captures", "v04_corpus")
 parts = sorted(p for root, _d, files in os.walk(corpus) for p in
-               [os.path.join(root, f) for f in files if f.startswith("board_") and f.endswith(".pnraw")]) if os.path.isdir(corpus) else []
+               [os.path.join(root, f) for f in files
+                if f.startswith("board_") and f.endswith("_0001.pnraw")]) if os.path.isdir(corpus) else []
+# a first part (_0001) always carries the opening $CFG/$TCFG/$LCFG, so a fresh writer replaying it
+# alone produces the afe:/timing: snapshots; a later part would not (config arrives once, up front).
 if parts:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from pulsenest_recorder import read_pnraw
