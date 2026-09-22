@@ -25232,3 +25232,16 @@ Flow. Runbook: la comprobación de Flow dice que el CSV es v0.4 y que, si un fic
 hospital, se añade `--csv on` a la línea de lanzamiento (el `.pnraw` permite reconstruir el v0.4 después).
 recorder_test: la instancia principal pide `csv_mode="on"` explícito porque sus checks [2] describen el
 contenedor antiguo. Humo sin `--csv`: `# format=incunest_csv/1`. Plan v0.4: fases 0-5 hechas.
+
+## 2026-09-22 (tarde) - Ensayo del guion con v04: la ventana imponía sus widgets al Recorder
+
+Ventana lanzada desde un TOML (BENCH, 8850, SIM, note, probe, ref, videonest) 60 s en el banco. Alguien
+(Alex, probando) hizo clic en ella: a los 36 s salió `subject ... SUBJ01`, `videonest none` y cuatro
+REF_SPO2=96. Causa real, no del clic: el panel NUNCA escribía los valores del Recorder en sus widgets. El
+combo SUBJECT mostraba SUBJ01 (su primer elemento) con el Recorder en SIM; VideoNest sin marcar con
+`J6plusACM` declarado. Al salir del campo, `editingFinished` "aplicó" lo mostrado: re-vinculó el bebé a
+SUBJ01 y `_subject_changed` -> `_videonest_changed` tiró el móvil. Un clic perdido destruía dos valores
+de lanzamiento. Arreglo: `BoardRow._mirror_state()` en cada refresh: cada control sin foco toma el valor
+del Recorder con señales bloqueadas (sujeto, casilla+id del móvil, condición). 4 checks nuevos (67/67).
+Segundo ensayo: solo los eventos de lanzamiento + SESSION_END, fichero `SIM_...`, conversor idéntico
+byte a byte. Commit `d5e1545`. Formato v0.4 y flujo TOML->ventana->conversor: OK de extremo a extremo.
