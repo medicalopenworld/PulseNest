@@ -23,6 +23,7 @@ reduce human error, so the checks are about the guard rails rather than about pi
 import os
 import sys
 import tempfile
+import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -144,6 +145,24 @@ check("unticking clears it: this baby has no VideoNest reference",
       rec.videonest_id is None, str(rec.videonest_id))
 row.vn_id.setCurrentText("J6plusACM")
 row.vn_on.setChecked(True)
+
+# -- the panel mirrors the Recorder (2026-09-22 rehearsal: a stray click re-bound SUBJ01 over SIM) --
+rec.console("subject 7560 SIM")
+rec.console("videonest none")
+row.refresh(time.monotonic(), False)
+check("after a console change the SUBJECT box shows what the Recorder holds (SIM), added to the menu",
+      row.subject.currentText() == "SIM" and rec.sources["192.168.1.50"].subject == "SIM", row.subject.currentText())
+check("and the VideoNest box is unticked because the Recorder has no phone", not row.vn_on.isChecked())
+n_events = rec.event_id
+row.subject.lineEdit().editingFinished.emit()      # focus leaves the box: no command, nothing changes
+check("leaving the SUBJECT box without typing issues no command: SIM stays, no new event",
+      rec.sources["192.168.1.50"].subject == "SIM" and rec.event_id == n_events and rec.videonest_id is None)
+rec.console("videonest J6plusACM")
+row.refresh(time.monotonic(), False)
+check("a phone declared on the console appears ticked and named in the panel",
+      row.vn_on.isChecked() and row.vn_id.currentText() == "J6plusACM")
+rec.console("subject 7560 SUBJ01")
+row.refresh(time.monotonic(), False)
 
 # ── condition ────────────────────────────────────────────────────────────────────────────────
 row.condition.setCurrentIndex(1)

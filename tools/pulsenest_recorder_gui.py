@@ -408,6 +408,41 @@ class BoardRow(QtWidgets.QFrame):
             return
         self.win.command(f"videonest {want or 'none'}")
 
+    def _mirror_state(self):
+        """Widgets follow the Recorder, never the other way round unless the operator acts.
+
+        Found in the 2026-09-22 rehearsal: a window launched from a TOML with subject=SIM and
+        videonest=J6plusACM showed SUBJ01 (the combo's first item) and an unticked VideoNest box,
+        because nothing ever wrote the Recorder's values INTO the widgets. One click into and out
+        of SUBJECT then "applied" what the box displayed: the baby was re-bound to SUBJ01 and
+        the phone dropped (`videonest none`) -- two launch values destroyed by a stray click.
+        So on every refresh, each control that does not have keyboard focus is set to what the
+        Recorder holds, with its signals blocked: mirroring is not a command."""
+        src, rec = self.src, self.win.rec
+        if src is None or not src.mac:
+            return
+        if not self.subject.hasFocus() and (src.subject or "") != self.subject.currentText().strip():
+            if src.subject and self.subject.findText(src.subject) < 0:
+                self.subject.addItem(src.subject)            # SIM, or a code beyond the menu
+            self.subject.blockSignals(True)
+            self.subject.setCurrentText(src.subject or "")
+            self.subject.blockSignals(False)
+            self._set_dependents_enabled(bool(src.subject))
+        vn = rec.videonest_id or ""
+        if not (self.vn_on.hasFocus() or self.vn_id.hasFocus()):
+            if self.vn_on.isChecked() != bool(vn):
+                self.vn_on.blockSignals(True)
+                self.vn_on.setChecked(bool(vn))
+                self.vn_on.blockSignals(False)
+            if vn and self.vn_id.currentText() != vn:
+                if self.vn_id.findText(vn) < 0:
+                    self.vn_id.addItem(vn)                      # declared before it was heard
+                self.vn_id.setCurrentText(vn)
+        if not self.condition.hasFocus() and (src.condition or "") != self.condition.currentText().strip():
+            self.condition.blockSignals(True)
+            self.condition.setCurrentText(src.condition or "")
+            self.condition.blockSignals(False)
+
     def refresh_phones(self):
         """The device list fills itself from the phones actually heard. A phone that is not
         sending never appears, which is the answer to "is VideoNest working?" without a menu."""
@@ -572,6 +607,8 @@ class BoardRow(QtWidgets.QFrame):
             self.flag_btn.setStyleSheet(
                 f"background-color:{FLAG_COLOUR}; color:#1A0B26; font-weight:bold;"
                 if src.flagged else "")
+        if src is not None:
+            self._mirror_state()
         if self.body.isVisible():
             self.refresh_phones()
             self.refresh_listing()
