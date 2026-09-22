@@ -25245,3 +25245,22 @@ de lanzamiento. Arreglo: `BoardRow._mirror_state()` en cada refresh: cada contro
 del Recorder con señales bloqueadas (sujeto, casilla+id del móvil, condición). 4 checks nuevos (67/67).
 Segundo ensayo: solo los eventos de lanzamiento + SESSION_END, fichero `SIM_...`, conversor idéntico
 byte a byte. Commit `d5e1545`. Formato v0.4 y flujo TOML->ventana->conversor: OK de extremo a extremo.
+
+## 2026-09-22 (tarde) - Desfase del móvil: CLOCK ANCHOR con reloj en pantalla (B) y trama de dos sellos (E)
+
+Alex pidió analizar B y E. **B**: CLOCK ANCHOR solo escribía el evento; ahora además llena la ventana con
+la hora del portátil en dígitos grandes con ms (20 ms de refresco) hasta un clic/Esc: se fotografía esa
+pantalla con el móvil; dígitos = reloj del portátil, nombre del fichero de la foto = reloj del móvil; su
+diferencia es el desfase. No hay que apuntarlo: se calcula en el análisis. Runbook reescrito (`a439dbb`).
+**E**: escrito el prompt para el Claude Code de VideoNest (dos sellos epoch ms, captura y emisión, id el
+último, opcional indicador NTP). Implementado el mismo día en el móvil: trama real
+`$VN1,1245,89,0.98,1790084454887,1790084455216,1,J6plusACM*02`. El receptor de PulseNest NO la reconocía
+(`_VN_ID_RE` exigía cuatro campos antes del id): con el móvil emitiendo, 0 filas en `reference_spo2.csv`
+-> arreglado (`e895955`): ambas formas aceptadas, id = último campo (también en fleet_monitor), tres
+columnas nuevas al final: `emit_ts`, `offset_ms` (= llegada - emisión), `ntp`. 121/121, 37/37.
+**Hallazgo**: en vivo, emisión - captura = 260-620 ms (el proceso del móvil) y **offset_ms = +2 313...2 336
+ms, estable a ±20 ms**: el portátil va 2,3 s por delante del móvil. Era un DESFASE DE RELOJES real, no
+tiempo de proceso como yo había deducido de la trama de un solo sello. El móvil dice ntp=1; el portátil
+lo sincronizó Alex a mano por la mañana: cuál de los dos va bien lo dirá la foto de CLOCK ANCHOR, pero
+para alinear placa y monitor solo importa la diferencia, y ahora viene en cada trama. Lectura del monitor
+se coloca en `captura - offset`.
