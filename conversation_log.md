@@ -24934,3 +24934,11 @@ instante, y solo las dos equivocadas se retiran al identificarse.
 que resulte no ser de esta ventana, con `_forget_ip()`. Verificado con el comando exacto de Alex
 en el banco: una sola placa grabada. Prueba nueva y permanente que alimenta una ventana real a
 traves del `drain()` de verdad (no `.feed()` a mano, que no veia el fallo). 46 comprobaciones.
+
+## 2026-09-22 (madrugada) - Alex se va a dormir; tarea pendiente anotada
+
+Pedido antes de cerrar: poder lanzar `pulsenest_recorder_gui.py` sin escribir a mano todos los
+parametros de la linea de mandato, leyendolos de un fichero preparado de antemano. Sin implementar,
+anotado en `project_robust_capture_tool_task.md` con dos vias a explorar (argparse `@fichero`, o
+un `.toml`/`.ini` por bebe con `--config`). El arbol de trabajo esta limpio y todo subido hasta
+`aca989e`.
