@@ -375,13 +375,13 @@ location  = "HOSP01"
 operator  = "AC"
 board     = "8850"
 subject   = "SUBJ01"
-videonest = "J6plusACM"
 note      = "term neonate, resting after a feed"
 
 [ref]
 model = "Masimo Radical-7"
 avg   = 8
 probe-site = "left thumb"
+videonest  = "J6plusACM"
 """)
 
 

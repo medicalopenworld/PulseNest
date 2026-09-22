@@ -809,20 +809,23 @@ CONFIG_FIELDS = ("location", "operator", "board", "subject", "videonest", "note"
 def load_session_config(path):
     """A TOML session file -> {field: value}, every value a string ("" if absent).
 
-    [ref] is a sub-table so the file reads as two groups, the same two the window shows as
-    SUBJECT/REFERENCE/CONDITION/NOTE and MONITOR:
+    [ref] groups everything about the ONE commercial monitor a session is checked against --
+    including which phone is filming it, since a phone reads that same monitor's screen rather
+    than being a fact about the baby on its own (Alex, 2026-09-22, thinking ahead to a possible
+    second physical oximeter some day: this is the shape that could grow into `[[ref]]`, one
+    table per monitor, without a second reshape of the file):
 
-        location  = "HOSP01"
-        operator  = "AC"
-        board     = "8850"
-        subject   = "SUBJ01"
-        videonest = "J6plusACM"
-        note      = "term neonate, resting after a feed"
+        location = "HOSP01"
+        operator = "AC"
+        board    = "8850"
+        subject  = "SUBJ01"
+        note     = "term neonate, resting after a feed"
 
         [ref]
-        model = "Masimo Radical-7"
-        avg   = 8
+        model      = "Masimo Radical-7"
+        avg        = 8
         probe-site = "left thumb"
+        videonest  = "J6plusACM"
 
     `note` is free text (written verbatim as a NOTE event) and its sanitised form also seeds the
     starting CONDITION -- there is no separate `cond` field, because a short, controlled-vocabulary
@@ -841,7 +844,7 @@ def load_session_config(path):
     return {
         "location": text(data.get("location")), "operator": text(data.get("operator")),
         "board": text(data.get("board")), "subject": text(data.get("subject")),
-        "videonest": text(data.get("videonest")), "note": text(data.get("note")),
+        "videonest": text(ref.get("videonest")), "note": text(data.get("note")),
         "ref_model": text(ref.get("model")), "ref_avg": text(ref.get("avg")),
         "ref_probe_site": text(ref.get("probe-site")), "ref_note": text(ref.get("note")),
     }

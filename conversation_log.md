@@ -24995,3 +24995,18 @@ larga y sitio especifico. 112 y 60 comprobaciones.
 **3. Videonest dentro de [ref]?** Pendiente de decidir con Alex, ver siguiente mensaje: analisis
 sin implementar, porque tocar esto de verdad (dos pulsioximetros fisicos en un mismo bebe) es una
 funcionalidad mayor, no una reestructuracion del TOML.
+
+## 2026-09-22 (mañana, cont.) - `videonest` se muda dentro de `[ref]`
+
+Respuesta al punto 3: Alex confirma "solo mover videonest a [ref] ahora", sin construir soporte
+real de dos monitores fisicos por bebe (eso exigiria lista de monitores, lecturas manuales
+etiquetadas y una columna nueva en `reference_spo2.csv`; nada de eso existe). Lo que se mueve es
+solo la forma del TOML: `[ref]` ahora agrupa `model, avg, probe-site, videonest` -- un movil filma
+la pantalla de un monitor, asi que pertenece a ese monitor, no es un hecho aparte del bebe. Es la
+base natural para `[[ref]]` (una tabla por monitor) el dia que haga falta, sin remodelar el
+fichero dos veces. El parametro `--videonest` de la linea de mandato NO cambia, sigue plano: una
+linea de mandato no tiene problema de anidamiento que resolver.
+
+Plantilla, prueba permanente y spec actualizadas y verificadas: recarga del fichero final y
+lanzamiento real en el banco con `--config docs/session_configs/example.toml`, `videonest_id`
+correcto leido desde dentro de `[ref]`. 112 y 60 comprobaciones.

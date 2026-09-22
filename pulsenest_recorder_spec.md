@@ -513,8 +513,8 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   `flag on|off [SUBJ01]`.
 * **`--config <file>.toml` (Alex, 2026-09-22).** The ten fields above are typed once, per baby,
   the night before a campaign, not on the day at the cot side. `load_session_config()` /
-  `apply_session_config()` read `location, operator, board, subject, videonest, note` and a
-  `[ref]` sub-table (`model, avg, probe-site, note`) — `docs/session_configs/example.toml` is the
+  `apply_session_config()` read `location, operator, board, subject, note` and a `[ref]` sub-table
+  (`model, avg, probe-site, videonest, note`) — `docs/session_configs/example.toml` is the
   template. Deliberately **not** `--hub`/`--out`/`--raw`/`--split-min`/`--duration`: those are how
   the tool behaves, identical across all three cots, not who a session is about.
   **Full substitution, refused rather than merged**: typing any of the ten alongside `--config`
@@ -522,6 +522,17 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   suffix — one session, one source of truth for who it is. `--config` is optional in both
   directions: omit it and every flag still works exactly as before; a malformed or missing file is
   a named exception (`OSError`, `tomllib.TOMLDecodeError`), never a bare traceback.
+* **`videonest` lives in `[ref]`, in the file only (Alex, 2026-09-22).** Thinking ahead to
+  possibly asking the hospital for two commercial oximeters on the same baby: a phone films a
+  monitor's screen, so which phone belongs with which monitor rather than being a separate fact
+  about the baby. Analysed, not built: real support for two physical monitors on one subject is a
+  larger feature — a list of monitors, manual readings tagged with which one, a column in
+  `reference_spo2.csv` naming the source device — none of which exists (`Source.reference` is one
+  dict, `ref` addresses no monitor index, `spo2` tags no monitor). What moved is only the TOML's
+  shape: `[ref]` now groups `model, avg, probe-site, videonest`, the natural base for `[[ref]]` —
+  an array of tables, one per monitor — if that feature is ever built, without reshaping the file
+  twice. The `--videonest` command-line flag is unchanged and stays flat: a command line has no
+  nesting to solve, so renaming it there would only be churn.
 
 ---
 
