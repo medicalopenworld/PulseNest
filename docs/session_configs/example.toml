@@ -27,5 +27,5 @@ probe     = "Medle-neo"      # OUR probe's physical model -- ISO 80601-2-61 cali
 [ref]
 model      = "Masimo Radical-7"
 avg        = 8                    # its averaging window, in seconds -- decides if the two SpO2 compare at all
-probe-site = "left thumb"         # where ITS probe is, not ours -- as specific as the photo lets you be
+probe-site = "left thumb"         # (left/right + thumb/index-finger/middle-finger/ring-finger/little-finger/baby-foot) where ITS probe is, not ours -- as specific as the photo lets you be
 videonest  = "J6plusACM"          # device id of the phone filming THIS monitor -- omit if none
