@@ -1126,6 +1126,23 @@ class Recorder:
                 self.log.error("note failed for %s: %r", src.label(), exc)
 
     # ── events (section 6) ───────────────────────────────────────────────────────────────
+    def _event_targets(self, subject, board_mac):
+        """The sources an event's per-stream copy (the @E in the .pnraw, the `# event` line in
+        the CSV) belongs to. An event that names a board reaches THAT board only -- so one
+        baby's note never lands in another baby's file; one that names a subject reaches the
+        boards bound to it; a session-wide one (board=* subject=*: SESSION_START/END,
+        CLOCK_ANCHOR, a videonest META) reaches every source. session_events.csv still logs
+        every event once, whole -- this scopes only the per-stream copies. It is also what lets
+        the converter reproduce a multi-board file byte for byte: a launch-metadata event fires
+        before its own board's CSV is open, so with no sibling to leak into it lands nowhere,
+        live and rebuilt alike, instead of in whichever sibling happened to be open."""
+        owners = self._owners()
+        if board_mac and board_mac != "*":
+            return [s for s in owners if s.kind == "board" and s.mac == board_mac]
+        if subject and subject != "*":
+            return [s for s in owners if s.kind == "board" and s.subject == subject]
+        return owners
+
     def event(self, kind, subject="*", board_mac="*", value="", value2="", source="keyboard",
               confidence="", note=""):
         """One row in session_events.csv (flush + fsync at once) and an @E copy in every open stream."""
@@ -1155,7 +1172,7 @@ class Recorder:
         text += f" source={source}"
         if note:
             text += " note=" + note.replace("\n", " ")
-        for src in self._owners():
+        for src in self._event_targets(subject, board_mac):
             self._note_event(src, t_mono_us, t_epoch_us, kind, text)
             # The same event, in the CSV's own idiom: '# event @row N: ...' with the post-notes.
             if src.csv is not None and src.csv.active:
@@ -1246,8 +1263,8 @@ class Recorder:
                 # "nappy change": before this (2026-09-20) the only way to say which baby a mark
                 # concerned was to write it in the free text, where no query will ever find it.
                 subj, text = "*", " ".join(args)
-                if args and _SUBJ_RE.match(args[0]):
-                    subj, text = args[0].upper(), " ".join(args[1:])
+                if args and normalise_subject(args[0]):
+                    subj, text = normalise_subject(args[0]), " ".join(args[1:])   # SUBJnn or SIM
                 kind = "MARK" if cmd == "mark" else "NOTE"
                 eid = self.event(kind, subject=subj, board_mac=self._mac_for_subject(subj),
                                  note=text)

@@ -25193,3 +25193,32 @@ nuevo y sella; N+1 ya va con el RF nuevo; 2 ms entre ambas, el proceso dura cien
 - **Fixture para Flow (fase 5 depende de ello, manual/Alex)**:
   `captures/v04_corpus/20260922_1245_BENCH_SIM/SIM_V04-TEN-MINUTE-PART-FOR-_20260922_124541_p02.csv`
   (129 351 filas, parte completa, `cause=part`, reproducida por el conversor).
+
+## 2026-09-22 (tarde) - Acotar eventos por placa; migración de captures/ como tarea final; Flow OK
+
+Comentarios de Alex: (1) ejecutar "acotar cada evento a su placa"; (2) apuntar como tarea final que Claude
+Code convierta a v0.4 todo `captures/` (Alex cree que es el único que ha usado estas herramientas); (3) el
+p02 se abre bien en Flow CSV Viewer, ¿qué me preocupaba?
+
+1. **Acotado (`_event_targets`)**: un evento que nombra una placa (board_mac) llega SOLO al stream y CSV de
+   esa placa; uno que nombra un sujeto, a las placas de ese sujeto; uno de sala (board=* subject=*:
+   SESSION_START/END, CLOCK_ANCHOR, META de videonest), a todas. `session_events.csv` sigue registrando
+   cada evento entero una vez; esto acota solo las copias por stream. Arreglado de paso un bug que esto
+   destapó: el comando `note` usaba `_SUBJ_RE` (solo `SUBJnn`), así que el `note` de lanzamiento de una
+   sesión SIM perdía su sujeto y metía "SIM" en el texto -> ahora `normalise_subject` (acepta SIM). Test
+   nuevo en recorder_test (119/119): una marca de SUBJ01 llega al stream de la placa A y NO al de la B; una
+   marca de sala llega a las dos. La igualdad byte a byte del conversor: exacta con una placa por proceso
+   (la campaña) y con varias placas de sujetos únicos; el corpus viejo 1245 (tres placas, todas SIM) es
+   doblemente artificial y su p01 podía diferir en líneas de evento de sujeto -> lo borro y regrabo una
+   sesión de UNA placa (fixture byte-exacto y para Flow). convert_test ahora detecta el formato del fichero
+   vivo (v0.4 empieza por `# format=incunest_csv`) y convierte en ese formato.
+2. **Migración de `captures/` a v0.4**: apuntada como tarea final en el plan (fase 6). NO la hace
+   `pulsenest_convert.py` (esos ficheros no tienen `.pnraw`); sería un `tools/pulsenest_migrate.py` de una
+   vez que lee cada CSV antiguo por el diccionario (cp1252 donde F3), reescribe el contenedor v0.4 con lo
+   recuperable y deja `# note:` donde no lo sea. Riesgo bajo (ficheros solo de Alex, git-ignored). No antes
+   de la campaña.
+3. **Flow**: lo que me preocupaba era concreto -- si Flow tropezaría con la cabecera v0.4, mucho más densa
+   que la de hoy (~20 claves + líneas de instantánea con cientos de `key=value`), con las líneas especiales
+   `# @row N:` intercaladas entre filas de datos, con el epoch de 16 dígitos de las anclas o con las celdas
+   vacías (F11: Flow no publica su formato; Excel se queda en 15 dígitos). Como Flow ignora las líneas `#` y
+   dibuja las columnas de datos, y lo abre bien, esas dudas quedan resueltas: la fase 5 puede seguir.

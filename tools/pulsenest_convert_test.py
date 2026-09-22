@@ -111,11 +111,14 @@ if corpus:
         sdir = os.path.dirname(raw_dir)
         if not board_csvs(sdir):
             continue
+        # convert in the format the live files are in: a v0.4 file starts "# format=incunest_csv"
+        first = io.open(board_csvs(sdir)[0], encoding="utf-8", errors="replace").readline()
+        mode = "v04" if first.startswith("# format=incunest_csv") else "on"
         with tempfile.TemporaryDirectory() as td:
             log = logging.getLogger("k"); log.addHandler(logging.NullHandler()); log.propagate = False
-            rec = C.convert(sdir, td, csv_mode="on", log=log)
+            rec = C.convert(sdir, td, csv_mode=mode, log=log)
             res = C.verify(sdir, rec)
-            check(f"corpus {os.path.basename(sdir)}: {len(res)} live CSV(s) reproduced byte for byte",
+            check(f"corpus {os.path.basename(sdir)} [{mode}]: {len(res)} live CSV(s) reproduced byte for byte",
                   res and all(v == "identical" for _n, v in res), str(res))
 else:
     print("skip corpus: captures/v04_corpus not present")

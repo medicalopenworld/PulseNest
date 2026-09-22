@@ -222,6 +222,19 @@ try:
     check("[6] a text that merely starts with a word is not mistaken for a subject",
           "(session-wide)" in rec.console("mark subject moved"), "")
 
+    # scoping (2026-09-22): a board-named event reaches only that board's stream, so one baby's
+    # note never lands in another baby's file. .pnraw is unbuffered, so it is on disk at once.
+    import glob as _glob
+    def _raw_for(mac):   # this session splits the .pnraw into small parts: read the whole history
+        return b"".join(open(p, "rb").read()
+                        for p in sorted(_glob.glob(os.path.join(rec.raw_dir, f"*{mac}*.pnraw"))))
+    _a = _raw_for("1020BA147560")   # board A = SUBJ01
+    _b = _raw_for("1051DB508850")   # board B, a sibling
+    check("[6] a mark naming SUBJ01 reaches board A's stream, not the sibling B's",
+          b"nappy change" in _a and b"nappy change" not in _b)
+    check("[6] a session-wide mark still reaches every board's stream",
+          b"phototherapy lamp on" in _a and b"phototherapy lamp on" in _b)
+
     # a reading can be corrected or retracted, by new events, never by rewriting the file
     r1 = rec.console("spo2 SUBJ01 96 140")
     id1 = int(r1.split()[1].rstrip(":"))

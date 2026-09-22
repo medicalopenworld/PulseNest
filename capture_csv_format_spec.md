@@ -657,8 +657,18 @@ type if a v0.4 file will not open on site. **Not before a bench session of at le
 
 ### Phase 6 — Deferred, by dependency not by choice
 
-* **R21a / prerequisite 6**: firmware emits a `$CFG` (or a lighter RF frame) where HGAC applies a
-  move. Library + firmware work, OTA to three boards, verification. Then `rf_as_columns` goes.
+* **R21a / prerequisite 6 — DONE 2026-09-22** (lib v0.94 + fw 0.15). `rf_as_columns` never had to
+  be a flag: v0.4 shipped with RF already out of the columns and in the `afe:` snapshot.
+* **Migrate `captures/` to v0.4 — a final task (Alex, 2026-09-22).** The existing capture files —
+  the 121 CSVs and the loose `.csv`/`.pncfg` under `captures/` — get converted to v0.4 and the
+  dictionary's names. `pulsenest_convert.py` does NOT do this: it rebuilds from a `.pnraw`, which
+  these files do not have. A separate one-shot `tools/pulsenest_migrate.py` reads each legacy CSV
+  through the dictionary's synonyms (cp1252 where F3), writes the v0.4 container with what it can
+  recover (column renames; an `afe:`/`timing:`/`alg:` snapshot only where a `# from-board:` or the
+  old header carried the values; anchors from any `HOST_T_US`/`FW_Ts_us` columns), and leaves a
+  `# note:` where a field is unrecoverable rather than inventing it. Low risk to run — the
+  originals are the user's own (nobody else has used these tools yet, Alex), git-ignored, and kept
+  until the migration is checked. Not before the campaign; nothing depends on it.
 * **P0** (incubator writer, D7/D8) — the field budget decision is Alex's and nothing here needs it.
 * `session.json` retired in favour of the header — only once Phase 5 has run for a while.
 
