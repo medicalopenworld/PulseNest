@@ -25096,3 +25096,24 @@ tareas previas (que el firmware anuncie los movimientos de HGAC, y el diccionari
 
 **Siguiente.** OTA de fw 0.15 (decisión de Alex) y verificar en el banco un `$CFG` con `cause=hgac` real;
 después, fase 0 del plan (`--csv-format legacy|v04` + corpus del banco).
+
+## 2026-09-22 (tarde, cont.) - OTA fw 0.15 a las tres placas y `cause=hgac` visto en el cable
+
+Alex: "OK a todos los flash que hagan falta". Pregunta: ¿no debería comprobarse el cambio de RF en cada
+muestra y no cada 50 ms? Respuesta: saber CUÁNDO cambió ya es exacto por muestra (el sello `ts_us` lo pone
+la librería dentro de `_process_sample()`, mismo reloj que `Ts_us`); lo que va cada 50 ms es solo el
+ANUNCIO, y solo puede ir en `Cmd_Task` porque la tarea de medida no llama a la red. Lo único que pierde el
+sondeo son dos movimientos dentro del mismo ciclo (IR y RED a la vez): estado final correcto, instante
+intermedio perdido, `hgac_rf_changes` salta de dos. Si algún día importa: un sello por color, no sondear más.
+
+- OTA (`scripts/build.ps1 V18 -Ota <ip>`) a `…88:50` (192.168.137.136), `…87:A4` (.55), `…82:5C` (.99).
+  Verificado por `$CFG?` a través del concentrador como controlador (las placas responden al destino de
+  datos, no al remitente): las tres `fw=0.15 lib=0.94 build=da3cc94 elfsha=0154b6e792e5323f`.
+- **Prueba de extremo a extremo en la `…88:50` (HGAC activo)**: `$SET,tiagain1,1M*XX` → `# SET` +
+  `$CFG cause=set ts_us=327022111 rf1=1000000`; **0,33 s después `$CFG cause=hgac ts_us=327327577
+  rf1=500000 hgac_rf_changes=2`**: HGAC bajó 1M→500K tras el recalentamiento del EMA (≥ 300 ms) y la
+  trama llegó con el sello del movimiento. Prerrequisito 6 cerrado también en hardware.
+- Tropiezos propios: el `$SET` sin `*XX` se rechaza en silencio (el fw exige suma NMEA); un heredoc volvió a
+  corromper `\r\n` en un parche Python (regla `feedback_python_patch_via_file_not_heredoc`, otra vez).
+- La `…88:50` queda con RF1=500K (HGAC lo gobierna; antes estaba en 50K por decisión suya al arrancar).
+- `docs/boards.md`: tres filas con la OTA de hoy.
