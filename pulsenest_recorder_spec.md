@@ -511,17 +511,31 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   indistinguishable from a crash, and its worst failure (forgetting to resume) loses data that was
   fine. A wrong flag costs nothing to reverse; a dropped interval cannot be recovered. Console:
   `flag on|off [SUBJ01]`.
-* **`--config <file>.toml` (Alex, 2026-09-22).** The ten fields above are typed once, per baby,
+* **`--config <file>.toml` (Alex, 2026-09-22).** The fields above are typed once, per baby,
   the night before a campaign, not on the day at the cot side. `load_session_config()` /
-  `apply_session_config()` read `location, operator, board, subject, note` and a `[ref]` sub-table
-  (`model, avg, probe-site, videonest, note`) — `docs/session_configs/example.toml` is the
-  template. Deliberately **not** `--hub`/`--out`/`--raw`/`--split-min`/`--duration`: those are how
-  the tool behaves, identical across all three cots, not who a session is about.
-  **Full substitution, refused rather than merged**: typing any of the ten alongside `--config`
+  `apply_session_config()` read `location, operator, board, subject, note, probe` and a `[ref]`
+  sub-table (`model, avg, probe-site, videonest, note`) — `docs/session_configs/example.toml` is
+  the template. Deliberately **not** `--hub`/`--out`/`--raw`/`--split-min`/`--duration`: those are
+  how the tool behaves, identical across all three cots, not who a session is about.
+  **Full substitution, refused rather than merged**: typing any of these alongside `--config`
   exits with an error naming which flags conflict, the same discipline as the ambiguous `--board`
   suffix — one session, one source of truth for who it is. `--config` is optional in both
   directions: omit it and every flag still works exactly as before; a malformed or missing file is
   a named exception (`OSError`, `tomllib.TOMLDecodeError`), never a bare traceback.
+* **`probe` and `--probe` (Alex, 2026-09-22).** ISO 80601-2-61 calibrates a **monitor+probe
+  pair**, never a monitor alone. Our monitor is the incunest board running `incunest_afe4490`;
+  which physical sensor is clipped onto the baby is a fact the library has no way to know —
+  nothing electrical distinguishes one probe model from another, only a person can say. New
+  console command `probe SUBJ01 <model>`, mirroring `site` (WHERE our probe is) but naming WHICH
+  probe it is; new `--probe`/`probe=` launch field, top-level (not inside `[ref]`, which is about
+  the commercial monitor, not ours), applied the moment the subject is known, shown **PROBE**
+  read-only beside MONITOR. Named `probe_model` internally, never bare `probe`: `BoardTrace.probe`
+  in `fleet_ppg_viewer.py` already means the firmware's real-time ProbeState
+  (APPLIED/DISCONNECTED/…), an entirely different concept the two must never be confused with.
+  Written into the CSV header as `# probe=<model>`, next to the identity notes and ahead of the
+  raw `from-board:` evidence line — `capture_csv_format_spec.md` R23/R26 already designed this
+  exact key two days earlier (`# probe=Medle-neo` in the Appendix B worked example); this closes
+  the gap between that design and the tool actually recording sessions this week.
 * **`videonest` lives in `[ref]`, in the file only (Alex, 2026-09-22).** Thinking ahead to
   possibly asking the hospital for two commercial oximeters on the same baby: a phone films a
   monitor's screen, so which phone belongs with which monitor rather than being a separate fact
@@ -641,12 +655,11 @@ What the implementation fixed in this document's wording, or added:
   `status` and fields in `session.json`. The authoritative per-frame check stays with the CSV
   writer (`capture_csv_format_spec` R12a); this is situational awareness at the cot side.
 * **Session metadata is typed, not hand-edited** (§7): `subject <MAC suffix> SUBJnn`,
-  `cond`, `videonest <id>` and `ref SUBJnn model|avg|site|note`. Each writes a **`META` event** (a kind
-  added to §6's list) as well as updating `session.json`, so the metadata is auditable and
-  survives in the `.pnraw` even if `session.json` is lost. `ref` covers the block §7 calls
-  non-negotiable: the commercial monitor's model, its averaging in seconds and **its** probe
-  site. literal
-  `"pending"`.
+  `cond`, `videonest <id>`, `probe SUBJnn <model>` (WHICH probe, ISO's other half of "monitor") and
+  `ref SUBJnn model|avg|site|note`. Each writes a **`META` event** (a kind added to §6's list) as
+  well as updating `session.json`, so the metadata is auditable and survives in the `.pnraw` even
+  if `session.json` is lost. `ref` covers the block §7 calls non-negotiable: the commercial
+  monitor's model, its averaging in seconds and **its** probe site.
 * **A runbook for the person at the cot side**: `docs/hospital_runbook.md` — the order of
   commands at the start, what to type during the session, how to close it, and a table of what
   to do when something looks wrong.

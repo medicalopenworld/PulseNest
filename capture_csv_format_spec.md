@@ -193,6 +193,11 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
   columns in dictionary order; then configuration; then outputs.
 - **R23 — Channel versus wavelength.** `LED1=IR`, `LED2=RED` is a board+probe convention; the header
   declares `# led1=IR led2=RED probe=<model>`; `IR`/`RED` are synonyms under that mapping only.
+  `probe` is **operator-entered, always** (2026-09-22): ISO 80601-2-61 calibrates a monitor+probe
+  pair, and nothing electrical distinguishes one probe model from another — the library has no
+  way to fill this key in on its own, unlike every other R26 identity key, which comes straight
+  off `$CFG`. `tools/pulsenest_recorder.py`'s `probe SUBJnn <model>` console command and
+  `--probe`/`probe=` launch field are what write it.
 
 ## E. Metadata
 
@@ -560,6 +565,43 @@ R10a's `# @row N <type>:` grammar, R21's RF as a change event rather than two co
 the firmware announcing HGAC's RF moves), R24's three domain snapshots, and R16's filename. The
 acceptance test is unchanged: the converter's output must equal the live writer's, byte for byte.
 
+### 5. Why today's headers differ between the two live writers (analysed, 2026-09-22)
+
+Alex asked why the `#` lines at the top of a capture differ between `pulsenest_lab.py` and
+`tools/pulsenest_recorder(_gui).py`, and whether v0.4 is meant for both. Both questions have
+concrete answers.
+
+**They share one writer class** — `CaptureCsvWriter` in `pulsenest_capture_csv.py` (`LabCaptureWriter`
+is its old name, kept as an alias) — so the difference is not in the writer, it is in what each
+caller hands it as `pre_notes`. Today, three genuinely different shapes exist, none of them v0.4:
+
+1. **`pulsenest_lab.py`** (`_on_cfg_frame_received`, `pulsenest_lab.py:13437`): a hand-formatted,
+   human-readable paragraph — `"AFE4490 config — <timestamp>\n  Board: ...\n  Firmware: ...\n  Sample rate: ...\n"` — built as one long f-string. Predates the v0.4 design entirely; not
+   machine-parseable without regexing specific label text.
+2. **`tools/pulsenest_recorder.py`** (`_open_csv`): a short set of true `# key=value` bookkeeping
+   lines (`session=`, `writer=`, `source_ip=`, `part=`, `prev=`, `probe=`) plus **one** line,
+   `# from-board: <the raw $CFG wire string, verbatim, unparsed>` — deliberately interim, stated
+   in the method's own docstring: it "cannot wait for the v0.4 format and its column dictionary"
+   because Flow CSV Viewer already reads today's shape and R18 (the dictionary) does not exist yet.
+3. **v0.4 itself** (this document, R17/R22/R26): fully parsed, one key per line, in canonical
+   order — identity and provenance first, `from-board:` demoted to optional evidence, everything
+   else derived from three structured domain snapshots at `@row 0` rather than living in the
+   header at all. **Designed, implemented nowhere.**
+
+**Is v0.4 for both?** Yes, by explicit intent — **R3**: "One writer per platform. `LabCaptureWriter`
+for lab, recorder and converter." Neither tool has migrated yet; both are pre-v0.4 shapes that
+happened to be built independently, years apart, for different reasons, which is the entire
+explanation for why they read differently today. Unifying them is exactly "The v0.4 work plan"
+above (§1's dictionary first) — not done as a side effect of this question, since a mid-campaign
+rewrite of either writer was not what was asked and is not warranted this week.
+
+**What was changed today, narrowly**: `pulsenest_lab.py`'s Board/MAC and Firmware/Image lines are
+now adjacent (were separated by eight lines of AFE analog configuration), because together they
+ARE the ISO "monitor" — our monitor is this board running `incunest_afe4490`, and the rest of that
+paragraph is *configuration* of the monitor, not its identity. R22 already states this ordering
+principle for v0.4 (host anchors, then identity, then configuration, then outputs); the pre-v0.4
+header now follows it too, without waiting for the rest of the migration.
+
 ---
 
 ## Decisions
@@ -577,6 +619,7 @@ acceptance test is unchanged: the converter's output must equal the live writer'
 | D9 | P0 signal representation: `OT1,OT2` only, or `OT1,OT2 + ALED1,ALED2` (+10,6 B/row plain, +4,0 gz) | open; Appendix A lists what the ambient buys |
 | **D10** | **R21: RF as column or as change-event** | **Closed 2026-09-20: change-event (R21a), everywhere, not just P0** — recorded as a full `afe:` snapshot (R24, v0.4); blocked on prerequisite 6 (firmware) |
 | **D11** | **R24: configuration record — wire frame verbatim, or the file's own snapshot** | **Closed 2026-09-20 (Alex): own snapshot, full, three domains, integers; wire frame demoted to `from-board:` evidence.** Reals admitted in `alg:` only, for dimensionless coefficients |
+| D12 | R23's `probe=<model>` key — read from `$CFG`, or operator-entered? | **Closed 2026-09-22 (Alex): always operator-entered.** ISO 80601-2-61 calibrates a monitor+probe pair; nothing electrical distinguishes one probe model from another, unlike every other R26 identity key. `pulsenest_recorder.py`'s `probe`/`--probe` now write it |
 
 ## Prerequisites this list creates
 

@@ -286,6 +286,25 @@ try:
     check("[3] SIM is accepted as a subject: the spec's own word for the simulator",
           R.normalise_subject("sim") == "SIM" and R.normalise_subject("SIMULATOR") is None)
 
+    # `--probe`: OUR probe's model, set before the first row so the CSV header carries it from
+    # part 1 -- the same launch-time pattern as --note, applied through the console command.
+    recP = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock(),
+                      board="8850", subject="SUBJ01", probe="Medle-neo")
+    recP.feed("10.0.0.1", CFG_8850)
+    recP.feed("10.0.0.1", M4)
+    p = [x for x in recP.owners() if x.kind == "board"][0]
+    check("[3] --probe is applied before the first row, distinct from ProbeState",
+          p.probe_model == "Medle-neo", p.probe_model)
+    recP.stop("t")
+    recP.close()
+    head = [ln for ln in open(p.csv_path, encoding="cp1252").read().splitlines()
+           if ln.startswith("#")]
+    check("[3] the CSV header carries # probe=, ahead of the raw $CFG evidence line",
+          "# probe=Medle-neo" in head, head)
+    sjP = json.load(open(os.path.join(recP.dir, "session.json"), encoding="utf-8"))
+    check("[3] session.json carries probe_model too",
+          sjP["sources"][0]["probe_model"] == "Medle-neo", sjP["sources"][0].get("probe_model"))
+
     # reference_spo2.csv (Alex, 2026-09-22): what the commercial monitor showed, read by OCR and
     # read by a person, one file, side by side. Phone rows only from the DECLARED phone.
     import tempfile as _tf2
@@ -397,6 +416,13 @@ try:
     check("[7] reference monitor: model, averaging (numeric) and ITS probe site",
           a.reference == {"make_model": "Masimo Radical-7", "averaging_s": 8.0,
                           "probe_site": "right hand", "notes": ""}, str(a.reference))
+    # OUR probe's physical model (ISO 80601-2-61: calibration is for the monitor+probe pair),
+    # never confused with `site` (WHERE it is) or the firmware's real-time ProbeState.
+    check("[7] probe needs a board bound to that subject",
+          rec.console("probe SUBJ99 Medle-neo").startswith("no board bound to SUBJ99"))
+    check("[7] probe sets OUR probe's model, distinct from probe_site and from ProbeState",
+          rec.console("probe SUBJ01 Medle-neo") == "probe=Medle-neo on SUBJ01"
+          and a.probe_model == "Medle-neo" and a.probe_site != "Medle-neo")
     # help: the list, one command's detail, and the check that keeps the two in step
     listed = rec.console("help")
     check("[9] help lists every command with its usage and a summary",

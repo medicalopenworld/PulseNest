@@ -3,8 +3,8 @@
 #
 # Launch with:  pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj01.toml
 #
-# FULL SUBSTITUTION: any of these ten fields typed on the command line alongside --config is
-# refused, not merged, so the file is never silently overridden by a stray flag.
+# FULL SUBSTITUTION: any of these fields typed on the command line alongside --config is refused,
+# not merged, so the file is never silently overridden by a stray flag.
 
 location  = "HOSP01"        # coded site, never a place name (pulsenest_recorder_spec.md section 11)
 operator  = "AC"             # initials or role, never a full name
@@ -15,6 +15,11 @@ note      = "term neonate, resting after a feed"
 # CONDITION -- there is no separate "cond" field: a short, controlled word was not worth a launch
 # parameter of its own. Correct CONDITION in the window at any time if the derived slug looks
 # wrong or the baby's state simply changes.
+probe     = "Medle-neo"      # OUR probe's physical model -- ISO 80601-2-61 calibrates the
+# monitor+probe pair together, and the library cannot know which sensor is clipped onto the baby;
+# only a person can. Not the same as [ref].probe-site below, which is the COMMERCIAL monitor's
+# probe placement, and not the same as ProbeState (APPLIED/DISCONNECTED), which is real-time and
+# comes from the firmware, not typed here.
 
 # Everything about the ONE commercial monitor beside this baby -- including which phone is
 # filming it, since a phone reads that same monitor's screen rather than being a separate fact.

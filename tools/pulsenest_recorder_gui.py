@@ -263,6 +263,17 @@ class BoardRow(QtWidgets.QFrame):
                                   "--ref-probe-site, --ref-note. Shown here read-only so you can\n"
                                   "see it was typed correctly, not to be edited from the window.")
         form.addRow("MONITOR", self.ref_label)
+
+        # Same principle, one field: OUR probe, not the reference monitor's -- ISO 80601-2-61
+        # calibrates a monitor+probe pair, and the library cannot know which physical sensor is
+        # clipped onto the baby, only a person can. Top-level --probe, not --ref-probe: it says
+        # nothing about the commercial monitor.
+        self.probe_label = QtWidgets.QLabel("(not set)")
+        self.probe_label.setStyleSheet(f"color:{FG_DIM};")
+        self.probe_label.setToolTip("OUR probe's physical model, e.g. Medle-neo. Set once, on\n"
+                                    "the command line (--probe), shown here read-only so a typo\n"
+                                    "is visible instead of silent.")
+        form.addRow("PROBE", self.probe_label)
         self._set_dependents_enabled(False)
         return g
 
@@ -553,6 +564,7 @@ class BoardRow(QtWidgets.QFrame):
             if ref.get("notes"):
                 self.ref_label.setToolTip(self.ref_label.toolTip().split("\n\n")[0]
                                           + f"\n\nNote: {ref['notes']}")
+            self.probe_label.setText(src.probe_model or "(not set)")
             if self.flag_btn.isChecked() != src.flagged:
                 self.flag_btn.blockSignals(True)     # reflect state, do not re-fire the command
                 self.flag_btn.setChecked(src.flagged)
@@ -802,7 +814,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
 # The ten fields a session file can set -- what a baby's session IS, never how the tool behaves
 # (--hub, --out, --raw, --split-min, --duration, --min-free-gb stay command-line only: they are
 # the same for all three cots and belong to the laptop, not the baby).
-CONFIG_FIELDS = ("location", "operator", "board", "subject", "videonest", "note",
+CONFIG_FIELDS = ("location", "operator", "board", "subject", "videonest", "note", "probe",
                  "ref_model", "ref_avg", "ref_probe_site", "ref_note")
 
 
@@ -820,6 +832,8 @@ def load_session_config(path):
         board    = "8850"
         subject  = "SUBJ01"
         note     = "term neonate, resting after a feed"
+        probe    = "Medle-neo"   # OUR probe's model -- ISO 80601-2-61 calibrates monitor+probe
+                                 # together, and the library cannot know which sensor is on the baby
 
         [ref]
         model      = "Masimo Radical-7"
@@ -845,6 +859,7 @@ def load_session_config(path):
         "location": text(data.get("location")), "operator": text(data.get("operator")),
         "board": text(data.get("board")), "subject": text(data.get("subject")),
         "videonest": text(ref.get("videonest")), "note": text(data.get("note")),
+        "probe": text(data.get("probe")),
         "ref_model": text(ref.get("model")), "ref_avg": text(ref.get("avg")),
         "ref_probe_site": text(ref.get("probe-site")), "ref_note": text(ref.get("note")),
     }
@@ -921,6 +936,9 @@ def main(argv=None):
                     help="a free-text note about this baby's session, applied once the subject "
                          "is known: written verbatim as a NOTE event, and its sanitised form "
                          "also seeds the starting CONDITION (correctable in the window)")
+    ap.add_argument("--probe", default="", metavar="MODEL",
+                    help="OUR probe's physical model (e.g. Medle-neo) -- the library cannot know "
+                         "which sensor is plugged in, applied once the subject is known")
     ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
     ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
     ap.add_argument("--ref-probe-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
@@ -958,8 +976,9 @@ def main(argv=None):
                        split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9),
                        board=args.board, subject=args.subject, videonest=args.videonest,
-                       note=args.note, ref_model=args.ref_model, ref_avg=args.ref_avg,
-                       ref_probe_site=args.ref_probe_site, ref_note=args.ref_note)
+                       note=args.note, probe=args.probe, ref_model=args.ref_model,
+                       ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
+                       ref_note=args.ref_note)
     except (NotEnoughSpace, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2

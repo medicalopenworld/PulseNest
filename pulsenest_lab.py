@@ -13450,16 +13450,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         )
         text = (
             f"AFE4490 config — {ts}\n"
+            # Board and Firmware/Image are kept adjacent on purpose (Alex, 2026-09-22): together
+            # they ARE the "monitor" ISO 80601-2-61 calibrates against a probe -- our monitor is
+            # this board running incunest_afe4490, not the board alone. Everything from Sample
+            # rate onward is CONFIGURATION of that monitor, not its identity, and belongs after.
             f"  Board: {kv.get('board','?')}   MAC: {kv.get('mac','?')}\n"
-            f"  Sample rate: {kv.get('sr','?')} Hz   NUMAV: {kv.get('numav','?')}\n"
-            f"  LED1: {kv.get('led1','?')} mA   LED2: {kv.get('led2','?')} mA   Range: {kv.get('range','?')} mA\n"
-            f"  ENSEPGAIN: {kv.get('ensepgain','?')}\n"
-            f"  LED1: TIA={kv.get('tia1','?')}   CF={kv.get('cf1','?')}   STG2={kv.get('stg21','?')}   EN={kv.get('stage2en1','?')}\n"
-            f"  LED2: TIA={kv.get('tia2','?')}   CF={kv.get('cf2','?')}   STG2={kv.get('stg22','?')}   EN={kv.get('stage2en2','?')}\n"
-            f"  AMBDAC: {kv.get('ambdac','?')} µA\n"
-            f"  PPG channel: {kv.get('ch','?')}   Filter: BW [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
-            f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
-            f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}\n"
             # Provenance. Emitted by the firmware since 2026-09-05; '?' means the board is
             # running an older build. Without it the FW_* columns of a capture cannot be
             # attributed to a firmware version once the algorithms change.
@@ -13468,7 +13463,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
             # elfsha is the only field here that identifies the IMAGE rather than a commit:
             # two captures with the same elfsha came from the same binary, whatever their
             # build= says. Meaningful because CONFIG_APP_REPRODUCIBLE_BUILD is on.
-            f"  Image: elfsha {kv.get('elfsha','?')}   ESP-IDF {kv.get('idfver','?')}"
+            f"  Image: elfsha {kv.get('elfsha','?')}   ESP-IDF {kv.get('idfver','?')}\n"
+            f"  Sample rate: {kv.get('sr','?')} Hz   NUMAV: {kv.get('numav','?')}\n"
+            f"  LED1: {kv.get('led1','?')} mA   LED2: {kv.get('led2','?')} mA   Range: {kv.get('range','?')} mA\n"
+            f"  ENSEPGAIN: {kv.get('ensepgain','?')}\n"
+            f"  LED1: TIA={kv.get('tia1','?')}   CF={kv.get('cf1','?')}   STG2={kv.get('stg21','?')}   EN={kv.get('stage2en1','?')}\n"
+            f"  LED2: TIA={kv.get('tia2','?')}   CF={kv.get('cf2','?')}   STG2={kv.get('stg22','?')}   EN={kv.get('stage2en2','?')}\n"
+            f"  AMBDAC: {kv.get('ambdac','?')} µA\n"
+            f"  PPG channel: {kv.get('ch','?')}   Filter: BW [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
+            f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
+            f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}"
         )
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', False):
             self._cfg_listener(text)

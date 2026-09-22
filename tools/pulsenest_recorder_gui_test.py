@@ -225,6 +225,15 @@ check("once set, the panel shows them -- a QLabel, so the window cannot type int
       and isinstance(row.ref_label, QtWidgets.QLabel),
       row.ref_label.text())
 
+# ── OUR probe's model: same read-only principle, a separate field from the ref monitor's ─────
+check("with none set, PROBE says so plainly too",
+      row.probe_label.text() == "(not set)")
+rec.console("probe SUBJ01 Medle-neo")
+win.redraw()
+check("once set, PROBE shows it, distinct from MONITOR and from ProbeState",
+      row.probe_label.text() == "Medle-neo" and "Medle-neo" not in row.ref_label.text(),
+      row.probe_label.text())
+
 
 row.fold.setChecked(False)
 check("a row folds to its header line, and the header keeps updating",
@@ -376,6 +385,7 @@ operator  = "AC"
 board     = "8850"
 subject   = "SUBJ01"
 note      = "term neonate, resting after a feed"
+probe     = "Medle-neo"
 
 [ref]
 model = "Masimo Radical-7"
@@ -391,11 +401,11 @@ def blank_args():
 
 ns = blank_args()
 G.apply_session_config(ns, cfg_path)
-check("--config fills all ten fields from the file, avg as a string like a typed flag would be",
+check("--config fills all eleven fields from the file, avg as a string like a typed flag would be",
       vars(ns) == {"location": "HOSP01", "operator": "AC", "board": "8850", "subject": "SUBJ01",
                    "videonest": "J6plusACM", "note": "term neonate, resting after a feed",
-                   "ref_model": "Masimo Radical-7", "ref_avg": "8", "ref_probe_site": "left thumb",
-                   "ref_note": ""}, vars(ns))
+                   "probe": "Medle-neo", "ref_model": "Masimo Radical-7", "ref_avg": "8",
+                   "ref_probe_site": "left thumb", "ref_note": ""}, vars(ns))
 
 for field in G.CONFIG_FIELDS:
     conflicting = blank_args()

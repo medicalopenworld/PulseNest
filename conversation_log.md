@@ -25010,3 +25010,48 @@ linea de mandato no tiene problema de anidamiento que resolver.
 Plantilla, prueba permanente y spec actualizadas y verificadas: recarga del fichero final y
 lanzamiento real en el banco con `--config docs/session_configs/example.toml`, `videonest_id`
 correcto leido desde dentro de `[ref]`. 112 y 60 comprobaciones.
+
+## 2026-09-22 (mañana, cont.) - ISO 80601-2-61: la calibración es monitor+sonda
+
+Alex: "en la especificacion de estas capturas me he olvidado de que la norma ISO 80601-2-61
+considera que la calibracion es para el conjunto monitor+sonda. Nuestro monitor es la placa
+incunest con AFE4489 y libreria incunest_afe4490." Tres consecuencias.
+
+**1. `pulsenest_lab.py`: Board y Firmware adyacentes.** Las lineas `Board:`/`MAC:` y
+`Firmware:`/`Image:` de la cabecera del CSV estaban separadas por ocho lineas de configuracion
+analogica del AFE (sample rate, LED, TIA/CF, AMBDAC, filtros, coeficientes SpO2). Reordenadas:
+Board y Firmware ahora van seguidas, porque juntas son el "monitor" de la norma; todo lo demas es
+CONFIGURACION de ese monitor, no su identidad. Renderizado y verificado el bloque aislado antes
+de tocar el fichero real (16.000 lineas, importa Qt); `ast.parse`/`py_compile` limpios.
+
+**2. Por que difieren las cabeceras entre `pulsenest_lab.py` y `pulsenest_recorder(_gui).py`,
+analizado.** Comparten la MISMA clase escritora (`CaptureCsvWriter`), asi que la diferencia esta
+en lo que cada llamante le pasa como `pre_notes`. Tres formas distintas hoy, ninguna es v0.4:
+(1) `pulsenest_lab.py` escribe un parrafo legible hecho a mano, anterior al diseno v0.4 por
+completo; (2) `pulsenest_recorder.py` escribe unas pocas lineas `# key=value` mas UNA linea con
+el `$CFG` crudo sin analizar, deliberadamente provisional (su propio docstring lo dice: no puede
+esperar al diccionario R18 porque Flow CSV Viewer ya lee el formato de hoy); (3) v0.4, disenado
+en `capture_csv_format_spec.md`, no implementado en ningun sitio. **¿Es v0.4 para ambas?** Si,
+por diseno explicito (R3: "un escritor por plataforma"), pero ninguna de las dos se ha migrado
+todavia; son formas pre-v0.4 construidas de forma independiente, con anos de diferencia, que es
+la explicacion completa de por que difieren. No unificadas hoy: seria reescribir de fondo un
+modulo de 16.000 lineas en plena semana de campana, y no es lo que se pidio. Analisis anadido
+como nueva seccion 5 de "The v0.4 work plan".
+
+**3. Nuevo parametro `probe`, introducido por el operario.** No es nuevo del todo: R23/R26 de
+`capture_csv_format_spec.md` **ya disenaban exactamente este campo** hace dos dias
+(`# probe=Medle-neo` en el ejemplo trabajado del Apendice B), sin decir explicitamente que es
+introducido por el operario ni implementarlo en ninguna herramienta viva. Cerrado ese hueco:
+comando de consola `probe SUBJ01 <modelo>` (espejo de `site`, que dice DONDE esta nuestra sonda;
+`probe` dice CUAL es), parametro `--probe`/`probe=` al arranque con el mismo patron que `--note`,
+etiqueta de solo lectura PROBE junto a MONITOR en la ventana. Nombrado `probe_model` en Python,
+nunca `probe` a secas: `BoardTrace.probe` en `fleet_ppg_viewer.py` ya significa el ProbeState en
+tiempo real de la firmware (APPLIED/DISCONNECTED/...), un concepto completamente distinto que no
+debe confundirse. Escrito en la cabecera del CSV como `# probe=<modelo>`, junto a la identidad y
+antes de la evidencia cruda. Probado en el banco de extremo a extremo:
+`# probe=Medle-neo` en la cabecera, `probe_model` correcto en `session.json`.
+
+De paso, corregido un fragmento de prosa huerfano en `pulsenest_recorder_spec.md` ("literal
+`"pending"`.") que quedo suelto de una edicion anterior sobre `consent`, sin relacion con nada.
+
+117 y 63 comprobaciones.

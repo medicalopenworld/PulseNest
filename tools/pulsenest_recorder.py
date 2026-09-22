@@ -19,6 +19,7 @@ with no GUI at all):
     mark [SUBJ01] [text]      an operator mark; with no subject it is session-wide
     note [SUBJ01] <text>      a free-text note (no personal data -- coded subjects only)
     site SUBJ01 <text>        probe site of OUR probe for a subject ("left foot")
+    probe SUBJ01 <model>      OUR probe's model ("Medle-neo") -- the library cannot know this
     anchor                    CLOCK_ANCHOR: written when the laptop clock is being filmed
     subject <MAC suffix> SUBJ01   bind a board to a subject (a REF_SPO2 then carries its MAC)
     cond RESTING [SUBJ01]     condition; no subject = every board
@@ -223,6 +224,15 @@ COMMAND_HELP = {
         "two is exactly why both must be recorded: in a neonate with a patent ductus, preductal\n"
         "(right hand) and postductal (foot) SpO2 genuinely differ by several points, and an\n"
         "unrecorded difference is read later as OUR error.",
+    ),
+    "probe": (
+        "probe SUBJ01 <model>",
+        "OUR probe's physical model -- the library cannot know this",
+        "ISO 80601-2-61 calibrates a MONITOR+PROBE pair, not the monitor alone. Our monitor is\n"
+        "this board plus incunest_afe4490; the model of the physical sensor clipped onto the baby\n"
+        "is the other half, and nothing electrical tells us which one is plugged in -- a person\n"
+        "has to say. Not the same field as `site` (WHERE the probe is) or `ref ... site` (the\n"
+        "commercial monitor's probe placement): this one is WHICH probe it is.",
     ),
     "ref": (
         "ref SUBJ01 model|avg|site|note <value>",
@@ -552,6 +562,12 @@ class Source:
         self.restarts = 0                     # counter went backwards: the board rebooted
         self.subject = None
         self.probe_site = None
+        # OUR probe's physical model ("Medle-neo"), operator-entered -- the library cannot know
+        # which sensor is plugged in. Named `probe_model`, never bare `probe`: fleet_ppg_viewer.py's
+        # BoardTrace.probe already means the firmware's real-time ProbeState (APPLIED/...), an
+        # entirely different concept. The CSV header key stays `probe=` (capture_csv_format_spec.md
+        # R23/R26), which already designed this field before this tool caught up to it.
+        self.probe_model = None
         self.condition = None                 # RESTING, FEEDING, ...
         self.flagged = False                  # `flag on`: this stretch is of questionable validity
         # The commercial monitor this baby is also wearing. Two of these are not bureaucracy
@@ -584,7 +600,8 @@ class Source:
              # counts the last part twice (measured: 122 410 reported against 95 065 written).
              "csv_rows": self.csv_rows_total + (self.csv.count if (self.csv and self.csv.active) else 0),
              "samples_lost": self.samples_lost, "restarts": self.restarts,
-             "subject": self.subject, "probe_site": self.probe_site, "flagged": self.flagged}
+             "subject": self.subject, "probe_site": self.probe_site,
+             "probe_model": self.probe_model, "flagged": self.flagged}
         if self.kind == "board":
             d["mac"] = self.mac
             d["condition"] = self.condition
@@ -603,7 +620,7 @@ class Recorder:
     def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="on", hub_text="",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
-                 board=None, subject=None, videonest=None, note=None,
+                 board=None, subject=None, videonest=None, note=None, probe=None,
                  ref_model=None, ref_avg=None, ref_probe_site=None, ref_note=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
@@ -640,6 +657,7 @@ class Recorder:
         # written verbatim (nothing lost) AND seeds the initial condition from the same text --
         # provisional, correctable in the window the moment it looks wrong or simply changes.
         self.want_note = (note or "").strip() or None
+        self.want_probe = (probe or "").strip() or None
         self.want_ref = {k: v for k, v in
                          (("model", ref_model), ("avg", ref_avg), ("site", ref_probe_site), ("note", ref_note))
                          if v}
@@ -925,6 +943,8 @@ class Recorder:
         if self.want_note:
             self.console(f"note {src.subject} {self.want_note}")
             self.console(f"cond {self.want_note} {src.subject}")
+        if self.want_probe:
+            self.console(f"probe {src.subject} {self.want_probe}")
         for key, value in self.want_ref.items():
             self.console(f"ref {src.subject} {key} {value}")
 
@@ -956,6 +976,11 @@ class Recorder:
             # provisional name and every part is renamed at close, so a name written here would
             # point at a file that no longer exists. All parts of a capture share a stem.
             notes.append(f"prev={prev}")
+        if src.probe_model:
+            # capture_csv_format_spec.md R23: `# ... probe=<model>` sits with identity, before the
+            # raw evidence line -- ISO calibrates monitor+probe together, so the probe belongs
+            # beside the board it is currently reading through, not buried in free text.
+            notes.append(f"probe={src.probe_model}")
         if src.cfg_raw:
             notes.append(f"from-board: {src.cfg_raw}")
         src.csv.open("\n".join(notes))
@@ -1212,6 +1237,19 @@ class Recorder:
                                  note=text)
                 self.write_session_json()
                 return f"event {eid}: PROBE_SITE {subj} {text}"
+            if cmd == "probe":
+                if len(args) < 2:
+                    return "usage: probe SUBJ01 <model>"
+                subj, text = args[0].upper(), " ".join(args[1:])
+                targets = [s for s in self._owners() if s.kind == "board" and s.subject == subj]
+                if not targets:
+                    return f"no board bound to {subj} (use: subject <MAC suffix> {subj})"
+                for s in targets:
+                    s.probe_model = text
+                self.event("META", subject=subj, board_mac=targets[0].mac or "*",
+                          note=f"probe={text}")
+                self.write_session_json()
+                return f"probe={text} on {subj}"
             if cmd == "subject":
                 if len(args) < 2:
                     return "usage: subject <MAC or last 4 hex> SUBJ01"
@@ -1670,6 +1708,9 @@ def main(argv=None):
                     help="a free-text note about this baby's session, applied once the subject "
                          "is known: written verbatim as a NOTE event, and its sanitised form "
                          "also seeds the starting CONDITION (correctable in the window)")
+    ap.add_argument("--probe", default="", metavar="MODEL",
+                    help="OUR probe's physical model (e.g. Medle-neo) -- the library cannot know "
+                         "which sensor is plugged in, applied once the subject is known")
     ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
     ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
     ap.add_argument("--ref-probe-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
@@ -1685,8 +1726,9 @@ def main(argv=None):
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),
                        board=args.board, subject=args.subject, videonest=args.videonest,
-                       note=args.note, ref_model=args.ref_model, ref_avg=args.ref_avg,
-                       ref_probe_site=args.ref_probe_site, ref_note=args.ref_note)
+                       note=args.note, probe=args.probe, ref_model=args.ref_model,
+                       ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
+                       ref_note=args.ref_note)
     except NotEnoughSpace as exc:
         print(f"NOT STARTING: {exc}.", file=sys.stderr)
         print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)

@@ -19,6 +19,9 @@ board and writes its own session directory.
       three should report the same `fw`, `build` and `elfsha`.
 - [ ] **Write down which board goes to which cot**, by the **last four hex digits of its MAC** —
       that is what you will type. The three V18 are `8850`, `825C` and `87A4`.
+- [ ] **Write down which probe model goes on each baby** (e.g. `Medle-neo`) — ISO 80601-2-61
+      calibrates a **monitor+probe pair**, never the monitor alone, and nothing electrical tells
+      the library which physical sensor is clipped on. `--probe` records it once at launch.
 - [ ] **Disk**: measured, **17 MB per minute per board** (`.pnraw` plus the live CSV), so about
       **1 GB per board per hour**. Three boards for eight hours ≈ **24 GB**. Leave at least twice
       that free; the recorder refuses to start below 2 GB and stops cleanly if it gets there.
@@ -58,10 +61,10 @@ pythonw tools/pulsenest_recorder_gui.py --config subj02.toml
 pythonw tools/pulsenest_recorder_gui.py --config subj03.toml
 ```
 
-`--config` reads `location`, `operator`, `board`, `subject`, `videonest`, `note` and the four
-`ref.*` fields in one go — the ten things a session needs to say who it is about, as opposed to
+`--config` reads `location`, `operator`, `board`, `subject`, `videonest`, `note`, `probe` and the
+four `ref.*` fields in one go — everything a session needs to say who it is about, as opposed to
 `--hub`/`--out`/`--raw`/`--split-min`/`--duration`, which are how the tool behaves and are the
-same for all three cots. **Full substitution**: typing any of those ten on the command line
+same for all three cots. **Full substitution**: typing any of those on the command line
 *alongside* `--config` is refused outright, never silently merged, so the file is always the
 whole story or none of it. If a value needs to change on the day — the phone died, a different
 oximeter arrived — edit the file, or drop `--config` for that window and type the flags by hand
@@ -70,7 +73,7 @@ oximeter arrived — edit the file, or drop `--config` for that window and type 
 Without a prepared file, the equivalent by hand is:
 
 ```
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM --note "term neonate, resting after a feed" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
+pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM --note "term neonate, resting after a feed" --probe "Medle-neo" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
 ```
 
 `--location` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`,
@@ -86,6 +89,10 @@ launched with `--note` already has a canonical CSV name instead of the provision
 — though for a long note that name can come out truncated and ugly (`TERM-NEONATE-RESTING-AFT`,
 measured), which is fine: it is only a starting point, fix it in the window's CONDITION field the
 moment it looks wrong.
+
+`--probe` is OUR probe's physical model — ISO 80601-2-61 calibrates a monitor+probe pair, never a
+monitor alone, and the library has no way to know which sensor is clipped onto the baby. Shown
+under **PROBE**, read-only, same reason as MONITOR below.
 
 `--ref-model`, `--ref-avg`, `--ref-probe-site` and `--ref-note` describe the commercial monitor
 beside that baby, from the photograph you took the day before (§1). They do not change during the
