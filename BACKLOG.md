@@ -68,8 +68,9 @@ has not been triaged yet.
 	3. Afecta al set de regresión: `captures/CAPTURE_SET_SPEC.md` §2.3 exige que las columnas `FW_*` sean atribuibles a una configuración. Con HGAC fuera de las notas, esa atribución está incompleta.
 	4. Aplica igual a la ventana MULTI CAPTURE (§7.20), que hoy tampoco vuelca `$LCFG` y además graba varias placas, cada una con su propio estado.
 - Plan de contingencia ante el riesgo de posible crash aleatorio de pulsenest_lab.py mientras se mide en un hospital:
-	1. Desarrollar una app de captura robusta sin Qt — pendiente: bruto+conversor vs CSV directo
+	1. [x] Desarrollar una app de captura robusta sin Qt — HECHO 2026-09-20/22: `tools/pulsenest_recorder.py` (`.pnraw` + CSV en vivo, v0.4 por defecto) y su ventana `pulsenest_recorder_gui.py`; conversor `tools/pulsenest_convert.py` reproduce el CSV byte a byte desde el `.pnraw`
 	2. [x] Opción de desactivar gráficos — HECHO 2026-09-17 (v1.63, spec §6.5.2): botón PLOTS, cierra y bloquea las 14 subventanas con pyqtgraph; SIGNAL STATS/HW CONFIG/LAB CAPTURE/hub intactos; persiste tras reinicio; `tools/disable_plots_test.py` 13/13
+- [x] Añadir zoom a VideoNest
 
 
 
@@ -94,5 +95,9 @@ has not been triaged yet.
       `project_prf_range_settle_windows_task` y conversation_log 2026-08-22.
 - [x] Cuando quito y pongo tensión a una placa, o doy al botón RESET ESP32, o cambio de placa UDP, los plots de pulsenest se vuelven locos al principio — RESUELTO 2026-09-15 (v1.50, spec §4.10): nada reseteaba los buffers al reiniciar el flujo; ahora un evento de discontinuidad (contador atrás, banner/RESET_REASON, cambio de fuente) los reinicia y avisa a las 10 ventanas
 
+- Post-campaña: migrar `captures/` a v0.4 con un `tools/pulsenest_migrate.py` de una vez (sin `.pnraw`; plan v0.4 fase 6). Solo Alex ha usado las herramientas: sin retrocompatibilidad
+- Post-campaña: retirar `session.json` a favor de la cabecera v0.4 cuando el formato lleve tiempo rodando
+- Reloj: móvil (`ntp=1`) y portátil difieren 2,3 s (`offset_ms` en `reference_spo2.csv`). ¿Cuál va bien? Lo dice la foto de CLOCK ANCHOR. Para alinear placa y monitor basta la diferencia, ya medida por trama
+- `pulsenest_convert.py`: comprobar también `reference_spo2.csv` byte a byte (hoy solo los CSV de placa)
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->
