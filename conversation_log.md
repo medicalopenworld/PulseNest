@@ -24942,3 +24942,29 @@ parametros de la linea de mandato, leyendolos de un fichero preparado de anteman
 anotado en `project_robust_capture_tool_task.md` con dos vias a explorar (argparse `@fichero`, o
 un `.toml`/`.ini` por bebe con `--config`). El arbol de trabajo esta limpio y todo subido hasta
 `aca989e`.
+
+## 2026-09-22 (manana) - `--config`: lanzar desde un fichero TOML, sustitucion completa
+
+Retomada la tarea que Alex dejo apuntada anoche. Pregunto por las alternativas tipicas: fichero
+`@argumentos` de argparse, INI (ya es el idioma del proyecto para la geometria de ventana), TOML
+(en la biblioteca estandar desde la version de Python instalada), JSON, YAML. Recomendado TOML por
+admitir comentarios y tipos claros sin dependencia nueva. Alex eligio TOML con sustitucion completa,
+y pregunto si el fichero pasaria a ser obligatorio: no, es opcional en las dos direcciones.
+
+**Implementado.** `--config <file>.toml` lee los diez campos que definen de quien es la sesion
+(`location, operator, board, subject, videonest, cond` y `[ref] model/avg/site/note`), nunca los
+que definen como se comporta la herramienta (`--hub/--out/--raw/--split-min/--duration`, iguales
+en las tres cunas). **Sustitucion completa forzada**: pasar `--config` junto a cualquiera de esos
+diez campos se rechaza con un mensaje que nombra el conflicto, en vez de fusionarse en silencio —
+el mismo criterio que ya protegia el sufijo de MAC ambiguo. Fichero ausente o TOML mal formado da
+una excepcion nombrada, no una traza.
+
+Dos funciones puras (`load_session_config`, `apply_session_config`) para poder probarlas sin
+levantar Qt. Plantilla comprometida en `docs/session_configs/example.toml`, con codigos de
+ejemplo, nada identificable. Guion de hospital reescrito: la via principal es preparar un TOML por
+cuna la noche antes y lanzar con `--config subj01.toml`; el modo manual de ayer queda como
+alternativa explicita, nunca mezclado con el fichero.
+
+Probado en el banco de extremo a extremo: sesion HOSP01/SUBJ01 completa arrancada desde un solo
+fichero, `reference_monitor` y condicion correctos desde la primera fila. 60/60 en la ventana (10
+nuevas, una por cada campo que debe rechazarse si se repite fuera del fichero), 112 en el grabador.

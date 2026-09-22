@@ -504,6 +504,17 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   indistinguishable from a crash, and its worst failure (forgetting to resume) loses data that was
   fine. A wrong flag costs nothing to reverse; a dropped interval cannot be recovered. Console:
   `flag on|off [SUBJ01]`.
+* **`--config <file>.toml` (Alex, 2026-09-22).** The ten fields above are typed once, per baby,
+  the night before a campaign, not on the day at the cot side. `load_session_config()` /
+  `apply_session_config()` read `location, operator, board, subject, videonest, cond` and a
+  `[ref]` sub-table (`model, avg, site, note`) — `docs/session_configs/example.toml` is the
+  template. Deliberately **not** `--hub`/`--out`/`--raw`/`--split-min`/`--duration`: those are how
+  the tool behaves, identical across all three cots, not who a session is about.
+  **Full substitution, refused rather than merged**: typing any of the ten alongside `--config`
+  exits with an error naming which flags conflict, the same discipline as the ambiguous `--board`
+  suffix — one session, one source of truth for who it is. `--config` is optional in both
+  directions: omit it and every flag still works exactly as before; a malformed or missing file is
+  a named exception (`OSError`, `tomllib.TOMLDecodeError`), never a bare traceback.
 
 ---
 

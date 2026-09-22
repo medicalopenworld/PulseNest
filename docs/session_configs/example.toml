@@ -1,0 +1,21 @@
+# One of these per cot, prepared the day before. --location, --board and --subject are the only
+# lines every campaign session needs; the rest can be left out and typed in the window instead.
+#
+# Launch with:  pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj01.toml
+#
+# FULL SUBSTITUTION: any of these ten fields typed on the command line alongside --config is
+# refused, not merged, so the file is never silently overridden by a stray flag.
+
+location  = "HOSP01"        # coded site, never a place name (pulsenest_recorder_spec.md section 11)
+operator  = "AC"             # initials or role, never a full name
+board     = "8850"           # last hex digits of this cot's board MAC (docs/boards.md)
+subject   = "SUBJ01"         # coded subject, never a name
+videonest = "J6plusACM"      # device id of the phone filming THIS cot -- omit if none
+cond      = "RESTING"        # what the baby is doing; can still be changed in the window
+
+# The commercial monitor beside this baby, from the photo taken the day before (runbook section 1).
+# Every line here is optional; leave the table out entirely if there is no reference monitor.
+[ref]
+model = "Masimo Radical-7"
+avg   = 8                    # its averaging window, in seconds -- decides if the two SpO2 compare at all
+site  = "right hand"         # where ITS probe is, not ours

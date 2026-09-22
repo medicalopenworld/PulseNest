@@ -44,12 +44,33 @@ board and writes its own session directory.
 
 ## 2. Starting
 
+**Prepare one TOML file per cot the day before** — copy `docs/session_configs/example.toml` to
+`subj01.toml`, `subj02.toml`, `subj03.toml`, and fill in that baby's board, subject, phone and
+monitor from the photo taken in §1. Nothing about these files is secret and nothing in them is a
+name — `location` and `subject` are codes — so they can sit anywhere convenient, e.g. next to the
+runbook, or on a USB stick brought to site.
+
 Open one terminal in `C:\PRJ\MOW\PulseNest` and launch **one window per baby**:
 
 ```
+pythonw tools/pulsenest_recorder_gui.py --config subj01.toml
+pythonw tools/pulsenest_recorder_gui.py --config subj02.toml
+pythonw tools/pulsenest_recorder_gui.py --config subj03.toml
+```
+
+`--config` reads `location`, `operator`, `board`, `subject`, `videonest`, `cond` and the four
+`ref.*` fields in one go — the ten things a session needs to say who it is about, as opposed to
+`--hub`/`--out`/`--raw`/`--split-min`/`--duration`, which are how the tool behaves and are the
+same for all three cots. **Full substitution**: typing any of those ten on the command line
+*alongside* `--config` is refused outright, never silently merged, so the file is always the
+whole story or none of it. If a value needs to change on the day — the phone died, a different
+oximeter arrived — edit the file, or drop `--config` for that window and type the flags by hand
+(below); do not mix the two.
+
+Without a prepared file, the equivalent by hand is:
+
+```
 pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM --cond RESTING --ref-model "Masimo Radical-7" --ref-avg 8 --ref-site "right hand"
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 825C --subject SUBJ02 --cond RESTING --ref-model "Philips IntelliVue" --ref-avg 8 --ref-site "left foot"
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 87A4 --subject SUBJ03 --cond RESTING --ref-model "Nellcor N-600" --ref-avg 7 --ref-site "right foot"
 ```
 
 `--location` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`,
@@ -64,8 +85,9 @@ session with no condition keeps its CSV under a provisional name (`<MAC>_…`) u
 
 `--ref-model`, `--ref-avg`, `--ref-site` and `--ref-note` describe the commercial monitor beside
 that baby, from the photograph you took the day before (§1). They do not change during the
-session, so they are typed once here rather than in the window — the window shows them under
-**MONITOR**, read-only, so a typo is visible instead of silent. `--ref-avg` is the number that
+session, so they are typed once, in the file or on the command line, rather than in the window —
+the window shows them under **MONITOR**, read-only, so a typo is visible instead of silent.
+`--ref-avg` is the number that
 decides whether our SpO2 can be compared with theirs at all; leave it out and correct it later
 from the console tool (`ref SUBJ01 avg 8`) if you did not have the photo to hand yet.
 

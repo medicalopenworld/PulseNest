@@ -41,6 +41,7 @@ import faulthandler
 import os
 import sys
 import time
+import tomllib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -798,6 +799,62 @@ class RecorderWindow(QtWidgets.QMainWindow):
 # ============================================================================================
 # start-up: the two facts only a person knows, asked once
 # ============================================================================================
+# The ten fields a session file can set -- what a baby's session IS, never how the tool behaves
+# (--hub, --out, --raw, --split-min, --duration, --min-free-gb stay command-line only: they are
+# the same for all three cots and belong to the laptop, not the baby).
+CONFIG_FIELDS = ("location", "operator", "board", "subject", "videonest", "cond",
+                 "ref_model", "ref_avg", "ref_site", "ref_note")
+
+
+def load_session_config(path):
+    """A TOML session file -> {field: value}, every value a string ("" if absent).
+
+    [ref] is a sub-table so the file reads as two groups, the same two the window shows as
+    SUBJECT/REFERENCE/CONDITION/NOTE and MONITOR:
+
+        location  = "HOSP01"
+        operator  = "AC"
+        board     = "8850"
+        subject   = "SUBJ01"
+        videonest = "J6plusACM"
+        cond      = "RESTING"
+
+        [ref]
+        model = "Masimo Radical-7"
+        avg   = 8
+        site  = "right hand"
+
+    Raises OSError if the file cannot be read, tomllib.TOMLDecodeError if it is not valid TOML.
+    Neither is caught here -- the caller decides how to report it.
+    """
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    ref = data.get("ref") or {}
+
+    def text(v):
+        return "" if v is None else str(v)
+    return {
+        "location": text(data.get("location")), "operator": text(data.get("operator")),
+        "board": text(data.get("board")), "subject": text(data.get("subject")),
+        "videonest": text(data.get("videonest")), "cond": text(data.get("cond")),
+        "ref_model": text(ref.get("model")), "ref_avg": text(ref.get("avg")),
+        "ref_site": text(ref.get("site")), "ref_note": text(ref.get("note")),
+    }
+
+
+def apply_session_config(args, path):
+    """Load `path` into `args`, in place. FULL substitution: raises ValueError if any of the ten
+    fields was ALSO typed on the command line, rather than silently choosing one -- the same
+    discipline as the ambiguous --board suffix (one session, one baby, one source of truth for
+    who it is)."""
+    typed = [f for f in CONFIG_FIELDS if getattr(args, f)]
+    if typed:
+        names = ", ".join("--" + f.replace("_", "-") for f in typed)
+        raise ValueError(f"--config replaces {names} entirely; drop --config or drop {names}")
+    for field, value in load_session_config(path).items():
+        setattr(args, field, value)
+
+
 def ask_session(app, location, operator):
     if location:
         return location, operator
@@ -826,6 +883,11 @@ def ask_session(app, location, operator):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", default="", metavar="FILE.toml",
+                    help="read location/operator/board/subject/videonest/cond/ref-* from this "
+                         "TOML file instead of typing them -- one per cot, prepared the day "
+                         "before. FULL substitution: giving --config together with any of those "
+                         "flags is refused, not merged")
     ap.add_argument("--location", default="", help="site CODE for the session id (BENCH, HOSP01); asked if absent")
     ap.add_argument("--operator", default="", help="initials or role, never a full name")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
@@ -863,6 +925,15 @@ def main(argv=None):
                     help="close the session cleanly after this many seconds (0 = until the "
                          "operator stops it). For an unattended bench soak")
     args = ap.parse_args(argv)
+    if args.config:
+        try:
+            apply_session_config(args, args.config)
+        except ValueError as exc:
+            ap.error(str(exc))
+        except OSError as exc:
+            ap.error(f"cannot read {args.config}: {exc}")
+        except tomllib.TOMLDecodeError as exc:
+            ap.error(f"{args.config} is not valid TOML: {exc}")
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
 

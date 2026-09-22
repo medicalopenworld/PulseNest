@@ -364,6 +364,64 @@ recF.stop("test")
 winF.client.close()
 recF.close()
 
+# ── --config: a TOML session file, full substitution ─────────────────────────────────────────
+import argparse as _argparse
+import tomllib as _tomllib
+
+cfg_dir = tempfile.mkdtemp()
+cfg_path = os.path.join(cfg_dir, "subj01.toml")
+open(cfg_path, "w", encoding="utf-8").write("""
+location  = "HOSP01"
+operator  = "AC"
+board     = "8850"
+subject   = "SUBJ01"
+videonest = "J6plusACM"
+cond      = "RESTING"
+
+[ref]
+model = "Masimo Radical-7"
+avg   = 8
+site  = "right hand"
+""")
+
+
+def blank_args():
+    return _argparse.Namespace(**{f: "" for f in G.CONFIG_FIELDS})
+
+
+ns = blank_args()
+G.apply_session_config(ns, cfg_path)
+check("--config fills all ten fields from the file, avg as a string like a typed flag would be",
+      vars(ns) == {"location": "HOSP01", "operator": "AC", "board": "8850", "subject": "SUBJ01",
+                   "videonest": "J6plusACM", "cond": "RESTING", "ref_model": "Masimo Radical-7",
+                   "ref_avg": "8", "ref_site": "right hand", "ref_note": ""}, vars(ns))
+
+for field in G.CONFIG_FIELDS:
+    conflicting = blank_args()
+    setattr(conflicting, field, "x")
+    try:
+        G.apply_session_config(conflicting, cfg_path)
+        ok.append(False)
+        print(f"FAIL --config must refuse when --{field.replace('_','-')} is also given")
+    except ValueError as exc:
+        ok.append(f"--{field.replace('_','-')}" in str(exc))
+check("full substitution: EVERY one of the ten fields, given alongside --config, is refused",
+      True)  # the loop above recorded one PASS/FAIL per field; this line is just a section marker
+
+try:
+    G.apply_session_config(blank_args(), os.path.join(cfg_dir, "missing.toml"))
+    check("a missing config file raises", False)
+except OSError:
+    check("a missing config file raises OSError, not a traceback the operator has to read", True)
+
+bad_path = os.path.join(cfg_dir, "bad.toml")
+open(bad_path, "w", encoding="utf-8").write("this is [[[ not toml")
+try:
+    G.apply_session_config(blank_args(), bad_path)
+    check("malformed TOML raises", False)
+except _tomllib.TOMLDecodeError:
+    check("malformed TOML raises TOMLDecodeError, named clearly rather than crashing opaquely", True)
+
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
 sys.stdout.flush()
 sys.stderr.flush()
