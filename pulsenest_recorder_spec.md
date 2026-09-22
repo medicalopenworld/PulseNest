@@ -583,7 +583,7 @@ reference streams below.
   `operator` (typed); `id` is the device id or who typed; `kind` is `reading`, `correction` or
   `retraction`, and `supersedes` names the event a correction refers to, so nothing is ever
   rewritten. Columns: `t_epoch_us, iso_local, source, id, kind, spo2, pr, conf, seq, phone_ts,
-  drift_ms, checksum_ok, event_id, supersedes` — a column that does not apply to a source is
+  drift_ms, checksum_ok, event_id, supersedes, emit_ts, offset_ms, ntp` — a column that does not apply to a source is
   blank, never a zero. `phone_ts` is the phone's own clock **verbatim**, because that string is
   also the timestamp in the photograph's filename. Phone rows come only from the phone declared
   as this baby's reference. It is one measurement read twice, and the whole reason to have both
@@ -752,7 +752,8 @@ What the implementation fixed in this document's wording, or added:
 * **A phone names itself, and we treat that name as we treat a MAC** (agreed with Alex,
   2026-09-20). The contract, for VideoNest to implement:
 
-      $VN1,<seq>,<spo2>,<conf>,<phone time>,<id>*<checksum>
+      $VN1,<seq>,<spo2>,<conf>,<phone time>,<id>*<checksum>                       (2026-09-20)
+      $VN1,<seq>,<spo2>,<conf>,<capture_ms>,<emit_ms>,<ntp>,<id>*<checksum>      (2026-09-22, option E)
 
   `<id>` is **appended, never inserted**: a reader written for build 8 keeps working unchanged,
   and the two shapes coexist — the same rule R18 of the CSV dictionary applies to its own columns.
@@ -782,8 +783,13 @@ What the implementation fixed in this document's wording, or added:
   phone** — the instant stamped is when the picture was taken, and the OCR and the send happen
   after. It matters: 2 s at 500 Hz is a thousand samples, so a reading placed on our timeline by
   this stamp lands two seconds early. The earlier figure of 164–350 ms was measured on the old
-  epoch field and is not comparable. **Open**: whether to subtract a calibrated constant, or to
-  use arrival time and treat the phone stamp as the photograph's key only.
+  epoch field and is not comparable. **Closed 2026-09-22 (option E, implemented on the phone the
+  same day):** the frame carries a second stamp, the emission time, taken just before `sendto`.
+  `emit − capture` is the phone's processing (measured 260–620 ms); `arrival − emit` is network
+  (1–20 ms on the local WiFi) plus the clock offset — so `offset_ms` in `reference_spo2.csv` is
+  the offset between the two clocks, per frame, and a reading is placed at `capture − offset`.
+  Both stamps are epoch ms (UTC), no longer local-time text. The CLOCK ANCHOR photograph stays
+  as an independent check of the same number, not as the way to obtain it.
 * **VideoNest build 8 (2026-09-20) drops `pr` from the frame**: `$VN1,<seq>,<spo2>,<conf>,<ts_ms>`,
   four fields where there were five, and the NMEA checksum is over the new, shorter body. It read 0
   in every frame anyway (measured above). **Nothing in this repository had to change to keep

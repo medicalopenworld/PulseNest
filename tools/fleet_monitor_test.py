@@ -170,6 +170,11 @@ check("a line that is not $VN1 is ignored", a.seq == "356")
 
 idd = F.AuxView("192.168.1.143", "videonest")
 idd.feed(b"$VN1,901,95,0.97,1790000012000,VN02*00\r\n", now)
+# the 2026-09-22 two-stamp frame, off the real phone: the id is still the last field
+idd.feed(b"$VN1,1245,89,0.98,1790084454887,1790084455216,1,J6plusACM*02\r\n", now)
+check("the two-stamp frame names the phone by its LAST field, not the emission stamp",
+      idd.vn_id == "J6plusACM" and idd.seq == "1245" and idd.spo2 == "89", str(idd.vn_id))
+idd.feed(b"$VN1,901,95,0.97,1790000012000,VN02*00\r\n", now)
 check("AuxView reads the phone's trailing id, and the fields before it are unmoved",
       (idd.vn_id, idd.seq, idd.spo2, idd.conf) == ("VN02", "901", "95", "0.97"),
       f"{idd.vn_id},{idd.seq},{idd.spo2},{idd.conf}")

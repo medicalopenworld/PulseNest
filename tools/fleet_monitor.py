@@ -303,8 +303,9 @@ class AuxView:
                 if len(p) > 3:
                     self.conf = p[3].decode("ascii", "replace")
                 if len(p) > 5:
-                    # Appended field: the phone's own id. Older frames simply do not have it.
-                    self.vn_id = p[5].decode("ascii", "replace")
+                    # The phone's own id is the LAST field: fifth in the 2026-09-20 shape, seventh
+                    # since emission time and an NTP flag were inserted before it (2026-09-22).
+                    self.vn_id = p[-1].decode("ascii", "replace")
             except (ValueError, IndexError):
                 pass
 

@@ -340,6 +340,9 @@ try:
     recV.feed("10.0.0.9", b"$VN1,8,97.0,0.90,2026-09-22 00:21:27.831,J6plusACM*00\n")  # bad cks
     recV.feed("10.0.0.9", b"$VN1,not,a,frame*ZZ\n")                                    # junk
     recV.feed("10.0.0.8", vn(1, b"92", b"0.99", b"2026-09-22 00:21:28.000", b"OtherPhone"))
+    # The two-stamp frame, copied off the real phone 2026-09-22 (option E): capture ms, emission
+    # ms, NTP flag, id. Same phone id, so it joins the declared phone's rows (the fifth).
+    recV.feed("10.0.0.9", b"$VN1,1245,89,0.98,1790084454887,1790084455216,1,J6plusACM*02\n")
     r_id = int(recV.console("spo2 SUBJ01 96 140").split()[1].rstrip(":"))
     recV.console(f"correct {r_id} 97")
     phone = [x for x in recV.owners() if x.kind == "videonest" and x.vn_id == "J6plusACM"][0]
@@ -358,8 +361,8 @@ try:
     vrows = [r for r in rows if r[col["source"]] == "videonest"]
     orows = [r for r in rows if r[col["source"]] == "operator"]
     check("[2] the declared phone's frames are rows, id = its device id; the other phone's are not",
-          len(vrows) == 4 and all(r[col["id"]] == "J6plusACM" for r in vrows)
-          and other.vn_rows == 0 and phone.vn_rows == 4, f"{len(vrows)} rows, other={other.vn_rows}")
+          len(vrows) == 5 and all(r[col["id"]] == "J6plusACM" for r in vrows)
+          and other.vn_rows == 0 and phone.vn_rows == 5, f"{len(vrows)} rows, other={other.vn_rows}")
     check("[2] a frame that fails its checksum is written and FLAGGED, never dropped",
           vrows[0][col["checksum_ok"]] == "1" and vrows[3][col["checksum_ok"]] == "0"
           and phone.vn_bad == 2, f"bad={phone.vn_bad}")
@@ -368,6 +371,14 @@ try:
     check("[2] the drift between the phone's clock and arrival here is explicit",
           vrows[0][col["drift_ms"]] == str((R.phone_epoch_us("2026-09-22 00:21:26.261")
                                             - int(vrows[0][col["t_epoch_us"]])) // 1000))
+    last = vrows[-1]                          # the two-stamp frame fed before close
+    check("[2] the two-stamp frame is recognised: id last, capture verbatim, emission and NTP kept",
+          last[col["seq"]] == "1245" and last[col["phone_ts"]] == "1790084454887"
+          and last[col["emit_ts"]] == "1790084455216" and last[col["ntp"]] == "1"
+          and last[col["checksum_ok"]] == "1", str(last))
+    check("[2] offset_ms = arrival - emission, the clock offset with the network aside",
+          last[col["offset_ms"]] == str((int(last[col["t_epoch_us"]]) - 1790084455216 * 1000) // 1000)
+          and vrows[0][col["offset_ms"]] == "" and vrows[0][col["emit_ts"]] == "", str(last))
     check("[2] both shapes of that field are read: local time, and older builds' epoch ms",
           R.phone_epoch_us("1789927282311") == 1789927282311000
           and R.phone_epoch_us("not a time") is None)
@@ -382,7 +393,7 @@ try:
           orows[0][col["conf"]] == "" and orows[0][col["phone_ts"]] == ""
           and vrows[0][col["pr"]] == "" and vrows[0][col["event_id"]] == "")
     check("[2] the closing note counts both sources and the bad frames",
-          "videonest=4" in notes[-1] and "operator=2" in notes[-1] and "bad_frames=2" in notes[-1],
+          "videonest=5" in notes[-1] and "operator=2" in notes[-1] and "bad_frames=2" in notes[-1],
           notes[-1])
 
     # the live CSV splits with the .pnraw, or a four-hour session ends in a 2 GB file

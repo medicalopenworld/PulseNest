@@ -319,7 +319,9 @@ def safe_condition(text):
     """A condition ends up in a filename, so it may only hold what a filename can."""
     t = re.sub(r"[^A-Za-z0-9-]+", "-", (text or "").strip().upper()).strip("-")
     return t[:24]
-_VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4},([A-Za-z0-9_-]{1,32})\*")
+# The id is the LAST field before the checksum, whatever comes before it: four fields in the
+# 2026-09-20 shape, six since the phone added emission time and an NTP flag (2026-09-22).
+_VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4,6},([A-Za-z0-9_-]{1,32})\*")
 _VN_IDCHARS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 # $VN1,<seq>,<spo2>,<conf>,<phone time>,<id>*<checksum>
 # The fourth field is the phone's own clock. Measured on the real phone 2026-09-22 it is LOCAL
@@ -327,15 +329,24 @@ _VN_IDCHARS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 # and the spec still described. Both are accepted: bare digits are epoch ms, anything else is
 # parsed as local time. It is written to the CSV verbatim, because that string is also the
 # timestamp in the photograph's filename, so the row already says which picture to open.
+# Two shapes. 2026-09-20: $VN1,<seq>,<spo2>,<conf>,<capture>,<id>*. 2026-09-22 (option E, asked
+# of VideoNest so the clock offset can be separated from the phone's processing time):
+# $VN1,<seq>,<spo2>,<conf>,<capture_ms>,<emit_ms>,<ntp 0|1>,<id>*. Measured on the real phone:
+# emit - capture = 260-620 ms of camera+OCR; arrival - emit = network (1-20 ms) + clock offset,
+# so `offset_ms` below IS the offset between the two clocks, per frame, no photograph needed.
 _VN_FRAME_RE = re.compile(
-    rb"^\$VN1,(\d+),(-?[\d.]+),(-?[\d.]+),([^,*]+),([A-Za-z0-9_-]{1,32})\*([0-9A-Fa-f]{2})\s*$")
+    rb"^\$VN1,(\d+),(-?[\d.]+),(-?[\d.]+),([^,*]+)(?:,(\d+),([01]))?,([A-Za-z0-9_-]{1,32})"
+    rb"\*([0-9A-Fa-f]{2})\s*$")
 # reference_spo2.csv: the commercial monitor's reading, by OCR (videonest) and by a person
 # (operator), one row each, in one file. `source` says which; `id` is the device id or the
 # operator; `kind` is reading | correction | retraction, and `supersedes` names the event a
 # correction or retraction refers to. The phone-only and operator-only columns are simply blank
 # for the other source -- a sparse union is clearer than two files that have to be joined.
 REF_COLS = ["t_epoch_us", "iso_local", "source", "id", "kind", "spo2", "pr", "conf", "seq",
-            "phone_ts", "drift_ms", "checksum_ok", "event_id", "supersedes"]
+            "phone_ts", "drift_ms", "checksum_ok", "event_id", "supersedes",
+            # appended 2026-09-22 with the phone's two-stamp frame: the emission stamp verbatim,
+            # arrival - emission in ms (= the clock offset, network aside), and the NTP flag
+            "emit_ts", "offset_ms", "ntp"]
 REF_KIND = {"REF_SPO2": "reading", "CORRECT": "correction", "RETRACT": "retraction"}
 
 
@@ -1017,12 +1028,13 @@ class Recorder:
         self.log.info("%s -> %s", src.label(), name)
 
     def _ref_row(self, t_epoch_us, source, ident, kind, spo2="", pr="", conf="", seq="",
-                 phone_ts="", drift_ms="", checksum_ok="", event_id="", supersedes=""):
+                 phone_ts="", drift_ms="", checksum_ok="", event_id="", supersedes="",
+                 emit_ts="", offset_ms="", ntp=""):
         """One row of reference_spo2.csv. Blank is blank: a column that does not apply to this
         source is empty, never a zero."""
         self._ref_f.write(",".join(str(v) for v in (
             t_epoch_us, iso_local(t_epoch_us), source, ident, kind, spo2, pr, conf, seq,
-            phone_ts, drift_ms, checksum_ok, event_id, supersedes)) + "\n")
+            phone_ts, drift_ms, checksum_ok, event_id, supersedes, emit_ts, offset_ms, ntp)) + "\n")
         self.ref_rows[source] += 1
 
     def _vn_rows(self, src, data, t_mono_us, t_epoch_us):
@@ -1041,7 +1053,7 @@ class Recorder:
                 if m is None:
                     src.vn_bad += 1
                     continue
-                seq, spo2, conf, phone_ts, _id, cks = m.groups()
+                seq, spo2, conf, phone_ts, emit_ts, ntp, _id, cks = m.groups()
                 body = line[1:line.rindex(b"*")]
                 ok = 1 if nmea_checksum(body) == int(cks, 16) else 0
                 if not ok:
@@ -1053,9 +1065,15 @@ class Recorder:
                 # How far the phone's clock is from arrival here. Blank rather than a zero when
                 # the field cannot be read: a missing measurement is not a drift of nothing.
                 drift = "" if phone_us is None else str((phone_us - t_epoch_us) // 1000)
+                # The two-stamp frame: arrival - emission is network plus clock offset, and the
+                # network is milliseconds, so this column is the offset between the phone's
+                # clock and ours -- positive when ours is ahead. Blank for the older shape.
+                emit_txt = emit_ts.decode("ascii", "replace") if emit_ts else ""
+                offset = str((t_epoch_us - int(emit_txt) * 1000) // 1000) if emit_txt else ""
                 self._ref_row(t_epoch_us, "videonest", src.vn_id, "reading", spo2=spo2.decode(),
                               conf=conf.decode(), seq=seq.decode(), phone_ts=phone_txt,
-                              drift_ms=drift, checksum_ok=ok)
+                              drift_ms=drift, checksum_ok=ok, emit_ts=emit_txt, offset_ms=offset,
+                              ntp=ntp.decode() if ntp else "")
                 src.vn_rows += 1
         except Exception as exc:
             self.csv_errors += 1
