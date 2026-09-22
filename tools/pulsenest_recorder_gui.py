@@ -919,7 +919,7 @@ def main(argv=None):
                     help="where session directories are created (default captures/sessions). "
                          "Point it at a second disk and the recording is written there directly, "
                          "instead of being copied afterwards")
-    ap.add_argument("--csv", default="on", choices=("on", "off", "v04"),
+    ap.add_argument("--csv", default="v04", choices=("v04", "on", "off"),
                     help="live capture CSV per board: on = today's format, v04 = capture_csv_format_spec.md v0.4, off")
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"),
                     help="the .pnraw stream in raw/: `full` keeps every datagram verbatim, "

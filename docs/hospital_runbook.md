@@ -164,7 +164,11 @@ Then, in each window:
 - [ ] Press **`STOP SESSION`**, or close the window: it asks first, so a stray click cannot end a
       recording. There is no Ctrl+C to get wrong.
 - [ ] **Open one CSV in Flow CSV Viewer before leaving.** This is the check that says the session
-      is good *here* instead of a week later. Each part is about 87 MB.
+      is good *here* instead of a week later. Each part is about 60 MB. The CSV is the v0.4 format
+      (`capture_csv_format_spec.md`) since 2026-09-22; Flow opened a full 10-minute part of it on
+      the bench. **If a file will not open on site, add `--csv on` to the launch line** for the next
+      session: that is the format every tool read until today, and the `.pnraw` lets the v0.4 file be
+      rebuilt later anyway (`python tools/pulsenest_convert.py <session dir> --csv v04`).
 - [ ] At close each CSV is renamed to `SUBJ01_RESTING_<date>_<time>_pNN.csv` — all parts or
       none. A file still called `<MAC>_…` means the condition was never set.
 - [ ] **Copy the whole session directory** to a second disk before leaving. Each baby has its own,

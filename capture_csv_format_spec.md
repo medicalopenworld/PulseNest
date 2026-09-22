@@ -651,7 +651,11 @@ decision (Phase 5) rests on, and it has never been done for the new shape. Fixtu
 
 ### Phase 5 — Flip the live writer (only after 3 and 4 are green on the bench)
 
-Default `--csv-format v04` in both tools; `legacy` stays available; runbook says which flag to
+**Done 2026-09-22.** `--csv` defaults to `v04` in `pulsenest_recorder.py` and the window; `on` (the
+pre-v0.4 format) stays one flag away and the runbook says so. Gate met the same day: a 13-minute
+single-board bench session in `v04`, both parts reproduced byte for byte by the converter, and
+Alex opened the full 10-minute part 2 in Flow CSV Viewer ("se abre aparentemente sin problemas").
+As planned: default `--csv-format v04` in both tools; `legacy` stays available; runbook says which flag to
 type if a v0.4 file will not open on site. **Not before a bench session of at least one full
 10-minute part in `v04`, opened in Flow, with the converter reproducing it byte for byte.**
 

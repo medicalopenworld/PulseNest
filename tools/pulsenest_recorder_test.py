@@ -93,7 +93,10 @@ try:
     # ── Part 1: the core ─────────────────────────────────────────────────────────────────────
     clk = FakeClock()
     log = QuietLog()
-    rec = R.Recorder(tmp, "bench-01", operator="AC", raw_mode="full", split_bytes=6000,
+    # csv_mode="on": the [2] checks below describe the pre-v0.4 container, kept available behind
+    # the flag. The default is v04 since 2026-09-22; that writer has its own suites
+    # (capture_csv_v04_test.py, pulsenest_convert_test.py).
+    rec = R.Recorder(tmp, "bench-01", operator="AC", raw_mode="full", csv_mode="on", split_bytes=6000,
                      identify_wait_s=3.0, log=log, clock=clk)
 
     check("[3] session dir and session.json exist before any datagram",

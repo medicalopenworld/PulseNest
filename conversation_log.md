@@ -25222,3 +25222,13 @@ p02 se abre bien en Flow CSV Viewer, ¿qué me preocupaba?
    `# @row N:` intercaladas entre filas de datos, con el epoch de 16 dígitos de las anclas o con las celdas
    vacías (F11: Flow no publica su formato; Excel se queda en 15 dígitos). Como Flow ignora las líneas `#` y
    dibuja las columnas de datos, y lo abre bien, esas dudas quedan resueltas: la fase 5 puede seguir.
+
+## 2026-09-22 (tarde) - Fase 5: `--csv v04` por defecto
+
+Alex: "adelante". `--csv` pasa a `v04` por defecto en `pulsenest_recorder.py` (argparse y constructor) y en la
+ventana; `on` (formato pre-v0.4) sigue a una bandera. Puerta cumplida el mismo día: sesión de 13 min de una
+placa en v0.4, ambas partes reproducidas byte a byte por el conversor, y Alex abrió la parte 2 completa en
+Flow. Runbook: la comprobación de Flow dice que el CSV es v0.4 y que, si un fichero no abriera en el
+hospital, se añade `--csv on` a la línea de lanzamiento (el `.pnraw` permite reconstruir el v0.4 después).
+recorder_test: la instancia principal pide `csv_mode="on"` explícito porque sus checks [2] describen el
+contenedor antiguo. Humo sin `--csv`: `# format=incunest_csv/1`. Plan v0.4: fases 0-5 hechas.

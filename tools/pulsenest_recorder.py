@@ -619,7 +619,7 @@ class Source:
 # the recorder core -- no sockets in here, so the test can drive it directly
 # ============================================================================================
 class Recorder:
-    def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="on", hub_text="",
+    def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="v04", hub_text="",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
                  board=None, subject=None, videonest=None, note=None, probe=None,
@@ -1741,9 +1741,9 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"), metavar="DIR",
                     help="where session directories are created (default captures/sessions)")
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
-    ap.add_argument("--csv", default="on", choices=("on", "off", "v04"),
-                    help="live capture CSV per board beside the .pnraw: on = today's format (what every "
-                         "tool reads), v04 = capture_csv_format_spec.md v0.4 (snapshots, anchors), off")
+    ap.add_argument("--csv", default="v04", choices=("v04", "on", "off"),
+                    help="live capture CSV per board beside the .pnraw: v04 = capture_csv_format_spec.md "
+                         "v0.4 (default since 2026-09-22), on = the pre-v0.4 format, off")
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT,
                     help="split the raw stream on this wall-clock period, in minutes")
     ap.add_argument("--split-mb", type=float, default=SPLIT_MB_DEFAULT)

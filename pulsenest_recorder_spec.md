@@ -737,8 +737,9 @@ What the implementation fixed in this document's wording, or added:
   CSV is precisely what earns that trust. `--csv off` turns it off; **`--csv v04` (2026-09-22)**
   writes the v0.4 container of `capture_csv_format_spec.md` instead — same rows, keys instead of
   notes, the configuration as `afe:`/`timing:`/`alg:` snapshots, clock anchors instead of the
-  `HOST_T_US`/`FW_SmpCnt`/`FW_Ts_us` columns, RF in the snapshot rather than a column. `on` stays
-  the default until the plan's Phase 5 (a full 10-minute part opened in Flow CSV Viewer).
+  `HOST_T_US`/`FW_SmpCnt`/`FW_Ts_us` columns, RF in the snapshot rather than a column. **`v04` is
+  the default since 2026-09-22** (Phase 5: a full 10-minute part opened in Flow CSV Viewer, both
+  parts reproduced byte for byte by the converter); `--csv on` keeps the pre-v0.4 format available.
 * **An auxiliary source is judged silent on its own timescale** (measured 2026-09-20, second
   rehearsal). A board emits 100 datagrams/s, so `SOURCE_SILENT_S = 5` is already 500 lost. A phone
   emits when its OCR has a reading: **0,81 Hz measured, median gap 0,9 s, p90 2,7 s, longest 6,5 s
