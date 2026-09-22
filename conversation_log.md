@@ -25055,3 +25055,44 @@ De paso, corregido un fragmento de prosa huerfano en `pulsenest_recorder_spec.md
 `"pending"`.") que quedo suelto de una edicion anterior sobre `consent`, sin relacion con nada.
 
 117 y 63 comprobaciones.
+
+## 2026-09-22 (tarde) - Las dos tareas previas a v0.4: el firmware anuncia los movimientos de RF de HGAC; el diccionario R18
+
+**Contexto.** Tras el plan de v0.4 (commit `2f1bde8`), Alex: "antes de implementar el plan hagamos las dos
+tareas previas (que el firmware anuncie los movimientos de HGAC, y el diccionario de columnas)".
+
+**1. Prerrequisito 6 — lib v0.94 + fw 0.15 (`f41fdf6` en la librería, `da3cc94` en PulseNest).**
+- La librería no emite nada: `_hgac_change_rf()` corre en la tarea de medida, y la regla de fw 0.13 es que
+  ninguna tarea de medida llama a la red. Sella `_hgac_rf_change_ts_us = esp_timer_get_time()` (el mismo
+  reloj que `Ts_us` de cada fila) y luego incrementa `_hgac_rf_change_count`. Getter sin bloqueo
+  `hgacRfChangeCount(uint64_t*)`: lee el contador, el sello, el contador otra vez; devuelve solo si
+  coinciden (un sello de 64 bits son dos cargas en este núcleo y podría partirse).
+- `setTIAGainLED1/2()` manual NO cuenta: un `$SET` ya responde con su propio `$CFG`.
+- Firmware: `Cmd_Task` sondea la cuenta en su ciclo de 50 ms y emite `send_cfg_frame("hgac")`. `$CFG` gana
+  tres claves: `cause=query|set|hgac`, `ts_us` (para `hgac`, el instante del movimiento; si no, el de la
+  emisión) y `hgac_rf_changes` (acumulado desde el arranque; un salto > 1 entre tramas = varios
+  movimientos dentro de un ciclo). Todos los consumidores (`pulsenest_lab.py`, hub, recorder, fleet_*)
+  parsean `key=value` e ignoran claves desconocidas: verificado leyendo cada parser.
+- Test nativo `test_hgac_rf_change_is_counted_and_stamped` (20/20): la primera expectativa (2 movimientos)
+  era mía y estaba mal: HGAC actúa por color, RED baja 100K->50K->25K->10K además de los 2 de IR = 5.
+- Build V18 limpio con `-Werror`, 892 624 B. **NO flasheado**: OTA a las tres placas del banco pendiente de
+  la decisión de Alex (víspera de campaña).
+- Specs: lib §5.8.4 + §14 v0.94; `pulsenest_lab_spec.md` trama `$CFG`; `capture_csv_format_spec.md` R21a y
+  prerrequisito 6 marcados como hechos (OTA pendiente).
+
+**2. Diccionario R18 — `tools/pulsenest_capture_dict.py` (+ `_test.py`, 1213/1213).**
+- Solo datos: 37 columnas (canon = etiquetas del lab, que ya siguen el vocabulario hardware; `FW_*`,
+  `IR/IR_Amb/IR_Sub/RED/...` y `LED1 (IR)` como sinónimos; nuevas `OT1_E10`/`OT2_E10`, `HOST_T_US` legada) y
+  92 claves en seis dominios (`id`, `session`, `clock`, `afe`, `timing`, `alg`) con origen en el cable
+  (trama, claves, escala) para que el conversor traduzca `$CFG`/`$TCFG`/`$LCFG` sin tablas propias.
+- El test cruza el diccionario con `CAPTURE_COLS`, con las tres cadenas de formato del firmware en los
+  dos sentidos (una clave nueva en el cable falla hasta que tenga nombre) y con el apéndice B de la spec.
+- El test corrigió la spec, no al revés: apéndice B usaba `ppgdisp_channel` (nombre del campo de la
+  librería, como pide R18) y yo había puesto `ppgdisp_ch`; `OT1,OT2` -> `OT1_E10,OT2_E10` (una OT escalada
+  nombra su escala, la regla `_ppm` generalizada); `hgac_v_tia_*=0.900` -> `hgac_v_tia_*_mv=900` (R24a:
+  reales solo para coeficientes adimensionales). D2/R19 cerrados; R18 y prerrequisito 1b hechos.
+- Abierto sin tocar: la columna `SQI` del ejemplo del apéndice B (P1 abreviado) no está en el diccionario;
+  el test solo comprueba las líneas de instantánea, no la fila de cabecera.
+
+**Siguiente.** OTA de fw 0.15 (decisión de Alex) y verificar en el banco un `$CFG` con `cause=hgac` real;
+después, fase 0 del plan (`--csv-format legacy|v04` + corpus del banco).
