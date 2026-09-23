@@ -662,6 +662,15 @@ class Recorder:
         # but only the declared one writes rows into reference_spo2.csv: one of them is pointed
         # at this baby's monitor, and session.json has to say which.
         self.videonest_id = videonest or None
+        # A phone id given at launch (--ref-videonest / [ref].videonest) is a DECLARATION, not a
+        # starting guess: once said, no other id may replace it for this session, from the
+        # console or the window. Found 2026-09-23: a GUI auto-select ("only one phone heard so
+        # far, it must be mine") locked SUBJ09's reference onto SUBJ08's phone 0.56 s after this
+        # window's first frame from it, 9.3 s before the right phone was even identified -- a
+        # race that a two-phone campaign turns into a silent misattribution. `expected_videonest_id`
+        # is the guardrail: set once here, checked in the `videonest` console command below,
+        # never itself reassigned.
+        self.expected_videonest_id = videonest or None
         # Typed once on the command line rather than in the panel (Alex, 2026-09-22: they do not
         # change during the session, so a fixed control would sit idle). Applied through the same
         # `note`/`cond`/`ref` console commands a keystroke would use, once a subject is known --
@@ -1332,11 +1341,19 @@ class Recorder:
                 self.write_session_json()
                 return f"{s.label()} -> {s.subject}"
             if cmd == "videonest":
-                # Which phone is pointed at THIS baby's monitor. `videonest none` clears it.
+                # Which phone is pointed at THIS baby's monitor. `videonest none` clears it --
+                # unless one was DECLARED at launch, in which case it is locked (see
+                # expected_videonest_id above) and this command can only ever confirm that same
+                # id, never clear it or switch it, from the console or the window alike.
                 want = args[0] if args else ""
                 if not want:
                     seen = ", ".join(sorted(self.by_vn)) or "(none seen yet)"
-                    return f"usage: videonest <device id>|none   seen: {seen}"
+                    locked = (f"   locked to {self.expected_videonest_id!r}"
+                              if self.expected_videonest_id else "")
+                    return f"usage: videonest <device id>|none   seen: {seen}{locked}"
+                if self.expected_videonest_id and want.lower() != self.expected_videonest_id.lower():
+                    return (f"refused: videonest is locked to {self.expected_videonest_id!r} "
+                            f"(declared at launch); {want!r} does not match")
                 if want.lower() == "none":
                     self.videonest_id = None
                 else:
@@ -1774,19 +1791,26 @@ def main(argv=None):
     ap.add_argument("--subject", default="", metavar="SUBJnn",
                     help="bind this coded subject as soon as the board is identified, so the "
                          "session directory is named from the start")
-    ap.add_argument("--videonest", default="", metavar="ID",
-                    help="device id of the phone pointed at THIS baby's monitor")
     ap.add_argument("--note", default="", metavar="TEXT",
                     help="a free-text note about this baby's session, applied once the subject "
                          "is known: written verbatim as a NOTE event, and its sanitised form "
                          "also seeds the starting CONDITION (correctable in the window)")
     ap.add_argument("--probe", default="", metavar="MODEL",
-                    help="OUR probe's physical model (e.g. Medle-neo) -- the library cannot know "
-                         "which sensor is plugged in, applied once the subject is known")
-    ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
-    ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
-    ap.add_argument("--ref-probe-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
-    ap.add_argument("--ref-note", default="", metavar="TEXT", help="commercial monitor: anything else")
+                    help="OUR probe's physical model (e.g. Medle ST-30163-26) -- the library "
+                         "cannot know which sensor is plugged in, applied once the subject is known")
+    ref_group = ap.add_argument_group(
+        "the commercial monitor beside this baby",
+        "All optional; also settable in one go as the [ref] table of --config. --ref-videonest "
+        "is the one of these actually enforced at runtime (2026-09-23: declared once, locked for "
+        "the whole session, never switched by a click or a race) -- the other four are recorded "
+        "and shown read-only, nothing electrical can check them.")
+    ref_group.add_argument("--ref-videonest", default="", metavar="ID",
+                    help="device id of the phone pointed at THIS baby's monitor -- once given, "
+                         "locked: no other id can become this session's reference")
+    ref_group.add_argument("--ref-model", default="", metavar="TEXT", help="make and model")
+    ref_group.add_argument("--ref-avg", default="", metavar="SECONDS", help="its averaging window")
+    ref_group.add_argument("--ref-probe-site", default="", metavar="TEXT", help="where ITS probe is")
+    ref_group.add_argument("--ref-note", default="", metavar="TEXT", help="anything else")
     ap.add_argument("--duration", type=float, default=0.0, help="seconds; 0 = until quit")
     args = ap.parse_args(argv)
 
@@ -1797,7 +1821,7 @@ def main(argv=None):
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject, videonest=args.videonest,
+                       board=args.board, subject=args.subject, videonest=args.ref_videonest,
                        note=args.note, probe=args.probe, ref_model=args.ref_model,
                        ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
                        ref_note=args.ref_note)

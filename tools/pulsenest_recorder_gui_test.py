@@ -435,7 +435,7 @@ ns = blank_args()
 G.apply_session_config(ns, cfg_path)
 check("--config fills all eleven fields from the file, avg as a string like a typed flag would be",
       vars(ns) == {"location": "HOSP01", "operator": "AC", "board": "8850", "subject": "SUBJ01",
-                   "videonest": "J6plusACM", "note": "term neonate, resting after a feed",
+                   "ref_videonest": "J6plusACM", "note": "term neonate, resting after a feed",
                    "probe": "Medle-neo", "ref_model": "Masimo Radical-7", "ref_avg": "8",
                    "ref_probe_site": "left thumb", "ref_note": ""}, vars(ns))
 

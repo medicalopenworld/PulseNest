@@ -73,7 +73,7 @@ oximeter arrived — edit the file, or drop `--config` for that window and type 
 Without a prepared file, the equivalent by hand is:
 
 ```
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --videonest J6plusACM --note "term neonate, resting after a feed" --probe "Medle-neo" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
+pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --ref-videonest J6plusACM --note "term neonate, resting after a feed" --probe "Medle ST-30163-26" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
 ```
 
 `--location` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`,
@@ -82,8 +82,12 @@ identifies a person even with no name written anywhere; what the code means live
 mapping file, beside the `SUBJnn` one.
 
 `--board` is a MAC suffix of any length. If it matches two boards the session refuses to start,
-rather than recording a baby nobody asked for. `--subject`, `--videonest` and `--note` can be
-left out and chosen in the window instead. `--note` is worth typing here anyway: it is written
+rather than recording a baby nobody asked for. `--subject`, `--ref-videonest` and `--note` can be
+left out and chosen in the window instead — but `--ref-videonest`, unlike the other two, is a
+one-way door once given: **it locks the reference phone for the whole session**, and neither the
+window nor the console can switch it to another id afterwards (2026-09-23, after a session
+recorded with the wrong cot's phone — see §5). Give it here when you know the phone in advance;
+leave it out and choose it in the window if you don't. `--note` is worth typing here anyway: it is written
 verbatim as a NOTE event **and** its sanitised form seeds the starting CONDITION, so a session
 launched with `--note` already has a canonical CSV name instead of the provisional `<MAC>_…` one
 — though for a long note that name can come out truncated and ugly (`TERM-NEONATE-RESTING-AFT`,
@@ -195,6 +199,7 @@ Then, in each window:
 | The window closes by itself | Disk below the floor, or `--duration` expired | The session closed cleanly and is intact |
 | The waveform freezes or the window dies | pyqtgraph, which has killed the lab window 28 times | Only that baby's recording stops; the other two are separate programs. Everything written is on disk. Relaunch, and press `PLOTS` to record without the waveform |
 | A crash of any kind | | The `.pnraw` and the CSV are append-only and end on a complete record. What is lost is metadata: `SESSION_END`, the clock drift, and the rename — the files keep their provisional `<MAC>_…` names |
+| REFERENCE is greyed out and shows the wrong phone | `--ref-videonest` was typed at launch with the wrong id (or the wrong cot's), and it is now locked for this session | Close the window and relaunch: either the correct `--ref-videonest`/`[ref].videonest`, or none at all — leave it out and pick the phone live from the REFERENCE list instead |
 
 **The recorder never writes to a board.** It cannot change a setting or reboot anything, by
 construction. Configuration is done from the lab before the session.

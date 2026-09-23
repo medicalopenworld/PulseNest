@@ -25264,3 +25264,121 @@ tiempo de proceso como yo había deducido de la trama de un solo sello. El móvi
 lo sincronizó Alex a mano por la mañana: cuál de los dos va bien lo dirá la foto de CLOCK ANCHOR, pero
 para alinear placa y monitor solo importa la diferencia, y ahora viene en cada trama. Lectura del monitor
 se coloca en `captura - offset`.
+
+## 2026-09-23 - TOML del hospital, ensayo de tres sesiones y primera campaña real en HOSPNAV
+
+**TOML para el hospital.** Preparados `docs/session_configs/subj08.toml`/`subj09.toml`/`subj10.toml`
+(placa 8850→SUBJ08, 87A4→SUBJ09, 825C→SUBJ10 — SUBJ01-07 ya usados por la familia de Alex en
+`captures/SUBJECT_CODES.txt`). `probe="Medle-neo"` inicial resultó ser un valor de ejemplo, no un modelo
+real: nació como placeholder de trabajo en el Apéndice B de `capture_csv_format_spec.md` (2026-09-20) y se
+había ido copiando de fichero en fichero (`example.toml`, el runbook, varios tests) hasta colarse sin
+verificar en los `.toml` reales. Alex lo corrigió a `Medle ST-30163-26` (modelo real confirmado) al revisar
+los tres ficheros.
+
+**Ensayo de tres sesiones simultáneas.** Lanzadas las tres ventanas del recorder por Claude — Alex: *"Quería
+aprender a hacerlo yo"*. Anotado como feedback (`feedback_teach_dont_execute_operational_steps.md`): en
+procedimientos que Alex va a operar solo en el terreno, preguntar antes de ejecutar, no asumir la
+delegación.
+
+**Primera campaña real en HOSPNAV (dos bebés, no tres).** 8 sesiones (4 por bebé, 11:42-13:16), todas
+cerradas limpio por el operador, cero eventos de gap/silencio/reinicio. Evaluación preliminar pedida por
+Alex tras volver:
+- **Nuestro SpO2 lee sistemáticamente 15-20 puntos por debajo** del monitor de referencia (Mindray
+  BeneVision, leído por OCR de VideoNest) en las 8 sesiones, los dos bebés. Coincide con lo ya anticipado en
+  `project_probe_dependent_specs.md` fila #1: la curva de calibración R→SpO2 (`spo2_a=114.9208,
+  spo2_b=30.5547`) es la genérica del banco, nunca validada con la sonda Medle real sobre un neonato. Sin
+  lectura manual (RECORD) ese día — el OCR iba sorprendentemente bien, dixit Alex — así que no hay verdad
+  humana independiente para separar sesgo nuestro de sesgo del OCR.
+- **SUBJ08 tuvo peor contacto de sonda que SUBJ09**: fracción de muestras con SpO2 válido 4-32 % frente a
+  42-52 %; dos de sus cuatro sesiones pasaron buena parte del tiempo en `PROBE_OT_HIGH` (demasiada luz,
+  sonda floja/con fuga). SUBJ08 nunca tuvo una nota de "dónde está puesta la sonda" en ninguna sesión;
+  SUBJ09 la repitió las 4 veces. SUBJ08 tampoco tuvo nunca CONDITION -> sus CSV se quedaron con el nombre
+  provisional `1051DB508850_...` todo el día.
+- Un salto aislado de OCR encontrado por Claude en el minuto equivocado (dije 12:38, era **SUBJ09/13:08**
+  — Alex lo corrigió con la foto real del móvil).
+
+**Bug real encontrado y corregido: `20260923_1309_HOSPNAV_SUBJ09` usó de referencia el teléfono de
+SUBJ08.** Causa exacta, con logs: la ventana de SUBJ09 arrancó a las 13:09:32, oyó `Pixel8aACM` (el móvil
+de SUBJ08, ya "caliente") a las 13:09:33.280, y el atajo `elif len(seen) == 1 and
+self.vn_on.isChecked(): self._videonest_changed()` de `refresh_phones()` lo fijó como referencia 0,56 s
+después — **9,3 s antes** de que `J6plusACM` (el móvil correcto) se identificara ante esa misma ventana. El
+supuesto "si solo he oído uno, es el mío" era cierto con un solo teléfono en la campaña; con dos activos a
+la vez es una carrera que gana el que esté más "caliente", no el que corresponda a esa cuna.
+Corrección (sin commit todavía): `Recorder.expected_videonest_id` (`pulsenest_recorder.py`) fija una vez,
+al lanzar, el id declarado por `--videonest`/`[ref].videonest`, y el comando de consola `videonest <id>`
+rechaza cualquier otro id (incluido `none`) mientras haya uno declarado — ni la ventana ni la consola
+pueden cambiarlo. En `pulsenest_recorder_gui.py`: eliminado el atajo de autoselección; los controles
+REFERENCE quedan deshabilitados (solo lectura) cuando el teléfono se declaró al lanzar. 2 checks nuevos,
+123/123 y 70/70 sin regresiones. `captures/sessions/20260923_1309_HOSPNAV_SUBJ09/reference_spo2.csv`
+marcado con un comentario de cabecera (no borrado: las filas son reales, son la referencia de SUBJ08, no
+de SUBJ09) apuntando al fichero correcto.
+**Pendiente de decidir con Alex**: renombrar `--videonest` a `--ref-videonest` por consistencia con
+`--ref-model`/`--ref-avg`/`--ref-probe-site` (el campo ya vive en `[ref]` dentro del TOML, pero el flag de
+línea de comandos no lleva el prefijo).
+
+## 2026-09-23 (2) - `--ref-videonest`, confirmación de v0.4/gap y frecuencia, error silencioso de pythonw
+
+**`--videonest` → `--ref-videonest`, hecho.** Alex confirmó el renombrado pendiente de la entrada anterior,
+agrupado en `--help` con `--ref-model/--ref-avg/--ref-probe-site/--ref-note` (nuevo `ap.add_argument_group`
+en ambos ficheros, no existía agrupación antes). `CONFIG_FIELDS`, `load_session_config()`, el runbook (+
+fila nueva en la tabla de fallos: REFERENCE en gris con el teléfono equivocado = declarado mal al lanzar,
+relanzar), `pulsenest_recorder_spec.md` (nota de corrección fechada bajo la decisión original de
+2026-09-22, sin borrarla) y los tests actualizados. 123/123, 70/70. De paso, corregidos los ejemplos
+`--probe "Medle-neo"` de textos de ayuda y runbook por el modelo real `Medle ST-30163-26`.
+
+**Aclarado, no cambiado: v0.4 = `# format=incunest_csv/1`.** Dos numeraciones paralelas que hoy coinciden
+(nombre de trabajo del proyecto vs. `DICT_VERSION` del propio fichero); si el formato cambia otra vez será
+`incunest_csv/2`.
+
+**Aclarado, no cambiado: la frecuencia de muestreo ya está cubierta.** Alex preguntó si hacía falta un
+parámetro nuevo ahora que no hay timestamp/contador por fila. Ya existe por dos vías, las dos implementadas
+(no solo en la spec): `afe_prf_hz` en la instantánea `afe:` (tasa nominal) y `# @row N gap: missing=K` /
+`stall: dt=…us` / `end: gaps=G stalls=S`, escritos en el momento en que ocurre la anomalía
+(`pulsenest_capture_csv.py:473-513`). Lo único no inmediato es la tasa *medida* exacta entre dos anclas de
+reloj (`clock: smpcnt=… fw_ts_us=…`), derivable restando dos anclas consecutivas, no una columna.
+
+**Hallazgo pendiente de decidir: `pythonw` traga los errores de arranque en silencio.** `apply_session_config()`
+SÍ lanza `TOMLDecodeError` con dos `note` en el TOML, y `main()` la captura con `ap.error(...)` — pero eso
+escribe a stderr, y `pythonw` no tiene consola detrás: el proceso muere sin ventana, sin diálogo, sin log.
+Explica por qué Alex no vio ningún mensaje. Propuesto (no implementado, a la espera de confirmación):
+capturar el fallo de arranque y mostrar un `QMessageBox` en vez de confiar en `ap.error()`/stderr.
+
+## 2026-09-23 (3) - `pythonw` deja de tragarse errores de arranque en silencio
+
+Alex, sobre la pregunta del `QMessageBox`: **"sí, si el script es capaz de saber fácilmente que le han
+llamado con un pythonw... aunque no estoy seguro, ¿qué harías tú?"** Mi recomendación: no detectar el
+lanzador — un diálogo modal es la respuesta más visible también bajo `python` normal (la consola puede
+estar minimizada junto a la cuna), y añadir esa rama no gana nada. Implementado sin condicional: `app =
+QtWidgets.QApplication(...)` se construye ANTES de leer `--config` (un `QMessageBox` lo necesita ya
+creado), y las tres excepciones de `apply_session_config` (`ValueError`, `OSError`,
+`tomllib.TOMLDecodeError`) muestran `QMessageBox.critical(None, "not starting", …)` en vez de
+`ap.error()`/stderr — mismo patrón que ya existía para el fallo de `Recorder()` sin espacio en disco, que
+se había quedado sin aplicar a la carga del TOML. Verificado de verdad: lanzado sin `pythonw` con un
+`.toml` de `note` duplicado, apareció una ventana real titulada "not starting" en vez de morir en
+silencio (proceso Windows 24924, confirmado por `Get-Process`, cerrado tras comprobar). 70/70. Nota:
+`QT_QPA_PLATFORM=offscreen` + `QMessageBox.critical` provoca *segfault* de Qt en este entorno incluso en
+un script de 4 líneas ajeno al proyecto — limitación del modo headless de pruebas, no del fix.
+
+También aclarado (sin cambio de código): qué significa `# @row N <tipo>:` en el CSV v0.4 — N = filas de
+datos ya escritas = índice de la siguiente; la línea describe el estado justo antes de esa fila
+(`afe:`/`timing:`/`alg:`/`clock:` al abrir, `gap:`/`stall:` cuando ocurren, `end:` al cerrar).
+
+## 2026-09-23 (4) - Cierre: repaso de cambios de incunest_afe4490 y desincronización de versión corregida
+
+Alex pidió un repaso de los cambios de `incunest_afe4490` (repo separado, `C:\PRJ\MOW\incunest_afe4490`) de
+la última semana y de septiembre. Última semana (2 commits): v0.93 (16-sept, `hr1_max_decay_tau_s` 20s→1,5s,
+arregla una racha de falsa bradicardia por SQI a 0 tras un latido perdido) y v0.94 (22-sept,
+`hgacRfChangeCount()`, prerrequisito 6 del plan v0.4 de PulseNest). Septiembre completo: 26 commits,
+v0.82→v0.94, 2837+/742- en 15 ficheros — refactor de decimación (4-sept), catálogo cerrado de PRF y reset
+de estado al cambiar de tasa (4-sept), unidades en segundos (4-sept), presencia por OT AND en vez de OR y
+`ProbeState` dividido (7-sept), **capa de abstracción de hardware — compila en Arduino-ESP32, ESP-IDF y
+host (15-sept, v0.91)**, la pieza que habilitó dejar PlatformIO ocho días después.
+
+Al repasar se encontró `library.json` ("0.93.0") desincronizado de `INCUNEST_AFE4490_VERSION` ("0.94") en
+el header — la sincronización del 8-sept (commit 6eb7dfa) fue puntual, no automática, y v0.94 volvió a
+romperla. Corregido, comprometido y subido: commit `a793d52` en `incunest_afe4490` (`chore: sync
+library.json version with INCUNEST_AFE4490_VERSION (0.94)`), push a `origin/master` hecho.
+
+Alex sale a actualizar Claude Code. Sesión de hoy (arranca en el bloque "2026-09-23 - TOML del hospital..."
+más arriba) cerrada sin pendientes: el renombrado `--ref-videonest`, el `QMessageBox` de `pythonw` y esta
+sincronización de versión están hechos y verificados, no solo propuestos.

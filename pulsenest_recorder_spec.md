@@ -547,6 +547,15 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   an array of tables, one per monitor — if that feature is ever built, without reshaping the file
   twice. The `--videonest` command-line flag is unchanged and stays flat: a command line has no
   nesting to solve, so renaming it there would only be churn.
+  **Superseded 2026-09-23 (Alex):** renamed to `--ref-videonest`, grouped in `--help` with the
+  other four `--ref-*` flags — the flat/nested distinction above was reasonable, but a flag
+  documented one screen away from `--ref-model`/`--ref-avg`/`--ref-probe-site`/`--ref-note`, and
+  described in the same `[ref]` TOML table, that does not share their prefix reads as a typo. Also
+  the day this flag stopped being a mere starting value: a two-phone campaign's first real session
+  (`conversation_log.md`, 2026-09-23) had a window silently adopt the OTHER cot's phone as its
+  reference, 0.56 s after hearing it first, 9.3 s before the correct phone was even heard.
+  `Recorder.expected_videonest_id` fixes it: once given, `--ref-videonest`/`[ref].videonest` is
+  locked for the whole session — not a default the window (or a GUI shortcut) can drift away from.
 
 ---
 

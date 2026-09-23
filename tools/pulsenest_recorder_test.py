@@ -347,6 +347,14 @@ try:
     recV.console(f"correct {r_id} 97")
     phone = [x for x in recV.owners() if x.kind == "videonest" and x.vn_id == "J6plusACM"][0]
     other = [x for x in recV.owners() if x.kind == "videonest" and x.vn_id == "OtherPhone"][0]
+    # A phone declared at launch (--ref-videonest / [ref].videonest) is locked: the 2026-09-23
+    # incident was a GUI shortcut silently switching a session's reference to another cot's
+    # phone. The guardrail is here, in the console command every switch goes through.
+    check("[7] a phone declared at launch is locked: a different id is refused, not applied",
+          recV.console("videonest OtherPhone").startswith("refused: videonest is locked")
+          and recV.videonest_id == "J6plusACM", recV.console("videonest OtherPhone"))
+    check("[7] locked also refuses 'none' -- the declaration cannot be cleared from the console",
+          recV.console("videonest none").startswith("refused") and recV.videonest_id == "J6plusACM")
     recV.stop("t")
     recV.close()
     check("[2] one reference file per session, named for what it holds",

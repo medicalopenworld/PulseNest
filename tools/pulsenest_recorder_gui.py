@@ -439,6 +439,13 @@ class BoardRow(QtWidgets.QFrame):
                 if self.vn_id.findText(vn) < 0:
                     self.vn_id.addItem(vn)                      # declared before it was heard
                 self.vn_id.setCurrentText(vn)
+        if rec.expected_videonest_id:
+            # A phone declared at launch (--ref-videonest / [ref].videonest) is read-only here, same
+            # principle as MONITOR/PROBE below: shown so a typo is visible, not offered for the
+            # operator to override by mistake. The backend refuses a switch anyway (Recorder's
+            # `videonest` command), but a disabled control also cannot be clicked by mistake.
+            self.vn_on.setEnabled(False)
+            self.vn_id.setEnabled(False)
         if not self.condition.hasFocus() and (src.condition or "") != self.condition.currentText().strip():
             self.condition.blockSignals(True)
             self.condition.setCurrentText(src.condition or "")
@@ -446,7 +453,14 @@ class BoardRow(QtWidgets.QFrame):
 
     def refresh_phones(self):
         """The device list fills itself from the phones actually heard. A phone that is not
-        sending never appears, which is the answer to "is VideoNest working?" without a menu."""
+        sending never appears, which is the answer to "is VideoNest working?" without a menu.
+
+        NEVER auto-selects (removed 2026-09-23, root cause of a real misattribution): a fresh
+        window's `by_vn` starts empty, so "only one phone heard so far" can mean "the one phone
+        heard so far", not "the only phone in the campaign" -- with two cots' phones both live,
+        whichever one happened to speak first inside THIS window's first second won, silently.
+        Picking the reference is always an explicit operator action from here on, or a declared
+        --ref-videonest/[ref].videonest at launch (which locks it, see expected_videonest_id)."""
         seen = sorted(self.win.rec.by_vn)
         if seen == [self.vn_id.itemText(i) for i in range(self.vn_id.count())]:
             return
@@ -455,8 +469,6 @@ class BoardRow(QtWidgets.QFrame):
         self.vn_id.addItems(seen)
         if current in seen:
             self.vn_id.setCurrentText(current)
-        elif len(seen) == 1 and self.vn_on.isChecked():
-            self._videonest_changed()          # only one phone: it is the one
 
     def _condition_changed(self, *_):
         subj, cond = self.subject.currentText(), self.condition.currentText().strip()
@@ -909,7 +921,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
 # The ten fields a session file can set -- what a baby's session IS, never how the tool behaves
 # (--hub, --out, --raw, --split-min, --duration, --min-free-gb stay command-line only: they are
 # the same for all three cots and belong to the laptop, not the baby).
-CONFIG_FIELDS = ("location", "operator", "board", "subject", "videonest", "note", "probe",
+CONFIG_FIELDS = ("location", "operator", "board", "subject", "ref_videonest", "note", "probe",
                  "ref_model", "ref_avg", "ref_probe_site", "ref_note")
 
 
@@ -927,8 +939,8 @@ def load_session_config(path):
         board    = "8850"
         subject  = "SUBJ01"
         note     = "term neonate, resting after a feed"
-        probe    = "Medle-neo"   # OUR probe's model -- ISO 80601-2-61 calibrates monitor+probe
-                                 # together, and the library cannot know which sensor is on the baby
+        probe    = "Medle ST-30163-26"   # OUR probe's model -- ISO 80601-2-61 calibrates monitor+
+                                 # probe together, and the library cannot know which sensor is on the baby
 
         [ref]
         model      = "Masimo Radical-7"
@@ -953,7 +965,7 @@ def load_session_config(path):
     return {
         "location": text(data.get("location")), "operator": text(data.get("operator")),
         "board": text(data.get("board")), "subject": text(data.get("subject")),
-        "videonest": text(ref.get("videonest")), "note": text(data.get("note")),
+        "ref_videonest": text(ref.get("videonest")), "note": text(data.get("note")),
         "probe": text(data.get("probe")),
         "ref_model": text(ref.get("model")), "ref_avg": text(ref.get("avg")),
         "ref_probe_site": text(ref.get("probe-site")), "ref_note": text(ref.get("note")),
@@ -1002,7 +1014,7 @@ def ask_session(app, location, operator):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default="", metavar="FILE.toml",
-                    help="read location/operator/board/subject/videonest/cond/ref-* from this "
+                    help="read location/operator/board/subject/note/probe/ref-* from this "
                          "TOML file instead of typing them -- one per cot, prepared the day "
                          "before. FULL substitution: giving --config together with any of those "
                          "flags is refused, not merged")
@@ -1027,19 +1039,26 @@ def main(argv=None):
                          "508850). One window, one board, one baby")
     ap.add_argument("--subject", default="", metavar="SUBJnn",
                     help="bind this coded subject as soon as the board is identified")
-    ap.add_argument("--videonest", default="", metavar="ID",
-                    help="device id of the phone pointed at THIS baby's monitor")
     ap.add_argument("--note", default="", metavar="TEXT",
                     help="a free-text note about this baby's session, applied once the subject "
                          "is known: written verbatim as a NOTE event, and its sanitised form "
                          "also seeds the starting CONDITION (correctable in the window)")
     ap.add_argument("--probe", default="", metavar="MODEL",
-                    help="OUR probe's physical model (e.g. Medle-neo) -- the library cannot know "
-                         "which sensor is plugged in, applied once the subject is known")
-    ap.add_argument("--ref-model", default="", metavar="TEXT", help="commercial monitor: make and model")
-    ap.add_argument("--ref-avg", default="", metavar="SECONDS", help="commercial monitor: its averaging window")
-    ap.add_argument("--ref-probe-site", default="", metavar="TEXT", help="commercial monitor: where ITS probe is")
-    ap.add_argument("--ref-note", default="", metavar="TEXT", help="commercial monitor: anything else")
+                    help="OUR probe's physical model (e.g. Medle ST-30163-26) -- the library "
+                         "cannot know which sensor is plugged in, applied once the subject is known")
+    ref_group = ap.add_argument_group(
+        "the commercial monitor beside this baby",
+        "All optional; also settable in one go as the [ref] table of --config. --ref-videonest "
+        "is the one of these actually enforced at runtime (2026-09-23: declared once, locked for "
+        "the whole session, never switched by a click or a race) -- the other four are recorded "
+        "and shown read-only, nothing electrical can check them.")
+    ref_group.add_argument("--ref-videonest", default="", metavar="ID",
+                    help="device id of the phone pointed at THIS baby's monitor -- once given, "
+                         "locked: no other id can become this session's reference")
+    ref_group.add_argument("--ref-model", default="", metavar="TEXT", help="make and model")
+    ref_group.add_argument("--ref-avg", default="", metavar="SECONDS", help="its averaging window")
+    ref_group.add_argument("--ref-probe-site", default="", metavar="TEXT", help="where ITS probe is")
+    ref_group.add_argument("--ref-note", default="", metavar="TEXT", help="anything else")
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT, metavar="MIN",
                     help=f"split both the .pnraw and the live CSV on this wall-clock period "
@@ -1050,20 +1069,32 @@ def main(argv=None):
                     help="close the session cleanly after this many seconds (0 = until the "
                          "operator stops it). For an unattended bench soak")
     args = ap.parse_args(argv)
+    # QApplication built BEFORE --config is read (moved 2026-09-23, was after): this window is
+    # always launched with `pythonw`, which has no console, so `ap.error()` -- stderr, then exit
+    # -- used to fail SILENTLY: a `.toml` with a duplicate `note` (TOML forbids repeating a key)
+    # closed the process with no window, no dialog, nothing on screen (Alex, same day: "no vi
+    # ningun mensaje de error"). A QMessageBox needs a QApplication to exist first, so it moves up
+    # here rather than trying to detect pythonw specifically -- a dialog is also the more visible
+    # answer even under plain `python`, where the console can be behind another window.
+    pg.setConfigOptions(useOpenGL=False, antialias=False)
+    app = QtWidgets.QApplication(sys.argv[:1])
     if args.config:
         try:
             apply_session_config(args, args.config)
         except ValueError as exc:
-            ap.error(str(exc))
+            QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
+            return 2
         except OSError as exc:
-            ap.error(f"cannot read {args.config}: {exc}")
+            QtWidgets.QMessageBox.critical(None, "not starting",
+                                           f"cannot read {args.config}: {exc}")
+            return 2
         except tomllib.TOMLDecodeError as exc:
-            ap.error(f"{args.config} is not valid TOML: {exc}")
+            QtWidgets.QMessageBox.critical(None, "not starting",
+                                           f"{args.config} is not valid TOML: {exc}")
+            return 2
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
 
-    pg.setConfigOptions(useOpenGL=False, antialias=False)
-    app = QtWidgets.QApplication(sys.argv[:1])
     location, operator = ask_session(app, args.location, args.operator)
     if not location:
         return 1
@@ -1072,7 +1103,7 @@ def main(argv=None):
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60,
                        min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject, videonest=args.videonest,
+                       board=args.board, subject=args.subject, videonest=args.ref_videonest,
                        note=args.note, probe=args.probe, ref_model=args.ref_model,
                        ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
                        ref_note=args.ref_note)
