@@ -25521,3 +25521,13 @@ R/SpO2 desde OT1/OT2 (sí). Decisión: opción (a), réplica exacta con la libre
    (Wackernagel 2020); por debajo de ~85-90 % sobreestiman (Kim 2019) → nuestra curva 87-100 % no
    extrapola hacia abajo; y el precedente del escalón 87-90 % del Masimo en SUPPORT/BOOST (NEJM
    2013) obliga a trazabilidad de toda recalibración.
+
+### Datasheet Medle: λ pico y FWHM, términos aclarados
+
+Los valores que Alex citó (RED 665 nm [663-667], IR 905 nm [895-915]; FWHM 17/65 nm) ya estaban en
+`project_probe_dependent_specs` desde el 27-07 (con el aviso de correspondencia no confirmada con
+las sondas físicas). Añadida la explicación de términos: *peak wavelength* = cima de la campana
+espectral, y el rango least/typ/max es tolerancia ENTRE ejemplares (relevante en rojo, donde la
+extinción de Hb varía deprisa — motivo de la resistencia de calibración de los Nellcor);
+*half wave width* = FWHM, anchura de la campana al 50 % del pico (IR ancho, 65 nm → λ efectiva
+promediada, sensible a temperatura/corriente; menos crítico por ser planas las curvas en IR).
