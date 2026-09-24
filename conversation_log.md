@@ -25382,3 +25382,32 @@ library.json version with INCUNEST_AFE4490_VERSION (0.94)`), push a `origin/mast
 Alex sale a actualizar Claude Code. Sesión de hoy (arranca en el bloque "2026-09-23 - TOML del hospital..."
 más arriba) cerrada sin pendientes: el renombrado `--ref-videonest`, el `QMessageBox` de `pythonw` y esta
 sincronización de versión están hechos y verificados, no solo propuestos.
+
+## 2026-09-24 — rsqm_ot_thr 100→150 ppm (lib v0.95): primera calibración con paciente real
+
+Observación de Alex sobre los datos de HOSPNAV: SUBJ08 caía en `PROBE_OT_HIGH` porque su OT_LED1
+medio rondaba 120 ppm con máximos de ~145 ppm — sonda aplicada, tejido fino, el caso que la nota
+v0.44 de la spec anticipaba. Propuso subir `rsqm_ot_thr` a 1.5e-4; Claude de acuerdo: el umbral
+1.0e-4 venía del simulador CONTEC (nunca calibrado con paciente), `PROBE_OT_HIGH` decide presencia
+y no calidad (cada excursión resetea SpO2/HR — parte del 4-32 % de validez de SUBJ08), y queda ×5,3
+hasta la sonda al aire teórica (~8e-4), con ONLY_LED_SATURATING como detección independiente.
+Matiz documentado: solo ×1,03 sobre el máximo observado, n=1 paciente, recalibrar con más campañas.
+
+- Lib v0.95 (commit `fb44263`, tag y push): default + comentarios en `incunest_afe4490.h` (y
+  comentario de versión "v0.93" obsoleto corregido), spec §5.6.2 + historial, `library.json` 0.95.0.
+- PulseNest `fbb7718`: tooltips y fallback `LIB_DEFAULT` en `pulsenest_lab.py`, §7.17 de su spec.
+- Verificado: build V18 OK, sintaxis lab OK. Pendiente de Alex: OTA con el build nuevo o `$SET
+  rsqm_ot_thr=1.5e-4` en caliente (no sobrevive al reinicio).
+
+Antes, cierre de la sesión del 23: commit `d860aa3` (los 8 ficheros del recorder; PDFs de terceros
+y `subj08/09/10.toml` fuera del repo). El análisis R→SpO2 con la referencia de SUBJ09 quedó
+planificado (3 sesiones útiles; la de 13:09 excluida por la referencia cruzada) e interrumpido por
+este cambio — sigue siendo el siguiente punto.
+
+### OTA v0.95 a las tres V18 del banco (mismo día, tras el visto bueno de Alex)
+
+Rebuild V18 con la lib comprometida (`build=da3cc94`, `libsha=fb44263` limpio — el build previo
+llevaba `f41fdf6-dirty`), OTA a `87:A4` (.150), `88:50` (.171) y `82:5C` (.7), las tres `http=200`
+en ~4 s. Verificado por `tools/udp_fw_versions.py`: las tres reportan fw 0.15, **lib 0.95**,
+`libsha=fb44263` y `elfsha=3dcc20a309ce2666` idéntico. `docs/boards.md` actualizado (fila de OTA
+del 24-09 en las tres unidades). El banco ya corre el umbral de 150 ppm en persistente.
