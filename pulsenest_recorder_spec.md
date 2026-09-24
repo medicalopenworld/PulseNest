@@ -133,7 +133,22 @@ captures/sessions/<SESSION_ID>/
         reference_spo2.csv                      rebuilt from raw; must equal the live one
 ```
 
-`SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>` with `SITE` a short code typed at start.
+`SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>[_<SUBJECT>]` with `SITE` a short code typed at start.
+(Until 2026-09-24 this line said `<YYYYMMDD>_<HHMM>_<SITE>`; the writer had been appending the
+subject tag all along — the spec was stale, not the code.)
+
+**Vocabulary (decided 2026-09-24).** A **session** is one start/stop interval of the recorder and
+covers at most **one subject**. Subjects measured at the same time are separate sessions from
+separate recorder instances: each subject carries its own board(s), probe, reference monitor and
+VideoNest phone, so the coincidence in time/place/laptop carries almost no analytical value, while
+everything that matters differs per subject. The 2026-09-23 cross-reference bug (SUBJ09 recorded
+with SUBJ08's phone) is what an accidentally shared scope costs. A **campaign** is the set of
+sessions of **one subject** at one site on one day:
+`CAMPAIGN_ID` = `<YYYYMMDD>_<SITE>_<SUBJECT>` — 2026-09-23 was two campaigns,
+`20260923_HOSPNAV_SUBJ08` and `20260923_HOSPNAV_SUBJ09`. A campaign has no file or directory of
+its own: it is derived from the session ids
+(`ls captures/sessions/<YYYYMMDD>_*_<SITE>_<SUBJECT>`); if campaign-level metadata is ever
+needed, add it then, not now.
 
 **`SITE` is a code, not a description** (decided 2026-09-20, the same rule §2.7 of
 `CAPTURE_SET_SPEC` already applies to people). A place name plus a date plus "a baby" identifies

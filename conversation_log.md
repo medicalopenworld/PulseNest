@@ -25419,4 +25419,18 @@ del 24-09 en las tres unidades). El banco ya corre el umbral de 150 ppm en persi
 - Tarea pendiente registrada (salida (d) en `project_probe_applied_ot_thr_task`): no se puede subir
   mucho más `rsqm_ot_thr` porque la sonda al aire con LED/PD separados da OT en el mismo rango que
   el tejido fino. Propuesta de Alex: mirar además el ratio ALED/LED (en APPLIED probablemente
-  < 0.1); problema a resolver, saturación de ALED con ambiente alto cuando la sonda no está puesta.
+  < 0.1, aunque ese valor podría depender de la cantidad de luz ambiental); problema a resolver,
+  saturación de ALED con ambiente alto cuando la sonda no está puesta.
+
+### Vocabulario: session y campaign (decisión de Alex)
+
+- **session** = un arranque/parada del recorder, como máximo UN sujeto (sujetos simultáneos =
+  instancias y sesiones separadas). `SESSION_ID = <YYYYMMDD>_<HHMM>_<SITE>[_<SUBJECT>]` — el writer
+  ya añadía el tag de sujeto; la spec decía otra cosa y se corrigió (spec desfasada, no el código).
+- **campaign** = las sesiones de UN sujeto en un sitio y un día; `CAMPAIGN_ID =
+  <YYYYMMDD>_<SITE>_<SUBJECT>`. El 23-09 = DOS campañas. Claude propuso campaña multi-sujeto
+  (contenedor de lo compartido: día/sitio/portátil); Alex lo rebatió — esa coincidencia apenas
+  tiene valor analítico y todo lo relevante (sujeto/tarjeta/sonda/referencia/VideoNest) es por
+  sujeto — y su criterio quedó. Sin fichero propio: la campaña se deriva de los SESSION_ID.
+  Registrado en `pulsenest_recorder_spec.md` §3 y en el diccionario de nomenclatura. Descartados
+  session-pack/group/serie.
