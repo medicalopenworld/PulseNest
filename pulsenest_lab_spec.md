@@ -2293,7 +2293,7 @@ characterise the condition. `OT_norm > 1` means the stored reference was not rea
 
 `current_ot_thr()` reads the threshold from the `rsqm_ot_thr` spin, so the verdict tracks a value
 typed but not yet sent; before the first `$LCFG` the spin reads 0, and it falls back to the library
-default (1.0e-4) rather than claiming OT_HIGH for every possible OT.
+default (1.5e-4, lib v0.95) rather than claiming OT_HIGH for every possible OT.
 
 Fed from the drain at the subwindow rate. Requires `$M4`: no other frame carries OT.
 

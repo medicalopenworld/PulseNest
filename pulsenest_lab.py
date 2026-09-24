@@ -7674,9 +7674,10 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                                     "(OT > thr) from PROBE_APPLIED (OT ≤ thr) — only checked when\n"
                                                                     "the channel is CH_VALID_RANGE; an invalid/saturated channel is\n"
                                                                     "PROBE_AMB_SATURATING / PROBE_ONLY_LED_SATURATING instead (by phase), regardless of this threshold.\n"
-                                                                    "Default 1.0e-4 (widened 2026-07-19 from 8.5e-5: CONTEC MS100\n"
-                                                                    "simulator is very sensitive to probe placement).\n"
-                                                                    "Still needs empirical calibration with a real probe.",         6,   0.0,    0.01,      " A/A",    1.0),
+                                                                    "Default 1.5e-4 (lib v0.95, first real-patient data: HOSPNAV\n"
+                                                                    "SUBJ08 read up to 145 ppm with the probe applied; history\n"
+                                                                    "8.5e-5 -> 1.0e-4 CONTEC MS100 -> 1.5e-4). n=1 patient:\n"
+                                                                    "recalibrate as campaigns accumulate.",                          6,   0.0,    0.01,      " A/A",    1.0),
         ("rsqm_disconn_led_sub_thr",  "Disconn. LED_sub thr",      "|led_sub| threshold for PROBE_DISCONNECTED detection.\n"
                                                                     "If |led1_sub| AND |led2_sub| < this → no probe connected.\n"
                                                                     "Measured worst case: LED2_Sub=4013 (×1.25 margin → 5000).",   0,   0.0,    100000.0,  " counts", 1.0),
@@ -7901,7 +7902,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
 
         grp.setToolTip(_make_tooltip(
             "OT MONITOR",
-            "OT = (I_PD_LED - I_PD_ALED) / I_LED, shown in ppm (A/A x1e6); rsqm_ot_thr = 100 ppm "
+            "OT = (I_PD_LED - I_PD_ALED) / I_LED, shown in ppm (A/A x1e6); rsqm_ot_thr = 150 ppm "
             "by default. It is the whole electro-optical ratio (LED efficiency x tissue x PD "
             "responsivity x geometry), NOT tissue transmittance — which is why the two channels "
             "differ even in air, and why the ratio column matters.\n\n"
@@ -7920,7 +7921,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         in, and what the user edits before pressing Set, so the verdict line tracks the value
         being considered — including one typed but not yet sent.
         """
-        LIB_DEFAULT = 1.0e-4          # incunest_afe4490.h rsqm_ot_thr
+        LIB_DEFAULT = 1.5e-4          # incunest_afe4490.h rsqm_ot_thr (v0.95)
         spin  = self._spins.get("rsqm_ot_thr")
         scale = self._scales.get("rsqm_ot_thr", 1.0)
         if spin is None:
