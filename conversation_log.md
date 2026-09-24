@@ -25411,3 +25411,12 @@ llevaba `f41fdf6-dirty`), OTA a `87:A4` (.150), `88:50` (.171) y `82:5C` (.7), l
 en ~4 s. Verificado por `tools/udp_fw_versions.py`: las tres reportan fw 0.15, **lib 0.95**,
 `libsha=fb44263` y `elfsha=3dcc20a309ce2666` idéntico. `docs/boards.md` actualizado (fila de OTA
 del 24-09 en las tres unidades). El banco ya corre el umbral de 150 ppm en persistente.
+
+### Tooltip rezagado corregido y tarea nueva: ratio ALED/LED como segundo eje de PROBE_APPLIED
+
+- Alex señaló que el tooltip de la celda ProbeState de SIGNAL STATS aún decía 1.0e-4; corregido a
+  1.5e-4 (lib v0.95) en sus dos menciones (OT_HIGH y APPLIED).
+- Tarea pendiente registrada (salida (d) en `project_probe_applied_ot_thr_task`): no se puede subir
+  mucho más `rsqm_ot_thr` porque la sonda al aire con LED/PD separados da OT en el mismo rango que
+  el tejido fino. Propuesta de Alex: mirar además el ratio ALED/LED (en APPLIED probablemente
+  < 0.1); problema a resolver, saturación de ALED con ambiente alto cuando la sonda no está puesta.

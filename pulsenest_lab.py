@@ -12338,11 +12338,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
              "but thin tissue at high RF gives the same signature (open check). Absent everywhere\n"
              "(isProbeAbsent): HGAC gated off, algorithms reset.\n\n"
              "1 — OT_HIGH (lib v0.90 name; was NOT_APPLIED's OT route)\n"
-             "Not DISCONNECTED, not saturated, AND <b>both</b> channels OT > 1.0×10⁻⁴\n"
-             "(rsqm_ot_thr, AND logic since lib v0.89)  →  rows OT_LED1, OT_LED2\n"
+             "Not DISCONNECTED, not saturated, AND <b>both</b> channels OT > 1.5×10⁻⁴\n"
+             "(rsqm_ot_thr default, lib v0.95; AND logic since lib v0.89)  →  rows OT_LED1, OT_LED2\n"
              "  OT = (I_PD_LEDx − I_PD_ALEDx) / I_LEDx  [A/A, dimensionless]\n\n"
              "2 — APPLIED (finger on sensor)\n"
-             "Not DISCONNECTED, not saturated, AND OT ≤ 1.0×10⁻⁴ on at least one channel\n"
+             "Not DISCONNECTED, not saturated, AND OT ≤ 1.5×10⁻⁴ on at least one channel\n"
              "(rsqm_ot_thr, runtime-configurable via $LCFG).",
              "AFE4490Data::probe_state"),
             # AFE4490DebugData analog signals — only populated in $M4 frame mode
