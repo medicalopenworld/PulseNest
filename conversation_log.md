@@ -25503,3 +25503,21 @@ R/SpO2 desde OT1/OT2 (sí). Decisión: opción (a), réplica exacta con la libre
   la sonda Medle es la pendiente (30,55 → 21,5). Propuesta provisional actualizada en los dos
   findings.md; la de solo-SUBJ09 queda superada. **Decisión pendiente de Alex**: aplicar
   `spo2a/spo2b` nuevos (defaults fw / $SET / esperar otra campaña).
+
+### Etiquetas de calibración RCAL-* y literatura sobre curva R vs edad
+
+1. Provenance confirmada de los coeficientes actuales (a=114.9208, b=30.5547): sesión 26 del log,
+   **2026-03-23**, simulador CONTEC MS100, ajuste "R-Curve Nellcor 100 bpm", sonda **UpnMed
+   U401-D(01AS-F)** (Nellcor Non-Oximax, IR 905 nm). La propuesta nueva (a=115.17, b=21.54) viene
+   de SUBJ08+SUBJ09 con la sonda **Medle ST-30163-26**.
+2. Etiquetas acuñadas (`RCAL-<sonda>-<fuente>-<fecha>`): **RCAL-U401D-MS100-20260323** (vigente) y
+   **RCAL-ST30163-HOSPNAV-20260923** (propuesta). Registradas en `project_probe_dependent_specs`
+   (fila #1) y en el findings.md de SUBJ08. Idea anotada sin implementar: `spo2_cal_id` en $CFG.
+3. Búsqueda de literatura (memoria nueva `reference_r_curve_age_dependence`): las curvas
+   comerciales se calibran en adultos (desaturación controlada 70-100 %); el efecto HbF sobre la
+   óptica es pequeño/no concluyente (Pritišanac 2021) — la edad entra por óptica de tejido y
+   geometría del sensor (Mannheimer 2007), que es justo lo que justifica curva por sonda/sitio;
+   en prematuros los oxímetros comerciales incumplen el 4 % ISO dentro del rango objetivo
+   (Wackernagel 2020); por debajo de ~85-90 % sobreestiman (Kim 2019) → nuestra curva 87-100 % no
+   extrapola hacia abajo; y el precedente del escalón 87-90 % del Masimo en SUPPORT/BOOST (NEJM
+   2013) obliga a trazabilidad de toda recalibración.
