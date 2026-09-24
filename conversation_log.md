@@ -25441,3 +25441,65 @@ La tabla `HOSP01`/`SITE01`/... de la spec era demasiado restrictiva (decisión d
 de cada hospital/emplazamiento se decidirá caso a caso. Sobreviven dos reglas: `BENCH` conserva su
 significado y ningún código puede identificar el lugar por sí solo (el mapeo código→sitio sigue en
 el fichero privado, fuera del repo). Spec §3 actualizada.
+
+### Análisis R→SpO2 de la campaña 20260923_HOSPNAV_SUBJ08 (resultados en `captures/sessions/20260923_HOSPNAV_SUBJ08_ANALYSIS/`)
+
+Emparejadas las 5079 lecturas OCR con ventanas de 8 s de la tarjeta (2222 pares útiles: ≥80 %
+APPLIED y ≥25 % muestras válidas = R finito y SpO2 produciendo). Resultados:
+- **Sesgo mediano −11,0 pts** (sd 5,7; por sesión −8,6..−12,7) — el "15-20 pts" de la evaluación
+  preliminar estaba inflado por muestras inválidas.
+- **No es offset puro**: −5,5 pts en ref 70-85 y −12,3 en 90-95 (corr sesgo-nivel −0,41).
+- **En régimen estacionario (88-100 %) R no sigue a la referencia**: mediana de R por banda no
+  monótona (1,17@88, 0,89@94, 1,27@97); solo las desaturaciones dan la dirección esperada, y esas
+  son dinámicas (retardo del monitor desconocido).
+- **Decisión: NO recalibrar desde SUBJ08** — era el bebé con peor contacto y su R está dominada
+  por artefactos de acoplo, no por SaO2. Siguiente: mismo análisis en SUBJ09 y, si allí R sí sigue
+  a la referencia, coeficientes provisionales de SUBJ09 contrastados contra las desaturaciones de
+  SUBJ08.
+Ficheros: `r_vs_ref_analysis.py` (pairs.csv, summary.txt, 2 PNG), `stationary_bins.py`,
+`findings.md`. Carpeta creada por Alex; el script vive junto a los resultados (reproducibilidad).
+
+### Análisis R→SpO2 de la campaña SUBJ09 — R SÍ sigue a la referencia; curva provisional candidata
+
+Mismo método que SUBJ08 (además: ProbeState 1|2 aceptado por el umbral antiguo — apenas cambia
+nada porque el firmware reseteaba SpO2/R durante OT_HIGH; timeseries ahora en un solo eje de reloj
+común, que desmonta el falso solape 1142/1200: cerró 12:00:42,5 y abrió 12:00:47,6). Resultados en
+`captures/sessions/20260923_HOSPNAV_SUBJ09_ANALYSIS/`:
+- 2721/2772 pares útiles (98 %; SUBJ08: 44 %). Sesgo mediano −8,7 pts (sd 4,7).
+- **En estacionario, R casi monótona con la referencia** (1,36@80 → 1,07@90 → 0,92@94 → 0,81@96-98);
+  ajuste ponderado por bandas: **SpO2 = 111,55 − 19,39·R**, RMS 1,29 pts (SUBJ08: 3,05 y no
+  monótona). Residuos sugieren aplanamiento arriba (curva real no lineal).
+- Contraste sobre SUBJ08: banda media 88-96 % dentro de ±3,5 pts; sus bandas artefactuales fallan
+  por −10 (coherente con acoplo, no SaO2).
+- Exclusiones: 1309 (móvil equivocado, fichero WRONG_), 1206 (sin filas de referencia).
+- Propuesta provisional en `findings.md`: `spo2a 114,92→111,55`, `spo2b 30,55→19,39` — n=1 sujeto,
+  1 ejemplar de sonda, referencia OCR de monitor sin identificar; NO es calibración clínica.
+  **Decisión pendiente de Alex**: defaults de firmware, `$SET` por sesión, o esperar segunda
+  campaña con buen contacto.
+
+### Offline runner v0.20 + replay de SUBJ08: la campaña "no calibrable" se vuelve calibrable
+
+Preguntas de Alex: por qué "mediocre" (aclarado: el contenido de información para calibrar, no la
+campaña — 44 % emparejable, R no monótona, oscilaciones no fisiológicas) y si se puede recalcular
+R/SpO2 desde OT1/OT2 (sí). Decisión: opción (a), réplica exacta con la librería en host.
+
+- **Lib v0.96** (commit `41c3e6f`, tag, push): accesores UNIT_TEST `test_last_ot_led2()`,
+  `test_probe_state()`, `test_pi()`; spec §9.2 reescrita. Sin cambio de comportamiento.
+- **`tools/offline_runner` reescrito (v0.20)**: alimenta códigos ADC crudos por
+  `test_feed_sample()` (pipeline completo → RSQM recomputa ProbeState con su antirrebote), dialecto
+  de columnas PulseNest + IncuNest, configuración desde la línea `$CFG` de la propia captura,
+  `--ot-thr` para reproducir umbrales antiguos, estado continuo entre partes (`_pNN`), salida
+  `*_replay.csv` con deltas contra las columnas del firmware.
+- **Fidelidad medida** (sesión 1238 SUBJ09, umbral de aquel día): delta mediano exactamente 0,00;
+  94,6 % ≤1 pt; ProbeState match ≥99,7 %; cola = micro-divergencia de los EMA de varianza en
+  episodios de artefacto (48 s, 2,8 %); con medianas de 8 s, p95 = 0,84 pt. Fiel para calibración;
+  no bit-exacto (arranque frío + redondeo entre compiladores).
+- **Replay de las 4 sesiones de SUBJ08 con 1.5e-4**: pares útiles 2240→4128 (81 %); las bandas
+  estacionarias se vuelven casi monótonas — la no-monotonicidad era en gran parte reseteos + sesgo
+  de selección del umbral, no solo acoplo. Ajuste SUBJ08: 115,89 − 21,13·R (RMS 1,49), compatible
+  con SUBJ09 (111,55 − 19,39·R).
+- **Ajuste conjunto n=2 (`pooled_fit.py`): SpO2 = 115,17 − 21,54·R** (RMS 1,53; residuo por sujeto
+  ±1,5). El término independiente actual (114,92) era esencialmente correcto; lo que está mal para
+  la sonda Medle es la pendiente (30,55 → 21,5). Propuesta provisional actualizada en los dos
+  findings.md; la de solo-SUBJ09 queda superada. **Decisión pendiente de Alex**: aplicar
+  `spo2a/spo2b` nuevos (defaults fw / $SET / esperar otra campaña).

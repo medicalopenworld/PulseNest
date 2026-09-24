@@ -1,16 +1,34 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Library version: v0.16 — native/offline (no hardware)
+// Runner version: v0.20 — native/offline (no hardware), library API v0.96
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
-
-// Host build: the library selects its host HAL by itself (no ESP_PLATFORM); UNIT_TEST opens the test_feed_* API.
+//
+// v0.20 (2026-09-24): rewritten for the current library API and the PulseNest capture CSVs.
+//   * Feeds raw ADC codes through test_feed_sample() — the full _process_sample() path
+//     (analog state -> RSQM -> SpO2/HR1/HR2/HR3), so ProbeState is recomputed by the
+//     library itself, debounce included, instead of trusting the recorded column.
+//   * Two column dialects, detected by header name: PulseNest captures
+//     (LED2,LED1,ALED2,ALED1,...) and legacy IncuNest exports (RED,IR,RED_Amb,...).
+//   * Configures the library from the capture's own "# from-board: $CFG,..." header line
+//     (PRF, NUMAV, LED currents/range, per-channel RF/CF/RG/STAGE2EN, AMBDAC, SpO2
+//     coefficients, filter cutoffs) — no hand-typed configuration to go stale.
+//   * --ot-thr <A/A> overrides rsqm_ot_thr for the replay (e.g. 1.0e-4 to reproduce the
+//     2026-09-23 firmware for equivalence checking, default = library default).
+//   * Parts of one session (<stem>_pNN.csv) share ONE library instance, in order, so
+//     filter/EMA state is continuous across part boundaries, as it was on the board.
+//   * When the capture carries firmware outputs (SpO2, R, ProbeState) the replay row
+//     also emits them and the deltas, for equivalence checking after warm-up.
+//
+// Host build: the library selects its host HAL by itself (no ESP_PLATFORM); UNIT_TEST
+// opens the test_feed_* API.
 #include "incunest_afe4490.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <ctime>
 #include <string>
 #include <vector>
+#include <map>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -21,37 +39,16 @@ namespace fs = std::filesystem;
 
 // ── CSV row (raw signals + optional firmware outputs) ─────────────────────────
 struct CsvRow {
-    int32_t red    = 0;  // LED2VAL  — RED raw
-    int32_t ir     = 0;  // LED1VAL  — IR raw
-    int32_t red_amb = 0; // ALED2VAL — ambient after LED2
-    int32_t ir_amb  = 0; // ALED1VAL — ambient after LED1
-    int32_t red_sub = 0; // LED2-ALED2
-    int32_t ir_sub  = 0; // LED1-ALED1
-    // Optional firmware outputs (present if CSV contains FW_* columns)
+    int32_t led1    = 0;  // IR raw        (PulseNest LED1  / IncuNest IR)
+    int32_t led2    = 0;  // RED raw       (PulseNest LED2  / IncuNest RED)
+    int32_t aled1   = 0;  // IR ambient    (PulseNest ALED1 / IncuNest IR_Amb)
+    int32_t aled2   = 0;  // RED ambient   (PulseNest ALED2 / IncuNest RED_Amb)
     bool    has_fw  = false;
-    float   fw_hr1  = 0.0f;
-    float   fw_hr2  = 0.0f;
-    float   fw_hr3  = 0.0f;
     float   fw_spo2 = 0.0f;
+    float   fw_r    = 0.0f;
+    int     fw_ps   = -1;
 };
 
-// ── File summary ──────────────────────────────────────────────────────────────
-struct FileSummary {
-    std::string filename;
-    int         n_samples      = 0;
-    double      spo2_sum       = 0.0;
-    double      spo2_sqi_sum   = 0.0;
-    int         spo2_valid     = 0;
-    double      hr1_sum        = 0.0;
-    double      hr1_sqi_sum    = 0.0;
-    int         hr1_valid      = 0;
-    double      hr2_sum        = 0.0;
-    int         hr2_valid      = 0;
-    double      hr3_sum        = 0.0;
-    int         hr3_valid      = 0;
-};
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 static std::string to_lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c){ return std::tolower(c); });
@@ -63,7 +60,6 @@ static std::vector<std::string> split_csv(const std::string& line) {
     std::stringstream ss(line);
     std::string cell;
     while (std::getline(ss, cell, ',')) {
-        // Trim whitespace
         size_t start = cell.find_first_not_of(" \t\r\n");
         size_t end   = cell.find_last_not_of(" \t\r\n");
         cols.push_back(start == std::string::npos ? "" : cell.substr(start, end - start + 1));
@@ -71,252 +67,310 @@ static std::vector<std::string> split_csv(const std::string& line) {
     return cols;
 }
 
-static std::string timestamp_str() {
-    time_t now = std::time(nullptr);
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", std::localtime(&now));
-    return buf;
+// ── $CFG header → key/value map ───────────────────────────────────────────────
+// The capture header carries the exact board configuration:
+//   # from-board: $CFG,sr=500,numav=8,led1=49.80,...,spo2b=30.5547,...*67
+static std::map<std::string, std::string> parse_cfg_line(const std::string& line) {
+    std::map<std::string, std::string> kv;
+    size_t at = line.find("$CFG,");
+    if (at == std::string::npos) return kv;
+    std::string body = line.substr(at + 5);
+    size_t star = body.rfind('*');          // NMEA-style checksum, not a value
+    if (star != std::string::npos) body = body.substr(0, star);
+    for (const auto& tok : split_csv(body)) {
+        size_t eq = tok.find('=');
+        if (eq != std::string::npos)
+            kv[to_lower(tok.substr(0, eq))] = tok.substr(eq + 1);
+    }
+    return kv;
 }
 
-// ── Parse a single CSV file → vector of rows ─────────────────────────────────
-static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows) {
+static AFE4490RF rf_from_string(const std::string& s, bool* ok) {
+    static const std::map<std::string, AFE4490RF> m = {
+        {"10k", AFE4490RF::RF_10K},  {"25k", AFE4490RF::RF_25K},
+        {"50k", AFE4490RF::RF_50K},  {"100k", AFE4490RF::RF_100K},
+        {"250k", AFE4490RF::RF_250K},{"500k", AFE4490RF::RF_500K},
+        {"1m", AFE4490RF::RF_1M},
+    };
+    auto it = m.find(to_lower(s));
+    *ok = (it != m.end());
+    return *ok ? it->second : AFE4490RF::RF_500K;
+}
+
+static AFE4490RG rg_from_ohms(long ohms, bool* ok) {
+    *ok = true;
+    switch (ohms) {
+        case 100000: return AFE4490RG::RG_100K;
+        case 150000: return AFE4490RG::RG_150K;
+        case 200000: return AFE4490RG::RG_200K;
+        case 300000: return AFE4490RG::RG_300K;
+        case 400000: return AFE4490RG::RG_400K;
+    }
+    *ok = false;
+    return AFE4490RG::RG_100K;
+}
+
+// Apply the capture's $CFG to a fresh library instance. Returns false (with a message)
+// if a value it does not understand shows up — refuse to replay with a wrong config.
+static bool apply_cfg(INCUNEST_AFE4490& afe, const std::map<std::string, std::string>& cfg,
+                      const char* label) {
+    auto has = [&](const char* k) { return cfg.count(k) > 0; };
+    auto s   = [&](const char* k) { return cfg.at(k); };
+    auto f   = [&](const char* k) { return std::stof(cfg.at(k)); };
+    auto l   = [&](const char* k) { return std::stol(cfg.at(k)); };
+    bool ok = true;
+
+    if (has("sr"))     afe.setSampleRate((uint16_t)l("sr"));
+    if (has("numav"))  afe.setAdcAverages((uint8_t)l("numav"));
+    if (has("range"))  afe.setLEDRange((uint8_t)l("range"));
+    if (has("led1"))   afe.setLED1Current(f("led1"));
+    if (has("led2"))   afe.setLED2Current(f("led2"));
+    if (has("ensepgain")) afe.setEnSepGain(l("ensepgain") != 0);
+    if (has("tia1"))   { afe.setTIAGainLED1(rf_from_string(s("tia1"), &ok));
+                         if (!ok) { fprintf(stderr, "ERROR: %s: unknown tia1=%s\n", label, s("tia1").c_str()); return false; } }
+    if (has("tia2"))   { afe.setTIAGainLED2(rf_from_string(s("tia2"), &ok));
+                         if (!ok) { fprintf(stderr, "ERROR: %s: unknown tia2=%s\n", label, s("tia2").c_str()); return false; } }
+    if (has("cf1_pf")) afe.setTIACFLED1(f("cf1_pf"));
+    if (has("cf2_pf")) afe.setTIACFLED2(f("cf2_pf"));
+    if (has("rg1_ohm")) { afe.setStage2GainLED1(rg_from_ohms(l("rg1_ohm"), &ok));
+                          if (!ok) { fprintf(stderr, "ERROR: %s: unknown rg1_ohm=%s\n", label, s("rg1_ohm").c_str()); return false; } }
+    if (has("rg2_ohm")) { afe.setStage2GainLED2(rg_from_ohms(l("rg2_ohm"), &ok));
+                          if (!ok) { fprintf(stderr, "ERROR: %s: unknown rg2_ohm=%s\n", label, s("rg2_ohm").c_str()); return false; } }
+    if (has("stage2en1")) afe.setStage2En1(l("stage2en1") != 0);
+    if (has("stage2en2")) afe.setStage2En2(l("stage2en2") != 0);
+    if (has("ambdac")) afe.setAmbDac((uint8_t)l("ambdac"));
+    if (has("spo2a") && has("spo2b")) afe.setSpO2Coefficients(f("spo2a"), f("spo2b"));
+    if (has("fl") && has("fh"))    afe.setPPGDispFilter(f("fl"), f("fh"));
+    if (has("hr2l") && has("hr2h")) afe.setHR2Filter(f("hr2l"), f("hr2h"));
+    if (has("hr3h"))   afe.setHR3Filter(f("hr3h"));
+    return true;
+}
+
+// ── Column dialects ───────────────────────────────────────────────────────────
+struct ColIdx {
+    int led1 = -1, led2 = -1, aled1 = -1, aled2 = -1;
+    int fw_spo2 = -1, fw_r = -1, fw_ps = -1;
+    bool valid() const { return led1 >= 0 && led2 >= 0 && aled1 >= 0 && aled2 >= 0; }
+};
+
+static ColIdx find_columns(const std::vector<std::string>& header) {
+    ColIdx ix;
+    for (int i = 0; i < (int)header.size(); i++) {
+        std::string c = to_lower(header[i]);
+        // PulseNest capture dialect
+        if      (c == "led1")  ix.led1  = i;
+        else if (c == "led2")  ix.led2  = i;
+        else if (c == "aled1") ix.aled1 = i;
+        else if (c == "aled2") ix.aled2 = i;
+        else if (c == "spo2")  ix.fw_spo2 = i;
+        else if (c == "r")     ix.fw_r  = i;
+        else if (c == "probestate") ix.fw_ps = i;
+        // Legacy IncuNest dialect
+        else if (c == "ir")      ix.led1  = i;
+        else if (c == "red")     ix.led2  = i;
+        else if (c == "ir_amb")  ix.aled1 = i;
+        else if (c == "red_amb") ix.aled2 = i;
+        else if (c == "fw_spo2") ix.fw_spo2 = i;
+    }
+    return ix;
+}
+
+// ── Parse one CSV part: rows + (first seen) $CFG map ─────────────────────────
+static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
+                      std::map<std::string, std::string>& cfg) {
     std::ifstream f(path);
     if (!f.is_open()) {
         fprintf(stderr, "ERROR: cannot open %s\n", path.string().c_str());
         return false;
     }
-
-    // Skip comment/empty lines before the header
-    std::string header_line;
-    while (std::getline(f, header_line)) {
-        if (!header_line.empty() && header_line[0] != '#') break;
-    }
-    if (header_line.empty()) {
-        fprintf(stderr, "ERROR: no header found in %s\n", path.string().c_str());
-        return false;
-    }
-
-    // Locate required columns by name (case-insensitive)
-    auto cols = split_csv(header_line);
-    int idx_red = -1, idx_ir = -1, idx_red_amb = -1, idx_ir_amb = -1;
-    int idx_red_sub = -1, idx_ir_sub = -1;
-    int idx_fw_hr1 = -1, idx_fw_hr2 = -1, idx_fw_hr3 = -1, idx_fw_spo2 = -1;
-
-    for (int i = 0; i < (int)cols.size(); i++) {
-        std::string c = to_lower(cols[i]);
-        if      (c == "red")      idx_red     = i;
-        else if (c == "ir")       idx_ir      = i;
-        else if (c == "red_amb")  idx_red_amb = i;
-        else if (c == "ir_amb")   idx_ir_amb  = i;
-        else if (c == "red_sub")  idx_red_sub = i;
-        else if (c == "ir_sub")   idx_ir_sub  = i;
-        else if (c == "fw_hr1")   idx_fw_hr1  = i;
-        else if (c == "fw_hr2")   idx_fw_hr2  = i;
-        else if (c == "fw_hr3")   idx_fw_hr3  = i;
-        else if (c == "fw_spo2")  idx_fw_spo2 = i;
-    }
-
-    if (idx_red < 0 || idx_ir < 0 || idx_red_amb < 0 || idx_ir_amb < 0 ||
-        idx_red_sub < 0 || idx_ir_sub < 0) {
-        fprintf(stderr, "ERROR: %s is missing one or more required columns "
-                "(RED, IR, RED_Amb, IR_Amb, RED_Sub, IR_Sub)\n", path.string().c_str());
-        return false;
-    }
-
-    bool has_fw = (idx_fw_hr1 >= 0 && idx_fw_hr2 >= 0 &&
-                   idx_fw_hr3 >= 0 && idx_fw_spo2 >= 0);
-
     std::string line;
+    ColIdx ix;
+    bool have_header = false;
     while (std::getline(f, line)) {
-        if (line.empty() || line[0] == '#') continue;
+        if (line.empty()) continue;
+        if (line[0] == '#') {
+            if (cfg.empty() && line.find("$CFG,") != std::string::npos)
+                cfg = parse_cfg_line(line);
+            continue;
+        }
+        if (!have_header) {
+            ix = find_columns(split_csv(line));
+            if (!ix.valid()) {
+                fprintf(stderr, "ERROR: %s is missing the raw ADC columns "
+                        "(LED1/LED2/ALED1/ALED2 or IR/RED/IR_Amb/RED_Amb)\n",
+                        path.string().c_str());
+                return false;
+            }
+            have_header = true;
+            continue;
+        }
         auto c2 = split_csv(line);
         int n = (int)c2.size();
-
         auto get_i32 = [&](int idx) -> int32_t {
             if (idx < 0 || idx >= n) return 0;
             try { return (int32_t)std::stol(c2[idx]); } catch (...) { return 0; }
         };
-        auto get_f32 = [&](int idx) -> float {
-            if (idx < 0 || idx >= n) return 0.0f;
-            try { return std::stof(c2[idx]); } catch (...) { return 0.0f; }
+        auto get_f32 = [&](int idx, float dflt) -> float {
+            if (idx < 0 || idx >= n) return dflt;
+            try { return std::stof(c2[idx]); } catch (...) { return dflt; }
         };
-
         CsvRow row;
-        row.red     = get_i32(idx_red);
-        row.ir      = get_i32(idx_ir);
-        row.red_amb = get_i32(idx_red_amb);
-        row.ir_amb  = get_i32(idx_ir_amb);
-        row.red_sub = get_i32(idx_red_sub);
-        row.ir_sub  = get_i32(idx_ir_sub);
-        row.has_fw  = has_fw;
-        if (has_fw) {
-            row.fw_hr1  = get_f32(idx_fw_hr1);
-            row.fw_hr2  = get_f32(idx_fw_hr2);
-            row.fw_hr3  = get_f32(idx_fw_hr3);
-            row.fw_spo2 = get_f32(idx_fw_spo2);
+        row.led1  = get_i32(ix.led1);
+        row.led2  = get_i32(ix.led2);
+        row.aled1 = get_i32(ix.aled1);
+        row.aled2 = get_i32(ix.aled2);
+        row.has_fw = (ix.fw_spo2 >= 0);
+        if (row.has_fw) {
+            row.fw_spo2 = get_f32(ix.fw_spo2, NAN);
+            row.fw_r    = get_f32(ix.fw_r, NAN);
+            row.fw_ps   = (int)get_i32(ix.fw_ps);
         }
         rows.push_back(row);
     }
-
     return !rows.empty();
 }
 
-// ── Process one file ──────────────────────────────────────────────────────────
-static void process_file(const fs::path& input_path, std::ofstream& summary_csv) {
-    std::vector<CsvRow> rows;
-    if (!parse_csv(input_path, rows)) return;
+// ── Replay one part through an already-configured library instance ───────────
+struct PartStats {
+    int n = 0, probe_on = 0, spo2_producing = 0, ps_match = 0, ps_compared = 0;
+};
 
-    // Result CSV alongside the input file
-    fs::path result_path = input_path.parent_path() /
-        (input_path.stem().string() + "_result.csv");
-    std::ofstream out(result_path);
+static PartStats replay_part(INCUNEST_AFE4490& afe, const std::vector<CsvRow>& rows,
+                             const fs::path& out_path, long long* smp_idx) {
+    std::ofstream out(out_path);
+    PartStats st;
     if (!out.is_open()) {
-        fprintf(stderr, "ERROR: cannot write %s\n", result_path.string().c_str());
-        return;
+        fprintf(stderr, "ERROR: cannot write %s\n", out_path.string().c_str());
+        return st;
     }
-
     bool has_fw = rows[0].has_fw;
-
-    // Header
-    out << "SmpIdx,RED,IR,RED_Amb,IR_Amb,RED_Sub,IR_Sub,"
-           "SpO2,SpO2_SQI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
-    if (has_fw)
-        out << ",FW_HR1,FW_HR2,FW_HR3,FW_SpO2,delta_HR1,delta_HR2,delta_HR3,delta_SpO2";
+    out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,PI,SpO2,SpO2_SQI,"
+           "HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
+    if (has_fw) out << ",FW_SpO2,FW_R,FW_ProbeState,delta_SpO2,delta_R";
     out << "\n";
-
-    // Instantiate library in offline mode — constructor calls _reset_algorithms() + Hann precompute
-    INCUNEST_AFE4490 afe;
-
-    FileSummary summary;
-    summary.filename = input_path.filename().string();
-
-    for (int idx = 0; idx < (int)rows.size(); idx++) {
-        const CsvRow& r = rows[idx];
-
-        afe.test_feed_spo2(r.ir_sub, r.red_sub);
-        afe.test_feed_hr1(r.ir_sub);
-        afe.test_feed_hr2(r.ir_sub);
-        afe.test_feed_hr3(r.ir_sub);
-
-        float spo2     = afe.test_spo2();
-        float spo2_sqi = afe.test_spo2_sqi();
-        float hr1      = afe.test_hr1();
-        float hr1_sqi  = afe.test_hr1_sqi();
-        float hr2      = afe.test_hr2();
-        float hr2_sqi  = afe.test_hr2_sqi();
-        float hr3      = afe.test_hr3();
-        float hr3_sqi  = afe.test_hr3_sqi();
-
-        // Write result row
-        out << idx << ","
-            << r.red << "," << r.ir << "," << r.red_amb << "," << r.ir_amb << ","
-            << r.red_sub << "," << r.ir_sub << ","
-            << spo2 << "," << spo2_sqi << ","
-            << hr1  << "," << hr1_sqi  << ","
-            << hr2  << "," << hr2_sqi  << ","
-            << hr3  << "," << hr3_sqi;
-
+    char buf[512];
+    for (const CsvRow& r : rows) {
+        afe.test_feed_sample(r.led1, r.led2, r.aled1, r.aled2);
+        int   ps   = (int)afe.test_probe_state();
+        float spo2 = afe.test_spo2();
+        float rr   = afe.test_spo2_r();
+        snprintf(buf, sizeof(buf),
+                 "%lld,%d,%.5g,%.5g,%.5f,%.3g,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                 *smp_idx, ps,
+                 afe.test_last_ot_led1(), afe.test_last_ot_led2(),
+                 rr, afe.test_pi(), spo2, afe.test_spo2_sqi(),
+                 afe.test_hr1(), afe.test_hr1_sqi(),
+                 afe.test_hr2(), afe.test_hr2_sqi(),
+                 afe.test_hr3(), afe.test_hr3_sqi());
+        out << buf;
         if (has_fw) {
-            out << "," << r.fw_hr1  << "," << r.fw_hr2
-                << "," << r.fw_hr3  << "," << r.fw_spo2
-                << "," << (hr1  - r.fw_hr1)
-                << "," << (hr2  - r.fw_hr2)
-                << "," << (hr3  - r.fw_hr3)
-                << "," << (spo2 - r.fw_spo2);
+            snprintf(buf, sizeof(buf), ",%.2f,%.5f,%d,%.2f,%.5f",
+                     r.fw_spo2, r.fw_r, r.fw_ps,
+                     spo2 - r.fw_spo2, rr - r.fw_r);
+            out << buf;
+            st.ps_compared++;
+            if (ps == r.fw_ps) st.ps_match++;
         }
         out << "\n";
-
-        // Accumulate summary stats
-        summary.n_samples++;
-        if (spo2_sqi > 0.0f) {
-            summary.spo2_sum     += spo2;
-            summary.spo2_sqi_sum += spo2_sqi;
-            summary.spo2_valid++;
-        }
-        if (hr1_sqi > 0.0f) {
-            summary.hr1_sum     += hr1;
-            summary.hr1_sqi_sum += hr1_sqi;
-            summary.hr1_valid++;
-        }
-        if (hr2_sqi > 0.0f) { summary.hr2_sum += hr2; summary.hr2_valid++; }
-        if (hr3_sqi > 0.0f) { summary.hr3_sum += hr3; summary.hr3_valid++; }
+        (*smp_idx)++;
+        st.n++;
+        if (ps == 1 || ps == 2) st.probe_on++;
+        if (spo2 > 1.0f) st.spo2_producing++;
     }
-
-    out.close();
-    printf("  -> %s  (%d samples)\n", result_path.filename().string().c_str(),
-           summary.n_samples);
-
-    // Append to batch summary
-    auto mean = [](double sum, int n) -> double { return n > 0 ? sum / n : 0.0; };
-    double valid_spo2_pct = summary.n_samples > 0
-        ? 100.0 * summary.spo2_valid / summary.n_samples : 0.0;
-
-    summary_csv << timestamp_str()          << ","
-                << summary.filename         << ","
-                << summary.n_samples        << ","
-                << mean(summary.spo2_sum,     summary.spo2_valid)   << ","
-                << mean(summary.spo2_sqi_sum, summary.spo2_valid)   << ","
-                << mean(summary.hr1_sum,      summary.hr1_valid)    << ","
-                << mean(summary.hr1_sqi_sum,  summary.hr1_valid)    << ","
-                << mean(summary.hr2_sum,      summary.hr2_valid)    << ","
-                << mean(summary.hr3_sum,      summary.hr3_valid)    << ","
-                << valid_spo2_pct           << "\n";
-    summary_csv.flush();
+    return st;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: incunest_offline_runner <file.csv | directory>\n");
+    fs::path target;
+    float ot_thr = -1.0f;   // <0 = keep library default
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--ot-thr") == 0 && i + 1 < argc) {
+            ot_thr = std::stof(argv[++i]);
+        } else if (target.empty()) {
+            target = argv[i];
+        } else {
+            fprintf(stderr, "Usage: incunest_offline_runner <file.csv | directory> [--ot-thr <A/A>]\n");
+            return 1;
+        }
+    }
+    if (target.empty() || !fs::exists(target)) {
+        fprintf(stderr, "Usage: incunest_offline_runner <file.csv | directory> [--ot-thr <A/A>]\n");
         return 1;
     }
 
-    fs::path target(argv[1]);
-    if (!fs::exists(target)) {
-        fprintf(stderr, "ERROR: path does not exist: %s\n", argv[1]);
-        return 1;
-    }
-
-    // Collect CSV files to process
+    // Collect input CSVs (skip our own outputs)
     std::vector<fs::path> files;
     if (fs::is_directory(target)) {
-        for (const auto& entry : fs::directory_iterator(target)) {
-            if (entry.is_regular_file() &&
-                to_lower(entry.path().extension().string()) == ".csv" &&
-                entry.path().stem().string().find("_result") == std::string::npos &&
-                entry.path().filename().string() != "batch_summary.csv")
-                files.push_back(entry.path());
+        for (const auto& e : fs::directory_iterator(target)) {
+            std::string name = e.path().filename().string();
+            if (e.is_regular_file() &&
+                to_lower(e.path().extension().string()) == ".csv" &&
+                name.find("_replay") == std::string::npos &&
+                name.find("_result") == std::string::npos &&
+                to_lower(name).find("reference_spo2") == std::string::npos &&
+                to_lower(name).find("events") == std::string::npos)
+                files.push_back(e.path());
         }
         std::sort(files.begin(), files.end());
     } else {
         files.push_back(target);
     }
-
     if (files.empty()) {
-        fprintf(stderr, "No CSV files found in %s\n", argv[1]);
+        fprintf(stderr, "No CSV files found in %s\n", target.string().c_str());
         return 1;
     }
 
-    // Open (or append) batch summary
-    fs::path summary_path = fs::is_directory(target)
-        ? target / "batch_summary.csv"
-        : target.parent_path() / "batch_summary.csv";
+    // Group parts of one session: strip a trailing _pNN from the stem
+    auto group_of = [](const fs::path& p) {
+        std::string stem = p.stem().string();
+        size_t at = stem.rfind("_p");
+        if (at != std::string::npos && stem.size() - at == 4 &&
+            std::isdigit((unsigned char)stem[at + 2]) && std::isdigit((unsigned char)stem[at + 3]))
+            return stem.substr(0, at);
+        return stem;
+    };
 
-    bool summary_exists = fs::exists(summary_path);
-    std::ofstream summary_csv(summary_path, std::ios::app);
-    if (!summary_csv.is_open()) {
-        fprintf(stderr, "ERROR: cannot open batch_summary.csv for writing\n");
-        return 1;
-    }
-    if (!summary_exists)
-        summary_csv << "Timestamp,File,N_samples,SpO2_mean,SpO2_SQI_mean,"
-                       "HR1_mean,HR1_SQI_mean,HR2_mean,HR3_mean,valid_spo2_pct\n";
+    printf("incunest_offline_runner v0.20 (lib %s) — %zu file(s)%s\n",
+           INCUNEST_AFE4490_VERSION, files.size(),
+           ot_thr > 0 ? "" : ", ot-thr = library default");
+    if (ot_thr > 0) printf("  rsqm_ot_thr override: %g A/A\n", ot_thr);
 
-    printf("incunest_offline_runner — processing %zu file(s)\n", files.size());
-    for (const auto& f : files) {
-        printf("  %s\n", f.filename().string().c_str());
-        process_file(f, summary_csv);
+    std::string cur_group;
+    INCUNEST_AFE4490* afe = nullptr;
+    long long smp_idx = 0;
+    int rc = 0;
+    for (const auto& fpath : files) {
+        std::vector<CsvRow> rows;
+        std::map<std::string, std::string> cfg;
+        if (!parse_csv(fpath, rows, cfg)) { rc = 1; continue; }
+
+        std::string grp = group_of(fpath);
+        if (grp != cur_group) {                 // new session: fresh library instance
+            delete afe;
+            afe = new INCUNEST_AFE4490();
+            cur_group = grp;
+            smp_idx = 0;
+            if (cfg.empty()) {
+                fprintf(stderr, "WARNING: %s has no $CFG header; using library defaults\n",
+                        fpath.filename().string().c_str());
+            } else if (!apply_cfg(*afe, cfg, fpath.filename().string().c_str())) {
+                delete afe; afe = nullptr; cur_group.clear(); rc = 1;
+                continue;                       // refuse to replay misconfigured
+            }
+            if (ot_thr > 0) afe->setRsqmOtThr(ot_thr);
+        }
+
+        fs::path out_path = fpath.parent_path() / (fpath.stem().string() + "_replay.csv");
+        PartStats st = replay_part(*afe, rows, out_path, &smp_idx);
+        printf("  %s -> %s  (%d samples, probe-on %.1f%%, SpO2 producing %.1f%%",
+               fpath.filename().string().c_str(), out_path.filename().string().c_str(),
+               st.n, st.n ? 100.0 * st.probe_on / st.n : 0.0,
+               st.n ? 100.0 * st.spo2_producing / st.n : 0.0);
+        if (st.ps_compared)
+            printf(", ProbeState match %.1f%%", 100.0 * st.ps_match / st.ps_compared);
+        printf(")\n");
     }
-    printf("Done. Summary: %s\n", summary_path.string().c_str());
-    return 0;
+    delete afe;
+    return rc;
 }
