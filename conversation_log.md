@@ -25434,3 +25434,10 @@ del 24-09 en las tres unidades). El banco ya corre el umbral de 150 ppm en persi
   sujeto — y su criterio quedó. Sin fichero propio: la campaña se deriva de los SESSION_ID.
   Registrado en `pulsenest_recorder_spec.md` §3 y en el diccionario de nomenclatura. Descartados
   session-pack/group/serie.
+
+### Códigos SITE: libres (se mantiene HOSPNAV)
+
+La tabla `HOSP01`/`SITE01`/... de la spec era demasiado restrictiva (decisión de Alex): el código
+de cada hospital/emplazamiento se decidirá caso a caso. Sobreviven dos reglas: `BENCH` conserva su
+significado y ningún código puede identificar el lugar por sí solo (el mapeo código→sitio sigue en
+el fichero privado, fuera del repo). Spec §3 actualizada.

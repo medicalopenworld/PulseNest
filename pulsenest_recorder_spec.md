@@ -153,14 +153,14 @@ needed, add it then, not now.
 **`SITE` is a code, not a description** (decided 2026-09-20, the same rule §2.7 of
 `CAPTURE_SET_SPEC` already applies to people). A place name plus a date plus "a baby" identifies
 a person even when no name is written anywhere, so the site is coded and what it means lives
-**outside the repository**, in the private file that maps `SUBJnn` to a person. Three prefixes,
-and nothing else:
+**outside the repository**, in the private file that maps `SUBJnn` to a person.
 
-| Code | When |
-|---|---|
-| `BENCH` | our own bench: no subject, or an adult from the team. Identifies nobody |
-| `HOSP01`, `HOSP02` … | clinical sites, numbered in the order they appear |
-| `SITE01`, `SITE02` … | anywhere else: a home, an office, someone's flat |
+**The code itself is free** (decided 2026-09-24: `HOSPNAV`, used in the first campaign, stays,
+and each new hospital/site gets whatever identifier is decided for it — the earlier rule of
+numbered `HOSP01`/`SITE01` prefixes was too restrictive and is dropped). Two rules survive:
+`BENCH` keeps its meaning (our own bench: no subject, or an adult from the team — identifies
+nobody), and a code must not identify the place on its own (no names, no city). The
+code → site mapping lives in the same private file as `SUBJnn`.
 
 No names, no ward, no room, no city, no street — see §11. What *is* worth recording, because it
 is measurement context and identifies nobody, goes in `session.json`'s `notes`: indoors or out,
