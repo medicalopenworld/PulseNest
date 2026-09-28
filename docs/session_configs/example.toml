@@ -10,11 +10,12 @@ location  = "HOSPNAV"        # coded site, never a place name (pulsenest_recorde
 operator  = "ACM"             # initials or role, never a full name
 board     = "8850"           # last hex digits of this cot's board MAC (docs/boards.md)
 subject   = "SUBJ67"         # coded subject, never a name
-note      = "term neonate, resting after a feed"
-# ^ free text, written verbatim as a NOTE event, AND its sanitised form seeds the starting
-# CONDITION -- there is no separate "cond" field: a short, controlled word was not worth a launch
-# parameter of its own. Correct CONDITION in the window at any time if the derived slug looks
-# wrong or the baby's state simply changes.
+note      = "preterm neonate, 27+3 weeks"
+# ^ free text, written verbatim as a NOTE event and nothing else: it never sets the CONDITION
+# and never reaches a filename. The CSV is named <subject>_<location>_<date>_<time>_pNN.csv.
+# CONDITION is set in the window (or with the `cond` console command) whenever it changes.
+#
+# Also works with the console recorder:  python tools/pulsenest_recorder.py --config <this file>
 probe     = "Medle ST-30163-26"      # OUR probe's physical model -- ISO 80601-2-61 calibrates the
 # monitor+probe pair together, and the library cannot know which sensor is clipped onto the baby;
 # only a person can. Not the same as [ref].probe-site below, which is the COMMERCIAL monitor's
@@ -25,7 +26,7 @@ probe     = "Medle ST-30163-26"      # OUR probe's physical model -- ISO 80601-2
 # filming it, since a phone reads that same monitor's screen rather than being a separate fact.
 # Every line here is optional; leave the table out entirely if there is no reference monitor.
 [ref]
-model      = "Masimo Radical-7"
-avg        = 8                    # its averaging window, in seconds -- decides if the two SpO2 compare at all
-probe-site = "left thumb"         # (left/right + thumb/index-finger/middle-finger/ring-finger/little-finger/baby-foot) where ITS probe is, not ours -- as specific as the photo lets you be
-videonest  = "Pixel8aACM"          # device id of the phone filming THIS monitor -- omit if none
+model      = "Mindray BeneVision N17"
+##avg        = 8                   # its averaging window, in seconds -- decides if the two SpO2 compare at all
+probe-site = "left foot"         # (left/right + thumb/index-finger/middle-finger/ring-finger/little-finger/baby-foot) where ITS probe is, not ours -- as specific as the photo lets you be
+videonest  = "Pixel8aACM"        # device id of the phone filming THIS monitor -- omit if none

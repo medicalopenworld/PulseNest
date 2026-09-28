@@ -305,10 +305,18 @@ try:
     # `--probe`: OUR probe's model, set before the first row so the CSV header carries it from
     # part 1 -- the same launch-time pattern as --note, applied through the console command.
     recP = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock(),
-                      board="8850", subject="SUBJ01", probe="Medle-neo")
+                      board="8850", subject="SUBJ01", probe="Medle-neo",
+                      note="probe placed in the left foot")
     recP.feed("10.0.0.1", CFG_8850)
     recP.feed("10.0.0.1", M4)
     p = [x for x in recP.owners() if x.kind == "board"][0]
+    # Filename = subject + location, known at launch, so the CSV opens under its final name
+    # (a crash then leaves it named) and the note never reaches it (Alex, 2026-09-29).
+    check("[2] with --subject the CSV opens as <SUBJECT>_<LOCATION>_<date>_<time>_p01.csv",
+          os.path.basename(p.csv_path).startswith("SUBJ01_HOSP01_")
+          and os.path.basename(p.csv_path).endswith("_p01.csv"), os.path.basename(p.csv_path))
+    check("[3] --note is a NOTE event only: it no longer seeds the condition",
+          p.condition is None, p.condition)
     check("[3] --probe is applied before the first row, distinct from ProbeState",
           p.probe_model == "Medle-neo", p.probe_model)
     recP.stop("t")
@@ -627,6 +635,11 @@ try:
     check("[2] the row count in session.json is what the parts actually hold",
           sum(sum(1 for ln in open(p, encoding="cp1252") if ln and not ln.startswith("#")) - 1
               for p in a.csv_paths) == srcA["csv_rows"], str(srcA["csv_rows"]))
+    check("[2] a subject bound after the first part opened: every part renamed at close, all alike",
+          a.csv_paths and all(os.path.basename(x).startswith("SUBJ01_BENCH01_") and os.path.exists(x)
+                              for x in a.csv_paths)
+          and not any(f.startswith("1020BA147560_") and f.endswith(".csv") for f in os.listdir(rec.dir)),
+          [os.path.basename(x) for x in a.csv_paths])
     check("[7] session.json: schema, closed with drift, operator", sj["schema"] == "pulsenest_session/1"
           and sj["closed"] is not None and sj["closed"]["clock_drift_us"] == 0 and sj["operator"] == "AC")
     check("[7] session.json carries the typed metadata",

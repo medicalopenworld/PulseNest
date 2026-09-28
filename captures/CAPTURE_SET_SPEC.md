@@ -155,6 +155,10 @@ suggests: **per-sample columns > the signal itself > filename > `#` header.**
 
 `SIM_PHOTOTHERAPY_60BPM_96SPO2_20260905_101500.csv`
 
+This is the shape of the curated bench set. Sessions written by `pulsenest_recorder` are named
+`<SUBJECT>_<LOCATION>_<YYYYMMDD>_<HHMMSS>_pNN.csv` since 2026-09-29 (recorder spec §2,
+**Filename**): the condition changes during a session and stays in the header and the events.
+
 Rules that the tooling depends on:
 * the rate token ends in `BPM` and the SpO2 token in `SPO2` — `hr1_detector_experiment.py` parses
   the true rate from the filename;

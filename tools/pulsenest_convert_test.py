@@ -88,7 +88,7 @@ for mode in ("on", "v04"):
         live_dir = record_live(os.path.join(td, "live"), mode)
         live = board_csvs(live_dir)
         check(f"[{mode}] the live session wrote one board CSV, canonical name",
-              len(live) == 1 and os.path.basename(live[0]).startswith("SUBJ03_RESTING_"), str([os.path.basename(f) for f in live]))
+              len(live) == 1 and os.path.basename(live[0]).startswith("SUBJ03_BENCH_"), str([os.path.basename(f) for f in live]))
         log = logging.getLogger("c"); log.addHandler(logging.NullHandler()); log.propagate = False
         rec = C.convert(live_dir, os.path.join(td, "out"), csv_mode=mode, split_min=1, log=log)
         res = C.verify(live_dir, rec)

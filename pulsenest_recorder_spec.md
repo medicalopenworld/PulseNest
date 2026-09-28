@@ -122,14 +122,14 @@ captures/sessions/<SESSION_ID>/
     session.json                  metadata, the only hand-edited file (§7)
     session_events.csv            operator marks and manual readings (§6)
     pulsenest_recorder.log        the tool's own log: connections, errors, disk, splits
-    SUBJ01_RESTING_20260926_101500_p01.csv  the live capture CSV, one per board, in parts (§2)
+    SUBJ01_HOSP01_20260926_101500_p01.csv   the live capture CSV, one per board, in parts (§2)
     reference_spo2.csv            the commercial monitor's reading, by OCR and by hand (§10)
     raw/                          only when --raw is full or exceptions (§2.3)
         board_<MAC>_0001.pnraw    one stream per board, split into parts (§5)
         board_<MAC>_0002.pnraw
         aux_vn_<IP>_0001.pnraw    VideoNest's $VN1 stream, same format
     derived/                      produced OFF-SITE by the converter, never during the session
-        SUBJ01_RESTING_20260926_101500_p01.csv  rebuilt from raw; must equal the live one
+        SUBJ01_HOSP01_20260926_101500_p01.csv   rebuilt from raw; must equal the live one
         reference_spo2.csv                      rebuilt from raw; must equal the live one
 ```
 
@@ -450,7 +450,7 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   so `SUBJ7` and `SUBJ07` cannot become two babies) and returns nothing for anything else; the
   console refuses with a message naming what a subject code is; the window's box is **editable and
   validated**, its menu a shortcut rather than a ceiling, and a refusal is said out loud instead of
-  swallowed. `safe_condition()` does the matching job for the condition, which reaches a filename
+  swallowed. `safe_condition()` does the matching job for the condition, which reached a filename until 2026-09-29
   and was only upper-cased: `RESTING/FEEDING` made a path, not a name.
 * **A session is one baby, not one run of the script (Alex, 2026-09-21).** The original model
   tied a session to the process, so three probes on three babies shared one session -- and since
@@ -490,6 +490,8 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   A 10-minute part is ~87 MB; `--split-min` is the knob, on the window as well as the console. At
   close **every part is renamed** to the canonical stem, all of them or none: one canonical name
   beside one provisional name in the same directory reads as two different captures.
+  *Since 2026-09-29 the provisional name is the exception*: with the subject bound at launch the
+  part opens under its final name (§2, **Filename**).
 * **What a crash costs, measured (2026-09-21).** The 48-minute session above was killed outright
   (`taskkill /F`) to find out. **Kept**: every `.pnraw` part and every CSV, both ending on a
   complete record — the `.pnraw` is flushed per datagram and the CSV is line-buffered, so no
@@ -497,6 +499,8 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   with it the clock drift), each CSV's closing `# rows=… gaps=…` note, and the rename to canonical
   names — the files keep their provisional `<MAC>_…` names. A laptop that dies mid-session costs
   metadata, not data; the recovery is to note by hand which subject each MAC belonged to.
+  (Since 2026-09-29 a session launched with `--subject`/`--config` has nothing to rename: its
+  parts open under their final names.)
 * **No reference class, no tick boxes (Alex, 2026-09-22).** For two days there was a T0–T3
   class, first typed, then ticked as a set of references, then derived at close. Each step made it
   smaller and it never earned its place: Alex asked what it meant twice, and the capture-set spec
@@ -510,15 +514,16 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   RESTING` (a short, sanitised word); the same day, reviewing it, Alex judged a controlled-vocab
   condition was not important enough to deserve its own launch flag, and that a free-text note
   should determine the starting condition instead. So **`--note`**: written verbatim as a real
-  `NOTE` event (nothing is lost past 24 characters the way `--cond` used to lose it), and its
-  sanitised form *also* seeds the starting CONDITION through the ordinary `cond` console command —
-  provisional, and correctable in the window the moment it looks wrong (a long note can truncate
-  into an ugly slug, measured: `TERM-NEONATE-RESTING-AFT`). `--ref-model`/`--ref-avg`/
+  `NOTE` event (nothing is lost past 24 characters the way `--cond` used to lose it). Until
+  2026-09-29 its sanitised form *also* seeded the starting CONDITION, and through it the CSV's
+  name: the HOSPNAV campaign of 2026-09-23 shipped `SUBJ09_PROBE-PLACED-IN-THE-LEFT_…` beside
+  `1051DB508850_…` for SUBJ08, whose note had not been given. **Superseded (Alex, 2026-09-29):**
+  the note is a NOTE event and nothing else; the condition is set in the window or with `cond`,
+  and neither reaches the filename (§2, **Filename**). `--ref-model`/`--ref-avg`/
   `--ref-probe-site`/`--ref-note` (renamed from `--ref-site`, clearer about what it names) are
   typed on the command line the same way, applied once the subject is known through the ordinary
   `ref` console command, and shown **MONITOR** in the panel, read-only — visible so a typo is
-  caught, not editable from the window. Without `--note` the CSV keeps its provisional `<MAC>_…`
-  name until someone sets a condition, same as before.
+  caught, not editable from the window.
   A fifth control, `ABNORMAL CONDITION`, is the one Alex asked for after ruling out a pause
   button: a toggle that writes `ANOMALY_START`/`ANOMALY_END` around a stretch of questionable
   validity — probe loosely applied, motion, an alarm interfering — **without stopping the
@@ -532,6 +537,13 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   sub-table (`model, avg, probe-site, videonest, note`) — `docs/session_configs/example.toml` is
   the template. Deliberately **not** `--hub`/`--out`/`--raw`/`--split-min`/`--duration`: those are
   how the tool behaves, identical across all three cots, not who a session is about.
+  **One argument set for both tools (Alex, 2026-09-29).** The console and the window used to
+  declare their arguments separately and had drifted: `--site` (required) on one, `--location`
+  on the other, `--config` and the long help texts only in the window, `--split-mb` only in the
+  console. Now `pulsenest_recorder.add_session_args()` declares them once, with
+  `CONFIG_FIELDS`/`load_session_config()`/`apply_session_config()` beside it, and both `main()`s
+  call it; the console adds only `--event-port`. `--site` is gone: it is `--location`, as in the
+  `.toml`. The console refuses to start without a location (flag or file); the window asks.
   **Full substitution, refused rather than merged**: typing any of these alongside `--config`
   exits with an error naming which flags conflict, the same discipline as the ambiguous `--board`
   suffix — one session, one source of truth for who it is. `--config` is optional in both
@@ -599,9 +611,11 @@ reference streams below.
   emits lines beginning with `#` (`# STAT frame_dropped=...`), and dropping those in raw would
   make the two indistinguishable — the same ambiguity as the `.pnraw` header, one floor down.
   So the converter writes them as **`# from-board: # STAT ...`**, and any consumer can tell an
-  annotation from a message. Named per
-  `CAPTURE_SET_SPEC` §2.4 (`<SUBJECT>_<CONDITION>_<params>_<date>_<time>_pNN.csv`) from
-  `session.json`, so nobody types a long filename in a hospital.
+  annotation from a message. Named exactly as the live file (§2, **Filename**), from
+  `session.json`, so nobody types a long filename in a hospital. `verify()` pairs a rebuilt
+  file with its live twin on subject-or-MAC plus `<date>_<time>_pNN`, so sessions named under
+  the pre-2026-09-29 rule (`SUBJ01_RESTING_…`) still verify byte for byte; for those, the
+  converter also replays the condition the launch note used to seed (`Recorder.want_condition`).
 * **`reference_spo2.csv`** — **written live since 2026-09-22, not by the converter**: what the
   commercial monitor showed, read two ways, in one file. `source` is `videonest` (OCR) or
   `operator` (typed); `id` is the device id or who typed; `kind` is `reading`, `correction` or
@@ -651,7 +665,7 @@ Captures are health data, and several subjects are minors (`CAPTURE_SET_SPEC` §
 | D2 | Compress closed `.pnraw` parts automatically? | Not during the session. Offer `--compress-on-close`, default off for the first campaign. Text compresses ≈ 8×, so it is the cheap way to keep `full` affordable if `exceptions` is not trusted yet. |
 | D3 | ~~Live thin CSV?~~ **Closed**: the full live capture CSV (§2) replaces it — a once-per-second summary is not needed beside a file that is the deliverable. |  |
 | D4 | Split period and alignment | **Closed 2026-09-20: 10 min on the local wall-clock boundary**, 256 MB ceiling. Reasoning in §5. |
-| D6 | ~~Drop the T0–T3 class altogether?~~ **Closed 2026-09-22: dropped.** Alex asked what it meant twice in two days; the capture-set spec held cells from two orderings of it. Filename is `<SUBJECT>_<CONDITION>_…`; a simulator is subject `SIM`; a commercial reference is rows in `reference_spo2.csv`. | closed |
+| D6 | ~~Drop the T0–T3 class altogether?~~ **Closed 2026-09-22: dropped.** Alex asked what it meant twice in two days; the capture-set spec held cells from two orderings of it. Filename is `<SUBJECT>_<CONDITION>_…` (since 2026-09-29 `<SUBJECT>_<LOCATION>_…`, §2); a simulator is subject `SIM`; a commercial reference is rows in `reference_spo2.csv`. | closed |
 | D5 | Should `session_events.csv` also be mirrored to a plain `.txt` log in operator-readable form? | The `@M`/`@E` lines in `pulsenest_recorder.log` already cover it. |
 
 ---
@@ -751,10 +765,18 @@ What the implementation fixed in this document's wording, or added:
   with the row and skip counts. Written **after** the `.pnraw` record and in its own `try/except`
   (§2.2): a parsing bug costs rows in the CSV and leaves the raw stream untouched, and
   `csv_errors` counts them separately in `session.json`.
-  **The name is provisional until close**: a board starts streaming before a person has bound it
-  to a subject, so the file opens as `<MAC>_<date>_<time>.csv` and is renamed at close to
-  `CAPTURE_SET_SPEC` §2.4's `SUBJ01_RESTING_<date>_<time>_pNN.csv` once subject and condition
-  are known — verified on the bench, three boards, three canonical names.
+  **Filename (Alex, 2026-09-29): `<SUBJECT>_<LOCATION>_<YYYYMMDD>_<HHMMSS>_pNN.csv`** —
+  `SUBJ08_HOSPNAV_20260923_114230_p01.csv`. Subject first, as in R16 of
+  `capture_csv_format_spec.md`, so files of several campaigns in one flat folder group by baby;
+  location beside it, the same code as the session directory. Nothing typed as free text reaches
+  it: not the note, not the condition (both stay in the header and in `session_events.csv`).
+  No MAC: one session records one board (`--board`), and `# source_mac=` names it. With the
+  subject bound at launch (`--subject`, `--config`, always in a hospital) the part **opens under
+  its final name**, so a crash leaves it named. Only a board still unbound opens as
+  `<MAC>_<date>_<time>_pNN.csv`, and every part is renamed at close to the subject it has then.
+  *Before 2026-09-29* the name was `<SUBJECT>_<CONDITION>_…`, reached only at close and only if a
+  condition had been set — which the launch note did silently — so one campaign could hold both
+  shapes. Recorded files are not renamed (append-only applies to what was recorded).
   **Cost, measured:** 2,85 MB per board per 20 s = **~510 MB/h**, on top of the 0,5 GB/h of
   `.pnraw`: about **1 GB/h per board**, 24 GB for three boards over eight hours. That is the
   argument for `--raw exceptions` (240 kB/h, §2.3) as soon as the pipeline is trusted — the live

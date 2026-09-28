@@ -88,11 +88,9 @@ one-way door once given: **it locks the reference phone for the whole session**,
 window nor the console can switch it to another id afterwards (2026-09-23, after a session
 recorded with the wrong cot's phone — see §5). Give it here when you know the phone in advance;
 leave it out and choose it in the window if you don't. `--note` is worth typing here anyway: it is written
-verbatim as a NOTE event **and** its sanitised form seeds the starting CONDITION, so a session
-launched with `--note` already has a canonical CSV name instead of the provisional `<MAC>_…` one
-— though for a long note that name can come out truncated and ugly (`TERM-NEONATE-RESTING-AFT`,
-measured), which is fine: it is only a starting point, fix it in the window's CONDITION field the
-moment it looks wrong.
+verbatim as a NOTE event, and that is all it does — it does not set the CONDITION and never
+reaches a filename. The CSV is named `<SUBJECT>_<LOCATION>_<date>_<time>_pNN.csv` from the
+subject and location alone, from the moment it opens.
 
 `--probe` is OUR probe's physical model — ISO 80601-2-61 calibrates a monitor+probe pair, never a
 monitor alone, and the library has no way to know which sensor is clipped onto the baby. Shown
@@ -120,8 +118,7 @@ Then, in each window:
       is not there, VideoNest is not sending — that is the answer, before you open any menu. Leave
       it unticked in the other two windows.
 - [ ] **CONDITION**: `RESTING`, `FEEDING`, `HANDLING`… Change it whenever it changes; each change
-      is a timestamped event. The CSV **filename** takes the last value, and without a condition
-      the file keeps its provisional `<MAC>_…` name.
+      is a timestamped event. It is not part of the filename.
 - [ ] **NOTE**: where our probe is, e.g. `probe on left foot`. This matters more than it looks —
       in a baby with a patent ductus, a foot and a right hand genuinely read differently, and an
       unrecorded difference is read later as our error.
@@ -176,8 +173,8 @@ Then, in each window:
       the bench. **If a file will not open on site, add `--csv on` to the launch line** for the next
       session: that is the format every tool read until today, and the `.pnraw` lets the v0.4 file be
       rebuilt later anyway (`python tools/pulsenest_convert.py <session dir> --csv v04`).
-- [ ] At close each CSV is renamed to `SUBJ01_RESTING_<date>_<time>_pNN.csv` — all parts or
-      none. A file still called `<MAC>_…` means the condition was never set.
+- [ ] Each CSV is named `SUBJ01_HOSP01_<date>_<time>_pNN.csv`. A file called `<MAC>_…` means the
+      board was never bound to a subject (it is renamed at close if the subject is bound later).
 - [ ] **Copy the whole session directory** to a second disk before leaving. Each baby has its own,
       under `captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>_<SUBJnn>/`.
 - [ ] Copy the phone's photos and videos to the same place. They never reach the laptop by
@@ -198,7 +195,7 @@ Then, in each window:
 | `dgrams` climbing with no baby connected | Normal: the board streams with no probe | Nothing |
 | The window closes by itself | Disk below the floor, or `--duration` expired | The session closed cleanly and is intact |
 | The waveform freezes or the window dies | pyqtgraph, which has killed the lab window 28 times | Only that baby's recording stops; the other two are separate programs. Everything written is on disk. Relaunch, and press `PLOTS` to record without the waveform |
-| A crash of any kind | | The `.pnraw` and the CSV are append-only and end on a complete record. What is lost is metadata: `SESSION_END`, the clock drift, and the rename — the files keep their provisional `<MAC>_…` names |
+| A crash of any kind | | The `.pnraw` and the CSV are append-only and end on a complete record. What is lost is metadata: `SESSION_END` and the clock drift; a board never bound to a subject also keeps its provisional `<MAC>_…` name |
 | REFERENCE is greyed out and shows the wrong phone | `--ref-videonest` was typed at launch with the wrong id (or the wrong cot's), and it is now locked for this session | Close the window and relaunch: either the correct `--ref-videonest`/`[ref].videonest`, or none at all — leave it out and pick the phone live from the REFERENCE list instead |
 
 **The recorder never writes to a board.** It cannot change a setting or reboot anything, by

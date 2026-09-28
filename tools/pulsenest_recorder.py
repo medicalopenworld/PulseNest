@@ -9,8 +9,9 @@ exists so that a bad paint never costs a capture again. Format and behaviour are
 come later: the raw stream carries every `$M4` field, RF included, so nothing is lost by
 recording raw first and converting off-site.
 
-    python tools/pulsenest_recorder.py --site HOSP01 [--operator AC] [--raw full|exceptions]
+    python tools/pulsenest_recorder.py --location HOSP01 [--operator AC] [--raw full|exceptions]
                                        [--hub 127.0.0.1[:5005]] [--out captures/sessions]
+    python tools/pulsenest_recorder.py --config docs/session_configs/subj01.toml
 
 While it runs, the console accepts one command per line (§9 says a session must be possible
 with no GUI at all):
@@ -68,6 +69,7 @@ import socket
 import sys
 import threading
 import time
+import tomllib
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -181,8 +183,8 @@ COMMAND_HELP = {
         "bind a board to a baby",
         "Ties one board to one coded subject, by the last four hex digits of its MAC (the `status`\n"
         "line shows them). Do this first: a `spo2` reading carries the bound board's MAC, and the\n"
-        "CSV is renamed at close to SUBJ01_RESTING_<date>_<time>_pNN.csv once the subject and\n"
-        "the condition are both known.",
+        "CSV is named SUBJ01_<LOCATION>_<date>_<time>_pNN.csv from it (renamed at close if the\n"
+        "subject was bound after the first part opened).",
     ),
     "videonest": (
         "videonest <device id>|none",
@@ -673,12 +675,13 @@ class Recorder:
         self.expected_videonest_id = videonest or None
         # Typed once on the command line rather than in the panel (Alex, 2026-09-22: they do not
         # change during the session, so a fixed control would sit idle). Applied through the same
-        # `note`/`cond`/`ref` console commands a keystroke would use, once a subject is known --
-        # see _apply_pending_metadata(). `note` is deliberately the only free-text launch field:
-        # a short, sanitised `cond` was not worth a field of its own, so the launch-time note is
-        # written verbatim (nothing lost) AND seeds the initial condition from the same text --
-        # provisional, correctable in the window the moment it looks wrong or simply changes.
+        # `note`/`probe`/`ref` console commands a keystroke would use, once a subject is known --
+        # see _apply_pending_metadata(). The note is only a NOTE event: it no longer seeds the
+        # condition (Alex, 2026-09-29 -- a free-text note had become the CSV's filename).
         self.want_note = (note or "").strip() or None
+        # Never set by a launch flag: pulsenest_convert.py sets it to replay a session recorded
+        # before 2026-09-29, when the note also seeded the starting condition.
+        self.want_condition = None
         self.want_probe = (probe or "").strip() or None
         self.want_ref = {k: v for k, v in
                          (("model", ref_model), ("avg", ref_avg), ("site", ref_probe_site), ("note", ref_note))
@@ -956,22 +959,17 @@ class Recorder:
         src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
 
     def _apply_pending_metadata(self, src):
-        """`--note` and `--ref-*`, applied once a subject is known, through the ordinary `note`,
-        `cond` and `ref` console commands -- so a value typed on the command line is validated
-        and event-logged exactly like one typed at the keyboard. Guarded so a board re-identifying
-        (a new DHCP lease) does not repeat it.
-
-        `--note` does two things with the one string: written verbatim as a NOTE event (so
-        `mark SUBJ02 nappy change` if it were one line and `note SUBJ02 term neonate, resting
-        after a feed` if it were the other survive intact), and ALSO fed through `cond`'s own
-        sanitiser to seed the starting CONDITION -- the same short slug a keystroke would have
-        produced, just derived instead of typed twice."""
+        """`--note`, `--probe` and `--ref-*`, applied once a subject is known, through the ordinary
+        `note`, `probe` and `ref` console commands -- so a value typed on the command line is
+        validated and event-logged exactly like one typed at the keyboard. Guarded so a board
+        re-identifying (a new DHCP lease) does not repeat it."""
         if getattr(src, "_metadata_applied", False):
             return
         src._metadata_applied = True
         if self.want_note:
             self.console(f"note {src.subject} {self.want_note}")
-            self.console(f"cond {self.want_note} {src.subject}")
+        if self.want_condition:
+            self.console(f"cond {self.want_condition} {src.subject}")
         if self.want_probe:
             self.console(f"probe {src.subject} {self.want_probe}")
         for key, value in self.want_ref.items():
@@ -983,17 +981,16 @@ class Recorder:
         the v0.4 format and its column dictionary. Written AFTER the .pnraw record and inside its
         own try/except (section 2.2), so a parsing bug costs rows here and nothing there.
 
-        The name is provisional: the subject is bound by a person seconds or minutes after the
-        board starts streaming, so the file opens as <MAC>_<date>_<time>.csv and is renamed at
-        close to the CAPTURE_SET_SPEC 2.4 shape once subject and condition are known."""
+        Named <SUBJECT>_<LOCATION>_<date>_<time>_pNN.csv when the subject is already bound (always,
+        with --subject or --config). A board still waiting for one opens as <MAC>_<date>_<time>_pNN
+        and every part is renamed at close (_name_csv)."""
         if self.csv_mode == "off" or src.kind != "board":
             return
         if not src.csv_stamp:
             src.csv_stamp = _dt.datetime.fromtimestamp(t_epoch_us / 1e6).strftime("%Y%m%d_%H%M%S")
         prev = f"p{src.csv_part:02d}" if src.csv_part else ""   # the part that is closing, if any
         src.csv_part += 1
-        name = (f"{mac_compact(src.mac) if src.mac else src.ip}_{src.csv_stamp}"
-                f"_p{src.csv_part:02d}.csv")
+        name = f"{self._csv_stem(src)}_p{src.csv_part:02d}.csv"
         src.csv_path = os.path.join(self.dir, name)
         src.csv_paths.append(src.csv_path)
         if self.csv_mode == "v04":
@@ -1565,23 +1562,28 @@ class Recorder:
         os.replace(tmp, p)
 
     # ── stop ─────────────────────────────────────────────────────────────────────────────
-    def _name_csv(self, src):
-        """Rename EVERY part of this source's CSV to the CAPTURE_SET_SPEC 2.4 shape, now that the
-        metadata typed during the session is known. Provisional names kept when it is not.
+    def _csv_stem(self, src):
+        """`SUBJ01_HOSP01_<date>_<time>` once a subject is bound, `<MAC>_<date>_<time>` before.
+        Subject and location only: a free-text note or condition never reaches a filename."""
+        if src.subject:
+            return f"{src.subject}_{self.site}_{src.csv_stamp}"
+        return f"{mac_compact(src.mac) if src.mac else src.ip}_{src.csv_stamp}"
 
-        All parts or none: a directory holding `SUBJ01_RESTING_..._p01.csv` beside
+    def _name_csv(self, src):
+        """Give EVERY part of this source's CSV the stem it has now (_csv_stem). Only does work
+        when the subject was bound, or rebound, after a part opened.
+
+        All parts or none: a directory holding `SUBJ01_HOSP01_..._p01.csv` beside
         `1051DB508850_..._p02.csv` would read as two different captures.
         """
-        if not (src.subject and src.condition):
-            return
-        stem = "_".join([src.subject, src.condition.replace(" ", "-"), src.csv_stamp])
+        stem = self._csv_stem(src)
         renamed = []
         for path in src.csv_paths:
-            if not os.path.exists(path):
-                renamed.append(path)
-                continue
             part = os.path.basename(path).rsplit("_", 1)[-1]        # 'pNN.csv'
             target = os.path.join(self.dir, f"{stem}_{part}")
+            if target == path or not os.path.exists(path):
+                renamed.append(path)
+                continue
             try:
                 os.replace(path, target)
                 renamed.append(target)
@@ -1768,33 +1770,107 @@ class _ConsoleReader(threading.Thread):
             pass
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--site", required=True, help="short site code for the session id (HOSP01, BENCH)")
+# The fields a session file can set -- what a baby's session IS, never how the tool behaves
+# (--hub, --out, --raw, --split-min, --duration, --min-free-gb stay command-line only: they are
+# the same for all three cots and belong to the laptop, not the baby).
+CONFIG_FIELDS = ("location", "operator", "board", "subject", "ref_videonest", "note", "probe",
+                 "ref_model", "ref_avg", "ref_probe_site", "ref_note")
+
+
+def load_session_config(path):
+    """A TOML session file -> {field: value}, every value a string ("" if absent).
+
+    [ref] groups everything about the ONE commercial monitor a session is checked against --
+    including which phone is filming it, since a phone reads that same monitor's screen rather
+    than being a fact about the baby on its own (Alex, 2026-09-22, thinking ahead to a possible
+    second physical oximeter some day: this is the shape that could grow into `[[ref]]`, one
+    table per monitor, without a second reshape of the file):
+
+        location = "HOSP01"
+        operator = "AC"
+        board    = "8850"
+        subject  = "SUBJ01"
+        note     = "term neonate, resting after a feed"
+        probe    = "Medle ST-30163-26"   # OUR probe's model -- ISO 80601-2-61 calibrates monitor+
+                                 # probe together, and the library cannot know which sensor is on the baby
+
+        [ref]
+        model      = "Masimo Radical-7"
+        avg        = 8
+        probe-site = "left thumb"
+        videonest  = "J6plusACM"
+
+    `note` is free text, written verbatim as a NOTE event and nothing else. There is no `cond`
+    field: the condition is set in the window or with the `cond` console command.
+
+    Raises OSError if the file cannot be read, tomllib.TOMLDecodeError if it is not valid TOML.
+    Neither is caught here -- the caller decides how to report it.
+    """
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    ref = data.get("ref") or {}
+
+    def text(v):
+        return "" if v is None else str(v)
+    return {
+        "location": text(data.get("location")), "operator": text(data.get("operator")),
+        "board": text(data.get("board")), "subject": text(data.get("subject")),
+        "ref_videonest": text(ref.get("videonest")), "note": text(data.get("note")),
+        "probe": text(data.get("probe")),
+        "ref_model": text(ref.get("model")), "ref_avg": text(ref.get("avg")),
+        "ref_probe_site": text(ref.get("probe-site")), "ref_note": text(ref.get("note")),
+    }
+
+
+def apply_session_config(args, path):
+    """Load `path` into `args`, in place. FULL substitution: raises ValueError if any of the
+    fields was ALSO typed on the command line, rather than silently choosing one -- the same
+    discipline as the ambiguous --board suffix (one session, one baby, one source of truth for
+    who it is)."""
+    typed = [f for f in CONFIG_FIELDS if getattr(args, f)]
+    if typed:
+        names = ", ".join("--" + f.replace("_", "-") for f in typed)
+        raise ValueError(f"--config replaces {names} entirely; drop --config or drop {names}")
+    for field, value in load_session_config(path).items():
+        setattr(args, field, value)
+
+
+def add_session_args(ap):
+    """The arguments the console recorder and pulsenest_recorder_gui.py share, defined once so
+    their --help cannot drift apart. Each tool adds only what is its own on top."""
+    ap.add_argument("--config", default="", metavar="FILE.toml",
+                    help="read location/operator/board/subject/note/probe/ref-* from this "
+                         "TOML file instead of typing them -- one per cot, prepared the day "
+                         "before. FULL substitution: giving --config together with any of those "
+                         "flags is refused, not merged")
+    ap.add_argument("--location", default="",
+                    help="site CODE, never a place (BENCH, HOSP01): names the session directory "
+                         "and the CSV")
     ap.add_argument("--operator", default="", help="initials or role, never a full name")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"), metavar="DIR",
-                    help="where session directories are created (default captures/sessions)")
-    ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"))
+                    help="where session directories are created (default captures/sessions). "
+                         "Point it at a second disk and the recording is written there directly, "
+                         "instead of being copied afterwards")
     ap.add_argument("--csv", default="v04", choices=("v04", "on", "off"),
-                    help="live capture CSV per board beside the .pnraw: v04 = capture_csv_format_spec.md "
-                         "v0.4 (default since 2026-09-22), on = the pre-v0.4 format, off")
-    ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT,
-                    help="split the raw stream on this wall-clock period, in minutes")
-    ap.add_argument("--split-mb", type=float, default=SPLIT_MB_DEFAULT)
-    ap.add_argument("--min-free-gb", type=float, default=2.0)
-    ap.add_argument("--event-port", type=int, default=0,
-                    help="local UDP port that accepts the console commands from a panel process")
+                    help="live capture CSV per board beside the .pnraw: v04 = "
+                         "capture_csv_format_spec.md v0.4 (default since 2026-09-22), on = the "
+                         "pre-v0.4 format, off")
+    ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"),
+                    help="the .pnraw stream in raw/: `full` keeps every datagram verbatim, "
+                         "`exceptions` only the ones around a gap or a restart, `off` writes no "
+                         "raw/ directory at all. The CSV is unaffected. Off halves the ~17 MB per "
+                         "minute per board and gives up the only copy of what arrived on the wire, "
+                         "so a parsing bug found later can no longer be repaired from it")
     ap.add_argument("--board", default="", metavar="SUFFIX",
                     help="record ONLY the board whose MAC ends in this (any length: 8850, "
-                         "508850). One session, one baby. An ambiguous suffix is refused")
+                         "508850). One session, one board, one baby. An ambiguous suffix is refused")
     ap.add_argument("--subject", default="", metavar="SUBJnn",
                     help="bind this coded subject as soon as the board is identified, so the "
-                         "session directory is named from the start")
+                         "session directory and the CSV are named from it from the start")
     ap.add_argument("--note", default="", metavar="TEXT",
-                    help="a free-text note about this baby's session, applied once the subject "
-                         "is known: written verbatim as a NOTE event, and its sanitised form "
-                         "also seeds the starting CONDITION (correctable in the window)")
+                    help="a free-text note about this baby's session, written verbatim as a NOTE "
+                         "event once the subject is known. It never reaches a filename")
     ap.add_argument("--probe", default="", metavar="MODEL",
                     help="OUR probe's physical model (e.g. Medle ST-30163-26) -- the library "
                          "cannot know which sensor is plugged in, applied once the subject is known")
@@ -1811,13 +1887,44 @@ def main(argv=None):
     ref_group.add_argument("--ref-avg", default="", metavar="SECONDS", help="its averaging window")
     ref_group.add_argument("--ref-probe-site", default="", metavar="TEXT", help="where ITS probe is")
     ref_group.add_argument("--ref-note", default="", metavar="TEXT", help="anything else")
-    ap.add_argument("--duration", type=float, default=0.0, help="seconds; 0 = until quit")
+    ap.add_argument("--min-free-gb", type=float, default=2.0,
+                    help="refuse to start below this much free disk, and stop cleanly if a "
+                         "session reaches it")
+    ap.add_argument("--split-min", type=float, default=SPLIT_MIN_DEFAULT, metavar="MIN",
+                    help=f"split both the .pnraw and the live CSV on this wall-clock period "
+                         f"(default {SPLIT_MIN_DEFAULT:.0f}). At 500 Hz a board writes about "
+                         f"8.7 MB of CSV per minute, so 10 min is a part of roughly 87 MB -- "
+                         f"lower it if the tool that opens the CSV struggles")
+    ap.add_argument("--split-mb", type=float, default=SPLIT_MB_DEFAULT, metavar="MB",
+                    help="also split a .pnraw part that reaches this size")
+    ap.add_argument("--duration", type=float, default=0.0, metavar="S",
+                    help="close the session cleanly after this many seconds (0 = until the "
+                         "operator stops it). For an unattended bench soak")
+    return ap
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_session_args(ap)
+    ap.add_argument("--event-port", type=int, default=0,
+                    help="local UDP port that accepts the console commands from a panel process")
     args = ap.parse_args(argv)
+    if args.config:
+        try:
+            apply_session_config(args, args.config)
+        except ValueError as exc:
+            ap.error(str(exc))
+        except OSError as exc:
+            ap.error(f"cannot read {args.config}: {exc}")
+        except tomllib.TOMLDecodeError as exc:
+            ap.error(f"{args.config} is not valid TOML: {exc}")
+    if not args.location:
+        ap.error("a location code is required: --location, or `location` in --config")
 
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
     try:
-        rec = Recorder(args.out, args.site, args.operator, args.raw, args.csv,
+        rec = Recorder(args.out, args.location, args.operator, args.raw, args.csv,
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),

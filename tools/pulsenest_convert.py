@@ -178,6 +178,14 @@ def convert(session_dir, out_root=None, csv_mode="on", split_min=None, log=None)
                    ref_model=ref.get("model"), ref_avg=ref.get("avg"),
                    ref_probe_site=ref.get("site"), ref_note=ref.get("note"), **kw)
     regenerates = bool(launch)
+    if regenerates:
+        # Recorded before 2026-09-29: the launch note also seeded the condition, as a META
+        # `cond=` fired before any stream opened. Today's Recorder no longer does that by itself.
+        for r in recs:
+            if (r[0] != "D" and r[4] == "META" and r[3] not in in_streams
+                    and isinstance(r[5], dict) and r[5]["note"].startswith("cond=")):
+                rec.want_condition = r[5]["note"][len("cond="):]
+                break
     if rec.session_id != session_id:
         rec.log.warning("replayed session id %s differs from the record's %s", rec.session_id, session_id)
     stop_reason = "operator"
@@ -222,13 +230,29 @@ def convert(session_dir, out_root=None, csv_mode="on", split_min=None, log=None)
 
 def verify(session_dir, rec):
     """Compare every live board CSV with its rebuilt twin, byte for byte. Returns
-    [(name, 'identical' | 'DIFFERS' | 'missing')]."""
-    live = sorted(f for f in glob.glob(os.path.join(session_dir, "*.csv"))
-                  if os.path.basename(f) not in ("reference_spo2.csv", "session_events.csv"))
+    [(name, 'identical' | 'DIFFERS' | 'missing')].
+
+    Twins pair on subject-or-MAC plus `<date>_<time>_pNN`, not on the whole name: sessions
+    recorded before 2026-09-29 carry the condition where today's names carry the location
+    (`SUBJ01_RESTING_...` then, `SUBJ01_BENCH_...` now), and the rows are the same."""
+    def key(path):
+        parts = os.path.basename(path).split("_")
+        return (parts[0], "_".join(parts[-3:])) if len(parts) >= 4 else (os.path.basename(path),)
+
+    def board_csvs(d):
+        return sorted(f for f in glob.glob(os.path.join(d, "*.csv"))
+                      if os.path.basename(f) not in ("reference_spo2.csv", "session_events.csv")
+                      and not f.endswith("_replay.csv"))       # tools/offline_runner output
+    rebuilt ={key(f): f for f in board_csvs(rec.dir)}
+    by_tail = {}
+    for k, f in rebuilt.items():
+        by_tail.setdefault(k[-1], []).append(f)
     out = []
-    for f in live:
-        twin = os.path.join(rec.dir, os.path.basename(f))
-        if not os.path.exists(twin):
+    for f in board_csvs(session_dir):
+        twin = rebuilt.get(key(f))
+        if twin is None and len(by_tail.get(key(f)[-1], [])) == 1:
+            twin = by_tail[key(f)[-1]][0]     # a live `<MAC>_…` beside its rebuilt `SUBJnn_…`
+        if twin is None:
             out.append((os.path.basename(f), "missing"))
             continue
         a, b = io.open(f, "rb").read(), io.open(twin, "rb").read()

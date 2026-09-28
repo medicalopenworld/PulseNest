@@ -25553,3 +25553,36 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   **RCAL-ST30163-HOSPNAV-20260923** (spo2a=115.17, spo2b=21.54): defaults de firmware (lib v0.97 +
   OTA), `$SET` por sesión, o esperar otra campaña. BACKLOG: marcado hecho el item de `adc_code`
   (convención ya registrada); el resto del inbox sigue pendiente de triaje con Alex.
+
+## 2026-09-28/29 — Gráficos de análisis HOSPNAV y nombre de los CSV del recorder
+
+- `*_replay.csv` explicados: salida de `tools/offline_runner` (captura re-procesada por la lib en PC).
+- Añadido a `r_vs_ref_analysis.py` (SUBJ08) el XY SpO2 lib vs SpO2 VideoNest (`spo2_vs_ref_replay.png`):
+  casi todo bajo la identidad, dispersión vertical grande y un suelo aparente en ~71 % sin investigar.
+- Espectrogramas PPG/OT_LED1/OT_LED2 (8 s, 75 %, 0-10 Hz): SUBJ08 1142 p01 → `spectrogram_p01.png`
+  y SUBJ09 1206 p02 → `spectrogram_1206_p02.png`, en las carpetas `*_ANALYSIS` de cada campaña
+  (Alex fija ese criterio: los resultados de análisis van en `<campaña>_ANALYSIS`). Script aún en
+  scratchpad, no en el repo.
+- Por qué los CSV de SUBJ08 (`1051DB508850_…`) y SUBJ09 (`SUBJ09_PROBE-PLACED-IN-THE-LEFT_…`) se
+  llamaban distinto: el nombre canónico era `<SUBJECT>_<CONDITION>_…` y la **nota de lanzamiento
+  fijaba en silencio la condición**; las sesiones de SUBJ08 no tuvieron nota (sin evento NOTE), así
+  que se quedaron con el nombre provisional de la MAC.
+- **Decisión (Alex):** la nota no genera el nombre. Nombre = **`<SUBJECT>_<LOCATION>_<fecha>_<hora>_pNN.csv`**
+  (sujeto primero, como R16; sin MAC ni condición). Con sujeto al lanzar, el CSV abre ya con su nombre
+  final (un crash lo deja nombrado); sin sujeto, `<MAC>_…` y renombrado al cerrar. La nota es solo
+  un evento NOTE. Ficheros ya grabados NO se renombran.
+- **Decisión (Alex):** unificar los argumentos de `pulsenest_recorder.py` y `pulsenest_recorder_gui.py`:
+  `add_session_args()` + `CONFIG_FIELDS`/`load_session_config()`/`apply_session_config()` en el recorder;
+  la consola gana `--config`, `--site` pasa a `--location`, el GUI gana `--split-mb`; solo `--event-port`
+  es propio de la consola.
+- `pulsenest_convert.verify()` empareja por sujeto-o-MAC + `<fecha>_<hora>_pNN`, y replica la condición
+  que sembraba la nota en sesiones antiguas (`Recorder.want_condition`) → el corpus sigue byte a byte.
+- Tests: recorder 126/126, GUI 70/70, convert 11/11. Specs actualizadas: recorder spec, R16/R33 de
+  `capture_csv_format_spec.md`, `CAPTURE_SET_SPEC.md` §2.4, `docs/hospital_runbook.md`. Sin commit.
+- `docs/session_configs/example.toml` restaurado por Alex (la spec lo cita como plantilla).
+- **Decisión:** NO renombrar los CSV ya grabados en `captures/sessions` (romperían `session.json`,
+  `pulsenest_recorder.log`, `*_replay.csv` y citas; los scripts de análisis usan glob y la cabecera ya
+  dice sujeto/sitio). Si hacen falta nombres nuevos: `pulsenest_convert.py` → `derived/`.
+- Corregido `pulsenest_convert.verify()`: si no hay pareja exacta, empareja por `<fecha>_<hora>_pNN`
+  cuando es único (live `<MAC>_…` ↔ rebuilt `SUBJnn_…`), e ignora `*_replay.csv`. Verificado con la
+  sesión real `20260923_1309_HOSPNAV_SUBJ08`: 2 partes idénticas byte a byte; test 11/11.
