@@ -22,8 +22,9 @@ has not been triaged yet.
 ## Inbox
 
 <!-- Add new ideas below. One line each; optional indented context line. -->
-- Añadir a la nomenlatura del proyecto "adc_code" para salidas del ADC (y quizás LSB
+- [x] Añadir a la nomenlatura del proyecto "adc_code" para salidas del ADC (y quizás LSB
   para variaciones/intervalos/errores/tolerancias de adc_code)
+  (hecho: convención registrada en la memoria feedback_naming_adc_code_samples; la parte LSB sigue abierta)
 - Estudiar el solapamiento entre los estados PROBE_SATURATING y el resto
 - Estudiar la posibilidad de cambiar tia_diff por tia (eliminar diff)
 - Estudiar por qué para decidir PROBE_SATURATING usamos anyPositiveSaturation/tiaOverFs(FS_V) en vez de GUARD_V  

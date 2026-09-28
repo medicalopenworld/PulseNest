@@ -25531,3 +25531,25 @@ espectral, y el rango least/typ/max es tolerancia ENTRE ejemplares (relevante en
 extinción de Hb varía deprisa — motivo de la resistencia de calibración de los Nellcor);
 *half wave width* = FWHM, anchura de la campana al 50 % del pico (IR ancho, 65 nm → λ efectiva
 promediada, sensible a temperatura/corriente; menos crítico por ser planas las curvas en IR).
+
+## 2026-09-26/28 — Sensibilidad a la longitud de onda: cuantificación, bibliografía y cierre
+
+- Explicada con números la afirmación "el IR perdona, el rojo no": pendientes relativas de las
+  curvas de extinción (Prahl OMLC/Zijlstra 1991): Hb a 660 nm ≈ −1,5 %/nm; ambas especies en
+  880-920 ≈ +0,14 %/nm (~×10 más planas). Con la curva RCAL-ST30163: ±2 nm de tolerancia del rojo
+  ≈ 0,2 pt a SpO2 95 % y 0,5-1 pt a 80 % (error sistemático por ejemplar); la anchura del IR
+  (FWHM 65 nm) se promedia y se cancela a primer orden en R. Aclarado a preguntas de Alex:
+  0,2 pt corresponde a 2 nm (0,1 pt/nm a 95 %), "puntos" = puntos porcentuales de SpO2.
+- Bibliografía (2026-09-26): CONFIRMA rojo ≫ IR — Tsiakaka *Sensors* 2020 (ε rojo hasta 174 vs 54
+  L·mol⁻¹·cm⁻¹ el IR, ~×3, "la roja es la crítica"), Mannheimer IEEE TBME 1997 (rojo a 735 nm en
+  sensores de baja saturación), Webster 1997/Pologe 1987 (binning del rojo, Rcal Nellcor).
+  MATIZ — Reynolds BJA 1991: la deriva térmica real (rojo +5,5 nm, IR +7,8 nm en 0-50 °C) tiene
+  efecto despreciable a saturaciones normales; el rojo pesa a saturaciones bajas.
+- Pregunta de Alex sobre el datasheet Medle: la tolerancia estrecha del pico rojo (±2 nm vs ±10 nm
+  IR) NO es coincidencia — es el binning industrial para oximetría; el FWHM (17 vs 65 nm) sí viene
+  dado por el material (AlGaInP vs GaAs/AlGaAs). Todo registrado con fuentes en
+  `project_probe_dependent_specs`.
+- Cierre de sesión 2026-09-28. Queda abierta la decisión de Alex sobre aplicar
+  **RCAL-ST30163-HOSPNAV-20260923** (spo2a=115.17, spo2b=21.54): defaults de firmware (lib v0.97 +
+  OTA), `$SET` por sesión, o esperar otra campaña. BACKLOG: marcado hecho el item de `adc_code`
+  (convención ya registrada); el resto del inbox sigue pendiente de triaje con Alex.
