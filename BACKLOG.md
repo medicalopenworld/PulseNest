@@ -100,5 +100,12 @@ has not been triaged yet.
 - Post-campaña: retirar `session.json` a favor de la cabecera v0.4 cuando el formato lleve tiempo rodando
 - Reloj: móvil (`ntp=1`) y portátil difieren 2,3 s (`offset_ms` en `reference_spo2.csv`). ¿Cuál va bien? Lo dice la foto de CLOCK ANCHOR. Para alinear placa y monitor basta la diferencia, ya medida por trama
 - `pulsenest_convert.py`: comprobar también `reference_spo2.csv` byte a byte (hoy solo los CSV de placa)
+- [ ] HR3: probar un pasa banda 0,5–15 Hz *zero-phase* de 4.º orden en lugar del paso bajo Butterworth 15 Hz
+  actual. Primer paso: compararlos en la ventana HR3TEST (`HR3TestCalc`/`HR3TestWindow`) sobre capturas reales.
+  Contexto (spec lib §HR3, v0.83): el pasa banda se descartó a propósito ("un corte alto cerca de la fundamental
+  distorsiona lo que usa el HPS"); la media de la ventana quita el DC pero no la deriva lenta dentro de los 10 s,
+  que es lo que podría ganar. A aclarar: el espectro de potencia no ve la fase, así que zero-phase solo aporta
+  si importa la forma temporal; 0,5 Hz = 30 lpm es el suelo de PR OMS (atenúa ahí); zero-phase = filtfilt sobre
+  la ventana (no causal); ¿4.º orden total, o 2.º aplicado ida y vuelta (magnitud al cuadrado)?
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->

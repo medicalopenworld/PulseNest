@@ -128,9 +128,12 @@ captures/sessions/<SESSION_ID>/
         board_<MAC>_0001.pnraw    one stream per board, split into parts (§5)
         board_<MAC>_0002.pnraw
         aux_vn_<IP>_0001.pnraw    VideoNest's $VN1 stream, same format
-    derived/                      produced OFF-SITE by the converter, never during the session
-        SUBJ01_HOSP01_20260926_101500_p01.csv   rebuilt from raw; must equal the live one
+    derived/                      produced OFF-SITE, never during the session
+        SUBJ01_HOSP01_20260926_101500_p01.csv   rebuilt from raw by the converter; must equal the live one
         reference_spo2.csv                      rebuilt from raw; must equal the live one
+        replay_lib0.96/                         tools/offline_runner: the parts re-run through the
+            SUBJ01_HOSP01_..._p01_replay.csv    library on a PC, one folder per library version
+                                                (and `_ot<thr>` when the threshold is overridden)
 ```
 
 `SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>[_<SUBJECT>]` with `SITE` a short code typed at start.

@@ -1,7 +1,10 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.20 — native/offline (no hardware), library API v0.96
+// Runner version: v0.21 — native/offline (no hardware), library API v0.96
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
+//
+// v0.21 (2026-09-29): output moves out of the session directory, which holds only what was
+//   recorded, into <input dir>/derived/replay_lib<ver>[_ot<thr>]/ (--out DIR overrides).
 //
 // v0.20 (2026-09-24): rewritten for the current library API and the PulseNest capture CSVs.
 //   * Feeds raw ADC codes through test_feed_sample() — the full _process_sample() path
@@ -282,20 +285,41 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, const std::vector<CsvRow>& r
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
+    static const char* USAGE =
+        "Usage: incunest_offline_runner <file.csv | directory> [--ot-thr <A/A>] [--out DIR]\n";
     fs::path target;
+    fs::path out_dir;
+    std::string ot_arg;
     float ot_thr = -1.0f;   // <0 = keep library default
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--ot-thr") == 0 && i + 1 < argc) {
-            ot_thr = std::stof(argv[++i]);
+            ot_arg = argv[++i];
+            ot_thr = std::stof(ot_arg);
+        } else if (std::strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+            out_dir = argv[++i];
         } else if (target.empty()) {
             target = argv[i];
         } else {
-            fprintf(stderr, "Usage: incunest_offline_runner <file.csv | directory> [--ot-thr <A/A>]\n");
+            fprintf(stderr, "%s", USAGE);
             return 1;
         }
     }
     if (target.empty() || !fs::exists(target)) {
-        fprintf(stderr, "Usage: incunest_offline_runner <file.csv | directory> [--ot-thr <A/A>]\n");
+        fprintf(stderr, "%s", USAGE);
+        return 1;
+    }
+    // The session directory holds only what was recorded: a replay is derived, and is named
+    // by what it depends on, so another library version or threshold never overwrites it.
+    if (out_dir.empty()) {
+        fs::path base = fs::is_directory(target) ? target : target.parent_path();
+        std::string name = std::string("replay_lib") + INCUNEST_AFE4490_VERSION;
+        if (ot_thr > 0) name += "_ot" + ot_arg;
+        out_dir = base / "derived" / name;
+    }
+    std::error_code ec;
+    fs::create_directories(out_dir, ec);
+    if (ec) {
+        fprintf(stderr, "cannot create %s: %s\n", out_dir.string().c_str(), ec.message().c_str());
         return 1;
     }
 
@@ -331,9 +355,9 @@ int main(int argc, char* argv[]) {
         return stem;
     };
 
-    printf("incunest_offline_runner v0.20 (lib %s) — %zu file(s)%s\n",
+    printf("incunest_offline_runner v0.21 (lib %s) — %zu file(s)%s -> %s\n",
            INCUNEST_AFE4490_VERSION, files.size(),
-           ot_thr > 0 ? "" : ", ot-thr = library default");
+           ot_thr > 0 ? "" : ", ot-thr = library default", out_dir.string().c_str());
     if (ot_thr > 0) printf("  rsqm_ot_thr override: %g A/A\n", ot_thr);
 
     std::string cur_group;
@@ -361,7 +385,7 @@ int main(int argc, char* argv[]) {
             if (ot_thr > 0) afe->setRsqmOtThr(ot_thr);
         }
 
-        fs::path out_path = fpath.parent_path() / (fpath.stem().string() + "_replay.csv");
+        fs::path out_path = out_dir / (fpath.stem().string() + "_replay.csv");
         PartStats st = replay_part(*afe, rows, out_path, &smp_idx);
         printf("  %s -> %s  (%d samples, probe-on %.1f%%, SpO2 producing %.1f%%",
                fpath.filename().string().c_str(), out_path.filename().string().c_str(),

@@ -25586,3 +25586,20 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
 - Corregido `pulsenest_convert.verify()`: si no hay pareja exacta, empareja por `<fecha>_<hora>_pNN`
   cuando es único (live `<MAC>_…` ↔ rebuilt `SUBJnn_…`), e ignora `*_replay.csv`. Verificado con la
   sesión real `20260923_1309_HOSPNAV_SUBJ08`: 2 partes idénticas byte a byte; test 11/11.
+- **Decisión (Alex, 29-09):** los `*_replay.csv` salen de la carpeta de sesión (que solo guarda lo
+  grabado) a `<sesión>/derived/replay_lib<ver>[_ot<thr>]/`. `tools/offline_runner` v0.21 escribe ahí
+  (`--out DIR` opcional). Los 17 replays existentes regenerados y comparados: idénticos byte a byte
+  con lib 0.96 y umbral por defecto → movidos (borrados los duplicados). Consecuencia: el replay de
+  SUBJ09 1238 con `--ot-thr 1.0e-4` citado en la spec §9 ya no existía (lo pisó uno posterior; es
+  el problema que el cambio evita). `r_vs_ref_analysis.py` lee de `derived/replay_lib0.96/`;
+  `pairs_replay.csv`, resumen y ajuste conjunto (115,17 − 21,54·R) salen idénticos. Actualizadas la
+  spec de la lib §9 (sin cambio de versión: solo describe el runner) y el árbol de la spec del recorder.
+- Pregunta de Alex: ¿R = PI(red)/PI(IR)? Respuesta con la ISO 80601-2-61:2026: sí en primera aproximación
+  (Fórmula EE.1, EE.4: R ≈ log(max/min) rojo / IR ≈ (AC/DC)rojo/(AC/DC)IR = %mod_rojo/%mod_IR; II.2.1: %mod
+  "sometimes referred to as … Perfusion Index, or PI"). Matices: EE.1 es solo un ejemplo (R definido de forma
+  abstracta en 201.3.239); el PI que se muestra es solo IR (201.3.245 Nota 3); AC/DC aproxima el log para
+  modulación pequeña. Consecuencia: "PI espectral" y "R alternativo" son el mismo problema de estimar el AC
+  pulsátil por canal — memorias enlazadas. La definición ISO de %mod (solo cambios de sangre arterial) está
+  más cerca de un AC espectral que de nuestro sqrt(var), que incluye ruido.
+- Versión de la librería NO subida: el cambio es solo la descripción del runner en la spec §9 (política:
+  no se sube por cambios no funcionales). Commit en ambos repos.
