@@ -25603,3 +25603,19 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   más cerca de un AC espectral que de nuestro sqrt(var), que incluye ruido.
 - Versión de la librería NO subida: el cambio es solo la descripción del runner en la spec §9 (política:
   no se sube por cambios no funcionales). Commit en ambos repos.
+
+## 2026-09-30 — PILAB: ayuda del Plot 1 y ruta offline
+
+- Alex detecta que la ayuda de PILAB dice "overlaid with the DC estimate from STEP1". Verificado: desde el
+  2026-06-15 el Plot 1 muestra `AC_t` (salida pulsátil del STEP1), pero ese cambio solo llegó a la ruta en
+  directo; la ruta offline (LOAD CSV) seguía metiendo `dc_sub_ir` → el mismo plot mostraba el DC offline
+  y el pulso en directo. Corregido: las dos rutas usan `ac_t_ir` (prueba offscreen: valores idénticos),
+  ayuda reescrita ("overlaid with AC_t, the pulsatile waveform that STEP1 extracts" — no "AC estimate",
+  que en PILAB es el nombre del STEP2), buffers renombrados (`_dc_sub_*`→`_ac_t_*`, `_ac_t_*`→`_ac_r_*`).
+  Spec del lab v1.73.
+- Curva gris `led1_sub` (DC ~10⁵ cuentas, mismo eje que `AC_t` centrada en 0 → la aplastaba): **quitada**
+  a petición de Alex, con `_ir_buf` y `_CLR_SIG`. Prueba offscreen OK.
+- `AC_t` / `AC_r` (nombres no documentados en el código, deducidos): `_t` = onda en el tiempo, muestra a
+  muestra (salida STEP1); `_r` = valor que entra en R/PI (amplitud, STEP2), pareja de `dc_r` (DC del
+  denominador, STEP3) frente a `dc_sub` (DC que se resta, STEP1) — la misma distinción DC_sub/DC_R de la
+  tarea pendiente de separar el DC.

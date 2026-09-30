@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.72
+# pulsenest_lab — Specification v1.73
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2032,7 +2032,7 @@ independently configured PI estimators side by side on live or recorded data.
 ┌─────────────────────────────────────────────────────────┐
 │ LEFT (4 stacked plots, X linked)  │ RIGHT panel         │
 │                                   │ [LOAD CSV][LIVE]    │
-│ Plot 1: led1_sub + DC_sub A/B     │ [PAUSE]         [?] │
+│ Plot 1: AC_t A/B                  │ [PAUSE]         [?] │
 │                                   │ ┌─────────┬───────┐ │
 │ Plot 2: AC_r [ADC] A/B            │ │Instance │Inst.  │ │
 │                                   │ │A(orange)│B(blue)│ │
@@ -2046,7 +2046,9 @@ independently configured PI estimators side by side on live or recorded data.
 ```
 
 **Plots:**
-1. Raw `led1_sub` (grey) + DC_sub from STEP1 for A (orange) and B (blue) — shows DC tracking quality.
+1. `AC_t`, the pulsatile waveform STEP1 extracts, for A (orange) and B (blue) — shows the pulse
+   shape STEP1 leaves for STEP2 to measure (since 2026-06-15; it showed DC_sub before). No raw
+   `led1_sub` trace since v1.73: at ~10^5 counts on the same axis it flattened the zero-mean AC_t.
 2. AC amplitude (STEP2 output) for A and B — compares estimator magnitude.
 3. PI_ir [%] for A and B — final PI result (AC/DC × 100).
 4. R ratio for A and B — modulation ratio entering SpO2 formula.
@@ -2619,6 +2621,18 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.73 — 2026-09-30
+
+**PILAB Plot 1 shows `AC_t` everywhere, and says so.** Spotted by Alex in the `?` help, which
+still read "overlaid with the DC estimate from STEP1". Plot 1 was switched from `DC_sub` to
+`AC_t` (STEP1's pulsatile output) on 2026-06-15, but only on the live path: the offline CSV
+path kept appending `dc_sub_ir`, so the same plot showed the baseline (~10⁵ counts) offline and
+the zero-mean pulse live. Now both append `ac_t_ir` — checked offscreen, live and offline give
+identical values — and the help text describes `AC_t`. The buffers had been cross-named since
+that change (`_dc_sub_*` held `AC_t`, `_ac_t_*` held `AC_r`); renamed to `_ac_t_*` (Plot 1) and
+`_ac_r_*` (Plot 2). The grey raw `led1_sub` trace is gone (Alex): at ~10⁵ counts on the same axis
+it squeezed the zero-mean `AC_t` into the bottom of the plot; with it go `_ir_buf` and `_CLR_SIG`.
 
 ### v1.72 — 2026-09-19
 

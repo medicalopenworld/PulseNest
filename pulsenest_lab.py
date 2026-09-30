@@ -5427,13 +5427,12 @@ class PILabWindow(QtWidgets.QMainWindow):
     pipeline: STEP1 (AC extraction) → STEP2 (AC estimator) → STEP3 (DC denominator).
 
     Layout:
-      Left  : 4 stacked plots — signal+DC_sub, AC_r over time, PI_ir, R ratio.
+      Left  : 4 stacked plots — AC_t, AC_r over time, PI_ir, R ratio.
       Right : Tabbed config panels for instance A (orange) and B (blue) + value table.
     """
 
     _BUF_LEN    = 3000    # 3000 samples @ 50 Hz → 60 s
     _PLOT_WIN_S = 30.0    # visible x-axis window (s)
-    _CLR_SIG    = "#888888"
     _CLR_A      = "#FF8800"   # instance A — orange
     _CLR_B      = "#44AAFF"   # instance B — blue
 
@@ -5454,11 +5453,10 @@ class PILabWindow(QtWidgets.QMainWindow):
 
         # rolling plot buffers
         self._t_buf     = deque(maxlen=self._BUF_LEN)
-        self._ir_buf    = deque(maxlen=self._BUF_LEN)
-        self._dc_sub_a  = deque(maxlen=self._BUF_LEN)
-        self._dc_sub_b  = deque(maxlen=self._BUF_LEN)
-        self._ac_t_a    = deque(maxlen=self._BUF_LEN)
-        self._ac_t_b    = deque(maxlen=self._BUF_LEN)
+        self._ac_t_a  = deque(maxlen=self._BUF_LEN)
+        self._ac_t_b  = deque(maxlen=self._BUF_LEN)
+        self._ac_r_a    = deque(maxlen=self._BUF_LEN)
+        self._ac_r_b    = deque(maxlen=self._BUF_LEN)
         self._pi_ir_a   = deque(maxlen=self._BUF_LEN)
         self._pi_ir_b   = deque(maxlen=self._BUF_LEN)
         self._r_a       = deque(maxlen=self._BUF_LEN)
@@ -5519,7 +5517,6 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.p_sig.setLabel('left', "AC_t_ir [ADC]")
         self.p_sig.showGrid(x=True, y=True, alpha=0.3)
         self.p_sig.addLegend(offset=(5, 5))
-        self.curve_sig   = self.p_sig.plot(pen=_pen(self._CLR_SIG), name="led1_sub")
         self.curve_act_a = self.p_sig.plot(pen=_pen(self._CLR_A),   name="AC_t A")
         self.curve_act_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="AC_t B")
 
@@ -5849,9 +5846,9 @@ class PILabWindow(QtWidgets.QMainWindow):
         calc.win_norm_s  = cfg['win_norm'].value()
         calc._fs = 0.0  # force reconfigure on next sample
         # clear all plot buffers so comparison starts fresh
-        self._t_buf.clear(); self._ir_buf.clear()
-        self._dc_sub_a.clear(); self._dc_sub_b.clear()
-        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._t_buf.clear()
+        self._ac_t_a.clear(); self._ac_t_b.clear()
+        self._ac_r_a.clear();   self._ac_r_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._spo2_a.clear();   self._spo2_b.clear()
@@ -5922,11 +5919,10 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.calc_b.update(ir, red, fs)
 
         self._t_buf.append(t)
-        self._ir_buf.append(float(ir))
-        self._dc_sub_a.append(self.calc_a.ac_t_ir)
-        self._dc_sub_b.append(self.calc_b.ac_t_ir)
-        self._ac_t_a.append(self.calc_a.ac_r_ir)
-        self._ac_t_b.append(self.calc_b.ac_r_ir)
+        self._ac_t_a.append(self.calc_a.ac_t_ir)
+        self._ac_t_b.append(self.calc_b.ac_t_ir)
+        self._ac_r_a.append(self.calc_a.ac_r_ir)
+        self._ac_r_b.append(self.calc_b.ac_r_ir)
         self._pi_ir_a.append(self.calc_a.pi_ir)
         self._pi_ir_b.append(self.calc_b.pi_ir)
         self._r_a.append(self.calc_a.R)
@@ -5944,9 +5940,9 @@ class PILabWindow(QtWidgets.QMainWindow):
             return
         self._t0_us = None
         self.calc_a.reset(); self.calc_b.reset()
-        self._t_buf.clear(); self._ir_buf.clear()
-        self._dc_sub_a.clear(); self._dc_sub_b.clear()
-        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._t_buf.clear()
+        self._ac_t_a.clear(); self._ac_t_b.clear()
+        self._ac_r_a.clear();   self._ac_r_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._spo2_a.clear();   self._spo2_b.clear()
@@ -5957,11 +5953,10 @@ class PILabWindow(QtWidgets.QMainWindow):
         t = np.array(self._t_buf)
         t_end = t[-1]
 
-        self.curve_sig.setData(t,    np.array(self._ir_buf))
-        self.curve_act_a.setData(t, np.array(self._dc_sub_a))
-        self.curve_act_b.setData(t, np.array(self._dc_sub_b))
-        self.curve_ac_a.setData(t, np.array(self._ac_t_a))
-        self.curve_ac_b.setData(t, np.array(self._ac_t_b))
+        self.curve_act_a.setData(t, np.array(self._ac_t_a))
+        self.curve_act_b.setData(t, np.array(self._ac_t_b))
+        self.curve_ac_a.setData(t, np.array(self._ac_r_a))
+        self.curve_ac_b.setData(t, np.array(self._ac_r_b))
         self.curve_pi_a.setData(t, np.array(self._pi_ir_a))
         self.curve_pi_b.setData(t, np.array(self._pi_ir_b))
         self.curve_r_a.setData(t,    np.array(self._r_a))
@@ -6017,11 +6012,12 @@ class PILabWindow(QtWidgets.QMainWindow):
 <p>Each plot shows the output of one stage of the 3-step PI pipeline,
 for instances <b style="color:#FF8800;">A</b> and <b style="color:#44AAFF;">B</b> side by side.</p>
 
-<h3>Plot 1 — IR signal + DC_sub</h3>
-<p>The raw <code>led1_sub</code> (IR, grey) overlaid with the DC estimate from STEP1.
-STEP1 tracks the slow baseline so it can be subtracted to isolate the AC pulse.
-Use this plot to judge whether the DC tracker follows the baseline correctly
-(too fast → distorts the pulse; too slow → leaves residual drift).</p>
+<h3>Plot 1 — AC_t_ir [ADC counts]</h3>
+<p><code>AC_t</code>, the pulsatile IR waveform that STEP1 extracts: what is left of
+<code>led1_sub</code> once the slow baseline is removed, sample by sample, and what STEP2
+then measures in amplitude. Use this plot to judge STEP1 by the shape it leaves
+(a baseline tracker that is too fast, or a band that is too narrow, distorts the pulse;
+one that is too slow, or too wide, leaves residual drift).</p>
 
 <h3>Plot 2 — AC_r [ADC counts]</h3>
 <p>The AC amplitude estimated by STEP2, in raw ADC counts.
@@ -6092,9 +6088,9 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
         self.btn_live.setEnabled(True)
         self.btn_load.setEnabled(False)
         self.calc_a.reset(); self.calc_b.reset()
-        self._t_buf.clear(); self._ir_buf.clear()
-        self._dc_sub_a.clear(); self._dc_sub_b.clear()
-        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._t_buf.clear()
+        self._ac_t_a.clear(); self._ac_t_b.clear()
+        self._ac_r_a.clear();   self._ac_r_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._t0_us = None
@@ -6111,11 +6107,11 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
             t = (ts - self._t0_us) * 1e-6
             self.calc_a.update(ir, red, fs)
             self.calc_b.update(ir, red, fs)
-            self._t_buf.append(t); self._ir_buf.append(ir)
-            self._dc_sub_a.append(self.calc_a.dc_sub_ir)
-            self._dc_sub_b.append(self.calc_b.dc_sub_ir)
-            self._ac_t_a.append(self.calc_a.ac_r_ir)
-            self._ac_t_b.append(self.calc_b.ac_r_ir)
+            self._t_buf.append(t)
+            self._ac_t_a.append(self.calc_a.ac_t_ir)
+            self._ac_t_b.append(self.calc_b.ac_t_ir)
+            self._ac_r_a.append(self.calc_a.ac_r_ir)
+            self._ac_r_b.append(self.calc_b.ac_r_ir)
             self._pi_ir_a.append(self.calc_a.pi_ir)
             self._pi_ir_b.append(self.calc_b.pi_ir)
             self._r_a.append(self.calc_a.R)
@@ -6133,9 +6129,9 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
         self.calc_a.reset(); self.calc_b.reset()
         self.btn_live.setEnabled(False)
         self.btn_load.setEnabled(True)
-        self._t_buf.clear(); self._ir_buf.clear()
-        self._dc_sub_a.clear(); self._dc_sub_b.clear()
-        self._ac_t_a.clear();   self._ac_t_b.clear()
+        self._t_buf.clear()
+        self._ac_t_a.clear(); self._ac_t_b.clear()
+        self._ac_r_a.clear();   self._ac_r_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self.statusBar().showMessage(_MOUSE_HINT)
