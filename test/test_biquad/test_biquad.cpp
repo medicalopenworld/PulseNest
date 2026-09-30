@@ -84,6 +84,58 @@ void test_biquad_drains_to_zero() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, last);
 }
 
+// ── HR3 anti-aliasing low-pass (v0.97): 4th-order Butterworth, 15 Hz at 500 Hz ──────────────
+// 25 Hz is the Nyquist of HR3's 50 Hz decimated rate: what passes there folds into the band.
+
+static float lp4_amplitude(float freq_hz) {
+    INCUNEST_AFE4490::TestLowPass4 f;
+    f.init(15.0f, 500.0f);
+    f.reset();
+    float peak = 0.0f;
+    for (int i = 0; i < 4000; i++) {
+        float y = f.process(sinf(2.0f * (float)M_PI * freq_hz * i / 500.0f));
+        if (i >= 2000 && fabsf(y) > peak) peak = fabsf(y);
+    }
+    return peak;
+}
+
+static float lp2_amplitude(float freq_hz) {
+    INCUNEST_AFE4490::TestBiquadFilter f;
+    f.init_lp(15.0f, 500.0f);
+    f.reset();
+    return sine_amplitude_after_filter(f, freq_hz, 500.0f, 4000);
+}
+
+// The pulse band (a 4 Hz = 240 BPM fundamental) passes untouched.
+void test_lp4_passes_pulse_band() {
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 1.0f, lp4_amplitude(4.0f));
+}
+
+// Butterworth: -3 dB at the cutoff (two identical 2nd-order sections would give -6 dB, 0.5).
+void test_lp4_minus_3db_at_cutoff() {
+    TEST_ASSERT_FLOAT_WITHIN(0.03f, 0.7071f, lp4_amplitude(15.0f));
+}
+
+// At 25 Hz: < 0.14 (about -17 dB) where the 2nd-order low-pass it replaces leaves ~0.34 (-9.4 dB).
+void test_lp4_attenuates_decimated_nyquist() {
+    float a4 = lp4_amplitude(25.0f);
+    float a2 = lp2_amplitude(25.0f);
+    TEST_ASSERT_LESS_THAN_FLOAT(0.14f, a4);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.30f, a2);
+}
+
+// Unity DC gain, and the precharge after reset() lands each section on its steady state.
+void test_lp4_dc_gain_and_precharge() {
+    INCUNEST_AFE4490::TestLowPass4 f;
+    f.init(15.0f, 500.0f);
+    f.reset();
+    float first = f.process(1.0e-4f);
+    float last  = first;
+    for (int i = 0; i < 500; i++) last = f.process(1.0e-4f);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-8f, 1.0e-4f, first);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-8f, 1.0e-4f, last);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_biquad_passband_passes);
@@ -91,5 +143,9 @@ int main() {
     RUN_TEST(test_biquad_attenuates_high_freq);
     RUN_TEST(test_biquad_hr2_attenuates_20hz);
     RUN_TEST(test_biquad_drains_to_zero);
+    RUN_TEST(test_lp4_passes_pulse_band);
+    RUN_TEST(test_lp4_minus_3db_at_cutoff);
+    RUN_TEST(test_lp4_attenuates_decimated_nyquist);
+    RUN_TEST(test_lp4_dc_gain_and_precharge);
     return UNITY_END();
 }

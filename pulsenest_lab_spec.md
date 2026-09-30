@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.73
+# pulsenest_lab — Specification v1.74
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2029,37 +2029,73 @@ independently configured PI estimators side by side on live or recorded data.
 #### PILabWindow layout
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ LEFT (4 stacked plots, X linked)  │ RIGHT panel         │
-│                                   │ [LOAD CSV][LIVE]    │
-│ Plot 1: AC_t A/B                  │ [PAUSE]         [?] │
-│                                   │ ┌─────────┬───────┐ │
-│ Plot 2: AC_r [ADC] A/B            │ │Instance │Inst.  │ │
-│                                   │ │A(orange)│B(blue)│ │
-│ Plot 3: PI_ir [%] A/B             │ │ STEP1   │ STEP1 │ │
-│                                   │ │ STEP2   │ STEP2 │ │
-│ Plot 4: R = PI_red/PI_ir A/B      │ │ STEP3   │ STEP3 │ │
-│                                   │ └─────────┴───────┘ │
-│                                   │ Value table 4×2     │
-│                                   │ PI_ir/PI_red/R/AC_r  │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ LEFT (6 stacked plots, X linked)  │ RIGHT panel          │
+│                                   │ [LOAD CSV][LIVE]     │
+│ Plot 1: AC waveform A/B           │ [PAUSE]          [?] │
+│ Plot 2: AC amplitude A/B          │ ┌─────────┬───────┐  │
+│ Plot 3: led1_sub + DC denom. A/B  │ │Instance │Inst.  │  │
+│ Plot 4: PI_ir [%] A/B             │ │A(orange)│B(blue)│  │
+│ Plot 5: R = PI_red/PI_ir A/B      │ │ STEP1   │ STEP1 │  │
+│ Plot 6: SpO2 [%] A/B              │ │         │       │  │
+│                                   │ │ STEP2   │ STEP2 │  │
+│                                   │ │ STEP3   │ STEP3 │  │
+│                                   │ └─────────┴───────┘  │
+│                                   │ Value table 8×2      │
+└──────────────────────────────────────────────────────────┘
 ```
 
+**Names (v1.74, Alex chose "option A").** Each quantity is named for what it is, and its stage is
+said beside it on screen. Per channel (`_ir` / `_red`):
+
+| Name | What it is | Stage |
+|---|---|---|
+| `ac_wave` | AC **waveform**, sample by sample | STEP1 "AC waveform extraction" |
+| `dc_base` | the baseline STEP1 subtracts to get `ac_wave` | STEP1 |
+| `ac_amp` | AC **amplitude** (RMS, peak-to-peak or spectral, per method) | STEP2 "AC amplitude estimator" |
+| `dc_norm` | the DC that normalises it — the PI denominator | STEP3 "DC denominator" |
+
+`PI = ac_amp / dc_norm × 100`, `R = PI_red / PI_ir`. They replace `ac_t` / `ac_r` / `dc_sub` / `dc_r`,
+whose one-letter suffixes had to be deduced. The same base/norm split is still pending in the
+library, where one EMA mean serves both (`project_spo2_dc_split_task`).
+
 **Plots:**
-1. `AC_t`, the pulsatile waveform STEP1 extracts, for A (orange) and B (blue) — shows the pulse
-   shape STEP1 leaves for STEP2 to measure (since 2026-06-15; it showed DC_sub before). No raw
-   `led1_sub` trace since v1.73: at ~10^5 counts on the same axis it flattened the zero-mean AC_t.
-2. AC amplitude (STEP2 output) for A and B — compares estimator magnitude.
-3. PI_ir [%] for A and B — final PI result (AC/DC × 100).
-4. R ratio for A and B — modulation ratio entering SpO2 formula.
+1. AC waveform (`ac_wave`, STEP1) for A (orange) and B (blue) — the pulse shape STEP1 leaves for
+   STEP2 to measure (since 2026-06-15; it showed the baseline before). No raw `led1_sub` trace since
+   v1.73: at ~10^5 counts on the same axis it flattened the zero-mean waveform. Legend: "A" / "B".
+2. AC amplitude (`ac_amp`, STEP2) for A and B — compares estimator magnitude. Legend: "A" / "B".
+3. DC denominator (`dc_norm_ir`, STEP3) for A and B over the raw `led1_sub` (grey) — how closely
+   each DC estimator follows the baseline and how far it lags after a step (gain change, movement),
+   while PI and R are biased (v1.74, Alex). The grey trace belongs here, on the DC's own scale; A and B
+   1 % apart still look like one line at ~10^5 counts — if that proves too coarse, the next step is to
+   plot (dc_norm_A − dc_norm_B) / dc_norm_B in %. Legend: "led1_sub" / "A" / "B".
+4. PI_ir [%] for A and B — final PI result (ac_amp / dc_norm × 100).
+5. R ratio for A and B — modulation ratio entering SpO2 formula.
+6. SpO2 [%] for A and B — spo2_a − spo2_b × R, coefficients synced from the firmware `$CFG`.
 
 **Config columns A / B:** always visible side by side (not tabs). Each column has an independent
 `_make_config_tab()` panel with STEP1/2/3 method combo + associated parameter spinboxes + [APPLY] button.
-Font sizes: combos/spins 17 px, form labels 17 px.
+Section headers: "STEP1: AC waveform extraction", "STEP2: AC amplitude estimator", "STEP3: DC
+denominator". Font sizes: combos/spins 17 px, form labels 17 px.
+**Unapplied parameters are red (v1.74, Alex).** A control whose shown value is not the one its
+instance runs with gets a red background (`#7A1C1C`, the `dirty` property + `_PILAB_DIRTY_QSS`)
+until APPLY or FIRMWARE PRESET. It compares against the snapshot `_apply_config()` takes, so
+setting a value back to the applied one clears it; a disabled parameter (another method selected)
+still shows red if it changed, because APPLY will send it. At startup the restored `.ini` values are
+applied, so the window opens with nothing red.
 
-**Value table:** 4 rows × 2 cols (A / B). Font 24 px data, 20 px headers. Rows: PI_ir [%], PI_red [%], R, AC_r_ir.
+**Value table:** 8 rows × 2 cols (A / B). Font 24 px data, 20 px headers. Rows: ac_amp_red,
+dc_norm_red, ac_amp_ir, dc_norm_ir, PI_red [%], PI_ir [%], R, SpO2 [%] — the code names, because the
+row tooltips use them in the formulas (PI_ir = ac_amp_ir / dc_norm_ir × 100).
 
-**Help button `?`:** opens a `QDialog` with HTML explaining the four plots and the pipeline.
+**Settings are saved on APPLY / FIRMWARE PRESET (v1.74).** Each apply writes that instance's
+**applied** values to `PILabWindow/<A|B>/<key>` (keys = `_CFG_KEYS`, unchanged from before, so old
+`.ini` files restore). `closeEvent` keeps only the geometry. Before, the values were written only in
+`closeEvent`, so a forced stop (a relaunch, a crash, a hook killing Python) lost them — Alex noticed
+they were not being kept — and a clean close saved the values *shown*, so a red, never-applied value
+was silently applied at the next opening.
+
+**Help button `?`:** opens a `QDialog` with HTML explaining the names, the six plots and the pipeline.
 
 **Feed architecture:**
 - `feed_sample(ir, red, fs, ts_us)` — called per sample in `_process_frames_tick()`.
@@ -2621,6 +2657,35 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.74 — 2026-09-30
+
+**PILAB names say what a quantity is, and which STEP makes it** (Alex asked whether "AC_t"/"AC_r"
+should become "STEP1"/"STEP2"; a stage is where a value comes from, not what it is, so both are
+said). Plot axes "AC waveform (AC_t) — STEP1 [ADC]" and "AC amplitude (AC_r) — STEP2 [ADC]",
+legends "A"/"B"; config headers "STEP1: AC waveform extraction" and "STEP2: AC amplitude
+estimator" (they fit: 700 px in a 716 px column, window minimum width unchanged). The value table
+keeps its symbols, which its tooltips use in formulas, and the help and the `PICalc` docstring now
+define `_t`/`_r`. On the way: PILAB has **five** plots, not four — the SpO2 plot was missing from
+the help, the docstring and this section — and the SpO2 row tooltip said "110 − 25×R, not
+calibrated" while the code uses the firmware's own spo2_a/spo2_b. *(The `AC_t`/`AC_r` names of
+this paragraph were then replaced by `ac_wave`/`ac_amp`/`dc_base`/`dc_norm`, same version — §7.11.)*
+Then, from Alex's first look: the two long axis titles break over two lines
+("AC waveform (AC_t)<br>STEP1 [ADC]"), and all five left axes get **one shared width** — the
+plots share the time axis, and a two-line label (or longer tick texts) on some of them had shifted
+those plot areas sideways. The width is the sum `AxisItem._updateWidth()` makes, taken from the font
+(tallest label × 0.8 + a six-character tick), not a px constant. And the help's section titles were
+smaller than its body text: **Qt's rich text ignores `font-size` on `<h3>` in every form** (selector,
+class, inline style, inner span — measured: it keeps its own 14.4 pt heading size while the body got
+its 30 px), so the titles are now `<p class="h">`, bold, 36 px. Dialog title "Four" → "Five plots
+explained". Finally, unapplied parameters: every PILAB control whose shown value differs from
+the value in use has a red background until APPLY / FIRMWARE PRESET (§7.11); checked offscreen,
+including the painted colour and that the combos' normal look and popup are unchanged.
+Settings: saved on every APPLY / FIRMWARE PRESET, applied values only (§7.11), after Alex noticed
+PILAB forgot them — they were written only in `closeEvent`, which a forced stop never reaches.
+And a **STEP3 plot** (now Plot 3, the others move down one): the raw `led1_sub` in grey with
+`dc_norm_ir` of A and B, the only pipeline stage that had no plot. Checked offscreen: fed live and
+offline, cleared wherever the other buffers are, six plots aligned and X-linked.
 
 ### v1.73 — 2026-09-30
 

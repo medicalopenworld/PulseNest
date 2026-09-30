@@ -4512,14 +4512,20 @@ class HR3TestCalc:
 class PICalc:
     """Configurable 3-step Perfusion Index pipeline.
 
-    Pipeline: STEP1 (AC extraction) → STEP2 (AC estimator) → STEP3 (DC for denominator)
+    Pipeline: STEP1 (AC waveform extraction) → STEP2 (AC amplitude estimator)
+              → STEP3 (DC for denominator)
 
-    STEP1 — AC extraction:
+    Outputs, per channel (_ir/_red): ac_wave = AC waveform, sample by sample (STEP1);
+    dc_base = the baseline STEP1 subtracts to get it; ac_amp = AC amplitude (STEP2; RMS,
+    peak-to-peak or spectral, per method); dc_norm = DC that normalises it (STEP3).
+    PI = ac_amp / dc_norm × 100; R = PI_red / PI_ir.
+
+    STEP1 — AC waveform extraction:
       S1_EMA  (1.1): EMA-based subtraction (τ_sub seconds)
       S1_BPF  (1.2): 2nd-order Butterworth bandpass (bpf_lo–bpf_hi Hz)
       S1_NONE (1.3): pass-through (only valid with spectral STEP2 2.4/2.5)
 
-    STEP2 — AC estimator:
+    STEP2 — AC amplitude estimator:
       S2_EMA_RMS   (2.1): running RMS via EMA of x² — firmware method method
       S2_WIN_RMS   (2.2): windowed RMS (win_s seconds)
       S2_PEAKPK    (2.3): peak-to-peak / 2 over win_s seconds
@@ -4566,7 +4572,7 @@ class PICalc:
         self._alpha_sub = 0.0; self._alpha_ac = 0.0; self._alpha_norm = 0.0
         self._ema_dc_ir    = 0.0; self._ema_dc_red    = 0.0
         self._ema_ac2_ir   = 0.0; self._ema_ac2_red   = 0.0
-        self._ema_dc_r_ir  = 0.0; self._ema_dc_r_red  = 0.0
+        self._ema_dc_norm_ir  = 0.0; self._ema_dc_norm_red  = 0.0
         self._win_buf_ir   = deque(); self._win_buf_red  = deque()
         self._raw_ir_buf   = deque(); self._raw_red_buf  = deque()
         self._norm_buf_ir  = deque(); self._norm_buf_red = deque()
@@ -4580,26 +4586,26 @@ class PICalc:
 
         # outputs
         self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
-        self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
-        self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
-        self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
-        self.ac_t_ir   = 0.0; self.ac_t_red   = 0.0  # STEP1 pulsatile waveform output
+        self.ac_amp_ir  = 0.0; self.ac_amp_red = 0.0
+        self.dc_norm_ir  = 1.0; self.dc_norm_red = 1.0
+        self.dc_base_ir = 0.0; self.dc_base_red = 0.0
+        self.ac_wave_ir   = 0.0; self.ac_wave_red   = 0.0  # STEP1 pulsatile waveform output
 
     def reset(self):
         """Reset all accumulators (keeps configuration)."""
         self._ema_dc_ir   = 0.0; self._ema_dc_red   = 0.0
         self._ema_ac2_ir  = 0.0; self._ema_ac2_red  = 0.0
-        self._ema_dc_r_ir = 0.0; self._ema_dc_r_red = 0.0
+        self._ema_dc_norm_ir = 0.0; self._ema_dc_norm_red = 0.0
         self._win_buf_ir.clear(); self._win_buf_red.clear()
         self._raw_ir_buf.clear(); self._raw_red_buf.clear()
         self._norm_buf_ir.clear(); self._norm_buf_red.clear()
         self._bpf_zi_ir = None; self._bpf_zi_red = None
         self._lpf_zi_ir = None; self._lpf_zi_red = None
         self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
-        self.ac_r_ir  = 0.0; self.ac_r_red = 0.0
-        self.dc_r_ir  = 1.0; self.dc_r_red = 1.0
-        self.dc_sub_ir = 0.0; self.dc_sub_red = 0.0
-        self.ac_t_ir   = 0.0; self.ac_t_red   = 0.0
+        self.ac_amp_ir  = 0.0; self.ac_amp_red = 0.0
+        self.dc_norm_ir  = 1.0; self.dc_norm_red = 1.0
+        self.dc_base_ir = 0.0; self.dc_base_red = 0.0
+        self.ac_wave_ir   = 0.0; self.ac_wave_red   = 0.0
 
     def reconfigure(self, fs):
         """Recalculate derived params from current settings and reset state."""
@@ -4642,12 +4648,12 @@ class PICalc:
             self.reconfigure(fs)
         ir = float(ir); red = float(red)
 
-        # ── STEP 1: AC extraction ─────────────────────────────────────────────
+        # ── STEP 1: AC waveform extraction ─────────────────────────────────────────────
         if self.step1 == self.S1_EMA:
             self._ema_dc_ir  += self._alpha_sub * (ir  - self._ema_dc_ir)
             self._ema_dc_red += self._alpha_sub * (red - self._ema_dc_red)
-            self.dc_sub_ir  = self._ema_dc_ir
-            self.dc_sub_red = self._ema_dc_red
+            self.dc_base_ir  = self._ema_dc_ir
+            self.dc_base_red = self._ema_dc_red
             ac_ir  = ir  - self._ema_dc_ir
             ac_red = red - self._ema_dc_red
         elif self.step1 == self.S1_BPF:
@@ -4662,37 +4668,37 @@ class PICalc:
             else:
                 ac_ir = ir; ac_red = red
             # dc_sub = signal minus BPF output (what the BPF removes)
-            self.dc_sub_ir  = ir  - ac_ir
-            self.dc_sub_red = red - ac_red
+            self.dc_base_ir  = ir  - ac_ir
+            self.dc_base_red = red - ac_red
         else:  # S1_NONE — pass-through, nothing removed; show raw signal as DC reference
             ac_ir = ir; ac_red = red
-            self.dc_sub_ir  = ir
-            self.dc_sub_red = red
+            self.dc_base_ir  = ir
+            self.dc_base_red = red
 
         # STEP1 pulsatile waveform output (fed to STEP2 amplitude estimator)
-        self.ac_t_ir  = ac_ir
-        self.ac_t_red = ac_red
+        self.ac_wave_ir  = ac_ir
+        self.ac_wave_red = ac_red
 
-        # ── STEP 2: AC estimator ─────────────────────────────────────────────
+        # ── STEP 2: AC amplitude estimator ─────────────────────────────────────────────
         if self.step2 == self.S2_EMA_RMS:
             self._ema_ac2_ir  += self._alpha_ac * (ac_ir  * ac_ir  - self._ema_ac2_ir)
             self._ema_ac2_red += self._alpha_ac * (ac_red * ac_red - self._ema_ac2_red)
-            ac_r_ir  = math.sqrt(max(0.0, self._ema_ac2_ir))
-            ac_r_red = math.sqrt(max(0.0, self._ema_ac2_red))
+            ac_amp_ir  = math.sqrt(max(0.0, self._ema_ac2_ir))
+            ac_amp_red = math.sqrt(max(0.0, self._ema_ac2_red))
         elif self.step2 == self.S2_WIN_RMS:
             self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
             while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
             while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
             arr_ir  = np.fromiter(self._win_buf_ir,  dtype=float, count=len(self._win_buf_ir))
             arr_red = np.fromiter(self._win_buf_red, dtype=float, count=len(self._win_buf_red))
-            ac_r_ir  = float(np.sqrt(np.mean(arr_ir  * arr_ir)))
-            ac_r_red = float(np.sqrt(np.mean(arr_red * arr_red)))
+            ac_amp_ir  = float(np.sqrt(np.mean(arr_ir  * arr_ir)))
+            ac_amp_red = float(np.sqrt(np.mean(arr_red * arr_red)))
         elif self.step2 == self.S2_PEAKPK:
             self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
             while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
             while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
-            ac_r_ir  = (max(self._win_buf_ir)  - min(self._win_buf_ir))  / 2.0
-            ac_r_red = (max(self._win_buf_red) - min(self._win_buf_red)) / 2.0
+            ac_amp_ir  = (max(self._win_buf_ir)  - min(self._win_buf_ir))  / 2.0
+            ac_amp_red = (max(self._win_buf_red) - min(self._win_buf_red)) / 2.0
         elif self.step2 in (self.S2_SPECTRAL, self.S2_HARMONICS):
             self._raw_ir_buf.append(ir);   self._raw_red_buf.append(red)
             while len(self._raw_ir_buf)  > self._win_max_n: self._raw_ir_buf.popleft()
@@ -4718,19 +4724,19 @@ class PICalc:
                         if mask.any():
                             e_ir  += float(np.sum(fft_ir[mask]  ** 2))
                             e_red += float(np.sum(fft_red[mask] ** 2))
-                ac_r_ir  = math.sqrt(e_ir  / n_fft) if e_ir  > 0 else 0.0
-                ac_r_red = math.sqrt(e_red / n_fft) if e_red > 0 else 0.0
+                ac_amp_ir  = math.sqrt(e_ir  / n_fft) if e_ir  > 0 else 0.0
+                ac_amp_red = math.sqrt(e_red / n_fft) if e_red > 0 else 0.0
             else:
-                ac_r_ir = 0.0; ac_r_red = 0.0
+                ac_amp_ir = 0.0; ac_amp_red = 0.0
         else:
-            ac_r_ir = 0.0; ac_r_red = 0.0
-        self.ac_r_ir = ac_r_ir; self.ac_r_red = ac_r_red
+            ac_amp_ir = 0.0; ac_amp_red = 0.0
+        self.ac_amp_ir = ac_amp_ir; self.ac_amp_red = ac_amp_red
 
         # ── STEP 3: DC for denominator ────────────────────────────────────────
         if self.step3 == self.S3_EMA:
-            self._ema_dc_r_ir  += self._alpha_norm * (ir  - self._ema_dc_r_ir)
-            self._ema_dc_r_red += self._alpha_norm * (red - self._ema_dc_r_red)
-            dc_r_ir  = self._ema_dc_r_ir; dc_r_red = self._ema_dc_r_red
+            self._ema_dc_norm_ir  += self._alpha_norm * (ir  - self._ema_dc_norm_ir)
+            self._ema_dc_norm_red += self._alpha_norm * (red - self._ema_dc_norm_red)
+            dc_norm_ir  = self._ema_dc_norm_ir; dc_norm_red = self._ema_dc_norm_red
         elif self.step3 == self.S3_LPF:
             if self._lpf_sos is not None:
                 if self._lpf_zi_ir is None:
@@ -4738,24 +4744,24 @@ class PICalc:
                     self._lpf_zi_ir  = zi * ir; self._lpf_zi_red = zi * red
                 _out_ir,  self._lpf_zi_ir  = signal.sosfilt(self._lpf_sos, [ir],  zi=self._lpf_zi_ir)
                 _out_red, self._lpf_zi_red = signal.sosfilt(self._lpf_sos, [red], zi=self._lpf_zi_red)
-                dc_r_ir  = float(_out_ir[0]); dc_r_red = float(_out_red[0])
+                dc_norm_ir  = float(_out_ir[0]); dc_norm_red = float(_out_red[0])
             else:
-                dc_r_ir = ir; dc_r_red = red
+                dc_norm_ir = ir; dc_norm_red = red
         elif self.step3 == self.S3_WIN_MEAN:
             self._norm_buf_ir.append(ir);   self._norm_buf_red.append(red)
             while len(self._norm_buf_ir)  > self._norm_max_n: self._norm_buf_ir.popleft()
             while len(self._norm_buf_red) > self._norm_max_n: self._norm_buf_red.popleft()
-            dc_r_ir  = float(np.mean(list(self._norm_buf_ir)))
-            dc_r_red = float(np.mean(list(self._norm_buf_red)))
+            dc_norm_ir  = float(np.mean(list(self._norm_buf_ir)))
+            dc_norm_red = float(np.mean(list(self._norm_buf_red)))
         else:
-            dc_r_ir = ir; dc_r_red = red
+            dc_norm_ir = ir; dc_norm_red = red
 
-        self.dc_r_ir  = max(1.0, dc_r_ir)
-        self.dc_r_red = max(1.0, dc_r_red)
+        self.dc_norm_ir  = max(1.0, dc_norm_ir)
+        self.dc_norm_red = max(1.0, dc_norm_red)
 
         # ── PI & R ────────────────────────────────────────────────────────────
-        self.pi_ir  = self.ac_r_ir  / self.dc_r_ir  * 100.0
-        self.pi_red = self.ac_r_red / self.dc_r_red * 100.0
+        self.pi_ir  = self.ac_amp_ir  / self.dc_norm_ir  * 100.0
+        self.pi_red = self.ac_amp_red / self.dc_norm_red * 100.0
         self.R    = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
         self.spo2 = max(0.0, min(100.0, self.spo2_a - self.spo2_b * self.R)) if self.R > 0.0 else 0.0
         return self.pi_ir, self.pi_red, self.R
@@ -5419,15 +5425,20 @@ class HR3TestWindow(QtWidgets.QMainWindow):
 #  PILabWindow — Perfusion Index pipeline investigation window
 # ──────────────────────────────────────────────────────────────────────────────
 
+# A PILAB parameter that is shown but not yet applied (see PILabWindow._mark_dirty).
+_PILAB_DIRTY_QSS = ' {w}[dirty="true"] {{ background-color: #7A1C1C; color: #FFFFFF; }}'
+
+
 class PILabWindow(QtWidgets.QMainWindow):
     """PILAB — Perfusion Index pipeline investigation window.
 
     Two independent PICalc instances (A = firmware reference, B = experimental)
     run in parallel on live or recorded data. Each uses a 3-step configurable
-    pipeline: STEP1 (AC extraction) → STEP2 (AC estimator) → STEP3 (DC denominator).
+    pipeline: STEP1 (AC waveform extraction) → STEP2 (AC amplitude estimator)
+    → STEP3 (DC denominator).
 
     Layout:
-      Left  : 4 stacked plots — AC_t, AC_r over time, PI_ir, R ratio.
+      Left  : 6 stacked plots — ac_wave, ac_amp, dc_norm, PI_ir, R ratio, SpO2.
       Right : Tabbed config panels for instance A (orange) and B (blue) + value table.
     """
 
@@ -5435,6 +5446,7 @@ class PILabWindow(QtWidgets.QMainWindow):
     _PLOT_WIN_S = 30.0    # visible x-axis window (s)
     _CLR_A      = "#FF8800"   # instance A — orange
     _CLR_B      = "#44AAFF"   # instance B — blue
+    _CLR_RAW    = "#888888"   # raw led1_sub, behind the DC estimates
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -5453,10 +5465,13 @@ class PILabWindow(QtWidgets.QMainWindow):
 
         # rolling plot buffers
         self._t_buf     = deque(maxlen=self._BUF_LEN)
-        self._ac_t_a  = deque(maxlen=self._BUF_LEN)
-        self._ac_t_b  = deque(maxlen=self._BUF_LEN)
-        self._ac_r_a    = deque(maxlen=self._BUF_LEN)
-        self._ac_r_b    = deque(maxlen=self._BUF_LEN)
+        self._ac_wave_a  = deque(maxlen=self._BUF_LEN)
+        self._ac_wave_b  = deque(maxlen=self._BUF_LEN)
+        self._ac_amp_a    = deque(maxlen=self._BUF_LEN)
+        self._ac_amp_b    = deque(maxlen=self._BUF_LEN)
+        self._led1_sub_buf = deque(maxlen=self._BUF_LEN)
+        self._dc_norm_a   = deque(maxlen=self._BUF_LEN)
+        self._dc_norm_b   = deque(maxlen=self._BUF_LEN)
         self._pi_ir_a   = deque(maxlen=self._BUF_LEN)
         self._pi_ir_b   = deque(maxlen=self._BUF_LEN)
         self._r_a       = deque(maxlen=self._BUF_LEN)
@@ -5476,20 +5491,15 @@ class PILabWindow(QtWidgets.QMainWindow):
         # restore config from ini (falls back to widget defaults if not saved yet)
         for inst, cfg in (("A", self._cfg_a), ("B", self._cfg_b)):
             pfx = f"PILabWindow/{inst}"
-            if s.contains(f"{pfx}/s1"):
-                cfg['s1'].setCurrentIndex(s.value(f"{pfx}/s1",      0,    type=int))
-                cfg['s2'].setCurrentIndex(s.value(f"{pfx}/s2",      0,    type=int))
-                cfg['s3'].setCurrentIndex(s.value(f"{pfx}/s3",      0,    type=int))
-                cfg['tau_sub'].setValue(  s.value(f"{pfx}/tau_sub", 2.0,  type=float))
-                cfg['bpf_lo'].setValue(   s.value(f"{pfx}/bpf_lo",  0.5,  type=float))
-                cfg['bpf_hi'].setValue(   s.value(f"{pfx}/bpf_hi",  4.0,  type=float))
-                cfg['tau_ac'].setValue(   s.value(f"{pfx}/tau_ac",  6.0,  type=float))
-                cfg['win_s'].setValue(    s.value(f"{pfx}/win_s",   4.0,  type=float))
-                cfg['hr_bpm'].setValue(   s.value(f"{pfx}/hr_bpm",  70.0, type=float))
-                cfg['n_harm'].setValue(   s.value(f"{pfx}/n_harm",  3,    type=int))
-                cfg['tau_norm'].setValue( s.value(f"{pfx}/tau_norm",2.0,  type=float))
-                cfg['lpf_fc'].setValue(   s.value(f"{pfx}/lpf_fc",  0.4,  type=float))
-                cfg['win_norm'].setValue( s.value(f"{pfx}/win_norm",4.0,  type=float))
+            for key in self._CFG_KEYS:
+                if s.contains(f"{pfx}/{key}"):
+                    wd = cfg[key]
+                    if isinstance(wd, QtWidgets.QComboBox):
+                        wd.setCurrentIndex(s.value(f"{pfx}/{key}", 0, type=int))
+                    elif isinstance(wd, QtWidgets.QSpinBox):
+                        wd.setValue(s.value(f"{pfx}/{key}", wd.value(), type=int))
+                    else:
+                        wd.setValue(s.value(f"{pfx}/{key}", wd.value(), type=float))
 
         # apply config (uses current widget values, restored or default)
         self._apply_config(self._cfg_a, self.calc_a)
@@ -5506,7 +5516,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
-        # ── left: 4 stacked plots ─────────────────────────────────────────────
+        # ── left: 6 stacked plots ─────────────────────────────────────────────
         gv = pg.GraphicsLayoutWidget()
         gv.setBackground("#121212")
         root.addWidget(gv, stretch=2)
@@ -5514,34 +5524,42 @@ class PILabWindow(QtWidgets.QMainWindow):
         def _pen(c): return pg.mkPen(c, width=1)
 
         self.p_sig = gv.addPlot(row=0, col=0)
-        self.p_sig.setLabel('left', "AC_t_ir [ADC]")
+        self.p_sig.setLabel('left', "AC waveform<br>STEP1 [ADC]")
         self.p_sig.showGrid(x=True, y=True, alpha=0.3)
         self.p_sig.addLegend(offset=(5, 5))
-        self.curve_act_a = self.p_sig.plot(pen=_pen(self._CLR_A),   name="AC_t A")
-        self.curve_act_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="AC_t B")
+        self.curve_ac_wave_a = self.p_sig.plot(pen=_pen(self._CLR_A),   name="A")
+        self.curve_ac_wave_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="B")
 
         self.p_ac = gv.addPlot(row=1, col=0)
-        self.p_ac.setLabel('left', "AC_r_ir [ADC]")
+        self.p_ac.setLabel('left', "AC amplitude<br>STEP2 [ADC]")
         self.p_ac.showGrid(x=True, y=True, alpha=0.3)
         self.p_ac.addLegend(offset=(5, 5))
-        self.curve_ac_a = self.p_ac.plot(pen=_pen(self._CLR_A), name="AC_r A")
-        self.curve_ac_b = self.p_ac.plot(pen=_pen(self._CLR_B), name="AC_r B")
+        self.curve_ac_amp_a = self.p_ac.plot(pen=_pen(self._CLR_A), name="A")
+        self.curve_ac_amp_b = self.p_ac.plot(pen=_pen(self._CLR_B), name="B")
 
-        self.p_pi = gv.addPlot(row=2, col=0)
+        self.p_dc = gv.addPlot(row=2, col=0)
+        self.p_dc.setLabel('left', "DC denominator<br>STEP3 [ADC]")
+        self.p_dc.showGrid(x=True, y=True, alpha=0.3)
+        self.p_dc.addLegend(offset=(5, 5))
+        self.curve_led1_sub  = self.p_dc.plot(pen=_pen(self._CLR_RAW), name="led1_sub")
+        self.curve_dc_norm_a = self.p_dc.plot(pen=_pen(self._CLR_A),   name="A")
+        self.curve_dc_norm_b = self.p_dc.plot(pen=_pen(self._CLR_B),   name="B")
+
+        self.p_pi = gv.addPlot(row=3, col=0)
         self.p_pi.setLabel('left', "PI_ir [%]")
         self.p_pi.showGrid(x=True, y=True, alpha=0.3)
         self.p_pi.addLegend(offset=(5, 5))
         self.curve_pi_a = self.p_pi.plot(pen=_pen(self._CLR_A), name="PI_ir A")
         self.curve_pi_b = self.p_pi.plot(pen=_pen(self._CLR_B), name="PI_ir B")
 
-        self.p_r = gv.addPlot(row=3, col=0)
+        self.p_r = gv.addPlot(row=4, col=0)
         self.p_r.setLabel('left', "R = PI_red / PI_ir")
         self.p_r.showGrid(x=True, y=True, alpha=0.3)
         self.p_r.addLegend(offset=(5, 5))
         self.curve_r_a = self.p_r.plot(pen=_pen(self._CLR_A), name="R A")
         self.curve_r_b = self.p_r.plot(pen=_pen(self._CLR_B), name="R B")
 
-        self.p_spo2 = gv.addPlot(row=4, col=0)
+        self.p_spo2 = gv.addPlot(row=5, col=0)
         self.p_spo2.setLabel('left', "SpO2 [%]")
         self.p_spo2.setLabel('bottom', "Time [s]")
         self.p_spo2.showGrid(x=True, y=True, alpha=0.3)
@@ -5550,9 +5568,21 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.curve_spo2_b = self.p_spo2.plot(pen=_pen(self._CLR_B), name="SpO2 B")
 
         self.p_ac.setXLink(self.p_sig)
+        self.p_dc.setXLink(self.p_sig)
         self.p_pi.setXLink(self.p_sig)
         self.p_r.setXLink(self.p_sig)
         self.p_spo2.setXLink(self.p_sig)
+
+        # The six plots share the time axis, so their left axes share one width: two-line labels
+        # and tick texts of different lengths would otherwise shift each plot area sideways.
+        # Same sum AxisItem._updateWidth() makes, with the tallest (two-line) label and room for a
+        # six-character tick ("-00000").
+        _ax = self.p_sig.getAxis('left')
+        _fm = QtGui.QFontMetrics(_ax.label.font())
+        _axis_w = int(_ax.label.boundingRect().height() * 0.8 + _fm.horizontalAdvance("-00000")
+                      + _ax.style['tickTextOffset'][0] + max(0, _ax.style['tickLength']))
+        for _p in (self.p_sig, self.p_ac, self.p_dc, self.p_pi, self.p_r, self.p_spo2):
+            _p.getAxis('left').setWidth(_axis_w)
 
         # ── right panel ───────────────────────────────────────────────────────
         right = QtWidgets.QVBoxLayout()
@@ -5608,7 +5638,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._val_table.horizontalHeaderItem(0).setForeground(QtGui.QColor(self._CLR_A))
         self._val_table.horizontalHeaderItem(1).setForeground(QtGui.QColor(self._CLR_B))
         self._val_table.setVerticalHeaderLabels([
-            "AC_r_red", "DC_r_red", "AC_r_ir", "DC_r_ir",
+            "ac_amp_red", "dc_norm_red", "ac_amp_ir", "dc_norm_ir",
             "PI_red [%]", "PI_ir [%]", "R", "SpO2 [%]",
         ])
         self._val_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
@@ -5619,14 +5649,14 @@ class PILabWindow(QtWidgets.QMainWindow):
             "QHeaderView::section { background: #252525; font-size: 20px; font-weight: bold; }"
         )
         _row_tips = [
-            "AC_r_red — STEP2 output: pulsatile amplitude estimate for red channel [ADC counts]",
-            "DC_r_red — STEP3 output: DC denominator for red channel [ADC counts]",
-            "AC_r_ir  — STEP2 output: pulsatile amplitude estimate for IR channel [ADC counts]",
-            "DC_r_ir  — STEP3 output: DC denominator for IR channel [ADC counts]",
-            "PI_red   — Perfusion Index red = AC_r_red / DC_r_red × 100 [%]",
-            "PI_ir    — Perfusion Index IR  = AC_r_ir  / DC_r_ir  × 100 [%]",
+            "ac_amp_red  — STEP2 output: AC amplitude of the red channel [ADC counts]",
+            "dc_norm_red — STEP3 output: DC that normalises it (PI denominator), red [ADC counts]",
+            "ac_amp_ir   — STEP2 output: AC amplitude of the IR channel [ADC counts]",
+            "dc_norm_ir  — STEP3 output: DC that normalises it (PI denominator), IR [ADC counts]",
+            "PI_red      — Perfusion Index red = ac_amp_red / dc_norm_red × 100 [%]",
+            "PI_ir       — Perfusion Index IR  = ac_amp_ir  / dc_norm_ir  × 100 [%]",
             "R        — SpO2 ratio = PI_red / PI_ir (dimensionless; ~0.4–1.0 physiological range)",
-            "SpO2     — Provisional estimate: 110 − 25×R [%]  (linear approximation, not calibrated)",
+            "SpO2     — spo2_a − spo2_b × R [%], coefficients synced from the firmware $CFG",
         ]
         for i, tip in enumerate(_row_tips):
             self._val_table.verticalHeaderItem(i).setToolTip(tip)
@@ -5643,8 +5673,11 @@ class PILabWindow(QtWidgets.QMainWindow):
         _ss_spin = ("QDoubleSpinBox { background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 20px; }"
                     " QDoubleSpinBox:disabled { color: #505050; background-color: #1A1A1A; }"
                     " QSpinBox { background-color: #2A2A2A; color: #FFDD44; padding: 2px; font-size: 20px; }"
-                    " QSpinBox:disabled { color: #505050; background-color: #1A1A1A; }")
-        _ss_cb   = "background-color: #2A2A2A; color: #FFFFFF; font-size: 20px;"
+                    " QSpinBox:disabled { color: #505050; background-color: #1A1A1A; }"
+                    + _PILAB_DIRTY_QSS.format(w="QDoubleSpinBox") + _PILAB_DIRTY_QSS.format(w="QSpinBox"))
+        _ss_cb   = ("QComboBox { background-color: #2A2A2A; color: #FFFFFF; font-size: 20px; }"
+                    " QComboBox QAbstractItemView { background-color: #2A2A2A; color: #FFFFFF; }"
+                    + _PILAB_DIRTY_QSS.format(w="QComboBox"))
         _lbl_sty = f"color: {color}; font-size: 20px; font-weight: bold;"
 
         def _dspin(lo, hi, val, step, suffix=""):
@@ -5661,7 +5694,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         form.setSpacing(5); form.setContentsMargins(8, 8, 8, 8)
 
         # STEP 1
-        lbl1 = QtWidgets.QLabel("── STEP1: AC extraction ──")
+        lbl1 = QtWidgets.QLabel("── STEP1: AC waveform extraction ──")
         lbl1.setStyleSheet(_lbl_sty); form.addRow(lbl1)
         s1 = QtWidgets.QComboBox(); s1.setStyleSheet(_ss_cb)
         s1.addItems(["1.1 EMA subtract", "1.2 BPF", "1.3 None"])
@@ -5700,7 +5733,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         form.addRow("  BPF hi:", bpf_hi)
 
         # STEP 2
-        lbl2 = QtWidgets.QLabel("── STEP2: AC estimator ──")
+        lbl2 = QtWidgets.QLabel("── STEP2: AC amplitude estimator ──")
         lbl2.setStyleSheet(_lbl_sty); form.addRow(lbl2)
         s2 = QtWidgets.QComboBox(); s2.setStyleSheet(_ss_cb)
         s2.addItems(["2.1 EMA-RMS", "2.2 Win-RMS", "2.3 Peak-to-peak",
@@ -5711,7 +5744,7 @@ class PILabWindow(QtWidgets.QMainWindow):
             "2.3 Peak-to-peak: (max−min)/2 over win_s seconds\n"
             "\n"
             "2.4 Spectral band: FFT over win_s s of raw signal (DC-mean removed);\n"
-            "    extracts energy in band [HR ± 0.3 Hz]; ac_r = √(energy/N).\n"
+            "    extracts energy in band [HR ± 0.3 Hz]; ac_amp = √(energy/N).\n"
             "    WARNING: HR param must match actual heart rate — if wrong, result = 0.\n"
             "    Note: STEP1 has no effect (uses raw signal with own mean removal).\n"
             "\n"
@@ -5781,7 +5814,9 @@ class PILabWindow(QtWidgets.QMainWindow):
         apply_btn.setStyleSheet(ACTION_BUTTON_STYLE)
         apply_btn.setToolTip(_make_tooltip(f"Apply {name}",
             "Apply configuration changes and reset pipeline state. "
-            "Plot buffers are cleared so the comparison starts clean."))
+            "Plot buffers are cleared so the comparison starts clean.\n"
+            "A parameter shown on a red background is not in use yet: it differs from the "
+            "value this instance is running with until APPLY (or FIRMWARE PRESET)."))
         form.addRow("", apply_btn)
 
         preset_btn = QtWidgets.QPushButton("FIRMWARE PRESET")
@@ -5811,7 +5846,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         tab_lay.addWidget(scroll)
 
         cfg = {
-            'widget': tab_widget, 'form': form, 's1': s1, 's2': s2, 's3': s3,
+            'name': name, 'widget': tab_widget, 'form': form, 's1': s1, 's2': s2, 's3': s3,
             'tau_sub': tau_sub, 'bpf_lo': bpf_lo, 'bpf_hi': bpf_hi,
             'tau_ac':  tau_ac,  'win_s':  win_s,  'hr_bpm': hr_bpm, 'n_harm': n_harm,
             'tau_norm': tau_norm, 'lpf_fc': lpf_fc, 'win_norm': win_norm,
@@ -5822,7 +5857,31 @@ class PILabWindow(QtWidgets.QMainWindow):
         s1.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
         s2.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
         s3.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
+        for key in self._CFG_KEYS:
+            w = cfg[key]
+            changed = w.currentIndexChanged if isinstance(w, QtWidgets.QComboBox) else w.valueChanged
+            changed.connect(lambda _=None, c=cfg: self._mark_dirty(c))
         return cfg
+
+    # Every control whose value reaches PICalc through _apply_config().
+    _CFG_KEYS = ('s1', 'tau_sub', 'bpf_lo', 'bpf_hi', 's2', 'tau_ac', 'win_s', 'hr_bpm', 'n_harm',
+                 's3', 'tau_norm', 'lpf_fc', 'win_norm')
+
+    @staticmethod
+    def _widget_value(w):
+        return w.currentIndex() if isinstance(w, QtWidgets.QComboBox) else w.value()
+
+    def _mark_dirty(self, cfg):
+        """Red background on every control whose shown value is not the one in use, i.e. differs
+        from the snapshot _apply_config() took. Setting a value back to the applied one clears it."""
+        applied = cfg.get('applied')
+        for key in self._CFG_KEYS:
+            w = cfg[key]
+            dirty = applied is not None and self._widget_value(w) != applied[key]
+            if bool(w.property("dirty")) != dirty:
+                w.setProperty("dirty", dirty)
+                w.style().unpolish(w)
+                w.style().polish(w)
 
     # ── config application ────────────────────────────────────────────────────
 
@@ -5845,10 +5904,19 @@ class PILabWindow(QtWidgets.QMainWindow):
         calc.lpf_fc      = cfg['lpf_fc'].value()
         calc.win_norm_s  = cfg['win_norm'].value()
         calc._fs = 0.0  # force reconfigure on next sample
+        cfg['applied'] = {k: self._widget_value(cfg[k]) for k in self._CFG_KEYS}
+        self._mark_dirty(cfg)
+        # Saved here, not in closeEvent: a forced stop (relaunch, crash) never reaches closeEvent,
+        # and only APPLIED values are saved, so a reopened window never runs what was left red.
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        for key, value in cfg['applied'].items():
+            s.setValue(f"PILabWindow/{cfg['name']}/{key}", value)
+        s.sync()
         # clear all plot buffers so comparison starts fresh
         self._t_buf.clear()
-        self._ac_t_a.clear(); self._ac_t_b.clear()
-        self._ac_r_a.clear();   self._ac_r_b.clear()
+        self._ac_wave_a.clear(); self._ac_wave_b.clear()
+        self._ac_amp_a.clear();   self._ac_amp_b.clear()
+        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._spo2_a.clear();   self._spo2_b.clear()
@@ -5919,10 +5987,13 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.calc_b.update(ir, red, fs)
 
         self._t_buf.append(t)
-        self._ac_t_a.append(self.calc_a.ac_t_ir)
-        self._ac_t_b.append(self.calc_b.ac_t_ir)
-        self._ac_r_a.append(self.calc_a.ac_r_ir)
-        self._ac_r_b.append(self.calc_b.ac_r_ir)
+        self._ac_wave_a.append(self.calc_a.ac_wave_ir)
+        self._ac_wave_b.append(self.calc_b.ac_wave_ir)
+        self._ac_amp_a.append(self.calc_a.ac_amp_ir)
+        self._ac_amp_b.append(self.calc_b.ac_amp_ir)
+        self._led1_sub_buf.append(float(ir))
+        self._dc_norm_a.append(self.calc_a.dc_norm_ir)
+        self._dc_norm_b.append(self.calc_b.dc_norm_ir)
         self._pi_ir_a.append(self.calc_a.pi_ir)
         self._pi_ir_b.append(self.calc_b.pi_ir)
         self._r_a.append(self.calc_a.R)
@@ -5941,8 +6012,9 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._t0_us = None
         self.calc_a.reset(); self.calc_b.reset()
         self._t_buf.clear()
-        self._ac_t_a.clear(); self._ac_t_b.clear()
-        self._ac_r_a.clear();   self._ac_r_b.clear()
+        self._ac_wave_a.clear(); self._ac_wave_b.clear()
+        self._ac_amp_a.clear();   self._ac_amp_b.clear()
+        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._spo2_a.clear();   self._spo2_b.clear()
@@ -5953,10 +6025,13 @@ class PILabWindow(QtWidgets.QMainWindow):
         t = np.array(self._t_buf)
         t_end = t[-1]
 
-        self.curve_act_a.setData(t, np.array(self._ac_t_a))
-        self.curve_act_b.setData(t, np.array(self._ac_t_b))
-        self.curve_ac_a.setData(t, np.array(self._ac_r_a))
-        self.curve_ac_b.setData(t, np.array(self._ac_r_b))
+        self.curve_ac_wave_a.setData(t, np.array(self._ac_wave_a))
+        self.curve_ac_wave_b.setData(t, np.array(self._ac_wave_b))
+        self.curve_ac_amp_a.setData(t, np.array(self._ac_amp_a))
+        self.curve_ac_amp_b.setData(t, np.array(self._ac_amp_b))
+        self.curve_led1_sub.setData(t,  np.array(self._led1_sub_buf))
+        self.curve_dc_norm_a.setData(t, np.array(self._dc_norm_a))
+        self.curve_dc_norm_b.setData(t, np.array(self._dc_norm_b))
         self.curve_pi_a.setData(t, np.array(self._pi_ir_a))
         self.curve_pi_b.setData(t, np.array(self._pi_ir_b))
         self.curve_r_a.setData(t,    np.array(self._r_a))
@@ -5970,10 +6045,10 @@ class PILabWindow(QtWidgets.QMainWindow):
         a, b = self.calc_a, self.calc_b
         rows = [
             # (val_a, val_b, fmt)
-            (a.ac_r_red, b.ac_r_red, ".1f"),
-            (a.dc_r_red, b.dc_r_red, ".1f"),
-            (a.ac_r_ir,  b.ac_r_ir,  ".1f"),
-            (a.dc_r_ir,  b.dc_r_ir,  ".1f"),
+            (a.ac_amp_red, b.ac_amp_red, ".1f"),
+            (a.dc_norm_red, b.dc_norm_red, ".1f"),
+            (a.ac_amp_ir,  b.ac_amp_ir,  ".1f"),
+            (a.dc_norm_ir,  b.dc_norm_ir,  ".1f"),
             (a.pi_red,   b.pi_red,   ".3f"),
             (a.pi_ir,    b.pi_ir,    ".3f"),
             (a.R,        b.R,        ".4f"),
@@ -5996,14 +6071,14 @@ class PILabWindow(QtWidgets.QMainWindow):
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(10)
 
-        title = QtWidgets.QLabel("PILAB — Four plots explained")
+        title = QtWidgets.QLabel("PILAB — Six plots explained")
         title.setStyleSheet("font-size: 40px; font-weight: bold; color: #FFD070;")
         lay.addWidget(title)
 
         _HTML = """
 <style>
   body  { font-size: 30px; color: #D0D0D0; }
-  h3    { font-size: 32px; color: #FFD070; margin-bottom: 2px; margin-top: 12px; }
+  .h    { font-size: 36px; font-weight: bold; color: #FFD070; margin-top: 14px; margin-bottom: 2px; }
   p     { margin: 2px 0 6px 0; }
   code  { color: #FFDD44; }
   .formula { color: #88DDFF; font-style: italic; }
@@ -6011,37 +6086,55 @@ class PILabWindow(QtWidgets.QMainWindow):
 <body>
 <p>Each plot shows the output of one stage of the 3-step PI pipeline,
 for instances <b style="color:#FF8800;">A</b> and <b style="color:#44AAFF;">B</b> side by side.</p>
+<p>A parameter on a <b style="color:#FF6060;">red background</b> is not in use yet: it
+differs from the value its instance runs with, until APPLY or FIRMWARE PRESET.</p>
+<p>Names: <code>ac_wave</code> is the AC waveform, sample by sample (STEP1), obtained by
+removing the baseline <code>dc_base</code>; <code>ac_amp</code> is its amplitude (STEP2);
+<code>dc_norm</code> is the DC that normalises it (STEP3):
+<span class="formula">PI = ac_amp / dc_norm × 100</span>.</p>
 
-<h3>Plot 1 — AC_t_ir [ADC counts]</h3>
-<p><code>AC_t</code>, the pulsatile IR waveform that STEP1 extracts: what is left of
+<p class="h">Plot 1 — AC waveform (ac_wave), STEP1 [ADC counts]</p>
+<p><code>ac_wave</code>, the pulsatile IR waveform that STEP1 extracts: what is left of
 <code>led1_sub</code> once the slow baseline is removed, sample by sample, and what STEP2
 then measures in amplitude. Use this plot to judge STEP1 by the shape it leaves
 (a baseline tracker that is too fast, or a band that is too narrow, distorts the pulse;
 one that is too slow, or too wide, leaves residual drift).</p>
 
-<h3>Plot 2 — AC_r [ADC counts]</h3>
+<p class="h">Plot 2 — AC amplitude (ac_amp), STEP2 [ADC counts]</p>
 <p>The AC amplitude estimated by STEP2, in raw ADC counts.
-This is the "pulse height" after AC extraction (STEP1):
+This is the "pulse height" of the waveform STEP1 extracted:
 EMA-RMS computes <span class="formula">√EMA(x²)</span>,
 Peak-to-peak computes <span class="formula">(max−min)/2</span>,
 spectral methods extract energy at the heart-rate fundamental.
 Use this to compare estimators — they should agree on a clean signal
 and diverge differently on noise.</p>
 
-<h3>Plot 3 — PI_ir [%]</h3>
+<p class="h">Plot 3 — DC denominator (dc_norm), STEP3 [ADC counts]</p>
+<p>The raw <code>led1_sub</code> (IR, grey) with the DC that STEP3 estimates from it for A and B,
+<code>dc_norm_ir</code> — the denominator of PI and R. Use it to judge how closely each DC
+estimator follows the baseline and how far it lags after a step (a gain change, a movement):
+while it lags, PI and R are biased. On this scale (~10⁵ counts) A and B differing by 1 % look
+almost the same line; that 1 % is still a 1 % error in PI.</p>
+
+<p class="h">Plot 4 — PI_ir [%]</p>
 <p>The Perfusion Index for the IR channel:
-<span class="formula">PI_ir = (AC_ir / DC_ir) × 100 %</span>.
-The DC denominator comes from STEP3 (independent of STEP1).
+<span class="formula">PI_ir = (ac_amp_ir / dc_norm_ir) × 100 %</span>.
+The DC denominator comes from STEP3 (Plot 3), independently of STEP1.
 A high PI means a strong, well-perfused signal;
 a low PI (&lt; 0.3 %) indicates poor contact or weak perfusion.
 This is the main clinical quality indicator.</p>
 
-<h3>Plot 4 — R = PI_red / PI_ir</h3>
+<p class="h">Plot 5 — R = PI_red / PI_ir</p>
 <p>The modulation ratio used for SpO2:
 <span class="formula">R = (AC_red/DC_red) / (AC_ir/DC_ir)</span>.
 Different pipeline configurations that produce the same PI_ir
 may still produce different R values — and therefore different SpO2 readings.
 Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
+
+<p class="h">Plot 6 — SpO2 [%]</p>
+<p><span class="formula">SpO2 = spo2_a − spo2_b × R</span>, with the calibration
+coefficients synced from the firmware's <code>$CFG</code>. It shows how a difference in R
+between A and B becomes a difference in the displayed saturation.</p>
 </body>"""
 
         txt = QtWidgets.QTextEdit()
@@ -6089,8 +6182,9 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
         self.btn_load.setEnabled(False)
         self.calc_a.reset(); self.calc_b.reset()
         self._t_buf.clear()
-        self._ac_t_a.clear(); self._ac_t_b.clear()
-        self._ac_r_a.clear();   self._ac_r_b.clear()
+        self._ac_wave_a.clear(); self._ac_wave_b.clear()
+        self._ac_amp_a.clear();   self._ac_amp_b.clear()
+        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._t0_us = None
@@ -6108,10 +6202,13 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
             self.calc_a.update(ir, red, fs)
             self.calc_b.update(ir, red, fs)
             self._t_buf.append(t)
-            self._ac_t_a.append(self.calc_a.ac_t_ir)
-            self._ac_t_b.append(self.calc_b.ac_t_ir)
-            self._ac_r_a.append(self.calc_a.ac_r_ir)
-            self._ac_r_b.append(self.calc_b.ac_r_ir)
+            self._ac_wave_a.append(self.calc_a.ac_wave_ir)
+            self._ac_wave_b.append(self.calc_b.ac_wave_ir)
+            self._ac_amp_a.append(self.calc_a.ac_amp_ir)
+            self._ac_amp_b.append(self.calc_b.ac_amp_ir)
+            self._led1_sub_buf.append(ir)
+            self._dc_norm_a.append(self.calc_a.dc_norm_ir)
+            self._dc_norm_b.append(self.calc_b.dc_norm_ir)
             self._pi_ir_a.append(self.calc_a.pi_ir)
             self._pi_ir_b.append(self.calc_b.pi_ir)
             self._r_a.append(self.calc_a.R)
@@ -6130,8 +6227,9 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
         self.btn_live.setEnabled(False)
         self.btn_load.setEnabled(True)
         self._t_buf.clear()
-        self._ac_t_a.clear(); self._ac_t_b.clear()
-        self._ac_r_a.clear();   self._ac_r_b.clear()
+        self._ac_wave_a.clear(); self._ac_wave_b.clear()
+        self._ac_amp_a.clear();   self._ac_amp_b.clear()
+        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -6142,21 +6240,6 @@ Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         s.setValue("PILabWindow/geometry", self.saveGeometry())
-        for inst, cfg in (("A", self._cfg_a), ("B", self._cfg_b)):
-            pfx = f"PILabWindow/{inst}"
-            s.setValue(f"{pfx}/s1",      cfg['s1'].currentIndex())
-            s.setValue(f"{pfx}/s2",      cfg['s2'].currentIndex())
-            s.setValue(f"{pfx}/s3",      cfg['s3'].currentIndex())
-            s.setValue(f"{pfx}/tau_sub", cfg['tau_sub'].value())
-            s.setValue(f"{pfx}/bpf_lo",  cfg['bpf_lo'].value())
-            s.setValue(f"{pfx}/bpf_hi",  cfg['bpf_hi'].value())
-            s.setValue(f"{pfx}/tau_ac",  cfg['tau_ac'].value())
-            s.setValue(f"{pfx}/win_s",   cfg['win_s'].value())
-            s.setValue(f"{pfx}/hr_bpm",  cfg['hr_bpm'].value())
-            s.setValue(f"{pfx}/n_harm",  cfg['n_harm'].value())
-            s.setValue(f"{pfx}/tau_norm",cfg['tau_norm'].value())
-            s.setValue(f"{pfx}/lpf_fc",  cfg['lpf_fc'].value())
-            s.setValue(f"{pfx}/win_norm",cfg['win_norm'].value())
         if self.main_monitor is not None:
             self.main_monitor.btn_pilab.setChecked(False)
             self.main_monitor.pilab_window = None
@@ -12771,7 +12854,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "PILAB — Perfusion Index Lab",
             "Opens the PI investigation window. Compares two configurable PI pipelines (A vs B) "
             "on live or recorded data. Each pipeline has 3 independent steps: "
-            "STEP1 (AC extraction), STEP2 (AC estimator), STEP3 (DC denominator). "
+            "STEP1 (AC waveform extraction), STEP2 (AC amplitude estimator), STEP3 (DC denominator). "
             "Instance A defaults to firmware method settings; B is freely configurable.",
             src="PILabWindow"))
         self.sidebar_layout.addWidget(self.btn_pilab)

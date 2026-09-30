@@ -25619,3 +25619,58 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   muestra (salida STEP1); `_r` = valor que entra en R/PI (amplitud, STEP2), pareja de `dc_r` (DC del
   denominador, STEP3) frente a `dc_sub` (DC que se resta, STEP1) — la misma distinción DC_sub/DC_R de la
   tarea pendiente de separar el DC.
+- PILAB nombres (Alex: ¿"AC_t"/"AC_r" → "STEP1"/"STEP2"?). Decisión: nombrar la magnitud y decir el paso al
+  lado. Ejes "AC waveform (AC_t) — STEP1 [ADC]" y "AC amplitude (AC_r) — STEP2 [ADC]", leyendas "A"/"B";
+  cabeceras del panel "STEP1: AC waveform extraction" y "STEP2: AC amplitude estimator" (propuesta de Alex,
+  aceptada: caben, 700 px en columna de 716, ancho mínimo sin cambios). La tabla conserva los símbolos
+  (sus tooltips los usan en fórmulas); ayuda y docstring de `PICalc` definen `_t`/`_r`. De paso: PILAB
+  tiene 5 plots (faltaba el de SpO2 en ayuda, docstring y spec) y el tooltip de SpO2 decía "110 − 25×R"
+  cuando el código usa spo2_a/spo2_b del firmware. Spec del lab v1.74.
+- PILAB (Alex): títulos de eje de los plots 1-2 en dos filas (`<br>`); los 5 ejes izquierdos con un ancho común
+  (derivado de la fuente) para que los plots enlazados en X sigan alineados. Títulos de la ayuda pequeños:
+  Qt ignora `font-size` en `<h3>` de cualquier forma (medido: 14,4 pt fijos frente a 30 px del cuerpo) →
+  pasan a `<p class="h">` 36 px negrita. Ancho absoluto no verificable offscreen (métricas infladas): lo
+  confirma Alex en pantalla.
+- PILAB (Alex): parámetro cambiado y no aplicado → fondo rojo hasta APPLY o FIRMWARE PRESET. Compara con
+  la copia que toma `_apply_config()`: si se devuelve el valor, se quita solo. Probado offscreen (arranque,
+  cambio, vuelta atrás, APPLY, PRESET, color pintado, aspecto normal de los combos sin cambios).
+- Nombres PILAB, **opción A** (Alex): `ac_t`→`ac_wave`, `ac_r`→`ac_amp`, `dc_sub`→`dc_base`, `dc_r`→`dc_norm`
+  (código de `PICalc`/`PILabWindow`, tabla, ayuda, tooltips, spec). Ejes: "AC waveform / STEP1 [ADC]",
+  "AC amplitude / STEP2 [ADC]". En la librería, la tarea de separar el DC usará `spo2_dc_base`/`spo2_dc_norm`.
+- Bug (Alex: "los valores de PILAB no se guardan en el .ini"): solo se escribían en `closeEvent`, que un
+  cierre forzado nunca alcanza (mis relanzamientos con Stop-Process, un crash, el hook); y un cierre limpio
+  guardaba lo *mostrado*, así que un valor en rojo sin aplicar se aplicaba solo al reabrir. Ahora se guarda
+  en cada APPLY / FIRMWARE PRESET y solo lo aplicado; `closeEvent` guarda solo la geometría. Probado offscreen.
+- PILAB: nuevo **Plot 3 "DC denominator / STEP3"** (Alex): `led1_sub` en gris (la curva quitada del Plot 1,
+  aquí en su escala) con `dc_norm_ir` de A y B; los demás bajan un puesto (PI 4, R 5, SpO2 6). Motivo: era
+  el único paso sin plot, y el retraso del DC tras un cambio de ganancia o un movimiento sesga PI y R.
+  Si A y B se ven como una sola línea (10⁵ cuentas), siguiente paso: dibujar la diferencia relativa en %.
+  Probado offscreen (directo, offline, vaciado, 6 plots alineados). Spec del lab v1.74.
+
+## Sesión 2026-10-01 (consulta teórica, sin cambios de código)
+- Pregunta (Alex): ¿un biquad BPF de 2.º orden es tan selectivo como un LPF de 1.er orden?
+- Respuesta: cada flanco del BPF cae a 20 dB/década, igual que un LPF de 1.er orden; la ventaja del BPF es que
+  también rechaza DC y baja frecuencia (el LPF no). Con Q≈0,5-0,7 equivale a HPF1+LPF1 (banda muy ancha); un Q alto
+  estrecha la banda pero las colas siguen a 20 dB/década. Para rechazar ruido de alta frecuencia hace falta LPF de
+  2.º orden o más. No se revisaron los coeficientes/Q reales del firmware (pendiente si Alex indica el filtro).
+- Sin decisiones de diseño ni modificaciones de ficheros. Los cambios `.cpp/.h/.py` detectados por el hook son
+  anteriores a esta sesión.
+
+## 2026-10-01 — HR3: paso bajo antialias de 4.º orden (lib v0.97)
+
+- Pregunta de Alex: ¿por qué biquads de 2.º orden? Respuesta: herencia (coeficientes de Protocentral,
+  cálculo dinámico desde v0.6), no decisión; "2.º orden" paso banda = 1.er orden por flanco (20 dB/déc).
+  Único punto débil registrado (v0.83): el LP de 15 Hz de HR3 deja −9,4 dB en el Nyquist de 25 Hz del
+  diezmado ×10.
+- **Hecho (Alex: "ejecuta el cambio en HR3, anticípame los cambios"):** lib **v0.97** — `LowPass4` (dos
+  biquads, Q 0,5412/1,3066, −3 dB en el corte), `init_lp(q)` opcional, `_hr3_bpf`→`_hr3_lp`. −18,0 dB en
+  25 Hz (500 Hz PRF) y además más plano en los armónicos del HPS (13 Hz: −1,2 vs −1,9 dB). API pública igual.
+  Tests host 9/9 (87, +4 en test_biquad), build V18 OK, **sin flashear**. Cabeceras de versión resincronizadas
+  (.cpp y ejemplo decían v0.91, spec v0.94). Commit+tag+push `d0480f9`.
+- Datos reales (SUBJ08 1238, 30,6 min, OT_LED1+ProbeState del replay por la entrada síncrona de HR3,
+  v0.96 vs v0.97): HR3 mediana Δ 0,00 lpm; hr3_sqi medio 0,605→0,609; tiempo con SQI≥0,5 59,7→60,2 %.
+  Las diferencias >3 lpm están donde SQI=0 salvo un empate en un tramo que HR3 ya confundía con el 3.er
+  armónico en ambas versiones. Efecto pequeño, como se esperaba (hay poco ruido por encima de 25 Hz).
+- `offline_runner` no calcula HR3 (la tarea asíncrona C no existe en el host) → HR3 NaN en los replays.
+- Pendiente: el espejo HR3TEST no reproduce el firmware desde v0.83 (apuntado en la tarea del backlog).
+  La RCAL de SpO2, si va a defaults, sería ya v0.98.

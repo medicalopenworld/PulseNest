@@ -107,5 +107,8 @@ has not been triaged yet.
   que es lo que podría ganar. A aclarar: el espectro de potencia no ve la fase, así que zero-phase solo aporta
   si importa la forma temporal; 0,5 Hz = 30 lpm es el suelo de PR OMS (atenúa ahí); zero-phase = filtfilt sobre
   la ventana (no causal); ¿4.º orden total, o 2.º aplicado ida y vuelta (magnitud al cuadrado)?
+  (2026-10-01) El paso bajo antialias de HR3 ya es de 4.º orden en la lib v0.97. OJO: el espejo HR3TEST
+  (`HR3TestCalc`) NO reproduce el firmware desde la v0.83 — sigue siendo un paso banda 2.º orden 0,4–15 Hz
+  con controles BP low/high: rehacerlo es parte de esta tarea.
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->
