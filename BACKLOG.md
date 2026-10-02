@@ -119,5 +119,15 @@ has not been triaged yet.
   el paso alto 0,5 Hz (causal o zero-phase) EMPEORA HR3 — menos acuerdo con HR2 (−1,3 a −3 pts) y más
   picos < 72 lpm (6,7→9,3/11,3 % y 3,9→7,1/10,5 %), aunque sube el SQI. El detrend lineal = restar la media.
   Ver conversation_log 2026-10-01. Antes de seguir con esta tarea, revisar esa conclusión.
+- [ ] Herramienta de marcado manual de picos sistólicos sobre capturas (`.csv` de sesión), para tener una
+  referencia de HR independiente de los algoritmos: la persona marca los latidos en tramos limpios y la
+  herramienta guarda los instantes (fichero aparte, en `derived/`, nunca en la captura) y calcula la HR de
+  referencia por ventana como (N−1)/(t_N − t_1). Uso: validar HR1/HR2/HR3 con la diferencia RMS que pide la
+  ISO 80601-2-61 §201.12.1.104 (el marcado manual equivale a "pulso palpado" / "cualquier otro método con
+  exactitud suficiente"). Contexto (Alex, 2026-10-02): la calibración de HR es secundaria porque esta
+  referencia basta para la precisión buscada; los errores de marcado se cancelan en el promedio (un retraso
+  sistemático se cancela del todo; un latido perdido o inventado NO: ±1/N), así que marcar solo tramos sin
+  duda. Habría mejorado el experimento de HR3 del 2026-10-01, que usó HR2 como referencia a falta de otra
+  cosa (el monitor de planta no registró el pulso en HOSPNAV).
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->

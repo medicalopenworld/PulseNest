@@ -25768,3 +25768,19 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
 - Abierto: el sufijo grabado (`-26`) salía de la plantilla `.toml` («confirm against the physical probe»),
   así que **no consta qué unidad (-25 o -26) se puso en cada bebé**. La etiqueta RCAL es por modelo, no por lote.
   Anotarlo en la próxima campaña.
+
+## 2026-10-02 — HR/PI secundarios; plan de calibración de SpO2
+
+- Alex: la calibración de HR es secundaria (referencia = marcado manual de picos sistólicos; errores que se
+  cancelan en el promedio) y la de PI también (cada fabricante elige su definición). De acuerdo, con matices:
+  HR no tiene calibración sino validación (ISO §201.12.1.104 admite pulso palpado / "otro método suficiente");
+  un latido perdido o inventado no se cancela (±1/N). La escala del PI es secundaria (sin requisito de
+  exactitud en la ISO), pero el **estimador de AC por canal no**, porque alimenta R → SpO2. Apuntada en
+  BACKLOG la herramienta de marcado manual de picos.
+- Plan de calibración de SpO2 (guardado en memoria `project_spo2_calibration_strategy_task`): incertidumbre
+  cuantificada + trazabilidad en vez de una referencia "fiable" inexistente. MS100 solo para regresión;
+  monitor por VideoNest = referencia de transferencia (anexo JJ) con incertidumbre conocida; patrón oro en
+  neonatos = gasometrías arteriales clínicas emparejadas (estudio observacional, ética + hospital); adultos =
+  laboratorio de hipoxia. Riesgo detectado: *regression dilution* (un R ruidoso aplana la pendiente), así que
+  parte del 30,55 → 21,54 podría ser ruido. Orden: 1) `docs/spo2_calibrations.md`; 2) comprobar sesgo de
+  pendiente en HOSPNAV; 3) alternativas para R; 4) protocolo de campaña con gasometrías; 5) hipoxia adultos.
