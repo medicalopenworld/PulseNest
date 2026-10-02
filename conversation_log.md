@@ -25784,3 +25784,47 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   laboratorio de hipoxia. Riesgo detectado: *regression dilution* (un R ruidoso aplana la pendiente), así que
   parte del 30,55 → 21,54 podría ser ruido. Orden: 1) `docs/spo2_calibrations.md`; 2) comprobar sesgo de
   pendiente en HOSPNAV; 3) alternativas para R; 4) protocolo de campaña con gasometrías; 5) hipoxia adultos.
+- Factores de los que depende una curva R→SpO2 (Alex: sonda, sujetos, referencia, definición de R). Añadidos:
+  lote de la sonda; sitio/aplicación; corriente del LED (λ con I_F y T) y cadena de adquisición; reglas de
+  selección de datos (el cambio de `rsqm_ot_thr` ya movió el ajuste); emparejamiento con la referencia
+  (promediado, alineación, OCR, **sitio de la sonda de referencia: preductal vs posductal en neonatos**);
+  método de ajuste. Lo no registrado hoy irá como columnas del registro de curvas.
+- Identificador del estimador de R: Alex propuso `SPO2_R_CURVE_DEF = "RCURVE_DEF1"`; propuesto y adoptado
+  (Alex delegó el nombre) **`SPO2_R_ESTIMATOR_ID = "R-ESTIMATOR-1"`** / clave `spo2_r_estimator_id`, para no
+  confundirlo con la curva (RCAL). Sube si y solo si R cambia ante la misma entrada; cada RCAL dice con qué
+  estimador se ajustó; si no coincide con la lib, SpO2 = no calibrada (DiagCode). Candidatos PILAB:
+  `R-ESTIMATOR-CAND-1.1(2s)/2.1(6s)/3.1(2s)`. A comprobar: la curva del MS100 (marzo) probablemente se ajustó
+  con otro estimador (τ_dc 1,6 → 2 s desde entonces). Todo en memoria `project_spo2_calibration_strategy_task`.
+- Nombre definitivo del identificador del método de R (Alex): **`SPO2_R_METHOD_ID = "R-METHOD-1"`**, clave
+  `spo2_r_method_id`, candidatos `R-METHOD-CAND-…` (sustituye a `R-ESTIMATOR-1`, que no le gustaba). El prefijo
+  `SPO2_` por la convención de dominio y porque "R" a secas en la lib suele ser una resistencia. Identifica solo
+  el cálculo de R; la curva R→SpO2 sigue con su etiqueta `RCAL-…`.
+- **Esquema de nombres definitivo (Alex): `r_method` + `r_curve`.** Etiquetas `R-METHOD-<n>` y
+  `R-CURVE-<sonda>-<fuente>-<fecha>`; claves idénticas en todas las capas (lib, `$CFG`, `$SET`, cabecera,
+  PILAB): `spo2_r_method_id`, `spo2_r_curve_id`, `spo2_r_curve_a`, `spo2_r_curve_b`; setter
+  `setSpO2RCurve(id, r_method_id, a, b)`; registro `docs/spo2_r_curves.md`. Descartados `r_cal` ("CAL" se lee
+  como calculado), `r_calib` y `r_calibcurve`. Elegido `r_curve` porque "R-curve" es la jerga del sector (el
+  propio MS100). Las etiquetas `RCAL-…` se renombrarán a `R-CURVE-…` en el mismo lote que el código; los
+  lectores de capturas seguirán aceptando `spo2a/b` y `spo2_cal_a/b`. Detalle en el plan de calibración.
+
+## 2026-10-02 — Masimo SET OEM, patentes de pulsioximetría, primera prueba de R por regresión
+
+**Preguntas clave**
+- ¿Por qué equipos como el Radiometer TCM FLEX llevan el logo Masimo SET? → módulo OEM con licencia: la
+  SpO2 la hace una placa de Masimo; exige logo y sensores Masimo (curva calibrada por par algoritmo+sensor).
+- ¿Qué patentes de Masimo, Nellcor/Medtronic, Philips, Nonin, Mindray… nos pueden afectar? → todo lo
+  presentado antes de ~oct-2006 ha caducado (Aoyagi, SET/DST US 5,632,272, Nellcor wavelet US 7,035,679,
+  Philips FAST US 6,631,281). Vivas y relevantes solo si se añaden: PVI (Masimo, ~fin 2027) y frecuencia
+  respiratoria desde el PPG (Masimo RRp ~2030+, Nellcor/Addison ~2028-2032). No es asesoramiento legal; FTO
+  antes de distribuir.
+- Explicación de PVI y del método de regresión para R. Corrección: R-METHOD-1 de la lib NO es pico-valle,
+  es cociente de RMS (sqrt de la EMA de la varianza).
+
+**Decisiones / resultados**
+- Alex: apuntar la regresión a la lista de métodos de R a analizar (no la conocía). Lista de 7 métodos en la
+  memoria `project_spo2_r_estimation_alternatives_task`.
+- Prueba offline (`captures/sessions/20260923_HOSPNAV_SUBJ08_ANALYSIS/r_regression_test.py`, 3471 pares
+  estacionarios SUBJ08+SUBJ09): dispersión a SpO2 de referencia constante 5,1 pts (lib) → 2,7 (paso banda
+  0,5-5 Hz + RMS) → 2,4 (regresión) → **1,6 (regresión sobre derivadas)**; Spearman −0,44 → −0,82. Pendiente
+  de la curva 21,5 → ~37,6 con cualquier método filtrado: la RCAL-STS0163-HOSPNAV-20260923 es sobre todo
+  ruido de R-METHOD-1 → no aplicarla. Siguiente: versión causal en offline_runner/PILAB como R-METHOD-CAND.
