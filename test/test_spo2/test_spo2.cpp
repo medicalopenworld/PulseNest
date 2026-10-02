@@ -15,7 +15,7 @@
 // (SPO2_A/SPO2_B calibration coefficients and WARMUP_SAMPLES were removed 2026-08-19: both were
 // dead code — hardcoded duplicates of incunest_afe4490.cpp's spo2_a_default/spo2_b_default and
 // spo2_warmup_s, defined but never referenced by any assertion. If a future test needs them,
-// derive from afe.getConfig().spo2_a / .spo2_b / .spo2_warmup_s instead of re-hardcoding, per
+// derive from afe.getConfig().spo2_r_curve_a / _b / .spo2_warmup_s instead of re-hardcoding, per
 // the same fix applied to test_hgac.cpp's WEAK_CODE/SAT_CODE — see conversation_log.md.)
 //
 // R/SpO2-accuracy tests need much longer than the nominal warmup: the AC^2 EMA (tau_var=6s)
@@ -156,6 +156,53 @@ void test_spo2_r_invariant_to_uniform_scale() {
     TEST_ASSERT_FLOAT_WITHIN(0.001f, afe_a.test_spo2_r(), afe_b.test_spo2_r());
 }
 
+// ── R method / R curve identifiers (v0.98) ───────────────────────────────────
+// The default curve is the MS100 one, fitted with R-METHOD-0: it must say so, and the mismatch
+// with SPO2_R_METHOD_ID must be reported as a warning, not by invalidating SpO2.
+void test_spo2_default_r_curve_is_labelled_and_warns() {
+    INCUNEST_AFE4490 afe;
+    AFE4490Config cfg = afe.getConfig();
+    TEST_ASSERT_EQUAL_STRING("R-METHOD-1", cfg.spo2_r_method_id);
+    TEST_ASSERT_EQUAL_STRING("R-CURVE-U401D-MS100-20260323", cfg.spo2_r_curve_id);
+    TEST_ASSERT_EQUAL_STRING("R-METHOD-0", cfg.spo2_r_curve_r_method_id);
+    TEST_ASSERT_FALSE(cfg.spo2_r_curve_method_match);
+    TEST_ASSERT_EQUAL_FLOAT(114.9208f, cfg.spo2_r_curve_a);
+    TEST_ASSERT_EQUAL_FLOAT(30.5547f, cfg.spo2_r_curve_b);
+    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());          // warning only: SpO2 still valid
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 98.0f, afe.test_spo2());
+}
+
+// A curve for the library's own R method clears the warning, and SpO2 follows its coefficients.
+void test_spo2_set_r_curve_applies_and_matches() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_TRUE(afe.setSpO2RCurve("R-CURVE-TEST-BENCH-20261002", "R-METHOD-1", 110.0f, 20.0f));
+    AFE4490Config cfg = afe.getConfig();
+    TEST_ASSERT_EQUAL_STRING("R-CURVE-TEST-BENCH-20261002", cfg.spo2_r_curve_id);
+    TEST_ASSERT_TRUE(cfg.spo2_r_curve_method_match);
+    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 110.0f - 20.0f * afe.test_spo2_r(), afe.test_spo2());
+}
+
+// Bad input never half-applies: the previous curve stays, whole.
+void test_spo2_set_r_curve_rejects_bad_input() {
+    INCUNEST_AFE4490 afe;
+    char too_long[SPO2_R_ID_LEN + 4];
+    memset(too_long, 'X', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    TEST_ASSERT_FALSE(afe.setSpO2RCurve("", "R-METHOD-1", 110.0f, 20.0f));
+    TEST_ASSERT_FALSE(afe.setSpO2RCurve(nullptr, "R-METHOD-1", 110.0f, 20.0f));
+    TEST_ASSERT_FALSE(afe.setSpO2RCurve(too_long, "R-METHOD-1", 110.0f, 20.0f));
+    TEST_ASSERT_FALSE(afe.setSpO2RCurve("R-CURVE-X", "", 110.0f, 20.0f));
+    TEST_ASSERT_FALSE(afe.setSpO2RCurve("R-CURVE-X", "R-METHOD-1", NAN, 20.0f));
+    TEST_ASSERT_FALSE(afe.setSpO2RCurve("R-CURVE-X", "R-METHOD-1", 110.0f, INFINITY));
+    AFE4490Config cfg = afe.getConfig();
+    TEST_ASSERT_EQUAL_STRING("R-CURVE-U401D-MS100-20260323", cfg.spo2_r_curve_id);
+    TEST_ASSERT_EQUAL_STRING("R-METHOD-0", cfg.spo2_r_curve_r_method_id);
+    TEST_ASSERT_EQUAL_FLOAT(114.9208f, cfg.spo2_r_curve_a);
+    TEST_ASSERT_EQUAL_FLOAT(30.5547f, cfg.spo2_r_curve_b);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_spo2_not_valid_during_warmup);
@@ -165,5 +212,8 @@ int main() {
     RUN_TEST(test_spo2_clamp_above_100);
     RUN_TEST(test_spo2_too_high_invalid);
     RUN_TEST(test_spo2_r_invariant_to_uniform_scale);
+    RUN_TEST(test_spo2_default_r_curve_is_labelled_and_warns);
+    RUN_TEST(test_spo2_set_r_curve_applies_and_matches);
+    RUN_TEST(test_spo2_set_r_curve_rejects_bad_input);
     return UNITY_END();
 }

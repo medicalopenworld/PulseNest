@@ -1,7 +1,11 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.21 — native/offline (no hardware), library API v0.96
+// Runner version: v0.22 — native/offline (no hardware), library API v0.98
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
+//
+// v0.22 (2026-10-02): replays with the capture's own R curve through setSpO2RCurve() (lib v0.98):
+//   fw >= 0.16 names it in $CFG (spo2_r_curve_*); fw <= 0.15 printed only spo2a/spo2b, read as the
+//   MS100 default when they match it and as an explicitly unlabelled curve otherwise.
 //
 // v0.21 (2026-09-29): output moves out of the session directory, which holds only what was
 //   recorded, into <input dir>/derived/replay_lib<ver>[_ot<thr>]/ (--out DIR overrides).
@@ -72,7 +76,7 @@ static std::vector<std::string> split_csv(const std::string& line) {
 
 // ── $CFG header → key/value map ───────────────────────────────────────────────
 // The capture header carries the exact board configuration:
-//   # from-board: $CFG,sr=500,numav=8,led1=49.80,...,spo2b=30.5547,...*67
+//   # from-board: $CFG,sr=500,numav=8,led1=49.80,...,spo2_r_curve_b=30.5547,...*67 (fw <= 0.15: spo2b=)
 static std::map<std::string, std::string> parse_cfg_line(const std::string& line) {
     std::map<std::string, std::string> kv;
     size_t at = line.find("$CFG,");
@@ -142,7 +146,21 @@ static bool apply_cfg(INCUNEST_AFE4490& afe, const std::map<std::string, std::st
     if (has("stage2en1")) afe.setStage2En1(l("stage2en1") != 0);
     if (has("stage2en2")) afe.setStage2En2(l("stage2en2") != 0);
     if (has("ambdac")) afe.setAmbDac((uint8_t)l("ambdac"));
-    if (has("spo2a") && has("spo2b")) afe.setSpO2Coefficients(f("spo2a"), f("spo2b"));
+    // The R curve the board used. fw >= 0.16 names it (spo2_r_curve_*); fw <= 0.15 printed only the
+    // coefficients (spo2a/spo2b), and the one curve such firmware ever shipped is the MS100 default —
+    // anything else is replayed under an explicit "unlabelled" id rather than a guessed one.
+    if (has("spo2_r_curve_id") && has("spo2_r_curve_r_method_id")
+        && has("spo2_r_curve_a") && has("spo2_r_curve_b")) {
+        if (!afe.setSpO2RCurve(s("spo2_r_curve_id").c_str(), s("spo2_r_curve_r_method_id").c_str(),
+                               f("spo2_r_curve_a"), f("spo2_r_curve_b"))) {
+            fprintf(stderr, "ERROR: %s: invalid R curve in $CFG\n", label);
+            return false;
+        }
+    } else if (has("spo2a") && has("spo2b")) {
+        bool is_default = fabsf(f("spo2a") - 114.9208f) < 1e-3f && fabsf(f("spo2b") - 30.5547f) < 1e-3f;
+        afe.setSpO2RCurve(is_default ? "R-CURVE-U401D-MS100-20260323" : "R-CURVE-UNLABELLED-FW-0.15",
+                          is_default ? "R-METHOD-0" : "R-METHOD-UNKNOWN", f("spo2a"), f("spo2b"));
+    }
     if (has("fl") && has("fh"))    afe.setPPGDispFilter(f("fl"), f("fh"));
     if (has("hr2l") && has("hr2h")) afe.setHR2Filter(f("hr2l"), f("hr2h"));
     if (has("hr3h"))   afe.setHR3Filter(f("hr3h"));
@@ -355,7 +373,7 @@ int main(int argc, char* argv[]) {
         return stem;
     };
 
-    printf("incunest_offline_runner v0.21 (lib %s) — %zu file(s)%s -> %s\n",
+    printf("incunest_offline_runner v0.22 (lib %s) — %zu file(s)%s -> %s\n",
            INCUNEST_AFE4490_VERSION, files.size(),
            ot_thr > 0 ? "" : ", ot-thr = library default", out_dir.string().c_str());
     if (ot_thr > 0) printf("  rsqm_ot_thr override: %g A/A\n", ot_thr);

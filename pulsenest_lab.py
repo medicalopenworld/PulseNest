@@ -259,7 +259,7 @@ class SpO2LocalCalc:
       _DC_IIR_TAU_S <- spo2_ema_mean_tau_s  (2.0 s)
       _AC_EMA_TAU_S <- spo2_ema_var_tau_s   (6.0 s, ISO 80601-2-61:2026 Annex JJ.2 d) >= 6 s)
       _WARMUP_S     <- spo2_warmup_s        (18.0 s = 3 x tau_var)
-      SPO2_A/B      <- spo2_a_default / spo2_b_default
+      SPO2_R_CURVE_A/B      <- spo2_r_curve_a_default / spo2_r_curve_b_default (lib v0.98; were spo2_a/b_default)
       _SPO2_MIN/MAX <- spo2_min / spo2_max
     """
     _DC_IIR_TAU_S = 2.0
@@ -269,8 +269,8 @@ class SpO2LocalCalc:
     # replay of captures that predate that change.
     _SPO2_MIN_DC  = 1000.0
     _WARMUP_S     = 18.0
-    SPO2_A        = 114.9208
-    SPO2_B        =  30.5547
+    SPO2_R_CURVE_A        = 114.9208
+    SPO2_R_CURVE_B        =  30.5547
     _SPO2_MIN     = 70.0
     _SPO2_MAX     = 100.0
 
@@ -331,7 +331,7 @@ class SpO2LocalCalc:
             return None
 
         R    = (rms_ac_red / self._dc_red) / (rms_ac_ir / self._dc_ir)
-        spo2 = self.SPO2_A - self.SPO2_B * R
+        spo2 = self.SPO2_R_CURVE_A - self.SPO2_R_CURVE_B * R
         return {
             'dc_ir':      self._dc_ir,
             'dc_red':     self._dc_red,
@@ -571,8 +571,8 @@ class SpO2TestCalc:
     FW_AC_EMA_TAU_S = 6.0    # spo2_ema_var_tau_s  (EmaChannel τ_var, ISO 80601-2-61:2026 JJ.2 d ≥ 6 s)
     FW_SPO2_DIV_EPS = 1e-9   # spo2_div_eps — numerical guard only, not user-adjustable
     FW_WARMUP_S     = 18.0   # spo2_warmup_s = 3 × τ_var
-    FW_SPO2_A       = 114.9208
-    FW_SPO2_B       =  30.5547
+    FW_SPO2_R_CURVE_A       = 114.9208
+    FW_SPO2_R_CURVE_B       =  30.5547
     FW_SPO2_MIN     = 70.0
     FW_SPO2_MAX     = 100.0
     FW_PI_SQI_LOW   = 0.5    # PI below this → SQI = 0
@@ -583,8 +583,8 @@ class SpO2TestCalc:
         self.dc_iir_tau_s = self.FW_DC_IIR_TAU_S
         self.ac_ema_tau_s = self.FW_AC_EMA_TAU_S
         self.warmup_s     = self.FW_WARMUP_S
-        self.spo2_a       = self.FW_SPO2_A
-        self.spo2_b       = self.FW_SPO2_B
+        self.spo2_r_curve_a       = self.FW_SPO2_R_CURVE_A
+        self.spo2_r_curve_b       = self.FW_SPO2_R_CURVE_B
         # Internal state
         self._fs           = 0.0
         self._alpha        = 0.0
@@ -610,8 +610,8 @@ class SpO2TestCalc:
         self.dc_iir_tau_s = self.FW_DC_IIR_TAU_S
         self.ac_ema_tau_s = self.FW_AC_EMA_TAU_S
         self.warmup_s     = self.FW_WARMUP_S
-        self.spo2_a       = self.FW_SPO2_A
-        self.spo2_b       = self.FW_SPO2_B
+        self.spo2_r_curve_a       = self.FW_SPO2_R_CURVE_A
+        self.spo2_r_curve_b       = self.FW_SPO2_R_CURVE_B
         self.reset()
 
     @property
@@ -621,8 +621,8 @@ class SpO2TestCalc:
             self.dc_iir_tau_s == self.FW_DC_IIR_TAU_S and
             self.ac_ema_tau_s == self.FW_AC_EMA_TAU_S and
             self.warmup_s     == self.FW_WARMUP_S     and
-            self.spo2_a       == self.FW_SPO2_A       and
-            self.spo2_b       == self.FW_SPO2_B
+            self.spo2_r_curve_a       == self.FW_SPO2_R_CURVE_A       and
+            self.spo2_r_curve_b       == self.FW_SPO2_R_CURVE_B
         )
 
     def _recalc_params(self, fs):
@@ -706,7 +706,7 @@ class SpO2TestCalc:
 
         R    = (rms_ac_red / self._dc_red) / (rms_ac_ir / self._dc_ir)
         pi   = (rms_ac_ir / self._dc_ir) * 100.0
-        spo2 = self.spo2_a - self.spo2_b * R
+        spo2 = self.spo2_r_curve_a - self.spo2_r_curve_b * R
         spo2_valid = self.FW_SPO2_MIN <= spo2 <= self.FW_SPO2_MAX
         sqi = float(np.clip((pi - self.FW_PI_SQI_LOW) / (self.FW_PI_SQI_HIGH - self.FW_PI_SQI_LOW), 0.0, 1.0))
         if not spo2_valid:
@@ -1936,7 +1936,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
         self._lbl_r2.setText(f"R\u00b2  =  {r2:.4f}")
         self._lbl_status.setText(
             f"Regression done ({len(self._cal_points)} pts). "
-            f"Use setSpO2Coefficients({a:.4f}, {b:.4f}) in firmware.")
+            f"Use setSpO2RCurve(\"R-CURVE-<probe>-<source>-<date>\", <R method it was fitted with>, "
+            f"{a:.4f}, {b:.4f}) in firmware.")
 
     def _clear_points(self):
         self._cal_points.clear()
@@ -1963,7 +1964,7 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
                 f.write(f"# SimSetting,{self._edit_sim_setting.text()}\n")
                 f.write(f"# SpO2LocalCalc: DC_IIR_TAU_S={SpO2LocalCalc._DC_IIR_TAU_S}, "
                         f"AC_EMA_TAU_S={SpO2LocalCalc._AC_EMA_TAU_S}\n")
-                f.write(f"# Firmware defaults: a={SpO2LocalCalc.SPO2_A}, b={SpO2LocalCalc.SPO2_B}\n")
+                f.write(f"# Firmware defaults: a={SpO2LocalCalc.SPO2_R_CURVE_A}, b={SpO2LocalCalc.SPO2_R_CURVE_B}\n")
                 f.write("#\n")
                 f.write("index,spo2_ref,R_fw_mean,R_local_mean\n")
                 for i, (s, rfw, rloc) in enumerate(self._cal_points, 1):
@@ -2315,8 +2316,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                 w.setSuffix(suffix)
             return w
 
-        self._spin_a       = _dspin(50.0,   200.0,  SpO2TestCalc.FW_SPO2_A,       4, 0.0001)
-        self._spin_b       = _dspin(0.0,    100.0,  SpO2TestCalc.FW_SPO2_B,       4, 0.0001)
+        self._spin_a       = _dspin(50.0,   200.0,  SpO2TestCalc.FW_SPO2_R_CURVE_A,       4, 0.0001)
+        self._spin_b       = _dspin(0.0,    100.0,  SpO2TestCalc.FW_SPO2_R_CURVE_B,       4, 0.0001)
         self._spin_dc_tau  = _dspin(0.1,    20.0,   SpO2TestCalc.FW_DC_IIR_TAU_S, 1, 0.1,  " s")
         self._spin_ac_tau  = _dspin(0.1,    20.0,   SpO2TestCalc.FW_AC_EMA_TAU_S, 1, 0.1,  " s")
         self._spin_warmup  = _dspin(0.0,    60.0,   SpO2TestCalc.FW_WARMUP_S,     1, 0.5,  " s")
@@ -2325,12 +2326,12 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             "SpO2 coefficient a",
             "SpO2 = a − b·R. Firmware default: 114.9208. "
             "Empirical calibration coefficient. Changing this shifts the SpO2 curve vertically.",
-            src="spo2_a"))
+            src="spo2_r_curve_a"))
         self._spin_b.setToolTip(_make_tooltip(
             "SpO2 coefficient b",
             "SpO2 = a − b·R. Firmware default: 30.5547. "
             "Empirical calibration coefficient. Changing this changes the slope of the SpO2 vs R curve.",
-            src="spo2_b"))
+            src="spo2_r_curve_b"))
         self._spin_dc_tau.setToolTip(_make_tooltip(
             "DC IIR time constant",
             "IIR low-pass filter time constant for DC level tracking [s]. "
@@ -2426,8 +2427,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._calc.dc_iir_tau_s = self._spin_dc_tau.value()
         self._calc.ac_ema_tau_s = self._spin_ac_tau.value()
         self._calc.warmup_s     = self._spin_warmup.value()
-        self._calc.spo2_a       = self._spin_a.value()
-        self._calc.spo2_b       = self._spin_b.value()
+        self._calc.spo2_r_curve_a       = self._spin_a.value()
+        self._calc.spo2_r_curve_b       = self._spin_b.value()
         self._calc.reset()   # reset filter state when params change
         self._last_sample_cnt = -1
         self._t0_us = None
@@ -2436,8 +2437,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     def _reset_to_defaults(self):
         for sp, attr in [
-            (self._spin_a,      'FW_SPO2_A'),
-            (self._spin_b,      'FW_SPO2_B'),
+            (self._spin_a,      'FW_SPO2_R_CURVE_A'),
+            (self._spin_b,      'FW_SPO2_R_CURVE_B'),
             (self._spin_dc_tau, 'FW_DC_IIR_TAU_S'),
             (self._spin_ac_tau, 'FW_AC_EMA_TAU_S'),
             (self._spin_warmup, 'FW_WARMUP_S'),
@@ -2668,7 +2669,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         try:
             with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# SPO2TEST export — {datetime.datetime.now()}\n")
-                f.write(f"# a={self._calc.spo2_a:.4f}, b={self._calc.spo2_b:.4f}, "
+                f.write(f"# a={self._calc.spo2_r_curve_a:.4f}, b={self._calc.spo2_r_curve_b:.4f}, "
                         f"dc_tau={self._calc.dc_iir_tau_s:.1f}s, ac_tau={self._calc.ac_ema_tau_s:.1f}s\n")
                 f.write(f"# defaults={'YES' if self._calc.using_defaults else 'NO'}\n")
                 f.write("t_s,spo2_fw,spo2_py,spo2_delta,R_fw,R_py\n")
@@ -4544,8 +4545,8 @@ class PICalc:
     S3_EMA = "3.1"; S3_LPF = "3.2"; S3_WIN_MEAN = "3.3"
 
     # SpO2 calibration defaults (mirror firmware incunest_afe4490 defaults)
-    DEFAULT_SPO2_A = 114.9208
-    DEFAULT_SPO2_B =  30.5547
+    DEFAULT_SPO2_R_CURVE_A = 114.9208
+    DEFAULT_SPO2_R_CURVE_B =  30.5547
 
     def __init__(self):
         # STEP1
@@ -4581,8 +4582,8 @@ class PICalc:
         self._win_max_n = 200; self._norm_max_n = 200
 
         # SpO2 calibration (synced from firmware $CFG at runtime)
-        self.spo2_a = self.DEFAULT_SPO2_A
-        self.spo2_b = self.DEFAULT_SPO2_B
+        self.spo2_r_curve_a = self.DEFAULT_SPO2_R_CURVE_A
+        self.spo2_r_curve_b = self.DEFAULT_SPO2_R_CURVE_B
 
         # outputs
         self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
@@ -4763,7 +4764,7 @@ class PICalc:
         self.pi_ir  = self.ac_amp_ir  / self.dc_norm_ir  * 100.0
         self.pi_red = self.ac_amp_red / self.dc_norm_red * 100.0
         self.R    = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
-        self.spo2 = max(0.0, min(100.0, self.spo2_a - self.spo2_b * self.R)) if self.R > 0.0 else 0.0
+        self.spo2 = max(0.0, min(100.0, self.spo2_r_curve_a - self.spo2_r_curve_b * self.R)) if self.R > 0.0 else 0.0
         return self.pi_ir, self.pi_red, self.R
 
 
@@ -5656,7 +5657,7 @@ class PILabWindow(QtWidgets.QMainWindow):
             "PI_red      — Perfusion Index red = ac_amp_red / dc_norm_red × 100 [%]",
             "PI_ir       — Perfusion Index IR  = ac_amp_ir  / dc_norm_ir  × 100 [%]",
             "R        — SpO2 ratio = PI_red / PI_ir (dimensionless; ~0.4–1.0 physiological range)",
-            "SpO2     — spo2_a − spo2_b × R [%], coefficients synced from the firmware $CFG",
+            "SpO2     — spo2_r_curve_a − spo2_r_curve_b × R [%], coefficients synced from the firmware $CFG",
         ]
         for i, tip in enumerate(_row_tips):
             self._val_table.verticalHeaderItem(i).setToolTip(tip)
@@ -5826,7 +5827,7 @@ class PILabWindow(QtWidgets.QMainWindow):
             "  STEP1: EMA subtract  τ_sub = 2.0 s\n"
             "  STEP2: EMA-RMS       τ_ac  = 6.0 s\n"
             "  STEP3: EMA           τ_norm = 2.0 s\n"
-            "spo2_a/b are read from the last received $CFG frame."))
+            "spo2_r_curve_a/b are read from the last received $CFG frame."))
         form.addRow("", preset_btn)
 
         scroll = QtWidgets.QScrollArea()
@@ -5938,14 +5939,15 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._sync_spo2_coeffs(kv)
 
     def _sync_spo2_coeffs(self, kv):
-        """Read spo2_a/spo2_b from a parsed $CFG kv dict and apply to both PICalc instances."""
+        """Read spo2_r_curve_a/spo2_r_curve_b from a parsed $CFG kv dict and apply to both PICalc instances."""
         try:
-            a = float(kv.get("spo2a", PICalc.DEFAULT_SPO2_A))
-            b = float(kv.get("spo2b", PICalc.DEFAULT_SPO2_B))
+            # fw >= 0.16 names the R curve (spo2_r_curve_*); fw <= 0.15 printed spo2a/spo2b
+            a = float(kv.get("spo2_r_curve_a", kv.get("spo2a", PICalc.DEFAULT_SPO2_R_CURVE_A)))
+            b = float(kv.get("spo2_r_curve_b", kv.get("spo2b", PICalc.DEFAULT_SPO2_R_CURVE_B)))
         except (ValueError, TypeError):
             return
-        self.calc_a.spo2_a = a;  self.calc_a.spo2_b = b
-        self.calc_b.spo2_a = a;  self.calc_b.spo2_b = b
+        self.calc_a.spo2_r_curve_a = a;  self.calc_a.spo2_r_curve_b = b
+        self.calc_b.spo2_r_curve_a = a;  self.calc_b.spo2_r_curve_b = b
 
     def _refresh_param_state(self, cfg):
         """Enable/disable parameter widgets based on current STEP combo selections."""
@@ -6132,7 +6134,7 @@ may still produce different R values — and therefore different SpO2 readings.
 Use this plot to evaluate how sensitive R is to the choice of estimator.</p>
 
 <p class="h">Plot 6 — SpO2 [%]</p>
-<p><span class="formula">SpO2 = spo2_a − spo2_b × R</span>, with the calibration
+<p><span class="formula">SpO2 = spo2_r_curve_a − spo2_r_curve_b × R</span>, with the calibration
 coefficients synced from the firmware's <code>$CFG</code>. It shows how a difference in R
 between A and B becomes a difference in the displayed saturation.</p>
 </body>"""
@@ -13552,7 +13554,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  AMBDAC: {kv.get('ambdac','?')} µA\n"
             f"  PPG channel: {kv.get('ch','?')}   Filter: BW [{kv.get('fl','?')}–{kv.get('fh','?')} Hz]\n"
             f"  HR2 BPF: {kv.get('hr2l','?')}–{kv.get('hr2h','?')} Hz   HR3 LPF: {kv.get('hr3h','?')} Hz\n"
-            f"  SpO2: a={kv.get('spo2a','?')}  b={kv.get('spo2b','?')}"
+            f"  SpO2: R method {kv.get('spo2_r_method_id','?')}   R curve {kv.get('spo2_r_curve_id','?')} "
+            f"(fitted with {kv.get('spo2_r_curve_r_method_id','?')}"
+            f"{', MISMATCH' if kv.get('spo2_r_curve_method_match') == '0' else ''})"
+            f"   a={kv.get('spo2_r_curve_a', kv.get('spo2a','?'))}  b={kv.get('spo2_r_curve_b', kv.get('spo2b','?'))}"
         )
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', False):
             self._cfg_listener(text)

@@ -25828,3 +25828,23 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   0,5-5 Hz + RMS) → 2,4 (regresión) → **1,6 (regresión sobre derivadas)**; Spearman −0,44 → −0,82. Pendiente
   de la curva 21,5 → ~37,6 con cualquier método filtrado: la RCAL-STS0163-HOSPNAV-20260923 es sobre todo
   ruido de R-METHOD-1 → no aplicarla. Siguiente: versión causal en offline_runner/PILAB como R-METHOD-CAND.
+
+## 2026-10-02 — Renombrado r_method / r_curve implementado (lib v0.98, fw 0.16, lab v1.75)
+
+- Alex confirma: la curva HOSPNAV (ahora `R-CURVE-STS0163-HOSPNAV-20260923`) no se aplica de momento.
+- Hecho, con la salvaguarda en **modo aviso** (Alex): `SPO2_R_METHOD_ID = "R-METHOD-1"`, `setSpO2RCurve(id,
+  r_method_id, a, b)` en lugar de `setSpO2Coefficients()`, campos `spo2_r_method_id` / `spo2_r_curve_id` /
+  `spo2_r_curve_r_method_id` / `spo2_r_curve_method_match` / `spo2_r_curve_a/b` en la lib, el `$CFG` (fw 0.16),
+  la cabecera v0.4, PILAB y el offline_runner (v0.22). La curva por defecto es `R-CURVE-U401D-MS100-20260323`
+  ajustada con **R-METHOD-0** (comprobado en el log: el 23-03 R se calculaba sobre adc_code con DC τ 1,6 s y AC
+  τ 1,0 s), así que el propio default dispara el aviso.
+- Hallazgos: (1) el aviso no puede ser un bit de `diag_code`, porque `rsqi` exige `diag_code == 0`: invalidaría
+  la señal para siempre; va como estado de configuración + log. (2) El firmware nunca tuvo `$SET` para la SpO2:
+  la opción "curva por `$SET` en cada sesión" no existía. (3) El renombrado de los τ (`spo2_ema_*`) se deja para
+  la tarea de separar el DC, para no renombrarlos dos veces.
+- Compatibilidad: las capturas antiguas se siguen leyendo (`spo2a/b`, `spo2_cal_a/b` como sinónimos); el corpus
+  del conversor sigue idéntico byte a byte; un replay antiguo sale idéntico al de la v0.96.
+- Etiquetas `RCAL-…` → `R-CURVE-…` en memoria y análisis (fe de erratas en el `findings.md` de SUBJ08). En las
+  entradas anteriores de este log, `RCAL-X` se lee como `R-CURVE-X`.
+- Tests todos en verde y build V18 OK. Sin commit ni OTA: el repo de la librería tiene cambios de otra sesión
+  sin commit (spec y design rationale) que hay que decidir antes.

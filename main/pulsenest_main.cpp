@@ -50,7 +50,8 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.15"   // 0.15: $CFG says why it exists (cause=boot|query|set|hgac, ts_us, hgac_rf_changes); one per HGAC RF move
+#define PULSENEST_FW_VERSION "0.16"   // 0.16: $CFG names the R method and the R curve (spo2_r_method_id, spo2_r_curve_*; was spo2a/spo2b)
+                                      // 0.15: $CFG says why it exists (cause=boot|query|set|hgac, ts_us, hgac_rf_changes); one per HGAC RF move
 
 // ── Pin definitions ────────────────────────────────────────────────────────────────────
 // From Kconfig (main/Kconfig.projbuild, menu "PulseNest board"): one build directory per board,
@@ -780,12 +781,13 @@ static void send_cfg_frame(const char* cause) {
         elf_sha8[i * 2 + 1] = kHex[app_desc->app_elf_sha256[i] & 0x0F];
     }
     elf_sha8[16] = '\0';
-    // 720: measured on the bench 2026-09-18, three boards, the real frame is 447-453 B (the
-    // "~560" this comment used to claim was an overestimate); elfsha/idfver add 38, so 485-491
-    // against the 714 snprintf may use — 223 B of margin. Sized with margin because a truncated
-    // frame would still get a valid checksum appended below and reach the host as a well-formed
-    // but incomplete $CFG.
-    char buf[720];
+    // 832: measured on the bench 2026-09-18, three boards, the real frame was 447-453 B; elfsha/
+    // idfver added 38 (485-491). fw 0.16 replaces spo2a/spo2b (29 B) with the R method and R curve
+    // keys (156 B with the default ids): ~615 B, and up to ~710 B if both curve ids use all
+    // SPO2_R_ID_LEN. Sized with margin because a truncated frame would still get a valid checksum
+    // appended below and reach the host as a well-formed but incomplete $CFG. Not a UDP queue
+    // slot: udp_send_line() sends it directly.
+    char buf[832];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$CFG,sr=%u,numav=%u,led1=%.2f,led2=%.2f,range=%u"
         ",ensepgain=%d"
@@ -794,7 +796,11 @@ static void send_cfg_frame(const char* cause) {
         ",ambdac=%u,ri_ohm=%.0f"
         ",ch=%s"
         ",fl=%.2f,fh=%.2f,hr2l=%.2f,hr2h=%.2f,hr3h=%.2f"
-        ",spo2a=%.4f,spo2b=%.4f"
+        // The R method this library computes, and the R curve in use with the R method it was
+        // fitted for (lib v0.98). spo2_r_curve_method_match=0 is a WARNING: the curve was fitted
+        // for another R method; SpO2 is still shown.
+        ",spo2_r_method_id=%s,spo2_r_curve_id=%s,spo2_r_curve_r_method_id=%s"
+        ",spo2_r_curve_method_match=%d,spo2_r_curve_a=%.4f,spo2_r_curve_b=%.4f"
         ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X"
         // Provenance: which firmware produced this capture. Without it the FW_* columns of a
         // CSV become uninterpretable as soon as the algorithms change — see
@@ -816,7 +822,8 @@ static void send_cfg_frame(const char* cause) {
         channel_str(cfg.ppgdisp_channel),
         cfg.ppgdisp_f_low_hz, cfg.ppgdisp_f_high_hz,
         cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,
-        cfg.spo2_a, cfg.spo2_b,
+        cfg.spo2_r_method_id, cfg.spo2_r_curve_id, cfg.spo2_r_curve_r_method_id,
+        cfg.spo2_r_curve_method_match ? 1 : 0, cfg.spo2_r_curve_a, cfg.spo2_r_curve_b,
         BOARD_VERSION,
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
         // build = this project's commit, libsha = the library's, each covering only the paths

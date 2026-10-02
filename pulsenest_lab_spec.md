@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.74
+# pulsenest_lab — Specification v1.75
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2071,7 +2071,8 @@ library, where one EMA mean serves both (`project_spo2_dc_split_task`).
    plot (dc_norm_A − dc_norm_B) / dc_norm_B in %. Legend: "led1_sub" / "A" / "B".
 4. PI_ir [%] for A and B — final PI result (ac_amp / dc_norm × 100).
 5. R ratio for A and B — modulation ratio entering SpO2 formula.
-6. SpO2 [%] for A and B — spo2_a − spo2_b × R, coefficients synced from the firmware `$CFG`.
+6. SpO2 [%] for A and B — spo2_r_curve_a − spo2_r_curve_b × R, the R curve synced from the firmware `$CFG`
+   (`spo2_r_curve_a/b` from fw 0.16, `spo2a/b` before).
 
 **Config columns A / B:** always visible side by side (not tabs). Each column has an independent
 `_make_config_tab()` panel with STEP1/2/3 method combo + associated parameter spinboxes + [APPLY] button.
@@ -2657,6 +2658,18 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.75 — 2026-10-02
+
+**One name per concept for the R curve** (Alex: the same root in every layer, lib v0.98 / fw 0.16).
+The coefficients of the curve that turns R into SpO2 are `spo2_r_curve_a` / `spo2_r_curve_b`
+everywhere in the lab: `PICalc` (`DEFAULT_SPO2_R_CURVE_A/B`), `SpO2TestCalc` (`FW_SPO2_R_CURVE_A/B`),
+`SpO2LocalCalc` (`SPO2_R_CURVE_A/B`) — they were `spo2_a`, `FW_SPO2_A`, `SPO2_A`, `DEFAULT_SPO2_A`. PILAB
+reads `spo2_r_curve_a/b` from `$CFG` and falls back to `spo2a/b` (fw ≤ 0.15). The `$CFG` notes of a
+capture now say the R method, the R curve, the R method it was fitted with (`MISMATCH` when they
+differ — a warning, the lib still computes SpO2) and the coefficients. SpO2LAB's regression hint names
+`setSpO2RCurve()`. Not renamed: PILAB's `_spo2_a`/`_spo2_b` and `curve_spo2_a/b`, which are the SpO2
+buffers and curves of instances A and B, not coefficients.
 
 ### v1.74 — 2026-09-30
 

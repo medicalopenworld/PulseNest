@@ -40,6 +40,7 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [os.path.dirname(_HERE), _HERE]
 from pulsenest_recorder import Recorder, read_pnraw, normalise_subject   # noqa: E402
+from pulsenest_capture_dict import KEY_SYNONYMS                          # noqa: E402
 
 _SESSION_RE = re.compile(r"^(\d{8}_\d{4})_([A-Z0-9]+)(?:_([A-Za-z0-9]+))?$")
 _EVENT_TEXT_RE = re.compile(r"^subject=(\S*) board=(\S*)(?: value=(\S*))?(?: value2=(\S*))?"
@@ -256,6 +257,10 @@ def verify(session_dir, rec):
             out.append((os.path.basename(f), "missing"))
             continue
         a, b = io.open(f, "rb").read(), io.open(twin, "rb").read()
+        # A snapshot key renamed since the live file was written is the same value under its
+        # canonical name (renaming = adding a synonym): compare under today's names.
+        for old, new in KEY_SYNONYMS.items():
+            a = a.replace(f" {old}=".encode(), f" {new}=".encode())
         out.append((os.path.basename(f), "identical" if a == b else "DIFFERS"))
     return out
 

@@ -88,11 +88,11 @@ check("afe: one representation per register, integers in natural units (R24a)",
 check("timing: the 28 registers by datasheet name plus the derived afe_prpcount=7999",
       " afe_led2stc=6050 " in snaps[1] and snaps[1].endswith(" afe_adcrstendct3=6003 afe_prpcount=7999")
       and len(snaps[1].split()) == 5 + 29)     # '#', '@row', '0', 'timing:', 'cause=open' + 28 registers + prpcount
-check("alg: merges $CFG corners and $LCFG parameters; ms/mHz/mV/pA/e10 integers; reals only for spo2_cal",
+check("alg: merges $CFG corners and $LCFG parameters; ms/mHz/mV/pA/e10 integers; reals only for spo2_r_curve; an fw <= 0.15 spo2a lands under its canonical name",
       " hgac_v_tia_high2_mv=900 " in snaps[2] and " hgac_ema_fast_tau_ms=100 " in snaps[2]
       and " rsqm_ot_thr_e10=1000000 " in snaps[2] and " rsqm_disconn_i_pd_thr_pa=50000 " in snaps[2]
       and " rsqm_probe_state_min_ms=500 " in snaps[2] and " hr2_f_low_mhz=500 " in snaps[2]
-      and " ppgdisp_channel=LED1 " in snaps[2] and " spo2_cal_a=110.0000 " in snaps[2]
+      and " ppgdisp_channel=LED1 " in snaps[2] and " spo2_r_curve_a=110.0000 " in snaps[2]
       and "hgac_rf_changes" not in snaps[2])
 for l in snaps:
     dom = l.split()[3][:-1]

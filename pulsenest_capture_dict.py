@@ -13,7 +13,7 @@ Rules this file obeys (R18/R19/R24a and the project's naming memories):
     header's `led1=IR led2=RED` mapping only, R23); ADC output is `adc_code`, never `count`;
   * keys carry a domain prefix and a unit suffix and hold ONE representation per register, an
     integer in natural units (`afe_rf1_ohm=50000`, not `tia1=50k` and `rf1_ohm=50000` twice);
-    reals only in `alg:` and only for dimensionless coefficients (`spo2_cal_a`);
+    reals only in `alg:` and only for dimensionless coefficients (`spo2_r_curve_a`);
   * a scaled OT says its scale in its name (`OT1_E10`, the `_ppm` rule generalised).
 
 `wire` says where a key comes from on the wire and how: (frame, wire keys, scale) -- the canonical
@@ -179,8 +179,15 @@ KEYS = [
     Key("hr2_f_low_mhz",        "alg", (CFG,  ("hr2l",),  1000), "HR2 band-pass low corner",                            "mHz",  "int",   CONFIG, "0.4"),
     Key("hr2_f_high_mhz",       "alg", (CFG,  ("hr2h",),  1000), "HR2 band-pass high corner",                           "mHz",  "int",   CONFIG, "0.4"),
     Key("hr3_f_high_mhz",       "alg", (CFG,  ("hr3h",),  1000), "HR3 low-pass corner",                                 "mHz",  "int",   CONFIG, "0.4"),
-    Key("spo2_cal_a",           "alg", (CFG,  ("spo2a",), 1),    "SpO2 = a - b*R calibration, a (dimensionless: a real is allowed, R24a)", "ratio", "float", CONFIG, "0.4"),
-    Key("spo2_cal_b",           "alg", (CFG,  ("spo2b",), 1),    "SpO2 = a - b*R calibration, b",                       "ratio", "float", CONFIG, "0.4"),
+    # The R method and the R curve (lib v0.98, fw 0.16): R-METHOD-<n> names how R is computed,
+    # R-CURVE-<probe>-<source>-<date> the curve that turns R into SpO2 and the R method it was fitted
+    # with; method_match=0 is a warning (curve for another R method), SpO2 is still produced.
+    Key("spo2_r_method_id",          "alg", (CFG, ("spo2_r_method_id",), None),         "how the library computes R (R-METHOD-<n>)", "text", "str", CONFIG, "0.4"),
+    Key("spo2_r_curve_id",           "alg", (CFG, ("spo2_r_curve_id",), None),          "R curve in use, R-CURVE-<probe>-<source>-<date>", "text", "str", CONFIG, "0.4"),
+    Key("spo2_r_curve_r_method_id",  "alg", (CFG, ("spo2_r_curve_r_method_id",), None), "R method that curve was fitted with", "text", "str", CONFIG, "0.4"),
+    Key("spo2_r_curve_method_match", "alg", (CFG, ("spo2_r_curve_method_match",), 1),   "1 = the curve's R method is the library's; 0 = warning", "flag", "int", CONFIG, "0.4"),
+    Key("spo2_r_curve_a",            "alg", (CFG, ("spo2_r_curve_a",), 1), "SpO2 = a - b*R, a (dimensionless: a real is allowed, R24a; was spo2_cal_a)", "ratio", "float", CONFIG, "0.4"),
+    Key("spo2_r_curve_b",            "alg", (CFG, ("spo2_r_curve_b",), 1), "SpO2 = a - b*R, b (was spo2_cal_b)",                       "ratio", "float", CONFIG, "0.4"),
     Key("rsqm_ot_thr_e10",      "alg", (LCFG, ("rsqm_ot_thr",),              1e10), "OT below which the probe is not on tissue (wire prints A/A as %.4e)", "1e-10 A/A", "int", CONFIG, "0.4"),
     Key("rsqm_disconn_led_sub_thr", "alg", (LCFG, ("rsqm_disconn_led_sub_thr",), 1), "|LED-ALED| below which the probe reads as disconnected", "LSB", "int", CONFIG, "0.4"),
     Key("rsqm_disconn_i_pd_thr_pa", "alg", (LCFG, ("rsqm_disconn_i_pd_thr",),   1e12), "|i_pd| below which the probe reads as disconnected (wire prints A)", "pA", "int", CONFIG, "0.4"),
@@ -204,3 +211,10 @@ KEY_BY_NAME    = {k.name: k for k in KEYS}
 COLUMN_CANON   = {s: c.name for c in COLUMNS for s in (c.name, *c.synonyms)}
 # (frame, wire key) -> canonical key, e.g. ("$CFG", "tia1") -> "afe_rf1_ohm"
 WIRE_TO_KEY    = {(k.wire[0], w): k.name for k in KEYS if k.wire for w in k.wire[1]}
+
+# Wire keys older firmware printed for what a key now reads from another name. Unlike the labels in
+# a Key's own wire list, an old name and its replacement never share a frame, so a reader may take
+# both. fw <= 0.15 printed the R curve as spo2a/spo2b (renamed fw 0.16 / lib v0.98).
+WIRE_LEGACY    = {(CFG, "spo2a"): "spo2_r_curve_a", (CFG, "spo2b"): "spo2_r_curve_b"}
+# Snapshot key names written by older writers -> canonical (renaming = adding a synonym).
+KEY_SYNONYMS   = {"spo2_cal_a": "spo2_r_curve_a", "spo2_cal_b": "spo2_r_curve_b"}

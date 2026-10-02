@@ -293,6 +293,8 @@ class CaptureCsvWriterV04:
     # The wire key each dictionary key is read from: the numeric twin, first in its list. The
     # labels beside it (tia1=50k next to rf1_ohm=50000) are ignored on purpose (R24a).
     _WIRE_READ = {(k.wire[0], k.wire[1][0]): k for k in D.KEYS if k.wire}
+    # ...plus the names older firmware used for the same key (never in the same frame as the new one)
+    _WIRE_READ.update({wk: D.KEY_BY_NAME[name] for wk, name in D.WIRE_LEGACY.items()})
 
     def __init__(self, filepath, keys=None, profile="P1", label="", keep_wire=True):
         self.filepath = filepath

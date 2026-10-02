@@ -50,7 +50,7 @@
   - Evaluar si el LED IR es el más adecuado para PI
 - [ ] **PI como índice de fiabilidad de SpO2** — estudiar si PI puede usarse para validar o ponderar la medida de SpO2.
 - [ ] **PI — RMS vs pico a pico** — analizar la idoneidad del método actual (AC_rms / DC_ir × 100) frente al uso del valor AC pico a pico: cuál es más representativo fisiológicamente, más robusto ante ruido, y más coherente con la definición usada por los fabricantes de pulsioxímetros comerciales.
-- [ ] **Calibrar coeficientes SpO2** (`setSpO2Coefficients`) con sensor real.
+- [ ] **Calibrar coeficientes SpO2** (`setSpO2RCurve`, lib v0.98) con sensor real.
 - [ ] **Validación general con hardware real** (la mayoría de pruebas se han hecho con simulador).
 - [ ] **Validar algoritmo HR en condiciones adversas:** (1) baja perfusión, (2) luz ambiental, (3) artefactos por movimiento.
 - [ ] **Probe presence detection** — diseñar estrategia y algoritmo explícito de detección de presencia del sensor. Actualmente es implícita (umbral DC en SpO2, PI en SQI); se necesita un módulo propio, genérico y configurable.
