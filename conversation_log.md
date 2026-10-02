@@ -25901,3 +25901,16 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   van a 500 Hz.
 - Siguiente: paso 1d (cambio de pendiente: ¿movimiento ↔ desaturación?), 1e (espectral/autocorrelación),
   1f (MS100).
+
+## 2026-10-03 — Paso 1d: por qué la pendiente pasa de 21,5 a 38
+
+- `pulsenest_lab.py` relanzado (faltaba tras v1.76).
+- Análisis (`captures/sessions/20260923_HOSPNAV_SUBJ08_ANALYSIS/r_slope_test.py`): la potencia de OT
+  por debajo de 0,5 Hz, unas dos veces mayor (respecto al pulso) en el rojo que en el IR, infla el R de la lib
+  ×1,2 de forma casi constante. La de más de 5 Hz es despreciable. La inflación **no se correlaciona con la
+  SpO2** → descartada la hipótesis "el movimiento coincide con las desaturaciones". 21,5 → 38 = regresión
+  diluida del ajuste directo SpO2-sobre-R (ajuste inverso de la lib: 30,4) × inflación constante (30,4 → 37,6).
+- Lección: con R ruidoso el método y la dirección del ajuste cambian la pendiente (21,6 / 24,1 / 30,4 con los
+  mismos datos); registrarlo en el registro de curvas y preferir ajuste inverso u ortogonal.
+- Siguiente: 1e (métodos espectral y de autocorrelación), 1f (MS100); antes del paso 2, arreglar el modo
+  offline de PILAB (supone 50 Hz; las capturas v0.4 van a 500 Hz).
