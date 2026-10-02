@@ -25866,3 +25866,38 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   multipart (`curl -F`) dio `FAIL` en las tres (fallo seguro, flash intacta); el firmware IDF espera el cuerpo
   crudo (`--data-binary`, lo que hace `build.ps1 -Ota`). `docs/boards.md` actualizado.
 - Siguiente: candidato causal de R (`reg_dols`: paso banda IIR + EMA(dx·dy)/EMA(dx²)) en offline_runner/PILAB.
+
+## 2026-10-02/03 — Plan de métodos de R aprobado, versión causal probada, PILAB pasa a OT
+
+**Preguntas clave**
+- Traspaso de la sesión de análisis pulsenest-56 (resultados de R por regresión y plan en 4 pasos). Se le
+  corrigió lo desfasado: el renombrado ya salió como v0.98, así que R-METHOD-2 será la **v0.99**; la salvaguarda
+  es un aviso; la decisión (i) ya estaba cerrada. Regla nueva de Alex: solo la sesión de desarrollo toca el repo.
+- ¿Curvas R→SpO2 por edad? → Sí, pero lo que las separa es sonda + sitio + tejido (Mannheimer 2007), que van
+  ligados a la población; la hemoglobina fetal pesa poco (Pritišanac 2021); los fabricantes calibran por sensor
+  y añaden ±1 punto de margen en neonatos. No combinar MS100 (simulador, curva Nellcor de adultos, otra sonda)
+  con SUBJ08/09.
+- ¿La lib y el lab usan OT como señal base? → La lib sí (SpO2, HR1-3, ppg_disp). El lab no siempre: PILAB,
+  SpO2LAB y HR3LAB usaban `led1_sub`, y de ahí el pico de PILAB en cada cambio de RF.
+
+**Decisiones**
+- Alex aprueba los pasos 1-4 del plan (pruebas offline → candidato en PILAB/offline_runner → lib v0.99 =
+  R-METHOD-2 → 2.ª campaña + gasometrías).
+- Decisión (ii): con R-METHOD-2 la `r_curve` se vuelve a ajustar con el método nuevo, desde las capturas del
+  MS100 (o nuevas) y/o SUBJ08/09; la elección entre ellas o una combinada depende de si conviene tener curvas
+  por población.
+- SUBJ08 y SUBJ09 son prematuros (27+3 y 26+1 semanas, 1,16 y 1,53 kg; piel blanca y negra): la curva
+  SUBJ08/09 es neonatal. `SUBJECT_CODES.txt` es confidencial (nunca leer, citar ni commitear);
+  `docs/session_configs/*.toml` no se commitean sin visto bueno.
+
+**Resultados**
+- Pasos 1a-1c (`captures/sessions/20260923_HOSPNAV_SUBJ08_ANALYSIS/r_causal_test.py`): la regresión sobre
+  derivadas **causal** da dispersión 1,62 pts (no causal 1,61; lib 5,07), ρ −0,80, ajuste 123,8 − 38,9·R.
+  Robusta frente a la banda, el orden, el desfase de la derivada y τ_dc; τ_ac de 2 s mejora un poco (1,44).
+  Validación cruzada entre sujetos: error mediano 0,94-1,35 pts (lib 3,1-3,3 con sesgo ±2,6).
+- pulsenest_lab **v1.76** (`e73814a`): PILAB pasa a OT_LED1/OT_LED2 (`$M4` en directo, columnas OT
+  offline); guarda del DC `max(1.0, dc)` → `dc > 0`; gráficas 1-3 y tabla en ppm. SUBJ09: R tras el cambio de RF
+  9,27 con `led1_sub` → 1,19-1,36 con OT. Pendiente: el modo offline de PILAB supone 50 Hz y las capturas v0.4
+  van a 500 Hz.
+- Siguiente: paso 1d (cambio de pendiente: ¿movimiento ↔ desaturación?), 1e (espectral/autocorrelación),
+  1f (MS100).
