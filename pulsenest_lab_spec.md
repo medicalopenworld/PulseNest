@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.75
+# pulsenest_lab — Specification v1.76
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2008,7 +2008,11 @@ independently configured PI estimators side by side on live or recorded data.
 
 #### PICalc — configurable 3-step PI pipeline (class)
 
-`PICalc` implements a configurable pipeline for computing PI from raw `led1_sub` / `led2_sub` samples.
+`PICalc` implements a configurable pipeline for computing PI from `OT_LED1` / `OT_LED2` samples
+(optical transmittance [A/A], gain-invariant), the input the library's SpO2/PI/HR use (v1.76; it
+was `led1_sub` / `led2_sub` before, see the changelog). Live, PILAB is fed only in `$M4`, the only
+frame that carries OT; offline, [LOAD CSV] needs the `OT_LED1` / `OT_LED2` columns.
+The PI denominator is guarded only against division by zero (`dc_norm > 0`, else PI = 0).
 
 **Pipeline steps:**
 
@@ -2034,7 +2038,7 @@ independently configured PI estimators side by side on live or recorded data.
 │                                   │ [LOAD CSV][LIVE]     │
 │ Plot 1: AC waveform A/B           │ [PAUSE]          [?] │
 │ Plot 2: AC amplitude A/B          │ ┌─────────┬───────┐  │
-│ Plot 3: led1_sub + DC denom. A/B  │ │Instance │Inst.  │  │
+│ Plot 3: OT_LED1 + DC denom. A/B   │ │Instance │Inst.  │  │
 │ Plot 4: PI_ir [%] A/B             │ │A(orange)│B(blue)│  │
 │ Plot 5: R = PI_red/PI_ir A/B      │ │ STEP1   │ STEP1 │  │
 │ Plot 6: SpO2 [%] A/B              │ │         │       │  │
@@ -2061,14 +2065,16 @@ library, where one EMA mean serves both (`project_spo2_dc_split_task`).
 
 **Plots:**
 1. AC waveform (`ac_wave`, STEP1) for A (orange) and B (blue) — the pulse shape STEP1 leaves for
-   STEP2 to measure (since 2026-06-15; it showed the baseline before). No raw `led1_sub` trace since
-   v1.73: at ~10^5 counts on the same axis it flattened the zero-mean waveform. Legend: "A" / "B".
+   STEP2 to measure (since 2026-06-15; it showed the baseline before). No raw input trace since
+   v1.73: on the same axis it flattened the zero-mean waveform. Legend: "A" / "B".
 2. AC amplitude (`ac_amp`, STEP2) for A and B — compares estimator magnitude. Legend: "A" / "B".
-3. DC denominator (`dc_norm_ir`, STEP3) for A and B over the raw `led1_sub` (grey) — how closely
+3. DC denominator (`dc_norm_ir`, STEP3) for A and B over the raw `OT_LED1` (grey) — how closely
    each DC estimator follows the baseline and how far it lags after a step (gain change, movement),
    while PI and R are biased (v1.74, Alex). The grey trace belongs here, on the DC's own scale; A and B
-   1 % apart still look like one line at ~10^5 counts — if that proves too coarse, the next step is to
-   plot (dc_norm_A − dc_norm_B) / dc_norm_B in %. Legend: "led1_sub" / "A" / "B".
+   1 % apart still look like one line — if that proves too coarse, the next step is to plot
+   (dc_norm_A − dc_norm_B) / dc_norm_B in %. Legend: "OT_LED1" / "A" / "B".
+   Plots 1–3 and the `ac_amp` / `dc_norm` rows of the value table show OT quantities in **ppm**
+   (`_PPM` = 1e6, display only; `PICalc` works in A/A).
 4. PI_ir [%] for A and B — final PI result (ac_amp / dc_norm × 100).
 5. R ratio for A and B — modulation ratio entering SpO2 formula.
 6. SpO2 [%] for A and B — spo2_r_curve_a − spo2_r_curve_b × R, the R curve synced from the firmware `$CFG`
@@ -2658,6 +2664,23 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.76 — 2026-10-03
+
+**PILAB runs on OT, as the library** (Alex: "every time RF1 changes a spike appears that OT does not
+have"). `PICalc` was fed `led1_sub` / `led2_sub` (`p[7]` / `p[6]`) live and offline, while the
+library's SpO2, PI and HR have used `OT_LED1` / `OT_LED2` since lib v0.38. `led1_sub` scales with the
+TIA gain, so an HGAC RF change stepped it at once and the DC estimators lagged the step: PI and R
+spiked. Instance A, labelled the firmware reference, therefore did not reproduce the firmware. Now:
+live input `OT_LED1` / `OT_LED2` from the `$M4` frame (`parts[31]` / `parts[32]`; nothing is fed in
+`$M1`–`$M3`), offline input the `OT_LED1` / `OT_LED2` CSV columns, and the PI denominator guard
+`max(1.0, dc)` — which assumed ADC counts and would pin an OT denominator (~1e-5..1e-2) to 1 —
+replaced by a division guard (`dc > 0`, else PI = 0). Plots 1–3 and the table show OT in ppm.
+Checked on SUBJ09 (`20260923_1221`, p01, the HGAC RF change at row 60055, `PICalc` at 500 Hz): in the
+10 s after the change R reaches 9.27 with `led1_sub` and stays within 1.19–1.36 with OT (median 1.06
+before). Known, not changed here: the offline loader assumes `SPO2_RECEIVED_FS` = 50 Hz and keeps
+`_BUF_LEN` = 3000 samples, while capture CSVs v0.4 are at `prf_hz` = 500 Hz — offline τ are 10× off
+and only the last 6 s are kept.
 
 ### v1.75 — 2026-10-02
 

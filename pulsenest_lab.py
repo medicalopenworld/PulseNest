@@ -4521,6 +4521,10 @@ class PICalc:
     peak-to-peak or spectral, per method); dc_norm = DC that normalises it (STEP3).
     PI = ac_amp / dc_norm × 100; R = PI_red / PI_ir.
 
+    Input: OT_LED1 (IR) / OT_LED2 (red) [A/A], the gain-invariant optical transmittance the
+    library's SpO2/PI/HR run on (lib v0.38+). Not led1_sub: an RF change scales led1_sub at once
+    and the DC estimators lag it, so PI and R spiked at every HGAC gain change (v1.76).
+
     STEP1 — AC waveform extraction:
       S1_EMA  (1.1): EMA-based subtraction (τ_sub seconds)
       S1_BPF  (1.2): 2nd-order Butterworth bandpass (bpf_lo–bpf_hi Hz)
@@ -4644,7 +4648,7 @@ class PICalc:
         self.reset()
 
     def update(self, ir, red, fs):
-        """Process one sample (ir/red = ADC counts). Returns (pi_ir, pi_red, R)."""
+        """Process one sample (ir/red = OT_LED1/OT_LED2 [A/A]). Returns (pi_ir, pi_red, R)."""
         if fs != self._fs:
             self.reconfigure(fs)
         ir = float(ir); red = float(red)
@@ -4757,12 +4761,14 @@ class PICalc:
         else:
             dc_norm_ir = ir; dc_norm_red = red
 
-        self.dc_norm_ir  = max(1.0, dc_norm_ir)
-        self.dc_norm_red = max(1.0, dc_norm_red)
+        self.dc_norm_ir  = dc_norm_ir
+        self.dc_norm_red = dc_norm_red
 
         # ── PI & R ────────────────────────────────────────────────────────────
-        self.pi_ir  = self.ac_amp_ir  / self.dc_norm_ir  * 100.0
-        self.pi_red = self.ac_amp_red / self.dc_norm_red * 100.0
+        # Division guard only: OT is ~1e-5..1e-2 A/A, so the max(1.0, dc) of the led1_sub era
+        # would pin the denominator to 1. No light, no PI.
+        self.pi_ir  = self.ac_amp_ir  / dc_norm_ir  * 100.0 if dc_norm_ir  > 0.0 else 0.0
+        self.pi_red = self.ac_amp_red / dc_norm_red * 100.0 if dc_norm_red > 0.0 else 0.0
         self.R    = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
         self.spo2 = max(0.0, min(100.0, self.spo2_r_curve_a - self.spo2_r_curve_b * self.R)) if self.R > 0.0 else 0.0
         return self.pi_ir, self.pi_red, self.R
@@ -5447,7 +5453,8 @@ class PILabWindow(QtWidgets.QMainWindow):
     _PLOT_WIN_S = 30.0    # visible x-axis window (s)
     _CLR_A      = "#FF8800"   # instance A — orange
     _CLR_B      = "#44AAFF"   # instance B — blue
-    _CLR_RAW    = "#888888"   # raw led1_sub, behind the DC estimates
+    _CLR_RAW    = "#888888"   # raw OT_LED1, behind the DC estimates
+    _PPM        = 1e6         # plots 1-3 and the value table show OT quantities in ppm
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -5470,7 +5477,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._ac_wave_b  = deque(maxlen=self._BUF_LEN)
         self._ac_amp_a    = deque(maxlen=self._BUF_LEN)
         self._ac_amp_b    = deque(maxlen=self._BUF_LEN)
-        self._led1_sub_buf = deque(maxlen=self._BUF_LEN)
+        self._ot_led1_buf = deque(maxlen=self._BUF_LEN)
         self._dc_norm_a   = deque(maxlen=self._BUF_LEN)
         self._dc_norm_b   = deque(maxlen=self._BUF_LEN)
         self._pi_ir_a   = deque(maxlen=self._BUF_LEN)
@@ -5525,24 +5532,24 @@ class PILabWindow(QtWidgets.QMainWindow):
         def _pen(c): return pg.mkPen(c, width=1)
 
         self.p_sig = gv.addPlot(row=0, col=0)
-        self.p_sig.setLabel('left', "AC waveform<br>STEP1 [ADC]")
+        self.p_sig.setLabel('left', "AC waveform<br>STEP1 [ppm]")
         self.p_sig.showGrid(x=True, y=True, alpha=0.3)
         self.p_sig.addLegend(offset=(5, 5))
         self.curve_ac_wave_a = self.p_sig.plot(pen=_pen(self._CLR_A),   name="A")
         self.curve_ac_wave_b = self.p_sig.plot(pen=_pen(self._CLR_B),   name="B")
 
         self.p_ac = gv.addPlot(row=1, col=0)
-        self.p_ac.setLabel('left', "AC amplitude<br>STEP2 [ADC]")
+        self.p_ac.setLabel('left', "AC amplitude<br>STEP2 [ppm]")
         self.p_ac.showGrid(x=True, y=True, alpha=0.3)
         self.p_ac.addLegend(offset=(5, 5))
         self.curve_ac_amp_a = self.p_ac.plot(pen=_pen(self._CLR_A), name="A")
         self.curve_ac_amp_b = self.p_ac.plot(pen=_pen(self._CLR_B), name="B")
 
         self.p_dc = gv.addPlot(row=2, col=0)
-        self.p_dc.setLabel('left', "DC denominator<br>STEP3 [ADC]")
+        self.p_dc.setLabel('left', "DC denominator<br>STEP3 [ppm]")
         self.p_dc.showGrid(x=True, y=True, alpha=0.3)
         self.p_dc.addLegend(offset=(5, 5))
-        self.curve_led1_sub  = self.p_dc.plot(pen=_pen(self._CLR_RAW), name="led1_sub")
+        self.curve_ot_led1  = self.p_dc.plot(pen=_pen(self._CLR_RAW), name="OT_LED1")
         self.curve_dc_norm_a = self.p_dc.plot(pen=_pen(self._CLR_A),   name="A")
         self.curve_dc_norm_b = self.p_dc.plot(pen=_pen(self._CLR_B),   name="B")
 
@@ -5650,10 +5657,10 @@ class PILabWindow(QtWidgets.QMainWindow):
             "QHeaderView::section { background: #252525; font-size: 20px; font-weight: bold; }"
         )
         _row_tips = [
-            "ac_amp_red  — STEP2 output: AC amplitude of the red channel [ADC counts]",
-            "dc_norm_red — STEP3 output: DC that normalises it (PI denominator), red [ADC counts]",
-            "ac_amp_ir   — STEP2 output: AC amplitude of the IR channel [ADC counts]",
-            "dc_norm_ir  — STEP3 output: DC that normalises it (PI denominator), IR [ADC counts]",
+            "ac_amp_red  — STEP2 output: AC amplitude of the red channel [ppm of OT]",
+            "dc_norm_red — STEP3 output: DC that normalises it (PI denominator), red [ppm of OT]",
+            "ac_amp_ir   — STEP2 output: AC amplitude of the IR channel [ppm of OT]",
+            "dc_norm_ir  — STEP3 output: DC that normalises it (PI denominator), IR [ppm of OT]",
             "PI_red      — Perfusion Index red = ac_amp_red / dc_norm_red × 100 [%]",
             "PI_ir       — Perfusion Index IR  = ac_amp_ir  / dc_norm_ir  × 100 [%]",
             "R        — SpO2 ratio = PI_red / PI_ir (dimensionless; ~0.4–1.0 physiological range)",
@@ -5917,7 +5924,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._t_buf.clear()
         self._ac_wave_a.clear(); self._ac_wave_b.clear()
         self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
+        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._spo2_a.clear();   self._spo2_b.clear()
@@ -5978,7 +5985,7 @@ class PILabWindow(QtWidgets.QMainWindow):
     # ── data feed (called per-sample from PPGMonitor drain loop) ──────────────
 
     def feed_sample(self, ir, red, fs, ts_us):
-        """Feed one sample. ir/red = ADC counts, ts_us = timestamp in µs."""
+        """Feed one sample. ir/red = OT_LED1/OT_LED2 [A/A], ts_us = timestamp in µs."""
         if self._paused or self._offline_mode:
             return
         if self._t0_us is None:
@@ -5989,13 +5996,13 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.calc_b.update(ir, red, fs)
 
         self._t_buf.append(t)
-        self._ac_wave_a.append(self.calc_a.ac_wave_ir)
-        self._ac_wave_b.append(self.calc_b.ac_wave_ir)
-        self._ac_amp_a.append(self.calc_a.ac_amp_ir)
-        self._ac_amp_b.append(self.calc_b.ac_amp_ir)
-        self._led1_sub_buf.append(float(ir))
-        self._dc_norm_a.append(self.calc_a.dc_norm_ir)
-        self._dc_norm_b.append(self.calc_b.dc_norm_ir)
+        self._ac_wave_a.append(self.calc_a.ac_wave_ir * self._PPM)
+        self._ac_wave_b.append(self.calc_b.ac_wave_ir * self._PPM)
+        self._ac_amp_a.append(self.calc_a.ac_amp_ir * self._PPM)
+        self._ac_amp_b.append(self.calc_b.ac_amp_ir * self._PPM)
+        self._ot_led1_buf.append(float(ir) * self._PPM)
+        self._dc_norm_a.append(self.calc_a.dc_norm_ir * self._PPM)
+        self._dc_norm_b.append(self.calc_b.dc_norm_ir * self._PPM)
         self._pi_ir_a.append(self.calc_a.pi_ir)
         self._pi_ir_b.append(self.calc_b.pi_ir)
         self._r_a.append(self.calc_a.R)
@@ -6016,7 +6023,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self._t_buf.clear()
         self._ac_wave_a.clear(); self._ac_wave_b.clear()
         self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
+        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._spo2_a.clear();   self._spo2_b.clear()
@@ -6031,7 +6038,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.curve_ac_wave_b.setData(t, np.array(self._ac_wave_b))
         self.curve_ac_amp_a.setData(t, np.array(self._ac_amp_a))
         self.curve_ac_amp_b.setData(t, np.array(self._ac_amp_b))
-        self.curve_led1_sub.setData(t,  np.array(self._led1_sub_buf))
+        self.curve_ot_led1.setData(t,  np.array(self._ot_led1_buf))
         self.curve_dc_norm_a.setData(t, np.array(self._dc_norm_a))
         self.curve_dc_norm_b.setData(t, np.array(self._dc_norm_b))
         self.curve_pi_a.setData(t, np.array(self._pi_ir_a))
@@ -6047,10 +6054,11 @@ class PILabWindow(QtWidgets.QMainWindow):
         a, b = self.calc_a, self.calc_b
         rows = [
             # (val_a, val_b, fmt)
-            (a.ac_amp_red, b.ac_amp_red, ".1f"),
-            (a.dc_norm_red, b.dc_norm_red, ".1f"),
-            (a.ac_amp_ir,  b.ac_amp_ir,  ".1f"),
-            (a.dc_norm_ir,  b.dc_norm_ir,  ".1f"),
+            # OT quantities in ppm, as in plots 1-3
+            (a.ac_amp_red * self._PPM, b.ac_amp_red * self._PPM, ".2f"),
+            (a.dc_norm_red * self._PPM, b.dc_norm_red * self._PPM, ".1f"),
+            (a.ac_amp_ir * self._PPM,  b.ac_amp_ir * self._PPM,  ".2f"),
+            (a.dc_norm_ir * self._PPM,  b.dc_norm_ir * self._PPM,  ".1f"),
             (a.pi_red,   b.pi_red,   ".3f"),
             (a.pi_ir,    b.pi_ir,    ".3f"),
             (a.R,        b.R,        ".4f"),
@@ -6095,15 +6103,15 @@ removing the baseline <code>dc_base</code>; <code>ac_amp</code> is its amplitude
 <code>dc_norm</code> is the DC that normalises it (STEP3):
 <span class="formula">PI = ac_amp / dc_norm × 100</span>.</p>
 
-<p class="h">Plot 1 — AC waveform (ac_wave), STEP1 [ADC counts]</p>
+<p class="h">Plot 1 — AC waveform (ac_wave), STEP1 [ppm]</p>
 <p><code>ac_wave</code>, the pulsatile IR waveform that STEP1 extracts: what is left of
-<code>led1_sub</code> once the slow baseline is removed, sample by sample, and what STEP2
+<code>OT_LED1</code> once the slow baseline is removed, sample by sample, and what STEP2
 then measures in amplitude. Use this plot to judge STEP1 by the shape it leaves
 (a baseline tracker that is too fast, or a band that is too narrow, distorts the pulse;
 one that is too slow, or too wide, leaves residual drift).</p>
 
-<p class="h">Plot 2 — AC amplitude (ac_amp), STEP2 [ADC counts]</p>
-<p>The AC amplitude estimated by STEP2, in raw ADC counts.
+<p class="h">Plot 2 — AC amplitude (ac_amp), STEP2 [ppm]</p>
+<p>The AC amplitude estimated by STEP2, in ppm of optical transmittance.
 This is the "pulse height" of the waveform STEP1 extracted:
 EMA-RMS computes <span class="formula">√EMA(x²)</span>,
 Peak-to-peak computes <span class="formula">(max−min)/2</span>,
@@ -6111,12 +6119,13 @@ spectral methods extract energy at the heart-rate fundamental.
 Use this to compare estimators — they should agree on a clean signal
 and diverge differently on noise.</p>
 
-<p class="h">Plot 3 — DC denominator (dc_norm), STEP3 [ADC counts]</p>
-<p>The raw <code>led1_sub</code> (IR, grey) with the DC that STEP3 estimates from it for A and B,
+<p class="h">Plot 3 — DC denominator (dc_norm), STEP3 [ppm]</p>
+<p>The raw <code>OT_LED1</code> (IR, grey) with the DC that STEP3 estimates from it for A and B,
 <code>dc_norm_ir</code> — the denominator of PI and R. Use it to judge how closely each DC
 estimator follows the baseline and how far it lags after a step (a gain change, a movement):
-while it lags, PI and R are biased. On this scale (~10⁵ counts) A and B differing by 1 % look
-almost the same line; that 1 % is still a 1 % error in PI.</p>
+while it lags, PI and R are biased. OT does not step when HGAC changes the gain (led1_sub,
+which PILAB used before v1.76, did). On this scale A and B differing by 1 % look almost the
+same line; that 1 % is still a 1 % error in PI.</p>
 
 <p class="h">Plot 4 — PI_ir [%]</p>
 <p>The Perfusion Index for the IR channel:
@@ -6170,13 +6179,13 @@ between A and B becomes a difference in the displayed saturation.</p>
             self.statusBar().showMessage("Empty or unreadable CSV file.")
             return
         cols = data.dtype.names
-        ir_col  = next((c for c in cols if c.upper() in ('LED1_SUB', 'IR')),  None)
-        red_col = next((c for c in cols if c.upper() in ('LED2_SUB', 'RED')), None)
+        ir_col  = next((c for c in cols if c.upper() == 'OT_LED1'), None)
+        red_col = next((c for c in cols if c.upper() == 'OT_LED2'), None)
         ts_col  = next((c for c in cols if any(k in c.upper()
                         for k in ('TIME', 'TS_US', 'TIMESTAMP'))), None)
         if ir_col is None or red_col is None:
             self.statusBar().showMessage(
-                f"CSV missing LED1_SUB/LED2_SUB columns. Found: {cols}")
+                f"CSV missing OT_LED1/OT_LED2 columns (PILAB runs on OT, as the library). Found: {cols}")
             return
 
         self._offline_mode = True
@@ -6186,7 +6195,7 @@ between A and B becomes a difference in the displayed saturation.</p>
         self._t_buf.clear()
         self._ac_wave_a.clear(); self._ac_wave_b.clear()
         self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
+        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self._t0_us = None
@@ -6204,13 +6213,13 @@ between A and B becomes a difference in the displayed saturation.</p>
             self.calc_a.update(ir, red, fs)
             self.calc_b.update(ir, red, fs)
             self._t_buf.append(t)
-            self._ac_wave_a.append(self.calc_a.ac_wave_ir)
-            self._ac_wave_b.append(self.calc_b.ac_wave_ir)
-            self._ac_amp_a.append(self.calc_a.ac_amp_ir)
-            self._ac_amp_b.append(self.calc_b.ac_amp_ir)
-            self._led1_sub_buf.append(ir)
-            self._dc_norm_a.append(self.calc_a.dc_norm_ir)
-            self._dc_norm_b.append(self.calc_b.dc_norm_ir)
+            self._ac_wave_a.append(self.calc_a.ac_wave_ir * self._PPM)
+            self._ac_wave_b.append(self.calc_b.ac_wave_ir * self._PPM)
+            self._ac_amp_a.append(self.calc_a.ac_amp_ir * self._PPM)
+            self._ac_amp_b.append(self.calc_b.ac_amp_ir * self._PPM)
+            self._ot_led1_buf.append(ir * self._PPM)
+            self._dc_norm_a.append(self.calc_a.dc_norm_ir * self._PPM)
+            self._dc_norm_b.append(self.calc_b.dc_norm_ir * self._PPM)
             self._pi_ir_a.append(self.calc_a.pi_ir)
             self._pi_ir_b.append(self.calc_b.pi_ir)
             self._r_a.append(self.calc_a.R)
@@ -6231,7 +6240,7 @@ between A and B becomes a difference in the displayed saturation.</p>
         self._t_buf.clear()
         self._ac_wave_a.clear(); self._ac_wave_b.clear()
         self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._led1_sub_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
+        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
         self._pi_ir_a.clear();  self._pi_ir_b.clear()
         self._r_a.clear();      self._r_b.clear()
         self.statusBar().showMessage(_MOUSE_HINT)
@@ -15592,9 +15601,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _ot_led1 = float(parts[31]) if lib_id == "M4" and len(parts) >= 34 else 0.0
                                 self.hr3test_calc.update(_ot_led1, SPO2_RECEIVED_FS,
                                                           int(float(parts[22])), int(p[0]))
-                            if self.pilab_window is not None:
+                            if self.pilab_window is not None and lib_id == "M4" and len(parts) >= 34:
+                                # OT_LED1 / OT_LED2 (parts[31] / parts[32]), as the library: only
+                                # $M4 carries OT, so PILAB is fed nothing in $M1-$M3.
                                 self.pilab_window.feed_sample(
-                                    p[7], p[6], SPO2_RECEIVED_FS, p[1])
+                                    float(parts[31]), float(parts[32]), SPO2_RECEIVED_FS, p[1])
                             if self.afe_sweep_window is not None:
                                 _m4 = lib_id == "M4" and len(parts) >= 31
                                 self.afe_sweep_window.feed_sample(
