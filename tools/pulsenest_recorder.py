@@ -1791,7 +1791,7 @@ def load_session_config(path):
         board    = "8850"
         subject  = "SUBJ01"
         note     = "term neonate, resting after a feed"
-        probe    = "Medle ST-30163-26"   # OUR probe's model -- ISO 80601-2-61 calibrates monitor+
+        probe    = "Medle ST-S0163-26"   # OUR probe's model -- ISO 80601-2-61 calibrates monitor+
                                  # probe together, and the library cannot know which sensor is on the baby
 
         [ref]
@@ -1872,7 +1872,7 @@ def add_session_args(ap):
                     help="a free-text note about this baby's session, written verbatim as a NOTE "
                          "event once the subject is known. It never reaches a filename")
     ap.add_argument("--probe", default="", metavar="MODEL",
-                    help="OUR probe's physical model (e.g. Medle ST-30163-26) -- the library "
+                    help="OUR probe's physical model (e.g. Medle ST-S0163-26) -- the library "
                          "cannot know which sensor is plugged in, applied once the subject is known")
     ref_group = ap.add_argument_group(
         "the commercial monitor beside this baby",

@@ -73,7 +73,7 @@ oximeter arrived — edit the file, or drop `--config` for that window and type 
 Without a prepared file, the equivalent by hand is:
 
 ```
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --ref-videonest J6plusACM --note "term neonate, resting after a feed" --probe "Medle ST-30163-26" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
+pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --ref-videonest J6plusACM --note "term neonate, resting after a feed" --probe "Medle ST-S0163-26" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
 ```
 
 `--location` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`,

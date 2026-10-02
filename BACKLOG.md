@@ -68,15 +68,20 @@ has not been triaged yet.
 	2. Alcance mínimo: que la captura pida `$LCFG?` al empezar y vuelque la respuesta en las notas, igual que ya hace con `$CFG?` (la casilla de lectura automática existe y está marcada por defecto). Hay que decidir si también al terminar, para detectar un cambio a mitad de captura — el `$CFG` de cierre ya se compara así (`_capture_open_cfg`).
 	3. Afecta al set de regresión: `captures/CAPTURE_SET_SPEC.md` §2.3 exige que las columnas `FW_*` sean atribuibles a una configuración. Con HGAC fuera de las notas, esa atribución está incompleta.
 	4. Aplica igual a la ventana MULTI CAPTURE (§7.20), que hoy tampoco vuelca `$LCFG` y además graba varias placas, cada una con su propio estado.
+- Cambiar el filtro de PPG (0.5-20Hz) de 2º orden a 4º orden.
+- Estudiar la posibilidad de que todos los parámetros temporales/frecuenciales se agrupen en distintos sets de configuración:
+	- Adultos/jóvenes/niños
+	- Neonatos/prematuros
+	- Universal (cualquier edad)
+	- Adaptativo (dependiente de la HR)
+- Hacer lista de parámetros configurables por el operador (ot_thr,iled_max,...)
+
+## Done / promoted
+
 - Plan de contingencia ante el riesgo de posible crash aleatorio de pulsenest_lab.py mientras se mide en un hospital:
 	1. [x] Desarrollar una app de captura robusta sin Qt — HECHO 2026-09-20/22: `tools/pulsenest_recorder.py` (`.pnraw` + CSV en vivo, v0.4 por defecto) y su ventana `pulsenest_recorder_gui.py`; conversor `tools/pulsenest_convert.py` reproduce el CSV byte a byte desde el `.pnraw`
 	2. [x] Opción de desactivar gráficos — HECHO 2026-09-17 (v1.63, spec §6.5.2): botón PLOTS, cierra y bloquea las 14 subventanas con pyqtgraph; SIGNAL STATS/HW CONFIG/LAB CAPTURE/hub intactos; persiste tras reinicio; `tools/disable_plots_test.py` 13/13
 - [x] Añadir zoom a VideoNest
-
-
-
-## Done / promoted
-
 - [x] **`esp_wifi_set_ps(WIFI_PS_NONE)`** → APLICADO y MEDIDO 2026-09-10. PulseNest no lo configuraba (defecto Arduino `WIFI_PS_MIN_MODEM`); motherBoard sí, con el comentario *"Mobile hotspots often drop power-saving clients"*. Añadido `WiFi.setSleep(WIFI_PS_NONE)` en `src/main.cpp` tras `WiFi.mode(WIFI_STA)`, flasheado en 16.A y 17.A. **El efecto depende por completo de si la placa está emitiendo**, y se midieron los dos regímenes con `tools/udp_cmd_latency.py` (ida y vuelta de `$CFG?`, ruta de bajada):
 	- **Emitiendo 100 datagramas/s, operación normal: no cuesta nada medible.** 16.A p50 19 ms sin el cambio, 16-22 ms con él. Una placa que transmite cada 10 ms casi nunca duerme de verdad y el suelo lo pone el ciclo de 50 ms de `Cmd_Task`.
 	- **Radio en reposo** (build con `-DPULSENEST_NO_DATA_STREAM`, misma placa y sesión): modem sleep activo p50 **259 ms**, media 233, con la masa entre 200 y 280 ms, que es el ciclo DTIM del punto de acceso; desactivado p50 **55 ms**, media 38, nada por encima de 63 ms. **Penalización de 4,7× en la mediana.** Eso es lo que compra la llamada.
@@ -110,5 +115,9 @@ has not been triaged yet.
   (2026-10-01) El paso bajo antialias de HR3 ya es de 4.º orden en la lib v0.97. OJO: el espejo HR3TEST
   (`HR3TestCalc`) NO reproduce el firmware desde la v0.83 — sigue siendo un paso banda 2.º orden 0,4–15 Hz
   con controles BP low/high: rehacerlo es parte de esta tarea.
+  (2026-10-01) MEDIDO en datos reales (SUBJ08 92 min + SUBJ09 30 min, réplica exacta del firmware):
+  el paso alto 0,5 Hz (causal o zero-phase) EMPEORA HR3 — menos acuerdo con HR2 (−1,3 a −3 pts) y más
+  picos < 72 lpm (6,7→9,3/11,3 % y 3,9→7,1/10,5 %), aunque sube el SQI. El detrend lineal = restar la media.
+  Ver conversation_log 2026-10-01. Antes de seguir con esta tarea, revisar esa conclusión.
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->

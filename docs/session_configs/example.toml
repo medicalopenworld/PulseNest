@@ -16,7 +16,7 @@ note      = "preterm neonate, 27+3 weeks"
 # CONDITION is set in the window (or with the `cond` console command) whenever it changes.
 #
 # Also works with the console recorder:  python tools/pulsenest_recorder.py --config <this file>
-probe     = "Medle ST-30163-26"      # OUR probe's physical model -- ISO 80601-2-61 calibrates the
+probe     = "Medle ST-S0163-26"      # OUR probe's physical model -- ISO 80601-2-61 calibrates the
 # monitor+probe pair together, and the library cannot know which sensor is clipped onto the baby;
 # only a person can. Not the same as [ref].probe-site below, which is the COMMERCIAL monitor's
 # probe placement, and not the same as ProbeState (APPLIED/DISCONNECTED), which is real-time and

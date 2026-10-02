@@ -25674,3 +25674,97 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
 - `offline_runner` no calcula HR3 (la tarea asíncrona C no existe en el host) → HR3 NaN en los replays.
 - Pendiente: el espejo HR3TEST no reproduce el firmware desde v0.83 (apuntado en la tarea del backlog).
   La RCAL de SpO2, si va a defaults, sería ya v0.98.
+
+### ¿Necesita HR3 filtrar las bajas frecuencias? (Alex, 2026-10-01) — medido: no, empeora
+
+- Objeción de Alex: la búsqueda en la FFT no basta, porque la baja frecuencia se cuela en el rango de búsqueda
+  (enventanado o lo que sea). Mi justificación anterior ("la búsqueda ignora esas frecuencias") era incompleta.
+- Sintético (ventana Hann 10,24 s, pulso 150 lpm amplitud 1): una deriva lineal 50× el pulso mete solo 0,05× en
+  el rango → la fuga del enventanado de derivas suaves es despreciable. Lo que sí entra: un **escalón** de línea
+  base (golpe de sonda) = 2× el pulso cerca de 41 lpm (espectro 1/f, contenido real en banda), y la
+  **respiración neonatal** (0,5-1 Hz) está dentro del rango por definición (búsqueda desde 37 lpm = 0,62 Hz).
+- Datos reales: réplica Python de `_hr3_compute()` validada contra el firmware v0.97 (|ΔHR| p99 0,002 lpm, SQI
+  idéntico). Variantes sobre SUBJ08 (4 sesiones, 92 min) y SUBJ09 (30 min), referencia = HR2 del firmware
+  (independiente) con SQI ≥ 0,5; "< 72 lpm" como indicador de pico implausible en un neonato:
+
+  | Variante | acuerdo HR2 (SQI≥0,5) S08 / S09 | picos < 72 lpm S08 / S09 | tiempo SQI≥0,5 S08 / S09 |
+  |---|---|---|---|
+  | A actual (resta de media) | 90,6 / 91,1 % | 6,7 / 3,9 % | 78,8 / 69,4 % |
+  | B + paso alto causal 0,5 Hz | 89,3 / 90,2 % | 9,3 / 7,1 % | 80,3 / 70,9 % |
+  | C detrend lineal por ventana | 90,7 / 91,2 % | 6,7 / 3,9 % | 78,8 / 69,4 % |
+  | D + paso alto zero-phase 0,5 Hz | 88,5 / 89,3 % | 11,3 / 10,5 % | 81,7 / 72,4 % |
+
+- Lectura: el paso alto **empeora** la exactitud y **sube** el SQI → HR3 más seguro de picos peores (lo peor en
+  un dispositivo médico). Hipótesis: el paso alto convierte el escalón en un transitorio que resuena ~0,5-0,7 Hz
+  dentro del rango (ya visto en HR1: el BPF de 2.º orden resuena ~2 s tras un apretón). El detrend no cambia
+  nada → confirma que la fuga de derivas suaves no es el problema. El sesgo de la referencia juega a favor del
+  paso alto (HR2 ya lleva paso banda desde 0,5 Hz), así que el resultado es conservador.
+- Qué ataca lo que sí entra: detección/descarte de artefactos (varianza de ALED como detector de movimiento,
+  backlog), no un filtro. No se puede subir el suelo de búsqueda: el pliego OMS pide PR desde 30 lpm.
+- Límites: n = 2 bebés, referencia interna (el monitor no registró PR), "< 72 lpm" es un indicador indirecto.
+  Script: scratchpad `hr3_lowcut_exp.py` (sin guardar en el repo).
+
+## Sesión 2026-10-01 (2) — inventario de filtros de la librería (solo lectura)
+- Pregunta (Alex): tabla con la lista de filtros de la librería (SpO2, HR1, etc.).
+- Resultado (lib v0.97, leído de `incunest_afe4490.h/.cpp`): BPF biquad 2.º orden en PPG display (0,5–20 Hz) y HR2
+  (0,5–5 Hz, decimado a 50 Hz); LPF Butterworth 4.º orden (`LowPass4`) 15 Hz en HR3 (decimado a 50 Hz); HR1 = media
+  móvil FIR (corte nominal 5 Hz) + IIR de DC τ=1,6 s + seguidor de máximo τ=1,5 s; EMA SpO2 τ=2 s (DC) / 6 s (AC²);
+  EMA HGAC τ=0,1 / 2 / 2 s. Observación: los BPF de display y HR2 tienen Q<0,5 (derivado, no leído de `init_bp`),
+  es decir, se comportan como HPF1+LPF1; solo HR3 tiene flanco de 80 dB/década.
+- Sin modificaciones de ficheros. Pendiente: Alex decide si la tabla se incorpora a la spec o a otro documento.
+
+## Sesión 2026-09-30 / 2026-10-01 (3) — %mod e isosbéstico, sonda Medle, espectrómetro, tiempos de promediado
+
+- Red: tras cambiar de wifi, escaneo ping de 192.168.1.0/24 (arp -a vacío por falta de tráfico): router .1, PC .140,
+  otros dos equipos .138 y .144 (sin identificar). Operativo, sin cambios en el proyecto.
+- ISO 201.3.245 Nota 3 (%mod con IR o isosbéstico) explicada: %mod = AC/DC×100; el isosbéstico (~805 nm, ε_O2Hb =
+  ε_HHb) daría un PI puro de perfusión; el AFE4490 solo tiene rojo e IR → PulseNest usa **LED1 (IR)** para PI_ir,
+  dentro de la norma. Por qué la industria usa 940 nm y no 805: LED GaAs barato/eficiente, curvas planas en 940
+  (tolerancia ±15 nm irrelevante; en 805 el signo de la sensibilidad cambia de un lote a otro y el FWHM 40 nm
+  abraza el cruce), responsividad máxima del fotodiodo de Si, R algo más sensible (factor 4,3 vs 3,7 entre 100 y
+  70 %) y la calibración es empírica de todos modos. Coste: PI_ir ≈ 13 % menor a SpO2 70 % que a 100 % con 940 nm.
+  Bibliografía: Webster 1997, Mannheimer 2007, Prahl OMLC.
+- Definidos ε (coef. de extinción molar), S (SaO2 como fracción) y ε_eff = S·ε_O2Hb + (1−S)·ε_HHb; AC/DC ∝ ε_eff·c·ΔL.
+  Para la Medle ST-30163-26 (665 / 905 nm): ε(665) ≈ 310/3000, ε(905) ≈ 1200/750 → PI_ir ≈ 11 % menor a 70 % que a
+  100 % (más cerca del isosbéstico que 940); tolerancia IR 895–915 → ±0,06 pt a 100 % y ±0,3 pt a 70 %: irrelevante;
+  la pendiente RCAL (30,55→21,5) no viene de ahí.
+- **Corrección** a lo dicho en esta misma sesión ("rojo < 0,3 pt"): solo a saturación alta. Con RCAL-ST30163:
+  ≈ 0,1 pt/nm a 95 %, 0,4 pt/nm a 80 %, 0,6 pt/nm a 70 % (coherente con el log del 26-09).
+- Protocolo de medida del rojo con espectrómetro visible: comprobar calibración con neón (640,2/650,7/659,9/667,8/
+  692,9 nm), resolución ≤ 5 nm, misma corriente (ideal AFE a 50 mA pulsados; ~0,11 nm/°C de deriva), integración
+  ≫ 1/PRF, sin saturar, oscuro restado, registrar pico + **centroide** + FWHM, 3 repeticiones, referencia = la sonda
+  de HOSPNAV. Umbrales de Δλ respecto a ella: ≤ 2 nm nada que hacer (anotar); 2–5 nm excluir de calibración /
+  valorar corrección por sonda; > 5 nm o FWHM > 25 nm fuera de spec. Alex medirá; script de centroide/FWHM
+  ofrecido, pendiente del formato de exportación del equipo.
+- **Tiempos de promediado — evidencia** (ISO leída en PDF + búsqueda bibliográfica en paralelo): la ISO no fija
+  ventana para el equipo, exige declararla; único número `data update period` < 30 s (neonatal continuo); JJ.2 d)
+  6–10 s para el *transfer standard* (origen de nuestro τ_var = 6 s, mínimo de un rango informativo, no óptimo);
+  Anexo FF fidelidad vs retardo; DD ≥ 20/30/60 s en el estudio de desaturación; II.2.1 %mod 1–8 %; OMS ≤ 10 s.
+  Fabricantes: Masimo 2–16 s defecto 8 s; Nellcor 5–7 s / fast 2–4 s; Nonin 4 latidos, "≤ 3 s" neonato; Philips
+  5–20 s. Neonatal: Ahmed 2010, Vagedes 2013/2014/2019, McClure 2016 (2 s + retardo de alarma 15 s), Janota 2023,
+  SUPPORT/COT 16 s, Martin 2023 (3,7 %/10 s). Consenso: 8 s UCIN, 2–4 s reanimación/IH, 16 s ensayos.
+- Documentos actualizados: `incunest_afe4490_design_rationale.md` — nuevo **§0 "Why this document exists"**
+  (petición de Alex) y nuevo **§4.5** con las tablas completas de evidencia; `incunest_afe4490_spec.md` —
+  justificación de `spo2_ema_var_tau_s` reescrita (JJ.2 es informativo y para el transfer standard; se quita
+  "violates the norm") con puntero al §4.5; memoria `reference_averaging_time_evidence.md`. Sin cambios de código
+  ni de versión (lib sigue en v0.97); commit de la librería pendiente de visto bueno.
+- Abierto: ¿bajar `spo2_ema_var_tau_s` hacia 3–4 s cuando el integrador tenga capa de retardo de alarma?
+
+## 2026-10-02 — Fe de erratas: el modelo de sonda es Medle ST-S0163, no "ST-30163"
+
+- Alex, al ver el nombre de la etiqueta de calibración, detecta que el modelo se había transcrito mal:
+  las cuatro sondas dicen **ST-S0163-25** (1 ud., LOT:260204002) y **ST-S0163-26** (3 uds., LOT:260521002).
+  Las entradas anteriores de este log que dicen `Medle ST-30163-26` y `RCAL-ST30163-HOSPNAV-20260923`
+  (24-09, 26-09, 28-09) NO se reescriben (el log solo se añade): léanse como **`Medle ST-S0163-26`** y
+  **`RCAL-STS0163-HOSPNAV-20260923`**.
+- Corregido (documentación y configuración): `tools/pulsenest_recorder.py` (docstring y ayuda de `--probe`),
+  `docs/hospital_runbook.md`, plantillas `docs/session_configs/{example,MS100,subj08,subj09,subj10}.toml`,
+  los `findings.md` de las dos campañas (con fe de erratas), y la memoria (`MEMORY.md`,
+  `project_probe_dependent_specs`, `reference_r_curve_age_dependence`, `project_robust_capture_tool_task`).
+- **NO corregido, a propósito:** los datos grabados (24 partes de CSV, 8 `session.json`, 8
+  `session_events.csv`, 8 `pulsenest_recorder.log` de las 8 sesiones de HOSPNAV) conservan `ST-30163-26`.
+  Regla del proyecto: lo grabado no se reescribe; además `pulsenest_convert.py` compara la reconstrucción
+  byte a byte con el CSV vivo, y cambiar `session.json` o las cabeceras rompería esa verificación.
+- Abierto: el sufijo grabado (`-26`) salía de la plantilla `.toml` («confirm against the physical probe»),
+  así que **no consta qué unidad (-25 o -26) se puso en cada bebé**. La etiqueta RCAL es por modelo, no por lote.
+  Anotarlo en la próxima campaña.
