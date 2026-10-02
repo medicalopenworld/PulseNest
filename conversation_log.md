@@ -25848,3 +25848,21 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   entradas anteriores de este log, `RCAL-X` se lee como `R-CURVE-X`.
 - Tests todos en verde y build V18 OK. Sin commit ni OTA: el repo de la librería tiene cambios de otra sesión
   sin commit (spec y design rationale) que hay que decidir antes.
+
+## 2026-10-02 — Cierre del punto 0: commits, push y OTA de lib v0.98 / fw 0.16
+
+- Alex delega la decisión de si los cambios de otra sesión en el repo de la librería van aparte. **Decisión:
+  commits separados.** Eran solo documentación de otro tema (rationale §0 "por qué existe el documento", §4.5
+  evidencia de tiempos de promediado, y la redacción de `spo2_ema_var_tau_s` en la spec: 6 s ya no se presenta
+  como requisito ISO). La spec mezclaba ambos temas en dos bloques; se separó metiendo en el índice una versión
+  intermedia con solo las 3 líneas de τ.
+- Librería: `db823e2` (docs, sin subir versión) + `2b09cba` v0.98 (tag `v0.98`). PulseNest: `67fa490`
+  (fw 0.16, lab v1.75, runner v0.22). Push de ambos repos. Tests de host 9/9 repetidos antes del commit.
+- Fuera del commit, a propósito (no son del renombrado): movimiento de los datasheets Medle a
+  `docs/Medle_probe/Datasheet/`, borrado de `spo2_cal_20260323_005943.*`, `analysis/`, PDFs de artículos,
+  `docs/UpnMed_probe/`, `docs/session_configs/*.toml`.
+- OTA a las 3 V18 del banco (88:50, 87:A4, 82:5C): `build=67fa490`, `libsha=2b09cba`,
+  `elfsha=18113976ae581ac9`, verificado con `tools/udp_fw_versions.py`. Tropiezo: el primer intento con
+  multipart (`curl -F`) dio `FAIL` en las tres (fallo seguro, flash intacta); el firmware IDF espera el cuerpo
+  crudo (`--data-binary`, lo que hace `build.ps1 -Ota`). `docs/boards.md` actualizado.
+- Siguiente: candidato causal de R (`reg_dols`: paso banda IIR + EMA(dx·dy)/EMA(dx²)) en offline_runner/PILAB.
