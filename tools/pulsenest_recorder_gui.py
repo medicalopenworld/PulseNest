@@ -983,6 +983,7 @@ def main(argv=None):
         return 1
     try:
         rec = Recorder(args.out, location, operator, raw_mode=args.raw, csv_mode=args.csv,
+                       csv_profile=args.csv_profile,
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),

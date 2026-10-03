@@ -633,6 +633,7 @@ class Source:
 # ============================================================================================
 class Recorder:
     def __init__(self, out_root, site, operator="", raw_mode="full", csv_mode="v04", hub_text="",
+                 csv_profile="P1",
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
                  board=None, subject=None, videonest=None, note=None, probe=None,
@@ -641,7 +642,10 @@ class Recorder:
             raise ValueError("raw_mode must be full | exceptions | off")
         if csv_mode not in ("on", "off", "v04"):
             raise ValueError("csv_mode must be on | off | v04")
+        if csv_profile not in CaptureCsvWriterV04.PROFILES:
+            raise ValueError(f"csv_profile must be one of {sorted(CaptureCsvWriterV04.PROFILES)}")
         self.csv_mode = csv_mode
+        self.csv_profile = csv_profile
         self.clock = clock
         self.raw_mode = raw_mode
         self.split_s = split_s
@@ -1003,7 +1007,8 @@ class Recorder:
                     "part": src.csv_part, "prev": prev, "led1": "IR", "led2": "RED",
                     "probe": src.probe_model or "", "t0_iso": iso_local(t_epoch_us),
                     "t0_epoch_us": t_epoch_us}
-            src.csv = CaptureCsvWriterV04(src.csv_path, keys=keys, label=src.mac or src.ip)
+            src.csv = CaptureCsvWriterV04(src.csv_path, keys=keys, profile=self.csv_profile,
+                                          label=src.mac or src.ip)
             for head in (b"$CFG", b"$TCFG", b"$LCFG"):
                 if head in src.cfg_frames:
                     src.csv.config(src.cfg_frames[head])
@@ -1545,7 +1550,8 @@ class Recorder:
             "closed": closed,
             "host": {"hostname": platform.node(), "recorder_version": RECORDER_VERSION,
                      "hub": self.hub_text, "python": platform.python_version(),
-                     "timezone": time.strftime("%Z"), "raw_mode": self.raw_mode},
+                     "timezone": time.strftime("%Z"), "raw_mode": self.raw_mode,
+                     "csv_profile": self.csv_profile},
             "sources": [s.to_json() for s in self._owners()],
             "events": self.events_written,
             "write_errors": self.errors, "csv_errors": self.csv_errors,
@@ -1856,6 +1862,10 @@ def add_session_args(ap):
                     help="live capture CSV per board beside the .pnraw: v04 = "
                          "capture_csv_format_spec.md v0.4 (default since 2026-09-22), on = the "
                          "pre-v0.4 format, off")
+    ap.add_argument("--csv-profile", default="P1", choices=sorted(CaptureCsvWriterV04.PROFILES),
+                    help="which columns the v04 CSV carries (capture_csv_format_spec.md section I): "
+                         "P1 = everything the firmware sends (default); P5 = the minimum -- the "
+                         "four ADC codes, OT_LED1/2 and CH_MASKS")
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"),
                     help="the .pnraw stream in raw/: `full` keeps every datagram verbatim, "
                          "`exceptions` only the ones around a gap or a restart, `off` writes no "
@@ -1925,7 +1935,7 @@ def main(argv=None):
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
     try:
         rec = Recorder(args.out, args.location, args.operator, args.raw, args.csv,
-                       hub_text=f"{hub[0]}:{hub[1]}",
+                       csv_profile=args.csv_profile, hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9),
                        board=args.board, subject=args.subject, videonest=args.ref_videonest,

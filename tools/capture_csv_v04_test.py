@@ -235,6 +235,29 @@ if parts:
 else:
     print("skip corpus: captures/v04_corpus not present")
 
+# ── P5: the minimum columns ─────────────────────────────────────────────────────────────────
+with tempfile.TemporaryDirectory() as td:
+    path = os.path.join(td, "p5.csv")
+    w5 = CaptureCsvWriterV04(path, keys=KEYS, profile="P5", label="test")
+    for fr in (CFG, TCFG, LCFG):
+        w5.config(fr)
+    w5.open()
+    w5.write_datagram(m4(1000, 2_000_000) + "\n" + m4(1001, 2_002_000) + "\n", 1790000000100000)
+    w5.close()
+    L5 = io.open(path, encoding="utf-8").read().split("\n")
+data5 = [l for l in L5 if l and not l.startswith("#")]
+check("P5: header = four ADC codes + OT_LED1/2 + CH_MASKS, nothing else",
+      data5[0] == "LED2,LED1,ALED2,ALED1,OT_LED1,OT_LED2,CH_MASKS", data5[0])
+check("P5: rows carry those fields (m4 field k holds k)", data5[1:] == ["3,4,5,6,31,32,33"] * 2, str(data5[1:]))
+check("P5: the file declares its profile; snapshots and anchors are unchanged",
+      "# profile=P5" in L5 and "# format=incunest_csv/1" in L5
+      and any(l.startswith("# @row 0 afe: ") for l in L5) and any(" clock: " in l for l in L5))
+try:
+    CaptureCsvWriterV04(os.path.join(tempfile.gettempdir(), "x.csv"), profile="P9")
+    check("an unknown profile is refused", False)
+except ValueError:
+    check("an unknown profile is refused", True)
+
 n = sum(ok)
 print(f"\n{n}/{len(ok)} checks passed" + (" -- OK" if n == len(ok) else " -- FAILURES"))
 sys.exit(0 if n == len(ok) else 1)

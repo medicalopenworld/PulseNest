@@ -100,7 +100,7 @@ KEYS = [
 
     # session -- the R26 header keys the host or the operator supply
     Key("format",      "session", None, "container version, incunest_csv/N (R41)",                "text", "str", HOST,     "0.4"),
-    Key("profile",     "session", None, "P0..P4, which columns and rate this file carries (section I)", "text", "str", HOST, "0.4"),
+    Key("profile",     "session", None, "P0..P5, which columns and rate this file carries (section I)", "text", "str", HOST, "0.4"),
     Key("writer",      "session", None, "program and version that wrote the file",                "text", "str", HOST,     "0.4"),
     Key("t0_iso",      "session", None, "wall clock at open, ISO 8601 local with offset",         "text", "str", HOST,     "0.4"),
     Key("t0_epoch_us", "session", None, "host epoch at open",                                     "us",   "int", HOST,     "0.4"),

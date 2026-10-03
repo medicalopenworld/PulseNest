@@ -26120,3 +26120,11 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
 
 Próxima sesión: SI Alex pide, integrar reg_dols en librería para R-METHOD-2 en-library con r SQI. Sino, proceder con
 tareas de campaña.
+
+## Sesión 2026-10-04 — CSV de columnas mínimas (perfil P5)
+
+- **Pregunta de Alex:** ¿qué columnas son el mínimo imprescindible en un CSV (criterio: quitar lo recalculable aunque el algoritmo cambie)?
+- **Análisis:** de las 31 columnas del recorder, `LED*_SUB`, `V_TIA_*`, `I_PD_*`, `PPG` y todas las salidas del firmware se recalculan desde los 4 códigos ADC + registros `afe:`. Alex: saber qué calculó el firmware en una fecha no aporta (se recalcula), pero `OT_LED1/2` sí se guardan: recalcularlas depende de que los eventos `afe:` estén completos y eso es un riesgo evitable. Revisado en la lib: `CH_MASKS` (saturación ADC y TIA vs `FS_V`/`LIN_V`) tiene la misma dependencia → se guarda también. `DiagCode`/`ProbeState` se recalculan desde OT + máscaras + `i_pd` (salvo bits 0-12 de `DiagCode` = registro DIAG del chip, solo en `runAfeDiagnostics()`).
+- **Decisión:** nuevo perfil **P5** = `LED2,LED1,ALED2,ALED1,OT_LED1,OT_LED2,CH_MASKS` (sin `SUB`). **No sustituye a P1**: es una opción más dentro de `incunest_csv/1` (añadir un perfil no cambia la versión del formato, R41). Selección: `--csv-profile P1|P5` (recorder consola y GUI), guardado en `session.json` (`host.csv_profile`) para que el conversor regenere el mismo CSV.
+- **Hecho:** `pulsenest_capture_csv.py` (`PROFILES`, `col_spec` por instancia, perfil desconocido → ValueError), recorder, GUI, conversor, 4 checks nuevos en `capture_csv_v04_test.py` (43/43), `capture_csv_format_spec.md` §I, `pulsenest_recorder_spec.md` §2.2a. Tests de recorder (126), conversor (11), dict (1258) y csv (15) pasan. El runner C++ ya lee P5 sin cambios (busca columnas por nombre, las salidas del firmware son opcionales).
+- **✅ Commit hecho** (2026-10-04, por dev session): 9 ficheros. El lab (`pulsenest_lab.py`) no se ha tocado: no se ha comprobado cómo abre un CSV P5 sin columnas de salida del firmware (task pendiente: probar en vivo).

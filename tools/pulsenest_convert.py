@@ -173,7 +173,8 @@ def convert(session_dir, out_root=None, csv_mode="on", split_min=None, log=None)
     if split_min is not None:
         kw["split_s"] = split_min * 60
     rec = Recorder(out_root, site, operator=meta.get("operator", ""), raw_mode="off",
-                   csv_mode=csv_mode, hub_text="replay", clock=clock, log=log,
+                   csv_mode=csv_mode, csv_profile=(meta.get("host") or {}).get("csv_profile", "P1"),
+                   hub_text="replay", clock=clock, log=log,
                    board=board, subject=subject, videonest=launch.get("videonest"),
                    note=launch.get("note"), probe=launch.get("probe"),
                    ref_model=ref.get("model"), ref_avg=ref.get("avg"),
