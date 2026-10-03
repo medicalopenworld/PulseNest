@@ -26009,3 +26009,17 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   sin subir versión de la lib (ningún cambio de código de la lib).
 - Siguiente: umbral de r → paso 3 (R-METHOD-2 en la lib + curva reajustada con él); pendientes 1e (espectral /
   autocorrelación) y 1f.
+
+## 2026-10-03 — Tramos que rechazaría r: qué contienen y qué marcaba el monitor
+
+- Alex preguntó por el método, los valores de la tabla y el umbral de r; pidió comprobar los tramos. Resultado
+  (8 sesiones HOSPNAV, 2,66 h válidas, ProbeState recalculado por la lib, referencia VideoNest en 6 sesiones):
+  r < 0,8 = **3,8 %** del tiempo (0,6 → 3,0 %, 0,9 → 4,2 %; r es bimodal). **Corrección:** el "93–94 % conservado"
+  de antes estaba mal (recalculaba el candidato por parte de captura, añadiendo un calentamiento de 18 s por
+  parte); lo correcto es 96,2 % con 0,8.
+- Los tramos son 10 episodios de 30–61 s, todos de SUBJ09. En todos la lib tenía HR2_SQI = HR3_SQI = 0 y SpO2_SQI = 0
+  (ya no mostraba SpO2 válido) mientras su R marcaba 1,5–26. El filtro no quita nada que la lib aceptara.
+- Referencia: 32 % de esos tramos con SpO2 < 90 % frente a 23 % fuera (coinciden algo con desaturaciones, por
+  agitación). De 69 desaturaciones de referencia (< 90 % ≥ 5 s), la mediana se conserva entera; se pierde una de 6 s
+  y dos largas de 1238 SUBJ09 quedan al 50–62 %, donde el firmware actual también tenía SQI 0.
+- Anotado en rationale §9 (con la corrección). Pendiente de Alex: umbral de r (recomiendo 0,8) y la ventana XY.
