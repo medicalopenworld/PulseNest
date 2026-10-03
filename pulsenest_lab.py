@@ -52,7 +52,7 @@ HRResult = namedtuple('HRResult', [
 
 
 def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=40, hr_max=300, prominence=0.1):
+                              hr_min=40, hr_max=260, prominence=0.1):
     """Compute HR estimate via cross-correlation between two overlapping segments of the same signal.
 
     Uses np.correlate(seg, template, mode='valid') where template = seg[max_lag_n:].
@@ -133,7 +133,7 @@ def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 
 
 def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=40, hr_max=300, prominence=0.1):
+                              hr_min=40, hr_max=260, prominence=0.1):
     """Compute autocorrelation-based HR estimate using scipy.signal.correlate with FFT.
 
     Key difference from v1: computes the true autocorrelation of a single vector
@@ -352,17 +352,17 @@ class HRFFTCalc:
       + parabolic sub-bin interpolation → HR3 (bpm)
 
     Constants must match the firmware implementation when ported:
-      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.6667, HR_MAX_HZ=3.5
+      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.6667, HR_MAX_HZ=4.3333
     """
     LP_CUTOFF_HZ       = 10.0
     BUF_LEN            = 512
     UPDATE_INTERVAL_S  = 0.5
     HR_MIN_HZ          = 40.0 / 60.0  # 0.6667 Hz — 40 BPM — reported valid lower bound (ISO 80601-2-61; neonatal)
-    HR_MAX_HZ          = 300.0 / 60.0 # 5.0 Hz    — 300 BPM — reported valid upper bound (neonatal tachycardia)
+    HR_MAX_HZ          = 260.0 / 60.0 # 4.3333 Hz — 260 BPM — reported valid upper bound (lib hr_max_bpm)
     # Guard band: internal search extends ±3 BPM beyond the reported valid range.
     # Ensures signals at the boundary are found before the validity gate is applied.
-    HR_SEARCH_MIN_HZ   = 22.0 / 60.0  # 0.3667 Hz — 22 BPM
-    HR_SEARCH_MAX_HZ   = 303.0 / 60.0 # 5.05 Hz   — 303 BPM
+    HR_SEARCH_MIN_HZ   = 37.0 / 60.0  # 0.6167 Hz — 37 BPM
+    HR_SEARCH_MAX_HZ   = 263.0 / 60.0 # 4.3833 Hz — 263 BPM
 
     def __init__(self):
         self._fs           = 0.0
@@ -1347,7 +1347,7 @@ class HR2TestCalc:
     FW_BUF_LEN       = 400
     FW_MAX_LAG       = 137
     FW_UPDATE_N      = 25
-    FW_MIN_LAG_S     = 0.228  # lib: 60 / (hr_max_bpm + 3) = 60 / 263
+    FW_MIN_LAG_S     = 0.22   # lib: int(60 / (hr_max_bpm + 3) × 50 Hz) = 11 samples
     FW_MIN_CORR      = 0.5
     FW_HR_MIN_BPM    = 40.0
     FW_HR_MAX_BPM    = 260.0  # hr_max_bpm
@@ -3799,7 +3799,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             "Recompute autocorrelation every N samples. Firmware default: 25 (0.5 s at 50 Hz).",
             src="hr2_update_n"))
         self._spin_min_lag.setToolTip(_make_tooltip("Min lag",
-            "Minimum lag to search [s]. Firmware default: 0.185 s (~303 BPM guard band).",
+            "Minimum lag to search [s]. Firmware default: 0.22 s (11 samples at 50 Hz, as the library: 60 / (260 + 3) BPM, truncated).",
             src="hr2_min_lag_s"))
         self._spin_min_cor.setToolTip(_make_tooltip("Min correlation",
             "Minimum normalised autocorrelation at peak to be considered valid. "
@@ -9084,7 +9084,7 @@ class HR2LabWindow(QtWidgets.QMainWindow):
         if self._hr_refresh_counter >= refresh_every and incunest_filtered is not None:
             self._hr_refresh_counter = 0
             window_n  = int(round(4.0 * fs))
-            max_lag_n = int(round((60.0 / 22.0) * fs))  # covers guard band minimum 22 BPM
+            max_lag_n = int(round((60.0 / 37.0) * fs))  # covers guard band minimum 37 BPM
             needed    = window_n + max_lag_n
             max_lag_s = max_lag_n / fs
 

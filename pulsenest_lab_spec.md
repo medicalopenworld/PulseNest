@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.77
+# pulsenest_lab — Specification v1.78
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2664,6 +2664,20 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.78 — 2026-10-03
+
+**One HR range, 40–260 BPM, everywhere in the script** (Alex).
+- `HR2TestCalc.FW_MIN_LAG_S` 0.228 → 0.22 s. v1.77 took the library's `60 / (hr_max_bpm + 3)` as a
+  time, but the library truncates it to whole decimated samples (11 at 50 Hz = 0.22 s), and the
+  script's `searchsorted` rounds 0.228 up to 12. 0.22 starts the search at the library's lag. On
+  synthetic 240–270 BPM sines both values gave the same HR (the script's argmax fallback interpolates
+  from the first lag), so the error was in the mirror, not in the readings. Tooltip updated.
+- HR3LAB (`HRFFTCalc`): valid 40–300 → 40–260 BPM, search 22–303 → 37–263 BPM (±3 BPM guard band, as
+  the library and HR3TEST). The search floor also bounds the harmonic-ratio denominator, so HR3LAB's
+  SQI moves slightly. `HR3TestCalc` does not inherit from it and is unchanged.
+- HR2LAB (`_estimate_hr_xcorr_v1` / `_estimate_hr_autocorr_v2`): `hr_max` 300 → 260; lag sweep to
+  37 BPM instead of 22.
 
 ### v1.77 — 2026-10-03
 

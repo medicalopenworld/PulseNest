@@ -25929,3 +25929,8 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   `FW_MAX_LAG` = 137 de HR2 (la lib lo deriva de `hr_min_bpm − 3`).
 - Traspaso pendiente recibido de `pulsenest-56`: R por regresión en `project_spo2_r_estimation_alternatives_task.md`
   (la sesión destinataria, `pulsenest-69`, ya no existe).
+- Tabla de rangos de HR por sistema (lib, fw, HR1/HR2/HR3 TEST, HR3LAB, HR2LAB, tools): lib y fw 40–260 con
+  búsqueda 37–263. **pulsenest_lab v1.78**: `FW_MIN_LAG_S` de HR2 0,228→0,22 s (la lib trunca a 11 muestras a
+  50 Hz; el 0,228 de v1.77 era un espejo mal hecho, aunque con senos de 240–270 BPM daba las mismas lecturas por
+  el fallback argmax del script) y HR3LAB/HR2LAB pasan de 40–300 a 40–260 (búsqueda 37–263). Ya no queda
+  ningún rango de 300 BPM en el script.
