@@ -4506,6 +4506,77 @@ class HR3TestCalc:
         return self.hr_bpm, self.hr_sqi
 
 
+OfflineCapture = namedtuple('OfflineCapture',
+                            'ir red t fs fmt restarts gaps dropped')
+
+
+def _read_capture_ot(path):
+    """OT_LED1 / OT_LED2 of a capture CSV, with the sample rate and time axis the FILE declares.
+
+    Two formats:
+      * v0.4 (`# format=incunest_csv/1`): columns `OT_LED1`/`OT_LED2`, no time column; the rate is
+        `afe_prf_hz` in the `# @row N afe:` records, the time axis is row / rate, and
+        `# @row N event: board restarted` marks where the estimators must start again.
+      * the older lab format: columns `FW_OT_LED1`/`FW_OT_LED2` and `FW_Ts_us`; the rate is the
+        median timestamp step (snapped to 500/250/100/50 Hz), the time axis the timestamps. Rows
+        outside `$M4` carry OT = -1 and are skipped.
+    No rate in the file is an error, never an assumed 50 Hz: that assumption is what made PILAB's
+    offline time constants 10x off on 500 Hz captures (v1.80).
+    """
+    prf, restarts, gaps, cols = set(), [], 0, None
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if not line.startswith('#'):
+                if cols is None:
+                    cols = [c.strip() for c in line.split(',')]
+                continue
+            if ' afe: ' in line and 'afe_prf_hz=' in line:
+                prf.add(float(line.split('afe_prf_hz=', 1)[1].split()[0]))
+            elif ' event: board restarted' in line:
+                restarts.append(int(line.split()[2]))
+            elif ' gap: missing=' in line:
+                gaps += 1
+            elif line.startswith('# event @row') and 'stream discontinuity' in line:
+                restarts.append(int(line.split()[3].rstrip(':')))
+    if cols is None:
+        raise ValueError("no header row")
+    ir_col  = next((c for c in ('OT_LED1', 'FW_OT_LED1') if c in cols), None)
+    red_col = next((c for c in ('OT_LED2', 'FW_OT_LED2') if c in cols), None)
+    if ir_col is None or red_col is None:
+        raise ValueError("no OT_LED1/OT_LED2 columns (PILAB runs on OT, as the library)")
+    use = [cols.index(ir_col), cols.index(red_col)]
+    if 'FW_Ts_us' in cols:
+        use.append(cols.index('FW_Ts_us'))
+    with open(path, encoding='utf-8', errors='replace') as f:
+        body = (line for line in f if not line.startswith('#'))
+        next(body)  # the header row
+        data = np.loadtxt(body, delimiter=',', usecols=use, dtype=float, ndmin=2)
+    ir, red = data[:, 0], data[:, 1]
+
+    if prf:
+        if len(prf) > 1:
+            raise ValueError(f"the sample rate changes inside the file ({sorted(prf)} Hz)")
+        fs = prf.pop()
+        return OfflineCapture(ir, red, np.arange(len(ir)) / fs, fs, "v0.4",
+                              sorted(set(restarts)), gaps, 0)
+    if len(use) < 3:
+        raise ValueError("no sample rate in the file: neither afe_prf_hz (v0.4) nor FW_Ts_us")
+    keep = np.nonzero((ir > 0) & (red > 0))[0]
+    if len(keep) < 2:
+        raise ValueError("no $M4 rows (OT only travels in $M4)")
+    ts = data[keep, 2]
+    steps = np.diff(ts)
+    steps = steps[steps > 0]
+    fs = float(1e6 / np.median(steps)) if len(steps) else 0.0
+    for std_fs in (500.0, 250.0, 100.0, 50.0):
+        if abs(fs - std_fs) < std_fs * 0.2:
+            fs = std_fs
+            break
+    restarts = sorted(set(int(i) for i in np.searchsorted(keep, restarts)))
+    return OfflineCapture(ir[keep], red[keep], (ts - ts[0]) * 1e-6, fs, "lab",
+                          restarts, gaps, len(ir) - len(keep))
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  PICalc — configurable 3-step Perfusion Index pipeline
 # ──────────────────────────────────────────────────────────────────────────────
@@ -5449,7 +5520,10 @@ class PILabWindow(QtWidgets.QMainWindow):
       Right : Tabbed config panels for instance A (orange) and B (blue) + value table.
     """
 
-    _BUF_LEN    = 3000    # 3000 samples @ 50 Hz → 60 s
+    _BUF_LEN    = 3000    # live rolling buffer: 60 s at the default 50 Hz feed (500 Hz / decimation 10)
+    _BUF_NAMES  = ('_t_buf', '_ac_wave_a', '_ac_wave_b', '_ac_amp_a', '_ac_amp_b', '_ot_led1_buf',
+                   '_dc_norm_a', '_dc_norm_b', '_pi_ir_a', '_pi_ir_b', '_r_a', '_r_b',
+                   '_spo2_a', '_spo2_b')
     _PLOT_WIN_S = 30.0    # visible x-axis window (s)
     _CLR_A      = "#FF8800"   # instance A — orange
     _CLR_B      = "#44AAFF"   # instance B — blue
@@ -5466,26 +5540,13 @@ class PILabWindow(QtWidgets.QMainWindow):
 
         self._paused       = False
         self._offline_mode = False
+        self._offline_cap  = None    # OfflineCapture being replayed, None when live
         self._t0_us        = None
 
         self.calc_a = PICalc()   # A = firmware method defaults
         self.calc_b = PICalc()   # B = user-configurable
 
-        # rolling plot buffers
-        self._t_buf     = deque(maxlen=self._BUF_LEN)
-        self._ac_wave_a  = deque(maxlen=self._BUF_LEN)
-        self._ac_wave_b  = deque(maxlen=self._BUF_LEN)
-        self._ac_amp_a    = deque(maxlen=self._BUF_LEN)
-        self._ac_amp_b    = deque(maxlen=self._BUF_LEN)
-        self._ot_led1_buf = deque(maxlen=self._BUF_LEN)
-        self._dc_norm_a   = deque(maxlen=self._BUF_LEN)
-        self._dc_norm_b   = deque(maxlen=self._BUF_LEN)
-        self._pi_ir_a   = deque(maxlen=self._BUF_LEN)
-        self._pi_ir_b   = deque(maxlen=self._BUF_LEN)
-        self._r_a       = deque(maxlen=self._BUF_LEN)
-        self._r_b       = deque(maxlen=self._BUF_LEN)
-        self._spo2_a    = deque(maxlen=self._BUF_LEN)
-        self._spo2_b    = deque(maxlen=self._BUF_LEN)
+        self._new_buffers(self._BUF_LEN)
 
         self._build_ui()
 
@@ -5575,6 +5636,12 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.curve_spo2_a = self.p_spo2.plot(pen=_pen(self._CLR_A), name="SpO2 A")
         self.curve_spo2_b = self.p_spo2.plot(pen=_pen(self._CLR_B), name="SpO2 B")
 
+        # Offline the curves hold the whole recording (225 000 points for 7.5 min at 500 Hz):
+        # draw only what is in view, decimated keeping each pixel's min and max.
+        for p in (self.p_sig, self.p_ac, self.p_dc, self.p_pi, self.p_r, self.p_spo2):
+            p.setDownsampling(auto=True, mode='peak')
+            p.setClipToView(True)
+
         self.p_ac.setXLink(self.p_sig)
         self.p_dc.setXLink(self.p_sig)
         self.p_pi.setXLink(self.p_sig)
@@ -5603,7 +5670,9 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.btn_load = QtWidgets.QPushButton("LOAD CSV")
         self.btn_load.setStyleSheet(ACTION_BUTTON_STYLE)
         self.btn_load.setToolTip(_make_tooltip("Load CSV",
-            "Load a recorded CSV file and replay it through both PI pipelines."))
+            "Load a capture CSV (v0.4 or the older lab format) and replay the whole recording "
+            "through both PI pipelines at the file's own sample rate. Changing a configuration "
+            "replays it again."))
         self.btn_load.clicked.connect(self._on_load_csv)
         tbar.addWidget(self.btn_load)
 
@@ -5920,15 +5989,12 @@ class PILabWindow(QtWidgets.QMainWindow):
         for key, value in cfg['applied'].items():
             s.setValue(f"PILabWindow/{cfg['name']}/{key}", value)
         s.sync()
-        # clear all plot buffers so comparison starts fresh
-        self._t_buf.clear()
-        self._ac_wave_a.clear(); self._ac_wave_b.clear()
-        self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
-        self._pi_ir_a.clear();  self._pi_ir_b.clear()
-        self._r_a.clear();      self._r_b.clear()
-        self._spo2_a.clear();   self._spo2_b.clear()
-        self._t0_us = None
+        # the comparison starts fresh: offline replays the whole file with the new config
+        if self._offline_cap is not None:
+            self._run_offline()
+        else:
+            self._new_buffers(self._BUF_LEN)
+            self._t0_us = None
 
     def _apply_firmware_preset(self, cfg, calc):
         """Load firmware SpO2 algorithm parameters into cfg widgets and apply."""
@@ -5994,21 +6060,31 @@ class PILabWindow(QtWidgets.QMainWindow):
 
         self.calc_a.update(ir, red, fs)
         self.calc_b.update(ir, red, fs)
+        self._append_sample(t, ir)
 
+    def _new_buffers(self, maxlen):
+        """Fresh plot buffers: rolling (_BUF_LEN) live, unbounded (None) offline, where they hold
+        the whole recording."""
+        for name in self._BUF_NAMES:
+            setattr(self, name, deque(maxlen=maxlen))
+
+    def _append_sample(self, t, ir):
+        """Record both instances' outputs for one sample (live and offline share this)."""
+        a, b = self.calc_a, self.calc_b
         self._t_buf.append(t)
-        self._ac_wave_a.append(self.calc_a.ac_wave_ir * self._PPM)
-        self._ac_wave_b.append(self.calc_b.ac_wave_ir * self._PPM)
-        self._ac_amp_a.append(self.calc_a.ac_amp_ir * self._PPM)
-        self._ac_amp_b.append(self.calc_b.ac_amp_ir * self._PPM)
+        self._ac_wave_a.append(a.ac_wave_ir * self._PPM)
+        self._ac_wave_b.append(b.ac_wave_ir * self._PPM)
+        self._ac_amp_a.append(a.ac_amp_ir * self._PPM)
+        self._ac_amp_b.append(b.ac_amp_ir * self._PPM)
         self._ot_led1_buf.append(float(ir) * self._PPM)
-        self._dc_norm_a.append(self.calc_a.dc_norm_ir * self._PPM)
-        self._dc_norm_b.append(self.calc_b.dc_norm_ir * self._PPM)
-        self._pi_ir_a.append(self.calc_a.pi_ir)
-        self._pi_ir_b.append(self.calc_b.pi_ir)
-        self._r_a.append(self.calc_a.R)
-        self._r_b.append(self.calc_b.R)
-        self._spo2_a.append(self.calc_a.spo2)
-        self._spo2_b.append(self.calc_b.spo2)
+        self._dc_norm_a.append(a.dc_norm_ir * self._PPM)
+        self._dc_norm_b.append(b.dc_norm_ir * self._PPM)
+        self._pi_ir_a.append(a.pi_ir)
+        self._pi_ir_b.append(b.pi_ir)
+        self._r_a.append(a.R)
+        self._r_b.append(b.R)
+        self._spo2_a.append(a.spo2)
+        self._spo2_b.append(b.spo2)
 
     # ── render (called from PPGMonitor render tick) ───────────────────────────
 
@@ -6020,20 +6096,18 @@ class PILabWindow(QtWidgets.QMainWindow):
             return
         self._t0_us = None
         self.calc_a.reset(); self.calc_b.reset()
-        self._t_buf.clear()
-        self._ac_wave_a.clear(); self._ac_wave_b.clear()
-        self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
-        self._pi_ir_a.clear();  self._pi_ir_b.clear()
-        self._r_a.clear();      self._r_b.clear()
-        self._spo2_a.clear();   self._spo2_b.clear()
+        self._new_buffers(self._BUF_LEN)
 
     def update_plots(self):
-        if self._paused or not self._t_buf:
+        """Render tick. Live only: offline data is static and drawn once by _run_offline()."""
+        if self._paused or self._offline_mode or not self._t_buf:
             return
-        t = np.array(self._t_buf)
-        t_end = t[-1]
+        self._draw()
+        t_end = self._t_buf[-1]
+        self.p_sig.setXRange(max(0.0, t_end - self._PLOT_WIN_S), t_end, padding=0)
 
+    def _draw(self):
+        t = np.array(self._t_buf)
         self.curve_ac_wave_a.setData(t, np.array(self._ac_wave_a))
         self.curve_ac_wave_b.setData(t, np.array(self._ac_wave_b))
         self.curve_ac_amp_a.setData(t, np.array(self._ac_amp_a))
@@ -6047,7 +6121,6 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.curve_r_b.setData(t,    np.array(self._r_b))
         self.curve_spo2_a.setData(t, np.array(self._spo2_a))
         self.curve_spo2_b.setData(t, np.array(self._spo2_b))
-        self.p_sig.setXRange(max(0.0, t_end - self._PLOT_WIN_S), t_end, padding=0)
         self._update_val_table()
 
     def _update_val_table(self):
@@ -6171,78 +6244,55 @@ between A and B becomes a difference in the displayed saturation.</p>
         if not path:
             return
         try:
-            data = np.genfromtxt(path, delimiter=',', names=True)
-        except Exception as exc:
+            cap = _read_capture_ot(path)
+        except (OSError, ValueError, StopIteration) as exc:
             self.statusBar().showMessage(f"CSV load error: {exc}")
-            return
-        if data is None or data.ndim == 0 or len(data) == 0:
-            self.statusBar().showMessage("Empty or unreadable CSV file.")
-            return
-        cols = data.dtype.names
-        ir_col  = next((c for c in cols if c.upper() == 'OT_LED1'), None)
-        red_col = next((c for c in cols if c.upper() == 'OT_LED2'), None)
-        ts_col  = next((c for c in cols if any(k in c.upper()
-                        for k in ('TIME', 'TS_US', 'TIMESTAMP'))), None)
-        if ir_col is None or red_col is None:
-            self.statusBar().showMessage(
-                f"CSV missing OT_LED1/OT_LED2 columns (PILAB runs on OT, as the library). Found: {cols}")
             return
 
         self._offline_mode = True
+        self._offline_cap = cap
         self.btn_live.setEnabled(True)
         self.btn_load.setEnabled(False)
-        self.calc_a.reset(); self.calc_b.reset()
-        self._t_buf.clear()
-        self._ac_wave_a.clear(); self._ac_wave_b.clear()
-        self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
-        self._pi_ir_a.clear();  self._pi_ir_b.clear()
-        self._r_a.clear();      self._r_b.clear()
         self._t0_us = None
+        self._run_offline()
 
-        n   = len(data)
-        fs  = SPO2_RECEIVED_FS
-        t0  = float(data[ts_col][0]) if ts_col else 0.0
-        for i in range(n):
-            ir  = float(data[ir_col][i])
-            red = float(data[red_col][i])
-            ts  = float(data[ts_col][i]) if ts_col else i / fs * 1e6
-            if self._t0_us is None:
-                self._t0_us = ts
-            t = (ts - self._t0_us) * 1e-6
-            self.calc_a.update(ir, red, fs)
-            self.calc_b.update(ir, red, fs)
-            self._t_buf.append(t)
-            self._ac_wave_a.append(self.calc_a.ac_wave_ir * self._PPM)
-            self._ac_wave_b.append(self.calc_b.ac_wave_ir * self._PPM)
-            self._ac_amp_a.append(self.calc_a.ac_amp_ir * self._PPM)
-            self._ac_amp_b.append(self.calc_b.ac_amp_ir * self._PPM)
-            self._ot_led1_buf.append(ir * self._PPM)
-            self._dc_norm_a.append(self.calc_a.dc_norm_ir * self._PPM)
-            self._dc_norm_b.append(self.calc_b.dc_norm_ir * self._PPM)
-            self._pi_ir_a.append(self.calc_a.pi_ir)
-            self._pi_ir_b.append(self.calc_b.pi_ir)
-            self._r_a.append(self.calc_a.R)
-            self._r_b.append(self.calc_b.R)
+        n = len(cap.ir)
+        notes = ""
+        if cap.restarts:
+            notes += f" · {len(cap.restarts)} board restart(s), estimators reset there"
+        if cap.gaps:
+            notes += f" · {cap.gaps} gap(s) in the stream"
+        if cap.dropped:
+            notes += f" · {cap.dropped} rows without OT skipped"
+        dur = cap.t[-1] if n else 0.0
+        self.statusBar().showMessage(
+            f"Offline: {Path(path).name}  ({n} samples @ {cap.fs:g} Hz, {dur:.0f} s, {cap.fmt}){notes}")
 
-        self.update_plots()
+    def _run_offline(self):
+        """Replay the whole loaded capture through both instances at the file's own rate."""
+        cap = self._offline_cap
+        self.calc_a.reset(); self.calc_b.reset()
+        self._new_buffers(None)
+        restarts = set(cap.restarts)
+        for i in range(len(cap.ir)):
+            if i in restarts:
+                self.calc_a.reset(); self.calc_b.reset()
+            ir = float(cap.ir[i]); red = float(cap.red[i])
+            self.calc_a.update(ir, red, cap.fs)
+            self.calc_b.update(ir, red, cap.fs)
+            self._append_sample(float(cap.t[i]), ir)
         if self._t_buf:
-            t_arr = np.array(self._t_buf)
-            self.p_sig.setXRange(t_arr[0], t_arr[-1], padding=0.02)
-        self.statusBar().showMessage(f"Offline: {path}  ({n} samples @ {fs:.0f} Hz)")
+            self._draw()
+            self.p_sig.setXRange(self._t_buf[0], self._t_buf[-1], padding=0.02)
 
     def _on_go_live(self):
         self._offline_mode = False
+        self._offline_cap = None
         self._t0_us = None
         self.calc_a.reset(); self.calc_b.reset()
         self.btn_live.setEnabled(False)
         self.btn_load.setEnabled(True)
-        self._t_buf.clear()
-        self._ac_wave_a.clear(); self._ac_wave_b.clear()
-        self._ac_amp_a.clear();   self._ac_amp_b.clear()
-        self._ot_led1_buf.clear(); self._dc_norm_a.clear(); self._dc_norm_b.clear()
-        self._pi_ir_a.clear();  self._pi_ir_b.clear()
-        self._r_a.clear();      self._r_b.clear()
+        self._new_buffers(self._BUF_LEN)
         self.statusBar().showMessage(_MOUSE_HINT)
 
     def _toggle_pause(self):

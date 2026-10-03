@@ -25970,3 +25970,18 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
 - OTA a las 3 V18 (`82:5C` .23, `88:50` .250, `87:A4` .252; MAC verificadas antes con `udp_fw_versions.py`):
   fw 0.16 / lib 0.99, `build=67fa490`, `libsha=aa428f2`, `elfsha=e0b20dc7d6653fc4` idéntico en las tres, verificado
   por `$CFG` tras el reinicio. `docs/boards.md` actualizado. Lab cerrado para la OTA (puerto 5005) y relanzado.
+
+## 2026-10-03 — PILAB offline (punto 4b del plan): lab v1.80
+
+- Alex no entendía el punto 4 del plan; explicado (4a: HR1 dobla cuentas a 30 BPM por la muesca dicrótica,
+  mejora no urgente; 4b: modo offline de PILAB). Eligió 4b, que bloquea el paso 2 del plan SpO2.
+- Hallazgo al comprobarlo antes de cambiar nada: [LOAD CSV] de PILAB no abría **ninguna** captura actual. En v0.4
+  `genfromtxt(names=True)` toma `# format=incunest_csv/1` como cabecera de una columna; en el formato antiguo la
+  columna es `FW_OT_LED1`. La nota de la v1.76 (τ ×10, 6 s) describía el código, no lo que pasaba. Detrás había
+  más fallos: 50 Hz supuestos (los dos formatos van a 500), búfer de 6 s, SpO2 sin rellenar (longitudes
+  distintas), redibujado cada tick que devolvía la vista a 30 s, y aplicar configuración vaciaba sin recalcular.
+- **pulsenest_lab v1.80**: `_read_capture_ot()` (sin Qt) lee la frecuencia que declara el fichero (`afe_prf_hz` en
+  v0.4; paso mediano de `FW_Ts_us` en el antiguo), reinicia los estimadores en `board restarted`, cuenta huecos;
+  PILAB guarda la grabación entera offline con diezmado por píxel, la vuelve a procesar al cambiar la config
+  (PICalc 1,1 µs/muestra: 266 000 muestras en 1,4 s). Verificado offscreen con SUBJ09 p01 y MS100 40 BPM.
+- Sin tocar: el directo de PILAB sigue pasando 50 Hz, cierto solo con el diezmado por defecto (10).

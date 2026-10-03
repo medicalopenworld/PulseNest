@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.79
+# pulsenest_lab — Specification v1.80
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2011,7 +2011,8 @@ independently configured PI estimators side by side on live or recorded data.
 `PICalc` implements a configurable pipeline for computing PI from `OT_LED1` / `OT_LED2` samples
 (optical transmittance [A/A], gain-invariant), the input the library's SpO2/PI/HR use (v1.76; it
 was `led1_sub` / `led2_sub` before, see the changelog). Live, PILAB is fed only in `$M4`, the only
-frame that carries OT; offline, [LOAD CSV] needs the `OT_LED1` / `OT_LED2` columns.
+frame that carries OT; offline, [LOAD CSV] needs the `OT_LED1` / `OT_LED2` columns (`FW_OT_LED1` /
+`FW_OT_LED2` in the older lab format).
 The PI denominator is guarded only against division by zero (`dc_norm > 0`, else PI = 0).
 
 **Pipeline steps:**
@@ -2108,7 +2109,24 @@ was silently applied at the next opening.
 - `feed_sample(ir, red, fs, ts_us)` — called per sample in `_process_frames_tick()`.
 - `update_plots()` — called from render tick every `_PILAB_REFRESH_EVERY` ticks (10 Hz).
 
-**Offline mode:** [LOAD CSV] reads a captured CSV file and replays samples through both pipelines.
+**Offline mode:** [LOAD CSV] replays a whole capture through both pipelines **at the rate the file
+declares** (v1.80), read by the module-level `_read_capture_ot(path)` → `OfflineCapture(ir, red, t,
+fs, fmt, restarts, gaps, dropped)`, which has no Qt in it:
+- **v0.4** (`# format=incunest_csv/1`): `OT_LED1`/`OT_LED2`; rate = `afe_prf_hz` of the `# @row N
+  afe:` records (two different values in one file is an error); time = row / rate (v0.4 has no time
+  column); `# @row N event: board restarted` rows reset both estimators, as a live stream
+  discontinuity does; `# @row N gap:` records are counted and reported, not filled.
+- **older lab format**: `FW_OT_LED1`/`FW_OT_LED2` + `FW_Ts_us`; rate = median timestamp step snapped
+  to 500/250/100/50 Hz, as HR1TEST does; time = the timestamps; rows outside `$M4` (OT = −1) are
+  skipped; `# event @row N: stream discontinuity` resets the estimators.
+- No rate in the file is an error, never an assumed rate.
+
+The plot buffers hold the **whole recording** offline (`_new_buffers(None)`; live they roll at
+`_BUF_LEN` = 3000) and the six plots decimate to the pixel (`setDownsampling(auto, 'peak')` +
+`setClipToView`), so a 9-minute 500 Hz capture (266 000 samples) replays in ~1.4 s and draws whole.
+Offline data is static: `update_plots()` (the render tick) returns at once and `_run_offline()` draws
+once. Applying a configuration offline replays the file again with it. The status bar gives samples,
+rate, duration, format and any restarts/gaps/skipped rows.
 [LIVE] switches back to live mode. [PAUSE] freezes plots without stopping collection.
 
 **Integration:** PILAB button is in the **LAB group** of the sidebar (alongside HR2LAB, HR3LAB, SPO2LAB).
@@ -2664,6 +2682,24 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.80 — 2026-10-03
+
+**PILAB offline mode opens today's captures, at their own rate, whole.** Checked before the change:
+[LOAD CSV] could open **no** current capture. On a v0.4 file `np.genfromtxt(names=True)` took the
+first comment (`# format=incunest_csv/1`) as a one-column header and rejected every row; on an older
+lab capture the columns are `FW_OT_LED1`/`FW_OT_LED2` and the loader looked only for `OT_LED1`. The
+v1.76 note ("offline τ 10× off, only 6 s kept") described the code, not what happened. Had a file
+loaded, three more faults were waiting: the rate assumed 50 Hz (both formats are 500 Hz) so every τ
+was 10× long; the 3000-sample rolling buffer kept the last 6 s; the SpO2 buffers were neither cleared
+nor filled, so plot 6 got arrays of a different length from the time axis. And after loading, the
+render tick redrew everything every 100 ms and snapped the view back to the last 30 s, while applying
+a configuration emptied the plots without recomputing. All fixed: see §7.11 *Offline mode*. The five
+copies of the buffer-clearing block became `_new_buffers(maxlen)`, and live and offline share
+`_append_sample()`. Checked offscreen on SUBJ09 p01 (v0.4, 266 145 samples, 500 Hz, 532 s): replay
+1.4 s, all 14 buffers = whole file; at the old 50 Hz the same samples end at R = 1.074 instead of
+1.209. Older format checked on `MS100_98SPO2_40HR` (30 015 samples, 500 Hz). Not changed: the live
+feed still passes `SPO2_RECEIVED_FS` = 50 Hz, true only at the default decimation of 10.
 
 ### v1.79 — 2026-10-03
 
