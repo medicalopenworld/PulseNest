@@ -206,7 +206,7 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 |-------|--------|-------------|
 | `V_TIA_*` | `%.4e` | TIA differential output voltage per channel [V] |
 | `I_PD_*` | `%.4e` | Photodiode current per channel [A] |
-| `OT_LED1`, `OT_LED2` | `%.4e` | Optical transmittance `(I_PD_LEDx − I_PD_ALEDx) / I_LEDx` [A/A], firmware-computed in `_compute_analog_state()` |
+| `OT_LED1`, `OT_LED2` | `%.6e` | Optical transmittance `(I_PD_LEDx − I_PD_ALEDx) / I_LEDx` [A/A], firmware-computed in `_compute_analog_state()` (7 significant figures, v0.17+) |
 | `CH_MASKS` | `%04X` hex | Validity masks packed in 4 nibbles: bits[3:0]=`adc_sat_pos`, [7:4]=`adc_sat_neg`, [11:8]=`tia_over_fs`, [15:12]=`tia_over_lin`. Within each nibble, bit = channel per `AFE4490Ch`: LED1=0, ALED1=1, LED2=2, ALED2=3. `0000` = all channels CLEAN |
 | `RF1`, `RF2` | string | Actual TIA feedback resistor in use for LED1/LED2 at this sample (e.g. `"500K"`, via `afeRFToStr()`) — the live config value, whoever set it (manual `$SET` or HGAC Phase 1 descent), so it is not a static config value. Renamed from `HGAC_RF1`/`HGAC_RF2` in lib v0.81/spec v1.29 — the old name wrongly implied HGAC always computed it |
 
@@ -1598,7 +1598,7 @@ ProbeState (6–19, 2 dp),
 V_TIA_LED1/LED2/ALED1/ALED2 (20–23, 6 dp V), I_PD_LED1/LED2/ALED1/ALED2 (24–27, µA 3 dp),
 OT_LED1 [ppm], OT_LED2 [ppm] (28–29, displayed ×1e6 for readability, 2 dp — **read from the
 $M4 frame**, not computed locally; $M4 mode only. Wire protocol unchanged: firmware still
-sends raw A/A in `%.4e` — the ×1e6 + 2dp formatting is local to the Python display only).
+sends raw A/A in `%.6e` (7 significant figures, v0.17+) — the ×1e6 + 2dp formatting is local to the Python display only).
 
 **V_TIA / V_ADC columns (cols 1–2):** populated only for rows 0–3 (LED1, LED2, ALED1, ALED2).
 Calculated from the current ADC mean using the AFE4490 gain chain (V_TIA is the differential

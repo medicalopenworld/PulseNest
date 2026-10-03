@@ -636,7 +636,7 @@ void Incunest_Task(void *pvParameters) {
                     char buf[512];
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M4,%lu,%llu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
-                        ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%04X"
+                        ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.6e,%.6e,%04X"
                         ",%s,%s",
                         (unsigned long)incunest_sample_count,
                         (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
