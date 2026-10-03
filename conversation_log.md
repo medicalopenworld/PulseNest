@@ -25934,3 +25934,9 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   50 Hz; el 0,228 de v1.77 era un espejo mal hecho, aunque con senos de 240–270 BPM daba las mismas lecturas por
   el fallback argmax del script) y HR3LAB/HR2LAB pasan de 40–300 a 40–260 (búsqueda 37–263). Ya no queda
   ningún rango de 300 BPM en el script.
+- Procedencia del rango HR 40–260 (pregunta de Alex): no hay fuente normativa. Historial 40–240 → 30–250 →
+  25–300 → 40–260, todo "decisión del usuario" sin razón registrada; la ISO 80601-2-61 §201.12 solo obliga a
+  declarar el rango; la fuente citable es OMS-UNICEF 2019 §6.5 / A1.11 (30–240 bpm, ±3 bpm) → el techo 260 cumple
+  y el suelo 40 no. Corregida la atribución falsa a la ISO (pendiente del 2026-09-08) en la spec y los comentarios
+  del `.cpp` de la lib (`e4f6677`, solo texto, sin subir versión) y en un comentario de `pulsenest_lab.py`.
+  Siguen pendientes: bajar el suelo a 30 BPM con validación, y una fuente para "TSV neonatal 250–300 BPM".

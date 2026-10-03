@@ -357,7 +357,7 @@ class HRFFTCalc:
     LP_CUTOFF_HZ       = 10.0
     BUF_LEN            = 512
     UPDATE_INTERVAL_S  = 0.5
-    HR_MIN_HZ          = 40.0 / 60.0  # 0.6667 Hz — 40 BPM — reported valid lower bound (ISO 80601-2-61; neonatal)
+    HR_MIN_HZ          = 40.0 / 60.0  # 0.6667 Hz — 40 BPM — reported valid lower bound (lib hr_min_bpm)
     HR_MAX_HZ          = 260.0 / 60.0 # 4.3333 Hz — 260 BPM — reported valid upper bound (lib hr_max_bpm)
     # Guard band: internal search extends ±3 BPM beyond the reported valid range.
     # Ensures signals at the boundary are found before the validity gate is applied.
