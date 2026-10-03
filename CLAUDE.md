@@ -25,6 +25,7 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 - Ver `incunest_afe4490_spec.md` en https://github.com/medicalopenworld/incunest_afe4490 — leer antes de tocar cualquier cosa relacionada con incunest_afe4490
 - La spec y la librería están **versionadas juntas** (misma versión semántica) en el repo de la librería
 - **Regla obligatoria:** cualquier modificación de diseño en la librería debe reflejarse inmediatamente en `incunest_afe4490_spec.md`, sin necesidad de que el usuario lo pida explícitamente
+- **Regla obligatoria (rationale):** cuando en una sesión se analicen varias opciones de diseño o desarrollo de la librería (alternativas, compromisos, evidencia medida o bibliográfica, decisiones revertidas), el análisis se añade a `incunest_afe4490_design_rationale.md` (repo de la librería) en el momento de tomar la decisión, sin que el usuario lo pida, si lo necesitaría un mantenedor futuro o un auditor. El `conversation_log.md` registra que se decidió; el rationale registra por qué y qué se descartó. Frontera spec/rationale: rationale §1 (spec = porqué corto inline junto al número; rationale = análisis largos, alternativas descartadas, base clínica, reversiones).
 - Objetivo: cada versión de la spec debe ser capaz por sí sola de regenerar la librería correspondiente
 
 ## Herramientas del proyecto

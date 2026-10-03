@@ -25961,3 +25961,12 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
 - Pendiente de Alex: OTA de las 3 V18 (fw 0.16 + lib 0.99) y la regla del rationale en CLAUDE.md pedida por
   `pulsenest-31` (no se aplica sin confirmación directa de Alex en la sesión de desarrollo).
 - Sigue pendiente: campaña MS100 a 30/35 BPM (confirmar HR3 con deriva en hardware) y respiración simulada.
+
+### Cierre (misma sesión): regla del rationale y OTA
+- Alex confirmó directamente la regla del rationale propuesta por `pulsenest-31`: añadida a `CLAUDE.md`
+  (sección "Especificación de incunest_afe4490", tras la regla de la spec). Bloque de `pulsenest-31`:
+  *Consigna nueva: análisis de opciones → design rationale* — CLAUDE.md solo obligaba a la spec; origen: el
+  inventario de constantes de tiempo del 2026-10-01/02, que no tenía dónde vivir.
+- OTA a las 3 V18 (`82:5C` .23, `88:50` .250, `87:A4` .252; MAC verificadas antes con `udp_fw_versions.py`):
+  fw 0.16 / lib 0.99, `build=67fa490`, `libsha=aa428f2`, `elfsha=e0b20dc7d6653fc4` idéntico en las tres, verificado
+  por `$CFG` tras el reinicio. `docs/boards.md` actualizado. Lab cerrado para la OTA (puerto 5005) y relanzado.
