@@ -1,7 +1,30 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.23 — native/offline (no hardware), library API v0.99
+// Runner version: v0.24 — native/offline (no hardware), library API v0.99
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
+//
+// v0.24 (2026-10-03): (1) the replay now FOLLOWS the capture's `# @row N afe:` records (v0.4 format):
+//   the recorder writes one whenever the board's HGAC changes RF (cause=hgac) and at every part start
+//   (cause=part). Until now the library instance kept the header's $CFG for the whole session, so
+//   after the first HGAC move it divided the raw codes by the wrong RF: on SUBJ09 the replayed OT_LED2
+//   jumped +150 % / -60 % where the board's moved 1-4 %, for 82-89 % of those sessions -- the
+//   ProbeState, SQIs and every R transient after such a step were replay artefacts (rationale §9,
+//   corrected). Only keys whose value changes are applied, so a record that repeats the current
+//   configuration (part starts) does not touch the library's state. The record's row is the row at
+//   which the HOST learnt of the change (frames arrive 5 per datagram), measured -4..+4 rows from the
+//   raw code's own jump: applied there, one sample of old-RF-on-new-codes (x2.5) went through the
+//   filters and the settling freeze held it for 10 more -- a 20 ms spike that polluted the candidate
+//   for 30 s after every HGAC move. So an RF change is aligned to the jump of that channel's raw
+//   code nearest the record (within +-50 rows, ratio within 30 % of the RF ratio) and the whole
+//   record is applied at that row; the summary prints the offset used.
+//   (2) DC-estimator experiment for the candidate (library rationale §10): the same
+//   regression runs four times, differing only in the DC each channel's band-passed signal is
+//   divided by -- the library's EMA (tau 2 s; R_CAND, unchanged), a 2nd-order low-pass at 0.2 Hz
+//   critically damped as one biquad (R_CAND_CD) and as two cascaded EMAs of 0.796 s (R_CAND_CE,
+//   the same transfer function in the EMA's arithmetic), and Butterworth (R_CAND_BW). Each DC runs
+//   in float, as the firmware would, with a double twin alongside; the per-part summary prints the
+//   largest relative deviation seen so far in the session, which is what float32 costs with poles
+//   this close to z = 1.
 //
 // v0.23 (2026-10-03): computes the R-method candidate R_CAND_LABEL (causal regression on
 //   derivatives, "reg_dols") next to the library, on the very OT samples and ProbeState the
@@ -64,7 +87,12 @@ namespace fs = std::filesystem;
 // PROBE_APPLIED resets, and R is NaN until the warm-up is over.
 // Label per the R-method naming (PILAB step numbering): STEP1 1.2 band-pass, STEP2 2.6
 // derivative regression, STEP3 3.1 EMA DC.
-static const char* R_CAND_LABEL = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1(2s)";
+static const char* R_CAND_LABEL    = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1(2s)";
+// DC variants (v0.24, rationale §10). 3.2 is PILAB's STEP3 "LPF" slot; "3.1x2" is two EMAs in cascade.
+static const char* R_CAND_CD_LABEL = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.2(LP2 0.2Hz Q0.5)";
+static const char* R_CAND_CE_LABEL = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1x2(0.796s)";
+static const char* R_CAND_BW_LABEL = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.2(LP2 0.2Hz Q0.707)";
+static const float DC_LP_FC_HZ = 0.2f, DC_CE_TAU_S = 0.7957747f;   // 1 / (2*pi*0.2 Hz)
 
 struct CandBiquad {                     // transcription of INCUNEST_AFE4490::BiquadFilter (band-pass)
     float b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0, v1 = 0, v2 = 0;
@@ -93,29 +121,85 @@ struct CandBiquad {                     // transcription of INCUNEST_AFE4490::Bi
     }
 };
 
-struct RCandDols {
-    static constexpr float F_LO = 0.5f, F_HI = 5.0f, TAU_DC_S = 2.0f, TAU_AC_S = 6.0f;
+// ── DC estimators under test (rationale §10) ──────────────────────────────────
+// All are "start at the first sample" (the EMA by construction, the biquads by the library's
+// steady-state precharge, whose y_ss = x for a low-pass). T = float is what the firmware would run;
+// T = double is the twin that shows what float32 loses when the poles sit this close to z = 1.
+template <typename T> struct DcEmaT {                         // EmaChannel's mean: one pole
+    float tau_s; T a = 0, dc = 0; bool first = true;
+    explicit DcEmaT(float tau) : tau_s(tau) {}
+    void init(float fs) { a = (T)1 - std::exp((T)-1 / ((T)tau_s * (T)fs)); reset(); }
+    void reset() { first = true; dc = 0; }
+    T update(T x) { if (first) { dc = x; first = false; } else dc += a * (x - dc); return dc; }
+};
+template <typename T> struct DcEma2T {                        // two EMAs in cascade: a double real pole
+    DcEmaT<T> s1, s2;
+    explicit DcEma2T(float tau) : s1(tau), s2(tau) {}
+    void init(float fs) { s1.init(fs); s2.init(fs); }
+    void reset() { s1.reset(); s2.reset(); }
+    T update(T x) { return s2.update(s1.update(x)); }
+};
+template <typename T> struct DcLp2T {                         // BiquadFilter::init_lp, DF-II transposed
+    float fc_hz, q; T b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0, v1 = 0, v2 = 0; bool precharge = true;
+    DcLp2T(float fc, float q_) : fc_hz(fc), q(q_) {}
+    void init(float fs) {
+        T Ohm = std::tan((T)3.14159265358979 * (T)fc_hz / (T)fs), Ohm2 = Ohm * Ohm, inv_q = (T)1 / (T)q;
+        T d = (T)1 + inv_q * Ohm + Ohm2;
+        b0 = Ohm2 / d; b1 = (T)2 * b0; b2 = b0;
+        a1 = (T)2 * (Ohm2 - (T)1) / d; a2 = ((T)1 - inv_q * Ohm + Ohm2) / d;
+        reset();
+    }
+    void reset() { v1 = 0; v2 = 0; precharge = true; }
+    T update(T x) {
+        if (precharge) {
+            T denom = (T)1 + a1 + a2;
+            T y_ss  = denom != (T)0 ? x * (b0 + b1 + b2) / denom : (T)0;
+            v1 = y_ss - b0 * x; v2 = b2 * x - a2 * y_ss; precharge = false;
+        }
+        T y = b0 * x + v1; v1 = b1 * x - a1 * y + v2; v2 = b2 * x - a2 * y;
+        return y;
+    }
+};
+template <template <typename> class DC> struct DcChecked {   // float estimator + double twin
+    DC<float> f; DC<double> d; double max_rel = 0.0;
+    template <typename... A> explicit DcChecked(A... a) : f(a...), d(a...) {}
+    void init(float fs) { f.init(fs); d.init(fs); }
+    void reset() { f.reset(); d.reset(); }
+    float update(float x) {
+        float vf = f.update(x); double vd = d.update((double)x);
+        if (vd != 0.0) { double rel = std::fabs((double)vf - vd) / std::fabs(vd); if (rel > max_rel) max_rel = rel; }
+        return vf;
+    }
+};
+
+template <typename DC> struct RCand {
+    static constexpr float F_LO = 0.5f, F_HI = 5.0f, TAU_AC_S = 6.0f;
     static constexpr float DIV_EPS = 1e-12f;
     CandBiquad bp_ir, bp_red;
-    float a_dc = 0, a_ac = 0, dc_ir = 0, dc_red = 0, x_prev = 0, y_prev = 0, sxy = 0, sxx = 0, syy = 0;
+    DC dc_ir, dc_red;
+    float a_ac = 0, x_prev = 0, y_prev = 0, sxy = 0, sxx = 0, syy = 0;
     float corr = NAN;   // r = sxy / sqrt(sxx*syy) of the last update: ~0.99 with a pulse, ~0 without
     uint32_t count = 0, warmup = 0;
 
+    template <typename... A> explicit RCand(A... a) : dc_ir(a...), dc_red(a...) {}
     void init(float fs) {
         bp_ir.init_bp(F_LO, F_HI, fs); bp_red.init_bp(F_LO, F_HI, fs);
-        a_dc = 1.0f - expf(-1.0f / (TAU_DC_S * fs));
+        dc_ir.init(fs); dc_red.init(fs);
         a_ac = 1.0f - expf(-1.0f / (TAU_AC_S * fs));
         warmup = (uint32_t)roundf(3.0f * TAU_AC_S * fs);
         reset();
     }
-    void reset() { bp_ir.reset(); bp_red.reset(); count = 0; sxy = 0.0f; sxx = 0.0f; syy = 0.0f; corr = NAN; }
+    void reset() {
+        bp_ir.reset(); bp_red.reset(); dc_ir.reset(); dc_red.reset();
+        count = 0; sxy = 0.0f; sxx = 0.0f; syy = 0.0f; corr = NAN;
+    }
+    double dc_max_rel() const { return std::max(dc_ir.max_rel, dc_red.max_rel); }
 
     float update(float ot_ir, float ot_red, bool applied) {
         if (!applied) { reset(); return NAN; }
-        if (count == 0) { dc_ir = ot_ir; dc_red = ot_red; }
-        else { dc_ir += a_dc * (ot_ir - dc_ir); dc_red += a_dc * (ot_red - dc_red); }
-        float x = dc_ir  > DIV_EPS ? bp_ir.process(ot_ir)   / dc_ir  : 0.0f;
-        float y = dc_red > DIV_EPS ? bp_red.process(ot_red) / dc_red : 0.0f;
+        float dci = dc_ir.update(ot_ir), dcr = dc_red.update(ot_red);
+        float x = dci > DIV_EPS ? bp_ir.process(ot_ir)  / dci : 0.0f;
+        float y = dcr > DIV_EPS ? bp_red.process(ot_red) / dcr : 0.0f;
         if (count > 0) {
             float dx = x - x_prev, dy = y - y_prev;
             sxy += a_ac * (dx * dy - sxy);
@@ -127,6 +211,14 @@ struct RCandDols {
         corr = sxy / sqrtf(sxx * syy);
         return sxy / sxx;
     }
+};
+
+struct CandSet {   // the same regression over four DC estimators, fed the same samples
+    RCand<DcChecked<DcEmaT>>  ema{2.0f};
+    RCand<DcChecked<DcLp2T>>  cd{DC_LP_FC_HZ, 0.5f};
+    RCand<DcChecked<DcEma2T>> ce{DC_CE_TAU_S};
+    RCand<DcChecked<DcLp2T>>  bw{DC_LP_FC_HZ, 0.70710678f};
+    void init(float fs) { ema.init(fs); cd.init(fs); ce.init(fs); bw.init(fs); }
 };
 
 // ── CSV row (raw signals + optional firmware outputs) ─────────────────────────
@@ -281,9 +373,99 @@ static ColIdx find_columns(const std::vector<std::string>& header) {
     return ix;
 }
 
-// ── Parse one CSV part: rows + (first seen) $CFG map ─────────────────────────
+// ── `# @row N afe: cause=... afe_rf2_ohm=250000 ...` → the board's analog configuration from data
+// row N on (0-based within the part). Applied in replay_part() before feeding that row.
+struct AfeRecord {
+    long row = 0;
+    std::map<std::string, std::string> kv;   // afe_* keys as written
+};
+
+static bool parse_afe_record(const std::string& line, AfeRecord* rec) {
+    // "# @row 126570 afe: cause=hgac afe_prf_hz=500 ... afe_rf2_ohm=250000 ..."
+    if (line.rfind("# @row ", 0) != 0) return false;
+    size_t sp = line.find(' ', 7);
+    if (sp == std::string::npos || line.compare(sp, 6, " afe: ") != 0) return false;
+    try { rec->row = std::stol(line.substr(7, sp - 7)); } catch (...) { return false; }
+    std::stringstream ss(line.substr(sp + 6));
+    std::string tok;
+    while (ss >> tok) {
+        size_t eq = tok.find('=');
+        if (eq != std::string::npos && tok.rfind("afe_", 0) == 0)
+            rec->kv[tok.substr(0, eq)] = tok.substr(eq + 1);
+    }
+    return !rec->kv.empty();
+}
+
+static AFE4490RF rf_from_ohms(long ohms, bool* ok) {
+    *ok = true;
+    switch (ohms) {
+        case 10000:   return AFE4490RF::RF_10K;
+        case 25000:   return AFE4490RF::RF_25K;
+        case 50000:   return AFE4490RF::RF_50K;
+        case 100000:  return AFE4490RF::RF_100K;
+        case 250000:  return AFE4490RF::RF_250K;
+        case 500000:  return AFE4490RF::RF_500K;
+        case 1000000: return AFE4490RF::RF_1M;
+    }
+    *ok = false;
+    return AFE4490RF::RF_500K;
+}
+
+// Apply the keys of `rec` whose value differs from `state` (the configuration the instance has);
+// `state` is updated. Returns the number of changes applied; unknown values are reported, not applied.
+static int apply_afe_record(INCUNEST_AFE4490& afe, const AfeRecord& rec,
+                            std::map<std::string, std::string>& state, const char* label) {
+    int n = 0;
+    for (const auto& [k, v] : rec.kv) {
+        auto it = state.find(k);
+        if (it != state.end() && it->second == v) continue;
+        bool ok = true;
+        long l = 0; float f = 0.0f;
+        try { f = std::stof(v); l = std::lround(f); } catch (...) { ok = false; }
+        if (ok) {
+            if      (k == "afe_rf1_ohm")       { AFE4490RF rf = rf_from_ohms(l, &ok); if (ok) afe.setTIAGainLED1(rf); }
+            else if (k == "afe_rf2_ohm")       { AFE4490RF rf = rf_from_ohms(l, &ok); if (ok) afe.setTIAGainLED2(rf); }
+            else if (k == "afe_cf1_pf")        afe.setTIACFLED1(f);
+            else if (k == "afe_cf2_pf")        afe.setTIACFLED2(f);
+            else if (k == "afe_rg1_ohm")       { AFE4490RG rg = rg_from_ohms(l, &ok); if (ok) afe.setStage2GainLED1(rg); }
+            else if (k == "afe_rg2_ohm")       { AFE4490RG rg = rg_from_ohms(l, &ok); if (ok) afe.setStage2GainLED2(rg); }
+            else if (k == "afe_stg2en1")       afe.setStage2En1(l != 0);
+            else if (k == "afe_stg2en2")       afe.setStage2En2(l != 0);
+            else if (k == "afe_ambdac_ua")     afe.setAmbDac((uint8_t)l);
+            else if (k == "afe_iled1_ua")      afe.setLED1Current(f / 1000.0f);
+            else if (k == "afe_iled2_ua")      afe.setLED2Current(f / 1000.0f);
+            else if (k == "afe_iled_range_ma") afe.setLEDRange((uint8_t)l);
+            else if (k == "afe_sep_gain")      afe.setEnSepGain(l != 0);
+            else if (k == "afe_prf_hz")        afe.setSampleRate((uint16_t)l);
+            else if (k == "afe_numav")         afe.setAdcAverages((uint8_t)l);
+            else continue;                      // afe_ri_ohm and the like: nothing to set
+        }
+        if (!ok) { fprintf(stderr, "WARNING: %s: @row %ld %s=%s not understood, not applied\n", label, rec.row, k.c_str(), v.c_str()); continue; }
+        state[k] = v;
+        n++;
+    }
+    return n;
+}
+
+// Row at which channel `ch` (0 = LED1, 1 = LED2) of `rows` jumps by about `k` (new RF / old RF),
+// searched within +-ALIGN_W rows of `row`: the first row of the new gain. -1 when no such jump.
+static const long ALIGN_W = 50;
+static long align_rf_change(const std::vector<CsvRow>& rows, long row, int ch, double k) {
+    long best = -1; double best_err = 1e9;
+    const double lk = std::log(k);
+    long lo = std::max<long>(1, row - ALIGN_W), hi = std::min<long>((long)rows.size() - 1, row + ALIGN_W);
+    for (long j = lo; j <= hi; j++) {
+        double a = ch ? rows[j - 1].led2 : rows[j - 1].led1, b = ch ? rows[j].led2 : rows[j].led1;
+        if (std::fabs(a) < 1000.0 || std::fabs(b) < 1000.0 || (a > 0) != (b > 0)) continue;
+        double err = std::fabs(std::log(b / a) - lk);
+        if (err < best_err) { best_err = err; best = j; }
+    }
+    return (best >= 0 && best_err < std::log(1.3)) ? best : -1;
+}
+
+// ── Parse one CSV part: rows + (first seen) $CFG map + the part's afe records ─
 static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
-                      std::map<std::string, std::string>& cfg) {
+                      std::map<std::string, std::string>& cfg, std::vector<AfeRecord>& afe_recs) {
     std::ifstream f(path);
     if (!f.is_open()) {
         fprintf(stderr, "ERROR: cannot open %s\n", path.string().c_str());
@@ -297,6 +479,8 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
         if (line[0] == '#') {
             if (cfg.empty() && line.find("$CFG,") != std::string::npos)
                 cfg = parse_cfg_line(line);
+            AfeRecord rec;
+            if (parse_afe_record(line, &rec)) afe_recs.push_back(rec);
             continue;
         }
         if (!have_header) {
@@ -340,6 +524,7 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
 struct PartStats {
     int n = 0, probe_on = 0, spo2_producing = 0, ps_match = 0, ps_compared = 0;
     std::vector<float> r_lib, r_cand;   // both finite on the same sample
+    std::vector<float> r_cd, r_ce, r_bw;   // the DC variants, where finite
     int lib_valid = 0, cand_valid = 0;
 };
 
@@ -350,8 +535,9 @@ static float pct(std::vector<float> v, float q) {
     return v[i];
 }
 
-static PartStats replay_part(INCUNEST_AFE4490& afe, RCandDols& cand, const std::vector<CsvRow>& rows,
-                             const fs::path& out_path, long long* smp_idx) {
+static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::vector<CsvRow>& rows,
+                             const std::vector<AfeRecord>& afe_recs, std::map<std::string, std::string>& afe_state,
+                             const fs::path& out_path, long long* smp_idx, int* afe_changes) {
     std::ofstream out(out_path);
     PartStats st;
     if (!out.is_open()) {
@@ -362,9 +548,46 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, RCandDols& cand, const std::
     out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,PI,SpO2,SpO2_SQI,"
            "HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
     if (has_fw) out << ",FW_SpO2,FW_R,FW_ProbeState,delta_SpO2,delta_R";
-    out << ",R_CAND,R_CAND_CORR\n";
+    out << ",R_CAND,R_CAND_CORR,R_CAND_CD,R_CAND_CD_CORR,R_CAND_CE,R_CAND_CE_CORR,R_CAND_BW,R_CAND_BW_CORR\n";
     char buf[512];
+    // Where each record really applies: an RF change is aligned to the raw code's jump (see header).
+    std::vector<long> apply_row(afe_recs.size());
+    {
+        std::map<std::string, std::string> st = afe_state;
+        for (size_t i = 0; i < afe_recs.size(); i++) {
+            const AfeRecord& rec = afe_recs[i];
+            apply_row[i] = rec.row;
+            if (!st.empty()) {
+                for (int ch = 0; ch < 2; ch++) {
+                    const char* key = ch ? "afe_rf2_ohm" : "afe_rf1_ohm";
+                    auto n = rec.kv.find(key); auto o = st.find(key);
+                    if (n == rec.kv.end() || o == st.end() || n->second == o->second) continue;
+                    double k = std::stod(n->second) / std::stod(o->second);
+                    long j = align_rf_change(rows, rec.row, ch, k);
+                    printf("      afe record @row %ld: %s %s -> %s, raw %s jump %s\n", rec.row, key,
+                           o->second.c_str(), n->second.c_str(), ch ? "LED2" : "LED1",
+                           j >= 0 ? (std::string("at ") + std::to_string(j - rec.row) + " rows").c_str()
+                                  : "NOT FOUND within +-50 rows, applied at the record's row");
+                    if (j >= 0) apply_row[i] = j;
+                    break;      // both channels in one record change on the same row
+                }
+            }
+            for (const auto& [k2, v2] : rec.kv) st[k2] = v2;
+        }
+    }
+    size_t next_rec = 0;
+    long row_i = 0;
     for (const CsvRow& r : rows) {
+        while (next_rec < afe_recs.size() && apply_row[next_rec] <= row_i) {
+            if (afe_state.empty()) {            // the session's first record describes the $CFG already applied
+                afe_state = afe_recs[next_rec].kv;
+            } else {
+                *afe_changes += apply_afe_record(afe, afe_recs[next_rec], afe_state,
+                                                 out_path.filename().string().c_str());
+            }
+            next_rec++;
+        }
+        row_i++;
         afe.test_feed_sample(r.led1, r.led2, r.aled1, r.aled2);
         int   ps   = (int)afe.test_probe_state();
         float spo2 = afe.test_spo2();
@@ -388,10 +611,18 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, RCandDols& cand, const std::
         }
         // The candidate sees what _spo2_update() saw: the last valid analog state's OT (the
         // library feeds `as`, which is that state) and the same ProbeState.
-        float rc = cand.update(afe.test_last_ot_led1(), afe.test_last_ot_led2(),
-                               ps == (int)ProbeState::PROBE_APPLIED);
-        snprintf(buf, sizeof(buf), ",%.5f,%.4f\n", rc, cand.corr);
+        const float oi = afe.test_last_ot_led1(), orr = afe.test_last_ot_led2();
+        const bool  applied = ps == (int)ProbeState::PROBE_APPLIED;
+        float rc  = cand.ema.update(oi, orr, applied);
+        float rcd = cand.cd.update(oi, orr, applied);
+        float rce = cand.ce.update(oi, orr, applied);
+        float rbw = cand.bw.update(oi, orr, applied);
+        snprintf(buf, sizeof(buf), ",%.5f,%.4f,%.5f,%.4f,%.5f,%.4f,%.5f,%.4f\n",
+                 rc, cand.ema.corr, rcd, cand.cd.corr, rce, cand.ce.corr, rbw, cand.bw.corr);
         out << buf;
+        if (std::isfinite(rcd)) st.r_cd.push_back(rcd);
+        if (std::isfinite(rce)) st.r_ce.push_back(rce);
+        if (std::isfinite(rbw)) st.r_bw.push_back(rbw);
         if (std::isfinite(rr)) st.lib_valid++;
         if (std::isfinite(rc)) st.cand_valid++;
         if (std::isfinite(rr) && std::isfinite(rc)) { st.r_lib.push_back(rr); st.r_cand.push_back(rc); }
@@ -475,21 +706,24 @@ int main(int argc, char* argv[]) {
         return stem;
     };
 
-    printf("incunest_offline_runner v0.23 (lib %s) — %zu file(s)%s -> %s\n",
+    printf("incunest_offline_runner v0.24 (lib %s) — %zu file(s)%s -> %s\n",
            INCUNEST_AFE4490_VERSION, files.size(),
            ot_thr > 0 ? "" : ", ot-thr = library default", out_dir.string().c_str());
     if (ot_thr > 0) printf("  rsqm_ot_thr override: %g A/A\n", ot_thr);
-    printf("  R_CAND = %s\n", R_CAND_LABEL);
+    printf("  R_CAND = %s\n  R_CAND_CD = %s\n  R_CAND_CE = %s\n  R_CAND_BW = %s\n",
+           R_CAND_LABEL, R_CAND_CD_LABEL, R_CAND_CE_LABEL, R_CAND_BW_LABEL);
 
     std::string cur_group;
     INCUNEST_AFE4490* afe = nullptr;
-    RCandDols cand;
+    CandSet cand;
+    std::map<std::string, std::string> afe_state;   // the configuration the instance has (afe_* keys)
     long long smp_idx = 0;
     int rc = 0;
     for (const auto& fpath : files) {
         std::vector<CsvRow> rows;
         std::map<std::string, std::string> cfg;
-        if (!parse_csv(fpath, rows, cfg)) { rc = 1; continue; }
+        std::vector<AfeRecord> afe_recs;
+        if (!parse_csv(fpath, rows, cfg, afe_recs)) { rc = 1; continue; }
 
         std::string grp = group_of(fpath);
         if (grp != cur_group) {                 // new session: fresh library instance
@@ -497,6 +731,7 @@ int main(int argc, char* argv[]) {
             afe = new INCUNEST_AFE4490();
             cur_group = grp;
             smp_idx = 0;
+            afe_state.clear();
             if (cfg.empty()) {
                 fprintf(stderr, "WARNING: %s has no $CFG header; using library defaults\n",
                         fpath.filename().string().c_str());
@@ -509,13 +744,15 @@ int main(int argc, char* argv[]) {
         }
 
         fs::path out_path = out_dir / (fpath.stem().string() + "_replay.csv");
-        PartStats st = replay_part(*afe, cand, rows, out_path, &smp_idx);
+        int afe_changes = 0;
+        PartStats st = replay_part(*afe, cand, rows, afe_recs, afe_state, out_path, &smp_idx, &afe_changes);
         printf("  %s -> %s  (%d samples, probe-on %.1f%%, SpO2 producing %.1f%%",
                fpath.filename().string().c_str(), out_path.filename().string().c_str(),
                st.n, st.n ? 100.0 * st.probe_on / st.n : 0.0,
                st.n ? 100.0 * st.spo2_producing / st.n : 0.0);
         if (st.ps_compared)
             printf(", ProbeState match %.1f%%", 100.0 * st.ps_match / st.ps_compared);
+        if (!afe_recs.empty()) printf(", afe records %zu / changes applied %d", afe_recs.size(), afe_changes);
         printf(")\n");
         // R of both methods where both are valid: median and the 1-99 % span
         printf("      R valid: lib %.1f%%, cand %.1f%%; both: lib p50 %.3f [p1 %.3f, p99 %.3f], "
@@ -523,6 +760,12 @@ int main(int argc, char* argv[]) {
                st.n ? 100.0 * st.lib_valid / st.n : 0.0, st.n ? 100.0 * st.cand_valid / st.n : 0.0,
                pct(st.r_lib, 0.5f), pct(st.r_lib, 0.01f), pct(st.r_lib, 0.99f),
                pct(st.r_cand, 0.5f), pct(st.r_cand, 0.01f), pct(st.r_cand, 0.99f));
+        printf("      DC variants p50 [p1, p99]: cd %.3f [%.3f, %.3f], ce %.3f [%.3f, %.3f], bw %.3f [%.3f, %.3f]; "
+               "DC float vs double max rel (session so far): ema %.1e, cd %.1e, ce %.1e, bw %.1e\n",
+               pct(st.r_cd, 0.5f), pct(st.r_cd, 0.01f), pct(st.r_cd, 0.99f),
+               pct(st.r_ce, 0.5f), pct(st.r_ce, 0.01f), pct(st.r_ce, 0.99f),
+               pct(st.r_bw, 0.5f), pct(st.r_bw, 0.01f), pct(st.r_bw, 0.99f),
+               cand.ema.dc_max_rel(), cand.cd.dc_max_rel(), cand.ce.dc_max_rel(), cand.bw.dc_max_rel());
     }
     delete afe;
     return rc;

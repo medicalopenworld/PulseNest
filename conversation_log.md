@@ -26041,3 +26041,55 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   par sintético con cociente AC 0,55 → pendiente 0,557, r 1,000 (25/25); disable_plots_test 13/13. PYTHON
   TIMING gana la fila PILAB que faltaba y la de XYLAB.
 - Siguiente: paso 3 del plan R (R-METHOD-2 en la lib con r ≥ 0,8 como SQI; curva R reajustada con él).
+
+## 2026-10-03 — Sesión de consulta (sin cambios de código): EMA frente a biquad; espectro de absorción
+
+- **¿Un biquad de primer orden equivale a una EMA?** Una EMA es la sección IIR de primer orden con un polo en
+  `1−α` y sin cero en el numerador (`b1 = 0`). Un primer orden por transformación bilineal (`b0 = b1`) tiene el
+  mismo polo pero un cero en Nyquist: respuesta distinta en fs/2 y media muestra de retardo de grupo. Euler hacia
+  atrás e invarianza al impulso del RC dan exactamente una EMA (`α = Ts/(τ+Ts)` o `1−α = e^(−Ts/τ)`). Dos EMAs en
+  cascada = doble polo real sin ceros; una Butterworth de 2.º orden (polos complejos) no se construye con EMAs.
+- **Nombre de la gráfica absorción frente a longitud de onda:** espectro de absorción (genérico); con ε en el eje Y
+  es el *molar extinction coefficient* de Hb/HbO2 (Prahl 1998; Zijlstra 2000), el que se usa en pulsioximetría.
+  Extinción = absorción + esparcimiento; en disolución de Hb son sinónimos, en tejido no (μa frente a μs').
+- Sin decisiones ni cambios en el repo. El `tools/offline_runner/main.cpp` v0.24 (estimadores de DC, rationale §10)
+  que hay sin commit es trabajo en curso de la sesión de desarrollo y se documenta allí.
+
+## 2026-10-03 — Experimento del estimador de DC (runner v0.24) y un artefacto de réplica encontrado
+
+- Alex propuso sustituir la EMA del DC por un paso bajo de 2.º orden (y BPF de 4.º por defecto); opinión dada
+  (la lentitud es del corte, no de la EMA; el 2.º orden compra ~2× velocidad a igual fuga; riesgos: sobreoscilación,
+  precisión float con polos pegados a z = 1, re-validación de umbrales). Alex: adelante con el experimento en el runner.
+- **Runner v0.24:** el candidato corre con cuatro DC a la vez (EMA 2 s = `R_CAND`; biquad 0,2 Hz Q 0,5 = `R_CAND_CD`;
+  dos EMA en cascada 0,796 s = `R_CAND_CE`; Butterworth 0,2 Hz = `R_CAND_BW`), cada DC en float con gemelo en double
+  (desviación máxima en el resumen por parte).
+- **Artefacto encontrado:** el runner replicaba toda la sesión con el `$CFG` del encabezado e ignoraba los registros
+  `# @row N afe: cause=hgac` (cambios de RF del HGAC). En SUBJ09 (1206, 1221, 1238, 1309) el 82–89 % de la sesión iba
+  con RF2 equivocada: OT_LED2 replicado +150 %/−60 % donde la placa vio 1–4 %; SpO2_SQI de la placa 0,65–1,0 frente a
+  0 en la réplica tras cada cambio. **Las conclusiones de SUBJ09 del paso 2 y del análisis de tramos de r baja quedan
+  en cuarentena hasta repetirlas.** Arreglado en v0.24: el runner aplica los registros `afe:` en su fila (solo las
+  claves que cambian). Réplicas y análisis en curso.
+- Segundo artefacto (mismo día): la fila del registro `afe:` es la fila en que el host SUPO del cambio (tramas de 5 por datagrama), medida de -4 a +4 filas respecto al salto real del código crudo; aplicado ahí, una muestra con RF vieja sobre códigos nuevos (x2,5) entraba en los filtros y el congelado de asentamiento la retenía 10 muestras: pico de 20 ms que ensuciaba el candidato 30 s tras cada movimiento del HGAC. Runner v0.24 alinea cada cambio de RF con el salto del código crudo del canal (±50 filas) e imprime el desfase. Réplicas repitiéndose.
+
+## 2026-10-03 — Resultados del experimento de DC; corrección de las conclusiones sobre r
+
+- **Con las réplicas corregidas (runner v0.24, registros HGAC aplicados y alineados):** r nunca baja de 0,83 en el corpus
+  (HOSPNAV p0,1/p1/p5/p50 = 0,906/0,949/0,973/0,994; r < 0,8 = 0 s; r < 0,9 = 6 s = 0,1 %). MS100 limpio 0,975–0,996;
+  con la sonda perturbada 0,94–0,97 mientras R se sesga +0,1…+0,18. **Todo lo que dije sobre "r bimodal 0,99/0,3",
+  el 3,8 % rechazado, los 10 episodios de SUBJ09, la cobertura de desaturaciones y la "firma de fallo nueva" (R ≈ 0 o
+  negativa) era artefacto de réplica.** El umbral 0,8 que Alex aprobó se decidió sobre esas cifras: no cuesta nada en
+  este corpus, pero tampoco protege de nada que el corpus muestre; queda por reconfirmar y por medir r sobre señales
+  sin pulso (sonda fuera, movimiento). Rationale §9 corregido en los cuatro puntos.
+- **Experimento de DC (rationale §10):** cuatro DC con la misma regresión. Dispersión frente a la referencia: EMA 2 s
+  1,64 · 2×EMA 0,796 s 1,63 · biquad Q 0,5 1,89 · Butterworth 1,80. Transitorios tras movimiento del HGAC y sesgo
+  PROBEPERT idénticos en los cuatro (los fija el BPF y la memoria de 6 s de la regresión, no el DC). float frente a
+  double: EMA 3·10⁻⁶, biquads **2–5 %** (ganancia DC = cancelación 1+a1+a2 ≈ 6·10⁻⁶ en float32), y se nota en la
+  dispersión. Único beneficio: asentamiento 95 % en 3,8 s en vez de 6 s, oculto tras los 18 s de calentamiento.
+  **Propuesta:** R-METHOD-2 mantiene la EMA de 2 s; si algún día se quiere más rápido, dos EMA en cascada, nunca un
+  biquad en float a ese corte; promediadores, detectores y opciones de PILAB sin tocar. BPF: 2.º orden salvo preferencia
+  de Alex (medido igual).
+- **Compensación de estado al cambiar RF:** Alex tenía razón: sobre OT el salto es el de la tolerancia del RF, 1–4 %
+  (hasta 30 % si coincide con cambio de señal); el candidato se desvía 0,07–0,10 en R durante ~2 s y r no baja de 0,83.
+  La tarea de compensación ×k era de la época de los EMA sobre v_tia; sobre OT queda sin objeto para R.
+- Regla aprendida: antes de concluir nada de una réplica, comparar su OT/ProbeState/SQI con las columnas grabadas por
+  la placa alrededor de cada registro `afe:`.
