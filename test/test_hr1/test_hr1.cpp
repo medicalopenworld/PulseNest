@@ -122,11 +122,24 @@ void test_hr1_not_applied_resets() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr1_sqi());
 }
 
+// ── Test 3b: 30 BPM — lower bound of the configured HR range (lib v0.99) ─────
+// 5 RR intervals of 2 s: the first valid reading arrives after ~11 s (measured 11.1 s), the
+// slowest first-report of the three estimators and the reason this feeds 20 s. Clean sine only:
+// with a dicrotic-like harmonic bump and noise, HR1 double-counts at 30 BPM because the fixed
+// 0.185 s refractory covers nothing of a 2 s period (rationale §5.3, §8) — a known limit.
+void test_hr1_30bpm_lower_bound() {
+    INCUNEST_AFE4490 afe;
+    feed_hr1_sine(afe, 30.0f / 60.0f, 500.0f, 10000);  // 20 s
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr1_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 30.0f, afe.test_hr1());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_hr1_not_valid_too_soon);
     RUN_TEST(test_hr1_60bpm);
     RUN_TEST(test_hr1_120bpm);
+    RUN_TEST(test_hr1_30bpm_lower_bound);
     RUN_TEST(test_hr1_flat_signal_invalid);
     RUN_TEST(test_hr1_60bpm_noisy);
     RUN_TEST(test_hr1_120bpm_noisy);

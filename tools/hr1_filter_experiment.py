@@ -49,7 +49,7 @@ HR1_MA_CUTOFF_HZ = 5.0      # hr1_ma_cutoff_hz
 HR1_REFRACTORY_S = 0.185    # hr1_refractory_s
 HR1_THRESH_FRAC  = 0.6      # threshold = 0.6 * running_max
 HR1_MAX_DECAY    = 0.9999   # running_max decay per sample
-HR_MIN_BPM       = 40.0
+HR_MIN_BPM       = 30.0
 HR_MAX_BPM       = 260.0
 
 

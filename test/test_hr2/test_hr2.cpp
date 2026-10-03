@@ -78,22 +78,33 @@ void test_hr2_120bpm() {
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 120.0f, afe.test_hr2());
 }
 
-// ── Test 3b: 40 BPM — lower bound of the configured HR range ─────────────────
+// ── Test 3b: 30 BPM — lower bound of the configured HR range ─────────────────
 // Regression guard for the lag sweep bound. max_lag used to be a hardcoded 137 samples;
-// it is now derived from _hr_min_bpm (40 BPM default) plus the same 3 BPM guard band that
-// min_lag uses, which at 50 Hz gives max_lag = 60/37*50 = 81 lags — and the peak search
-// skips the endpoints, so the usable range ends at lag 80.
+// it is now derived from _hr_min_bpm (30 BPM since lib v0.99, 40 before) plus the same 3 BPM
+// guard band that min_lag uses, which at 50 Hz gives max_lag = 60/27*50 = 111 lags — and the
+// peak search skips the endpoints, so the usable range ends at lag 110.
 //
-// 40 BPM = 0.667 Hz → lag 75, i.e. only 5 lags of margin. If the derivation is ever
-// tightened (smaller guard band, higher hr_min, shorter buffer), the slowest accepted heart
-// rate silently stops being reachable and this test is what catches it. 0.667 Hz also sits
-// near the 0.5 Hz bandpass corner, so this doubles as a check that the filter still passes
-// enough of the fundamental at the bottom of the range.
-void test_hr2_40bpm_lower_bound() {
+// 30 BPM = 0.5 Hz → lag 100, i.e. 10 lags of margin. If the derivation is ever tightened
+// (smaller guard band, higher hr_min, shorter buffer), the slowest accepted heart rate
+// silently stops being reachable and this test is what catches it. 0.5 Hz is exactly the
+// bandpass corner (−3 dB on the fundamental): the normalised autocorrelation does not care,
+// and this test is the proof — measured 2026-10-03, a 30.0 BPM sine reads 30.01 with SQI 1.00.
+// The validity gate is hard at 30, so the estimate must land on or above it; it does.
+void test_hr2_30bpm_lower_bound() {
     INCUNEST_AFE4490 afe;
-    feed_hr2_sine(afe, 40.0f / 60.0f, 500.0f, HR2_BUF_RAW + 1000);
+    feed_hr2_sine(afe, 30.0f / 60.0f, 500.0f, HR2_BUF_RAW + 1000);
     TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(1.0f, 40.0f, afe.test_hr2());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 30.0f, afe.test_hr2());
+}
+
+// ── Test 3b': 27 BPM — inside the search guard band, outside the valid range ──
+// The sweep reaches 27 BPM (lag 111) so the peak is found, but the result is below
+// hr_min_bpm: hr2 must be NaN and sqi 0. Pins the gate, not the search.
+void test_hr2_27bpm_guard_band_is_invalid() {
+    INCUNEST_AFE4490 afe;
+    feed_hr2_sine(afe, 27.0f / 60.0f, 500.0f, HR2_BUF_RAW + 1000);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr2_sqi());
+    TEST_ASSERT_TRUE(isnan(afe.test_hr2()));
 }
 
 // ── Test 3c: the decimated rate is invariant to the AFE sample rate ──────────
@@ -101,19 +112,20 @@ void test_hr2_40bpm_lower_bound() {
 // raising the AFE rate changes the factor and leaves the decimated rate — and with it the
 // meaning of hr2_buf_len (8 s), the update interval (0.5 s) and hr2_acorr_lag_cap (22 BPM).
 //
-// 40 BPM at 1000 Hz is the case that DISCRIMINATES. With the old fixed factor of 10 the
-// decimated rate would have doubled to 100 Hz, so 40 BPM would need lag = 60/40*100 = 150,
+// The range floor at 1000 Hz is the case that DISCRIMINATES. With the old fixed factor of 10
+// the decimated rate would have doubled to 100 Hz, so 30 BPM would need lag = 60/30*100 = 200,
 // beyond hr2_acorr_lag_cap (137): the sweep would stop short and real bradycardia would be
 // reported as "no periodicity" (sqi = 0). A 60 BPM check would NOT catch this — its lag
 // stays inside the cap either way. With the derived factor (20 at 1000 Hz) the decimated
-// rate stays at 50 Hz and the lag is 75, comfortably inside.
+// rate stays at 50 Hz and the lag is 100, inside the 111-lag sweep. (Written at 40 BPM when
+// the floor was 40; moved to 30 with lib v0.99.)
 void test_hr2_decimated_rate_invariant_to_sample_rate() {
     INCUNEST_AFE4490 afe;
     afe.setSampleRate(1000);
     // Same ~10 s of signal as the 500 Hz tests, at twice the raw rate.
-    feed_hr2_sine(afe, 40.0f / 60.0f, 1000.0f, HR2_BUF_RAW * 2 + 2000);
+    feed_hr2_sine(afe, 30.0f / 60.0f, 1000.0f, HR2_BUF_RAW * 2 + 2000);
     TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr2_sqi());
-    TEST_ASSERT_FLOAT_WITHIN(1.0f, 40.0f, afe.test_hr2());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 30.0f, afe.test_hr2());
 }
 
 // ── Test 3d: the two decimation chains derive independently ─────────────────
@@ -211,7 +223,8 @@ int main() {
     RUN_TEST(test_hr2_not_valid_until_buffer_full);
     RUN_TEST(test_hr2_60bpm);
     RUN_TEST(test_hr2_120bpm);
-    RUN_TEST(test_hr2_40bpm_lower_bound);
+    RUN_TEST(test_hr2_30bpm_lower_bound);
+    RUN_TEST(test_hr2_27bpm_guard_band_is_invalid);
     RUN_TEST(test_hr2_decimated_rate_invariant_to_sample_rate);
     RUN_TEST(test_decim_chains_derive_independently);
     RUN_TEST(test_hr2_flat_signal_invalid);

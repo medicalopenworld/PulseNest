@@ -25940,3 +25940,24 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   y el suelo 40 no. Corregida la atribución falsa a la ISO (pendiente del 2026-09-08) en la spec y los comentarios
   del `.cpp` de la lib (`e4f6677`, solo texto, sin subir versión) y en un comentario de `pulsenest_lab.py`.
   Siguen pendientes: bajar el suelo a 30 BPM con validación, y una fuente para "TSV neonatal 250–300 BPM".
+
+## 2026-10-03 — Suelo de HR 40 → 30 BPM (lib v0.99, lab v1.79) y fuente de la TSV neonatal
+
+- Fuente del techo 260 (faltaba): PALS/AHA define TSV del lactante > 220 bpm; revisiones dan 200–300 bpm en
+  neonatos (Turk Arch Pediatr 2022; PMC12812894 2025). Citado en spec §5.2 y bibliografía.
+- Experimento en el build de host (`setHRValidRange(30,260)` sobre v0.98, señal PPG con armónicos, 10 s): HR2 fija
+  30 BPM con el corte en 0,5 Hz (30,01, SQI 1,00) — la autocorrelación normalizada no sufre los −3 dB; con 0,35 Hz
+  no gana nada, empeora con deriva (0,89→0,84) y estima 29,91 → inválido. **Decisión: `hr_min_bpm` 30, corte HR2
+  se queda en 0,5 Hz; 0,35 Hz descartado.** Límites medidos y documentados: HR3 pierde 30–33 BPM con deriva ×2 a
+  0,1 Hz (sin paso alto); HR1 tarda 11,1 s a 30 BPM y dobla cuentas con ruido+armónicos; respiración 45 rpm a
+  amplitud ×1 corrompe los tres entre 30 y 40 BPM. El filtro de validez es un filo en el límite (±0,1 BPM decide).
+- Lib **v0.99**: `hr_min_bpm` 30, `hr_search_min` 27, HR2 barre 111 lags (topes 137/199 inactivos). Rationale
+  **§8** nuevo (procedencia del rango, medidas, alternativa descartada). Tests nuevos: `test_hr2_30bpm_lower_bound`,
+  `test_hr2_27bpm_guard_band_is_invalid`, `test_hr3_30bpm_lower_bound`, `test_hr1_30bpm_lower_bound`;
+  `test_hr2_decimated_rate_invariant_to_sample_rate` pasa a 30 BPM. Host: 9/9 suites, 93 tests OK.
+- pulsenest_lab **v1.79**: espejos del suelo (HR1/HR2/HR3 TEST, HR3LAB, HR2LAB) y `tools/hr1_*_experiment.py`.
+- Memorias: `project_hr_min_limit_task`, `reference_who_unicef_oxygen_devices_spec`, MEMORY.md; checklist de
+  versionado corregido (`platform_stub.h` ya no existe, ahora `hal_host`).
+- Pendiente de Alex: OTA de las 3 V18 (fw 0.16 + lib 0.99) y la regla del rationale en CLAUDE.md pedida por
+  `pulsenest-31` (no se aplica sin confirmación directa de Alex en la sesión de desarrollo).
+- Sigue pendiente: campaña MS100 a 30/35 BPM (confirmar HR3 con deriva en hardware) y respiración simulada.

@@ -156,12 +156,24 @@ void test_hr3_not_applied_resets() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_hr3_sqi());
 }
 
+// ── Test 3c: 30 BPM — lower bound of the configured HR range (lib v0.99) ─────
+// 30 BPM = 0.5 Hz = bin 5.12 at 50 Hz / 512; search_min = ceil(27/60/0.0977) = 5, so the floor
+// is searchable with no margin to spare. Clean PPG-like input: measured 30.06, SQI 1.00. Under
+// 2× baseline wander HR3 loses 30–33 BPM (no high-pass; rationale §8) — not pinned, a known limit.
+void test_hr3_30bpm_lower_bound() {
+    INCUNEST_AFE4490 afe;
+    feed_hr3_sine(afe, 30.0f / 60.0f, 500.0f, HR3_BUF_RAW + 1000);
+    TEST_ASSERT_GREATER_THAN_FLOAT(0.95f, afe.test_hr3_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 30.0f, afe.test_hr3());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_hr3_not_valid_until_buffer_full);
     RUN_TEST(test_hr3_60bpm);
     RUN_TEST(test_hr3_120bpm);
     RUN_TEST(test_hr3_85bpm);
+    RUN_TEST(test_hr3_30bpm_lower_bound);
     RUN_TEST(test_hr3_flat_signal_invalid);
     RUN_TEST(test_hr3_60bpm_noisy);
     RUN_TEST(test_hr3_120bpm_noisy);

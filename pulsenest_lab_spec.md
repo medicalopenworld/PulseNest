@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.78
+# pulsenest_lab — Specification v1.79
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1282,7 +1282,7 @@ communicable quantity: 0.9999 is 20 s at 500 Hz but 6.25 s at 1600 Hz.
 `max_decay_beats` (default 0 = the fixed tau above, i.e. firmware behaviour) makes the memory a
 number of beats instead: `tau = N x RR`, so the threshold falls by the same fraction on every beat
 at any rate. The lower bound on this parameter is proportional to RR — the threshold must not
-collapse between beats — so expressed in seconds it differs 6x across the declared 40-260 BPM
+collapse between beats — so expressed in seconds it differs 6x across the declared 30-260 BPM
 range, which no single fixed value can satisfy.
 
 **v1.58 — the threshold is referenced to zero, not to the waveform's floor.** Observed by Alex on
@@ -2664,6 +2664,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.79 — 2026-10-03
+
+**HR floor 40 → 30 BPM, mirroring lib v0.99.** `FW_HR_MIN_BPM` 40 → 30 (HR1/HR2/HR3 TEST),
+`FW_HR_SEARCH_MIN` 37 → 27, `HRFFTCalc.HR_MIN_HZ` / `HR_SEARCH_MIN_HZ` 40/37 → 30/27 BPM, the HR2LAB
+helpers' `hr_min` default and their lag sweep (to 27 BPM, 2.22 s). HR2TEST's `FW_MAX_LAG` = 137 stays:
+the sweep now needs 111 lags at 50 Hz, still inside. Why the library moved and what it costs each
+estimator is in the library rationale §8; the script only follows.
 
 ### v1.78 — 2026-10-03
 

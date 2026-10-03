@@ -52,7 +52,7 @@ HRResult = namedtuple('HRResult', [
 
 
 def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=40, hr_max=260, prominence=0.1):
+                              hr_min=30, hr_max=260, prominence=0.1):
     """Compute HR estimate via cross-correlation between two overlapping segments of the same signal.
 
     Uses np.correlate(seg, template, mode='valid') where template = seg[max_lag_n:].
@@ -133,7 +133,7 @@ def _estimate_hr_xcorr_v1(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 
 
 def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
-                              hr_min=40, hr_max=260, prominence=0.1):
+                              hr_min=30, hr_max=260, prominence=0.1):
     """Compute autocorrelation-based HR estimate using scipy.signal.correlate with FFT.
 
     Key difference from v1: computes the true autocorrelation of a single vector
@@ -352,16 +352,16 @@ class HRFFTCalc:
       + parabolic sub-bin interpolation → HR3 (bpm)
 
     Constants must match the firmware implementation when ported:
-      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.6667, HR_MAX_HZ=4.3333
+      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.5, HR_MAX_HZ=4.3333
     """
     LP_CUTOFF_HZ       = 10.0
     BUF_LEN            = 512
     UPDATE_INTERVAL_S  = 0.5
-    HR_MIN_HZ          = 40.0 / 60.0  # 0.6667 Hz — 40 BPM — reported valid lower bound (lib hr_min_bpm)
+    HR_MIN_HZ          = 30.0 / 60.0  # 0.5 Hz    — 30 BPM — reported valid lower bound (lib hr_min_bpm, v0.99)
     HR_MAX_HZ          = 260.0 / 60.0 # 4.3333 Hz — 260 BPM — reported valid upper bound (lib hr_max_bpm)
     # Guard band: internal search extends ±3 BPM beyond the reported valid range.
     # Ensures signals at the boundary are found before the validity gate is applied.
-    HR_SEARCH_MIN_HZ   = 37.0 / 60.0  # 0.6167 Hz — 37 BPM
+    HR_SEARCH_MIN_HZ   = 27.0 / 60.0  # 0.45 Hz   — 27 BPM
     HR_SEARCH_MAX_HZ   = 263.0 / 60.0 # 4.3833 Hz — 263 BPM
 
     def __init__(self):
@@ -765,7 +765,7 @@ class HR1Variant:
 
     # Shared post-detection constants — must match incunest_afe4490_spec.md §5.2
     FW_RR_BUF_LEN    = 5
-    FW_HR_MIN_BPM    = 40.0
+    FW_HR_MIN_BPM    = 30.0  # hr_min_bpm (lib v0.99)
     FW_HR_MAX_BPM    = 260.0  # hr_max_bpm
     FW_SQI_CV_MAX    = 0.15
     FW_PEAK_MARKER_N = 10
@@ -842,7 +842,7 @@ class HR1Variant:
         then falls by the same fraction on every beat at any heart rate, which no fixed tau
         can do. The lower bound on this parameter is proportional to RR (the threshold must
         not collapse between beats), so in seconds it differs 6x across the declared
-        40-260 BPM range: 2 s is 4.7 beats at 140 BPM but only 1.3 beats at 40.
+        30-260 BPM range: 2 s is 4.7 beats at 140 BPM but only 1.3 beats at 40.
         """
         tau = self.max_decay_tau_s
         if self.max_decay_beats > 0 and self._rr_buf:
@@ -1349,9 +1349,9 @@ class HR2TestCalc:
     FW_UPDATE_N      = 25
     FW_MIN_LAG_S     = 0.22   # lib: int(60 / (hr_max_bpm + 3) × 50 Hz) = 11 samples
     FW_MIN_CORR      = 0.5
-    FW_HR_MIN_BPM    = 40.0
+    FW_HR_MIN_BPM    = 30.0  # hr_min_bpm (lib v0.99)
     FW_HR_MAX_BPM    = 260.0  # hr_max_bpm
-    FW_HR_SEARCH_MIN = 37.0
+    FW_HR_SEARCH_MIN = 27.0
     FW_HR_SEARCH_MAX = 263.0  # guard band +3 BPM
 
     def __init__(self):
@@ -4292,9 +4292,9 @@ class HR3TestCalc:
     FW_BUF_LEN       = 512
     FW_UPDATE_N      = 25
     FW_HPS_HARMONICS = 3        # k = 2, 3  (multiply 2 additional harmonic downsamples)
-    FW_HR_MIN_BPM    = 40.0
+    FW_HR_MIN_BPM    = 30.0  # hr_min_bpm (lib v0.99)
     FW_HR_MAX_BPM    = 260.0
-    FW_HR_SEARCH_MIN = 37.0     # guard band −3 BPM
+    FW_HR_SEARCH_MIN = 27.0     # guard band −3 BPM
     FW_HR_SEARCH_MAX = 263.0    # guard band +3 BPM
     FW_SNR_LOCAL_W   = 5        # SQI local window half-width W [bins] on each side of {b1, b2}
 
@@ -9084,7 +9084,7 @@ class HR2LabWindow(QtWidgets.QMainWindow):
         if self._hr_refresh_counter >= refresh_every and incunest_filtered is not None:
             self._hr_refresh_counter = 0
             window_n  = int(round(4.0 * fs))
-            max_lag_n = int(round((60.0 / 37.0) * fs))  # covers guard band minimum 37 BPM
+            max_lag_n = int(round((60.0 / 27.0) * fs))  # covers guard band minimum 27 BPM
             needed    = window_n + max_lag_n
             max_lag_s = max_lag_n / fs
 

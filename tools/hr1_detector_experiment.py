@@ -46,7 +46,7 @@ HR1_LP_CUTOFF_HZ = 5.0
 HR1_REFRACTORY_S = 0.185
 HR1_THRESH_FRAC  = 0.6
 HR1_MAX_DECAY_TAU_S = 20.0     # v0.87: was a 0.9999 per-sample literal
-HR_MIN_BPM, HR_MAX_BPM = 40.0, 260.0
+HR_MIN_BPM, HR_MAX_BPM = 30.0, 260.0
 WARMUP_S = 5.0
 
 # TERMA windows, from Elgendi (PLOS One 2013). The published design rule is 2*W1 <= W2 <= 8*W1;
