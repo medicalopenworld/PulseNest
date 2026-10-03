@@ -26042,7 +26042,6 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   TIMING gana la fila PILAB que faltaba y la de XYLAB.
 - Siguiente: paso 3 del plan R (R-METHOD-2 en la lib con r ≥ 0,8 como SQI; curva R reajustada con él).
 
-## 2026-10-03 — Sesión de consulta (sin cambios de código): EMA frente a biquad; espectro de absorción
 
 - **¿Un biquad de primer orden equivale a una EMA?** Una EMA es la sección IIR de primer orden con un polo en
   `1−α` y sin cero en el numerador (`b1 = 0`). Un primer orden por transformación bilineal (`b0 = b1`) tiene el
