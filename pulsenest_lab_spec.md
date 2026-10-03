@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.76
+# pulsenest_lab — Specification v1.77
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1282,7 +1282,7 @@ communicable quantity: 0.9999 is 20 s at 500 Hz but 6.25 s at 1600 Hz.
 `max_decay_beats` (default 0 = the fixed tau above, i.e. firmware behaviour) makes the memory a
 number of beats instead: `tau = N x RR`, so the threshold falls by the same fraction on every beat
 at any rate. The lower bound on this parameter is proportional to RR — the threshold must not
-collapse between beats — so expressed in seconds it differs 6x across the declared 40-300 BPM
+collapse between beats — so expressed in seconds it differs 6x across the declared 40-260 BPM
 range, which no single fixed value can satisfy.
 
 **v1.58 — the threshold is referenced to zero, not to the waveform's floor.** Observed by Alex on
@@ -2664,6 +2664,23 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.77 — 2026-10-03
+
+**HR1/HR2 mirrors re-synced with the library.**
+- `HR1TestCalc.FW_REFRACTORY_S` was still 0.2 s while the library's `hr1_refractory_s` has been
+  0.185 s since its 0.200→0.185 change (spec changelog), so the SPEC variant in HR1TEST — and every
+  variant inheriting the default — blanked 15 ms longer than the firmware. Now 0.185 s; the docstring
+  and both tooltips that quoted 0.2 s / 300 BPM follow (~324 BPM). The spin boxes already had 3
+  decimals and a 0.005 s step. The other HR1 mirrors (1.6 s, 5 Hz, 1.5 s, 0.6, 0.15) match.
+- The valid HR range followed the library's `hr_max_bpm` = 260 only in HR3: `HR1Variant` and
+  `HR2TestCalc` still capped at 300 BPM (HR2 searching to 303), so between 260 and 300 BPM the
+  script reported SQI > 0 where the firmware forces 0. Now `FW_HR_MAX_BPM` = 260 and HR2
+  `FW_HR_SEARCH_MAX` = 263, as HR3. HR2's `FW_MIN_LAG_S` 0.185 → 0.228 s, the library's
+  `60 / (hr_max_bpm + 3)` (it no longer has a fixed `hr2_min_lag_s`). The data dictionary rows of
+  HR1/HR2/HR3 said "Valid range: 25–300 BPM" → 40–260.
+- Found by an analysis session's time-constant inventory. Not changed: `HRFFTCalc` (script-own FFT
+  HR, 300 BPM) and HR2 `FW_MAX_LAG` = 137 (the library now derives it from `hr_min_bpm − 3`).
 
 ### v1.76 — 2026-10-03
 

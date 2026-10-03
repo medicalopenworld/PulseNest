@@ -25914,3 +25914,18 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   mismos datos); registrarlo en el registro de curvas y preferir ajuste inverso u ortogonal.
 - Siguiente: 1e (métodos espectral y de autocorrelación), 1f (MS100); antes del paso 2, arreglar el modo
   offline de PILAB (supone 50 Hz; las capturas v0.4 van a 500 Hz).
+
+## 2026-10-03 — Sesión única de desarrollo y espejo del refractario de HR1
+
+- Regla confirmada: solo la sesión de desarrollo (`pulsenest-e5`) modifica los repos, hace commits y escribe
+  aquí; las sesiones de análisis (`pulsenest-4f`, `-56`, `-31`) proponen por memoria + `SendMessage`, y la de
+  desarrollo resume a Alex y aplica solo con su visto bueno. Anotado en `feedback_single_dev_session.md`.
+- Primer encargo recibido así (`pulsenest-31`, inventario de constantes de tiempo): `HR1TestCalc.FW_REFRACTORY_S`
+  seguía en 0,2 s y la lib usa `hr1_refractory_s` = 0,185 s. Verificado y corregido → **pulsenest_lab v1.77**
+  (constante, docstring y tooltip; los spin boxes ya admitían 0,185). Resto de espejos HR1 correctos.
+- Hallazgo adicional, aprobado por Alex e incluido en v1.77: `FW_HR_MAX_BPM` 300→260 en HR1 y HR2 (HR2 busca
+  hasta 263, como HR3), `FW_MIN_LAG_S` de HR2 0,185→0,228 s (= 60/263, como la lib), otro tooltip del refractario
+  y el diccionario de datos ("25–300" → "40–260 BPM"). Sin tocar: `HRFFTCalc` (FFT propia del script) y
+  `FW_MAX_LAG` = 137 de HR2 (la lib lo deriva de `hr_min_bpm − 3`).
+- Traspaso pendiente recibido de `pulsenest-56`: R por regresión en `project_spo2_r_estimation_alternatives_task.md`
+  (la sesión destinataria, `pulsenest-69`, ya no existe).

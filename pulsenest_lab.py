@@ -766,7 +766,7 @@ class HR1Variant:
     # Shared post-detection constants — must match incunest_afe4490_spec.md §5.2
     FW_RR_BUF_LEN    = 5
     FW_HR_MIN_BPM    = 40.0
-    FW_HR_MAX_BPM    = 300.0
+    FW_HR_MAX_BPM    = 260.0  # hr_max_bpm
     FW_SQI_CV_MAX    = 0.15
     FW_PEAK_MARKER_N = 10
 
@@ -842,7 +842,7 @@ class HR1Variant:
         then falls by the same fraction on every beat at any heart rate, which no fixed tau
         can do. The lower bound on this parameter is proportional to RR (the threshold must
         not collapse between beats), so in seconds it differs 6x across the declared
-        40-300 BPM range: 2 s is 4.7 beats at 140 BPM but only 1.3 beats at 40.
+        40-260 BPM range: 2 s is 4.7 beats at 140 BPM but only 1.3 beats at 40.
         """
         tau = self.max_decay_tau_s
         if self.max_decay_beats > 0 and self._rr_buf:
@@ -1019,7 +1019,7 @@ class HR1TestCalc(HR1Variant):
       OT_LED1 → IIR DC removal (τ=1.6 s) → negate (PPG polarity) →
       moving average LP (cutoff ~5 Hz, len=fs/(2×5), max 64) →
       running maximum (exponential decay, τ = 1.5 s — lib v0.93) →
-      threshold crossing (0.6 × running_max, refractory 0.2 s) →
+      threshold crossing (0.6 × running_max, refractory 0.185 s) →
       RR buffer (last 5 intervals) →
       HR1 = fs × 60 / mean(RR) →
       SQI = clamp(1 − CV/0.15, 0, 1)  where CV = std/mean of RR intervals
@@ -1036,7 +1036,7 @@ class HR1TestCalc(HR1Variant):
     FW_MA_CUTOFF_HZ      = 5.0
     FW_MA_MAX_LEN        = 64
     FW_THRESHOLD_FACTOR  = 0.6
-    FW_REFRACTORY_S      = 0.2
+    FW_REFRACTORY_S      = 0.185  # hr1_refractory_s (lib: 0.200→0.185)
 
     PARAMS = (
         HR1Param('dc_iir_tau_s',      'DC IIR tau',    0.1,  20.0,  FW_DC_IIR_TAU_S,      1, 0.1,    's',
@@ -1251,7 +1251,7 @@ class HR1BiquadCalc(HR1Variant):
         HR1Param('refractory_s',      'Refractory', 0.05, 2.0,
                  HR1TestCalc.FW_REFRACTORY_S,      3, 0.005, 's',
                  "Blanking period after a detected peak. Unchanged from SPEC. Note it caps the "
-                 "detectable rate at 1/refractory: 0.2 s means exactly 300 BPM, with no margin."),
+                 "detectable rate at 1/refractory: 0.185 s means ~324 BPM."),
     )
 
     DIAG_CURVES = (
@@ -1347,12 +1347,12 @@ class HR2TestCalc:
     FW_BUF_LEN       = 400
     FW_MAX_LAG       = 137
     FW_UPDATE_N      = 25
-    FW_MIN_LAG_S     = 0.185
+    FW_MIN_LAG_S     = 0.228  # lib: 60 / (hr_max_bpm + 3) = 60 / 263
     FW_MIN_CORR      = 0.5
     FW_HR_MIN_BPM    = 40.0
-    FW_HR_MAX_BPM    = 300.0
+    FW_HR_MAX_BPM    = 260.0  # hr_max_bpm
     FW_HR_SEARCH_MIN = 37.0
-    FW_HR_SEARCH_MAX = 303.0
+    FW_HR_SEARCH_MAX = 263.0  # guard band +3 BPM
 
     def __init__(self):
         self.bpf_low_hz  = self.FW_BPF_LOW_HZ
@@ -3117,7 +3117,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             "Rising-edge threshold = factor × running_max. Firmware default: 0.6.",
             src="hr1_threshold_factor"))
         self._spin_refr.setToolTip(_make_tooltip("Refractory period",
-            "Minimum time between two detected peaks [s]. Firmware default: 0.2 s (~300 BPM max).",
+            "Minimum time between two detected peaks [s]. Firmware default: 0.185 s (~324 BPM max).",
             src="hr1_refractory_s"))
 
         def _lbl(t):
@@ -12401,11 +12401,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("SpO2_SQI",   "data_spo2_sqi",   "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). Forced to 0 if SpO2 is outside valid range. Thresholds per Nellcor/Masimo clinical reference.", "AFE4490Data::spo2_sqi"),
             ("R",          "data_spo2_r",     "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve).",                   "AFE4490Data::spo2_r"),
             ("PI",         "data_pi",         "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion.", "AFE4490Data::pi"),
-            ("HR1",        "data_hr1",        "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 25–300 BPM.",                    "AFE4490Data::hr1"),
+            ("HR1",        "data_hr1",        "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 40–260 BPM.",                    "AFE4490Data::hr1"),
             ("HR1_SQI",    "data_hr1_sqi",    "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range.", "AFE4490Data::hr1_sqi"),
-            ("HR2",        "data_hr2",        "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM.",  "AFE4490Data::hr2"),
+            ("HR2",        "data_hr2",        "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 40–260 BPM.",  "AFE4490Data::hr2"),
             ("HR2_SQI",    "data_hr2_sqi",    "HR2 Signal Quality Index [0–1]. Unbiased normalised autocorrelation at the dominant RR lag: SQI = acorr[τ] / (acorr[0]·(N−τ)/N). Unbiased correction removes finite-window underestimation — clean signal yields SQI ≈ 1.0 at all HR. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range.", "AFE4490Data::hr2_sqi"),
-            ("HR3",        "data_hr3",        "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 25–300 BPM.", "AFE4490Data::hr3"),
+            ("HR3",        "data_hr3",        "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 40–260 BPM.", "AFE4490Data::hr3"),
             ("HR3_SQI",    "data_hr3_sqi",    "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range.", "AFE4490Data::hr3_sqi"),
             ("RSQI",       "data_rsqi",       "Raw Signal Quality Index (RSQM). 1 = probe applied and no active diagnostic flags. 0 = invalid (probe not applied, disconnected, or DiagCode != 0). Binary.",                                                   "AFE4490Data::rsqi"),
             ("DiagCode",   "data_diag_code",  "DiagCode bitmask (uint32). Bits 0-12: AFE hardware DIAG register (set by runAfeDiagnostics — PD_ALM, LED_ALM, DIAG_OUT, LED2_ALM, LED3_ALM, LED1_ALM, PDOC_ALM, PDSC_ALM, LED2OC_ALM, LED2SC_ALM, LED1OC_ALM, LED1SC_ALM, COMMON_MODE_ALM). Bits 13+: RSQM_DIAG_* — 0x2000=AMB_SAT, 0x4000=AMBIENT_HIGH (HGAC: RF at floor and ambient light alone saturates → 'TOO MUCH AMBIENT LIGHT'), 0x8000=HW_SETTLING (produced by HGAC after an RF change). 0 = no active conditions.", "AFE4490Data::diag_code"),
