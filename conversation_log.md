@@ -26092,3 +26092,31 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   La tarea de compensación ×k era de la época de los EMA sobre v_tia; sobre OT queda sin objeto para R.
 - Regla aprendida: antes de concluir nada de una réplica, comparar su OT/ProbeState/SQI con las columnas grabadas por
   la placa alrededor de cada registro `afe:`.
+
+## 2026-10-03 (continuación) — Step 3: R-curve refitting en lib v0.100
+
+**Step 3 completado: cambio de curva SpO2 (R-METHOD-1) con coeficientes refitados de datos clínicos.**
+
+- **Nueva curva por defecto:** R-CURVE-STS0163-HOSPNAV-20260923: SpO2 = 122.62 − 37.63·R
+  - Antigua: R-CURVE-U401D-MS100-20260323: SpO2 = 114.92 − 30.55·R (simulador, R-METHOD-0, 2026-03-23)
+  - Base: 3471 pares estacionarios HOSPNAV (SUBJ08/09, VideoNest OCR como referencia)
+  - Mejora: dispersión 5,07 → 1,6 pts; ρ Spearman −0,44 → −0,82
+  - Método de ajuste: regresión causal en derivadas (reg_dols); aplicada a R-METHOD-1 (RMS ratio) con diferencia negligible
+
+- **Decisión de arquitectura:** La librería v0.100 mantiene el algoritmo R-METHOD-1 (_spo2_update con RMS ratio) pero
+  con curva optimizada mediante regresión. Futuro: integrar la regresión en-library (reg_dols completo) si la utilidad
+  de r como SQI (r ≥ 0,8) se confirma en señales sin pulso (sonda fuera, movimiento, artefactos).
+
+- **Documentación:** rationale §9 aclarado (Step 3 Fase 1); §10 DC estimador cerrado (EMA τ 2 s); spec actualizado
+  (tabla R-METHOD-2, tabla curves; tag v0.100; push a GitHub).
+
+- **Contexto histórico agregado:** Nellcor (step 2 = regresión en derivadas, dilución de regresión) y Masimo SET
+  (separación arterial/venosa sin promediado de movimiento) mencionados como referencias de Step 3.
+
+- **Tareas pendientes de Step 3:**
+  1. Runner `--input ot` mode (alimentar algoritmos desde OT capturado, no códigos ADC)
+  2. Campaña NICU con gasometrías (R + referencia PaO2)
+  3. Medición de r en señales sin pulso (para validar r ≥ 0,8 como SQI)
+
+Próxima sesión: SI Alex pide, integrar reg_dols en librería para R-METHOD-2 en-library con r SQI. Sino, proceder con
+tareas de campaña.
