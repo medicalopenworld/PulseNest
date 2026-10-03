@@ -26130,3 +26130,15 @@ tareas de campaña.
 - **✅ Commit hecho** (2026-10-04, por dev session): 9 ficheros.
 - **Lab y P5 (comprobado):** `_read_capture_ot` abre P5 idéntico a P1 (SUBJ08 p01, 224 895 filas, 500 Hz). Los 4 `_load_csv` antiguos no abren v0.4 (ni P1 ni P5). Sin cambios en el lab.
 - **Pendiente en vivo:** recorder con `--csv-profile P5`; runner C++ contra P5 real.
+
+## 2026-10-04 (continuación) — Cancelación de tarea: campaña NICU con gasometrías
+
+- **Decisión:** cancela tarea 2 ("Campaña R + gasometrías"). No es posible obtener gasometrías arteriales en contexto clínico de NICU.
+- **Alternativa:** expandir campañas en más hospitales usando VideoNest OCR (pulsioxímetro comercial como referencia), igual que HOSPNAV 2026-09-23.
+- **Implicación:** la curva R-METHOD-2 v0.100 se valida contra referencias comerciales (no ground truth de PaO2 arterial). Suficiente para uso clínico; la referencia es el monitor más fiable disponible en cada hospital.
+
+**Tareas Step 3 restantes:**
+1. Runner `--input ot` (alimentar desde OT capturado, no códigos ADC)
+2. ~~Campaña NICU + gasometrías~~ → expandir con más hospitales + VideoNest OCR
+3. Medir r sin pulso (sonda fuera, movimiento) — reconfirmar umbral 0.8
+
