@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.81
+# pulsenest_lab — Specification v1.82
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1498,6 +1498,7 @@ Dark theme: background #121212, text #E0E0E0
 │ [HR3LAB]              │                          │                          │
 │ [SPO2LAB]             │                          │                          │
 │ [PILAB]               │                          │                          │
+│ [XYLAB]               │                          │                          │
 │ TEST group:           │                          │                          │
 │ [SPO2TEST]            │                          │                          │
 │ [HR1TEST]             │                          │                          │
@@ -1721,32 +1722,32 @@ Every one is a native segfault: it kills the process with no Python traceback, a
 The suspected trigger, `useOpenGL=True` (set once at startup, `if __name__ == "__main__"`), is
 still untested with `False` — an orthogonal, deferred lever (it would still leave software
 rendering exercising the same code path). This button removes the whole class of risk instead of
-tuning it: while it is on, none of the fourteen pyqtgraph-bearing subwindows can be open, so their
+tuning it: while it is on, none of the fifteen pyqtgraph-bearing subwindows can be open, so their
 paint code never runs, in this process, regardless of what the renderer backend is.
 
-**The fourteen.** Exactly the fed-from-`_refresh_plots_tick()` set — `HR1TEST`/`HR1LAB`,
+**The fifteen.** Exactly the fed-from-`_refresh_plots_tick()` set — `HR1TEST`/`HR1LAB`,
 `HR2TEST`/`HR2LAB`, `HR3TEST`/`HR3LAB`, `SPO2TEST`/`SPO2LAB`, `PPG Plots`, `PPG SIGNALS`,
-`PPG SIGNALS 2`, `ALGO RESULTS`, `PILAB` — plus `LIB CONFIG`, which owns one `PlotWidget` (a
+`PPG SIGNALS 2`, `ALGO RESULTS`, `PILAB`, `XYLAB` (v1.82) — plus `LIB CONFIG`, which owns one `PlotWidget` (a
 settling-time curve, read on demand) but sits outside that 200 ms tick. Not touched: `SIGNAL
 STATS` (the main window itself has no plot), `HW CONFIG`, `LAB CAPTURE`, `MULTI CAPTURE`,
 `SERIAL COM`, `UDP COM`, `DIAGNOSTICS`, `PYTHON TIMING`, `ESP32 TIMING`, `AFE SWEEP TEST`, and the
 serial/UDP/hub connections — nothing a capture needs to record is disabled.
 
 **What it does**, in `_apply_disable_plots(disabled, log_it)`, entirely by driving each of the
-fourteen buttons through the checkable-button/`toggle_xxx()` pair it already had (§6.5): turning
+fifteen buttons through the checkable-button/`toggle_xxx()` pair it already had (§6.5): turning
 it on calls `.click()` on every one that is currently checked — exactly the click the user would
 make — so the window closes through its own, unmodified `closeEvent` (geometry saved,
-`main_monitor` cleared, `self.xxx_window` set back to `None`); it then disables all fourteen
+`main_monitor` cleared, `self.xxx_window` set back to `None`); it then disables all fifteen
 buttons so none can reopen. Turning it off re-enables them and reopens nothing — the user opens
 what they need, same as always. The state is a QSettings boolean
 (`PPGMonitor/plots_disabled`), applied once more from `_restore_settings()` at startup: no
-window is open yet at that point, so this only paints the button and locks the fourteen — the
+window is open yet at that point, so this only paints the button and locks the fifteen — the
 point being that the setting outlives a crash-triggered relaunch without anyone having to
 remember to reapply it.
 
 **Verification:** `tools/disable_plots_test.py`, offscreen, no board and no hub — opens
 `HR1LAB`, `SPO2TEST` and `LIB CONFIG`, toggles the button on and checks all three close through
-their own `toggle_xxx()` and all fourteen buttons lock; checks a locked button truly cannot be
+their own `toggle_xxx()` and all fifteen buttons lock; checks a locked button truly cannot be
 clicked open; toggles off and checks the buttons unlock and nothing reopens on its own; then a
 save/restore round-trip through a fresh `PPGMonitor` instance, confirming the disabled state (and
 the locked buttons) survive a relaunch with no window ever created to close. 13/13.
@@ -1815,6 +1816,7 @@ All rates relative to the render timer tick (~50 ms = ~20 Hz):
 | `_HR2TEST_REFRESH_EVERY` | 2 | HR2TestWindow (10 Hz) |
 | `_HR3TEST_REFRESH_EVERY` | 2 | HR3TestWindow (10 Hz) |
 | `_PILAB_REFRESH_EVERY` | 2 | PILabWindow (10 Hz) |
+| `_XYLAB_REFRESH_EVERY` | 2 | XYLabWindow (10 Hz) |
 
 Serial console lines are appended every `_process_frames_tick()` cycle (no throttle; batched in `_console_lines`).
 
@@ -2498,6 +2500,34 @@ in both files, filenames carrying each MAC, and the corrupting board's frames re
 checksum and missing from its CSV). Live on one real board: 900 rows for a target of 900, analog
 columns populated, no queue overflow.
 
+### 7.21 XYLabWindow — "XYLAB" (v1.82)
+
+Live XY plot of any two `$M4` fields, built to **look at** the R-method candidate (library rationale
+§9) rather than at its number. Sidebar button in the LAB group, under PILAB. Requires `$M4`.
+
+| Zone | Content |
+|---|---|
+| Controls (left) | Per axis, a **channel** combo (every numeric `$M4` field 3–32 by its `CAPTURE_COLS` label; defaults OT_LED1 / OT_LED2) and a **processing** combo (`_XYAxisProc.MODES`: *raw* · *AC/DC* · *d(AC/DC)*). **Same processing on both axes** (default on) locks Y's processing to X's. **BPF lo/hi**, **DC tau** (0.5 / 5 Hz / 2 s, the candidate's) and **Window** (1–30 s, default 4). PAUSE / CONTINUE (key `P`). `PROBE` state |
+| XY plot (right) | The newest *Window* seconds as a trace in `_FADE_BANDS` = 6 age bands, oldest dimmest; the newest point as a white dot; the least-squares line through the finite points (≥ `_MIN_FIT_N` = 20) with **slope · r · n** in the title |
+| Time plot (below) | Both channels, as processed, against seconds before now — X on the left axis, Y on the right axis (a second `ViewBox` linked in x), each in its axis colour |
+
+**Processing (`_XYAxisProc`)**, per axis and independent: *raw* passes the field; *AC/DC* is one
+channel's input to the candidate — the library's one-biquad band-pass (`_lib_biquad_bp`, steady-state
+precharge) divided by an EMA DC started at the first sample, as `EmaChannel`; *d(AC/DC)* is its first
+difference. With d(AC/DC) on both axes and IR against RED a pulse draws a line through the origin:
+its slope is the candidate's R and its tightness its r (the SQI candidate); motion or no pulse draw a
+cloud. The fit is ordinary least squares with intercept over the window; for derivatives the intercept
+is ≈ 0 and the slope is a *Window*-long estimate of the R the candidate averages with τ 6 s.
+
+Nothing is gated on `ProbeState`: the window shows what the probe sees, on the patient or not. Any
+change of channel, processing or filter parameter restarts the filters and clears the window; changing
+*Window* keeps the newest samples. CONTINUE after PAUSE and a stream discontinuity clear it too, so the
+trace never splices two moments of signal. No offline mode.
+
+Fed at 500 Hz from the `$M4` path next to HR1LAB with the whole field list (`feed_frame(fields, fs)`);
+redrawn at 10 Hz (`_XYLAB_REFRESH_EVERY`), timed as `plot_xylab` in PYTHON TIMING. Selections, filter
+parameters and window length persist under `XYLabWindow/*` (§9).
+
 ## 8. File outputs
 
 `captures/<prefix>_<board>_<MAC tail>_<timestamp>.csv` — one per board of a MULTI CAPTURE run
@@ -2568,6 +2598,11 @@ swallows any parsing surprise, leaving the file exactly as QSettings wrote it.
 | `HR3LabWindow/geometry` | bytes | |
 | `HR2LabWindow/geometry` | bytes | |
 | `HR1LabWindow/geometry` | bytes | |
+| `XYLabWindow/geometry` | bytes | |
+| `XYLabWindow/x_field`, `y_field` | int | `$M4` field index of each axis (default 31, 32) |
+| `XYLabWindow/x_mode`, `y_mode` | int | processing per axis (0 raw, 1 AC/DC, 2 d(AC/DC)) |
+| `XYLabWindow/same_proc` | bool | Y follows X's processing |
+| `XYLabWindow/bpf_lo`, `bpf_hi`, `tau_dc_s`, `window_s` | float | filter parameters and window length |
 | `SerialComWindow/geometry` | bytes | |
 | `UdpComWindow/geometry` | bytes | |
 | `HWConfigWindow/geometry` | bytes | |
@@ -2684,6 +2719,19 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.82 — 2026-10-03
+
+**XYLAB** (§7.21, Alex): a live XY plot of any two `$M4` fields to see the R-method candidate work —
+OT_LED1 against OT_LED2 with d(AC/DC) on both axes draws the line whose slope is R and whose tightness
+is r. Per-axis channel and processing (raw · AC/DC · d(AC/DC)), "same processing" tick, the
+candidate's filter parameters editable, controls | XY plot above and both channels against time
+below. Fed at 500 Hz next to HR1LAB, in the PLOTS button's set (fifteen windows now). PYTHON TIMING
+gains the `PILAB` row that was missing since PILAB got its own timing key, and `XYLAB`. Checked
+offscreen: on a synthetic IR/RED pair with AC ratio 0.55 (80 BPM, 500 Hz, 10 s, with 5 % and 3 %
+linear drift) the d(AC/DC) fit over 4 s reads slope 0.557, r 1.000 (the drift through the 2 s DC EMA
+is the 0.007); the same-processing lock, window change, PAUSE/CONTINUE, stream discontinuity and the
+settings round trip behave as specified (25/25); `tools/disable_plots_test.py` 13/13.
 
 ### v1.81 — 2026-10-03
 
@@ -2971,7 +3019,7 @@ passing the wire format through.
 **PLOTS button (§6.5.2): disable every pyqtgraph-bearing subwindow for an unattended capture.**
 `faulthandler.log` has 28 native segfaults since 2026-07, 18 of them inside pyqtgraph's own paint
 code (`project_signals2_crash_investigation_task`) — unacceptable for a hospital session where a
-crash loses the recording. The button closes and locks the fourteen plot-bearing subwindows
+crash loses the recording. The button closes and locks the fifteen plot-bearing subwindows
 (everything fed by `_refresh_plots_tick()`, plus `LIB CONFIG`) through their own existing
 `toggle_xxx()`, so nothing about how a window closes is duplicated; `SIGNAL STATS`, `HW CONFIG`,
 `LAB CAPTURE`, `MULTI CAPTURE` and the hub connection are untouched. State persists across a

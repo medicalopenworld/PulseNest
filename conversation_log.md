@@ -26023,3 +26023,21 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   agitación). De 69 desaturaciones de referencia (< 90 % ≥ 5 s), la mediana se conserva entera; se pierde una de 6 s
   y dos largas de 1238 SUBJ09 quedan al 50–62 %, donde el firmware actual también tenía SQI 0.
 - Anotado en rationale §9 (con la corrección). Pendiente de Alex: umbral de r (recomiendo 0,8) y la ventana XY.
+
+## 2026-10-03 — Umbral de r decidido; XYLAB (lab v1.82)
+
+- Respuestas a los comentarios de Alex: el paso banda del candidato es de **2.º orden** (el único biquad de la
+  lib); medido igual que 4 polos para este método (dispersión 1,63 frente a 1,62 pts) → se queda en 2 polos
+  mientras los datos no pidan más rechazo de deriva/respiración. El techo de 5 Hz no sesga R (ambos canales
+  pasan por el mismo filtro; MS100 0,545 a 40 BPM → 0,551 a 250 BPM; HOSPNAV 0,5–8 Hz 1,59, 0,5–4 Hz 1,67):
+  los armónicos hacen falta para la forma de onda (HR3), no para R.
+- **Decisión (Alex):** umbral de r = **0,8** para el SQI de R-METHOD-2 (rechaza el 3,8 % del tiempo válido
+  HOSPNAV, todo él con HR2/HR3/SpO2 SQI = 0 en la lib actual).
+- **XYLAB** (Alex OK al diseño, con dos añadidos: procesado independiente por eje con casilla "same processing";
+  controles | gráfica XY arriba y gráfica temporal de los dos canales debajo): ventana nueva en el grupo LAB,
+  cualquier campo de $M4 en cada eje (OT_LED1/OT_LED2 por defecto), procesado raw · AC/DC · d(AC/DC) (el del
+  candidato, biquad de la lib + EMA DC), parámetros del filtro y ventana editables, recta de mínimos cuadrados
+  con pendiente · r · n en el título, alimentada a 500 Hz junto a HR1LAB. Spec §7.21. Comprobado offscreen:
+  par sintético con cociente AC 0,55 → pendiente 0,557, r 1,000 (25/25); disable_plots_test 13/13. PYTHON
+  TIMING gana la fila PILAB que faltaba y la de XYLAB.
+- Siguiente: paso 3 del plan R (R-METHOD-2 en la lib con r ≥ 0,8 como SQI; curva R reajustada con él).

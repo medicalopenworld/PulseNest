@@ -6423,6 +6423,8 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("plot_hr1lab",   "[_py_timing['plot_hr1lab']]    HR1LAB    |  HR1LabWindow.update_plots()",      _PLOTS_TICK_BUDGET_MS),
         ("plot_hr2test",  "[_py_timing['plot_hr2test']]   HR2TEST   |  HR2TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
         ("plot_hr3test",  "[_py_timing['plot_hr3test']]   HR3TEST   |  HR3TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
+        ("plot_pilab",    "[_py_timing['plot_pilab']]     PILAB     |  PILabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
+        ("plot_xylab",    "[_py_timing['plot_xylab']]     XYLAB     |  XYLabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
     ]
     # (key, display name) — 'Max' column repurposed as count; queue=instantaneous, others=since connect
     _GAP_ROWS = [
@@ -8855,6 +8857,424 @@ class HR1LabWindow(QtWidgets.QMainWindow):
         if self.main_monitor is not None:
             self.main_monitor.btn_hr1lab.setChecked(False)
             self.main_monitor.hr1lab_window = None
+        super().closeEvent(event)
+
+
+class _XYAxisProc:
+    """One axis of XYLAB: a $M4 field and what is done to it before it is plotted.
+
+    RAW passes the field through. ACDC is one channel's input to the R-method candidate
+    (library rationale §9): the library's one-biquad band-pass divided by an EMA DC that starts
+    at the first sample, as EmaChannel. DERIV is the first difference of ACDC. With a pulse, the
+    (dx, dy) of IR and RED fall on a line through the origin whose slope is the candidate's R
+    and whose correlation is its r -- the SQI candidate.
+    """
+    RAW, ACDC, DERIV = 0, 1, 2
+    MODES = ("raw", "AC/DC  (BPF / EMA DC)", "d(AC/DC)  (first difference)")
+
+    def __init__(self, field):
+        self.field    = field      # index in the $M4 field list (CAPTURE_COLS)
+        self.mode     = self.RAW
+        self.bpf_lo   = 0.5        # Hz -- the candidate's band
+        self.bpf_hi   = 5.0
+        self.tau_dc_s = 2.0        # s  -- the candidate's DC time constant
+        self.reset()
+
+    def reset(self):
+        self._fs = None; self._bp = None; self._a_dc = 0.0
+        self._v = None; self._dc = 0.0; self._prev = None
+
+    def _configure(self, fs):
+        nyq = fs / 2.0
+        lo = max(0.01, min(self.bpf_lo, nyq * 0.9))
+        hi = max(lo + 0.01, min(self.bpf_hi, nyq * 0.99))
+        self._bp   = _lib_biquad_bp(lo, hi, fs)
+        self._a_dc = 1.0 - math.exp(-1.0 / (max(self.tau_dc_s, 1.0 / fs) * fs))
+        self._fs   = fs
+
+    def update(self, x, fs):
+        """One sample in, one value out (NaN while the mode has no output yet)."""
+        if self.mode == self.RAW:
+            return x
+        if fs != self._fs:
+            self._configure(fs)
+        b0, b2, a1, a2 = self._bp
+        if self._v is None:                  # BiquadFilter's steady-state precharge (y_ss = 0)
+            self._v  = [-b0 * x, b2 * x]
+            self._dc = x                     # as EmaChannel: the DC starts at the first sample
+        v = self._v                          # DF-II transposed, b1 = 0
+        ac = b0 * x + v[0]; v[0] = -a1 * ac + v[1]; v[1] = b2 * x - a2 * ac
+        self._dc += self._a_dc * (x - self._dc)
+        y = ac / self._dc if self._dc != 0.0 else float('nan')
+        if self.mode == self.ACDC:
+            return y
+        d = (y - self._prev) if self._prev is not None else float('nan')
+        self._prev = y
+        return d
+
+
+class XYLabWindow(QtWidgets.QMainWindow):
+    """XYLAB -- live XY plot of any two $M4 fields, with the R-method candidate's processing.
+
+    Built to look at the candidate (library rationale §9) rather than at its number: with
+    d(AC/DC) on both axes and OT_LED1 against OT_LED2, a pulse draws a line through the origin
+    whose slope is R and whose tightness is r; motion, a probe half off or no pulse draw a
+    cloud, which is what r = 0.3 looks like. Any field can go on either axis, each with its own
+    processing, so the same view serves LED1 against ALED1, V_TIA against I_PD, and so on.
+
+    Left: the controls. Right: the XY plot -- the newest WINDOW seconds as a trace that fades
+    with age, the newest point marked, and the least-squares line through the points (slope, r
+    and n in the title). Below: both channels against time, each on its own axis.
+
+    Fed at 500 Hz from the $M4 path next to HR1LAB (the field list of every frame), redrawn at
+    10 Hz. No offline mode. Nothing is gated on ProbeState: the window shows what the probe
+    sees, on the patient or not; PROBE in the controls says which.
+    """
+    _CHANNELS   = [(label, idx) for label, _csv, idx, _m in CAPTURE_COLS if 3 <= idx <= 32]
+    _FADE_BANDS = 6         # the trace is drawn in this many age bands, the oldest the dimmest
+    _MIN_FIT_N  = 20        # fewer finite points than this: no line, no slope
+    _COL_X, _COL_Y, _COL_FIT = '#44DDFF', '#FFAA44', '#FF66FF'
+    _TRACE_RGB  = (255, 221, 68)    # the script's yellow, alpha by age
+    _PS_NAME = {0: "DISCONNECTED", 1: "OT HIGH", 2: "APPLIED", 3: "AMB SATURATING",
+                4: "ONLY LED SATURATING"}
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle(_win("XYLAB"))
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
+        self.statusBar().showMessage(_MOUSE_HINT)
+
+        self._fs      = 500.0
+        self._paused  = False
+        self._last_ps = -1
+        self._procs   = [_XYAxisProc(31), _XYAxisProc(32)]     # OT_LED1 (IR), OT_LED2 (RED)
+        self._win_s   = 4.0
+        self._bufs    = [deque(maxlen=int(self._win_s * self._fs)) for _ in range(2)]
+
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root = QtWidgets.QVBoxLayout(central)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(4)
+        top = QtWidgets.QHBoxLayout()
+        top.setSpacing(6)
+        root.addLayout(top, 3)
+
+        # ── Controls (left) ──────────────────────────────────────────────────
+        ctl = QtWidgets.QWidget()
+        ctl.setMaximumWidth(380)
+        cl = QtWidgets.QVBoxLayout(ctl)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(6)
+        self._combo_ch, self._combo_mode = [], []
+        for ax, proc, col in (("X", self._procs[0], self._COL_X), ("Y", self._procs[1], self._COL_Y)):
+            box = QtWidgets.QGroupBox("%s axis" % ax)
+            box.setStyleSheet("QGroupBox { color: %s; font-weight: bold; }" % col)
+            fl = QtWidgets.QFormLayout(box)
+            ch = QtWidgets.QComboBox()
+            for label, idx in self._CHANNELS:
+                ch.addItem(label, idx)
+            ch.setCurrentIndex(max(0, ch.findData(
+                s.value("XYLabWindow/%s_field" % ax.lower(), proc.field, type=int))))
+            ch.setToolTip(_make_tooltip(
+                "%s channel" % ax,
+                "Any numeric field of the $M4 frame, by its capture-column name. The default "
+                "pair OT_LED1 (IR) / OT_LED2 (RED) is what the SpO2 R estimators consume. "
+                "Changing it clears the window.",
+                src="CAPTURE_COLS"))
+            mode = QtWidgets.QComboBox()
+            mode.addItems(_XYAxisProc.MODES)
+            mode.setCurrentIndex(s.value("XYLabWindow/%s_mode" % ax.lower(), proc.mode, type=int))
+            mode.setToolTip(_make_tooltip(
+                "%s processing" % ax,
+                "<b>raw</b>: the field as received.\n"
+                "<b>AC/DC</b>: the R-method candidate's per-channel input -- the library's "
+                "one-biquad band-pass (BPF lo-hi) divided by an EMA DC (DC tau), both started "
+                "at the first sample as the library does.\n"
+                "<b>d(AC/DC)</b>: its first difference. With d(AC/DC) on both axes and IR / RED, "
+                "a pulse draws a line through the origin: its slope is the candidate's R and its "
+                "tightness its r. Changing the processing restarts the filters and clears the "
+                "window.",
+                src="_XYAxisProc"))
+            fl.addRow("Channel", ch)
+            fl.addRow("Processing", mode)
+            self._combo_ch.append(ch)
+            self._combo_mode.append(mode)
+            cl.addWidget(box)
+
+        self._chk_same = QtWidgets.QCheckBox("Same processing on both axes")
+        self._chk_same.setChecked(s.value("XYLabWindow/same_proc", True, type=bool))
+        self._chk_same.setToolTip(_make_tooltip(
+            "Same processing on both axes",
+            "Y follows X's processing and its own selector is locked. Untick to process each "
+            "axis differently -- e.g. raw LED1 against AC/DC of OT_LED1.",
+            src="XYLabWindow._chk_same"))
+        cl.addWidget(self._chk_same)
+
+        prm = QtWidgets.QGroupBox("Processing parameters")
+        pf = QtWidgets.QFormLayout(prm)
+        self._spin_lo = QtWidgets.QDoubleSpinBox()
+        self._spin_lo.setRange(0.05, 50.0); self._spin_lo.setDecimals(2); self._spin_lo.setSingleStep(0.1)
+        self._spin_lo.setValue(s.value("XYLabWindow/bpf_lo", 0.5, type=float))
+        self._spin_lo.setToolTip(_make_tooltip(
+            "BPF lo [Hz]",
+            "Lower edge of the band-pass used by AC/DC and d(AC/DC). 0.5 Hz is the candidate's "
+            "(and HR2's) band; the filter is the library's single biquad, 2 poles, so the skirt "
+            "is -6 dB/octave: respiration at 0.33 Hz is attenuated 5.6 dB, drift at 0.1 Hz 15 dB.",
+            src="_XYAxisProc.bpf_lo"))
+        self._spin_hi = QtWidgets.QDoubleSpinBox()
+        self._spin_hi.setRange(0.1, 200.0); self._spin_hi.setDecimals(1); self._spin_hi.setSingleStep(0.5)
+        self._spin_hi.setValue(s.value("XYLabWindow/bpf_hi", 5.0, type=float))
+        self._spin_hi.setToolTip(_make_tooltip(
+            "BPF hi [Hz]",
+            "Upper edge of the band-pass. 5 Hz is the candidate's; at 260 BPM the fundamental "
+            "(4.33 Hz) loses 2.3 dB and the second harmonic 6.5 dB. Both channels go through "
+            "the same filter, so the slope (R) does not depend on it; only the signal-to-noise "
+            "does. Try 8 Hz to see the harmonics come back.",
+            src="_XYAxisProc.bpf_hi"))
+        self._spin_tau = QtWidgets.QDoubleSpinBox()
+        self._spin_tau.setRange(0.1, 30.0); self._spin_tau.setDecimals(1); self._spin_tau.setSingleStep(0.5)
+        self._spin_tau.setValue(s.value("XYLabWindow/tau_dc_s", 2.0, type=float))
+        self._spin_tau.setToolTip(_make_tooltip(
+            "DC tau [s]",
+            "Time constant of the EMA that estimates the DC the band-passed signal is divided "
+            "by. 2 s is the library's mean EMA (and the candidate's).",
+            src="_XYAxisProc.tau_dc_s"))
+        self._spin_win = QtWidgets.QDoubleSpinBox()
+        self._spin_win.setRange(1.0, 30.0); self._spin_win.setDecimals(0); self._spin_win.setSingleStep(1.0)
+        self._spin_win.setSuffix(" s")
+        self._spin_win.setValue(s.value("XYLabWindow/window_s", 4.0, type=float))
+        self._spin_win.setToolTip(_make_tooltip(
+            "Window",
+            "How many seconds of samples the XY trace and the time plot hold; the least-squares "
+            "line is fitted over the same samples. The candidate itself averages with an EMA of "
+            "tau 6 s, so the slope here is a shorter-window estimate of its R. Changing it keeps "
+            "the newest samples.",
+            src="XYLabWindow._win_s"))
+        pf.addRow("BPF lo [Hz]", self._spin_lo)
+        pf.addRow("BPF hi [Hz]", self._spin_hi)
+        pf.addRow("DC tau [s]", self._spin_tau)
+        pf.addRow("Window", self._spin_win)
+        cl.addWidget(prm)
+
+        self._btn_pause = QtWidgets.QPushButton("PAUSE")
+        self._btn_pause.setCheckable(True)
+        self._btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_pause.setShortcut("P")
+        self._btn_pause.clicked.connect(self._toggle_pause)
+        self._btn_pause.setToolTip(_make_tooltip(
+            "PAUSE / CONTINUE  (shortcut: P)",
+            "Freeze both plots to study what just happened; the view can be zoomed and panned "
+            "while frozen. CONTINUE clears the window and restarts the filters, so the trace "
+            "never splices two moments of signal.",
+            src="XYLabWindow._toggle_pause"))
+        cl.addWidget(self._btn_pause)
+
+        self._lbl_probe = QtWidgets.QLabel("PROBE --")
+        self._lbl_probe.setStyleSheet("color: #FFDD44; font-weight: bold;")
+        self._lbl_probe.setToolTip(_make_tooltip(
+            "PROBE -- probe state",
+            "RSQM's probe classification, from the frame. Nothing here is gated on it: the "
+            "window shows what the probe sees, on the patient or not.",
+            src="ProbeState"))
+        cl.addWidget(self._lbl_probe)
+        cl.addStretch(1)
+        top.addWidget(ctl, 0)
+
+        # ── XY plot (right) ──────────────────────────────────────────────────
+        self._xy = pg.PlotWidget()
+        self._xy.showGrid(x=True, y=True, alpha=0.3)
+        self._bands = []
+        for k in range(self._FADE_BANDS):
+            alpha = int(40 + 215 * (k + 1) / self._FADE_BANDS)
+            c = pg.PlotCurveItem(pen=pg.mkPen(QtGui.QColor(*self._TRACE_RGB, alpha), width=1.5))
+            self._xy.addItem(c)
+            self._bands.append(c)
+        self._fit = pg.PlotCurveItem(pen=pg.mkPen(self._COL_FIT, width=2, style=QtCore.Qt.DashLine))
+        self._xy.addItem(self._fit)
+        self._dot = pg.ScatterPlotItem(size=12, brush=pg.mkBrush('#FFFFFF'), pen=pg.mkPen('#000000'))
+        self._xy.addItem(self._dot)
+        top.addWidget(self._xy, 1)
+
+        # ── Time plot (bottom): X channel on the left axis, Y channel on the right ──
+        self._tp = pg.PlotWidget()
+        self._tp.showGrid(x=True, y=True, alpha=0.3)
+        self._tp.setLabel('bottom', 'time before now', units='s')
+        for side, col in (('left', self._COL_X), ('right', self._COL_Y)):
+            self._tp.showAxis(side)
+            self._tp.getAxis(side).setPen(col)
+            self._tp.getAxis(side).setTextPen(col)
+        self._vb_y = pg.ViewBox()
+        self._tp.scene().addItem(self._vb_y)
+        self._tp.getAxis('right').linkToView(self._vb_y)
+        self._vb_y.setXLink(self._tp.getViewBox())
+        self._tp.getViewBox().sigResized.connect(self._sync_right_vb)
+        self._cx = pg.PlotCurveItem(pen=pg.mkPen(self._COL_X, width=1.5))
+        self._tp.addItem(self._cx)
+        self._cy = pg.PlotCurveItem(pen=pg.mkPen(self._COL_Y, width=1.5))
+        self._vb_y.addItem(self._cy)
+        root.addWidget(self._tp, 1)
+
+        for w in self._combo_ch + self._combo_mode:
+            w.currentIndexChanged.connect(self._on_cfg_changed)
+        self._chk_same.toggled.connect(self._on_cfg_changed)
+        for w in (self._spin_lo, self._spin_hi, self._spin_tau):
+            w.valueChanged.connect(self._on_cfg_changed)
+        self._spin_win.valueChanged.connect(self._on_window_changed)
+        self._on_window_changed()
+        self._on_cfg_changed()      # applies the restored selections and labels the axes
+
+        self.resize(1500, 950)
+        geom = s.value("XYLabWindow/geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+
+    # ── Configuration ────────────────────────────────────────────────────────
+    def _sync_right_vb(self):
+        vb = self._tp.getViewBox()
+        self._vb_y.setGeometry(vb.sceneBoundingRect())
+        self._vb_y.linkedViewChanged(vb, self._vb_y.XAxis)
+
+    def _axis_name(self, i):
+        ch = self._combo_ch[i].currentText()
+        m = self._procs[i].mode
+        if m == _XYAxisProc.ACDC:
+            return "AC/DC(%s)" % ch
+        if m == _XYAxisProc.DERIV:
+            return "d AC/DC(%s)" % ch
+        return ch
+
+    def _on_cfg_changed(self, *_):
+        same = self._chk_same.isChecked()
+        self._combo_mode[1].setEnabled(not same)
+        if same and self._combo_mode[1].currentIndex() != self._combo_mode[0].currentIndex():
+            self._combo_mode[1].blockSignals(True)
+            self._combo_mode[1].setCurrentIndex(self._combo_mode[0].currentIndex())
+            self._combo_mode[1].blockSignals(False)
+        lo = self._spin_lo.value()
+        for p, ch, mode in zip(self._procs, self._combo_ch, self._combo_mode):
+            p.field    = int(ch.currentData())
+            p.mode     = mode.currentIndex()
+            p.bpf_lo   = lo
+            p.bpf_hi   = max(self._spin_hi.value(), lo + 0.01)
+            p.tau_dc_s = self._spin_tau.value()
+            p.reset()
+        for b in self._bufs:
+            b.clear()
+        names = [self._axis_name(0), self._axis_name(1)]
+        self._xy.setLabel('bottom', names[0])
+        self._xy.setLabel('left', names[1])
+        self._tp.setLabel('left', names[0])
+        self._tp.setLabel('right', names[1])
+        self._draw()
+
+    def _on_window_changed(self, *_):
+        self._win_s = float(self._spin_win.value())
+        n = max(2, int(round(self._win_s * self._fs)))
+        self._bufs = [deque(b, maxlen=n) for b in self._bufs]    # keeps the newest n samples
+
+    # ── Data path ────────────────────────────────────────────────────────────
+    def feed_frame(self, fields, fs):
+        """One $M4 frame as its field list (index = position after the tag, as CAPTURE_COLS).
+        Both axes take their value from the same frame, which is what makes the XY point honest."""
+        if self._paused:
+            return
+        if fs != self._fs:
+            self._fs = fs
+            self._on_window_changed()
+        try:
+            self._last_ps = int(float(fields[22]))
+        except (ValueError, IndexError):
+            self._last_ps = -1
+        for p, b in zip(self._procs, self._bufs):
+            try:
+                v = float(fields[p.field])
+            except (ValueError, IndexError):
+                v = float('nan')
+            b.append(p.update(v, fs) if v == v else v)      # a NaN must not enter the filters
+
+    def _toggle_pause(self):
+        self._paused = self._btn_pause.isChecked()
+        if self._paused:
+            self._draw()
+            self._btn_pause.setText("CONTINUE")
+            self.statusBar().showMessage("PAUSED -- CONTINUE clears the window and restarts the filters")
+        else:
+            self.on_stream_discontinuity()
+            self._btn_pause.setText("PAUSE")
+            self.statusBar().showMessage(_MOUSE_HINT)
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): the trace must not splice
+        two moments of signal. A paused window keeps its frozen view."""
+        if self._paused:
+            return
+        for p in self._procs:
+            p.reset()
+        for b in self._bufs:
+            b.clear()
+
+    # ── Refresh ──────────────────────────────────────────────────────────────
+    def update_plots(self):
+        if self._paused:
+            return          # leave the frozen view alone, including zoom and pan
+        self._draw()
+
+    def _draw(self):
+        self._lbl_probe.setText("PROBE %s" % self._PS_NAME.get(self._last_ps, "--"))
+        n = min(len(self._bufs[0]), len(self._bufs[1]))
+        if n < 2:
+            for c in self._bands + [self._fit, self._cx, self._cy, self._dot]:
+                c.clear()
+            self._xy.setTitle("")
+            return
+        x = np.fromiter(self._bufs[0], dtype=float, count=len(self._bufs[0]))[-n:]
+        y = np.fromiter(self._bufs[1], dtype=float, count=len(self._bufs[1]))[-n:]
+        t = (np.arange(n) - (n - 1)) / self._fs
+        self._cx.setData(t, x, connect='finite')
+        self._cy.setData(t, y, connect='finite')
+        edges = np.linspace(0, n, self._FADE_BANDS + 1).astype(int)
+        for k, c in enumerate(self._bands):
+            i0 = max(0, int(edges[k]) - 1)       # one point of overlap keeps the trace continuous
+            c.setData(x[i0:edges[k + 1]], y[i0:edges[k + 1]], connect='finite')
+        if np.isfinite(x[-1]) and np.isfinite(y[-1]):
+            self._dot.setData([x[-1]], [y[-1]])
+        else:
+            self._dot.clear()
+        m = np.isfinite(x) & np.isfinite(y)
+        title = ""
+        if int(m.sum()) >= self._MIN_FIT_N:
+            xm, ym = x[m], y[m]
+            dx, dy = xm - xm.mean(), ym - ym.mean()
+            sxx, syy, sxy = float(dx @ dx), float(dy @ dy), float(dx @ dy)
+            if sxx > 0.0 and syy > 0.0:
+                slope = sxy / sxx
+                r = sxy / math.sqrt(sxx * syy)
+                xs = np.array([xm.min(), xm.max()])
+                self._fit.setData(xs, slope * (xs - xm.mean()) + ym.mean())
+                title = "slope %.4g  ·  r %.3f  ·  n %d (%.0f s)" % (slope, r, int(m.sum()), self._win_s)
+        if not title:
+            self._fit.clear()
+        self._xy.setTitle(title, color=self._COL_FIT, size='14pt')
+
+    def closeEvent(self, event):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("XYLabWindow/geometry", self.saveGeometry())
+        for ax, ch, mode in zip("xy", self._combo_ch, self._combo_mode):
+            s.setValue("XYLabWindow/%s_field" % ax, int(ch.currentData()))
+            s.setValue("XYLabWindow/%s_mode" % ax, mode.currentIndex())
+        s.setValue("XYLabWindow/same_proc", self._chk_same.isChecked())
+        s.setValue("XYLabWindow/bpf_lo",   self._spin_lo.value())
+        s.setValue("XYLabWindow/bpf_hi",   self._spin_hi.value())
+        s.setValue("XYLabWindow/tau_dc_s", self._spin_tau.value())
+        s.setValue("XYLabWindow/window_s", self._spin_win.value())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_xylab.setChecked(False)
+            self.main_monitor.xylab_window = None
         super().closeEvent(event)
 
 
@@ -12456,6 +12876,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr3test_window   = None
         self.hr3test_calc     = HR3TestCalc()
         self.pilab_window     = None
+        self.xylab_window     = None
         self.esp32_timing_window    = None
         self.python_timing_window   = None
         self.hw_config_window  = None
@@ -12472,6 +12893,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._HR2TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._HR3TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._PILAB_REFRESH_EVERY     = 2   # 10 Hz
+        self._XYLAB_REFRESH_EVERY     = 2   # 10 Hz
         self._render_pending          = False
         self._ppgplots_refresh_counter = 0
         self._signals_refresh_counter  = 0
@@ -12486,6 +12908,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._hr2test_refresh_counter  = 0
         self._hr3test_refresh_counter  = 0
         self._pilab_refresh_counter    = 0
+        self._xylab_refresh_counter    = 0
         self._pytiming_refresh_counter = 0
         self._decim_counter = 0
         # Stream continuity (see _on_stream_discontinuity): last data-frame counter of the active
@@ -12503,6 +12926,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hr2lab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
             'plot_hr1test', 'plot_hr1lab', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
+            'plot_xylab',
         ]
         self._py_timing = {k: deque(maxlen=50) for k in _pt_keys}
         self._last_drain_t  = None   # for drain_interval measurement
@@ -12684,7 +13108,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._PLOT_WINDOW_BUTTONS = (
             "btn_hr1test", "btn_hr1lab", "btn_hr2test", "btn_hr2lab", "btn_hr3test", "btn_hr3lab",
             "btn_spo2test", "btn_spo2lab", "btn_ppgplots", "btn_signals", "btn_signals2",
-            "btn_results", "btn_pilab", "btn_lib_config",
+            "btn_results", "btn_pilab", "btn_xylab", "btn_lib_config",
         )
         self.btn_disable_plots = QtWidgets.QPushButton("PLOTS  ●  ON")
         self.btn_disable_plots.setCheckable(True)
@@ -12994,6 +13418,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "Instance A defaults to firmware method settings; B is freely configurable.",
             src="PILabWindow"))
         self.sidebar_layout.addWidget(self.btn_pilab)
+
+        self.btn_xylab = QtWidgets.QPushButton("XYLAB")
+        self.btn_xylab.setCheckable(True)
+        self.btn_xylab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_xylab.clicked.connect(self.toggle_xylab)
+        self.btn_xylab.setToolTip(_make_tooltip(
+            "XYLAB -- XY plot of two channels",
+            "Live XY plot of any two $M4 fields (OT_LED1 vs OT_LED2 by default), each with its own "
+            "processing: raw, the R-method candidate's AC/DC, or its derivative -- with d(AC/DC) on "
+            "both axes a pulse draws a line whose slope is R and whose tightness is r. Both channels "
+            "against time below. Requires $M4.",
+            src="XYLabWindow"))
+        self.sidebar_layout.addWidget(self.btn_xylab)
 
         label_test = QtWidgets.QLabel("TEST")
         label_test.setStyleSheet("color: #AAAAAA; font-weight: 800; font-size: 20px; margin-top: 10px;")
@@ -14020,6 +14457,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.pilab_window.close()
                 self.pilab_window = None
 
+    def _open_xylab_default(self):
+        self.btn_xylab.setChecked(True)
+        self.toggle_xylab()
+
+    def toggle_xylab(self):
+        if self.btn_xylab.isChecked():
+            self.xylab_window = XYLabWindow(None)
+            self.xylab_window.main_monitor = self
+            self.xylab_window.show()
+        else:
+            if self.xylab_window is not None:
+                self.xylab_window.main_monitor = None
+                self.xylab_window.close()
+                self.xylab_window = None
+
     def _open_timing_default(self):
         self.btn_esp32_timing.setChecked(True)
         self.toggle_esp32_timing()
@@ -14384,6 +14836,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
         s.setValue("PPGMonitor/pilab_open",    self.pilab_window    is not None)
+        s.setValue("PPGMonitor/xylab_open",    self.xylab_window    is not None)
         s.setValue("PPGMonitor/esp32_timing_open",   self.esp32_timing_window   is not None)
         s.setValue("PPGMonitor/python_timing_open",  self.python_timing_window  is not None)
         s.setValue("PPGMonitor/hw_config_open",   self.hw_config_window   is not None)
@@ -14407,6 +14860,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.hr1lab_window    is not None: s.setValue("HR1LabWindow/geometry",     self.hr1lab_window.saveGeometry())
         if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
+        if self.xylab_window     is not None: s.setValue("XYLabWindow/geometry",      self.xylab_window.saveGeometry())
         if self.esp32_timing_window  is not None: s.setValue("Esp32TimingWindow/geometry",   self.esp32_timing_window.saveGeometry())
         if self.python_timing_window is not None: s.setValue("PythonTimingWindow/geometry", self.python_timing_window.saveGeometry())
         if self.hw_config_window     is not None: s.setValue("HWConfigWindow/geometry",     self.hw_config_window.saveGeometry())
@@ -14969,7 +15423,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self._lab_capture is not None and self._lab_capture.active:
             self._lab_capture.add_event(f"stream discontinuity: {reason}")
         for name in ("spo2lab_window", "spo2test_window", "hr1test_window", "hr2test_window",
-                     "hr3test_window", "pilab_window", "hr1lab_window", "hr2lab_window",
+                     "hr3test_window", "pilab_window", "xylab_window", "hr1lab_window", "hr2lab_window",
                      "signals_window", "signals2_window"):
             win = getattr(self, name, None)
             hook = getattr(win, "on_stream_discontinuity", None) if win is not None else None
@@ -15512,7 +15966,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # EXPERIMENT (OT-domain input): needs OT_LED1 (parts[31]), only in $M4 — $M1
                     # never carries it, so this now requires frame mode $M4.
                     if _is_active and (self.hr1test_window is not None
-                                       or self.hr1lab_window is not None):
+                                       or self.hr1lab_window is not None
+                                       or self.xylab_window is not None):
                         _p500 = line[1:].split(',')
                         if len(_p500) >= 32 and _p500[0] == 'M4':
                             try:
@@ -15525,6 +15980,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 # which is what makes a live comparison between them fair.
                                 if self.hr1lab_window is not None:
                                     self.hr1lab_window.feed_sample(_ot500, 500.0, _ps500, _sc500)
+                                # XYLAB: the whole field list, any field may be on an axis.
+                                if self.xylab_window is not None:
+                                    self.xylab_window.feed_frame(_p500, 500.0)
                             except (ValueError, IndexError):
                                 pass
 
@@ -16018,6 +16476,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.pilab_window.update_plots()
                 self._py_timing['plot_pilab'].append((time.perf_counter() - _t0p) * 1000)
 
+            self._xylab_refresh_counter += 1
+            if self.xylab_window is not None and self._xylab_refresh_counter >= self._XYLAB_REFRESH_EVERY:
+                self._xylab_refresh_counter = 0
+                _t0p = time.perf_counter()
+                self.xylab_window.update_plots()
+                self._py_timing['plot_xylab'].append((time.perf_counter() - _t0p) * 1000)
+
             # PythonTimingWindow: refresh every ~1 s (5 render ticks at 200 ms)
             self._pytiming_refresh_counter += 1
             if self.python_timing_window is not None and self._pytiming_refresh_counter >= 5:
@@ -16041,6 +16506,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self._py_timing['algo_hr2test'].clear()
                 if self.hr3test_window   is None: self._py_timing['plot_hr3test'].clear()
                 if self.pilab_window     is None: self._py_timing['plot_pilab'].clear()
+                if self.xylab_window     is None: self._py_timing['plot_xylab'].clear()
                 _pt_stats = {}
                 for k, q in self._py_timing.items():
                     if q:
@@ -16100,6 +16566,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr3test_default)
         if s.value("PPGMonitor/pilab_open",     False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_pilab_default)
+        if s.value("PPGMonitor/xylab_open",     False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_xylab_default)
         if s.value("PPGMonitor/esp32_timing_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_esp32_timing_default)
         if s.value("PPGMonitor/python_timing_open",  False, type=bool):
@@ -16150,6 +16618,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         ("hr3lab_open",        "HR3LabWindow"),
         ("spo2lab_open",       "SpO2LabWindow"),
         ("pilab_open",         "PILabWindow"),
+        ("xylab_open",         "XYLabWindow"),
         ("spo2test_open",      "SpO2TestWindow"),
         ("hr1test_open",       "HR1TestWindow"),
         ("hr2test_open",       "HR2TestWindow"),
@@ -16306,6 +16775,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.pilab_window is not None:
             self.pilab_window.main_monitor = None
             self.pilab_window.close()
+        if self.xylab_window is not None:
+            self.xylab_window.main_monitor = None
+            self.xylab_window.close()
         if self.esp32_timing_window is not None:
             self.esp32_timing_window.close()
         if self.python_timing_window is not None:
