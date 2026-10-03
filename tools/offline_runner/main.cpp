@@ -1,7 +1,14 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.22 — native/offline (no hardware), library API v0.98
+// Runner version: v0.23 — native/offline (no hardware), library API v0.99
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
+//
+// v0.23 (2026-10-03): computes the R-method candidate R_CAND_LABEL (causal regression on
+//   derivatives, "reg_dols") next to the library, on the very OT samples and ProbeState the
+//   library's SpO2 receives, and appends it as R_CAND, with its correlation R_CAND_CORR (r of the
+//   derivative regression: ~0.99 with a pulse, ~0 without -- the SQI candidate), to every replay row. Step 2
+//   of the R-method plan (library rationale): replay the corpus, check the candidate gets worse
+//   nowhere, before it goes into the library. The per-part summary compares both R streams.
 //
 // v0.22 (2026-10-02): replays with the capture's own R curve through setSpO2RCurve() (lib v0.98):
 //   fw >= 0.16 names it in $CFG (spo2_r_curve_*); fw <= 0.15 printed only spo2a/spo2b, read as the
@@ -43,6 +50,84 @@
 #include <cctype>
 
 namespace fs = std::filesystem;
+
+// ── R-method candidate: causal regression on derivatives ("reg_dols") ─────────
+// x = BP(ot_ir)/DC_ir, y = BP(ot_red)/DC_red;  R = EMA(dx·dy) / EMA(dx²),  dx = x[n] − x[n−1].
+// The derivative weights the systolic upstroke, where both channels move together, and
+// de-weights slow venous/motion components; the band-pass removes the out-of-band power that
+// inflates R-METHOD-1's red RMS more than its IR RMS. Offline on HOSPNAV SUBJ08/09 (3471 stationary
+// pairs): scatter 5.07 -> 1.63 SpO2 points, Spearman rho -0.44 -> -0.80.
+// Built only from library pieces, so it can move into the library as is: the band-pass is the
+// library's one-biquad BiquadFilter::init_bp (2 poles; a 4-pole Butterworth measured the same,
+// 1.62), with its steady-state precharge; DC is an EMA initialised to the first sample, as
+// EmaChannel; reset and warm-up (3 × tau_ac) follow _spo2_update(): any ProbeState other than
+// PROBE_APPLIED resets, and R is NaN until the warm-up is over.
+// Label per the R-method naming (PILAB step numbering): STEP1 1.2 band-pass, STEP2 2.6
+// derivative regression, STEP3 3.1 EMA DC.
+static const char* R_CAND_LABEL = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1(2s)";
+
+struct CandBiquad {                     // transcription of INCUNEST_AFE4490::BiquadFilter (band-pass)
+    float b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0, v1 = 0, v2 = 0;
+    bool  precharge = true;
+    void init_bp(float f_lo, float f_hi, float fs) {
+        float k = 2.0f * fs;
+        float o_lo = k * tanf(3.14159265358979f * f_lo / fs);
+        float o_hi = k * tanf(3.14159265358979f * f_hi / fs);
+        float o0sq = o_lo * o_hi, bw = o_hi - o_lo, d = k * k + bw * k + o0sq;
+        b0 = bw * k / d; b1 = 0.0f; b2 = -bw * k / d;
+        a1 = 2.0f * (o0sq - k * k) / d; a2 = (k * k - bw * k + o0sq) / d;
+    }
+    void reset() { v1 = 0.0f; v2 = 0.0f; precharge = true; }
+    float process(float x) {
+        if (precharge) {
+            float denom = 1.0f + a1 + a2;
+            float y_ss  = (denom != 0.0f) ? x * (b0 + b1 + b2) / denom : 0.0f;
+            v1 = y_ss - b0 * x;
+            v2 = b2 * x - a2 * y_ss;
+            precharge = false;
+        }
+        float y = b0 * x + v1;
+        v1 = b1 * x - a1 * y + v2;
+        v2 = b2 * x - a2 * y;
+        return y;
+    }
+};
+
+struct RCandDols {
+    static constexpr float F_LO = 0.5f, F_HI = 5.0f, TAU_DC_S = 2.0f, TAU_AC_S = 6.0f;
+    static constexpr float DIV_EPS = 1e-12f;
+    CandBiquad bp_ir, bp_red;
+    float a_dc = 0, a_ac = 0, dc_ir = 0, dc_red = 0, x_prev = 0, y_prev = 0, sxy = 0, sxx = 0, syy = 0;
+    float corr = NAN;   // r = sxy / sqrt(sxx*syy) of the last update: ~0.99 with a pulse, ~0 without
+    uint32_t count = 0, warmup = 0;
+
+    void init(float fs) {
+        bp_ir.init_bp(F_LO, F_HI, fs); bp_red.init_bp(F_LO, F_HI, fs);
+        a_dc = 1.0f - expf(-1.0f / (TAU_DC_S * fs));
+        a_ac = 1.0f - expf(-1.0f / (TAU_AC_S * fs));
+        warmup = (uint32_t)roundf(3.0f * TAU_AC_S * fs);
+        reset();
+    }
+    void reset() { bp_ir.reset(); bp_red.reset(); count = 0; sxy = 0.0f; sxx = 0.0f; syy = 0.0f; corr = NAN; }
+
+    float update(float ot_ir, float ot_red, bool applied) {
+        if (!applied) { reset(); return NAN; }
+        if (count == 0) { dc_ir = ot_ir; dc_red = ot_red; }
+        else { dc_ir += a_dc * (ot_ir - dc_ir); dc_red += a_dc * (ot_red - dc_red); }
+        float x = dc_ir  > DIV_EPS ? bp_ir.process(ot_ir)   / dc_ir  : 0.0f;
+        float y = dc_red > DIV_EPS ? bp_red.process(ot_red) / dc_red : 0.0f;
+        if (count > 0) {
+            float dx = x - x_prev, dy = y - y_prev;
+            sxy += a_ac * (dx * dy - sxy);
+            sxx += a_ac * (dx * dx - sxx);
+            syy += a_ac * (dy * dy - syy);
+        }
+        x_prev = x; y_prev = y; count++;
+        if (count < warmup || sxx <= DIV_EPS * DIV_EPS || syy <= DIV_EPS * DIV_EPS) { corr = NAN; return NAN; }
+        corr = sxy / sqrtf(sxx * syy);
+        return sxy / sxx;
+    }
+};
 
 // ── CSV row (raw signals + optional firmware outputs) ─────────────────────────
 struct CsvRow {
@@ -254,9 +339,18 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
 // ── Replay one part through an already-configured library instance ───────────
 struct PartStats {
     int n = 0, probe_on = 0, spo2_producing = 0, ps_match = 0, ps_compared = 0;
+    std::vector<float> r_lib, r_cand;   // both finite on the same sample
+    int lib_valid = 0, cand_valid = 0;
 };
 
-static PartStats replay_part(INCUNEST_AFE4490& afe, const std::vector<CsvRow>& rows,
+static float pct(std::vector<float> v, float q) {
+    if (v.empty()) return NAN;
+    size_t i = (size_t)(q * (v.size() - 1));
+    std::nth_element(v.begin(), v.begin() + i, v.end());
+    return v[i];
+}
+
+static PartStats replay_part(INCUNEST_AFE4490& afe, RCandDols& cand, const std::vector<CsvRow>& rows,
                              const fs::path& out_path, long long* smp_idx) {
     std::ofstream out(out_path);
     PartStats st;
@@ -268,7 +362,7 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, const std::vector<CsvRow>& r
     out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,PI,SpO2,SpO2_SQI,"
            "HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
     if (has_fw) out << ",FW_SpO2,FW_R,FW_ProbeState,delta_SpO2,delta_R";
-    out << "\n";
+    out << ",R_CAND,R_CAND_CORR\n";
     char buf[512];
     for (const CsvRow& r : rows) {
         afe.test_feed_sample(r.led1, r.led2, r.aled1, r.aled2);
@@ -292,7 +386,15 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, const std::vector<CsvRow>& r
             st.ps_compared++;
             if (ps == r.fw_ps) st.ps_match++;
         }
-        out << "\n";
+        // The candidate sees what _spo2_update() saw: the last valid analog state's OT (the
+        // library feeds `as`, which is that state) and the same ProbeState.
+        float rc = cand.update(afe.test_last_ot_led1(), afe.test_last_ot_led2(),
+                               ps == (int)ProbeState::PROBE_APPLIED);
+        snprintf(buf, sizeof(buf), ",%.5f,%.4f\n", rc, cand.corr);
+        out << buf;
+        if (std::isfinite(rr)) st.lib_valid++;
+        if (std::isfinite(rc)) st.cand_valid++;
+        if (std::isfinite(rr) && std::isfinite(rc)) { st.r_lib.push_back(rr); st.r_cand.push_back(rc); }
         (*smp_idx)++;
         st.n++;
         if (ps == 1 || ps == 2) st.probe_on++;
@@ -373,13 +475,15 @@ int main(int argc, char* argv[]) {
         return stem;
     };
 
-    printf("incunest_offline_runner v0.22 (lib %s) — %zu file(s)%s -> %s\n",
+    printf("incunest_offline_runner v0.23 (lib %s) — %zu file(s)%s -> %s\n",
            INCUNEST_AFE4490_VERSION, files.size(),
            ot_thr > 0 ? "" : ", ot-thr = library default", out_dir.string().c_str());
     if (ot_thr > 0) printf("  rsqm_ot_thr override: %g A/A\n", ot_thr);
+    printf("  R_CAND = %s\n", R_CAND_LABEL);
 
     std::string cur_group;
     INCUNEST_AFE4490* afe = nullptr;
+    RCandDols cand;
     long long smp_idx = 0;
     int rc = 0;
     for (const auto& fpath : files) {
@@ -401,10 +505,11 @@ int main(int argc, char* argv[]) {
                 continue;                       // refuse to replay misconfigured
             }
             if (ot_thr > 0) afe->setRsqmOtThr(ot_thr);
+            cand.init(cfg.count("sr") ? std::stof(cfg.at("sr")) : 500.0f);
         }
 
         fs::path out_path = out_dir / (fpath.stem().string() + "_replay.csv");
-        PartStats st = replay_part(*afe, rows, out_path, &smp_idx);
+        PartStats st = replay_part(*afe, cand, rows, out_path, &smp_idx);
         printf("  %s -> %s  (%d samples, probe-on %.1f%%, SpO2 producing %.1f%%",
                fpath.filename().string().c_str(), out_path.filename().string().c_str(),
                st.n, st.n ? 100.0 * st.probe_on / st.n : 0.0,
@@ -412,6 +517,12 @@ int main(int argc, char* argv[]) {
         if (st.ps_compared)
             printf(", ProbeState match %.1f%%", 100.0 * st.ps_match / st.ps_compared);
         printf(")\n");
+        // R of both methods where both are valid: median and the 1-99 % span
+        printf("      R valid: lib %.1f%%, cand %.1f%%; both: lib p50 %.3f [p1 %.3f, p99 %.3f], "
+               "cand p50 %.3f [p1 %.3f, p99 %.3f]\n",
+               st.n ? 100.0 * st.lib_valid / st.n : 0.0, st.n ? 100.0 * st.cand_valid / st.n : 0.0,
+               pct(st.r_lib, 0.5f), pct(st.r_lib, 0.01f), pct(st.r_lib, 0.99f),
+               pct(st.r_cand, 0.5f), pct(st.r_cand, 0.01f), pct(st.r_cand, 0.99f));
     }
     delete afe;
     return rc;

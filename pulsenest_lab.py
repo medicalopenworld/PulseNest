@@ -4506,6 +4506,23 @@ class HR3TestCalc:
         return self.hr_bpm, self.hr_sqi
 
 
+# The R-method candidate (R-method plan, step 2): what PILAB's [R CANDIDATE] preset loads and
+# tools/offline_runner computes as R_CAND (runner v0.23) -- same label, same arithmetic.
+R_METHOD_CAND_DOLS = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1(2s)"
+
+
+def _lib_biquad_bp(f_lo, f_hi, fs):
+    """(b0, b2, a1, a2) of the library's BiquadFilter::init_bp: one 2-pole Butterworth band-pass
+    section, bilinear and prewarped (b1 = 0, b2 = -b0). The firmware has no other band-pass."""
+    k = 2.0 * fs
+    o_lo = k * math.tan(math.pi * f_lo / fs)
+    o_hi = k * math.tan(math.pi * f_hi / fs)
+    o0sq = o_lo * o_hi
+    bw = o_hi - o_lo
+    d = k * k + bw * k + o0sq
+    return bw * k / d, -bw * k / d, 2.0 * (o0sq - k * k) / d, (k * k - bw * k + o0sq) / d
+
+
 OfflineCapture = namedtuple('OfflineCapture',
                             'ir red t fs fmt restarts gaps dropped')
 
@@ -4598,7 +4615,8 @@ class PICalc:
 
     STEP1 — AC waveform extraction:
       S1_EMA  (1.1): EMA-based subtraction (τ_sub seconds)
-      S1_BPF  (1.2): 2nd-order Butterworth bandpass (bpf_lo–bpf_hi Hz)
+      S1_BPF  (1.2): the library's one-biquad Butterworth band-pass (bpf_lo–bpf_hi Hz), with its
+                     steady-state precharge (v1.81; it was scipy's 4-pole design before)
       S1_NONE (1.3): pass-through (only valid with spectral STEP2 2.4/2.5)
 
     STEP2 — AC amplitude estimator:
@@ -4607,16 +4625,21 @@ class PICalc:
       S2_PEAKPK    (2.3): peak-to-peak / 2 over win_s seconds
       S2_SPECTRAL  (2.4): FFT energy in band [f_HR ± delta_hz]
       S2_HARMONICS (2.5): FFT energy sum at n·f_HR harmonics
+      S2_DOLS      (2.6): regression on derivatives (v1.81) -- R = EMA(dx·dy)/EMA(dx²) with
+                          x = ac_ir/dc_norm_ir, y = ac_red/dc_norm_red, dx = x[n]-x[n-1] (τ_ac).
+                          A joint estimator: it gives R, not one amplitude per channel, so ac_amp
+                          (and PI) are the 2.1 EMA-RMS of the same STEP1 output. corr_dols is its r.
 
     STEP3 — DC for PI denominator:
-      S3_EMA      (3.1): EMA of raw signal — firmware method method (τ_norm seconds)
+      S3_EMA      (3.1): EMA of raw signal — firmware method method (τ_norm seconds); like the
+                         library's EmaChannel it starts at the first sample, not at 0 (v1.81)
       S3_LPF      (3.2): 2nd-order Butterworth LPF (lpf_fc Hz)
       S3_WIN_MEAN (3.3): windowed mean (win_norm_s seconds)
     """
 
     S1_EMA = "1.1"; S1_BPF = "1.2"; S1_NONE = "1.3"
     S2_EMA_RMS = "2.1"; S2_WIN_RMS = "2.2"; S2_PEAKPK = "2.3"
-    S2_SPECTRAL = "2.4"; S2_HARMONICS = "2.5"
+    S2_SPECTRAL = "2.4"; S2_HARMONICS = "2.5"; S2_DOLS = "2.6"
     S3_EMA = "3.1"; S3_LPF = "3.2"; S3_WIN_MEAN = "3.3"
 
     # SpO2 calibration defaults (mirror firmware incunest_afe4490 defaults)
@@ -4652,7 +4675,10 @@ class PICalc:
         self._win_buf_ir   = deque(); self._win_buf_red  = deque()
         self._raw_ir_buf   = deque(); self._raw_red_buf  = deque()
         self._norm_buf_ir  = deque(); self._norm_buf_red = deque()
-        self._bpf_sos = None; self._bpf_zi_ir = None; self._bpf_zi_red = None
+        self._bp = None; self._bp_v_ir = None; self._bp_v_red = None   # S1_BPF: coeffs, [v1, v2]
+        self._n = 0                                                      # samples since reset
+        self._dols_sxy = 0.0; self._dols_sxx = 0.0; self._dols_syy = 0.0; self._dols_prev = None
+        self.corr_dols = 0.0   # S2_DOLS: r of the derivative regression (~0.99 with a pulse, ~0 without)
         self._lpf_sos = None; self._lpf_zi_ir = None; self._lpf_zi_red = None
         self._win_max_n = 200; self._norm_max_n = 200
 
@@ -4675,7 +4701,10 @@ class PICalc:
         self._win_buf_ir.clear(); self._win_buf_red.clear()
         self._raw_ir_buf.clear(); self._raw_red_buf.clear()
         self._norm_buf_ir.clear(); self._norm_buf_red.clear()
-        self._bpf_zi_ir = None; self._bpf_zi_red = None
+        self._bp_v_ir = None; self._bp_v_red = None
+        self._n = 0
+        self._dols_sxy = 0.0; self._dols_sxx = 0.0; self._dols_syy = 0.0; self._dols_prev = None
+        self.corr_dols = 0.0
         self._lpf_zi_ir = None; self._lpf_zi_red = None
         self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
         self.ac_amp_ir  = 0.0; self.ac_amp_red = 0.0
@@ -4699,12 +4728,9 @@ class PICalc:
         if self.step1 == self.S1_BPF:
             lo = max(0.01, min(self.bpf_lo, nyq * 0.9))
             hi = max(lo + 0.01, min(self.bpf_hi, nyq * 0.99))
-            try:
-                self._bpf_sos = signal.butter(2, [lo / nyq, hi / nyq], btype='bandpass', output='sos')
-            except Exception:
-                self._bpf_sos = None
+            self._bp = _lib_biquad_bp(lo, hi, fs)
         else:
-            self._bpf_sos = None
+            self._bp = None
         # LPF (S3_LPF)
         if self.step3 == self.S3_LPF:
             fc = max(0.01, min(self.lpf_fc, nyq * 0.99))
@@ -4723,6 +4749,10 @@ class PICalc:
         if fs != self._fs:
             self.reconfigure(fs)
         ir = float(ir); red = float(red)
+        if self._n == 0:   # as EmaChannel: the DC estimates start at the first sample, not at 0
+            self._ema_dc_ir = ir; self._ema_dc_red = red
+            self._ema_dc_norm_ir = ir; self._ema_dc_norm_red = red
+        self._n += 1
 
         # ── STEP 1: AC waveform extraction ─────────────────────────────────────────────
         if self.step1 == self.S1_EMA:
@@ -4733,14 +4763,15 @@ class PICalc:
             ac_ir  = ir  - self._ema_dc_ir
             ac_red = red - self._ema_dc_red
         elif self.step1 == self.S1_BPF:
-            if self._bpf_sos is not None:
-                if self._bpf_zi_ir is None:
-                    zi = signal.sosfilt_zi(self._bpf_sos)
-                    self._bpf_zi_ir  = zi * ir
-                    self._bpf_zi_red = zi * red
-                _out_ir,  self._bpf_zi_ir  = signal.sosfilt(self._bpf_sos, [ir],  zi=self._bpf_zi_ir)
-                _out_red, self._bpf_zi_red = signal.sosfilt(self._bpf_sos, [red], zi=self._bpf_zi_red)
-                ac_ir  = float(_out_ir[0]); ac_red = float(_out_red[0])
+            if self._bp is not None:
+                b0, b2, a1, a2 = self._bp
+                if self._bp_v_ir is None:   # BiquadFilter's steady-state precharge (y_ss = 0)
+                    self._bp_v_ir  = [-b0 * ir,  b2 * ir]
+                    self._bp_v_red = [-b0 * red, b2 * red]
+                v = self._bp_v_ir                     # DF-II transposed, b1 = 0
+                ac_ir = b0 * ir + v[0];   v[0] = -a1 * ac_ir + v[1];   v[1] = b2 * ir - a2 * ac_ir
+                v = self._bp_v_red
+                ac_red = b0 * red + v[0]; v[0] = -a1 * ac_red + v[1];  v[1] = b2 * red - a2 * ac_red
             else:
                 ac_ir = ir; ac_red = red
             # dc_sub = signal minus BPF output (what the BPF removes)
@@ -4756,7 +4787,7 @@ class PICalc:
         self.ac_wave_red = ac_red
 
         # ── STEP 2: AC amplitude estimator ─────────────────────────────────────────────
-        if self.step2 == self.S2_EMA_RMS:
+        if self.step2 in (self.S2_EMA_RMS, self.S2_DOLS):
             self._ema_ac2_ir  += self._alpha_ac * (ac_ir  * ac_ir  - self._ema_ac2_ir)
             self._ema_ac2_red += self._alpha_ac * (ac_red * ac_red - self._ema_ac2_red)
             ac_amp_ir  = math.sqrt(max(0.0, self._ema_ac2_ir))
@@ -4840,7 +4871,23 @@ class PICalc:
         # would pin the denominator to 1. No light, no PI.
         self.pi_ir  = self.ac_amp_ir  / dc_norm_ir  * 100.0 if dc_norm_ir  > 0.0 else 0.0
         self.pi_red = self.ac_amp_red / dc_norm_red * 100.0 if dc_norm_red > 0.0 else 0.0
-        self.R    = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
+        if self.step2 == self.S2_DOLS:
+            # Regression on derivatives of the normalised pulse: the slope of red against IR
+            # where both move together (systolic upstroke); slow components barely move dx.
+            x = ac_ir / dc_norm_ir if dc_norm_ir > 0.0 else 0.0
+            y = ac_red / dc_norm_red if dc_norm_red > 0.0 else 0.0
+            if self._dols_prev is not None:
+                dx = x - self._dols_prev[0]; dy = y - self._dols_prev[1]
+                a = self._alpha_ac
+                self._dols_sxy += a * (dx * dy - self._dols_sxy)
+                self._dols_sxx += a * (dx * dx - self._dols_sxx)
+                self._dols_syy += a * (dy * dy - self._dols_syy)
+            self._dols_prev = (x, y)
+            sxx, syy = self._dols_sxx, self._dols_syy
+            self.R = self._dols_sxy / sxx if sxx > 0.0 else 0.0
+            self.corr_dols = self._dols_sxy / math.sqrt(sxx * syy) if sxx > 0.0 and syy > 0.0 else 0.0
+        else:
+            self.R = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
         self.spo2 = max(0.0, min(100.0, self.spo2_r_curve_a - self.spo2_r_curve_b * self.R)) if self.R > 0.0 else 0.0
         return self.pi_ir, self.pi_red, self.R
 
@@ -5788,14 +5835,13 @@ class PILabWindow(QtWidgets.QMainWindow):
         form.addRow("  τ_sub:", tau_sub)
         bpf_lo = _dspin(0.01, 10.0, 0.5, 0.1, " Hz")
         bpf_lo.setToolTip(_make_tooltip("BPF lo cutoff",
-            "Lower cutoff frequency for 2nd-order Butterworth BPF (Hz).\n"
+            "Lower cutoff of the band-pass (Hz): the library's one-biquad 2-pole Butterworth\n"
+            "(BiquadFilter::init_bp), the only band-pass the firmware has (v1.81).\n"
             "Rejects slow components below this frequency (baseline wander, respiration).\n"
-            "Roll-off: -12 dB/octave — at bpf_lo the attenuation is only -3 dB.\n"
+            "Roll-off: -6 dB/octave per skirt — at bpf_lo the attenuation is only -3 dB.\n"
             "\n"
-            "Adult respiration: 0.20–0.33 Hz (12–20 rpm)\n"
-            "  0.3 Hz: 0.33 Hz passes at -3 dB — poor rejection\n"
-            "  0.4 Hz: 0.33 Hz at -3.5 dB — marginal\n"
-            "  0.5 Hz: 0.33 Hz at -8 dB, 0.2 Hz at -24 dB — good\n"
+            "Adult respiration: 0.20–0.33 Hz (12–20 rpm); with 0.5–5 Hz at 500 Hz:\n"
+            "  0.33 Hz at -5.6 dB, 0.2 Hz at -9.3 dB — partial rejection only\n"
             "\n"
             "Neonatal respiration: 0.5–1.0 Hz — falls inside the passband regardless\n"
             "of bpf_lo. BPF cannot reject it; use spectral methods (2.4/2.5) instead.\n"
@@ -5814,7 +5860,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         lbl2.setStyleSheet(_lbl_sty); form.addRow(lbl2)
         s2 = QtWidgets.QComboBox(); s2.setStyleSheet(_ss_cb)
         s2.addItems(["2.1 EMA-RMS", "2.2 Win-RMS", "2.3 Peak-to-peak",
-                     "2.4 Spectral band", "2.5 Harmonics"])
+                     "2.4 Spectral band", "2.5 Harmonics", "2.6 Derivative regression"])
         s2.setToolTip(_make_tooltip("STEP2 method",
             "2.1 EMA-RMS: running RMS via EMA of x² (τ_ac) — firmware method\n"
             "2.2 Win-RMS: windowed RMS over win_s seconds\n"
@@ -5831,7 +5877,11 @@ class PILabWindow(QtWidgets.QMainWindow):
             "    notch carry significant energy at 2nd and 3rd harmonic. Summing harmonics\n"
             "    gives a more complete amplitude estimate than the fundamental alone.\n"
             "    n_harm=3 is conservative; higher N risks capturing noise at low SNR.\n"
-            "    WARNING: same HR accuracy requirement as 2.4. STEP1 has no effect.",
+            "    WARNING: same HR accuracy requirement as 2.4. STEP1 has no effect.\n"
+            "\n"
+            "2.6 Derivative regression: R = EMA(dx·dy)/EMA(dx²) (τ_ac), x/y = STEP1 output over\n"
+            "    STEP3 DC for IR/red, dx = x[n]−x[n−1]. Weights the systolic upstroke, where both\n"
+            "    channels move together; R only (PI = 2.1). The R-method candidate (preset).",
             src="PICalc.step2"))
         form.addRow("Method:", s2)
         tau_ac = _dspin(0.1, 30.0, 6.0, 0.5, " s")
@@ -5905,6 +5955,17 @@ class PILabWindow(QtWidgets.QMainWindow):
             "  STEP3: EMA           τ_norm = 2.0 s\n"
             "spo2_r_curve_a/b are read from the last received $CFG frame."))
         form.addRow("", preset_btn)
+        cand_btn = QtWidgets.QPushButton("R CANDIDATE")
+        cand_btn.setStyleSheet(ACTION_BUTTON_STYLE)
+        cand_btn.setToolTip(_make_tooltip("R-method candidate",
+            f"Load {R_METHOD_CAND_DOLS} into this instance -- the causal regression on\n"
+            "derivatives that tools/offline_runner computes as R_CAND:\n"
+            "  STEP1: BPF 0.5–5 Hz (the library's one-biquad band-pass)\n"
+            "  STEP2: derivative regression  τ_ac = 6.0 s\n"
+            "  STEP3: EMA                    τ_norm = 2.0 s\n"
+            "SpO2 still uses the R curve from $CFG, fitted with another R method: its absolute\n"
+            "value is not calibrated for this R. Compare R, not SpO2."))
+        form.addRow("", cand_btn)
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
@@ -5931,6 +5992,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         calc_ref = self.calc_a if name == "A" else self.calc_b
         apply_btn.clicked.connect(lambda: self._apply_config(cfg, calc_ref))
         preset_btn.clicked.connect(lambda: self._apply_firmware_preset(cfg, calc_ref))
+        cand_btn.clicked.connect(lambda: self._apply_candidate_preset(cfg, calc_ref))
         s1.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
         s2.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
         s3.currentIndexChanged.connect(lambda _: self._refresh_param_state(cfg))
@@ -5965,7 +6027,7 @@ class PILabWindow(QtWidgets.QMainWindow):
     def _apply_config(self, cfg, calc):
         _s1 = [PICalc.S1_EMA,     PICalc.S1_BPF,     PICalc.S1_NONE]
         _s2 = [PICalc.S2_EMA_RMS, PICalc.S2_WIN_RMS, PICalc.S2_PEAKPK,
-               PICalc.S2_SPECTRAL, PICalc.S2_HARMONICS]
+               PICalc.S2_SPECTRAL, PICalc.S2_HARMONICS, PICalc.S2_DOLS]
         _s3 = [PICalc.S3_EMA,     PICalc.S3_LPF,     PICalc.S3_WIN_MEAN]
         calc.step1       = _s1[cfg['s1'].currentIndex()]
         calc.tau_sub     = cfg['tau_sub'].value()
@@ -6011,6 +6073,19 @@ class PILabWindow(QtWidgets.QMainWindow):
         kv  = getattr(mon, '_last_cfg', {}) if mon is not None else {}
         self._sync_spo2_coeffs(kv)
 
+    def _apply_candidate_preset(self, cfg, calc):
+        """Load the R-method candidate (R_METHOD_CAND_DOLS) into cfg widgets and apply."""
+        cfg['s1'].setCurrentIndex(1)       # S1_BPF
+        cfg['bpf_lo'].setValue(0.5)
+        cfg['bpf_hi'].setValue(5.0)
+        cfg['s2'].setCurrentIndex(5)       # S2_DOLS
+        cfg['tau_ac'].setValue(6.0)
+        cfg['s3'].setCurrentIndex(0)       # S3_EMA
+        cfg['tau_norm'].setValue(2.0)
+        self._refresh_param_state(cfg)
+        self._apply_config(cfg, calc)
+        self.statusBar().showMessage(f"Instance {cfg['name']} = {R_METHOD_CAND_DOLS}")
+
     def _sync_spo2_coeffs(self, kv):
         """Read spo2_r_curve_a/spo2_r_curve_b from a parsed $CFG kv dict and apply to both PICalc instances."""
         try:
@@ -6039,7 +6114,7 @@ class PILabWindow(QtWidgets.QMainWindow):
         _set(cfg['bpf_lo'],  s1_idx == 1)
         _set(cfg['bpf_hi'],  s1_idx == 1)
         # STEP2
-        _set(cfg['tau_ac'], s2_idx == 0)
+        _set(cfg['tau_ac'], s2_idx in (0, 5))
         _set(cfg['win_s'],  s2_idx in (1, 2))
         _set(cfg['hr_bpm'], s2_idx in (3, 4))
         _set(cfg['n_harm'], s2_idx == 4)

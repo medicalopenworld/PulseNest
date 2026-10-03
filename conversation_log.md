@@ -25985,3 +25985,27 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   PILAB guarda la grabación entera offline con diezmado por píxel, la vuelve a procesar al cambiar la config
   (PICalc 1,1 µs/muestra: 266 000 muestras en 1,4 s). Verificado offscreen con SUBJ09 p01 y MS100 40 BPM.
 - Sin tocar: el directo de PILAB sigue pasando 50 Hz, cierto solo con el diezmado por defecto (10).
+
+## 2026-10-03 — Plan R: paso 2 (candidato `reg_dols` en offline_runner y PILAB)
+
+- Alex: "adelante" tras la v1.80 → paso 2 del plan de R (traspaso de `pulsenest-56` en
+  `project_spo2_r_estimation_alternatives_task.md`).
+- **Decisión de filtro:** el paso banda del candidato es el **biquad único de la lib** (`init_bp`, 2 polos), no el
+  Butterworth de 4 polos de la referencia: dispersión 1,63 frente a 1,62 sobre los 3471 pares HOSPNAV, mismos
+  ajustes y LOSO. **τ_ac se queda en 6 s** (2 s da 1,39, pero es la decisión del tiempo de promediado, rationale
+  §4.5, no del método).
+- **offline_runner v0.23**: columnas `R_CAND` y `R_CAND_CORR` (r de la regresión) junto a la lib, con las mismas
+  OT y ProbeState que recibe `_spo2_update()`. C++ float = Python float64 a 2·10⁻⁴.
+- **Replay de todo lo grabado** (8 sesiones HOSPNAV, corpus v0.4, 16 MS100; salidas en el scratchpad): cobertura
+  idéntica a la lib; MS100 limpio estable (0,545–0,551 vs 0,554); MS100 con sonda perturbada menos sesgo (0,66–0,73
+  vs 0,82–0,87; sin perturbar 0,554); HOSPNAV p99 ≤ 1,53 frente a 15–50 de la lib en seis partes de SUBJ09.
+- **Modo de fallo nuevo y su detector:** 3 episodios (29 s, SUBJ09) con R del candidato ≈ 0 o negativo (hasta −1,1);
+  ahí r ≈ 0 (sin pulso) y la lib da R de 2,5–30, igual de mal. Exigir r ≥ 0,6–0,9 los quita todos y conserva el
+  93–94 %. **Umbral de r pendiente de Alex.**
+- **pulsenest_lab v1.81**: PILAB STEP2 2.6 (regresión sobre derivadas) + botón [R CANDIDATE]; STEP1 1.2 pasa al biquad
+  de la lib; los DC por EMA arrancan en la primera muestra (como `EmaChannel`). A = R de la lib a ≤ 1·10⁻³, B =
+  `R_CAND` a ≤ 2·10⁻⁴ (SUBJ08 1142 p01).
+- Rationale de la lib **§9 nuevo** (opciones, medidas, decisiones, fallo y detector) y spec §9 (columnas del runner),
+  sin subir versión de la lib (ningún cambio de código de la lib).
+- Siguiente: umbral de r → paso 3 (R-METHOD-2 en la lib + curva reajustada con él); pendientes 1e (espectral /
+  autocorrelación) y 1f.

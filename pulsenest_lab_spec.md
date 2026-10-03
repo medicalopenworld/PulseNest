@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.80
+# pulsenest_lab — Specification v1.81
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2019,13 +2019,15 @@ The PI denominator is guarded only against division by zero (`dc_norm > 0`, else
 
 | Step | Role | Methods |
 |------|------|---------|
-| STEP1 — DC subtraction | Removes baseline to isolate AC component | S1_EMA (EMA τ_sub), S1_BPF (Butterworth BPF), S1_NONE (pass-through) |
-| STEP2 — AC estimator | Estimates pulse amplitude | S2_EMA_RMS (EMA of x², τ_ac), S2_WIN_RMS (windowed RMS), S2_PEAKPK ((max−min)/2), S2_SPECTRAL (FFT energy at f_HR±Δ), S2_HARMONICS (FFT energy sum at n·f_HR) |
+| STEP1 — DC subtraction | Removes baseline to isolate AC component | S1_EMA (EMA τ_sub), S1_BPF (the library's one-biquad Butterworth band-pass, precharged — v1.81), S1_NONE (pass-through) |
+| STEP2 — AC estimator | Estimates pulse amplitude | S2_EMA_RMS (EMA of x², τ_ac), S2_WIN_RMS (windowed RMS), S2_PEAKPK ((max−min)/2), S2_SPECTRAL (FFT energy at f_HR±Δ), S2_HARMONICS (FFT energy sum at n·f_HR), S2_DOLS (v1.81: regression on derivatives — R = EMA(dx·dy)/EMA(dx²), τ_ac, of x = STEP1/STEP3 per channel; a joint estimator, so ac_amp/PI are 2.1's; `corr_dols` = its r) |
 | STEP3 — DC denominator | Estimates DC for the PI denominator (independent of STEP1) | S3_EMA (EMA τ_norm), S3_LPF (Butterworth LPF), S3_WIN_MEAN (windowed mean) |
 
 **Output:** `PI_ir = AC_ir / DC_ir × 100 %`, `PI_red = AC_red / DC_red × 100 %`, `R = PI_red / PI_ir`.
 
-**Firmware M1 defaults (Instance A):** STEP1 = S1_EMA τ_sub=2 s; STEP2 = S2_EMA_RMS τ_ac=6 s (ISO 80601-2-61:2026 JJ.2 d); STEP3 = S3_EMA τ_norm=2 s.
+**Firmware M1 defaults (Instance A):** STEP1 = S1_EMA τ_sub=2 s; STEP2 = S2_EMA_RMS τ_ac=6 s (ISO 80601-2-61:2026 JJ.2 d); STEP3 = S3_EMA τ_norm=2 s. The EMA DCs start at the first sample after a reset, as the library's `EmaChannel` (v1.81), so A equals the library's R from the first sample (checked: ≤ 1·10⁻³ over 215 797 samples of SUBJ08 1142 p01).
+
+**[R CANDIDATE] preset (v1.81):** loads `R_METHOD_CAND_DOLS` = `R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1(2s)` — STEP1 band-pass 0.5–5 Hz, STEP2 2.6 τ_ac 6 s, STEP3 EMA τ_norm 2 s — the candidate `tools/offline_runner` v0.23 computes as `R_CAND`; equal to it within 2·10⁻⁴ on the same file. SpO2 B still uses the `$CFG` R curve, fitted with another R method: compare R, not SpO2. Why this candidate: library rationale §9.
 
 `reconfigure(fs)` recalculates EMA alphas and filter coefficients from current parameters and resets state.
 `update(ir, red, fs)` processes one sample; calls `reconfigure` lazily if `fs` changed.
@@ -2682,6 +2684,21 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.81 — 2026-10-03
+
+**PILAB runs the R-method candidate, and mirrors the library's filters** (step 2 of the R-method
+plan, library rationale §9). STEP2 gains **2.6 derivative regression** (`S2_DOLS`): R = EMA(dx·dy)/
+EMA(dx²) over x = STEP1 output / STEP3 DC per channel, plus its correlation `corr_dols`; a joint
+estimator, so `ac_amp`/PI stay 2.1's. A **[R CANDIDATE]** button per instance loads
+`R_METHOD_CAND_DOLS` (BPF 0.5–5 Hz / 2.6 τ 6 s / EMA τ 2 s). Two fidelity fixes on the way:
+**STEP1 1.2 is now the library's one-biquad band-pass** (`BiquadFilter::init_bp`, with its
+steady-state precharge; it was `scipy.signal.butter(2)`, 4 poles, a filter the firmware does not
+have — measured equivalent for this method, rationale §9; tooltip roll-off corrected to −6 dB/octave
+per skirt, respiration attenuations recomputed: 0.33 Hz −5.6 dB, 0.2 Hz −9.3 dB), and **the EMA DCs
+start at the first sample**, as `EmaChannel`, instead of at 0 — before, instance A disagreed with
+the library for the first seconds after every reset. Checked offscreen on SUBJ08 1142 p01: A vs the
+library's R ≤ 1·10⁻³, B vs the runner's `R_CAND` ≤ 2·10⁻⁴, over 215 797 samples.
 
 ### v1.80 — 2026-10-03
 
