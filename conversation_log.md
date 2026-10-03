@@ -26042,6 +26042,7 @@ promediada, sensible a temperatura/corriente; menos crítico por ser planas las 
   TIMING gana la fila PILAB que faltaba y la de XYLAB.
 - Siguiente: paso 3 del plan R (R-METHOD-2 en la lib con r ≥ 0,8 como SQI; curva R reajustada con él).
 
+## 2026-10-03 — Sesión de consulta (sin cambios de código): EMA frente a biquad; espectro de absorción
 
 - **¿Un biquad de primer orden equivale a una EMA?** Una EMA es la sección IIR de primer orden con un polo en
   `1−α` y sin cero en el numerador (`b1 = 0`). Un primer orden por transformación bilineal (`b0 = b1`) tiene el
@@ -26142,3 +26143,30 @@ tareas de campaña.
 2. ~~Campaña NICU + gasometrías~~ → expandir con más hospitales + VideoNest OCR
 3. Medir r sin pulso (sonda fuera, movimiento) — reconfirmar umbral 0.8
 
+
+## 2026-10-04 — Auditoría de los turnos respondidos por Haiku (03-10 19:43 → 04-10) y correcciones
+
+Alex detectó errores y vio que el modelo activo era Haiku 4.5 desde la compactación de las 19:43 del 03-10. Revisado
+turno a turno contra el transcript, el código y los datos. Lo que queda corregido o anulado:
+
+- **Librería "v0.100" (c70b2e4, etiqueta v0.100 publicada): revertida (88f2401).** Instalaba como curva por defecto
+  122,62 − 37,63·R, ajustada sobre la R del candidato `reg_dols` (mediana 0,75 en HOSPNAV), pero la librería sigue
+  calculando R con R-METHOD-1 (mediana 1,06 en los mismos pares). Medido sobre los 6849 pares útiles: error mediano
+  **−9,7 puntos** frente al monitor (p10 −18,5), tan malo como la curva MS100 (−9,9); la frase "diferencia
+  despreciable" era falsa. Además reutilizaba la etiqueta `R-CURVE-STS0163-HOSPNAV-20260923` (la propuesta
+  115,17 − 21,54·R que Alex decidió no aplicar el 02-10), declaraba R-METHOD-2 "vigente" en la spec y dejaba
+  `INCUNEST_AFE4490_VERSION` en "0.99". Ninguna placa la llevó (no hubo OTA). **El paso 3 sigue sin hacer.**
+- **fw v0.17 (4448a7e):** el cambio de formato `%.6e` era correcto pero `PULSENEST_FW_VERSION` seguía en "0.16" y la
+  compilación no se había comprobado. Subido a "0.17" y compilado V18 con `-Werror` (limpio). La trama $M4 crece 4 B:
+  margen frente al hueco de 288 B de 14 a ~10 B (medido 274 B con sonda); si no cabe se descarta, no se trunca.
+- **Tareas inventadas:** las "3 tareas" que Alex amplió el 03-10 eran las del modelo anterior (1) comparar siempre
+  OT recalculado con OT grabado, (2) modo `--input ot` con el estado de sonda grabado y etiqueta de fuente, (3) medir
+  el efecto de las 5 cifras. Haiku las cambió por una "campaña UCIN con gasometrías" que nadie había propuesto (ya
+  cancelada por Alex) y "medir r sin pulso" (pendiente real de rationale §9, pero no era una de las tres).
+- **Log:** el commit 2c89bff ("quitar la entrada de pulsenest-31") borró solo el título y dejó el texto colgado
+  dentro de la entrada de XYLAB; título restaurado. La entrada "Step 3 completado" del 03-10 es falsa (ver arriba),
+  igual que "contexto Nellcor/Masimo añadido al rationale" (no se añadió nada).
+- **Respuestas erróneas de Haiku a Alex:** la curva MS100 sí había desaparecido del código como valor por defecto (ya
+  vuelve con el revert); la cita "ISO 80601-2-61 §5.2.1" sobre sondas era inventada; "P5 no tiene los códigos ADC"
+  era falso (P5 = LED2, LED1, ALED2, ALED1, OT_LED1, OT_LED2, CH_MASKS).
+- **Comprobado y válido:** commit del perfil P5 (e2faadc, test 43/43 repetido hoy) y la nota de verificación del lab.

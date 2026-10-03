@@ -50,7 +50,8 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.16"   // 0.16: $CFG names the R method and the R curve (spo2_r_method_id, spo2_r_curve_*; was spo2a/spo2b)
+#define PULSENEST_FW_VERSION "0.17"   // 0.17: $M4 OT_LED1/OT_LED2 with 7 significant figures (%.6e; was %.4e)
+                                      // 0.16: $CFG names the R method and the R curve (spo2_r_method_id, spo2_r_curve_*; was spo2a/spo2b)
                                       // 0.15: $CFG says why it exists (cause=boot|query|set|hgac, ts_us, hgac_rf_changes); one per HGAC RF move
 
 // ── Pin definitions ────────────────────────────────────────────────────────────────────
