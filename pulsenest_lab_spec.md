@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.82
+# pulsenest_lab — Specification v1.83
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -364,12 +364,16 @@ now emits `$ERR,CFG,frame too long (...)` instead. Since firmware 0.10 the same 
 #### $LCFG — Library/algorithm parameter report
 
 ```
-$LCFG,rsqm_ot_thr=<v>,rsqm_signal_weak_std=<v>,rsqm_disconn_led_sub_thr=<v>,
-      rsqm_disconn_i_pd_thr=<v>,rsqm_probe_state_min_s=<v>,
-      rsqm_ema_mean_tau_s=<v>,rsqm_ema_var_tau_s=<v>*XX
+$LCFG,rsqm_ot_thr=<v>,rsqm_disconn_led_sub_thr=<v>,rsqm_disconn_i_pd_thr=<v>,
+      rsqm_probe_state_min_s=<v>,
+      hgac_enable=<0|1>,hgac_v_tia_high2=<v>,hgac_v_tia_high1=<v>,hgac_v_tia_low1=<v>,
+      hgac_ema_fast_tau_s=<v>,hgac_ema_slow_tau_s=<v>,hgac_ema_ambient_tau_s=<v>,
+      spo2_r_method=<1|2>,spo2_r_corr_min=<v>*XX
 ```
 
-Emitted after a RSQM `$SET` command and in response to `$LCFG?`. Parsed by
+(`spo2_r_method` and `spo2_r_corr_min` since fw 0.18 / lib v0.100; `$SET,spo2_r_method,<1|2>` also
+re-emits `$CFG`, whose `spo2_r_method_id` names the method in force.) Emitted after a library
+`$SET` command and in response to `$LCFG?`. Parsed by
 `_on_lcfg_frame_received()` → updates `LIBConfigWindow`.
 
 #### $TCFG — Raw timing registers
@@ -2294,7 +2298,7 @@ and **clean** (no border) after a matching `$CFG` confirms the change.
 
 ### 7.17 LIBConfigWindow — "LIB CONFIG"
 
-Purpose: view and change RSQM / HGAC library parameters in real time via `$SET`/`$LCFG` protocol.
+Purpose: view and change RSQM / HGAC / SpO2 library parameters in real time via `$SET`/`$LCFG` protocol.
 
 **Contents (RSQM group):**
 - OT threshold (`rsqm_ot_thr`) — OT_HIGH vs APPLIED boundary [A/A]
@@ -2312,8 +2316,12 @@ Purpose: view and change RSQM / HGAC library parameters in real time via `$SET`/
 - Slow EMA τ (`hgac_ema_slow_tau_s`) [s] — leveling estimator
 - Ambient EMA τ (`hgac_ema_ambient_tau_s`) [s] — ALED estimator for the AMBIENT_HIGH alarm
 
+**Contents (SpO2 R method group, v1.83 / lib v0.100):** — see incunest_afe4490 §5.1, *R methods and R curves*
+- R method (`spo2_r_method`) — 1 = R-METHOD-1 (RMS ratio), 2 = R-METHOD-2 (regression on derivatives, default); the switch is immediate, and `$CFG` (re-emitted by the firmware on this `$SET`) shows `spo2_r_method_id` and whether the curve in force was fitted with it
+- r gate (`spo2_r_corr_min`) — R-METHOD-2 only: SpO2 withheld while the regression's correlation r is below it (default 0.8, provisional; −1 = off)
+
 - [Read from chip ($LCFG?)] — requests `$LCFG?` from firmware
-- [Set all] — sends `$SET` for `hgac_enable` and every RSQM + HGAC parameter in the window
+- [Set all] — sends `$SET` for `hgac_enable` and every RSQM, HGAC and SpO2 parameter in the window
 - Status bar: shows last command sent and confirmation status
 
 Controls are marked **dirty** (red text) when edited but not yet confirmed by firmware, and **clean** after a matching `$LCFG` arrives.
@@ -2719,6 +2727,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.83 — 2026-10-04
+
+**LIB CONFIG gains the "SpO2 R method" group** (§7.17): `spo2_r_method` (1 | 2) and
+`spo2_r_corr_min`, the two `$SET`/`$LCFG` keys fw 0.18 adds for lib v0.100, in which R-METHOD-2
+(regression on derivatives, r as validity gate) is the default and R-METHOD-1 stays selectable.
+Nothing else in the lab changes: the `$CFG` line already names the R method and the curve
+(v1.75), and `$M4` does not carry r.
 
 ### v1.82 — 2026-10-03
 

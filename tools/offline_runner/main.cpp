@@ -12,7 +12,7 @@
 //   algorithms (SpO2, HR1, HR2, HR3 and the R candidates) are fed the recorded OT and the recorded
 //   ProbeState, in the production order, skipping the analog reconstruction, RSQM and HGAC — for
 //   algorithm experiments whose input must be exactly what the board computed. It needs the
-//   ProbeState column (the P5 profile does not carry it: refused, not guessed). HR2/HR3 run through
+//   ProbeState column (refused, not guessed, when absent; P5 carries it since 2026-10-04). HR2/HR3 run through
 //   their synchronous test wrappers here; in the raw-code replay they never run on the host (their
 //   slow paths live in FreeRTOS tasks the host HAL does not create), so those columns stay empty there.
 //
@@ -544,7 +544,7 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
             ix = find_columns(split_csv(line));
             if (input_ot && !(ix.has_ot() && ix.fw_ps >= 0)) {
                 fprintf(stderr, "ERROR: %s: --input ot needs the OT_LED1, OT_LED2 and ProbeState columns "
-                        "(a P5 capture has no ProbeState)\n", path.string().c_str());
+                        "(P5 captures before 2026-10-04 afternoon lack ProbeState)\n", path.string().c_str());
                 return false;
             }
             if (!input_ot && !ix.valid()) {
@@ -592,6 +592,7 @@ struct PartStats {
     std::vector<float> r_lib, r_cand;   // both finite on the same sample
     std::vector<float> r_cd, r_ce, r_bw;   // the DC variants, where finite
     int lib_valid = 0, cand_valid = 0;
+    double lib_cand_max_abs = 0.0;       // max |R_lib − R_CAND| where both finite (lib v0.100: same method)
     // Replayed vs recorded OT (raw-code replay of a capture with OT columns)
     long ot_compared = 0, ot_within = 0, ot_max_row = -1;
     int  ot_max_ch = 0;
@@ -626,7 +627,7 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         return st;
     }
     bool has_fw = rows[0].has_fw;
-    out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,PI,SpO2,SpO2_SQI,"
+    out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,R_CORR,PI,SpO2,SpO2_SQI,"
            "HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
     if (has_fw) out << ",FW_SpO2,FW_R,FW_ProbeState,delta_SpO2,delta_R";
     out << ",R_CAND,R_CAND_CORR,R_CAND_CD,R_CAND_CD_CORR,R_CAND_CE,R_CAND_CE_CORR,R_CAND_BW,R_CAND_BW_CORR\n";
@@ -717,9 +718,9 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         float spo2 = afe.test_spo2();
         float rr   = afe.test_spo2_r();
         snprintf(buf, sizeof(buf),
-                 "%lld,%d,%.7g,%.7g,%.5f,%.3g,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                 "%lld,%d,%.7g,%.7g,%.5f,%.4f,%.3g,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
                  *smp_idx, ps, oi, orr,
-                 rr, afe.test_pi(), spo2, afe.test_spo2_sqi(),
+                 rr, afe.test_spo2_r_corr(), afe.test_pi(), spo2, afe.test_spo2_sqi(),
                  afe.test_hr1(), afe.test_hr1_sqi(),
                  afe.test_hr2(), afe.test_hr2_sqi(),
                  afe.test_hr3(), afe.test_hr3_sqi());
@@ -748,7 +749,10 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         if (std::isfinite(rbw)) st.r_bw.push_back(rbw);
         if (std::isfinite(rr)) st.lib_valid++;
         if (std::isfinite(rc)) st.cand_valid++;
-        if (std::isfinite(rr) && std::isfinite(rc)) { st.r_lib.push_back(rr); st.r_cand.push_back(rc); }
+        if (std::isfinite(rr) && std::isfinite(rc)) {
+            st.r_lib.push_back(rr); st.r_cand.push_back(rc);
+            st.lib_cand_max_abs = std::max(st.lib_cand_max_abs, std::fabs((double)rr - rc));
+        }
         (*smp_idx)++;
         st.n++;
         if (ps == 1 || ps == 2) st.probe_on++;
@@ -909,6 +913,9 @@ int main(int argc, char* argv[]) {
                st.n ? 100.0 * st.lib_valid / st.n : 0.0, st.n ? 100.0 * st.cand_valid / st.n : 0.0,
                pct(st.r_lib, 0.5f), pct(st.r_lib, 0.01f), pct(st.r_lib, 0.99f),
                pct(st.r_cand, 0.5f), pct(st.r_cand, 0.01f), pct(st.r_cand, 0.99f));
+        if (!st.r_lib.empty())
+            printf("      lib R vs R_CAND (same method since lib v0.100): max |delta| %.1e over %zu samples\n",
+                   st.lib_cand_max_abs, st.r_lib.size());
         printf("      DC variants p50 [p1, p99]: cd %.3f [%.3f, %.3f], ce %.3f [%.3f, %.3f], bw %.3f [%.3f, %.3f]; "
                "DC float vs double max rel (session so far): ema %.1e, cd %.1e, ce %.1e, bw %.1e\n",
                pct(st.r_cd, 0.5f), pct(st.r_cd, 0.01f), pct(st.r_cd, 0.99f),

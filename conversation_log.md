@@ -26198,3 +26198,38 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   SQI 1 (después pasa a ONLY_LED_SATURATING). Anotado en la tarea de asimetría del debounce.
 - Docs: spec lib §9 (runner v0.25) y rationale §10 (nota de método; "misma H" → "mismos polos", aviso de
   pulsenest-31). Siguiente: paso 3 (R-METHOD-2 en la librería).
+
+## 2026-10-04 (tarde) — P5 con ProbeState; paso 3: R-METHOD-2 en la librería (v0.100); fw 0.18; lab v1.83
+
+- **Modelo:** Alex detectó que respondía Haiku desde las 19:43 del 03-10 y cambió a Opus/Fable; la auditoría de
+  esos turnos está en la entrada de la noche del 03-10 → 04-10 (mañana). Lo de esta tarde se hizo con Fable 5.1.
+- **P5 lleva `ProbeState`** (Alex): `LED2,LED1,ALED2,ALED1,ProbeState,OT_LED1,OT_LED2,CH_MASKS` (8 columnas). Razón:
+  las demás columnas podrían no bastar para regenerarlo y los algoritmos (y `--input ot` del runner) lo necesitan
+  tal como lo vio la placa. Test 43/43, recorder 126, conversor 11; specs del CSV y del recorder al día.
+- **¿Cuándo grabamos a 30 y 35 lpm?** No está en el plan de R: es el pendiente del suelo de 30 lpm (rationale §8,
+  `CAPTURE_SET_SPEC.md`). Se hará en el banco con el MS100 al flashear fw 0.18 + lib v0.100, con P5. 30 lpm es justo
+  el corte inferior del paso banda de R-METHOD-2 (0,5 Hz): R no cambia (mismo filtro en los dos canales), la SNR sí.
+- **Prefijos `_ols`/`_tls`/`_dols`** (Alex): OLS = mínimos cuadrados ordinarios, TLS = totales, dOLS = OLS sobre las
+  primeras diferencias ("derivadas"). Etiquetas de trabajo de `r_regression_test.py`, no bibliografía. Documentado en
+  el diccionario de nomenclatura; en la librería el método se llama R-METHOD-2.
+- **Paso 3 HECHO — lib v0.100** (etiqueta y push): `setSpO2RMethod(1|2)`, por defecto 2 = regresión causal sobre las
+  derivadas del OT paso banda (un biquad 0,5–5 Hz) normalizado por la DC (EMA 2 s): R = EMA(dx·dy)/EMA(dx²), r su
+  correlación, τ 6 s, calentamiento 18 s. **r < `spo2_r_corr_min` (0,8) retira SpO2** (NaN, SQI 0) dejando R y r a la
+  vista (`AFE4490Data::spo2_r_corr`); la SQI sigue siendo la rampa de PI (r como valor de SQI se descartó: 0,9 es un
+  ajuste bueno y leería "media calidad"). **R-METHOD-1 sigue disponible** (Alex preguntó): los dos corren en cada
+  muestra, el cambio es inmediato; `$CFG` nombra el método en vigor y el aviso de curva/método lo sigue. El porte es
+  **idéntico bit a bit** al `R_CAND` del runner en las 24 partes HOSPNAV. Tests host 9/9 (test_spo2 13, tres nuevos).
+- **Curva nueva por defecto, ajustada con la R de la propia librería** (`fit_method2.py`, mismos pares/ventanas/ajuste
+  por bins que el paso 1): **SpO2 = 123,98 − 39,13·R** sobre 3455 ventanas estacionarias de SUBJ08+SUBJ09; ρ −0,80,
+  dispersión 1,65 pts, |residuo| mediano 0,91; por sujeto 129,2 − 46,7·R y 118,8 − 32,1·R, dejar-uno-fuera 0,95/1,38.
+  Coincide con el 124,0 − 39,1·R del rationale §10 por otro camino. r mínimo en ventana 0,928 (ninguna < 0,8). Por
+  debajo de 85 % de referencia (31 ventanas, dinámicas) lee −3,4 pts: rango bajo sin medir. Id
+  `R-CURVE-STS0163-HOSPNAV-20260923` con método R-METHOD-2 (la propuesta 115,17 − 21,54 bajo ese id nunca se aplicó).
+  La curva MS100 queda en el registro (UpnMed; capturas antiguas). Spec §5.1 y tabla de versiones; rationale §9.
+- **fw 0.18** (compilado V18, sin OTA aún): `$SET`/`$LCFG` `spo2_r_method` y `spo2_r_corr_min`; el `$SET` del método
+  reemite `$CFG`. **lab v1.83**: LIB CONFIG gana el grupo "SpO2 R method" (comprobado offscreen: lee `$LCFG`, envía
+  `$SET`, entra en "Set all"). `$M4` **no** lleva r: añadirlo son ~6 B y el hueco de 288 B tiene ~10 B de margen —
+  decisión pendiente de Alex (o la tarea del empaquetado por bytes).
+- **runner v0.25**: columna `R_CORR` tras `R`; resumen "lib R vs R_CAND" (máx. |Δ|).
+- **Pendiente de Alex:** (1) r en `$M4`; (2) el bloque de log que propone pulsenest-4f (P1 + raw full para hospital;
+  P5 solo con raw completo; flag de perfil en el conversor); (3) OTA de fw 0.18 a las V18 y los puntos 30/35 lpm.

@@ -7926,10 +7926,26 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                     "flicker). Warmup = 3·τ.",                                  3,  0.0,   30.0,  " s",  1.0),
     ]
 
+    # SpO2 R method (lib v0.100): which estimator spo2_r is, and R-METHOD-2's validity gate.
+    _SPO2_PARAMS = [
+        # key                 label                 tooltip                                                   dec  min   max  suffix scale
+        ("spo2_r_method",     "R method",           "Which R the library computes (lib v0.100):\n"
+                                                    "1 = R-METHOD-1, the RMS ratio (AC_red/DC_red)/(AC_ir/DC_ir);\n"
+                                                    "2 = R-METHOD-2, regression on the derivatives of the\n"
+                                                    "band-passed (0.5-5 Hz), DC-normalised OT (default). Both run\n"
+                                                    "on every sample: the switch is immediate, no warm-up. The\n"
+                                                    "R curve in force must have been fitted with the same method\n"
+                                                    "($CFG spo2_r_curve_method_match).",                        0,   1,    2,   "",    1.0),
+        ("spo2_r_corr_min",   "r gate (method 2)",  "R-METHOD-2 only: SpO2 is withheld (NaN, SQI 0) while the\n"
+                                                    "regression's correlation r is below this. Default 0.8,\n"
+                                                    "provisional: with a pulse r never fell below 0.83 on\n"
+                                                    "HOSPNAV; not yet measured on pulse-less input. -1 = off.",   2,  -1.0,  1.0, "",    1.0),
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_monitor = parent
-        self.setWindowTitle(_win("LIB CONFIG — RSQM / HGAC Parameters"))
+        self.setWindowTitle(_win("LIB CONFIG — RSQM / HGAC / SpO2 Parameters"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-size: 26px;")
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("LIBConfigWindow/geometry")
         if geom: self.restoreGeometry(geom)
@@ -7967,7 +7983,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         btn_set_all.clicked.connect(self._on_set_all)
         btn_set_all.setToolTip(_make_tooltip(
             "Set all parameters",
-            "Sends $SET for hgac_enable and every RSQM + HGAC parameter in this window in sequence.",
+            "Sends $SET for hgac_enable and every RSQM, HGAC and SpO2 parameter in this window in sequence.",
             src="LIBConfigWindow"))
         btn_row.addWidget(btn_set_all)
         vbox.addLayout(btn_row)
@@ -8016,6 +8032,15 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         for p in self._HGAC_PARAMS:
             self._add_param_row(hgac_form, p)
         vbox.addWidget(hgac_grp)
+
+        # SpO2 R method group (lib v0.100)
+        spo2_grp = QtWidgets.QGroupBox("SpO2 R method")
+        spo2_grp.setStyleSheet(self._GRP_SS)
+        spo2_form = QtWidgets.QFormLayout(spo2_grp)
+        spo2_form.setSpacing(6)
+        for p in self._SPO2_PARAMS:
+            self._add_param_row(spo2_form, p)
+        vbox.addWidget(spo2_grp)
 
         vbox.addWidget(self._build_ot_monitor())
         vbox.addStretch()
@@ -8267,7 +8292,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
 
     def _on_set_all(self):
         self._on_set_enable()
-        for key, _label, _tt, _dec, _vmin, _vmax, _sfx, scale in (self._PARAMS + self._HGAC_PARAMS):
+        for key, _label, _tt, _dec, _vmin, _vmax, _sfx, scale in (self._PARAMS + self._HGAC_PARAMS + self._SPO2_PARAMS):
             spin = self._spins[key]
             stored_val = spin.value() / scale if scale != 1.0 else spin.value()
             if abs(stored_val) < 1e-3 and stored_val != 0.0:

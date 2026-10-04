@@ -50,7 +50,8 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.17"   // 0.17: $M4 OT_LED1/OT_LED2 with 7 significant figures (%.6e; was %.4e)
+#define PULSENEST_FW_VERSION "0.18"   // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
+                                      // 0.17: $M4 OT_LED1/OT_LED2 with 7 significant figures (%.6e; was %.4e)
                                       // 0.16: $CFG names the R method and the R curve (spo2_r_method_id, spo2_r_curve_*; was spo2a/spo2b)
                                       // 0.15: $CFG says why it exists (cause=boot|query|set|hgac, ts_us, hgac_rf_changes); one per HGAC RF move
 
@@ -854,12 +855,14 @@ static void send_lcfg_frame() {
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
         ",rsqm_probe_state_min_s=%.3f"
         ",hgac_enable=%d,hgac_v_tia_high2=%.3f,hgac_v_tia_high1=%.3f,hgac_v_tia_low1=%.3f"
-        ",hgac_ema_fast_tau_s=%.3f,hgac_ema_slow_tau_s=%.3f,hgac_ema_ambient_tau_s=%.3f",
+        ",hgac_ema_fast_tau_s=%.3f,hgac_ema_slow_tau_s=%.3f,hgac_ema_ambient_tau_s=%.3f"
+        ",spo2_r_method=%u,spo2_r_corr_min=%.2f",
         cfg.rsqm_ot_thr,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
         cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_high2, cfg.hgac_v_tia_high1, cfg.hgac_v_tia_low1,
-        cfg.hgac_ema_fast_tau_s, cfg.hgac_ema_slow_tau_s, cfg.hgac_ema_ambient_tau_s);
+        cfg.hgac_ema_fast_tau_s, cfg.hgac_ema_slow_tau_s, cfg.hgac_ema_ambient_tau_s,
+        (unsigned)cfg.spo2_r_method, cfg.spo2_r_corr_min);
     if (frame_finish(buf, sizeof(buf), n, "LCFG")) Serial_print_locked(buf);
 }
 
@@ -1045,6 +1048,17 @@ static void apply_set_cmd(const char* key, const char* val) {
             return;
         }
     // ── RSQM / algorithm library parameters ──────────────────────────────────
+    } else if (strcmp(key, "spo2_r_method") == 0) {
+        afe.setSpO2RMethod((uint8_t)atoi(val));           // 1 | 2; the library rejects anything else
+        Serial_printf("# SET spo2_r_method=%u\n", (unsigned)afe.getConfig().spo2_r_method);
+        send_lcfg_frame();
+        send_cfg_frame("set");                              // $CFG names the R method in force
+        return;
+    } else if (strcmp(key, "spo2_r_corr_min") == 0) {
+        afe.setSpO2RCorrMin(atof(val));
+        Serial_printf("# SET spo2_r_corr_min=%.2f\n", atof(val));
+        send_lcfg_frame();
+        return;
     } else if (strcmp(key, "rsqm_ot_thr") == 0) {
         afe.setRsqmOtThr(atof(val));
         Serial_printf("# SET rsqm_ot_thr=%.4e\n", atof(val));

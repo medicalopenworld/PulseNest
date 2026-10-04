@@ -92,40 +92,43 @@ void test_spo2_not_applied_resets() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_ir_ema_mean());
 }
 
+// Tests 3–6 derive the red amplitude from the default curve's own coefficients (a, b), so they
+// hold whichever curve the library ships: a_red = 10000 · R_target, R_target = (a − SpO2) / b.
+static float a_red_for(float spo2_target) {
+    AFE4490Config cfg = INCUNEST_AFE4490().getConfig();
+    return 10000.0f * (cfg.spo2_r_curve_a - spo2_target) / cfg.spo2_r_curve_b;
+}
+
 // ── Test 3: SpO2 ≈ 98% ───────────────────────────────────────────────────────
-// R = (114.9208 - 98) / 30.5547 ≈ 0.5538
-// With a_ir=10000, a_red=5538 → R ≈ 0.5538
 void test_spo2_98_percent() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 10000.0f, a_red_for(98.0f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 98.0f, afe.test_spo2());
 }
 
 // ── Test 4: SpO2 ≈ 90% ───────────────────────────────────────────────────────
-// R = (114.9208 - 90) / 30.5547 ≈ 0.8156
-// With a_ir=10000, a_red=8156 → R ≈ 0.8156
 void test_spo2_90_percent() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, 8156.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 10000.0f, a_red_for(90.0f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 90.0f, afe.test_spo2());
 }
 
 // ── Test 5: SpO2 slightly above 100 → clamped to 100 and reported valid ──────
-// a_red=4500 → R ≈ 0.45 → raw SpO2 ≈ 101.2 → within clamp margin → 100.0
+// raw SpO2 ≈ 101.2 → within the 3-point clamp margin → 100.0
 void test_spo2_clamp_above_100() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, 4500.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 10000.0f, a_red_for(101.2f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, afe.test_spo2());
 }
 
 // ── Test 6: SpO2 far above 100 → invalid (outside clamp margin) ──────────────
-// a_red=3000 → R ≈ 0.30 → raw SpO2 ≈ 105.8 → exceeds clamp margin → invalid
+// raw SpO2 ≈ 105.8 → exceeds the clamp margin → invalid
 void test_spo2_too_high_invalid() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, 3000.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 10000.0f, a_red_for(105.8f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 }
@@ -156,19 +159,23 @@ void test_spo2_r_invariant_to_uniform_scale() {
     TEST_ASSERT_FLOAT_WITHIN(0.001f, afe_a.test_spo2_r(), afe_b.test_spo2_r());
 }
 
-// ── R method / R curve identifiers (v0.98) ───────────────────────────────────
-// The default curve is the MS100 one, fitted with R-METHOD-0: it must say so, and the mismatch
-// with SPO2_R_METHOD_ID must be reported as a warning, not by invalidating SpO2.
-void test_spo2_default_r_curve_is_labelled_and_warns() {
+// ── R method / R curve identifiers (v0.98; default curve of v0.100) ─────────
+// The default curve is the HOSPNAV one, fitted with R-METHOD-2 — the method in force — so the
+// pair must match. Switching to R-METHOD-1 makes it a mismatch, reported as a warning only.
+void test_spo2_default_r_curve_is_labelled_and_matches() {
     INCUNEST_AFE4490 afe;
     AFE4490Config cfg = afe.getConfig();
-    TEST_ASSERT_EQUAL_STRING("R-METHOD-1", cfg.spo2_r_method_id);
-    TEST_ASSERT_EQUAL_STRING("R-CURVE-U401D-MS100-20260323", cfg.spo2_r_curve_id);
-    TEST_ASSERT_EQUAL_STRING("R-METHOD-0", cfg.spo2_r_curve_r_method_id);
-    TEST_ASSERT_FALSE(cfg.spo2_r_curve_method_match);
-    TEST_ASSERT_EQUAL_FLOAT(114.9208f, cfg.spo2_r_curve_a);
-    TEST_ASSERT_EQUAL_FLOAT(30.5547f, cfg.spo2_r_curve_b);
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_EQUAL_STRING("R-METHOD-2", cfg.spo2_r_method_id);
+    TEST_ASSERT_EQUAL_UINT8(2, cfg.spo2_r_method);
+    TEST_ASSERT_EQUAL_STRING("R-CURVE-STS0163-HOSPNAV-20260923", cfg.spo2_r_curve_id);
+    TEST_ASSERT_EQUAL_STRING("R-METHOD-2", cfg.spo2_r_curve_r_method_id);
+    TEST_ASSERT_TRUE(cfg.spo2_r_curve_method_match);
+    TEST_ASSERT_EQUAL_FLOAT(123.98f, cfg.spo2_r_curve_a);
+    TEST_ASSERT_EQUAL_FLOAT(39.13f, cfg.spo2_r_curve_b);
+    TEST_ASSERT_EQUAL_FLOAT(0.8f, cfg.spo2_r_corr_min);
+    afe.setSpO2RMethod(1);
+    TEST_ASSERT_FALSE(afe.getConfig().spo2_r_curve_method_match);
+    feed_spo2_sine(afe, 10000.0f, a_red_for(98.0f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());          // warning only: SpO2 still valid
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 98.0f, afe.test_spo2());
 }
@@ -176,10 +183,14 @@ void test_spo2_default_r_curve_is_labelled_and_warns() {
 // A curve for the library's own R method clears the warning, and SpO2 follows its coefficients.
 void test_spo2_set_r_curve_applies_and_matches() {
     INCUNEST_AFE4490 afe;
-    TEST_ASSERT_TRUE(afe.setSpO2RCurve("R-CURVE-TEST-BENCH-20261002", "R-METHOD-1", 110.0f, 20.0f));
+    TEST_ASSERT_TRUE(afe.setSpO2RCurve("R-CURVE-TEST-BENCH-20261002", "R-METHOD-2", 110.0f, 20.0f));
     AFE4490Config cfg = afe.getConfig();
     TEST_ASSERT_EQUAL_STRING("R-CURVE-TEST-BENCH-20261002", cfg.spo2_r_curve_id);
     TEST_ASSERT_TRUE(cfg.spo2_r_curve_method_match);
+    afe.setSpO2RMethod(1);                                    // the match follows the method in force
+    TEST_ASSERT_FALSE(afe.getConfig().spo2_r_curve_method_match);
+    TEST_ASSERT_EQUAL_STRING("R-METHOD-1", afe.getConfig().spo2_r_method_id);
+    afe.setSpO2RMethod(2);
     feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_FLOAT_WITHIN(0.05f, 110.0f - 20.0f * afe.test_spo2_r(), afe.test_spo2());
 }
@@ -197,14 +208,66 @@ void test_spo2_set_r_curve_rejects_bad_input() {
     TEST_ASSERT_FALSE(afe.setSpO2RCurve("R-CURVE-X", "R-METHOD-1", NAN, 20.0f));
     TEST_ASSERT_FALSE(afe.setSpO2RCurve("R-CURVE-X", "R-METHOD-1", 110.0f, INFINITY));
     AFE4490Config cfg = afe.getConfig();
-    TEST_ASSERT_EQUAL_STRING("R-CURVE-U401D-MS100-20260323", cfg.spo2_r_curve_id);
-    TEST_ASSERT_EQUAL_STRING("R-METHOD-0", cfg.spo2_r_curve_r_method_id);
-    TEST_ASSERT_EQUAL_FLOAT(114.9208f, cfg.spo2_r_curve_a);
-    TEST_ASSERT_EQUAL_FLOAT(30.5547f, cfg.spo2_r_curve_b);
+    TEST_ASSERT_EQUAL_STRING("R-CURVE-STS0163-HOSPNAV-20260923", cfg.spo2_r_curve_id);
+    TEST_ASSERT_EQUAL_STRING("R-METHOD-2", cfg.spo2_r_curve_r_method_id);
+    TEST_ASSERT_EQUAL_FLOAT(123.98f, cfg.spo2_r_curve_a);
+    TEST_ASSERT_EQUAL_FLOAT(39.13f, cfg.spo2_r_curve_b);
+}
+
+// ── R-METHOD-2 (lib v0.100) ──────────────────────────────────────────────────
+// On a clean pair of in-phase sines the regression slope equals the amplitude ratio, so both
+// methods must give the same R; r must read as a near-perfect fit.
+void test_spo2_method2_equals_method1_on_clean_sines() {
+    INCUNEST_AFE4490 m2, m1;
+    m1.setSpO2RMethod(1);
+    feed_spo2_sine(m2, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(m1, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_FLOAT_WITHIN(0.005f, 0.5538f, m2.test_spo2_r());
+    TEST_ASSERT_FLOAT_WITHIN(0.005f, m1.test_spo2_r(), m2.test_spo2_r());
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, m2.test_spo2_r_corr());
+    TEST_ASSERT_TRUE(isnan(m1.test_spo2_r_corr()));            // r belongs to method 2 only
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, m2.test_spo2_sqi());
+}
+
+// Red uncorrelated with IR (no common pulse): r collapses, SpO2 is withheld, R and r stay on record.
+void test_spo2_method2_low_r_invalidates() {
+    INCUNEST_AFE4490 afe;
+    const float fs = 500.0f, scale = 1.4e-10f;
+    uint32_t seed = 12345u;
+    for (int i = 0; i < CONVERGED_SAMPLES; i++) {
+        float phase = 2.0f * (float)M_PI * 1.0f * i / fs;
+        seed = seed * 1664525u + 1013904223u;
+        float noise = ((float)(seed >> 8) / 16777216.0f - 0.5f) * 2.0f;   // white, ±1
+        afe.test_feed_spo2(OT_DC + 10000.0f * scale * sinf(phase),
+                           OT_DC + 10000.0f * scale * noise, ProbeState::PROBE_APPLIED);
+    }
+    TEST_ASSERT_TRUE(afe.test_spo2_r_corr() < 0.3f);
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2_r()));
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    afe.setSpO2RCorrMin(-1.0f);                                 // gate off: SpO2 comes back (if in range)
+    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
+}
+
+// Switching method takes effect on the next sample, without a new warm-up: both run all the time.
+void test_spo2_method_switch_is_immediate() {
+    INCUNEST_AFE4490 afe;
+    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    float r2 = afe.test_spo2_r();
+    afe.setSpO2RMethod(1);
+    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, 1);
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
+    TEST_ASSERT_FLOAT_WITHIN(0.005f, r2, afe.test_spo2_r());
+    afe.setSpO2RMethod(7);                                      // rejected: stays on 1
+    TEST_ASSERT_EQUAL_UINT8(1, afe.getConfig().spo2_r_method);
 }
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_spo2_method2_equals_method1_on_clean_sines);
+    RUN_TEST(test_spo2_method2_low_r_invalidates);
+    RUN_TEST(test_spo2_method_switch_is_immediate);
     RUN_TEST(test_spo2_not_valid_during_warmup);
     RUN_TEST(test_spo2_not_applied_resets);
     RUN_TEST(test_spo2_98_percent);
@@ -212,7 +275,7 @@ int main() {
     RUN_TEST(test_spo2_clamp_above_100);
     RUN_TEST(test_spo2_too_high_invalid);
     RUN_TEST(test_spo2_r_invariant_to_uniform_scale);
-    RUN_TEST(test_spo2_default_r_curve_is_labelled_and_warns);
+    RUN_TEST(test_spo2_default_r_curve_is_labelled_and_matches);
     RUN_TEST(test_spo2_set_r_curve_applies_and_matches);
     RUN_TEST(test_spo2_set_r_curve_rejects_bad_input);
     return UNITY_END();
