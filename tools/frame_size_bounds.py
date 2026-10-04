@@ -37,7 +37,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAIN = os.path.join(ROOT, "src", "main.cpp")
+MAIN = os.path.join(ROOT, "main", "pulsenest_main.cpp")
 
 FLOAT_MAX_INT_DIGITS = 39   # 3.4028235e38
 INT32_CHARS, UINT32_CHARS = 11, 10
@@ -74,6 +74,8 @@ def bound(spec):
         if m.group(2) == "e":
             return 3, 7 + n, "acotado"
         return 1, 1 + FLOAT_MAX_INT_DIGITS + 1 + n, "SIN ACOTAR"
+    if spec == "%llu":                      # uint64 (Ts_us since fw 0.14): "18446744073709551615"
+        return 1, 20, "acotado"
     if spec in ("%ld", "%d"):
         return 1, INT32_CHARS, "acotado"
     if spec in ("%lu", "%u"):

@@ -23,6 +23,7 @@ already read, and what `--csv on` selects. `CaptureCsvWriterV04` (2026-09-22) wr
 `capture_csv_format_spec.md` from the same frames, named through `pulsenest_capture_dict`; the
 `.pnraw` keeps everything needed to regenerate either.
 """
+import re
 import pulsenest_capture_dict as D
 
 # The canonical column table: (UI label, CSV name, index in the $M1 field list, mandatory).
@@ -64,12 +65,20 @@ CAPTURE_COLS = [
     ("CH_MASKS",    "FW_CH_MASKS",    33, False),
     ("RF1_OHM",     "FW_RF1_OHM",     34, False),
     ("RF2_OHM",     "FW_RF2_OHM",     35, False),
+    ("R_CORR",      "FW_R_CORR",      36, False),   # fw 0.19 / lib v0.100: R-METHOD-2's correlation r
 ]
+
+
+# A column the firmware only emits from some version on (canonical name -> (major, minor)). The v0.4
+# writer includes it only when the capture's $CFG says fw >= that version; the pre-v0.4 writer
+# (`CaptureCsvWriter`, frozen format) never does.
+COLUMN_MIN_FW = {"R_CORR": (0, 19)}
 
 
 def col_spec_all():
     """Every column, in canonical order: what a trial profile wants (P1-P3)."""
-    return [(csv_name, idx) for _label, csv_name, idx, _mand in CAPTURE_COLS]
+    return [(csv_name, idx) for _label, csv_name, idx, _mand in CAPTURE_COLS
+            if D.COLUMN_CANON[csv_name] not in COLUMN_MIN_FW]
 
 
 def col_spec_mandatory():
@@ -292,6 +301,17 @@ class CaptureCsvWriterV04:
     # firmware computes is kept: the library recomputes it from these (offline_runner).
     PROFILES = {"P1": None, "P2": None, "P3": None,
                 "P5": ("LED2", "LED1", "ALED2", "ALED1", "ProbeState", "OT_LED1", "OT_LED2", "CH_MASKS")}
+    # A column the firmware only emits from some version on (COLUMN_MIN_FW) is written only when
+    # the capture's $CFG says so; unknown fw counts as old. So a file from older firmware keeps its
+    # column set (the converter reproduces it byte for byte) and never carries an empty column for
+    # a field that was not on the wire. R41: an addition, the format version stays.
+    COLUMN_MIN_FW = COLUMN_MIN_FW
+
+    @staticmethod
+    def _fw_tuple(fw):
+        """'0.19' / '0.19-dirty' -> (0, 19); None when unknown or unparsable."""
+        m = re.match(r"^(\d+)\.(\d+)", str(fw or ""))
+        return (int(m.group(1)), int(m.group(2))) if m else None
     _DATA_TAGS = CaptureCsvWriter._DATA_TAGS
     _M2_MAP = CaptureCsvWriter._M2_MAP
     _M1_MAP = {9: 3}                 # $M1,SmpCnt,Ts_us,PPG_DISP: its one value is the PPG column
@@ -426,6 +446,9 @@ class CaptureCsvWriterV04:
         f = open(self.filepath, "w", buffering=1, encoding="utf-8", newline="\n")
         self._f = f
         self._open_cause = cause
+        fw = self._fw_tuple(self._ident.get("fw"))
+        self.col_spec = [(n, i) for n, i in self.col_spec
+                         if n not in self.COLUMN_MIN_FW or (fw is not None and fw >= self.COLUMN_MIN_FW[n])]
         keys = dict(self._ident)
         keys.update({k: v for k, v in self.keys.items() if v not in (None, "")})
         for k in self.KEY_ORDER:

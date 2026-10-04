@@ -25,6 +25,8 @@ def check(name, cond, detail=""):
 
 # $M4 with a recognisable value in every field: field k holds k, except the last two (RF strings).
 M4 = "$M4," + ",".join(str(i) for i in range(1, 34)) + ",500K,10K*06"
+from pulsenest_capture_csv import COLUMN_MIN_FW  # noqa: E402
+import pulsenest_capture_dict as D  # noqa: E402
 M1 = "$M1,7,8,9*00"
 M2 = "$M2,11,12,13,14,15,16,17,18,19,20*00"
 
@@ -32,7 +34,7 @@ w = CaptureCsvWriter("unused", col_spec_all(), host_t_us=True)
 row = w.format_row(M4, host_t_us=1789935222613634)
 hdr = w.header()
 check("the header is HOST_T_US then every dictionary column in order",
-      hdr[0] == "HOST_T_US" and hdr[1:] == [c[1] for c in CAPTURE_COLS], hdr[:4])
+      hdr[0] == "HOST_T_US" and hdr[1:] == [c[1] for c in CAPTURE_COLS if D.COLUMN_CANON[c[1]] not in COLUMN_MIN_FW], hdr[:4])   # the frozen pre-v0.4 format never gains fw-gated columns
 check("each column reads its own field of the frame",
       row[hdr.index("FW_SmpCnt")] == "1" and row[hdr.index("LED1")] == "4"
       and row[hdr.index("FW_HR3")] == "18" and row[hdr.index("FW_CH_MASKS")] == "33",

@@ -50,7 +50,8 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.18"   // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
+#define PULSENEST_FW_VERSION "0.19"   // 0.19: $M4 field 36 = R_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
+                                      // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
                                       // 0.17: $M4 OT_LED1/OT_LED2 with 7 significant figures (%.6e; was %.4e)
                                       // 0.16: $CFG names the R method and the R curve (spo2_r_method_id, spo2_r_curve_*; was spo2a/spo2b)
                                       // 0.15: $CFG says why it exists (cause=boot|query|set|hgac, ts_us, hgac_rf_changes); one per HGAC RF move
@@ -225,20 +226,21 @@ static httpd_handle_t g_ota_server = nullptr;
 // two consecutive data batches every 5 s, so "five frames per datagram" was false 0.4 % of the
 // time, the host's partial-batch counter fired on a healthy link, and a burst of diagnostics
 // competed with the measurements for the same 64 slots (measured 2026-09-15, conversation_log).
-#define UDP_QUEUE_FRAME_SIZE  288   // queue slot; $M4 measured 265 B (probe off), 274 B (probe on).
+#define UDP_QUEUE_FRAME_SIZE  320   // queue slot (fw 0.19; was 288 with ~10 B of margin once OT took
+                                    // 7 figures and R_CORR joined $M4: measured 274 B probe-on + 4 + 7).
                                     // A line that does not fit is DROPPED and counted (udp_enqueue),
                                     // never truncated. Worst case cannot be bounded by the format:
                                     // tools/frame_size_bounds.py.
 #define UDP_QUEUE_DEPTH       64    // data: ~128 ms headroom at 500 Hz
 #define UDP_DIAG_QUEUE_DEPTH  8     // diagnostics: one burst is five lines
-#define UDP_BATCH_SIZE        5     // frames per datagram: 5×288 = 1440 bytes < 1472 MTU
+#define UDP_BATCH_SIZE        5     // MAX frames per datagram; the datagram is packed by bytes up to
+                                    // UDP_MTU (fw 0.19), so with 5 × 320 > 1472 a frame that does not
+                                    // fit is carried to the next datagram, never dropped. Typical $M4
+                                    // (≤ 294 B) still travels five per datagram.
 #define UDP_MTU               1472  // max UDP payload without IP fragmentation (Ethernet/WiFi)
 
-// Compile-time guard: worst-case batch (all frames at max size) must fit within MTU.
-// If this fails, reduce UDP_BATCH_SIZE or UDP_QUEUE_FRAME_SIZE. Covers the diagnostic datagram
-// too: udp_flush_diag() packs at most UDP_BATCH_SIZE lines into the same buffer.
-static_assert(UDP_QUEUE_FRAME_SIZE * UDP_BATCH_SIZE <= UDP_MTU,
-    "UDP batch worst-case exceeds MTU — reduce UDP_BATCH_SIZE or UDP_QUEUE_FRAME_SIZE");
+// Compile-time guards: one frame must always fit one datagram, and the batch buffer is the MTU.
+static_assert(UDP_QUEUE_FRAME_SIZE <= UDP_MTU, "a UDP queue slot must fit one datagram");
 
 static QueueHandle_t g_udp_data_queue = nullptr;
 static QueueHandle_t g_udp_diag_queue = nullptr;
@@ -348,14 +350,17 @@ static void udp_flush_diag(char* batch, size_t cap, char* frame) {
 
 static void UDP_Task(void *pvParameters) {
     (void)pvParameters;
-    static char batch[UDP_QUEUE_FRAME_SIZE * UDP_BATCH_SIZE];
-    char frame[UDP_QUEUE_FRAME_SIZE];
+    static char batch[UDP_MTU];
+    char frame[UDP_QUEUE_FRAME_SIZE];     // the measurement being placed; may be carried over
+    char dframe[UDP_QUEUE_FRAME_SIZE];    // scratch for the diagnostic flush (must not clobber `frame`)
+    bool carried = false;                 // `frame` holds a measurement that did not fit the last datagram
     for (;;) {
         // Block until at least one frame is available (or 100 ms timeout)
-        if (xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(100)) != pdTRUE) {
-            if (g_wifi_ready && g_udp_sock >= 0) udp_flush_diag(batch, sizeof(batch), frame);
+        if (!carried && xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(100)) != pdTRUE) {
+            if (g_wifi_ready && g_udp_sock >= 0) udp_flush_diag(batch, sizeof(batch), dframe);
             continue;
         }
+        carried = false;
         if (!g_wifi_ready || g_udp_sock < 0) continue;
 
         // Start batch with first frame
@@ -365,18 +370,20 @@ static void UDP_Task(void *pvParameters) {
         // Accumulate up to UDP_BATCH_SIZE frames, waiting up to 12 ms per frame.
         // At 500 Hz (1 frame/2 ms), this fills the batch in ~10 ms → ~100 datagrams/s.
         // If a frame doesn't arrive within 12 ms, send the partial batch and continue — the only
-        // way a measurement datagram carries fewer than UDP_BATCH_SIZE frames (host: `partial`).
+        // way a measurement datagram carries fewer than UDP_BATCH_SIZE frames (host: `partial`),
+        // short of frames so long that five exceed the MTU: then the one that does not fit opens
+        // the next datagram instead of being dropped (fw 0.19; before, it was lost).
         for (int i = 1; i < UDP_BATCH_SIZE; i++) {
             if (xQueueReceive(g_udp_data_queue, frame, pdMS_TO_TICKS(12)) != pdTRUE) break;
             size_t flen = strlen(frame);
-            if (batch_len + flen > sizeof(batch)) break;
+            if (batch_len + flen > sizeof(batch)) { carried = true; break; }
             memcpy(batch + batch_len, frame, flen);
             batch_len += flen;
         }
         udp_sendto_batch(batch, batch_len);
 
         // Diagnostics ride in a datagram of their own, right behind the measurements they came with.
-        udp_flush_diag(batch, sizeof(batch), frame);
+        udp_flush_diag(batch, sizeof(batch), dframe);
     }
 }
 
@@ -639,7 +646,7 @@ void Incunest_Task(void *pvParameters) {
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M4,%lu,%llu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
                         ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.6e,%.6e,%04X"
-                        ",%s,%s",
+                        ",%s,%s,%.4f",   // field 36 (fw 0.19): R-METHOD-2's r, nan under R-METHOD-1 / invalid
                         (unsigned long)incunest_sample_count,
                         (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
                         (long)data.led2,       (long)data.led1,
@@ -665,7 +672,8 @@ void Incunest_Task(void *pvParameters) {
                         dbg.analog.i_pd_aled1,  dbg.analog.i_pd_aled2,
                         dbg.analog.ot_led1,     dbg.analog.ot_led2,
                         ch_masks,
-                        afeRFToStr(dbg.rf_led1), afeRFToStr(dbg.rf_led2));
+                        afeRFToStr(dbg.rf_led1), afeRFToStr(dbg.rf_led2),
+                        data.spo2_r_corr);
                     if (frame_finish(buf, sizeof(buf), n, "M4")) {
                         if (!g_wifi_ready) Serial_print_locked(buf);
                         udp_send(buf);
@@ -1519,7 +1527,7 @@ extern "C" void app_main(void) {
     // (buf[512]) + vsnprintf float formatting + lwIP/WiFiUDP + OTA handleClient all run on
     // this stack. 4096 overflowed sporadically (stack canary PANIC, ~1 in 3-4 $SET commands).
     xTaskCreatePinnedToCore(Cmd_Task,  "CMD",      8192, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(UDP_Task,  "UDP_DATA", 4096, NULL, 1, NULL, 1);  // core 1: independent of Incunest_Task (core 0); WiFi calls are thread-safe across cores
+    xTaskCreatePinnedToCore(UDP_Task,  "UDP_DATA", 5120, NULL, 1, NULL, 1);  // core 1: independent of Incunest_Task (core 0); WiFi calls are thread-safe across cores. 5120 since fw 0.19: two 320 B frame buffers on its stack (was one of 288)
 
     start_incunest();
 }

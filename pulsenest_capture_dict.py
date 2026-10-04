@@ -52,6 +52,7 @@ COLUMNS = [
     Column("SpO2",        ("FW_SpO2",),     "firmware SpO2; -1 when SpO2_SQI == 0",              "%",        "float", FW_COMPUTED, "legacy"),
     Column("SpO2_SQI",    ("FW_SpO2_SQI",), "SpO2 validity, 0 = invalid, 1 = valid (project_sqi_definition)", "flag", "float", FW_COMPUTED, "legacy"),
     Column("R",           ("FW_R",),        "ratio of ratios (AC/DC RED over AC/DC IR) behind SpO2", "ratio",  "float", FW_COMPUTED, "legacy"),
+    Column("R_CORR",      ("FW_R_CORR",),   "correlation r of R-METHOD-2's regression, the fit's own quality (fw 0.19, lib v0.100); nan under R-METHOD-1", "ratio", "float", FW_COMPUTED, "0.4"),
     Column("PI",          ("FW_PI",),       "perfusion index, AC/DC of the IR channel",           "%",        "float", FW_COMPUTED, "legacy"),
     Column("HR1",         ("FW_HR1",),      "HR1 (peak detection); -1 when HR1_SQI == 0",         "bpm",      "float", FW_COMPUTED, "legacy"),
     Column("HR1_SQI",     ("FW_HR1_SQI",),  "HR1 validity, 0/1",                                  "flag",     "float", FW_COMPUTED, "legacy"),
@@ -199,6 +200,8 @@ KEYS = [
     Key("hgac_ema_fast_tau_ms", "alg", (LCFG, ("hgac_ema_fast_tau_s",),  1000), "guard EMA time constant (wire prints s)",           "ms",   "int",   CONFIG, "0.4"),
     Key("hgac_ema_slow_tau_ms", "alg", (LCFG, ("hgac_ema_slow_tau_s",),  1000), "leveling EMA time constant",                        "ms",   "int",   CONFIG, "0.4"),
     Key("hgac_ema_ambient_tau_ms", "alg", (LCFG, ("hgac_ema_ambient_tau_s",), 1000), "ambient EMA time constant",                    "ms",   "int",   CONFIG, "0.4"),
+    Key("spo2_r_method",        "alg", (LCFG, ("spo2_r_method",), 1),        "R method in force: 1 = RMS ratio, 2 = regression on derivatives (fw 0.18, lib v0.100)", "enum", "int", CONFIG, "0.4"),
+    Key("spo2_r_corr_min",      "alg", (LCFG, ("spo2_r_corr_min",), 1),      "R-METHOD-2 validity gate: SpO2 withheld while the regression's r is below this (fw 0.18)", "ratio", "float", CONFIG, "0.4"),
     # telemetry about events, not a parameter: it rides on the $CFG that announces a move and is
     # never written into a snapshot (an alg: line must not change when only RF moved, R24)
     Key("hgac_rf_changes",      "clock", (CFG, ("hgac_rf_changes",), 1), "RF moves HGAC has applied since boot (fw 0.15); a jump > 1 between two $CFG means moves landed inside one 50 ms tick", "count", "int", FW_COMPUTED, "0.4"),

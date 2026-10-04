@@ -193,13 +193,13 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 
 `$M4` = the 22 `$M3` fields followed by 11 analog debug fields from
 `AFE4490DebugData::analog` (`AFE4490AnalogState`, lib ≥ v0.35), plus 2 RF fields
-(lib ≥ v0.37) — 13 fields total:
+(lib ≥ v0.37) and, since fw 0.19, `R_CORR` — 14 fields total:
 
 ```
 ...,<V_TIA_LED1>,<V_TIA_LED2>,<V_TIA_ALED1>,<V_TIA_ALED2>,
     <I_PD_LED1>,<I_PD_LED2>,<I_PD_ALED1>,<I_PD_ALED2>,
     <OT_LED1>,<OT_LED2>,<CH_MASKS>,
-    <RF1>,<RF2>*XX
+    <RF1>,<RF2>,<R_CORR>*XX
 ```
 
 | Field | Format | Description |
@@ -209,6 +209,8 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 | `OT_LED1`, `OT_LED2` | `%.6e` | Optical transmittance `(I_PD_LEDx − I_PD_ALEDx) / I_LEDx` [A/A], firmware-computed in `_compute_analog_state()` (7 significant figures, v0.17+) |
 | `CH_MASKS` | `%04X` hex | Validity masks packed in 4 nibbles: bits[3:0]=`adc_sat_pos`, [7:4]=`adc_sat_neg`, [11:8]=`tia_over_fs`, [15:12]=`tia_over_lin`. Within each nibble, bit = channel per `AFE4490Ch`: LED1=0, ALED1=1, LED2=2, ALED2=3. `0000` = all channels CLEAN |
 | `RF1`, `RF2` | string | Actual TIA feedback resistor in use for LED1/LED2 at this sample (e.g. `"500K"`, via `afeRFToStr()`) — the live config value, whoever set it (manual `$SET` or HGAC Phase 1 descent), so it is not a static config value. Renamed from `HGAC_RF1`/`HGAC_RF2` in lib v0.81/spec v1.29 — the old name wrongly implied HGAC always computed it |
+
+| `R_CORR` | `%.4f` | Field 36 (fw 0.19, lib v0.100): the correlation r of R-METHOD-2's regression, the fit's own quality (SpO2 is withheld below `spo2_r_corr_min`); `nan` under R-METHOD-1, during warm-up and when the probe is not applied. Recorded as `R_CORR` in P1 captures. Not displayed by the script yet. |
 
 The script requires ≥ 34 fields to accept the `$M4` analog block (frames from
 firmware older than lib v0.35+`CH_MASKS` are parsed as `$M3` with zeroed analog data).

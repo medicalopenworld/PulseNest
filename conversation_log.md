@@ -26238,3 +26238,18 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
 - **¿Qué se pierde con P5 en capturas críticas (neonatos, hospital)?** Conclusión propuesta: P1 para campañas hospitalarias, y P5 solo con `--raw full` (con `exceptions`/`off` el CSV P5 sería la única copia). Pérdidas: (1) la comprobación de que la réplica es fiel: los artefactos del 03-10 se detectaron comparando con SpO2/R/ProbeState/DiagCode de la placa, y con P5 solo quedan OT, CH_MASKS y (desde esta tarde) ProbeState; (2) lo que mostró el equipo en la versión que corría (el fw 0.15 con un fallo que la lib actual no tiene no se puede reconstruir); (3) DiagCode bits 0-12 (registro DIAG del chip) y SWITCHED_RC_SETTLING. P5 protege las dos señales OT, pero V_TIA/I_PD y la réplica de RSQM/HGAC siguen necesitando los `afe:` completos. Beneficio de P5 en hospital: espacio (~215 vs ~50 MB/h), irrelevante en el portátil. Mitigación: el `.pnraw` permite regenerar el CSV; hoy el conversor usa el perfil de `session.json`, sin flag para cambiarlo. PENDIENTE de decisión de Alex: confirmar "hospital = P1 + raw full" y si añadir el flag al conversor.
 - **DC con EMA frente a biquad (consulta):** con corte bajo (τ 2 s a 500 Hz, fc/fs ≈ 1,6e-4) el biquad en float32 pierde ganancia en continua (2-5 % según rationale §10); el EMA no rebota con los saltos del HGAC y reescala su estado con un número. Se confirma la decisión del 03-10: EMA 2 s se queda. Sin cambios de código.
 - **Explicación dada:** dos EMA en cascada tienen polo real doble, sin ceros útiles (paso bajo); un biquad con los mismos polos puede ser paso bajo, banda o alto según el numerador; `init_bp` tiene b1=0, b2=−b0 (ceros en continua y Nyquist), y por eso S1_EMA y S1_BPF difieren por los ceros, no por la velocidad.
+
+## 2026-10-04 (tarde, 2) — r en `$M4` (fw 0.19), hueco UDP 320 B y datagramas por bytes
+
+- **r va en `$M4` como campo 36 (`R_CORR`, `%.4f`)**, al final de la trama: todo lo que lee `$M4` por índice (lab,
+  fleet monitor, recorder) sigue valiendo. Alex: adelante con los tres pendientes.
+- **Transporte UDP (la tarea pendiente del hueco de 288 B, resuelta):** hueco 288 → 320 B; el datagrama se llena **por
+  bytes hasta la MTU (1472)** con un máximo de 5 tramas; la trama que no cabe abre el siguiente datagrama en vez de
+  perderse. Con `$M4` típica (~285 B) siguen yendo 5 por datagrama. `UDP_Task` con 5120 B de pila (dos buffers de
+  320 B). `tools/frame_size_bounds.py` apuntaba a `src/main.cpp` (PlatformIO) y no entendía `%llu`: corregido.
+- **CSV:** columna `R_CORR` en P1, **solo si el `$CFG` de la captura dice fw ≥ 0.19** (`COLUMN_MIN_FW`; fw desconocido
+  = antiguo), así los ficheros de firmware anterior no cambian y el conversor los reproduce byte a byte (11/11); el
+  escritor pre-v0.4 (formato congelado) no la añade nunca. Diccionario: `R_CORR` y las claves `$LCFG` `spo2_r_method`
+  / `spo2_r_corr_min` (van en el `alg:` de cada captura: queda registrado el método en vigor). Tests: v04 45/45,
+  csv 15/15, diccionario 1290/1290, recorder 126/126, conversor 11/11, fleet 37/37.
+- **fw 0.19 compilado (V18), sin OTA todavía.** Siguiente: OTA a las tres V18 del banco + puntos MS100 30/35 lpm.

@@ -5,7 +5,7 @@ column does not raise, it writes a well-formed file that means something else.
 """
 import io, os, re, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_capture_csv import CaptureCsvWriterV04, CAPTURE_COLS   # noqa: E402
+from pulsenest_capture_csv import CaptureCsvWriterV04, CAPTURE_COLS, COLUMN_MIN_FW   # noqa: E402
 import pulsenest_capture_dict as D                                     # noqa: E402
 
 print(f"== {os.path.basename(__file__)} ==  the v0.4 capture CSV writer")
@@ -40,6 +40,8 @@ def m4(cnt, ts, rf1="50K"):
 KEYS = {"writer": "capture_csv_v04_test/1", "session_id": "20260922_1200_BENCH", "subject": "SUBJ01",
         "site": "BENCH", "condition": "RESTING", "part": 1, "led1": "IR", "led2": "RED",
         "probe": "Medle-neo", "t0_iso": "2026-09-22T12:00:00+02:00", "t0_epoch_us": 1790000000000000}
+# CFG says fw=0.15: the columns gated on a later firmware (R_CORR, fw 0.19) are absent from these files.
+N_GATED = sum(1 for _l, csv, _i, _m in CAPTURE_COLS if D.COLUMN_CANON[csv] in COLUMN_MIN_FW)
 
 def run(frames_before_open, datagrams, keys=KEYS, keep_wire=True, events=()):
     """frames_before_open: wire lines fed before open(); datagrams: [(text, host_us)] fed after."""
@@ -104,7 +106,7 @@ hdr_i = next(i for i, l in enumerate(lines) if not l.startswith("#"))
 check("exactly one header row, the first non-# line, ASCII, canonical names, no SmpCnt/Ts_us/HOST/RF",
       lines[hdr_i].isascii() and lines[hdr_i].split(",")[:6] == ["LED2", "LED1", "ALED2", "ALED1", "LED2_SUB", "LED1_SUB"]
       and not any(x in lines[hdr_i] for x in ("SmpCnt", "Ts_us", "HOST", "RF1", "RF2", "FW_"))
-      and len(lines[hdr_i].split(",")) == len(CAPTURE_COLS) - 4)
+      and len(lines[hdr_i].split(",")) == len(CAPTURE_COLS) - 4 - N_GATED)
 check("the opening clock anchor is written with the first row, at @row 0, from that row's own values",
       lines[hdr_i - 1] == "# @row 0 clock: smpcnt=1000 fw_ts_us=2000000 host_epoch_us=1790000000100000"
       or lines[hdr_i + 1] == "# @row 0 clock: smpcnt=1000 fw_ts_us=2000000 host_epoch_us=1790000000100000",
@@ -178,7 +180,7 @@ w, raw = run([CFG], [("$M1,7,8,0.5*00\r\n$M2,11,12,13,14,15,16,17,18,19,20*00\r\
 L = raw.decode().split("\n")
 rows = [l for l in L if l and not l.startswith("#")][1:]
 check("$M1: its single value lands in PPG (never shifted into LED2); every other cell empty",
-      rows[0].split(",")[6] == "0.5" and rows[0].count(",") == len(CAPTURE_COLS) - 5 and set(rows[0].split(",")) == {"", "0.5"})
+      rows[0].split(",")[6] == "0.5" and rows[0].count(",") == len(CAPTURE_COLS) - 5 - N_GATED and set(rows[0].split(",")) == {"", "0.5"})
 check("$M2: remapped codes, the rest empty", rows[1].split(",")[:6] == ["12", "13", "14", "15", "16", "17"] and rows[1].split(",")[6] == "")
 check("a # STAT line and a $ERR line are skipped, never rows", (lambda w_: w_.skipped == 2)(run([CFG], [("# STAT n=1\r\n$ERR,x,y\r\n" + m4(1, 1), 1)])[0]))
 
@@ -234,6 +236,25 @@ if parts:
           all(l.count(",") == n_commas for l in L if l and not l.startswith("#")))
 else:
     print("skip corpus: captures/v04_corpus not present")
+
+# ── R_CORR ($M4 field 36, fw 0.19): written only when the capture's $CFG says fw >= 0.19 ────
+with tempfile.TemporaryDirectory() as td:
+    rows = {}
+    for tag, cfg, extra in (("old", CFG, ""), ("new", CFG.replace("fw=0.15", "fw=0.19"), ",36")):
+        path = os.path.join(td, f"rc_{tag}.csv")
+        w = CaptureCsvWriterV04(path, keys=KEYS, profile="P1", label="test")
+        for fr in (cfg, TCFG, LCFG):
+            w.config(fr)
+        w.open()
+        fr1, fr2 = m4(1000, 2_000_000), m4(1001, 2_002_000)
+        w.write_datagram(fr1[:-3] + extra + "*00\n" + fr2[:-3] + extra + "*00\n", 1790000000100000)
+        w.close()
+        L = io.open(path, encoding="utf-8").read().split("\n")
+        rows[tag] = [l for l in L if l and not l.startswith("#")]
+check("R_CORR: absent (header and rows) when the firmware is older or unknown",
+      "R_CORR" not in rows["old"][0] and rows["old"][1].split(",")[-1] == "33", rows["old"][0][-30:])
+check("R_CORR: last column, reads field 36, when $CFG says fw=0.19",
+      rows["new"][0].endswith(",R_CORR") and rows["new"][1].split(",")[-1] == "36", rows["new"][0][-30:])
 
 # ── P5: the minimum columns ─────────────────────────────────────────────────────────────────
 with tempfile.TemporaryDirectory() as td:
