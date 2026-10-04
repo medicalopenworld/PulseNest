@@ -26171,7 +26171,7 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   era falso (P5 = LED2, LED1, ALED2, ALED1, OT_LED1, OT_LED2, CH_MASKS).
 - **Comprobado y válido:** commit del perfil P5 (e2faadc, test 43/43 repetido hoy) y la nota de verificación del lab.
 
-## 2026-10-05 — Publicación de las correcciones de la auditoría
+## 2026-10-04 (mañana) — Publicación de las correcciones de la auditoría
 
 - Con el OK de Alex: publicados el revert de la librería (`88f2401`, master = contenido de v0.99) y `704fc27`
   (fw 0.17 + auditoría). **Etiqueta `v0.100` borrada** en GitHub y en local: nadie la usó y apuntaba a una curva
@@ -26179,3 +26179,22 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
 - Orden acordado: (1) runner — comparar siempre OT recalculado con OT grabado, modo `--input ot`, efecto de las 5
   cifras; (2) paso 3 — R-METHOD-2 en la librería con su curva ajustada con su propia R; (3) r sin pulso, OTA fw 0.17,
   triaje de los juegos de parámetros por edad.
+
+## 2026-10-04 — Runner v0.25: autocomprobación contra la placa, `--input ot`, efecto de las 5 cifras
+
+- **Comprobación del OT en cada réplica:** cada parte imprime la desviación máxima entre OT replicado y grabado y
+  el % de valores dentro de 10⁻⁴. Encontró un tercer artefacto: v0.24 aplicaba el cambio de RF en el salto del
+  código crudo, pero la placa lo hace 8 filas antes (su congelado de asentamiento repite los cuatro códigos 8 veces
+  en la captura); la réplica retenía el OT viejo 16 ms de más (~3 %). Corregido: se aplica en la primera copia
+  congelada; si el salto no se ve (LED en el raíl), se usa la racha sola. Resultado: 29 de 30 partes con columnas OT
+  al 100 % dentro de 10⁻⁴ (máx. 5·10⁻⁵ = redondeo). La que falla (SUBJ01_RESTING, 22-09) tiene la cabecera `$CFG`
+  obsoleta (RF1 100 k frente a 50 k en su columna FW_RF1_OHM). El runner reconoce ya los nombres `FW_*` antiguos.
+- **`--input ot`:** SpO2, HR1-3 y candidatos con el OT y ProbeState grabados; P5 rechazado (no tiene ProbeState).
+  Detalle: en la réplica desde crudos HR2/HR3 nunca se calculan en el host (sus tareas FreeRTOS no existen).
+- **Efecto de las 5 cifras:** candidato |ΔR| máx. 2,8·10⁻⁴ = 0,011 puntos de SpO2, igual en PI 0,3 → >1,2 % (no
+  hay datos < 0,3 %). La preocupación de que la cuantización dominara la derivada no se cumple aquí; las 7 cifras
+  de fw 0.17 quedan como margen. Sí afecta a HR1: > 11 BPM en el 0,1 % de las filas (máx. 127) → frágil.
+- **Aparte:** al retirar la sonda la placa siguió en APPLIED ~0,2 s con los LED en el raíl, mostrando SpO2 73–77 con
+  SQI 1 (después pasa a ONLY_LED_SATURATING). Anotado en la tarea de asimetría del debounce.
+- Docs: spec lib §9 (runner v0.25) y rationale §10 (nota de método; "misma H" → "mismos polos", aviso de
+  pulsenest-31). Siguiente: paso 3 (R-METHOD-2 en la librería).

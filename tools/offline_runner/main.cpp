@@ -1,7 +1,20 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.24 — native/offline (no hardware), library API v0.99
+// Runner version: v0.25 — native/offline (no hardware), library API v0.99
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
+//
+// v0.25 (2026-10-04): (1) every replay from raw codes now checks itself against the board: when the
+//   capture carries OT_LED1/OT_LED2, the replayed OT of every row is compared with the recorded one
+//   and each part prints the largest relative deviation (row and channel) and the share of rows
+//   within OT_TOL. The recorded OT has 5 significant figures up to fw 0.16 (rounding <= 5e-5) and 7
+//   from fw 0.17, so a deviation above 1e-4 is not rounding: it is a replay that does not reproduce
+//   the board (the v0.24 HGAC-record artefacts would have shown x2.5 here). (2) `--input ot`: the
+//   algorithms (SpO2, HR1, HR2, HR3 and the R candidates) are fed the recorded OT and the recorded
+//   ProbeState, in the production order, skipping the analog reconstruction, RSQM and HGAC — for
+//   algorithm experiments whose input must be exactly what the board computed. It needs the
+//   ProbeState column (the P5 profile does not carry it: refused, not guessed). HR2/HR3 run through
+//   their synchronous test wrappers here; in the raw-code replay they never run on the host (their
+//   slow paths live in FreeRTOS tasks the host HAL does not create), so those columns stay empty there.
 //
 // v0.24 (2026-10-03): (1) the replay now FOLLOWS the capture's `# @row N afe:` records (v0.4 format):
 //   the recorder writes one whenever the board's HGAC changes RF (cause=hgac) and at every part start
@@ -231,7 +244,11 @@ struct CsvRow {
     float   fw_spo2 = 0.0f;
     float   fw_r    = 0.0f;
     int     fw_ps   = -1;
+    float   ot1     = NAN;   // recorded OT_LED1 / OT_LED2 [A/A]; NAN when the capture has no such column
+    float   ot2     = NAN;
 };
+
+static const double OT_TOL = 1e-4;   // relative; 5-figure rounding is <= 5e-5
 
 static std::string to_lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
@@ -348,7 +365,9 @@ static bool apply_cfg(INCUNEST_AFE4490& afe, const std::map<std::string, std::st
 struct ColIdx {
     int led1 = -1, led2 = -1, aled1 = -1, aled2 = -1;
     int fw_spo2 = -1, fw_r = -1, fw_ps = -1;
+    int ot1 = -1, ot2 = -1;
     bool valid() const { return led1 >= 0 && led2 >= 0 && aled1 >= 0 && aled2 >= 0; }
+    bool has_ot() const { return ot1 >= 0 && ot2 >= 0; }
 };
 
 static ColIdx find_columns(const std::vector<std::string>& header) {
@@ -363,12 +382,19 @@ static ColIdx find_columns(const std::vector<std::string>& header) {
         else if (c == "spo2")  ix.fw_spo2 = i;
         else if (c == "r")     ix.fw_r  = i;
         else if (c == "probestate") ix.fw_ps = i;
+        else if (c == "ot_led1") ix.ot1 = i;
+        else if (c == "ot_led2") ix.ot2 = i;
         // Legacy IncuNest dialect
         else if (c == "ir")      ix.led1  = i;
         else if (c == "red")     ix.led2  = i;
         else if (c == "ir_amb")  ix.aled1 = i;
         else if (c == "red_amb") ix.aled2 = i;
         else if (c == "fw_spo2") ix.fw_spo2 = i;
+        // Firmware outputs prefixed FW_ (recorder captures of 2026-09-22 and earlier)
+        else if (c == "fw_r")          ix.fw_r  = i;
+        else if (c == "fw_probestate") ix.fw_ps = i;
+        else if (c == "fw_ot_led1")    ix.ot1   = i;
+        else if (c == "fw_ot_led2")    ix.ot2   = i;
     }
     return ix;
 }
@@ -463,9 +489,40 @@ static long align_rf_change(const std::vector<CsvRow>& rows, long row, int ch, d
     return (best >= 0 && best_err < std::log(1.3)) ? best : -1;
 }
 
+// The board's own RF change happened before that jump: its settling freeze repeats the last sample's
+// four codes into the capture, so the jump follows a run of identical rows. Returns the first
+// repeated row of the run that ends at `jump` (where the board changed RF), or `jump` if there is none.
+static long held_run_start(const std::vector<CsvRow>& rows, long jump) {
+    auto same = [&](long a, long b) {
+        return rows[a].led1 == rows[b].led1 && rows[a].led2 == rows[b].led2 &&
+               rows[a].aled1 == rows[b].aled1 && rows[a].aled2 == rows[b].aled2;
+    };
+    long h = jump;
+    while (h - 2 >= 0 && jump - h < ALIGN_W && same(h - 1, h - 2)) h--;
+    return h;
+}
+
+// When no jump can be seen (the LED codes clip at full scale before and after the change), the held
+// run alone marks the board's change: the first repeated row of the run nearest `row` within
+// +-ALIGN_W. Four codes repeating exactly does not happen with a live signal (ambient noise alone
+// moves them). -1 when there is none.
+static long nearest_held_run(const std::vector<CsvRow>& rows, long row) {
+    long best = -1;
+    long lo = std::max<long>(1, row - ALIGN_W), hi = std::min<long>((long)rows.size() - 1, row + ALIGN_W);
+    for (long k = lo; k <= hi; k++) {
+        const bool rep  = rows[k].led1 == rows[k - 1].led1 && rows[k].led2 == rows[k - 1].led2 &&
+                          rows[k].aled1 == rows[k - 1].aled1 && rows[k].aled2 == rows[k - 1].aled2;
+        const bool prev = k >= 2 && rows[k - 1].led1 == rows[k - 2].led1 && rows[k - 1].led2 == rows[k - 2].led2 &&
+                          rows[k - 1].aled1 == rows[k - 2].aled1 && rows[k - 1].aled2 == rows[k - 2].aled2;
+        if (rep && !prev && (best < 0 || std::labs(k - row) < std::labs(best - row))) best = k;
+    }
+    return best;
+}
+
 // ── Parse one CSV part: rows + (first seen) $CFG map + the part's afe records ─
 static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
-                      std::map<std::string, std::string>& cfg, std::vector<AfeRecord>& afe_recs) {
+                      std::map<std::string, std::string>& cfg, std::vector<AfeRecord>& afe_recs,
+                      bool input_ot) {
     std::ifstream f(path);
     if (!f.is_open()) {
         fprintf(stderr, "ERROR: cannot open %s\n", path.string().c_str());
@@ -485,7 +542,12 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
         }
         if (!have_header) {
             ix = find_columns(split_csv(line));
-            if (!ix.valid()) {
+            if (input_ot && !(ix.has_ot() && ix.fw_ps >= 0)) {
+                fprintf(stderr, "ERROR: %s: --input ot needs the OT_LED1, OT_LED2 and ProbeState columns "
+                        "(a P5 capture has no ProbeState)\n", path.string().c_str());
+                return false;
+            }
+            if (!input_ot && !ix.valid()) {
                 fprintf(stderr, "ERROR: %s is missing the raw ADC columns "
                         "(LED1/LED2/ALED1/ALED2 or IR/RED/IR_Amb/RED_Amb)\n",
                         path.string().c_str());
@@ -513,7 +575,11 @@ static bool parse_csv(const fs::path& path, std::vector<CsvRow>& rows,
         if (row.has_fw) {
             row.fw_spo2 = get_f32(ix.fw_spo2, NAN);
             row.fw_r    = get_f32(ix.fw_r, NAN);
-            row.fw_ps   = (int)get_i32(ix.fw_ps);
+        }
+        if (ix.fw_ps >= 0) row.fw_ps = (int)get_i32(ix.fw_ps);
+        if (ix.has_ot()) {
+            row.ot1 = get_f32(ix.ot1, NAN);
+            row.ot2 = get_f32(ix.ot2, NAN);
         }
         rows.push_back(row);
     }
@@ -526,7 +592,21 @@ struct PartStats {
     std::vector<float> r_lib, r_cand;   // both finite on the same sample
     std::vector<float> r_cd, r_ce, r_bw;   // the DC variants, where finite
     int lib_valid = 0, cand_valid = 0;
+    // Replayed vs recorded OT (raw-code replay of a capture with OT columns)
+    long ot_compared = 0, ot_within = 0, ot_max_row = -1;
+    int  ot_max_ch = 0;
+    double ot_max_rel = 0.0;
+    long missing_ot = 0;                 // --input ot: rows without a recorded OT, fed as not applied
+    long ot_startup = 0;                 // rows of the replay's cold-start freeze, not compared
 };
+
+static void compare_ot(PartStats& st, long row, int ch, float replayed, float recorded) {
+    if (!std::isfinite(recorded) || recorded == 0.0f || !std::isfinite(replayed)) return;
+    double rel = std::fabs((double)replayed - recorded) / std::fabs((double)recorded);
+    st.ot_compared++;
+    if (rel <= OT_TOL) st.ot_within++;
+    if (rel > st.ot_max_rel) { st.ot_max_rel = rel; st.ot_max_row = row; st.ot_max_ch = ch; }
+}
 
 static float pct(std::vector<float> v, float q) {
     if (v.empty()) return NAN;
@@ -537,7 +617,8 @@ static float pct(std::vector<float> v, float q) {
 
 static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::vector<CsvRow>& rows,
                              const std::vector<AfeRecord>& afe_recs, std::map<std::string, std::string>& afe_state,
-                             const fs::path& out_path, long long* smp_idx, int* afe_changes) {
+                             const fs::path& out_path, long long* smp_idx, int* afe_changes,
+                             bool input_ot, bool* ot_live) {
     std::ofstream out(out_path);
     PartStats st;
     if (!out.is_open()) {
@@ -557,18 +638,23 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         for (size_t i = 0; i < afe_recs.size(); i++) {
             const AfeRecord& rec = afe_recs[i];
             apply_row[i] = rec.row;
-            if (!st.empty()) {
+            if (!input_ot && !st.empty()) {
                 for (int ch = 0; ch < 2; ch++) {
                     const char* key = ch ? "afe_rf2_ohm" : "afe_rf1_ohm";
                     auto n = rec.kv.find(key); auto o = st.find(key);
                     if (n == rec.kv.end() || o == st.end() || n->second == o->second) continue;
                     double k = std::stod(n->second) / std::stod(o->second);
                     long j = align_rf_change(rows, rec.row, ch, k);
-                    printf("      afe record @row %ld: %s %s -> %s, raw %s jump %s\n", rec.row, key,
-                           o->second.c_str(), n->second.c_str(), ch ? "LED2" : "LED1",
-                           j >= 0 ? (std::string("at ") + std::to_string(j - rec.row) + " rows").c_str()
-                                  : "NOT FOUND within +-50 rows, applied at the record's row");
-                    if (j >= 0) apply_row[i] = j;
+                    long h = j >= 0 ? held_run_start(rows, j) : nearest_held_run(rows, rec.row);
+                    std::string how =
+                        j >= 0 ? "jump at " + std::to_string(j - rec.row) + " rows after " +
+                                 std::to_string(j - h) + " held rows; applied at " + std::to_string(h - rec.row)
+                      : h >= 0 ? "jump NOT FOUND (codes clipped?); held run at " + std::to_string(h - rec.row) +
+                                 " rows; applied there"
+                               : "jump and held run NOT FOUND within +-50 rows; applied at the record's row";
+                    printf("      afe record @row %ld: %s %s -> %s, raw %s %s\n", rec.row, key,
+                           o->second.c_str(), n->second.c_str(), ch ? "LED2" : "LED1", how.c_str());
+                    if (h >= 0) apply_row[i] = h;
                     break;      // both channels in one record change on the same row
                 }
             }
@@ -581,21 +667,58 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         while (next_rec < afe_recs.size() && apply_row[next_rec] <= row_i) {
             if (afe_state.empty()) {            // the session's first record describes the $CFG already applied
                 afe_state = afe_recs[next_rec].kv;
+            } else if (input_ot) {
+                // The recorded OT already carries every analog change; of a record only the sample
+                // rate still matters to the algorithms.
+                AfeRecord prf_only;
+                prf_only.row = afe_recs[next_rec].row;
+                auto it = afe_recs[next_rec].kv.find("afe_prf_hz");
+                if (it != afe_recs[next_rec].kv.end()) prf_only.kv[it->first] = it->second;
+                *afe_changes += apply_afe_record(afe, prf_only, afe_state,
+                                                 out_path.filename().string().c_str());
             } else {
                 *afe_changes += apply_afe_record(afe, afe_recs[next_rec], afe_state,
                                                  out_path.filename().string().c_str());
             }
             next_rec++;
         }
-        row_i++;
-        afe.test_feed_sample(r.led1, r.led2, r.aled1, r.aled2);
-        int   ps   = (int)afe.test_probe_state();
+        const long part_row = row_i++;
+        ProbeState ps_e;
+        float oi, orr;   // the OT the algorithms receive this sample
+        if (input_ot) {
+            // Production order (_process_sample): SpO2, HR1, HR2 fast path, HR3 fast path. A row with
+            // no recorded OT is fed as not applied: the algorithms reset rather than invent a value.
+            const bool have = std::isfinite(r.ot1) && std::isfinite(r.ot2);
+            if (!have) st.missing_ot++;
+            ps_e = have ? (ProbeState)r.fw_ps : ProbeState::PROBE_DISCONNECTED;
+            oi  = have ? r.ot1 : 0.0f;
+            orr = have ? r.ot2 : 0.0f;
+            afe.test_feed_spo2(oi, orr, ps_e);
+            afe.test_feed_hr1(oi, ps_e);
+            afe.test_feed_hr2(oi, ps_e);
+            afe.test_feed_hr3(oi, ps_e);
+        } else {
+            afe.test_feed_sample(r.led1, r.led2, r.aled1, r.aled2);
+            ps_e = afe.test_probe_state();
+            // What _spo2_update() saw: the last valid analog state's OT (frozen while settling).
+            oi  = afe.test_last_ot_led1();
+            orr = afe.test_last_ot_led2();
+            // A fresh instance starts in its settling freeze holding OT = 0, while the board had been
+            // running for a while: compare from the session's first live sample on.
+            if (!*ot_live && (oi != 0.0f || orr != 0.0f)) *ot_live = true;
+            if (*ot_live) {
+                compare_ot(st, part_row, 1, oi, r.ot1);
+                compare_ot(st, part_row, 2, orr, r.ot2);
+            } else if (std::isfinite(r.ot1)) {
+                st.ot_startup++;
+            }
+        }
+        int   ps   = (int)ps_e;
         float spo2 = afe.test_spo2();
         float rr   = afe.test_spo2_r();
         snprintf(buf, sizeof(buf),
-                 "%lld,%d,%.5g,%.5g,%.5f,%.3g,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
-                 *smp_idx, ps,
-                 afe.test_last_ot_led1(), afe.test_last_ot_led2(),
+                 "%lld,%d,%.7g,%.7g,%.5f,%.3g,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                 *smp_idx, ps, oi, orr,
                  rr, afe.test_pi(), spo2, afe.test_spo2_sqi(),
                  afe.test_hr1(), afe.test_hr1_sqi(),
                  afe.test_hr2(), afe.test_hr2_sqi(),
@@ -606,12 +729,12 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
                      r.fw_spo2, r.fw_r, r.fw_ps,
                      spo2 - r.fw_spo2, rr - r.fw_r);
             out << buf;
-            st.ps_compared++;
-            if (ps == r.fw_ps) st.ps_match++;
+            if (!input_ot && r.fw_ps >= 0) {    // in --input ot the ProbeState IS the recorded one
+                st.ps_compared++;
+                if (ps == r.fw_ps) st.ps_match++;
+            }
         }
-        // The candidate sees what _spo2_update() saw: the last valid analog state's OT (the
-        // library feeds `as`, which is that state) and the same ProbeState.
-        const float oi = afe.test_last_ot_led1(), orr = afe.test_last_ot_led2();
+        // The candidate sees what _spo2_update() saw: the same OT and the same ProbeState.
         const bool  applied = ps == (int)ProbeState::PROBE_APPLIED;
         float rc  = cand.ema.update(oi, orr, applied);
         float rcd = cand.cd.update(oi, orr, applied);
@@ -637,15 +760,20 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
 // ── Main ──────────────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
     static const char* USAGE =
-        "Usage: incunest_offline_runner <file.csv | directory> [--ot-thr <A/A>] [--out DIR]\n";
+        "Usage: incunest_offline_runner <file.csv | directory> [--ot-thr <A/A>] [--input raw|ot] [--out DIR]\n";
     fs::path target;
     fs::path out_dir;
     std::string ot_arg;
     float ot_thr = -1.0f;   // <0 = keep library default
+    bool input_ot = false;
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--ot-thr") == 0 && i + 1 < argc) {
             ot_arg = argv[++i];
             ot_thr = std::stof(ot_arg);
+        } else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
+            std::string v = to_lower(argv[++i]);
+            if (v != "raw" && v != "ot") { fprintf(stderr, "%s", USAGE); return 1; }
+            input_ot = (v == "ot");
         } else if (std::strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
             out_dir = argv[++i];
         } else if (target.empty()) {
@@ -659,12 +787,17 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "%s", USAGE);
         return 1;
     }
+    if (input_ot && ot_thr > 0) {
+        fprintf(stderr, "--ot-thr acts on the RSQM, which --input ot bypasses (it uses the recorded ProbeState)\n");
+        return 1;
+    }
     // The session directory holds only what was recorded: a replay is derived, and is named
     // by what it depends on, so another library version or threshold never overwrites it.
     if (out_dir.empty()) {
         fs::path base = fs::is_directory(target) ? target : target.parent_path();
         std::string name = std::string("replay_lib") + INCUNEST_AFE4490_VERSION;
         if (ot_thr > 0) name += "_ot" + ot_arg;
+        if (input_ot) name += "_inputot";
         out_dir = base / "derived" / name;
     }
     std::error_code ec;
@@ -706,9 +839,10 @@ int main(int argc, char* argv[]) {
         return stem;
     };
 
-    printf("incunest_offline_runner v0.24 (lib %s) — %zu file(s)%s -> %s\n",
+    printf("incunest_offline_runner v0.25 (lib %s) — %zu file(s), input = %s%s -> %s\n",
            INCUNEST_AFE4490_VERSION, files.size(),
-           ot_thr > 0 ? "" : ", ot-thr = library default", out_dir.string().c_str());
+           input_ot ? "recorded OT + ProbeState" : "raw ADC codes",
+           (ot_thr > 0 || input_ot) ? "" : ", ot-thr = library default", out_dir.string().c_str());
     if (ot_thr > 0) printf("  rsqm_ot_thr override: %g A/A\n", ot_thr);
     printf("  R_CAND = %s\n  R_CAND_CD = %s\n  R_CAND_CE = %s\n  R_CAND_BW = %s\n",
            R_CAND_LABEL, R_CAND_CD_LABEL, R_CAND_CE_LABEL, R_CAND_BW_LABEL);
@@ -718,12 +852,13 @@ int main(int argc, char* argv[]) {
     CandSet cand;
     std::map<std::string, std::string> afe_state;   // the configuration the instance has (afe_* keys)
     long long smp_idx = 0;
+    bool ot_live = false;                            // the session's replay has left its cold-start freeze
     int rc = 0;
     for (const auto& fpath : files) {
         std::vector<CsvRow> rows;
         std::map<std::string, std::string> cfg;
         std::vector<AfeRecord> afe_recs;
-        if (!parse_csv(fpath, rows, cfg, afe_recs)) { rc = 1; continue; }
+        if (!parse_csv(fpath, rows, cfg, afe_recs, input_ot)) { rc = 1; continue; }
 
         std::string grp = group_of(fpath);
         if (grp != cur_group) {                 // new session: fresh library instance
@@ -731,6 +866,7 @@ int main(int argc, char* argv[]) {
             afe = new INCUNEST_AFE4490();
             cur_group = grp;
             smp_idx = 0;
+            ot_live = false;
             afe_state.clear();
             if (cfg.empty()) {
                 fprintf(stderr, "WARNING: %s has no $CFG header; using library defaults\n",
@@ -745,7 +881,8 @@ int main(int argc, char* argv[]) {
 
         fs::path out_path = out_dir / (fpath.stem().string() + "_replay.csv");
         int afe_changes = 0;
-        PartStats st = replay_part(*afe, cand, rows, afe_recs, afe_state, out_path, &smp_idx, &afe_changes);
+        PartStats st = replay_part(*afe, cand, rows, afe_recs, afe_state, out_path, &smp_idx, &afe_changes,
+                                   input_ot, &ot_live);
         printf("  %s -> %s  (%d samples, probe-on %.1f%%, SpO2 producing %.1f%%",
                fpath.filename().string().c_str(), out_path.filename().string().c_str(),
                st.n, st.n ? 100.0 * st.probe_on / st.n : 0.0,
@@ -754,6 +891,18 @@ int main(int argc, char* argv[]) {
             printf(", ProbeState match %.1f%%", 100.0 * st.ps_match / st.ps_compared);
         if (!afe_recs.empty()) printf(", afe records %zu / changes applied %d", afe_recs.size(), afe_changes);
         printf(")\n");
+        if (st.ot_compared)
+            printf("      %s replayed vs recorded OT: %.3f%% of %ld values within %.0e; max rel %.2e "
+                   "(row %ld, OT_LED%d)\n",
+                   st.ot_within == st.ot_compared ? "OK  " : "!!  ",
+                   100.0 * st.ot_within / st.ot_compared, st.ot_compared, OT_TOL,
+                   st.ot_max_rel, st.ot_max_row, st.ot_max_ch);
+        if (st.ot_startup)
+            printf("      (first %ld rows: the replay's cold-start freeze, not compared)\n", st.ot_startup);
+        if (!st.ot_compared && !st.ot_startup && !input_ot)
+            printf("      (no OT columns in the capture: replay not checked against the board)\n");
+        if (st.missing_ot)
+            printf("      !!  %ld rows without a recorded OT, fed as not applied\n", st.missing_ot);
         // R of both methods where both are valid: median and the 1-99 % span
         printf("      R valid: lib %.1f%%, cand %.1f%%; both: lib p50 %.3f [p1 %.3f, p99 %.3f], "
                "cand p50 %.3f [p1 %.3f, p99 %.3f]\n",
