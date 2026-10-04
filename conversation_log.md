@@ -26253,3 +26253,8 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   / `spo2_r_corr_min` (van en el `alg:` de cada captura: queda registrado el método en vigor). Tests: v04 45/45,
   csv 15/15, diccionario 1290/1290, recorder 126/126, conversor 11/11, fleet 37/37.
 - **fw 0.19 compilado (V18), sin OTA todavía.** Siguiente: OTA a las tres V18 del banco + puntos MS100 30/35 lpm.
+- **Mensaje para Pablo (pulsenest-31, por indicación de Alex):** error de concepto en R — la fórmula (AC/DC)/(AC/DC)
+  es un estimador, no la definición; la ISO la define de forma abstracta (201.3.239) y da la fórmula solo como
+  aproximación (EE.4, fórmula EE.1); Nellcor regresa derivadas, Masimo separa arterial/venosa. Citas verificadas en el
+  PDF y llevadas al rationale §9 (párrafo "prior art") con la regla nueva: estado del arte comercial antes de diseñar
+  cualquier bloque de medida. El mensaje a Pablo es de Alex; no se guarda en el repo.
