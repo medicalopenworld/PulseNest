@@ -246,9 +246,9 @@ with tempfile.TemporaryDirectory() as td:
     w5.close()
     L5 = io.open(path, encoding="utf-8").read().split("\n")
 data5 = [l for l in L5 if l and not l.startswith("#")]
-check("P5: header = four ADC codes + OT_LED1/2 + CH_MASKS, nothing else",
-      data5[0] == "LED2,LED1,ALED2,ALED1,OT_LED1,OT_LED2,CH_MASKS", data5[0])
-check("P5: rows carry those fields (m4 field k holds k)", data5[1:] == ["3,4,5,6,31,32,33"] * 2, str(data5[1:]))
+check("P5: header = four ADC codes + ProbeState + OT_LED1/2 + CH_MASKS, nothing else",
+      data5[0] == "LED2,LED1,ALED2,ALED1,ProbeState,OT_LED1,OT_LED2,CH_MASKS", data5[0])
+check("P5: rows carry those fields (m4 field k holds k)", data5[1:] == ["3,4,5,6,22,31,32,33"] * 2, str(data5[1:]))
 check("P5: the file declares its profile; snapshots and anchors are unchanged",
       "# profile=P5" in L5 and "# format=incunest_csv/1" in L5
       and any(l.startswith("# @row 0 afe: ") for l in L5) and any(" clock: " in l for l in L5))

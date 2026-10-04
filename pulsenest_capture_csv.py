@@ -284,12 +284,14 @@ class CaptureCsvWriterV04:
     COL_SPEC = [(D.COLUMN_CANON[csv], idx) for _label, csv, idx, _m in CAPTURE_COLS
                 if csv not in ("FW_SmpCnt", "FW_Ts_us", "FW_RF1_OHM", "FW_RF2_OHM")]   # (class-body scope: no name lookup inside the comprehension)
     # Profile -> the columns it writes (None = all of COL_SPEC). P5 (Alex, 2026-10-04) is the
-    # minimum a capture needs to stay usable: the four ADC codes plus the two OT and the
-    # channel masks. OT/CH_MASKS are derivable in principle, but only from the `afe:` records;
-    # keeping them removes the dependence on those being complete. Nothing else the firmware
-    # computes is kept: the library recomputes it from these (offline_runner).
+    # minimum a capture needs to stay usable: the four ADC codes plus the two OT, the channel
+    # masks and the probe state. OT/CH_MASKS are derivable in principle, but only from the `afe:`
+    # records; keeping them removes the dependence on those being complete. ProbeState is kept
+    # because the columns above may not always suffice to regenerate it (the RSQM also reads what
+    # P5 drops), and the algorithms gate on it (offline_runner --input ot). Nothing else the
+    # firmware computes is kept: the library recomputes it from these (offline_runner).
     PROFILES = {"P1": None, "P2": None, "P3": None,
-                "P5": ("LED2", "LED1", "ALED2", "ALED1", "OT_LED1", "OT_LED2", "CH_MASKS")}
+                "P5": ("LED2", "LED1", "ALED2", "ALED1", "ProbeState", "OT_LED1", "OT_LED2", "CH_MASKS")}
     _DATA_TAGS = CaptureCsvWriter._DATA_TAGS
     _M2_MAP = CaptureCsvWriter._M2_MAP
     _M1_MAP = {9: 3}                 # $M1,SmpCnt,Ts_us,PPG_DISP: its one value is the PPG column

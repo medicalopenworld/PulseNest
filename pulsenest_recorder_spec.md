@@ -80,7 +80,7 @@ and logged, never discarded silently.
 
 ### 2.2a `--csv-profile` : P1 | P5
 
-Which columns the live CSV carries (capture_csv_format_spec.md §I). `P1` (default) writes everything the firmware sends; `P5` writes only `LED2,LED1,ALED2,ALED1,OT_LED1,OT_LED2,CH_MASKS`. Snapshots, anchors and events are identical. The choice is stored in `session.json` (`host.csv_profile`) and the converter regenerates the same CSV from it; the CSV header says `# profile=`. Console and GUI take the same argument.
+Which columns the live CSV carries (capture_csv_format_spec.md §I). `P1` (default) writes everything the firmware sends; `P5` writes only `LED2,LED1,ALED2,ALED1,ProbeState,OT_LED1,OT_LED2,CH_MASKS`. Snapshots, anchors and events are identical. The choice is stored in `session.json` (`host.csv_profile`) and the converter regenerates the same CSV from it; the CSV header says `# profile=`. Console and GUI take the same argument.
 
 ### 2.3 `--raw` : full | exceptions | off
 

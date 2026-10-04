@@ -1865,7 +1865,7 @@ def add_session_args(ap):
     ap.add_argument("--csv-profile", default="P1", choices=sorted(CaptureCsvWriterV04.PROFILES),
                     help="which columns the v04 CSV carries (capture_csv_format_spec.md section I): "
                          "P1 = everything the firmware sends (default); P5 = the minimum -- the "
-                         "four ADC codes, OT_LED1/2 and CH_MASKS")
+                         "four ADC codes, ProbeState, OT_LED1/2 and CH_MASKS")
     ap.add_argument("--raw", default="full", choices=("full", "exceptions", "off"),
                     help="the .pnraw stream in raw/: `full` keeps every datagram verbatim, "
                          "`exceptions` only the ones around a gap or a restart, `off` writes no "
