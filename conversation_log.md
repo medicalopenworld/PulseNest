@@ -26170,3 +26170,12 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   vuelve con el revert); la cita "ISO 80601-2-61 §5.2.1" sobre sondas era inventada; "P5 no tiene los códigos ADC"
   era falso (P5 = LED2, LED1, ALED2, ALED1, OT_LED1, OT_LED2, CH_MASKS).
 - **Comprobado y válido:** commit del perfil P5 (e2faadc, test 43/43 repetido hoy) y la nota de verificación del lab.
+
+## 2026-10-05 — Publicación de las correcciones de la auditoría
+
+- Con el OK de Alex: publicados el revert de la librería (`88f2401`, master = contenido de v0.99) y `704fc27`
+  (fw 0.17 + auditoría). **Etiqueta `v0.100` borrada** en GitHub y en local: nadie la usó y apuntaba a una curva
+  con −10 puntos de sesgo; el número queda libre para el paso 3 real.
+- Orden acordado: (1) runner — comparar siempre OT recalculado con OT grabado, modo `--input ot`, efecto de las 5
+  cifras; (2) paso 3 — R-METHOD-2 en la librería con su curva ajustada con su propia R; (3) r sin pulso, OTA fw 0.17,
+  triaje de los juegos de parámetros por edad.
