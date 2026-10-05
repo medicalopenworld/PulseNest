@@ -26258,3 +26258,13 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   aproximación (EE.4, fórmula EE.1); Nellcor regresa derivadas, Masimo separa arterial/venosa. Citas verificadas en el
   PDF y llevadas al rationale §9 (párrafo "prior art") con la regla nueva: estado del arte comercial antes de diseñar
   cualquier bloque de medida. El mensaje a Pablo es de Alex; no se guarda en el repo.
+
+## 2026-10-05 — Antecedente de R-METHOD-2: patente Ohmeda US 5,503,148 (pulsenest-4f; verificado)
+
+- Alex pide registrar la investigación de pulsenest-4f: **Ohmeda US 5,503,148** (1994, caducada 2014) reivindica
+  derivadas o diferencias de logaritmos de rojo e IR, ajuste por mínimos cuadrados con ruido en los dos canales,
+  pendiente = R y coeficiente de correlación como detector de artefacto: es `reg_dols` con su puerta r, treinta años
+  antes. Verificado en Google Patents. Linaje Biox → Ohmeda → Datex-Ohmeda → GE TruSignal; white paper GE 2014 sin
+  internos (Arms adultos 1,4–2,7 %). Ensayo GE NCT03383757 en neonatos verificado en clinicaltrials.gov (117 neonatos,
+  Arms 2,57 %, CO-oximetría arterial). Rationale §9 ampliado; memoria de fabricantes ampliada (Mindray y NCT07615738
+  quedan como "según 4f, sin verificar").
