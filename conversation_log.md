@@ -26339,3 +26339,21 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   justo la cota) + `test_spo2_pi_above_max_invalidates` (14/14); `test_pi` reescrito en unidades pp, 2 Hz, A = 2500 →
   PI 5,0 ± 0,3 (6/6). **10/10 suites host OK; firmware V18 limpio.** Spec §2, §5.1, §10.3b, §14; rationale §11.
   Sin commitear.
+
+## 2026-10-06 — Commit de lib v0.101 y OTA fw 0.19 / lib 0.101 a las tres V18 (sesión dev pulsenest-4b)
+
+- **Rol de sesiones confirmado:** esta (pulsenest-4b) es la única sesión de desarrollo; pulsenest-79 y pulsenest-c1 son
+  consultivas (sin cambios en los repos; traspaso por memoria + SendMessage, que aquí se trata como propuesta).
+- **Commit lib v0.101** (`4af9188`, publicado): PI desacoplado de SpO2, paso banda 0,5-15 Hz, RMS de ventana de 6 s con
+  DC de la misma ventana, unidades pico-a-pico, `spo2_pi_max` 20 %; spec §2/§5.1/§10.3b/§14 y rationale §11. Tests
+  host 10/10 suites re-ejecutados antes del commit. **Commit PulseNest** (`4967c6c`): `test/test_pi` nuevo,
+  `test_spo2.cpp`, log del 05-10 y notas de BACKLOG.
+- **OTA fw 0.19 / lib 0.101** a `88:50` (.129), `87:A4` (.170) y `82:5C` (.63): `build=82ba6d7` (último commit que
+  tocó `main/`), `libsha=4af9188`, `elfsha=872327d10103db1c` idéntico en las tres, verificado con
+  `tools/udp_fw_versions.py` (antes: fw 0.16 / lib 0.99). No se subió la versión de firmware: `$CFG` ya distingue la lib
+  por `lib=`/`libsha=`, igual que en las OTA 0.98→0.99. `docs/boards.md` actualizado.
+- **Sin tocar (quedan en el árbol de trabajo, decisión de Alex):** JPEG de Medle borrados y movidos a
+  `docs/Medle_probe/Datasheet/`, `docs/UpnMed_probe/`, PDFs en `docs/`, `analysis/`, `spo2_cal_20260323_*` borrados,
+  TOMLs de `docs/session_configs/` (no se commitean: códigos de sujeto).
+- **Siguiente:** puntos MS100 30/35 lpm (P5) y r sin pulso con R_CORR grabado; PI tras cada RF del HGAC; decisión
+  "hospital = P1 + raw full" y flag de perfil del conversor.
