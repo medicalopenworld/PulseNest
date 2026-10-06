@@ -18,19 +18,18 @@
 // PI's own tests.
 //
 // (SPO2_A/SPO2_B calibration coefficients and WARMUP_SAMPLES were removed 2026-08-19: both were
-// dead code — hardcoded duplicates of incunest_afe4490.cpp's spo2_a_default/spo2_b_default and
-// spo2_warmup_s, defined but never referenced by any assertion. If a future test needs them,
-// derive from afe.getConfig().spo2_r_curve_a / _b / .spo2_warmup_s instead of re-hardcoding, per
-// the same fix applied to test_hgac.cpp's WEAK_CODE/SAT_CODE — see conversation_log.md.)
+// dead code — hardcoded duplicates of incunest_afe4490.cpp's constants, defined but never
+// referenced by any assertion. Derive from afe.getConfig() instead of re-hardcoding, per the
+// same fix applied to test_hgac.cpp's WEAK_CODE/SAT_CODE — see conversation_log.md.)
 //
-// R/SpO2-accuracy tests need much longer than the nominal warmup: the AC^2 EMA (tau_var=6s)
-// is fed d=x-mean, and mean (tau_mean=2s) itself has not fully settled either — the
-// compounded two-stage IIR settles far slower than the naive 3*tau_var=18s estimate.
-// Verified empirically (standalone simulation): R keeps drifting until ~60s (30000 samples)
-// from a cold start; converges to within <0.1% of the theoretical value by 40000 samples.
-// This is a property of the EMA cascade itself, independent of the OT-domain migration —
-// not something this experiment changes or fixes.
+// Since v0.102 the averaging is a true sliding window (spo2_window_s, default 6 s at the 50 Hz
+// block cadence): the first estimate appears when the window is full (3000 raw samples at
+// 500 Hz, plus one decimation block) and is exact from then on — the only remaining transient
+// is the 2 s DC EMA, seeded on the first sample. 40000 samples (80 s) is kept as a generous
+// "fully converged" budget for the accuracy tests; it is no longer a necessity.
 static constexpr int CONVERGED_SAMPLES = 40000;
+static constexpr int WINDOW_RAW        = 3000;    // 6 s × 500 Hz — spo2_window_s default
+static constexpr int DECIM_RAW         = 10;      // raw samples per decimated (block) sample at 500 Hz
 
 // Typical OT DC magnitude (per spec: APPLIED ~1.4e-5).
 static constexpr float OT_DC = 1.4e-5f;
@@ -48,28 +47,68 @@ static void feed_spo2_sine(INCUNEST_AFE4490& afe,
         float phase = 2.0f * (float)M_PI * freq_hz * i / fs;
         float ot_ir  = OT_DC + a_ir  * scale * sinf(phase);
         float ot_red = OT_DC + a_red * scale * sinf(phase);
-        afe.test_feed_spo2(ot_ir, ot_red, probe_state);
-        afe.test_feed_pi(ot_ir, probe_state);   // SpO2's SQI reads AFE4490Data::pi — see note above
+        afe.test_feed_pi(ot_ir, probe_state);   // SpO2's SQI reads AFE4490Data::pi — see note above;
+        afe.test_feed_spo2(ot_ir, ot_red, probe_state);   // PI first, as the firmware's task body does
     }
 }
 
 void setUp() {}
 void tearDown() {}
 
-// ── Test 1: not valid during warmup — outputs are NaN, not stale ─────────────
+// ── Test 1: not valid while the window fills — outputs are NaN, not stale ────
 void test_spo2_not_valid_during_warmup() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1000);  // well short of warmup
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1000);  // well short of the 6 s window
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
     TEST_ASSERT_TRUE(isnan(afe.test_spo2_r()));
 }
 
+// ── Test 1b: the window IS the warm-up — valid exactly when full, not 3·τ later ──
+// NaN one block before the window is full; R, r and SpO2 present one block after (PI's own 6 s
+// window fills at the same time, so the SQI gate on PI does not bind here).
+void test_spo2_valid_exactly_when_window_full() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.0f, afe.getConfig().spo2_window_s);
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, WINDOW_RAW - DECIM_RAW);
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2_r()));
+    TEST_ASSERT_EQUAL_UINT32(afe.test_spo2_buf_n() - 1, afe.test_spo2_buf_count());
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 2 * DECIM_RAW);
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2_r()));
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
+    // Two clean sines: the regression is exact from the first full window.
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 2769.0f / 5000.0f, afe.test_spo2_r());
+}
+
+// ── Test 1c: window setter — clamped to [2, 12] s, length in seconds, empties the window ──
+void test_spo2_window_setter_clamps_and_resets() {
+    INCUNEST_AFE4490 afe;
+    afe.setSpO2WindowS(1.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.0f, afe.getConfig().spo2_window_s);
+    afe.setSpO2WindowS(20.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 12.0f, afe.getConfig().spo2_window_s);
+    TEST_ASSERT_EQUAL_INT(600, afe.test_spo2_buf_n());
+    afe.setSpO2WindowS(4.0f);
+    TEST_ASSERT_EQUAL_INT(200, afe.test_spo2_buf_n());
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.0f, afe.getConfig().pi_window_s);   // independent of PI's
+    // 4 s window: valid after 2000 raw (+ one block), with the same R.
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 2000 + 2 * DECIM_RAW);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 2769.0f / 5000.0f, afe.test_spo2_r());
+    // Changing the length mid-stream empties the window: NaN until the new length has filled.
+    afe.setSpO2WindowS(8.0f);
+    TEST_ASSERT_EQUAL_UINT32(0, afe.test_spo2_buf_count());
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1000);
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2_r()));
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 3000 + 2 * DECIM_RAW);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 2769.0f / 5000.0f, afe.test_spo2_r());
+}
+
 // ── Test 2: PROBE_DISCONNECTED/NOT_APPLIED forces invalid + resets state ─────
 // SpO2 never classifies presence itself — it only consumes probe_state. Feeding a real,
 // already-converged signal, then switching to PROBE_DISCONNECTED must: force sqi=0 and
-// pi/spo2/spo2_r to NaN, reset the internal EMAs, and require a fresh warmup once
-// probe_state returns to PROBE_APPLIED (no instant resume from stale pre-disconnect state).
+// pi/spo2/spo2_r to NaN, reset the internal EMAs and windows, and require a fresh full window
+// once probe_state returns to PROBE_APPLIED (no instant resume from stale pre-disconnect state).
 void test_spo2_not_applied_resets() {
     INCUNEST_AFE4490 afe;
     feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
@@ -85,9 +124,10 @@ void test_spo2_not_applied_resets() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_ir_ema_mean());  // EMA reset, not just gated
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_ir_ema_var());
 
-    // Re-applying (PROBE_APPLIED) must require a fresh warmup, not resume instantly from
+    // Re-applying (PROBE_APPLIED) must require a fresh full window, not resume instantly from
     // whatever the pre-disconnect state was.
-    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1000);  // well short of warmup
+    TEST_ASSERT_EQUAL_UINT32(0, afe.test_spo2_buf_count());
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1000);  // well short of the window
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 
@@ -257,13 +297,15 @@ void test_spo2_method2_low_r_invalidates() {
     TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
 }
 
-// Switching method takes effect on the next sample, without a new warm-up: both run all the time.
+// Switching method takes effect at the next window update (one decimation block, 20 ms at
+// 500 Hz — since v0.102 the outputs refresh at the block cadence), without a new warm-up: both
+// methods' windows run all the time.
 void test_spo2_method_switch_is_immediate() {
     INCUNEST_AFE4490 afe;
     feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     float r2 = afe.test_spo2_r();
     afe.setSpO2RMethod(1);
-    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1);
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, DECIM_RAW);
     TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
     TEST_ASSERT_FLOAT_WITHIN(0.005f, r2, afe.test_spo2_r());
     afe.setSpO2RMethod(7);                                      // rejected: stays on 1
@@ -282,7 +324,7 @@ void test_spo2_pi_above_max_invalidates() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_EQUAL_FLOAT(20.0f, afe.getConfig().spo2_pi_max);
     afe.setSpO2PiSqiThresholds(0.5f, 2.0f, 40.0f);
-    feed_spo2_sine(afe, 15000.0f, 15000.0f * 0.5538f, 1.0f, 1);
+    feed_spo2_sine(afe, 15000.0f, 15000.0f * 0.5538f, 1.0f, DECIM_RAW);   // next window update
     TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
 }
@@ -294,6 +336,8 @@ int main() {
     RUN_TEST(test_spo2_method2_low_r_invalidates);
     RUN_TEST(test_spo2_method_switch_is_immediate);
     RUN_TEST(test_spo2_not_valid_during_warmup);
+    RUN_TEST(test_spo2_valid_exactly_when_window_full);
+    RUN_TEST(test_spo2_window_setter_clamps_and_resets);
     RUN_TEST(test_spo2_not_applied_resets);
     RUN_TEST(test_spo2_98_percent);
     RUN_TEST(test_spo2_90_percent);
