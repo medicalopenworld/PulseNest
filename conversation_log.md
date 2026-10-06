@@ -26268,3 +26268,74 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   internos (Arms adultos 1,4–2,7 %). Ensayo GE NCT03383757 en neonatos verificado en clinicaltrials.gov (117 neonatos,
   Arms 2,57 %, CO-oximetría arterial). Rationale §9 ampliado; memoria de fabricantes ampliada (Mindray y NCT07615738
   quedan como "según 4f, sin verificar").
+
+## 2026-10-05 — PI (Perfusion Index) decoupled de SpO2: lib v0.101
+
+- **Motivo:** en PILAB (STEP1), Alex observó que BPF(0.5-2.0 Hz) se parece a "EMA subtract" τ 0.5 s pero no a τ 2 s
+  (coherente: el corte de un EMA-resta es f_c=1/(2π·τ), 0.08 Hz a 2 s frente a 0.32 Hz a 0.5 s). Esto reabrió, por
+  una razón distinta, la pregunta ya cerrada el 03-10 (rationale §10): aquella sesión fijó τ=2 s para el papel
+  **DC_R** (denominador normalizador de R-METHOD-2); el papel que preocupaba ahora era **DC_sub** (la resta que
+  extrae la onda AC de PI/R-METHOD-1) — mismo número, dos papeles con requisitos distintos
+  (`project_spo2_dc_split_task`, aún pendiente como tarea de separación en la propia librería).
+- **Decisión de alcance (Alex):** R-METHOD-1 queda solo para análisis comparativo, no es el objetivo a optimizar.
+  El objetivo es **PI**, y antes de tocar sus τ, **sacarlo de `_spo2_update()`** a su propia función.
+- **Implementado (lib v0.101):** `_pi_update_sample()`, independiente de SpO2, con:
+  - **STEP1 (onda AC):** biquad privado `_pi_bpf` (0.5-5 Hz, misma familia que HR2/R-METHOD-2 pero instancia
+    propia — "los caminos no comparten nada", spec §5.3.1), no una resta de EMA. Evita el riesgo de bradicardia de
+    un EMA de τ corto (que empezaría a seguir el propio pulso a 30 lpm).
+  - **STEP3 (DC normalizador):** EMA privado `_pi_dc_ema` (τ 2,0 s, `setPIDcTauS()`) — solo denominador, nunca se
+    resta, así que no hereda el riesgo de bradicardia; mismo papel que DC_R de R-METHOD-2, donde el experimento del
+    03-10 ya midió que acelerar no gana nada.
+  - **STEP2 (RMS de AC):** ventana deslizante real de 6 s (no EMA) — buffer circular de 300 muestras decimadas
+    (50 Hz, mismo patrón que HR2/HR3) con suma de cuadrados O(1). Asienta EXACTAMENTE a los 6 s en vez de
+    asintóticamente (el EMA de 6 s necesitaba ~18 s para el ~95 %). Sin Task lenta: la actualización es O(1), cabe
+    entera en el fast path.
+- **Guardia añadida en `_spo2_update()`:** el SQI (que sigue leyendo `pi`) ahora comprueba `isnan(pi)` explícitamente
+  en vez de confiar en el paso de NaN de `fmaxf`/`fminf` (que leería PI-no-asentado-aún como SQI=1, al revés de lo
+  correcto). En producción nunca se dispara (6 s de PI < 18 s de calentamiento de SpO2), pero protege cualquier
+  llamador que alimente los dos de forma desacoplada, ahora posible por primera vez.
+- **Tests:** nueva suite `test_pi` (6/6); `test_spo2.cpp` actualizado (`feed_spo2_sine()` y dos bucles manuales
+  alimentan también `test_feed_pi()`, porque el SQI de SpO2 sigue dependiendo de `pi`). **10/10 suites host OK**;
+  build firmware V18 limpio (`-Wall -Wextra -Werror`).
+- **Fuera de alcance (anotado en rationale §11):** exposición `$SET`/`$LCFG` de los nuevos parámetros (tarea aparte,
+  cruza repos); `TimingStat` dedicado para PI; setter para la longitud de ventana (fija en compile-time, igual que
+  `hr2_buf_len`).
+- **Ficheros:** `incunest_afe4490.h`/`.cpp` (lib v0.101, `library.json`), `incunest_afe4490_spec.md` (§2, §5.1,
+  §10.3b nueva, §14), `incunest_afe4490_design_rationale.md` (§11 nueva), `test/test_pi/test_pi.cpp` (nuevo),
+  `test/test_spo2/test_spo2.cpp`. Sin commitear.
+
+## 2026-10-05 — Estudio del método de cálculo de PI (AC y DC) y decisiones; lib v0.101 revisada
+
+- **Dos preguntas de Alex** sobre la v0.101 recién escrita: (1) el coste del reset incondicional de `_pi_update_sample()`
+  (memset de 1,2 KB por muestra sin sonda; propuso condicionarlo al `probe_state` anterior) y (2) por qué el DC no es la
+  media de un buffer como el de AC sin elevar al cuadrado — con estudio profundo de AC y DC: fabricantes, norma, literatura.
+- **(1) Decisión (mía, por delegación de Alex): no se añade guard, ni en PI ni en HR2/HR3.** Coste estimado 2-3 µs por
+  buffer (~8-10 µs los tres, 0,5 % del presupuesto a 500 Hz, 1,5 % a 1600 Hz) y solo sin sonda; HR2/HR3 ya lo miden
+  `_ts_hr2`/`_ts_hr3` en `$TIMING` y nunca ha destacado; un guard "`count == 0 && phase == 0` ⟺ limpio" es exacto hoy
+  pero es un invariante implícito que un cambio futuro rompería en silencio dejando estado rancio tras una desconexión.
+  Reset incondicional = trivialmente correcto. Rationale §11.
+- **(2) Fuentes:** ISO 80601-2-61:2026 §201.3.245 *%mod* ("may be approximated as AC/DC ×100", IR primario; no fija
+  pico-a-pico ni RMS ni ventana), Anexo II.2.1 (*%mod* = *pulse amplitude* = *PI*, normal 1-8 %), EE.1 (max/min por
+  pulso); Nellcor US 6,675,031 (AC = Max−Min, DC = (Max+Min)/2 por pulso); Masimo US 8,280,473 / 11,006,867
+  (PI = (λmax−λmin)/λDC, λDC = media; "smoother" publica el menor PI con movimiento); whitepaper Masimo (IR 940 nm);
+  literatura: PI no estandarizado ni comparable entre marcas; umbrales neonatales (todos Masimo, pico-a-pico): Granelli
+  p5 0,70 / p1 0,50; De Felice ≤ 1,24; Hakan término 1,35 / pretérmino 0,88 preductal.
+- **Medido** (scripts del scratchpad; SUBJ08 56 min HR ~166, SUBJ09 1238 p01, MS100 60-220 lpm, ventanas de 6 s):
+  factor de cresta pp/RMS del PPG filtrado 2,79 / 2,92 / 3,0-3,2 (sinusoide 2,83); DC EMA 2 s vs media de ventana 6 s
+  **±0,25 % (p5/p95 ±1,5 %)**, por latido +0,2 % → la elección de DC es estructural, no numérica; **PI v0.101 (RMS de
+  banda 0,5-5 Hz) = 1,06 vs 1,66 de la v0.100 en SUBJ08 (−36 %; SUBJ09 −16 %)**: la resta de EMA dejaba pasar < 0,5 y
+  > 5 Hz; con los umbrales SQI 0,5/2,0, SUBJ08 pasaba a 10,8 % de ventanas con SQI 0 y 9,6 % con SQI 1 (placa: SQI
+  medio 0,61) — y en unidades pico-a-pico son 0 % y 61 % (Granelli p5: 0,2 %); **corte superior**: a 220 lpm el 0,5-5 Hz
+  lee −25 % frente a 60 lpm en el MS100 (2.º armónico fuera), 0,5-15 Hz lo elimina y no añade ruido medible ni en el
+  decil bajo de SUBJ08 (me corrijo: había descartado ensanchar la banda); transitorio tras cada RF del HGAC (10 escalones
+  SUBJ09): PI se desvía 25-250 % durante 6-14 s con cualquier DC — lo domina el numerador; pendiente aparte.
+- **Decisiones (Alex: "ADELANTE" a las cuatro), implementadas en lib v0.101:** (a) DC = media de la misma ventana de 6 s
+  (medias de bloque del OT crudo a 50 Hz, 300 floats más; fuera `_pi_dc_ema`/`pi_dc_tau_s`/`setPIDcTauS()`); (b) PI en
+  unidades pico-a-pico: `2√2·RMS(bp)` (`pi_rms_to_pp`), la mediana de pp por latido queda como opción de PILAB;
+  (c) paso banda de PI 0,5-15 Hz (`setPIFilter` default); (d) `spo2_pi_sqi_lo/hi` se quedan en 0,5/2,0, ahora en las
+  unidades en que se copiaron, y **cota superior `spo2_pi_max` = 20 %** (tercer parámetro de `setSpO2PiSqiThresholds`,
+  `AFE4490Config::spo2_pi_max`): cierra la tarea del 22-08 (SQI 1 con PI imposible al retirar la sonda).
+- **Tests:** `test_spo2` amplitudes 10000/5538 → 5000/2769 (misma R; con la escala pico-a-pico 10000 daba PI = 20 %,
+  justo la cota) + `test_spo2_pi_above_max_invalidates` (14/14); `test_pi` reescrito en unidades pp, 2 Hz, A = 2500 →
+  PI 5,0 ± 0,3 (6/6). **10/10 suites host OK; firmware V18 limpio.** Spec §2, §5.1, §10.3b, §14; rationale §11.
+  Sin commitear.

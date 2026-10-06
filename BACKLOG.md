@@ -75,6 +75,16 @@ has not been triaged yet.
 	- Universal (cualquier edad)
 	- Adaptativo (dependiente de la HR)
 - Hacer lista de parámetros configurables por el operador (ot_thr,iled_max,...)
+- PROMPT: dado que las medidas SUBJ08/09 han generado una calibración SpO2(R) tan distinta a la actual, dos preguntas: 1. ¿Deberíamos tener un calibración separada para este grupo de edades? 2. ¿Qué hacen el resto de fabricantes respecto a esto? 3. ¿Qué hacen el resto de fabricantes acerca de tener parametros (tiempos,frecuencias,etc.) específicos por grupos de ddad?
+- Hacer un TOP10 de las principales decisiones analizadas en el _rationale.md (rango HR, ot_thr, tiempos de promediado, frecuencias de corte, etc.)
+- En el rationale no encuentro cómo se ha decidido el método/criterio de estimaciónde ProbeState
+- BUG!!! En el algún caso HGAC pasa a off y la RF1 hace que sature algún canal y ya no detecta APPLIED (todavía no sé reproducir el fallo)
+- Posible mejora para compensar las tolerancias de las resistencias RF1/RF2: que en algún momento realice un comprobación de dichas tolerancias saltando entre los distintos valores de RF. Por ejemplo, lo más rápido que permitan los tiempos de asentamiento ya que los condensadores a la entrada del ADC probablemente no esperen saltos bruscos entre una muestra y la siguiente. Antes de implementar el algoritmos, estudiar en unas cuantas tarjetas qué tolerancias hay y analizar cómo afectan dichos niveles de tolerancia.
+- Creo que hay calculos como las derivadas de R-METHOD-2 que dependen de la frecuencia de muestreo.
+  Habría que repensar si estos cálculos los hacemos sobre la señal de 500Hz o de 50Hz, y si tener en cuenta dicho delta(t).
+  
+
+
 
 ## Done / promoted
 
@@ -119,15 +129,5 @@ has not been triaged yet.
   el paso alto 0,5 Hz (causal o zero-phase) EMPEORA HR3 — menos acuerdo con HR2 (−1,3 a −3 pts) y más
   picos < 72 lpm (6,7→9,3/11,3 % y 3,9→7,1/10,5 %), aunque sube el SQI. El detrend lineal = restar la media.
   Ver conversation_log 2026-10-01. Antes de seguir con esta tarea, revisar esa conclusión.
-- [ ] Herramienta de marcado manual de picos sistólicos sobre capturas (`.csv` de sesión), para tener una
-  referencia de HR independiente de los algoritmos: la persona marca los latidos en tramos limpios y la
-  herramienta guarda los instantes (fichero aparte, en `derived/`, nunca en la captura) y calcula la HR de
-  referencia por ventana como (N−1)/(t_N − t_1). Uso: validar HR1/HR2/HR3 con la diferencia RMS que pide la
-  ISO 80601-2-61 §201.12.1.104 (el marcado manual equivale a "pulso palpado" / "cualquier otro método con
-  exactitud suficiente"). Contexto (Alex, 2026-10-02): la calibración de HR es secundaria porque esta
-  referencia basta para la precisión buscada; los errores de marcado se cancelan en el promedio (un retraso
-  sistemático se cancela del todo; un latido perdido o inventado NO: ±1/N), así que marcar solo tramos sin
-  duda. Habría mejorado el experimento de HR3 del 2026-10-01, que usó HR2 como referencia a falta de otra
-  cosa (el monitor de planta no registró el pulso en HOSPNAV).
 
 <!-- Triaged items land here briefly before removal, or are deleted outright. -->

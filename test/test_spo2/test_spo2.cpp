@@ -9,8 +9,13 @@
 // no-finger/no-signal classification, only a purely numerical division-safety guard
 // (spo2_div_eps). See _spo2_update() rationale in incunest_afe4490.cpp.
 //
-// Output contract: sqi==0.0f always implies pi==spo2==spo2_r==NaN (never a stale value),
-// unified across warmup, PROBE_DISCONNECTED/PROBE_OT_HIGH, and the division-safety guard.
+// Output contract: sqi==0.0f always implies spo2==spo2_r==NaN (never a stale value), unified
+// across warmup, PROBE_DISCONNECTED/PROBE_OT_HIGH, and the division-safety guard. PI (v0.101,
+// rationale §11) is computed independently by _pi_update_sample(), not by _spo2_update() — the
+// helper below feeds it in lockstep (same IR samples, same probe_state) because SpO2's SQI still
+// reads AFE4490Data::pi (unchanged). A test that calls test_feed_spo2() alone, bypassing PI,
+// gets pi==0.0f forever (never updated) rather than a real value — see test_pi/test_pi.cpp for
+// PI's own tests.
 //
 // (SPO2_A/SPO2_B calibration coefficients and WARMUP_SAMPLES were removed 2026-08-19: both were
 // dead code — hardcoded duplicates of incunest_afe4490.cpp's spo2_a_default/spo2_b_default and
@@ -44,6 +49,7 @@ static void feed_spo2_sine(INCUNEST_AFE4490& afe,
         float ot_ir  = OT_DC + a_ir  * scale * sinf(phase);
         float ot_red = OT_DC + a_red * scale * sinf(phase);
         afe.test_feed_spo2(ot_ir, ot_red, probe_state);
+        afe.test_feed_pi(ot_ir, probe_state);   // SpO2's SQI reads AFE4490Data::pi — see note above
     }
 }
 
@@ -53,7 +59,7 @@ void tearDown() {}
 // ── Test 1: not valid during warmup — outputs are NaN, not stale ─────────────
 void test_spo2_not_valid_during_warmup() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, 1000);  // well short of warmup
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1000);  // well short of warmup
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
     TEST_ASSERT_TRUE(isnan(afe.test_spo2_r()));
@@ -66,7 +72,7 @@ void test_spo2_not_valid_during_warmup() {
 // probe_state returns to PROBE_APPLIED (no instant resume from stale pre-disconnect state).
 void test_spo2_not_applied_resets() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());  // valid before disconnecting
 
     // Sustained disconnect: probe_state alone must force invalidity, regardless of what OT
@@ -81,7 +87,7 @@ void test_spo2_not_applied_resets() {
 
     // Re-applying (PROBE_APPLIED) must require a fresh warmup, not resume instantly from
     // whatever the pre-disconnect state was.
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, 1000);  // well short of warmup
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1000);  // well short of warmup
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 
@@ -96,13 +102,13 @@ void test_spo2_not_applied_resets() {
 // hold whichever curve the library ships: a_red = 10000 · R_target, R_target = (a − SpO2) / b.
 static float a_red_for(float spo2_target) {
     AFE4490Config cfg = INCUNEST_AFE4490().getConfig();
-    return 10000.0f * (cfg.spo2_r_curve_a - spo2_target) / cfg.spo2_r_curve_b;
+    return 5000.0f * (cfg.spo2_r_curve_a - spo2_target) / cfg.spo2_r_curve_b;
 }
 
 // ── Test 3: SpO2 ≈ 98% ───────────────────────────────────────────────────────
 void test_spo2_98_percent() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, a_red_for(98.0f), 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, a_red_for(98.0f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 98.0f, afe.test_spo2());
 }
@@ -110,7 +116,7 @@ void test_spo2_98_percent() {
 // ── Test 4: SpO2 ≈ 90% ───────────────────────────────────────────────────────
 void test_spo2_90_percent() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, a_red_for(90.0f), 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, a_red_for(90.0f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 90.0f, afe.test_spo2());
 }
@@ -119,7 +125,7 @@ void test_spo2_90_percent() {
 // raw SpO2 ≈ 101.2 → within the 3-point clamp margin → 100.0
 void test_spo2_clamp_above_100() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, a_red_for(101.2f), 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, a_red_for(101.2f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, afe.test_spo2());
 }
@@ -128,7 +134,7 @@ void test_spo2_clamp_above_100() {
 // raw SpO2 ≈ 105.8 → exceeds the clamp margin → invalid
 void test_spo2_too_high_invalid() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, a_red_for(105.8f), 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, a_red_for(105.8f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 }
@@ -139,7 +145,7 @@ void test_spo2_too_high_invalid() {
 // it), R and SpO2 must be identical. Demonstrates the OT-domain migration's core claim.
 void test_spo2_r_invariant_to_uniform_scale() {
     INCUNEST_AFE4490 afe_a, afe_b;
-    feed_spo2_sine(afe_a, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe_a, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     // afe_b fed with the SAME OT values scaled by an arbitrary constant (simulating what a
     // gain change would have done in the OLD raw-count domain) — R must match afe_a exactly,
     // because in OT domain a uniform scale is exactly what a real gain change looks like:
@@ -150,9 +156,10 @@ void test_spo2_r_invariant_to_uniform_scale() {
     const float scale = 1.4e-10f;
     for (int i = 0; i < CONVERGED_SAMPLES; i++) {
         float phase = 2.0f * (float)M_PI * 1.0f * i / fs;
-        float ot_ir  = k * (OT_DC + 10000.0f * scale * sinf(phase));
-        float ot_red = k * (OT_DC + 5538.0f  * scale * sinf(phase));
+        float ot_ir  = k * (OT_DC + 5000.0f * scale * sinf(phase));
+        float ot_red = k * (OT_DC + 2769.0f  * scale * sinf(phase));
         afe_b.test_feed_spo2(ot_ir, ot_red, ProbeState::PROBE_APPLIED);
+        afe_b.test_feed_pi(ot_ir, ProbeState::PROBE_APPLIED);
     }
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe_b.test_spo2_sqi());
     TEST_ASSERT_FLOAT_WITHIN(0.05f, afe_a.test_spo2(), afe_b.test_spo2());
@@ -175,7 +182,7 @@ void test_spo2_default_r_curve_is_labelled_and_matches() {
     TEST_ASSERT_EQUAL_FLOAT(0.8f, cfg.spo2_r_corr_min);
     afe.setSpO2RMethod(1);
     TEST_ASSERT_FALSE(afe.getConfig().spo2_r_curve_method_match);
-    feed_spo2_sine(afe, 10000.0f, a_red_for(98.0f), 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, a_red_for(98.0f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());          // warning only: SpO2 still valid
     TEST_ASSERT_FLOAT_WITHIN(2.0f, 98.0f, afe.test_spo2());
 }
@@ -191,7 +198,7 @@ void test_spo2_set_r_curve_applies_and_matches() {
     TEST_ASSERT_FALSE(afe.getConfig().spo2_r_curve_method_match);
     TEST_ASSERT_EQUAL_STRING("R-METHOD-1", afe.getConfig().spo2_r_method_id);
     afe.setSpO2RMethod(2);
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_FLOAT_WITHIN(0.05f, 110.0f - 20.0f * afe.test_spo2_r(), afe.test_spo2());
 }
 
@@ -220,8 +227,8 @@ void test_spo2_set_r_curve_rejects_bad_input() {
 void test_spo2_method2_equals_method1_on_clean_sines() {
     INCUNEST_AFE4490 m2, m1;
     m1.setSpO2RMethod(1);
-    feed_spo2_sine(m2, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
-    feed_spo2_sine(m1, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(m2, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(m1, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_FLOAT_WITHIN(0.005f, 0.5538f, m2.test_spo2_r());
     TEST_ASSERT_FLOAT_WITHIN(0.005f, m1.test_spo2_r(), m2.test_spo2_r());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, m2.test_spo2_r_corr());
@@ -238,33 +245,51 @@ void test_spo2_method2_low_r_invalidates() {
         float phase = 2.0f * (float)M_PI * 1.0f * i / fs;
         seed = seed * 1664525u + 1013904223u;
         float noise = ((float)(seed >> 8) / 16777216.0f - 0.5f) * 2.0f;   // white, ±1
-        afe.test_feed_spo2(OT_DC + 10000.0f * scale * sinf(phase),
-                           OT_DC + 10000.0f * scale * noise, ProbeState::PROBE_APPLIED);
+        afe.test_feed_spo2(OT_DC + 5000.0f * scale * sinf(phase),
+                           OT_DC + 5000.0f * scale * noise, ProbeState::PROBE_APPLIED);
     }
     TEST_ASSERT_TRUE(afe.test_spo2_r_corr() < 0.3f);
     TEST_ASSERT_FALSE(isnan(afe.test_spo2_r()));
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     afe.setSpO2RCorrMin(-1.0f);                                 // gate off: SpO2 comes back (if in range)
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
 }
 
 // Switching method takes effect on the next sample, without a new warm-up: both run all the time.
 void test_spo2_method_switch_is_immediate() {
     INCUNEST_AFE4490 afe;
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, CONVERGED_SAMPLES);
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     float r2 = afe.test_spo2_r();
     afe.setSpO2RMethod(1);
-    feed_spo2_sine(afe, 10000.0f, 5538.0f, 1.0f, 1);
+    feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 1);
     TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
     TEST_ASSERT_FLOAT_WITHIN(0.005f, r2, afe.test_spo2_r());
     afe.setSpO2RMethod(7);                                      // rejected: stays on 1
     TEST_ASSERT_EQUAL_UINT8(1, afe.getConfig().spo2_r_method);
 }
 
+// ── PI upper bound (v0.101): an impossible PI withholds SpO2 instead of scoring SQI = 1 ────
+// a_ir 15000 → PI = 2·15000·1.4e-10/1.4e-5 × 100 = 30 % (×0.9 band-pass gain at 1 Hz ≈ 27 %),
+// above spo2_pi_max (20 %): the pre-v0.101 code clamped the OUTPUT of the SQI ramp and reported
+// SQI = 1 here. Raising the bound through the third parameter of setSpO2PiSqiThresholds() restores it.
+void test_spo2_pi_above_max_invalidates() {
+    INCUNEST_AFE4490 afe;
+    feed_spo2_sine(afe, 15000.0f, 15000.0f * 0.5538f, 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_GREATER_THAN_FLOAT(20.0f, afe.test_pi());
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_EQUAL_FLOAT(20.0f, afe.getConfig().spo2_pi_max);
+    afe.setSpO2PiSqiThresholds(0.5f, 2.0f, 40.0f);
+    feed_spo2_sine(afe, 15000.0f, 15000.0f * 0.5538f, 1.0f, 1);
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_spo2_pi_above_max_invalidates);
     RUN_TEST(test_spo2_method2_equals_method1_on_clean_sines);
     RUN_TEST(test_spo2_method2_low_r_invalidates);
     RUN_TEST(test_spo2_method_switch_is_immediate);
