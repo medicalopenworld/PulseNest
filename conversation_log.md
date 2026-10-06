@@ -26367,3 +26367,56 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
 - Verificado offscreen (script del scratchpad): sin `_vb_y` ni sincronizador, eje derecho oculto, las dos curvas en el
   mismo `ViewBox`, etiqueta con los dos nombres y colores, y `autoRange` abarca las dos trazas (100 000 ± 1000 y
   20 000 ± 200 en modo raw) en el mismo eje. 5/5.
+
+## 2026-10-06 — ¿Ventana deslizante en vez de EMA para R/SpO2? (análisis, decisión pendiente)
+
+- **Pregunta de Alex:** PI v0.101 ya usa una ventana de 6 s (buffer circular a 50 Hz) en lugar del EMA, cuyo asentamiento
+  es demasiado largo; ¿hacer lo mismo con R-METHOD-1/2 (EMA τ 6 s en los productos dx·dy, dx², dy² y en el AC²)?
+- **Aclaración previa:** `_spo2_reg_alpha` no usa el τ de los DC (2 s) sino `spo2_ema_var_tau_s` (6 s), el tiempo de
+  promediado de SpO2, compartido con el AC² de R-METHOD-1 a propósito (una sola perilla, mismo calentamiento 3τ).
+  El nombre "var" es herencia de R-METHOD-1; posible limpieza de nombre, no de función.
+- **Medido** (scripts del scratchpad sobre las sesiones HOSPNAV con referencia; misma cadena causal que la lib, solo cambia
+  el promediador: ema6, ema3, box4, box6, box12): exactitud idéntica (scatter 1,66-1,79, LOSO igual); ruido ema6 0,25 ≈
+  box12 0,24, box6 0,34 ≈ ema3 0,32 pts (EMA τ ≡ ventana 2τ, teoría √2 confirmada); retardo frente al monitor: box6
+  adelanta ~2 s a ema6 (teoría 3 s); ráfaga limpia tras un salto de RF (−9 pts): box6 vuelve a ±1 pt en 2-3 s, box12 en
+  7-8 s, ema6 en ~17 s, pero la ventana tiene pico mayor mientras la ráfaga está dentro (6,6 vs 4,8 pts); la puerta
+  r < 0,8 no se dispara nunca en estas grabaciones con ningún promediador.
+- **Lectura clave:** el EMA τ 6 s actual equivale a una ventana de 12 s en ruido y retardo; el "6 s" declarado es de hecho
+  ~12 s, más lento que el defecto UCIN de 8 s y fuera del 6-10 s del anexo JJ de donde salió. La ventana hace que el
+  parámetro signifique lo que la literatura entiende por tiempo de promediado.
+- **Propuesta presentada a Alex (sin decidir):** ventana para los tres productos de R-METHOD-2 (y la var de R-METHOD-1),
+  sumas de bloque a 50 Hz como el DC de PI, misma T para PI y R; T = 8 s recomendada (12 s = sin cambio de
+  comportamiento salvo asentamiento exacto; 6 s = más rápida, +36 % ruido); `spo2_warmup_s` 18 s → T. Ventaja
+  futura exclusiva de la ventana: excluir bloques marcados (movimiento, asentamiento tras RF). Memoria:
+  `project_r_averager_window_task.md`. Rationale se escribe al decidir.
+
+## 2026-10-07 — Lib v0.102: ventana deslizante para R/SpO2; longitudes de ventana 2-12 s independientes para SpO2 y PI
+
+- **Preguntas previas de Alex:** (1) ¿R-METHOD-2 corre a 500 Hz? Sí: entero a la tasa del AFE dentro de `_spo2_update()`,
+  sin decimar (BPF, DC, diferencias y los tres EMA); solo PI/HR2/HR3 tienen cadena a 50 Hz. R y r son cocientes, así que
+  la escala 1/fs de la derivada se cancela; la primera diferencia se desvía de la derivada un 0,02 % a 5 Hz y por igual
+  en los dos canales. (2) ¿Pasar a 50 Hz es solo por RAM? Decimar la SEÑAL cambiaría el estimador; acumular los PRODUCTOS
+  en bloques a 50 Hz no pierde nada (suma de sumas parciales = suma total). Motivos: RAM (36 KB → 3,6 KB por 6 s a
+  500 Hz; > 100 KB a 1600 Hz), independencia de la PRF, coherencia con PI/HR2/HR3, CPU menor.
+- **Decisión de Alex:** ventana de 6 s para SpO2 (R-METHOD-1 y 2) y PI sigue en 6 s; longitudes independientes y
+  modificables en la librería, rango 2-12 s (propuso 4-12; acepté 2 como límite duro para no cerrar la configuración
+  "2 s + retardo de alarma" de McClure 2016, con 4-12 como rango recomendado); eliminar `spo2_warmup_s` (la ventana es
+  el calentamiento). Idea de Alex para después: selector de perfil Adulto/Neonato (conjuntos de parámetros); mi consejo:
+  perfil = estructura completa aplicada con una llamada, nombre en `$CFG`, dos perfiles para empezar.
+- **Implementado (lib v0.102, `15992be`, publicado):** nueva cadena `_spo2_decim` (50 Hz); productos dx·dy, dx², dy² y
+  (x−mean)² a tasa completa, sumas de bloque en 5 buffers circulares (máx. 600 = 12 s) con totales O(1) reconstruidos
+  en cada vuelta (deriva float32); R, r y SpO2 se refrescan por bloque y valen desde la primera ventana llena; NaN
+  mientras llena (también entre bloques: antes salía el 0 del constructor 9 ms). `setSpO2WindowS()`/`setPIWindowS()`
+  con clamp 2-12 s; un cambio de longitud vacía la ventana. Eliminados `spo2_warmup_s`, `spo2_ema_var_tau_s` y sus
+  setters; los EmaChannel de SpO2 solo usan la media. `AFE4490Config` gana `spo2_window_s`, `pi_window_s`. ~17 KB
+  estáticos. Spec §2.3b/§2.5/§5.1/§10.3/§10.3b/§14 (cabecera v0.102); rationale §12 (estado del arte, teoría EMA τ ≡
+  ventana 2τ, medidas, decisión, alternativas descartadas, costes).
+- **Verificación:** 10/10 suites host (test_spo2 16: exactitud al llenarse, clamps/reset del setter, cadencia de bloque;
+  test_pi 7; test_sample_rate comprueba las dos ventanas en segundos en todo el catálogo de PRF). Runner offline
+  recompilado; réplica de SUBJ09 1238 p01 (`--input ot`) frente a un modelo Python independiente de la cadena:
+  R coincide a 9·10⁻⁶ y r a 5·10⁻⁵ en 29 986 muestras; primer valor a los 6,02 s en ambos. Firmware V18 compila
+  limpio (fw 0.19 + lib `15992be`, `build_V18/pulsenest.bin`). Scripts del análisis copiados a
+  `captures/sessions/20260923_HOSPNAV_SUBJ08_ANALYSIS/r_averager_test*.py` (+ resúmenes).
+- **Pendiente:** OTA a las tres V18 (apagadas al cerrar; binario listo). Claves `$SET`/`$LCFG` para `spo2_window_s`
+  / `pi_window_s` (tarea aparte, cruza fw y lab); el lab sigue mostrando los parámetros antiguos en SPO2 TEST (mirror
+  local de R-METHOD-1 con EMA; solo comparativo). PulseNest `7f713ed` (tests).
