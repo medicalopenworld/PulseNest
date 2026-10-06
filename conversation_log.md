@@ -26357,3 +26357,13 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   TOMLs de `docs/session_configs/` (no se commitean: códigos de sujeto).
 - **Siguiente:** puntos MS100 30/35 lpm (P5) y r sin pulso con R_CORR grabado; PI tras cada RF del HGAC; decisión
   "hospital = P1 + raw full" y flag de perfil del conversor.
+
+## 2026-10-06 — XYLAB: una sola escala Y en la gráfica temporal (lab v1.84)
+
+- Alex: la gráfica temporal de XYLAB debe tener **una sola escala Y para las dos señales**. Hasta v1.83 el canal Y
+  tenía su propio eje derecho (segundo `ViewBox` enlazado en x), con lo que dos trazas de amplitud parecida en pantalla
+  podían diferir en órdenes de magnitud. Ahora las dos curvas viven en el único `ViewBox`, eje izquierdo, cuya etiqueta
+  nombra los dos canales en el color de cada traza. La gráfica XY no cambia. Spec §7.21 y changelog v1.84.
+- Verificado offscreen (script del scratchpad): sin `_vb_y` ni sincronizador, eje derecho oculto, las dos curvas en el
+  mismo `ViewBox`, etiqueta con los dos nombres y colores, y `autoRange` abarca las dos trazas (100 000 ± 1000 y
+  20 000 ± 200 en modo raw) en el mismo eje. 5/5.

@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.83
+# pulsenest_lab — Specification v1.84
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2519,7 +2519,7 @@ Live XY plot of any two `$M4` fields, built to **look at** the R-method candidat
 |---|---|
 | Controls (left) | Per axis, a **channel** combo (every numeric `$M4` field 3–32 by its `CAPTURE_COLS` label; defaults OT_LED1 / OT_LED2) and a **processing** combo (`_XYAxisProc.MODES`: *raw* · *AC/DC* · *d(AC/DC)*). **Same processing on both axes** (default on) locks Y's processing to X's. **BPF lo/hi**, **DC tau** (0.5 / 5 Hz / 2 s, the candidate's) and **Window** (1–30 s, default 4). PAUSE / CONTINUE (key `P`). `PROBE` state |
 | XY plot (right) | The newest *Window* seconds as a trace in `_FADE_BANDS` = 6 age bands, oldest dimmest; the newest point as a white dot; the least-squares line through the finite points (≥ `_MIN_FIT_N` = 20) with **slope · r · n** in the title |
-| Time plot (below) | Both channels, as processed, against seconds before now — X on the left axis, Y on the right axis (a second `ViewBox` linked in x), each in its axis colour |
+| Time plot (below) | Both channels, as processed, against seconds before now on **one Y scale** (one `ViewBox`, left axis; the label names both channels, each in its trace colour), so their amplitudes compare by eye. v1.82–1.83 gave Y its own right axis |
 
 **Processing (`_XYAxisProc`)**, per axis and independent: *raw* passes the field; *AC/DC* is one
 channel's input to the candidate — the library's one-biquad band-pass (`_lib_biquad_bp`, steady-state
@@ -2729,6 +2729,13 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.84 — 2026-10-06
+
+**XYLAB time plot on one Y scale** (§7.21, Alex): the Y channel loses its right axis and second
+`ViewBox`; both traces share the left axis, which names the two channels in their colours. With the
+same processing on both axes (the default) the two traces are now comparable by eye — before, equal-
+looking amplitudes could differ by orders of magnitude. The XY plot is unchanged.
 
 ### v1.83 — 2026-10-04
 

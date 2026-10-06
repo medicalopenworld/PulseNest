@@ -9125,23 +9125,16 @@ class XYLabWindow(QtWidgets.QMainWindow):
         self._xy.addItem(self._dot)
         top.addWidget(self._xy, 1)
 
-        # ── Time plot (bottom): X channel on the left axis, Y channel on the right ──
+        # ── Time plot (bottom): both channels on ONE Y scale, told apart by colour ──
+        # One ViewBox, one left axis: the two traces are comparable by eye (v1.84; until v1.83 Y had
+        # its own right axis, so equal-looking amplitudes could differ by orders of magnitude).
         self._tp = pg.PlotWidget()
         self._tp.showGrid(x=True, y=True, alpha=0.3)
         self._tp.setLabel('bottom', 'time before now', units='s')
-        for side, col in (('left', self._COL_X), ('right', self._COL_Y)):
-            self._tp.showAxis(side)
-            self._tp.getAxis(side).setPen(col)
-            self._tp.getAxis(side).setTextPen(col)
-        self._vb_y = pg.ViewBox()
-        self._tp.scene().addItem(self._vb_y)
-        self._tp.getAxis('right').linkToView(self._vb_y)
-        self._vb_y.setXLink(self._tp.getViewBox())
-        self._tp.getViewBox().sigResized.connect(self._sync_right_vb)
         self._cx = pg.PlotCurveItem(pen=pg.mkPen(self._COL_X, width=1.5))
         self._tp.addItem(self._cx)
         self._cy = pg.PlotCurveItem(pen=pg.mkPen(self._COL_Y, width=1.5))
-        self._vb_y.addItem(self._cy)
+        self._tp.addItem(self._cy)
         root.addWidget(self._tp, 1)
 
         for w in self._combo_ch + self._combo_mode:
@@ -9159,11 +9152,6 @@ class XYLabWindow(QtWidgets.QMainWindow):
             self.restoreGeometry(geom)
 
     # ── Configuration ────────────────────────────────────────────────────────
-    def _sync_right_vb(self):
-        vb = self._tp.getViewBox()
-        self._vb_y.setGeometry(vb.sceneBoundingRect())
-        self._vb_y.linkedViewChanged(vb, self._vb_y.XAxis)
-
     def _axis_name(self, i):
         ch = self._combo_ch[i].currentText()
         m = self._procs[i].mode
@@ -9193,8 +9181,8 @@ class XYLabWindow(QtWidgets.QMainWindow):
         names = [self._axis_name(0), self._axis_name(1)]
         self._xy.setLabel('bottom', names[0])
         self._xy.setLabel('left', names[1])
-        self._tp.setLabel('left', names[0])
-        self._tp.setLabel('right', names[1])
+        self._tp.setLabel('left', "<span style='color:%s'>%s</span> &middot; <span style='color:%s'>%s</span>"
+                          % (self._COL_X, names[0], self._COL_Y, names[1]))
         self._draw()
 
     def _on_window_changed(self, *_):
