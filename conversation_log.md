@@ -26519,3 +26519,29 @@ por bloque, como SpO2 (RMS exacto de la ventana; misma esperanza, menos varianza
 
 **OTA 2026-10-08 (pedido por Alex):** fw 0.21 / lib 0.103 en las tres V18 (88:50, 87:A4, 82:5C), `build=f73b10c`,
 `libsha=b97b945`, `elfsha=5cac9204719dba20`, verificado con tools/udp_fw_versions.py, mismo `elfsha` en las tres.
+
+## 2026-10-08 (2) — lab v1.88: todos los mirrors en vivo a la tasa del AFE; HR2TEST/HR3TEST reescritos a lib v0.103 y verificados contra el runner
+
+**Petición de Alex.** El CLI le sugirió "Arregla también el fs de 50 Hz en HR2TEST y HR3TEST" (una nota de
+pendiente mía). Explicado: `SPO2_RECEIVED_FS` = 50 Hz, de la época del puerto serie (1 muestra de cada 10),
+seguía siendo la "tasa" que recibían en vivo HR2TEST, HR3TEST, HR3LAB, PILAB y SPO2LAB, con un stream `$M4`
+a 500 Hz. Alex: "Arréglalo y verifica cada mirror contra el runner".
+
+**Hallazgo.** Pasar 500 Hz no bastaba: HR2TEST/HR3TEST estaban diseñados para entrada ya diezmada (buffer
+de 400/512 muestras "a 50 Hz") y además eran reimplementaciones aproximadas y atrasadas (scipy butter,
+`find_peaks`; HR3 con el paso-banda 0,4-15 Hz anterior a v0.83 y HPS sobre |X| en vez de |X|²).
+
+**Hecho (lab v1.88).**
+- `PPGMonitor.afe_fs()` (`sr` del último `$CFG`, si no 500 Hz) alimenta todos los mirrors en vivo:
+  HR2TEST, HR3TEST, HR3LAB, PILAB, SPO2LAB y también HR1TEST/HR1LAB/XYLAB (tenían 500.0 fijo).
+- `HR2TestCalc` y `HR3TestCalc` reescritos como mirrors fieles de lib v0.103: paso-banda de un biquad /
+  paso-bajo de 4.º orden (`_LowPass4`, portado; `_Biquad.init_lp` nuevo) a la tasa del AFE, diezmado a
+  50 Hz, barrido de lags y HPS de la librería, puerta de rango y SQI idénticas. Panel HR3TEST: LP cutoff,
+  buffer, update N (BP low y HPS harmonics eliminados: no existen en la librería).
+- `HRFFTCalc` (HR3LAB, prototipo propio, no mirror) diezma a sus 50 Hz de diseño.
+- Verificado contra el runner v0.27 (lib v0.103, réplica SUBJ09 a 500 Hz), muestra a muestra: HR2 y HR3
+  a 5e-3 lpm, SQI a 5e-3 (cuantización de impresión), validez idéntica (28 996 / 26 500 muestras),
+  primera estimación en la misma muestra (8,00 s / 10,50 s). Smoke offscreen 23/23 (hallazgo del smoke:
+  el HPS de una senoide pura es ~0, HR3 no engancha sin armónicos; y `QMessageBox` segfaultea offscreen).
+  SPO2TEST sin regresión (21/21, mirror 5/5).
+- Spec del lab §5.4, §5.5, §7.6, §7.9, §7.10, §7.12, changelog v1.88.

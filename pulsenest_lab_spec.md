@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.87
+# pulsenest_lab — Specification v1.88
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1459,49 +1459,70 @@ availability by counting the dicrotic notch would score as success on availabili
 
 ### 5.4 HR2TestCalc
 
-Replicates `INCUNEST_AFE4490::_hr2_update_for_test()` via `_estimate_hr_autocorr_v2()`.
+Mirror of `INCUNEST_AFE4490::_hr2_update_sample()` + `_hr2_compute()` (library spec §5.3), lib
+v0.103, rewritten in v1.88. Fed every `$M4` sample at the AFE rate (`update(ot_led1, fs,
+probe_state)`); the chain is the library's:
 
-**Algorithm:** 2nd-order Butterworth bandpass [0.5–5 Hz] → decimate ×10 (500 → 50 Hz) → circular buffer 400 samples (8 s) → every 25 decimated samples: unbiased normalised autocorrelation (FFT-based, `scipy.signal.correlate`) → find first significant peak above min_lag → HR = 60 / peak_lag.
+- `_Biquad.init_bp` 0.5–5 Hz (`hr2_f_low_hz` / `hr2_f_high_hz`) at the AFE rate, output negated.
+- Decimation: factor = round(fs / 50), one sample in `factor` kept (rate 50 Hz at 500 Hz).
+- Circular buffer of `hr2_buf_len` = 400 decimated samples (8 s); every 25 decimated samples
+  (`hr2_update_interval_s` 0.5 s × 50 Hz), once full: `acorr0 = Σx²` (< 1e-16 → SQI 0); lags
+  min_lag = int(60 / 263 · rate) = 11 … max_lag = min(int(60 / 27 · rate) = 111, cap 137,
+  buf/2 − 1); unbiased normalised autocorrelation Σx[i]x[i+lag] · N / (acorr0 · (N − lag)); the
+  first interior strict local maximum ≥ `hr2_min_corr` 0.5; parabolic interpolation;
+  HR2 = 60 / lag_s if 30 ≤ HR2 ≤ 260 with SQI = the peak value, else `NaN` / 0.
+- `probe_state != PROBE_APPLIED` resets the state every sample (idempotent); outputs `NaN` / 0.
 
-SQI = normalised autocorrelation value at peak [0–1].
+Parameters keep the HR2TEST panel's names (`bpf_low_hz`, `bpf_high_hz`, `buf_len`, `max_lag`
+= the lag cap, `update_n`, `min_lag_s`, `min_corr`); `rate_hz` / `decim_factor` expose the chain.
 
-Two internal cross-correlation implementations:
-- `_estimate_hr_xcorr_v1()` — cross-correlation variant (reference, not used in production path)
-- `_estimate_hr_autocorr_v2()` — true autocorrelation (production, matches firmware)
+**Verification (v1.88):** against the offline runner v0.27 (lib v0.103, `--input ot`) on the SUBJ09
+HOSPNAV replay at 500 Hz, sample by sample: HR2 to 5·10⁻³ BPM and SQI to 5·10⁻³ (the runner's
+print quantisation), identical validity (28 996 samples), first estimate at the same sample
+(8.00 s). Scripts in the session scratchpad (`hr_mirror_check.py`, `hr_windows_smoke.py`).
 
-**EXPERIMENT (OT-domain input, mirrors lib v0.39):** `update(ot_led1, fs)` — input is `OT_LED1`
-[A/A], not raw `LED1_SUB`. Firmware recalibrated its near-zero-energy guard to
-`hr2_ot_energy_eps` for the OT scale; this mirror's own guard (`acorr0 != 0`) is already
-scale-agnostic, so no constant changed here. Requires `$M4`.
-
-**v1.24: `probe_state` (mirrors lib v0.42):** `update(ot_led1, fs, probe_state)` — same design
-as HR1TestCalc above: while `probe_state != PROBE_APPLIED`, `reset()` runs every sample and
-`hr_bpm`/`hr_sqi` are forced to `nan`/`0`.
+**History.** Until v1.87 this was an approximate reimplementation (scipy 2nd-order band-pass,
+`scipy.signal.correlate`, `find_peaks` with prominence) that assumed its input was already
+decimated to 50 Hz — the serial era, when the firmware sent one sample in ten — and the live
+feed passed the constant `SPO2_RECEIVED_FS` = 50 Hz for a 500 Hz stream: every time constant
+was 10× too long and the 400-sample buffer held 0.8 s. Same defect as SPO2TEST's (§5.2, fixed
+in v1.86).
 
 ### 5.5 HR3TestCalc / HRFFTCalc
 
-Replicates `INCUNEST_AFE4490::_hr3_update_for_test()`.
+**`HR3TestCalc`** — mirror of `_hr3_update_sample()` + `_hr3_prepare_fft_input()` +
+`_hr3_compute()` (library spec §5.4), lib v0.103, rewritten in v1.88. Fed every `$M4` sample at
+the AFE rate (`update(ot_led1, fs, probe_state, sample_counter=None)`):
 
-**Algorithm:** 2nd-order Butterworth LP 10 Hz (anti-aliasing) → decimate ×10 → circular buffer 512 samples (10.24 s) → every 25 decimated samples: Hann window → real FFT → Harmonic Product Spectrum (HPS, 2nd and 3rd harmonics) → peak in [25, 240] BPM → HR = peak_freq × 60.
+- `_LowPass4` (port of the library's `LowPass4`: two cascaded `_Biquad.init_lp` sections, Q 0.5412
+  then 1.3066, 4th-order Butterworth) at `hr3_f_high_hz` = 15 Hz, at the AFE rate, output negated.
+  A pure low-pass; the DC leaves with the mean subtraction before the FFT.
+- Decimation: factor = round(fs / 50).
+- Circular buffer `hr3_buf_len` = 512 decimated samples (10.24 s, 0.098 Hz per bin); every 25
+  decimated samples (`hr3_update_interval_s` 0.5 s), once full: x − mean, Hann (N − 1), FFT,
+  P[k] = |X[k]|²; search bins ceil(27/60/bin_res) … floor(263/60/bin_res) capped at N/2 − 2 and
+  N/6; HPS[k] = P[k]·P[2k]·P[3k], first maximum; Gaussian interpolation on log P; HR3 = 60·f if
+  30 ≤ HR3 ≤ 260 else `NaN` / 0; SQI = two-bin HPS local SNR (b1 = floor(k + δ), b2 = b1 + 1, window
+  ±`hr3_snr_local_w` = 5 bins within 1..N/6, baseline 2/n_win), clamped to [0, 1].
+- `probe_state != PROBE_APPLIED` resets the state every sample; outputs `NaN` / 0.
 
-SQI = HPS peak prominence in the search range [0–1].
+Parameters = the library's: `lp_high_hz`, `buf_len`, `update_n` (the former `bp_low_hz` and
+`hps_harmonics` had no counterpart since lib v0.83 / v0.97 and were removed from the panel).
 
-`HRFFTCalc` is the base class. `HR3TestCalc` extends it with user-adjustable parameters for the HR3TestWindow.
+**Verification (v1.88):** same replay and method as HR2TestCalc: HR3 to 5·10⁻³ BPM, SQI to 4·10⁻³,
+identical validity (26 500 samples), first estimate at the same sample (10.50 s). The float32
+FFT of the library and numpy's float64 one agree to the print quantisation.
 
-**EXPERIMENT (OT-domain input, mirrors lib v0.39):** `HR3TestCalc.update(ot_led1, fs,
-sample_counter=None)` — input is `OT_LED1` [A/A], not raw `LED1_SUB`. No threshold
-recalibration needed: the HPS ratio/SQI are invariant to a uniform input scale. Requires
-`$M4`. Note: `HRFFTCalc`/`self.hr3_calc` ("HR3LAB" diagnostics, distinct from `HR3TestCalc`)
-was intentionally left unmigrated — still fed raw `LED1_SUB` — out of scope for this
-experiment (analogous to `SpO2LocalCalc`/SpO2LAB and `PICalc`/PILAB, also unmigrated).
+**History.** Until v1.87 the mirror still ran the pre-v0.83 band-pass 0.4–15 Hz (scipy), an HPS on
+|X| instead of |X|², no decimation, and was fed 50 Hz nominal for a 500 Hz stream.
 
-**v1.24: `probe_state` (mirrors lib v0.42):** `HR3TestCalc.update(ot_led1, fs, probe_state,
-sample_counter=None)` — same design as HR1TestCalc/HR2TestCalc above: while
-`probe_state != PROBE_APPLIED`, `reset()` runs every sample and `hr_bpm`/`hr_sqi` are forced
-to `nan`/`0`. Gap detection (via `sample_counter`) still runs regardless of `probe_state`.
-`HRFFTCalc`/`self.hr3_calc` remains out of scope, as above — no `probe_state` added there.
+**`HRFFTCalc`** (`self.hr3_calc`, HR3LAB diagnostics) is **not** a library mirror: a prototype
+of HR3 on `LED1_SUB` with its own design (scipy 2nd-order low-pass 10 Hz, 512-sample buffer, Hann,
+rfft, HPS on |X|, harmonic power ratio). Since v1.88 it decimates its low-pass output by
+round(fs / 50) before the buffer, so the buffer means 10.24 s at any AFE rate (it held ~1 s while
+fed the 500 Hz stream as 50 Hz); `rate_hz` is exposed for HR3LAB's info line. It had been left
+unmigrated to the OT domain on purpose (experiment scope, v1.2x).
 
----
 
 ## 6. Main window — PPGMonitor
 
@@ -1936,6 +1957,9 @@ else. They still feed the ESP32 TIMING window from the ACTIVE board only.
 ### 7.6 SpO2LabWindow — "SPO2LAB — Calibration"
 
 Purpose: calibrate SpO2 probe coefficients (A, B) by regression over reference points.
+Legacy: `SpO2LocalCalc` (§5.1) mirrors the EMA-based R-METHOD-1 of lib ≤ v0.99 on `LED1_SUB`;
+the current mirror is SPO2TEST (§5.2, §7.7). Since v1.88 it is at least fed the AFE rate
+(`PPGMonitor.afe_fs()`) instead of a nominal 50 Hz, so its τ are the seconds they claim.
 
 Layout: left 4 plots (rolling 60 s) + right control panel.
 
@@ -2024,8 +2048,9 @@ Layout: left 4 plots + right panel.
 3. HR2 fw (green) + HR2 py (yellow)
 4. HR2 SQI fw + py
 
-**Right panel:** BPF cutoff spinboxes, window/update interval spinboxes,
-current-values table, [EXPORT CSV], [LOAD CSV].
+**Right panel:** BPF low/high, Buf len, Max lag (the lag cap), Update N, Min lag, Min corr,
+current-values table, [EXPORT CSV], [LOAD CSV]. The window feeds `HR2TestCalc` itself from
+`PPGMonitor._process_frames_tick()` at `PPGMonitor.afe_fs()` (v1.88; a nominal 50 Hz before).
 
 **EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`, not in
 `$M1`/`$M3`. Status-bar warning shown when not in `$M4`. [LOAD CSV] only accepts `$M4` rows.
@@ -2042,7 +2067,10 @@ Layout: left 4 plots + right panel.
 3. HR3 fw (green) + HR3 py (yellow)
 4. HR3 SQI fw + py
 
-**Right panel:** LP cutoff, HPS harmonics count spinboxes, current-values table, [EXPORT CSV], [LOAD CSV].
+**Right panel:** LP cutoff (`hr3_f_high_hz`), Buffer length, Update every N — the library's
+parameters (v1.88: BP low and HPS harmonics removed, see §5.5) —, current-values table,
+[EXPORT CSV], [LOAD CSV]. `PPGMonitor._process_frames_tick()` feeds `hr3test_calc` per sample at
+`PPGMonitor.afe_fs()`; the window reads its outputs in `update_plots()`.
 
 **EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`, not in
 `$M1`/`$M3`. Status-bar warning shown when not in `$M4`. [LOAD CSV] only accepts `$M4` rows.
@@ -2191,6 +2219,7 @@ rate, duration, format and any restarts/gaps/skipped rows.
 ### 7.12 HR3LabWindow — "HR3LAB"
 
 Purpose: diagnostic view combining FFT spectrum and HR algorithm comparison.
+`HRFFTCalc` (§5.5) is fed at `PPGMonitor.afe_fs()` and decimates to 50 Hz itself (v1.88).
 
 Layout: left (FFT spectrum with HPS peak line) + right (2 stacked: LP signal + HR1/HR2/HR3 comparison).
 
@@ -2778,6 +2807,19 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.88 — 2026-10-08
+
+**Every live mirror at the AFE rate; HR2TEST / HR3TEST mirrors rewritten to lib v0.103** (§5.4,
+§5.5, §7.9, §7.10, §7.12, §7.6). New `PPGMonitor.afe_fs()` (`sr` of the last `$CFG`, else 500 Hz)
+replaces the serial-era `SPO2_RECEIVED_FS` = 50 Hz and the hard-coded 500.0 in every live feed:
+HR2TEST, HR3TEST, HR3LAB, PILAB, SPO2LAB, HR1TEST, HR1LAB, XYLAB. `HR2TestCalc` and `HR3TestCalc`
+now reproduce the library's chains (one-biquad band-pass / 4th-order low-pass at the AFE rate,
+decimation to 50 Hz, the library's lag sweep and HPS on |X|²); `_Biquad.init_lp` and `_LowPass4`
+ported. Verified sample by sample against the offline runner v0.27 (lib v0.103) on the SUBJ09
+HOSPNAV replay: HR2/HR3 to 5·10⁻³ BPM, SQI to 5·10⁻³, identical validity and first-estimate
+sample. `HRFFTCalc` (HR3LAB) decimates to its 50 Hz design rate. HR3TEST panel: LP cutoff, buffer,
+update N (BP low and HPS harmonics removed). Offscreen smoke 23/23.
 
 ### v1.87 — 2026-10-08
 

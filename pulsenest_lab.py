@@ -353,7 +353,13 @@ class HRFFTCalc:
 
     Constants must match the firmware implementation when ported:
       LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.5, HR_MAX_HZ=4.3333
+
+    The 512-sample buffer is designed for 50 Hz (10.24 s): since lab v1.88 the input is
+    the AFE rate (every $M4 sample streams) and the low-pass output is decimated by
+    round(fs / 50) before the buffer, as the library's HR3 chain does. Until v1.87 the
+    caller claimed 50 Hz for a 500 Hz stream, so the buffer held ~1 s.
     """
+    DECIM_TARGET_HZ    = 50.0
     LP_CUTOFF_HZ       = 10.0
     BUF_LEN            = 512
     UPDATE_INTERVAL_S  = 0.5
@@ -390,7 +396,10 @@ class HRFFTCalc:
 
     def _recalc_params(self, fs):
         self._fs      = fs
-        self._update_n = max(1, int(self.UPDATE_INTERVAL_S * fs))
+        self._factor  = max(1, int(round(fs / self.DECIM_TARGET_HZ)))
+        self._rate    = fs / self._factor
+        self._phase   = 0
+        self._update_n = max(1, int(self.UPDATE_INTERVAL_S * self._rate))
         self._b, self._a = signal.butter(2, self.LP_CUTOFF_HZ / (fs / 2.0), btype='low')
         self._zi      = signal.lfilter_zi(self._b, self._a) * 0.0
         self._buf     = np.zeros(self.BUF_LEN)
@@ -411,6 +420,11 @@ class HRFFTCalc:
         self.hr_bpm   = 0.0
         self.hr_valid = False
 
+    @property
+    def rate_hz(self):
+        """The decimated rate the buffer runs at (50 Hz at the default PRF)."""
+        return getattr(self, '_rate', 0.0)
+
     def update(self, led1_aled1, fs, sample_counter=None):
         """Process one sample. Returns (hr_bpm, hr_valid)."""
         if fs != self._fs:
@@ -429,6 +443,12 @@ class HRFFTCalc:
         x = float(led1_aled1)
         filtered, self._zi = signal.lfilter(self._b, self._a, [x], zi=self._zi)
         filtered = filtered[0]
+
+        # Decimate to the design rate (the low-pass above is the anti-alias filter)
+        self._phase += 1
+        if self._phase < self._factor:
+            return self.hr_bpm, self.hr_valid
+        self._phase = 0
 
         # Circular buffer
         self._buf[self._buf_idx] = filtered
@@ -454,7 +474,7 @@ class HRFFTCalc:
         seg      = seg_raw * np.hanning(self.BUF_LEN)
         fft_cplx = np.fft.rfft(seg)
         spectrum = np.abs(fft_cplx)
-        freqs    = np.fft.rfftfreq(self.BUF_LEN, d=1.0 / fs)
+        freqs    = np.fft.rfftfreq(self.BUF_LEN, d=1.0 / self._rate)
 
         # Restrict search to guard-band HR range (±3 BPM beyond reported valid range)
         mask = (freqs >= self.HR_SEARCH_MIN_HZ) & (freqs <= self.HR_SEARCH_MAX_HZ)
@@ -496,7 +516,7 @@ class HRFFTCalc:
         else:
             delta = 0.0
 
-        freq_res  = fs / self.BUF_LEN
+        freq_res  = self._rate / self.BUF_LEN
         peak_freq = freqs[peak_global] + delta * freq_res
         hr_bpm    = peak_freq * 60.0
 
@@ -510,7 +530,7 @@ class HRFFTCalc:
         # denominator = total power in [HR_MIN_HZ, min(3·f0 + 2 bins, Nyquist)].
         # Physically motivated: a clean PPG concentrates energy at the fundamental
         # + harmonics; noise spreads it uniformly.
-        f_top    = min(peak_freq * 3.0 + 2.0 * freq_res, fs / 2.0)
+        f_top    = min(peak_freq * 3.0 + 2.0 * freq_res, self._rate / 2.0)
         ext_mask = (freqs >= self.HR_SEARCH_MIN_HZ) & (freqs <= f_top)
         total_power  = np.sum(spectrum[ext_mask])
         signal_power = 0.0
@@ -1293,6 +1313,19 @@ class _Biquad:
         self._a1 =  2.0 * (o0sq - k * k) / d
         self._a2 =  (k * k - bw * k + o0sq) / d
 
+    def init_lp(self, f_high_hz, fs, q=0.70710678):
+        """2nd-order low-pass of quality factor q (1/√2 = Butterworth). Mirrors
+        BiquadFilter::init_lp(); other q values are the sections of LowPass4."""
+        ohm   = math.tan(math.pi * f_high_hz / fs)
+        ohm2  = ohm * ohm
+        inv_q = 1.0 / q
+        d     = 1.0 + inv_q * ohm + ohm2
+        self._b0 = ohm2 / d
+        self._b1 = 2.0 * self._b0
+        self._b2 = self._b0
+        self._a1 = 2.0 * (ohm2 - 1.0) / d
+        self._a2 = (1.0 - inv_q * ohm + ohm2) / d
+
     def reset(self):
         self._v1 = self._v2 = 0.0
         self._needs_precharge = True
@@ -1308,6 +1341,26 @@ class _Biquad:
         self._v1 = self._b1 * x - self._a1 * y + self._v2
         self._v2 = self._b2 * x - self._a2 * y
         return y
+
+
+class _LowPass4:
+    """Port of the library's LowPass4: 4th-order Butterworth low-pass as two cascaded biquads
+    with Q = 0.5412 and 1.3066 (the two pole pairs), lower Q first; each section precharges
+    on its own after reset(). HR3's anti-alias filter (lib v0.97+)."""
+
+    def __init__(self):
+        self._s1 = _Biquad()
+        self._s2 = _Biquad()
+
+    def init(self, f_high_hz, fs):
+        self._s1.init_lp(f_high_hz, fs, 0.54119610)
+        self._s2.init_lp(f_high_hz, fs, 1.30656296)
+
+    def reset(self):
+        self._s1.reset(); self._s2.reset()
+
+    def process(self, x):
+        return self._s2.process(self._s1.process(x))
 
 
 class HR1BiquadCalc(HR1Variant):
@@ -1424,33 +1477,45 @@ HR1_VARIANTS = (HR1TestCalc, HR1BiquadCalc)
 
 
 class HR2TestCalc:
-    """HR2 algorithm mirror for HR2TEST window.
+    """HR2 (HR2_ACF) mirror for the HR2TEST window — lib v0.103.
 
-    Independent reimplementation of firmware _update_hr2() from incunest_afe4490_spec.md §5.3.
-    Purpose: post-implementation verification.
+    Reimplements _hr2_update_sample() + _hr2_compute() (incunest_afe4490_spec.md §5.3) fed
+    with the same OT_LED1 samples at the same rate, for post-implementation verification
+    against the values the board sends. Verified against the offline runner (v0.27, lib
+    v0.103) on a HOSPNAV replay at 500 Hz — see the lab spec §5.4 for the figures.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
-    input is OT_LED1 [A/A], not the raw ambient-corrected LED1_SUB used before this migration.
-    Firmware recalibrated its near-zero-energy guard to hr2_ot_energy_eps for the OT scale;
-    this mirror's own guard (acorr0 != 0) is already scale-agnostic, so no constant change is
-    needed here. OT only travels in the $M4 frame — this mirror requires $M4 (live) or a CSV
-    captured in $M4.
+    Chain, per applied sample (probe_state == PROBE_APPLIED):
+      BPF    : the library's one-biquad Butterworth band-pass hr2_f_low_hz–hr2_f_high_hz
+               (0.5–5 Hz, precharged) at the AFE rate; the output is negated (peaks up).
+      Decim  : _hr2_decim, target 50 Hz — factor = round(fs / 50), one sample in `factor`
+               kept (the band-pass is the anti-alias filter, §5.3.1).
+      Buffer : hr2_buf_len = 400 decimated samples (8 s at 50 Hz), circular.
+      Every hr2_update_interval_s × rate = 25 decimated samples, once the buffer is full:
+               acorr0 = Σx²; below hr2_ot_energy_eps (1e-16) → SQI 0.
+               Lags min_lag = int(60 / (hr_max_bpm + 3) · rate) = 11 … max_lag =
+               min(int(60 / (hr_min_bpm − 3) · rate) = 111, hr2_acorr_lag_cap = 137,
+               buf_len/2 − 1); unbiased normalised autocorrelation
+               r[lag] = Σ x[i]·x[i+lag] · N / (acorr0 · (N − lag)).
+               Peak: the first interior lag that is a strict local maximum and ≥ hr2_min_corr
+               (0.5); parabolic interpolation; HR2 = 60 / peak_lag_s, published when
+               hr_min_bpm ≤ HR2 ≤ hr_max_bpm (30–260) with SQI = the peak value; else NaN, SQI 0.
+    Outputs hold between computations; they are NaN / 0 while the buffer is filling.
 
-    probe_state (RSQM's classification) is consumed, never computed here — mirrors lib v0.41
-    (see SpO2TestCalc for the design). While probe_state != PROBE_APPLIED, internal state
-    resets every sample (idempotent, never triggers the autocorrelation computation) and
-    hr_bpm/hr_sqi become nan/0.
+    While probe_state != PROBE_APPLIED the state is reset every sample (idempotent) and the
+    outputs are NaN / 0 — presence detection is RSQM's job (firmware §5.1).
 
-    Processing chain per sample (at 50 Hz after firmware decimation):
-      OT_LED1 → biquad BPF 0.5–5 Hz → circular buffer 400 samples →
-      [every 25 samples] normalised autocorrelation over lags [0.185 s .. 137 samples] →
-      first local max ≥ hr2_min_corr → parabolic interpolation → HR2 = 60/peak_lag_s
+    The adjustable parameters keep the HR2TEST panel's names: bpf_low_hz / bpf_high_hz
+    (hr2_f_low_hz / hr2_f_high_hz, runtime in the library), buf_len (hr2_buf_len),
+    max_lag (hr2_acorr_lag_cap), update_n (hr2_update_interval_s × 50 Hz), min_lag_s (the
+    library derives it from hr_max_bpm + 3: 0.22 s → 11 decimated samples) and min_corr
+    (hr2_min_corr). Any deviation from the defaults puts HR2TestWindow in CUSTOM PARAMS mode.
 
-    Diagnostic state exposed for HR2TestWindow:
-      last_acorr      — most recent normalised autocorrelation (np.array)
-      last_lags_s     — lag axis (s) for last_acorr
-      last_peak_lag_s — detected peak lag (s)
-      last_filtered   — last 400 filtered samples (circular buffer, ordered oldest→newest)
+    Until lab v1.87 this mirror was fed a nominal 50 Hz while every $M4 sample streams at the
+    AFE rate, and it had no decimation stage: a scipy band-pass at the wrong rate over a
+    400-sample buffer that held 0.8 s. Lab v1.88 rewrote it to the library's chain.
+
+    Diagnostic state for HR2TestWindow: last_acorr (lags min_lag..max_lag), last_lags_s,
+    last_peak_lag_s, last_filtered (the 400-sample decimated buffer, oldest first), rate_hz.
     """
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
@@ -1460,18 +1525,21 @@ class HR2TestCalc:
     PROBE_AMB_SATURATING      = 3   # lib v0.90: was PROBE_SATURATING
     PROBE_ONLY_LED_SATURATING = 4   # lib v0.90: split out of PROBE_NOT_APPLIED
 
-    FW_FS            = 50.0
-    FW_BPF_LOW_HZ    = 0.5
-    FW_BPF_HIGH_HZ   = 5.0
-    FW_BUF_LEN       = 400
-    FW_MAX_LAG       = 137
-    FW_UPDATE_N      = 25
-    FW_MIN_LAG_S     = 0.22   # lib: int(60 / (hr_max_bpm + 3) × 50 Hz) = 11 samples
-    FW_MIN_CORR      = 0.5
-    FW_HR_MIN_BPM    = 30.0  # hr_min_bpm (lib v0.99)
-    FW_HR_MAX_BPM    = 260.0  # hr_max_bpm
-    FW_HR_SEARCH_MIN = 27.0
-    FW_HR_SEARCH_MAX = 263.0  # guard band +3 BPM
+    FW_DECIM_TARGET_HZ = 50.0   # hr2_decim_target_rate_hz (§5.3.1)
+    FW_FS              = 50.0   # the decimated rate at the default PRF (legacy name, HR2TestWindow)
+    FW_BPF_LOW_HZ      = 0.5    # hr2_f_low_hz
+    FW_BPF_HIGH_HZ     = 5.0    # hr2_f_high_hz
+    FW_BUF_LEN         = 400    # hr2_buf_len — 8 s at 50 Hz
+    FW_MAX_LAG         = 137    # hr2_acorr_lag_cap — the sweep's scratch capacity
+    FW_UPDATE_N        = 25     # hr2_update_interval_s (0.5 s) × 50 Hz
+    FW_MIN_LAG_S       = 0.22   # int(60 / (hr_max_bpm + 3) × 50 Hz) = 11 samples = 0.22 s
+    FW_MIN_CORR        = 0.5    # hr2_min_corr
+    FW_OT_ENERGY_EPS   = 1e-16  # hr2_ot_energy_eps
+    FW_HR_MIN_BPM      = 30.0   # hr_min_bpm (lib v0.99)
+    FW_HR_MAX_BPM      = 260.0  # hr_max_bpm
+    FW_HR_GUARD_BPM    = 3.0    # hr_guard_band_bpm
+    FW_HR_SEARCH_MIN   = FW_HR_MIN_BPM - FW_HR_GUARD_BPM   # 27
+    FW_HR_SEARCH_MAX   = FW_HR_MAX_BPM + FW_HR_GUARD_BPM   # 263
 
     def __init__(self):
         self.bpf_low_hz  = self.FW_BPF_LOW_HZ
@@ -1482,32 +1550,51 @@ class HR2TestCalc:
         self.min_lag_s   = self.FW_MIN_LAG_S
         self.min_corr    = self.FW_MIN_CORR
         self._fs         = 0.0
-        self._b          = None
-        self._a          = None
-        self._zi         = None
+        self._factor     = 1
+        self._rate       = 0.0
+        self._bpf        = _Biquad()
         self._buf        = np.zeros(self.FW_BUF_LEN)
-        self._buf_idx    = 0
-        self._buf_count  = 0
-        self._update_ctr = 0
-        self.hr_bpm      = 0.0
+        self.hr_bpm      = float('nan')
         self.hr_sqi      = 0.0
-        # Diagnostic state (updated every update_n samples)
-        self.last_acorr      = np.zeros(self.FW_MAX_LAG + 1)
-        self.last_lags_s     = np.arange(self.FW_MAX_LAG + 1) / self.FW_FS
+        self.last_acorr      = np.zeros(0)
+        self.last_lags_s     = np.zeros(0)
         self.last_peak_lag_s = 0.0
         self.last_filtered   = np.zeros(self.FW_BUF_LEN)
+        self._reset_state()
+
+    # ── Parameters ────────────────────────────────────────────────────────────
+
+    def _recalc_params(self, fs):
+        """Derive the rate-dependent state from fs, as the library's _recalc_rate_params()."""
+        self._fs     = fs
+        self._factor = max(1, int(round(fs / self.FW_DECIM_TARGET_HZ)))   # Decimator::configure
+        self._rate   = fs / self._factor
+        self._bpf.init_bp(self.bpf_low_hz, self.bpf_high_hz, fs)
+        self._reset_state()
+
+    def _reset_state(self):
+        self._bpf.reset()
+        n = max(4, int(self.buf_len))
+        self._buf        = np.zeros(n)
+        self._buf_idx    = 0
+        self._buf_count  = 0
+        self._phase      = 0
+        self._update_ctr = 0
+        self.hr_bpm      = float('nan')
+        self.hr_sqi      = 0.0
+        self.last_acorr      = np.zeros(0)
+        self.last_lags_s     = np.zeros(0)
+        self.last_peak_lag_s = 0.0
+        self.last_filtered   = np.zeros(n)
+        self._clean = True
 
     def reset(self):
-        self._fs      = 0.0
-        self._zi      = None
-        self._buf[:]  = 0.0
-        self._buf_idx = 0
-        self._buf_count = 0
-        self._update_ctr = 0
-        self.hr_bpm   = 0.0
-        self.hr_sqi   = 0.0
-        self.last_acorr[:]  = 0.0
-        self.last_peak_lag_s = 0.0
+        """Reset the state; re-derives the rate-dependent parameters from the last fs seen
+        (a parameter change must reach the filter and the buffer length)."""
+        if self._fs > 0:
+            self._recalc_params(self._fs)
+        else:
+            self._reset_state()
 
     def reset_to_defaults(self):
         self.bpf_low_hz  = self.FW_BPF_LOW_HZ
@@ -1531,129 +1618,97 @@ class HR2TestCalc:
             self.min_corr    == self.FW_MIN_CORR
         )
 
-    def _recalc_filter(self, fs):
-        self._fs = fs
-        nyq = fs / 2.0
-        lo  = max(0.01, min(self.bpf_low_hz  / nyq, 0.99))
-        hi  = max(0.01, min(self.bpf_high_hz / nyq, 0.99))
-        if lo >= hi:
-            hi = min(lo + 0.01, 0.99)
-        self._b, self._a = signal.butter(2, [lo, hi], btype='band')
-        self._zi = signal.lfilter_zi(self._b, self._a) * 0.0
-        self._buf     = np.zeros(max(1, self.buf_len))
-        self._buf_idx = 0
-        self._buf_count = 0
-        self._update_ctr = 0
-        self.hr_bpm  = 0.0
-        self.hr_sqi  = 0.0
+    @property
+    def rate_hz(self):
+        """The decimated rate the buffer runs at (50 Hz at the default PRF)."""
+        return self._rate
+
+    @property
+    def decim_factor(self):
+        return self._factor
+
+    # ── Per-sample update ─────────────────────────────────────────────────────
 
     def update(self, ot_led1, fs, probe_state):
+        """Process one sample at the AFE rate fs. Outputs in hr_bpm (NaN = none) / hr_sqi."""
         if probe_state != self.PROBE_APPLIED:
-            # Reset every sample while not applied (idempotent) — mirrors lib v0.41. Never
-            # triggers the autocorrelation computation while not applied.
-            self.reset()
-            self.hr_bpm = float('nan')
-            self.hr_sqi = 0.0
+            if not self._clean:
+                self._reset_state()
             return
+        if fs != self._fs:
+            self._recalc_params(fs)
+        self._clean = False
 
-        if fs != self._fs or self._b is None:
-            self._recalc_filter(fs)
+        filtered = -self._bpf.process(float(ot_led1))     # negate: peaks up, as the library
 
-        # BPF
-        x = float(ot_led1)
-        filtered, self._zi = signal.lfilter(self._b, self._a, [x], zi=self._zi)
-        filtered = float(filtered[0])
+        self._phase += 1                                   # Decimator::step()
+        if self._phase < self._factor:
+            return
+        self._phase = 0
 
-        # Circular buffer
-        buf_len = max(1, self.buf_len)
-        if self._buf.shape[0] != buf_len:
-            self._buf = np.zeros(buf_len)
-            self._buf_idx = 0
-            self._buf_count = 0
+        n = self._buf.shape[0]
         self._buf[self._buf_idx] = filtered
-        self._buf_idx = (self._buf_idx + 1) % buf_len
-        if self._buf_count < buf_len:
+        self._buf_idx = (self._buf_idx + 1) % n
+        if self._buf_count < n:
             self._buf_count += 1
 
         self._update_ctr += 1
         if self._update_ctr < self.update_n:
             return
-
         self._update_ctr = 0
+        if self._buf_count < n:
+            return
+        self._compute(np.roll(self._buf, -self._buf_idx))
 
-        if self._buf_count < buf_len:
+    def _compute(self, seg):
+        """_hr2_compute() on the linearised snapshot (oldest first)."""
+        self.last_filtered = seg
+        n      = seg.shape[0]
+        rate   = self._rate
+        acorr0 = float(seg @ seg)
+        if acorr0 < self.FW_OT_ENERGY_EPS:
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
             return
 
-        # Ordered segment (oldest first)
-        seg = np.roll(self._buf, -self._buf_idx)
-        self.last_filtered = seg.copy()
+        min_lag = max(1, int(self.min_lag_s * rate))
+        lag_min_bpm = max(self.FW_HR_SEARCH_MIN, 1.0)
+        max_lag = int(60.0 / lag_min_bpm * rate)
+        max_lag = min(max_lag, int(self.max_lag), n // 2 - 1)
+        if max_lag < min_lag + 2:
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
+            return
 
-        # Unbiased normalised autocorrelation using scipy.signal.correlate (full, FFT).
-        # Each lag τ is corrected by n/(n-τ) to eliminate the finite-window bias: the
-        # biased estimator (/ acorr[0]) underestimates because the numerator sums only
-        # (n-τ) terms while acorr[0] = Σ x² sums n terms. Unbiased correction restores
-        # SQI ≈ 1.0 for a clean periodic signal regardless of lag (mirrors firmware fix).
-        n = len(seg)
-        max_lag = min(self.max_lag, n - 1)
-        full = signal.correlate(seg, seg, mode='full', method='fft')
-        acorr = full[n - 1: n - 1 + max_lag + 1]
-        acorr0_val = float(acorr[0])
-        if acorr0_val != 0:
-            n_terms = np.maximum(n - np.arange(len(acorr)), 1)
-            acorr = acorr * n / (acorr0_val * n_terms)
-        lags_s = np.arange(len(acorr)) / fs
-
+        lags  = np.arange(min_lag, max_lag + 1)
+        acorr = np.empty(lags.shape[0])
+        for j, lag in enumerate(lags):
+            m = n - lag
+            acorr[j] = float(seg[:m] @ seg[lag:lag + m]) * n / (acorr0 * m) if m > 0 else 0.0
         self.last_acorr  = acorr
-        self.last_lags_s = lags_s
+        self.last_lags_s = lags / rate
 
-        # Search range
-        min_idx = int(np.searchsorted(lags_s, self.min_lag_s))
-        max_search_lag_s = 60.0 / self.FW_HR_SEARCH_MIN
-        max_idx = int(np.searchsorted(lags_s, max_search_lag_s))
-        max_idx = min(max_idx, len(acorr) - 1)
-
-        if min_idx >= max_idx:
-            self.hr_sqi = 0.0
-            return
-
-        search = acorr[min_idx:max_idx + 1]
-        peaks, _ = signal.find_peaks(search, prominence=0.05)
-
-        peak_idx = None
-        for p in peaks:
-            if search[p] >= self.min_corr:
-                peak_idx = min_idx + p
+        # First interior strict local maximum at or above min_corr
+        peak = -1
+        for i in range(1, acorr.shape[0] - 1):
+            if acorr[i] > acorr[i - 1] and acorr[i] > acorr[i + 1] and acorr[i] >= self.min_corr:
+                peak = i
                 break
-        if peak_idx is None:
-            if len(peaks) > 0:
-                peak_idx = min_idx + peaks[np.argmax(search[peaks])]
-            else:
-                peak_idx = min_idx + int(np.argmax(search))
-
-        # Parabolic interpolation
-        if 0 < peak_idx < len(acorr) - 1:
-            yp, yc, yn = acorr[peak_idx - 1], acorr[peak_idx], acorr[peak_idx + 1]
-            denom = yp - 2.0 * yc + yn
-            delta = 0.5 * (yp - yn) / denom if denom < 0 else 0.0
-        else:
-            delta = 0.0
-
-        peak_lag_s = (peak_idx + delta) / fs
-        peak_val   = float(acorr[peak_idx]) if peak_idx < len(acorr) else 0.0
-
-        self.last_peak_lag_s = peak_lag_s
-
-        if peak_val < self.min_corr or peak_lag_s <= 0:
-            self.hr_sqi = 0.0
+        if peak < 0:
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
             return
-
-        hr_bpm = 60.0 / peak_lag_s
-        if self.FW_HR_SEARCH_MIN <= hr_bpm <= self.FW_HR_SEARCH_MAX:
-            self.hr_bpm = hr_bpm if self.FW_HR_MIN_BPM <= hr_bpm <= self.FW_HR_MAX_BPM else hr_bpm
-            self.hr_sqi = peak_val if self.FW_HR_MIN_BPM <= hr_bpm <= self.FW_HR_MAX_BPM else 0.0
+        y_prev, y_peak, y_next = acorr[peak - 1], acorr[peak], acorr[peak + 1]
+        denom = y_prev - 2.0 * y_peak + y_next
+        delta = 0.5 * (y_prev - y_next) / denom if denom < 0.0 else 0.0
+        peak_lag_s = (min_lag + peak + delta) / rate
+        self.last_peak_lag_s = peak_lag_s
+        if peak_lag_s <= 0.0:
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
+            return
+        hr = 60.0 / peak_lag_s
+        if self.FW_HR_MIN_BPM <= hr <= self.FW_HR_MAX_BPM:
+            self.hr_bpm = hr
+            self.hr_sqi = float(y_peak)
         else:
-            self.hr_sqi = 0.0
-
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
 
 ACTION_BUTTON_STYLE = """
     QPushButton { 
@@ -2153,7 +2208,8 @@ class SpO2LabWindow(QtWidgets.QMainWindow):
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            result = self._local_calc.update(ir, red, SPO2_RECEIVED_FS)
+            result = self._local_calc.update(
+                ir, red, self.main_monitor.afe_fs() if self.main_monitor is not None else 500.0)
 
             self._buf_t.append(t_s)
             self._buf_spo2_fw.append(spo2_f if spo2_f >= 0 else nan)
@@ -3693,8 +3749,8 @@ class HR2TestWindow(QtWidgets.QMainWindow):
     Runs an independent Python mirror of the firmware HR2 algorithm (HR2TestCalc,
     derived from incunest_afe4490_spec.md §5.3) and compares against firmware output.
 
-    The mirror runs at the decimated rate (50 Hz default) fed from PPGMonitor.update_plots().
-    Offline mode: load any recorded CSV.
+    The mirror is fed every $M4 sample at the AFE rate (PPGMonitor.afe_fs(), v1.88) and
+    decimates to 50 Hz itself, as the library. Offline mode: load a $M4 CSV.
 
     Layout:
       Left  : 4 stacked plots — autocorrelation curve, filtered buffer, HR2 fw/py, SQI fw/py.
@@ -3740,8 +3796,8 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         self._btn_load.setStyleSheet(ACTION_BUTTON_STYLE)
         self._btn_load.clicked.connect(self._load_csv)
         self._btn_load.setToolTip(_make_tooltip("LOAD CSV",
-            "Load a recorded CSV file for offline analysis. "
-            "HR2 runs at 50 Hz (after decimation); any recorded CSV format is accepted."))
+            "Load a recorded CSV file for offline analysis ($M4 rows: the mirror needs OT_LED1). "
+            "The rate comes from the timestamps; the mirror decimates to 50 Hz as the library."))
         toolbar.addWidget(self._btn_load)
 
         self._btn_clear = QtWidgets.QPushButton("BACK TO LIVE")
@@ -3881,24 +3937,27 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         self._spin_min_cor = _dspin(0.0,  1.0,  HR2TestCalc.FW_MIN_CORR,    2, 0.05)
 
         self._spin_bpf_lo.setToolTip(_make_tooltip("BPF low cutoff",
-            "Bandpass filter lower cutoff [Hz]. Firmware default: 0.5 Hz.",
-            src="hr2_bpf_low_hz"))
+            "One-biquad Butterworth bandpass lower cutoff [Hz], at the AFE rate. Firmware default: 0.5 Hz.",
+            src="hr2_f_low_hz"))
         self._spin_bpf_hi.setToolTip(_make_tooltip("BPF high cutoff",
-            "Bandpass filter upper cutoff [Hz]. Firmware default: 5.0 Hz.",
-            src="hr2_bpf_high_hz"))
+            "One-biquad Butterworth bandpass upper cutoff [Hz], at the AFE rate. Firmware default: 5.0 Hz.",
+            src="hr2_f_high_hz"))
         self._spin_buf_len.setToolTip(_make_tooltip("Buffer length",
-            "Circular buffer length [samples]. Firmware default: 400 (8 s at 50 Hz).",
+            "Circular buffer length [decimated samples]. Firmware default: 400 (8 s at 50 Hz).",
             src="hr2_buf_len"))
         self._spin_max_lag.setToolTip(_make_tooltip("Max lag",
-            "Maximum autocorrelation lag to compute [samples]. "
-            "Firmware default: 137 (≈22 BPM guard band at 50 Hz: 50×60/22=136.4).",
-            src="hr2_max_lag"))
+            "Cap on the autocorrelation lag sweep [decimated samples]. The library sweeps up to "
+            "60 / (hr_min_bpm − 3) × 50 Hz = 111 lags, capped by this scratch capacity (137) and by "
+            "buf_len/2 − 1.",
+            src="hr2_acorr_lag_cap"))
         self._spin_upd_n.setToolTip(_make_tooltip("Update interval",
-            "Recompute autocorrelation every N samples. Firmware default: 25 (0.5 s at 50 Hz).",
-            src="hr2_update_n"))
+            "Recompute the autocorrelation every N decimated samples. Firmware default: "
+            "hr2_update_interval_s = 0.5 s → 25 at 50 Hz.",
+            src="hr2_update_interval_s"))
         self._spin_min_lag.setToolTip(_make_tooltip("Min lag",
-            "Minimum lag to search [s]. Firmware default: 0.22 s (11 samples at 50 Hz, as the library: 60 / (260 + 3) BPM, truncated).",
-            src="hr2_min_lag_s"))
+            "Minimum lag to search [s]. The library derives it: int(60 / (hr_max_bpm + 3) × 50 Hz) = 11 "
+            "decimated samples = 0.22 s.",
+            src="hr_max_bpm + hr_guard_band_bpm"))
         self._spin_min_cor.setToolTip(_make_tooltip("Min correlation",
             "Minimum normalised autocorrelation at peak to be considered valid. "
             "Firmware default: 0.5. Also shown as a red dashed line on the autocorrelation plot.",
@@ -4235,7 +4294,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            self._calc.update(ot_led1, SPO2_RECEIVED_FS, probe_state)
+            self._calc.update(ot_led1, self.main_monitor.afe_fs(), probe_state)
 
             hr_fw  = hr_f  if hr_f  > 0 else nan
             sqi_fw = sqi_f if sqi_f >= 0 else nan
@@ -4326,7 +4385,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         filt = self._calc.last_filtered
         if len(filt) > 0 and len(t_hr) > 0:
             t_end = t_hr[-1]
-            fs = self._calc._fs if self._calc._fs > 0 else HR2TestCalc.FW_FS
+            fs = self._calc.rate_hz if self._calc.rate_hz > 0 else HR2TestCalc.FW_FS
             filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
             self.curve_filt.setData(filt_t, filt)
 
@@ -4339,42 +4398,47 @@ class HR2TestWindow(QtWidgets.QMainWindow):
 
 
 class HR3TestCalc:
-    """HR3 algorithm mirror for HR3TEST window.
+    """HR3 (FFT + HPS) mirror for the HR3TEST window — lib v0.103.
 
-    Independent reimplementation of firmware _update_hr3() from incunest_afe4490_spec.md §5.4.
-    Purpose: post-implementation verification.
+    Reimplements _hr3_update_sample() + _hr3_prepare_fft_input() + _hr3_compute()
+    (incunest_afe4490_spec.md §5.4) fed with the same OT_LED1 samples at the same rate, for
+    post-implementation verification against the values the board sends. Verified against
+    the offline runner (v0.27, lib v0.103) on a HOSPNAV replay at 500 Hz — lab spec §5.5.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
-    input is OT_LED1 [A/A], not the raw ambient-corrected LED1_SUB used before this migration.
-    No threshold recalibration needed — HPS ratio/SQI are invariant to a uniform input scale.
-    OT only travels in the $M4 frame — this mirror requires $M4 (live) or a CSV captured in $M4.
+    Chain, per applied sample (probe_state == PROBE_APPLIED):
+      LP     : the library's 4th-order Butterworth low-pass hr3_f_high_hz (15 Hz; two cascaded
+               biquads, Q 0.5412 then 1.3066, each precharged) at the AFE rate; output negated
+               (peaks up). A pure low-pass: the DC is removed by the mean subtraction below.
+      Decim  : _hr3_decim, target 50 Hz — factor = round(fs / 50) (the low-pass is the
+               anti-alias filter, §5.3.1).
+      Buffer : hr3_buf_len = 512 decimated samples (10.24 s at 50 Hz → 0.098 Hz per bin).
+      Every hr3_update_interval_s × rate = 25 decimated samples, once the buffer is full:
+               x − mean(x), Hann window (N − 1 denominator), FFT; P[k] = |X[k]|²;
+               bin_res = rate / N; search bins ceil((hr_min − 3) / 60 / bin_res) …
+               floor((hr_max + 3) / 60 / bin_res), capped at N/2 − 2 and N/6 (the 3rd harmonic
+               must stay inside Nyquist); HPS[k] = P[k]·P[2k]·P[3k]; the first maximum;
+               Gaussian interpolation on log P around the peak; HR3 = 60 · (k + δ) · bin_res,
+               published when hr_min_bpm ≤ HR3 ≤ hr_max_bpm (30–260), else NaN / SQI 0.
+      SQI    : two-bin HPS local SNR — b1 = floor(k + δ), b2 = b1 + 1; snr = (HPS[b1] + HPS[b2])
+               / Σ HPS over [b1 − W, b2 + W] (W = hr3_snr_local_w = 5, bins 1..N/6 only);
+               SQI = clamp((snr − 2/n_win) / (1 − 2/n_win), 0, 1); 0 if n_win ≤ 2.
+    Outputs hold between computations; they are NaN / 0 while the buffer is filling.
 
-    probe_state (RSQM's classification) is consumed, never computed here — mirrors lib v0.41
-    (see SpO2TestCalc for the design). While probe_state != PROBE_APPLIED, internal state
-    resets every sample (idempotent, never triggers the FFT/HPS computation) and hr_bpm/
-    hr_sqi become nan/0.
+    While probe_state != PROBE_APPLIED the state is reset every sample (idempotent) and the
+    outputs are NaN / 0 — presence detection is RSQM's job (firmware §5.1).
 
-    Processing chain per sample (at 50 Hz after firmware decimation):
-      OT_LED1 → 2nd-order Butterworth BP 0.4–15 Hz → circular buffer 512 samples →
-      [every 25 samples] mean subtraction → Hann window → rfft →
-      HPS: P[k]·P[2k]·P[3k] → argmax in HR range → parabolic interpolation
-      → HR3 = peak_freq × 60
+    Adjustable parameters = the library's: lp_high_hz (hr3_f_high_hz, runtime), buf_len
+    (hr3_buf_len; the library's radix-2 FFT needs a power of two, numpy does not) and update_n
+    (hr3_update_interval_s × 50 Hz). The HPS always uses the 2nd and 3rd harmonics, as the
+    library. Any deviation puts HR3TestWindow in CUSTOM PARAMS mode.
 
-    SQI (two-bin HPS local SNR, spec §5.4):
-      b1       = floor(peak_bin + delta)   (delta from parabolic interpolation)
-      b2       = b1 + 1
-      hps_num  = hps[b1] + hps[b2]
-      hps_win  = Σ hps[k]  for k in [b1−W .. b2+W]  (W = FW_SNR_LOCAL_W)
-      snr      = hps_num / hps_win
-      baseline = 2 / n_win
-      SQI      = clamp((snr − baseline) / (1 − baseline), 0, 1)
+    Until lab v1.87 this mirror was fed a nominal 50 Hz while every $M4 sample streams at the
+    AFE rate, had no decimation stage and still ran the v0.8x band-pass 0.4–15 Hz with an HPS
+    on |X| instead of |X|². Lab v1.88 rewrote it to the library's chain.
 
-    Diagnostic state exposed for HR3TestWindow:
-      last_spectrum      — FFT magnitude normalised to HR-band max
-      last_freqs         — frequency axis (Hz)
-      last_hps           — HPS curve normalised to HR-band max
-      last_peak_freq     — detected peak frequency (Hz)
-      last_filtered_buf  — LP filtered circular buffer (ordered oldest→newest)
+    Diagnostic state for HR3TestWindow: last_spectrum (|X| normalised to the search-band
+    maximum), last_freqs, last_hps (normalised likewise), last_peak_freq, last_filtered_buf
+    (the decimated buffer, oldest first), rate_hz.
     """
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
@@ -4384,95 +4448,101 @@ class HR3TestCalc:
     PROBE_AMB_SATURATING      = 3   # lib v0.90: was PROBE_SATURATING
     PROBE_ONLY_LED_SATURATING = 4   # lib v0.90: split out of PROBE_NOT_APPLIED
 
-    FW_FS            = 50.0
-    FW_BP_LOW_HZ     = 0.4
-    FW_BP_HIGH_HZ    = 15.0
-    FW_BUF_LEN       = 512
-    FW_UPDATE_N      = 25
-    FW_HPS_HARMONICS = 3        # k = 2, 3  (multiply 2 additional harmonic downsamples)
-    FW_HR_MIN_BPM    = 30.0  # hr_min_bpm (lib v0.99)
-    FW_HR_MAX_BPM    = 260.0
-    FW_HR_SEARCH_MIN = 27.0     # guard band −3 BPM
-    FW_HR_SEARCH_MAX = 263.0    # guard band +3 BPM
-    FW_SNR_LOCAL_W   = 5        # SQI local window half-width W [bins] on each side of {b1, b2}
+    FW_DECIM_TARGET_HZ = 50.0   # hr3_decim_target_rate_hz (§5.3.1)
+    FW_FS              = 50.0   # the decimated rate at the default PRF (legacy name, HR3TestWindow)
+    FW_LP_HIGH_HZ      = 15.0   # hr3_f_high_hz — 3rd harmonic of 260 BPM (13 Hz) with margin
+    FW_BUF_LEN         = 512    # hr3_buf_len — 10.24 s at 50 Hz
+    FW_UPDATE_N        = 25     # hr3_update_interval_s (0.5 s) × 50 Hz
+    FW_SNR_LOCAL_W     = 5      # hr3_snr_local_w
+    FW_HR_MIN_BPM      = 30.0   # hr_min_bpm (lib v0.99)
+    FW_HR_MAX_BPM      = 260.0  # hr_max_bpm
+    FW_HR_GUARD_BPM    = 3.0    # hr_guard_band_bpm
+    FW_HR_SEARCH_MIN   = FW_HR_MIN_BPM - FW_HR_GUARD_BPM   # 27
+    FW_HR_SEARCH_MAX   = FW_HR_MAX_BPM + FW_HR_GUARD_BPM   # 263
 
     def __init__(self):
-        self.bp_low_hz     = self.FW_BP_LOW_HZ
-        self.bp_high_hz    = self.FW_BP_HIGH_HZ
-        self.buf_len       = self.FW_BUF_LEN
-        self.update_n      = self.FW_UPDATE_N
-        self.hps_harmonics = self.FW_HPS_HARMONICS
-        self._fs           = 0.0
-        self._b            = None
-        self._a            = None
-        self._zi           = None
-        self._buf          = np.zeros(self.FW_BUF_LEN)
-        self._buf_idx      = 0
-        self._buf_count    = 0
-        self._update_ctr   = 0
-        self.hr_bpm        = 0.0
-        self.hr_sqi        = 0.0
-        n_fft = self.FW_BUF_LEN // 2 + 1
-        self.last_spectrum     = np.zeros(n_fft)
-        self.last_freqs        = np.zeros(n_fft)
-        self.last_hps          = np.zeros(n_fft)
+        self.lp_high_hz = self.FW_LP_HIGH_HZ
+        self.buf_len    = self.FW_BUF_LEN
+        self.update_n   = self.FW_UPDATE_N
+        self._fs        = 0.0
+        self._factor    = 1
+        self._rate      = 0.0
+        self._lp        = _LowPass4()
+        self._buf       = np.zeros(self.FW_BUF_LEN)
+        self._hann      = np.hanning(self.FW_BUF_LEN)
+        self.hr_bpm     = float('nan')
+        self.hr_sqi     = 0.0
+        self.last_spectrum     = np.zeros(0)
+        self.last_freqs        = np.zeros(0)
+        self.last_hps          = np.zeros(0)
         self.last_peak_freq    = 0.0
         self.last_filtered_buf = np.zeros(self.FW_BUF_LEN)
-        # Gap detection (data_sample_counter continuity — Punto C, post-decimation)
+        # Gap detection (data_sample_counter continuity)
         self._last_counter = None
         self._nominal_step = None
         self.gap_count     = 0
+        self._reset_state()
+
+    # ── Parameters ────────────────────────────────────────────────────────────
+
+    def _recalc_params(self, fs):
+        """Derive the rate-dependent state from fs, as the library's _recalc_rate_params()."""
+        self._fs     = fs
+        self._factor = max(1, int(round(fs / self.FW_DECIM_TARGET_HZ)))   # Decimator::configure
+        self._rate   = fs / self._factor
+        self._lp.init(self.lp_high_hz, fs)
+        self._reset_state()
+
+    def _reset_state(self):
+        self._lp.reset()
+        n = max(8, int(self.buf_len))
+        self._buf        = np.zeros(n)
+        self._hann       = np.hanning(n)            # 0.5·(1 − cos(2πi/(N−1))), as _hr3_hann
+        self._buf_idx    = 0
+        self._buf_count  = 0
+        self._phase      = 0
+        self._update_ctr = 0
+        self.hr_bpm      = float('nan')
+        self.hr_sqi      = 0.0
+        self.last_spectrum     = np.zeros(0)
+        self.last_freqs        = np.zeros(0)
+        self.last_hps          = np.zeros(0)
+        self.last_peak_freq    = 0.0
+        self.last_filtered_buf = np.zeros(n)
+        self._clean = True
 
     def reset(self):
-        self._fs        = 0.0
-        self._zi        = None
-        self._buf[:]    = 0.0
-        self._buf_idx   = 0
-        self._buf_count = 0
-        self._update_ctr = 0
-        self.hr_bpm     = 0.0
-        self.hr_sqi     = 0.0
-        self.last_spectrum[:]  = 0.0
-        self.last_hps[:]       = 0.0
-        self.last_peak_freq    = 0.0
+        """Reset the state; re-derives the rate-dependent parameters from the last fs seen."""
+        if self._fs > 0:
+            self._recalc_params(self._fs)
+        else:
+            self._reset_state()
 
     def reset_to_defaults(self):
-        self.bp_low_hz     = self.FW_BP_LOW_HZ
-        self.bp_high_hz    = self.FW_BP_HIGH_HZ
-        self.buf_len       = self.FW_BUF_LEN
-        self.update_n      = self.FW_UPDATE_N
-        self.hps_harmonics = self.FW_HPS_HARMONICS
+        self.lp_high_hz = self.FW_LP_HIGH_HZ
+        self.buf_len    = self.FW_BUF_LEN
+        self.update_n   = self.FW_UPDATE_N
         self.reset()
 
     @property
     def using_defaults(self):
-        return (
-            self.bp_low_hz     == self.FW_BP_LOW_HZ     and
-            self.bp_high_hz    == self.FW_BP_HIGH_HZ    and
-            self.buf_len       == self.FW_BUF_LEN       and
-            self.update_n      == self.FW_UPDATE_N      and
-            self.hps_harmonics == self.FW_HPS_HARMONICS
-        )
+        return (self.lp_high_hz == self.FW_LP_HIGH_HZ and
+                self.buf_len    == self.FW_BUF_LEN    and
+                self.update_n   == self.FW_UPDATE_N)
 
-    def _recalc_filter(self, fs):
-        self._fs = fs
-        nyq = fs / 2.0
-        self._b, self._a = signal.butter(2, [self.bp_low_hz / nyq, min(self.bp_high_hz / nyq, 0.9999)], btype='band')
-        self._zi = signal.lfilter_zi(self._b, self._a) * 0.0
-        self._buf = np.zeros(self.buf_len)
-        self._buf_idx    = 0
-        self._buf_count  = 0
-        self._update_ctr = 0
-        n_fft = self.buf_len // 2 + 1
-        self.last_spectrum     = np.zeros(n_fft)
-        self.last_freqs        = np.zeros(n_fft)
-        self.last_hps          = np.zeros(n_fft)
-        self.last_filtered_buf = np.zeros(self.buf_len)
-        self.hr_bpm = 0.0
-        self.hr_sqi = 0.0
+    @property
+    def rate_hz(self):
+        """The decimated rate the buffer runs at (50 Hz at the default PRF)."""
+        return self._rate
+
+    @property
+    def decim_factor(self):
+        return self._factor
+
+    # ── Per-sample update ─────────────────────────────────────────────────────
 
     def update(self, ot_led1, fs, probe_state, sample_counter=None):
-        """Process one sample at the given fs. Returns (hr_bpm, hr_sqi)."""
+        """Process one sample at the AFE rate fs. Returns (hr_bpm, hr_sqi); hr_bpm NaN = none."""
         # Gap detection runs regardless of probe_state (frame continuity, not presence).
         if sample_counter is not None:
             if self._last_counter is not None:
@@ -4484,511 +4554,109 @@ class HR3TestCalc:
             self._last_counter = sample_counter
 
         if probe_state != self.PROBE_APPLIED:
-            # Reset every sample while not applied (idempotent) — mirrors lib v0.41. Never
-            # triggers the FFT/HPS computation while not applied.
-            self.reset()
-            self.hr_bpm = float('nan')
-            self.hr_sqi = 0.0
+            if not self._clean:
+                self._reset_state()
             return self.hr_bpm, self.hr_sqi
+        if fs != self._fs:
+            self._recalc_params(fs)
+        self._clean = False
 
-        if fs != self._fs or self._b is None:
-            self._recalc_filter(fs)
+        filtered = -self._lp.process(float(ot_led1))      # negate: peaks up, as the library
 
-        # BP filter
-        filtered, self._zi = signal.lfilter(self._b, self._a, [float(ot_led1)], zi=self._zi)
-        filtered = filtered[0]
+        self._phase += 1                                   # Decimator::step()
+        if self._phase < self._factor:
+            return self.hr_bpm, self.hr_sqi
+        self._phase = 0
 
-        # Circular buffer
+        n = self._buf.shape[0]
         self._buf[self._buf_idx] = filtered
-        self._buf_idx = (self._buf_idx + 1) % self.buf_len
-        if self._buf_count < self.buf_len:
+        self._buf_idx = (self._buf_idx + 1) % n
+        if self._buf_count < n:
             self._buf_count += 1
-
-        # Always update display buffer (cheap: just reorder the circular buffer)
-        self.last_filtered_buf = np.roll(self._buf, -self._buf_idx)
 
         self._update_ctr += 1
         if self._update_ctr < self.update_n:
             return self.hr_bpm, self.hr_sqi
         self._update_ctr = 0
-
-        if self._buf_count < self.buf_len:
+        if self._buf_count < n:
             return self.hr_bpm, self.hr_sqi
+        self._compute(np.roll(self._buf, -self._buf_idx))
+        return self.hr_bpm, self.hr_sqi
 
-        # Ordered buffer (oldest first) — reuse display buffer already computed above
-        seg_raw = self.last_filtered_buf
+    def _compute(self, seg_raw):
+        """_hr3_prepare_fft_input() + _hr3_compute() on the linearised snapshot."""
+        self.last_filtered_buf = seg_raw
+        n    = seg_raw.shape[0]
+        rate = self._rate
+        x    = (seg_raw - seg_raw.mean()) * self._hann
+        X    = np.fft.rfft(x)                # bins 0..N/2 of the library's complex radix-2 FFT
+        P    = (X.real * X.real + X.imag * X.imag)
+        bin_res = rate / n
+        nyq     = n // 2
+        search_min = int(np.ceil(self.FW_HR_SEARCH_MIN / 60.0 / bin_res))
+        search_max = int(np.floor(self.FW_HR_SEARCH_MAX / 60.0 / bin_res))
+        search_max = min(search_max, nyq - 2, nyq // 3)
+        search_min = max(search_min, 1)
+        freqs = np.arange(nyq + 1) * bin_res
+        self.last_freqs = freqs
+        if search_min >= search_max:
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
+            return
 
-        # Mean subtraction → Hann window → rfft
-        seg      = seg_raw - seg_raw.mean()
-        seg      = seg * np.hanning(self.buf_len)
-        fft_cplx = np.fft.rfft(seg)
-        spectrum = np.abs(fft_cplx)
-        freqs    = np.fft.rfftfreq(self.buf_len, d=1.0 / fs)
+        # HPS over the bins where the 3rd harmonic exists (k ≤ N/6), zero elsewhere
+        k_max = nyq // 3
+        hps = np.zeros(nyq + 1)
+        k = np.arange(1, k_max + 1)
+        hps[1:k_max + 1] = P[k] * P[2 * k] * P[3 * k]
+        band = hps[search_min:search_max + 1]
+        peak_bin = search_min + int(np.argmax(band))     # the first maximum, as the > sweep
+        peak_hps = float(hps[peak_bin])
 
-        # HPS: P[k] · P[2k] · P[3k] · ... (hps_harmonics controls highest harmonic index)
-        n_spec = len(spectrum)
-        hps    = spectrum.copy()
-        for k in range(2, self.hps_harmonics + 1):
-            n_valid       = n_spec // k
-            hps[:n_valid] *= spectrum[np.arange(n_valid) * k]
-            hps[n_valid:]  = 0.0
+        # Gaussian interpolation (parabola on log P)
+        p_m, p_c, p_p = P[peak_bin - 1], P[peak_bin], P[peak_bin + 1]
+        lm = np.log(p_m if p_m > 0.0 else 1e-30)
+        lc = np.log(p_c if p_c > 0.0 else 1e-30)
+        lp = np.log(p_p if p_p > 0.0 else 1e-30)
+        denom = lm - 2.0 * lc + lp
+        delta = 0.5 * (lm - lp) / denom if denom != 0.0 else 0.0
+        peak_freq = (peak_bin + delta) * bin_res
+        self.last_peak_freq = peak_freq
 
-        # Search range
-        search_min_hz = self.FW_HR_SEARCH_MIN / 60.0
-        search_max_hz = self.FW_HR_SEARCH_MAX / 60.0
-        mask = (freqs >= search_min_hz) & (freqs <= search_max_hz)
-        if not np.any(mask):
-            return self.hr_bpm, self.hr_sqi
+        # Diagnostics: |X| and HPS normalised to their search-band maximum
+        spec = np.sqrt(P)
+        s_max = float(spec[search_min:search_max + 1].max()) or 1.0
+        h_max = float(band.max()) or 1.0
+        self.last_spectrum = spec / s_max
+        self.last_hps      = hps / h_max
 
-        hps_hr      = hps[mask]
-        n_bins      = int(np.sum(mask))
-        idx_offset  = int(np.where(mask)[0][0])
-        peak_local  = int(np.argmax(hps_hr))
-        peak_global = idx_offset + peak_local
+        if peak_freq <= 0.0:
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
+            return
+        hr = 60.0 * peak_freq
+        if not (self.FW_HR_MIN_BPM <= hr <= self.FW_HR_MAX_BPM):
+            self.hr_bpm = float('nan'); self.hr_sqi = 0.0
+            return
 
-        # Gaussian interpolation: parabolic fit on log|X|² (accurate for Hann window).
-        # Jacobsen (complex) gives δ ≈ -0.5·δ_true for Hann: adjacent bins carry
-        # phase e^{±jπ}=-1, inverting the numerator sign.  Gaussian gives δ ≈ 1.07·δ_true.
-        if 0 < peak_global < len(fft_cplx) - 1:
-            pm = abs(fft_cplx[peak_global - 1])**2
-            pc = abs(fft_cplx[peak_global    ])**2
-            pp = abs(fft_cplx[peak_global + 1])**2
-            lm, lc, lp = np.log(max(pm, 1e-30)), np.log(max(pc, 1e-30)), np.log(max(pp, 1e-30))
-            denom = lm - 2.0*lc + lp
-            delta = 0.5*(lm - lp) / denom if denom != 0.0 else 0.0
-        else:
-            delta = 0.0
-        freq_res  = fs / self.buf_len
-        peak_freq = freqs[peak_global] + delta * freq_res
-        hr_bpm    = peak_freq * 60.0
-
-        # SQI: two-bin HPS local SNR (mirrors firmware §5.4)
-        spec_hr  = spectrum[mask]
-        nyquist  = len(hps) - 1
-        b1       = int(np.floor(peak_global + delta))
-        b2       = b1 + 1
-        b1       = max(1, b1)
-        b2       = min(nyquist // 3, b2)
-        hps_b1   = float(hps[b1])
-        hps_b2   = float(hps[b2])
-        hps_num  = hps_b1 + hps_b2
-        W_sqi    = self.FW_SNR_LOCAL_W
-        hps_win  = 0.0
-        n_win    = 0
-        for k in range(b1 - W_sqi, b2 + W_sqi + 1):
-            if k < 1 or k > nyquist // 3:
+        # SQI: two-bin HPS local SNR against a flat-noise baseline
+        b1 = int(np.floor(peak_bin + delta))
+        b2 = b1 + 1
+        b1 = max(b1, 1)
+        b2 = min(b2, k_max)
+        hps_num = float(hps[b1] + hps[b2])
+        hps_win = 0.0
+        n_win   = 0
+        for kk in range(b1 - self.FW_SNR_LOCAL_W, b2 + self.FW_SNR_LOCAL_W + 1):
+            if kk < 1 or kk > k_max:
                 continue
-            hps_win += float(hps[k])
+            hps_win += float(hps[kk])
             n_win   += 1
         if hps_win > 0.0 and n_win > 2:
             snr      = hps_num / hps_win
             baseline = 2.0 / n_win
-            sqi = max(0.0, min(1.0, (snr - baseline) / (1.0 - baseline))) if baseline < 1.0 else 0.0
-        else:
-            sqi = 0.0
-
-        # Normalise for display
-        hps_max  = float(np.max(hps_hr))  if np.max(hps_hr)  > 0.0 else 1.0
-        spec_max = float(np.max(spec_hr)) if np.max(spec_hr) > 0.0 else 1.0
-        self.last_spectrum  = spectrum / spec_max
-        self.last_freqs     = freqs
-        self.last_hps       = hps / hps_max
-        self.last_peak_freq = peak_freq
-
-        if (self.FW_HR_MIN_BPM / 60.0) <= peak_freq <= (self.FW_HR_MAX_BPM / 60.0):
-            self.hr_bpm = hr_bpm
-            self.hr_sqi = sqi
+            self.hr_sqi = max(0.0, min(1.0, (snr - baseline) / (1.0 - baseline)))
         else:
             self.hr_sqi = 0.0
-
-        return self.hr_bpm, self.hr_sqi
-
-
-# The R-method candidate (R-method plan, step 2): what PILAB's [R CANDIDATE] preset loads and
-# tools/offline_runner computes as R_CAND (runner v0.23) -- same label, same arithmetic.
-R_METHOD_CAND_DOLS = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1(2s)"
-
-
-def _lib_biquad_bp(f_lo, f_hi, fs):
-    """(b0, b2, a1, a2) of the library's BiquadFilter::init_bp: one 2-pole Butterworth band-pass
-    section, bilinear and prewarped (b1 = 0, b2 = -b0). The firmware has no other band-pass."""
-    k = 2.0 * fs
-    o_lo = k * math.tan(math.pi * f_lo / fs)
-    o_hi = k * math.tan(math.pi * f_hi / fs)
-    o0sq = o_lo * o_hi
-    bw = o_hi - o_lo
-    d = k * k + bw * k + o0sq
-    return bw * k / d, -bw * k / d, 2.0 * (o0sq - k * k) / d, (k * k - bw * k + o0sq) / d
-
-
-OfflineCapture = namedtuple('OfflineCapture',
-                            'ir red t fs fmt restarts gaps dropped')
-
-
-def _read_capture_ot(path):
-    """OT_LED1 / OT_LED2 of a capture CSV, with the sample rate and time axis the FILE declares.
-
-    Two formats:
-      * v0.4 (`# format=incunest_csv/1`): columns `OT_LED1`/`OT_LED2`, no time column; the rate is
-        `afe_prf_hz` in the `# @row N afe:` records, the time axis is row / rate, and
-        `# @row N event: board restarted` marks where the estimators must start again.
-      * the older lab format: columns `FW_OT_LED1`/`FW_OT_LED2` and `FW_Ts_us`; the rate is the
-        median timestamp step (snapped to 500/250/100/50 Hz), the time axis the timestamps. Rows
-        outside `$M4` carry OT = -1 and are skipped.
-    No rate in the file is an error, never an assumed 50 Hz: that assumption is what made PILAB's
-    offline time constants 10x off on 500 Hz captures (v1.80).
-    """
-    prf, restarts, gaps, cols = set(), [], 0, None
-    with open(path, encoding='utf-8', errors='replace') as f:
-        for line in f:
-            if not line.startswith('#'):
-                if cols is None:
-                    cols = [c.strip() for c in line.split(',')]
-                continue
-            if ' afe: ' in line and 'afe_prf_hz=' in line:
-                prf.add(float(line.split('afe_prf_hz=', 1)[1].split()[0]))
-            elif ' event: board restarted' in line:
-                restarts.append(int(line.split()[2]))
-            elif ' gap: missing=' in line:
-                gaps += 1
-            elif line.startswith('# event @row') and 'stream discontinuity' in line:
-                restarts.append(int(line.split()[3].rstrip(':')))
-    if cols is None:
-        raise ValueError("no header row")
-    ir_col  = next((c for c in ('OT_LED1', 'FW_OT_LED1') if c in cols), None)
-    red_col = next((c for c in ('OT_LED2', 'FW_OT_LED2') if c in cols), None)
-    if ir_col is None or red_col is None:
-        raise ValueError("no OT_LED1/OT_LED2 columns (PILAB runs on OT, as the library)")
-    use = [cols.index(ir_col), cols.index(red_col)]
-    if 'FW_Ts_us' in cols:
-        use.append(cols.index('FW_Ts_us'))
-    with open(path, encoding='utf-8', errors='replace') as f:
-        body = (line for line in f if not line.startswith('#'))
-        next(body)  # the header row
-        data = np.loadtxt(body, delimiter=',', usecols=use, dtype=float, ndmin=2)
-    ir, red = data[:, 0], data[:, 1]
-
-    if prf:
-        if len(prf) > 1:
-            raise ValueError(f"the sample rate changes inside the file ({sorted(prf)} Hz)")
-        fs = prf.pop()
-        return OfflineCapture(ir, red, np.arange(len(ir)) / fs, fs, "v0.4",
-                              sorted(set(restarts)), gaps, 0)
-    if len(use) < 3:
-        raise ValueError("no sample rate in the file: neither afe_prf_hz (v0.4) nor FW_Ts_us")
-    keep = np.nonzero((ir > 0) & (red > 0))[0]
-    if len(keep) < 2:
-        raise ValueError("no $M4 rows (OT only travels in $M4)")
-    ts = data[keep, 2]
-    steps = np.diff(ts)
-    steps = steps[steps > 0]
-    fs = float(1e6 / np.median(steps)) if len(steps) else 0.0
-    for std_fs in (500.0, 250.0, 100.0, 50.0):
-        if abs(fs - std_fs) < std_fs * 0.2:
-            fs = std_fs
-            break
-    restarts = sorted(set(int(i) for i in np.searchsorted(keep, restarts)))
-    return OfflineCapture(ir[keep], red[keep], (ts - ts[0]) * 1e-6, fs, "lab",
-                          restarts, gaps, len(ir) - len(keep))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  PICalc — configurable 3-step Perfusion Index pipeline
-# ──────────────────────────────────────────────────────────────────────────────
-
-class PICalc:
-    """Configurable 3-step Perfusion Index pipeline.
-
-    Pipeline: STEP1 (AC waveform extraction) → STEP2 (AC amplitude estimator)
-              → STEP3 (DC for denominator)
-
-    Outputs, per channel (_ir/_red): ac_wave = AC waveform, sample by sample (STEP1);
-    dc_base = the baseline STEP1 subtracts to get it; ac_amp = AC amplitude (STEP2; RMS,
-    peak-to-peak or spectral, per method); dc_norm = DC that normalises it (STEP3).
-    PI = ac_amp / dc_norm × 100; R = PI_red / PI_ir.
-
-    Input: OT_LED1 (IR) / OT_LED2 (red) [A/A], the gain-invariant optical transmittance the
-    library's SpO2/PI/HR run on (lib v0.38+). Not led1_sub: an RF change scales led1_sub at once
-    and the DC estimators lag it, so PI and R spiked at every HGAC gain change (v1.76).
-
-    STEP1 — AC waveform extraction:
-      S1_EMA  (1.1): EMA-based subtraction (τ_sub seconds)
-      S1_BPF  (1.2): the library's one-biquad Butterworth band-pass (bpf_lo–bpf_hi Hz), with its
-                     steady-state precharge (v1.81; it was scipy's 4-pole design before)
-      S1_NONE (1.3): pass-through (only valid with spectral STEP2 2.4/2.5)
-
-    STEP2 — AC amplitude estimator:
-      S2_EMA_RMS   (2.1): running RMS via EMA of x² — firmware method method
-      S2_WIN_RMS   (2.2): windowed RMS (win_s seconds)
-      S2_PEAKPK    (2.3): peak-to-peak / 2 over win_s seconds
-      S2_SPECTRAL  (2.4): FFT energy in band [f_HR ± delta_hz]
-      S2_HARMONICS (2.5): FFT energy sum at n·f_HR harmonics
-      S2_DOLS      (2.6): regression on derivatives (v1.81) -- R = EMA(dx·dy)/EMA(dx²) with
-                          x = ac_ir/dc_norm_ir, y = ac_red/dc_norm_red, dx = x[n]-x[n-1] (τ_ac).
-                          A joint estimator: it gives R, not one amplitude per channel, so ac_amp
-                          (and PI) are the 2.1 EMA-RMS of the same STEP1 output. corr_dols is its r.
-
-    STEP3 — DC for PI denominator:
-      S3_EMA      (3.1): EMA of raw signal — firmware method method (τ_norm seconds); like the
-                         library's EmaChannel it starts at the first sample, not at 0 (v1.81)
-      S3_LPF      (3.2): 2nd-order Butterworth LPF (lpf_fc Hz)
-      S3_WIN_MEAN (3.3): windowed mean (win_norm_s seconds)
-    """
-
-    S1_EMA = "1.1"; S1_BPF = "1.2"; S1_NONE = "1.3"
-    S2_EMA_RMS = "2.1"; S2_WIN_RMS = "2.2"; S2_PEAKPK = "2.3"
-    S2_SPECTRAL = "2.4"; S2_HARMONICS = "2.5"; S2_DOLS = "2.6"
-    S3_EMA = "3.1"; S3_LPF = "3.2"; S3_WIN_MEAN = "3.3"
-
-    # SpO2 calibration defaults (mirror firmware incunest_afe4490 defaults)
-    DEFAULT_SPO2_R_CURVE_A = 114.9208
-    DEFAULT_SPO2_R_CURVE_B =  30.5547
-
-    def __init__(self):
-        # STEP1
-        self.step1      = self.S1_EMA
-        self.tau_sub    = 2.0   # S1_EMA τ (s)
-        self.bpf_lo     = 0.5   # S1_BPF lo cutoff (Hz)
-        self.bpf_hi     = 4.0   # S1_BPF hi cutoff (Hz)
-        # STEP2
-        self.step2       = self.S2_EMA_RMS
-        self.tau_ac      = 6.0   # S2_EMA_RMS τ (s)
-        self.win_s       = 4.0   # S2_WIN_RMS / S2_PEAKPK / spectral window (s)
-        self.fft_len     = 512   # S2_SPECTRAL / S2_HARMONICS FFT length (samples)
-        self.hr_bpm      = 70.0  # nominal HR for spectral methods (bpm)
-        self.n_harmonics = 3     # number of harmonics for S2_HARMONICS
-        self.delta_hz    = 0.3   # spectral bin half-width around each harmonic (Hz)
-        # STEP3
-        self.step3      = self.S3_EMA
-        self.tau_norm   = 2.0   # S3_EMA τ (s)
-        self.lpf_fc     = 0.4   # S3_LPF cutoff (Hz)
-        self.win_norm_s = 4.0   # S3_WIN_MEAN window (s)
-
-        # internal state
-        self._fs = 0.0
-        self._alpha_sub = 0.0; self._alpha_ac = 0.0; self._alpha_norm = 0.0
-        self._ema_dc_ir    = 0.0; self._ema_dc_red    = 0.0
-        self._ema_ac2_ir   = 0.0; self._ema_ac2_red   = 0.0
-        self._ema_dc_norm_ir  = 0.0; self._ema_dc_norm_red  = 0.0
-        self._win_buf_ir   = deque(); self._win_buf_red  = deque()
-        self._raw_ir_buf   = deque(); self._raw_red_buf  = deque()
-        self._norm_buf_ir  = deque(); self._norm_buf_red = deque()
-        self._bp = None; self._bp_v_ir = None; self._bp_v_red = None   # S1_BPF: coeffs, [v1, v2]
-        self._n = 0                                                      # samples since reset
-        self._dols_sxy = 0.0; self._dols_sxx = 0.0; self._dols_syy = 0.0; self._dols_prev = None
-        self.corr_dols = 0.0   # S2_DOLS: r of the derivative regression (~0.99 with a pulse, ~0 without)
-        self._lpf_sos = None; self._lpf_zi_ir = None; self._lpf_zi_red = None
-        self._win_max_n = 200; self._norm_max_n = 200
-
-        # SpO2 calibration (synced from firmware $CFG at runtime)
-        self.spo2_r_curve_a = self.DEFAULT_SPO2_R_CURVE_A
-        self.spo2_r_curve_b = self.DEFAULT_SPO2_R_CURVE_B
-
-        # outputs
-        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
-        self.ac_amp_ir  = 0.0; self.ac_amp_red = 0.0
-        self.dc_norm_ir  = 1.0; self.dc_norm_red = 1.0
-        self.dc_base_ir = 0.0; self.dc_base_red = 0.0
-        self.ac_wave_ir   = 0.0; self.ac_wave_red   = 0.0  # STEP1 pulsatile waveform output
-
-    def reset(self):
-        """Reset all accumulators (keeps configuration)."""
-        self._ema_dc_ir   = 0.0; self._ema_dc_red   = 0.0
-        self._ema_ac2_ir  = 0.0; self._ema_ac2_red  = 0.0
-        self._ema_dc_norm_ir = 0.0; self._ema_dc_norm_red = 0.0
-        self._win_buf_ir.clear(); self._win_buf_red.clear()
-        self._raw_ir_buf.clear(); self._raw_red_buf.clear()
-        self._norm_buf_ir.clear(); self._norm_buf_red.clear()
-        self._bp_v_ir = None; self._bp_v_red = None
-        self._n = 0
-        self._dols_sxy = 0.0; self._dols_sxx = 0.0; self._dols_syy = 0.0; self._dols_prev = None
-        self.corr_dols = 0.0
-        self._lpf_zi_ir = None; self._lpf_zi_red = None
-        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
-        self.ac_amp_ir  = 0.0; self.ac_amp_red = 0.0
-        self.dc_norm_ir  = 1.0; self.dc_norm_red = 1.0
-        self.dc_base_ir = 0.0; self.dc_base_red = 0.0
-        self.ac_wave_ir   = 0.0; self.ac_wave_red   = 0.0
-
-    def reconfigure(self, fs):
-        """Recalculate derived params from current settings and reset state."""
-        self._fs = fs
-        if fs <= 0:
-            return
-        a_sub  = 1.0 - math.exp(-1.0 / (max(self.tau_sub,  1.0 / fs) * fs))
-        a_ac   = 1.0 - math.exp(-1.0 / (max(self.tau_ac,   1.0 / fs) * fs))
-        a_norm = 1.0 - math.exp(-1.0 / (max(self.tau_norm, 1.0 / fs) * fs))
-        self._alpha_sub  = a_sub
-        self._alpha_ac   = a_ac
-        self._alpha_norm = a_norm
-        nyq = fs / 2.0
-        # BPF (S1_BPF)
-        if self.step1 == self.S1_BPF:
-            lo = max(0.01, min(self.bpf_lo, nyq * 0.9))
-            hi = max(lo + 0.01, min(self.bpf_hi, nyq * 0.99))
-            self._bp = _lib_biquad_bp(lo, hi, fs)
-        else:
-            self._bp = None
-        # LPF (S3_LPF)
-        if self.step3 == self.S3_LPF:
-            fc = max(0.01, min(self.lpf_fc, nyq * 0.99))
-            try:
-                self._lpf_sos = signal.butter(2, fc / nyq, btype='low', output='sos')
-            except Exception:
-                self._lpf_sos = None
-        else:
-            self._lpf_sos = None
-        self._win_max_n  = max(2, int(round(self.win_s      * fs)))
-        self._norm_max_n = max(2, int(round(self.win_norm_s * fs)))
-        self.reset()
-
-    def update(self, ir, red, fs):
-        """Process one sample (ir/red = OT_LED1/OT_LED2 [A/A]). Returns (pi_ir, pi_red, R)."""
-        if fs != self._fs:
-            self.reconfigure(fs)
-        ir = float(ir); red = float(red)
-        if self._n == 0:   # as EmaChannel: the DC estimates start at the first sample, not at 0
-            self._ema_dc_ir = ir; self._ema_dc_red = red
-            self._ema_dc_norm_ir = ir; self._ema_dc_norm_red = red
-        self._n += 1
-
-        # ── STEP 1: AC waveform extraction ─────────────────────────────────────────────
-        if self.step1 == self.S1_EMA:
-            self._ema_dc_ir  += self._alpha_sub * (ir  - self._ema_dc_ir)
-            self._ema_dc_red += self._alpha_sub * (red - self._ema_dc_red)
-            self.dc_base_ir  = self._ema_dc_ir
-            self.dc_base_red = self._ema_dc_red
-            ac_ir  = ir  - self._ema_dc_ir
-            ac_red = red - self._ema_dc_red
-        elif self.step1 == self.S1_BPF:
-            if self._bp is not None:
-                b0, b2, a1, a2 = self._bp
-                if self._bp_v_ir is None:   # BiquadFilter's steady-state precharge (y_ss = 0)
-                    self._bp_v_ir  = [-b0 * ir,  b2 * ir]
-                    self._bp_v_red = [-b0 * red, b2 * red]
-                v = self._bp_v_ir                     # DF-II transposed, b1 = 0
-                ac_ir = b0 * ir + v[0];   v[0] = -a1 * ac_ir + v[1];   v[1] = b2 * ir - a2 * ac_ir
-                v = self._bp_v_red
-                ac_red = b0 * red + v[0]; v[0] = -a1 * ac_red + v[1];  v[1] = b2 * red - a2 * ac_red
-            else:
-                ac_ir = ir; ac_red = red
-            # dc_sub = signal minus BPF output (what the BPF removes)
-            self.dc_base_ir  = ir  - ac_ir
-            self.dc_base_red = red - ac_red
-        else:  # S1_NONE — pass-through, nothing removed; show raw signal as DC reference
-            ac_ir = ir; ac_red = red
-            self.dc_base_ir  = ir
-            self.dc_base_red = red
-
-        # STEP1 pulsatile waveform output (fed to STEP2 amplitude estimator)
-        self.ac_wave_ir  = ac_ir
-        self.ac_wave_red = ac_red
-
-        # ── STEP 2: AC amplitude estimator ─────────────────────────────────────────────
-        if self.step2 in (self.S2_EMA_RMS, self.S2_DOLS):
-            self._ema_ac2_ir  += self._alpha_ac * (ac_ir  * ac_ir  - self._ema_ac2_ir)
-            self._ema_ac2_red += self._alpha_ac * (ac_red * ac_red - self._ema_ac2_red)
-            ac_amp_ir  = math.sqrt(max(0.0, self._ema_ac2_ir))
-            ac_amp_red = math.sqrt(max(0.0, self._ema_ac2_red))
-        elif self.step2 == self.S2_WIN_RMS:
-            self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
-            while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
-            while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
-            arr_ir  = np.fromiter(self._win_buf_ir,  dtype=float, count=len(self._win_buf_ir))
-            arr_red = np.fromiter(self._win_buf_red, dtype=float, count=len(self._win_buf_red))
-            ac_amp_ir  = float(np.sqrt(np.mean(arr_ir  * arr_ir)))
-            ac_amp_red = float(np.sqrt(np.mean(arr_red * arr_red)))
-        elif self.step2 == self.S2_PEAKPK:
-            self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
-            while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
-            while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
-            ac_amp_ir  = (max(self._win_buf_ir)  - min(self._win_buf_ir))  / 2.0
-            ac_amp_red = (max(self._win_buf_red) - min(self._win_buf_red)) / 2.0
-        elif self.step2 in (self.S2_SPECTRAL, self.S2_HARMONICS):
-            self._raw_ir_buf.append(ir);   self._raw_red_buf.append(red)
-            while len(self._raw_ir_buf)  > self._win_max_n: self._raw_ir_buf.popleft()
-            while len(self._raw_red_buf) > self._win_max_n: self._raw_red_buf.popleft()
-            n_fft = min(self.fft_len, len(self._raw_ir_buf))
-            if n_fft >= 8:
-                arr_ir  = np.array(list(self._raw_ir_buf)[-n_fft:],  dtype=float)
-                arr_red = np.array(list(self._raw_red_buf)[-n_fft:], dtype=float)
-                arr_ir  -= arr_ir.mean(); arr_red -= arr_red.mean()
-                win     = np.hanning(n_fft)
-                fft_ir  = np.abs(np.fft.rfft(arr_ir  * win))
-                fft_red = np.abs(np.fft.rfft(arr_red * win))
-                freqs   = np.fft.rfftfreq(n_fft, d=1.0 / self._fs)
-                f0 = self.hr_bpm / 60.0
-                if self.step2 == self.S2_SPECTRAL:
-                    mask = np.abs(freqs - f0) <= self.delta_hz
-                    e_ir  = float(np.sum(fft_ir[mask]  ** 2)) if mask.any() else 0.0
-                    e_red = float(np.sum(fft_red[mask] ** 2)) if mask.any() else 0.0
-                else:  # S2_HARMONICS
-                    e_ir = 0.0; e_red = 0.0
-                    for hn in range(1, self.n_harmonics + 1):
-                        mask = np.abs(freqs - hn * f0) <= self.delta_hz
-                        if mask.any():
-                            e_ir  += float(np.sum(fft_ir[mask]  ** 2))
-                            e_red += float(np.sum(fft_red[mask] ** 2))
-                ac_amp_ir  = math.sqrt(e_ir  / n_fft) if e_ir  > 0 else 0.0
-                ac_amp_red = math.sqrt(e_red / n_fft) if e_red > 0 else 0.0
-            else:
-                ac_amp_ir = 0.0; ac_amp_red = 0.0
-        else:
-            ac_amp_ir = 0.0; ac_amp_red = 0.0
-        self.ac_amp_ir = ac_amp_ir; self.ac_amp_red = ac_amp_red
-
-        # ── STEP 3: DC for denominator ────────────────────────────────────────
-        if self.step3 == self.S3_EMA:
-            self._ema_dc_norm_ir  += self._alpha_norm * (ir  - self._ema_dc_norm_ir)
-            self._ema_dc_norm_red += self._alpha_norm * (red - self._ema_dc_norm_red)
-            dc_norm_ir  = self._ema_dc_norm_ir; dc_norm_red = self._ema_dc_norm_red
-        elif self.step3 == self.S3_LPF:
-            if self._lpf_sos is not None:
-                if self._lpf_zi_ir is None:
-                    zi = signal.sosfilt_zi(self._lpf_sos)
-                    self._lpf_zi_ir  = zi * ir; self._lpf_zi_red = zi * red
-                _out_ir,  self._lpf_zi_ir  = signal.sosfilt(self._lpf_sos, [ir],  zi=self._lpf_zi_ir)
-                _out_red, self._lpf_zi_red = signal.sosfilt(self._lpf_sos, [red], zi=self._lpf_zi_red)
-                dc_norm_ir  = float(_out_ir[0]); dc_norm_red = float(_out_red[0])
-            else:
-                dc_norm_ir = ir; dc_norm_red = red
-        elif self.step3 == self.S3_WIN_MEAN:
-            self._norm_buf_ir.append(ir);   self._norm_buf_red.append(red)
-            while len(self._norm_buf_ir)  > self._norm_max_n: self._norm_buf_ir.popleft()
-            while len(self._norm_buf_red) > self._norm_max_n: self._norm_buf_red.popleft()
-            dc_norm_ir  = float(np.mean(list(self._norm_buf_ir)))
-            dc_norm_red = float(np.mean(list(self._norm_buf_red)))
-        else:
-            dc_norm_ir = ir; dc_norm_red = red
-
-        self.dc_norm_ir  = dc_norm_ir
-        self.dc_norm_red = dc_norm_red
-
-        # ── PI & R ────────────────────────────────────────────────────────────
-        # Division guard only: OT is ~1e-5..1e-2 A/A, so the max(1.0, dc) of the led1_sub era
-        # would pin the denominator to 1. No light, no PI.
-        self.pi_ir  = self.ac_amp_ir  / dc_norm_ir  * 100.0 if dc_norm_ir  > 0.0 else 0.0
-        self.pi_red = self.ac_amp_red / dc_norm_red * 100.0 if dc_norm_red > 0.0 else 0.0
-        if self.step2 == self.S2_DOLS:
-            # Regression on derivatives of the normalised pulse: the slope of red against IR
-            # where both move together (systolic upstroke); slow components barely move dx.
-            x = ac_ir / dc_norm_ir if dc_norm_ir > 0.0 else 0.0
-            y = ac_red / dc_norm_red if dc_norm_red > 0.0 else 0.0
-            if self._dols_prev is not None:
-                dx = x - self._dols_prev[0]; dy = y - self._dols_prev[1]
-                a = self._alpha_ac
-                self._dols_sxy += a * (dx * dy - self._dols_sxy)
-                self._dols_sxx += a * (dx * dx - self._dols_sxx)
-                self._dols_syy += a * (dy * dy - self._dols_syy)
-            self._dols_prev = (x, y)
-            sxx, syy = self._dols_sxx, self._dols_syy
-            self.R = self._dols_sxy / sxx if sxx > 0.0 else 0.0
-            self.corr_dols = self._dols_sxy / math.sqrt(sxx * syy) if sxx > 0.0 and syy > 0.0 else 0.0
-        else:
-            self.R = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
-        self.spo2 = max(0.0, min(100.0, self.spo2_r_curve_a - self.spo2_r_curve_b * self.R)) if self.R > 0.0 else 0.0
-        return self.pi_ir, self.pi_red, self.R
-
+        self.hr_bpm = hr if self.hr_sqi > 0.0 else float('nan')
 
 class HR3TestWindow(QtWidgets.QMainWindow):
     """HR3TEST — post-implementation verification window for the HR3 algorithm.
@@ -4996,7 +4664,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
     Runs an independent Python mirror of the firmware HR3 algorithm (HR3TestCalc,
     derived from incunest_afe4490_spec.md §5.4) and compares against firmware output.
 
-    The mirror runs at the decimated rate (50 Hz default) fed from PPGMonitor.update_plots().
+    The mirror is fed every $M4 sample at the AFE rate (PPGMonitor.afe_fs(), v1.88) and
+    decimates to 50 Hz itself, as the library.
     Offline mode: load any recorded CSV.
 
     Layout:
@@ -5042,8 +4711,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self._btn_load.setStyleSheet(ACTION_BUTTON_STYLE)
         self._btn_load.clicked.connect(self._load_csv)
         self._btn_load.setToolTip(_make_tooltip("LOAD CSV",
-            "Load a recorded CSV file for offline analysis. "
-            "HR3 runs at 50 Hz (after decimation); any recorded CSV format is accepted."))
+            "Load a recorded CSV file for offline analysis ($M4 rows: the mirror needs OT_LED1). "
+            "The rate comes from the timestamps; the mirror decimates to 50 Hz as the library."))
         toolbar.addWidget(self._btn_load)
 
         self._btn_clear = QtWidgets.QPushButton("BACK TO LIVE")
@@ -5202,46 +4871,35 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             w.setRange(lo, hi); w.setValue(val); w.setStyleSheet(_sp_s)
             return w
 
-        self._spin_bp_low      = _dspin(0.1, 5.0,  HR3TestCalc.FW_BP_LOW_HZ,  1, 0.1, " Hz")
-        self._spin_bp_high     = _dspin(5.0, 25.0, HR3TestCalc.FW_BP_HIGH_HZ, 1, 0.5, " Hz")
+        self._spin_lp_high     = _dspin(5.0, 25.0, HR3TestCalc.FW_LP_HIGH_HZ, 1, 0.5, " Hz")
         self._spin_buf_len     = _ispin(128,  1024, HR3TestCalc.FW_BUF_LEN)
         self._spin_upd_n       = _ispin(1,    200,  HR3TestCalc.FW_UPDATE_N)
-        self._spin_harmonics   = _ispin(2,    5,    HR3TestCalc.FW_HPS_HARMONICS)
 
-        self._spin_bp_low.setToolTip(_make_tooltip("BP low cutoff",
-            "Butterworth bandpass lower cutoff [Hz]. "
-            "Firmware default: 0.4 Hz. Removes DC and baseline drift.",
-            src="hr3_bp_low_hz"))
-        self._spin_bp_high.setToolTip(_make_tooltip("BP high cutoff",
-            "Butterworth bandpass upper cutoff [Hz]. "
-            "Firmware default: 15 Hz. Preserves 3rd harmonic of 260 BPM (13 Hz).",
-            src="hr3_bp_high_hz"))
+        self._spin_lp_high.setToolTip(_make_tooltip("LP cutoff",
+            "4th-order Butterworth low-pass cutoff [Hz], at the AFE rate (two cascaded biquads, "
+            "the anti-alias filter of the 50 Hz decimation). Firmware default: 15 Hz, the 3rd "
+            "harmonic of 260 BPM (13 Hz) with margin. DC is removed by the mean subtraction "
+            "before the FFT, not by this filter.",
+            src="hr3_f_high_hz"))
         self._spin_buf_len.setToolTip(_make_tooltip("Buffer length",
-            "Circular buffer length [samples]. "
-            "Firmware default: 512 (10.24 s at 50 Hz). Determines FFT frequency resolution.",
+            "Circular buffer length [decimated samples]. Firmware default: 512 (10.24 s at 50 Hz, "
+            "0.098 Hz per bin). The library's radix-2 FFT needs a power of two; the mirror does not.",
             src="hr3_buf_len"))
         self._spin_upd_n.setToolTip(_make_tooltip("Update every N",
-            "Run FFT/HPS every N samples. "
-            "Firmware default: 25 (every 0.5 s at 50 Hz).",
-            src="hr3_update_n"))
-        self._spin_harmonics.setToolTip(_make_tooltip("HPS harmonics",
-            "Number of harmonic downsamples in HPS: multiply spectrum by P[2k], ..., P[Kk]. "
-            "Firmware default: 3 (k=2 and k=3).",
-            src="hr3_hps_harmonics"))
+            "Run the FFT + HPS every N decimated samples. Firmware default: "
+            "hr3_update_interval_s = 0.5 s → 25 at 50 Hz.",
+            src="hr3_update_interval_s"))
 
         def _row(label_text, widget):
             lbl = QtWidgets.QLabel(label_text)
             lbl.setStyleSheet(_lbl_s)
             form.addRow(lbl, widget)
 
-        _row("BP low cutoff:",    self._spin_bp_low)
-        _row("BP high cutoff:",   self._spin_bp_high)
+        _row("LP cutoff:",        self._spin_lp_high)
         _row("Buffer length:",    self._spin_buf_len)
         _row("Update every N:",   self._spin_upd_n)
-        _row("HPS harmonics:",    self._spin_harmonics)
 
-        for sp in [self._spin_bp_low, self._spin_bp_high, self._spin_buf_len,
-                   self._spin_upd_n, self._spin_harmonics]:
+        for sp in [self._spin_lp_high, self._spin_buf_len, self._spin_upd_n]:
             sp.valueChanged.connect(self._on_param_changed)
 
         right_vbox.addWidget(grp_params)
@@ -5297,20 +4955,16 @@ class HR3TestWindow(QtWidgets.QMainWindow):
 
     def _on_param_changed(self):
         calc = self._active_calc()
-        calc.bp_low_hz     = self._spin_bp_low.value()
-        calc.bp_high_hz    = self._spin_bp_high.value()
-        calc.buf_len       = self._spin_buf_len.value()
-        calc.update_n      = self._spin_upd_n.value()
-        calc.hps_harmonics = self._spin_harmonics.value()
+        calc.lp_high_hz = self._spin_lp_high.value()
+        calc.buf_len    = self._spin_buf_len.value()
+        calc.update_n   = self._spin_upd_n.value()
         calc.reset()
         self._update_status_indicator()
 
     def _reset_to_defaults(self):
-        for sp, attr in [(self._spin_bp_low,    'FW_BP_LOW_HZ'),
-                         (self._spin_bp_high,   'FW_BP_HIGH_HZ'),
+        for sp, attr in [(self._spin_lp_high,   'FW_LP_HIGH_HZ'),
                          (self._spin_buf_len,   'FW_BUF_LEN'),
-                         (self._spin_upd_n,     'FW_UPDATE_N'),
-                         (self._spin_harmonics, 'FW_HPS_HARMONICS')]:
+                         (self._spin_upd_n,     'FW_UPDATE_N')]:
             sp.blockSignals(True)
             sp.setValue(getattr(HR3TestCalc, attr))
             sp.blockSignals(False)
@@ -5410,11 +5064,9 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                 fs = float(std_fs); break
 
         self._offline_calc.reset_to_defaults()
-        self._offline_calc.bp_low_hz     = self._spin_bp_low.value()
-        self._offline_calc.bp_high_hz    = self._spin_bp_high.value()
-        self._offline_calc.buf_len       = self._spin_buf_len.value()
-        self._offline_calc.update_n      = self._spin_upd_n.value()
-        self._offline_calc.hps_harmonics = self._spin_harmonics.value()
+        self._offline_calc.lp_high_hz = self._spin_lp_high.value()
+        self._offline_calc.buf_len    = self._spin_buf_len.value()
+        self._offline_calc.update_n   = self._spin_upd_n.value()
         self._offline_calc.reset()
 
         nan = float('nan')
@@ -5474,9 +5126,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# HR3TEST export — {datetime.datetime.now()}\n")
                 _c = self._active_calc()
-                f.write(f"# bp={_c.bp_low_hz:.1f}-{_c.bp_high_hz:.1f} Hz, "
-                        f"buf={_c.buf_len}, update_n={_c.update_n}, "
-                        f"hps_harmonics={_c.hps_harmonics}\n")
+                f.write(f"# lp={_c.lp_high_hz:.1f} Hz (4th order), "
+                        f"buf={_c.buf_len}, update_n={_c.update_n}, rate={_c.rate_hz:.1f} Hz\n")
                 f.write("t_s,hr3_fw,hr3_py,hr3_delta,sqi_fw,sqi_py\n")
                 nan = float('nan')
                 for i in range(len(t)):
@@ -5632,7 +5283,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         filt = c.last_filtered_buf
         if len(filt) > 0 and len(t_hr) > 0:
             t_end = t_hr[-1]
-            fs = c._fs if c._fs > 0 else HR3TestCalc.FW_FS
+            fs = c.rate_hz if c.rate_hz > 0 else HR3TestCalc.FW_FS
             filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
             self.curve_filt.setData(filt_t, filt)
 
@@ -9505,7 +9156,7 @@ class HR3LabWindow(QtWidgets.QMainWindow):
             self._info_label.setText(
                 "HR3 params: LP 10 Hz · BUF 512 · Hann · update 0.5 s · band [0.5–3.5 Hz]   |   waiting for data...")
             return
-        freq_res_bpm = (calc._fs / calc.BUF_LEN) * 60.0
+        freq_res_bpm = (calc.rate_hz / calc.BUF_LEN) * 60.0
         buf_pct      = 100.0 * calc._buf_count / calc.BUF_LEN
         self._info_label.setText(
             f"LP {calc.LP_CUTOFF_HZ:.0f} Hz · BUF {calc.BUF_LEN} · Hann · "
@@ -15922,6 +15573,17 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 it.setForeground(self._STATS_INVALID_FG if _raw_clipped else QtGui.QBrush())
             self._stats_buf[name].clear()
 
+    def afe_fs(self):
+        """The AFE sample rate the live $M4 samples arrive at [Hz]: `sr` of the last $CFG,
+        else the firmware's 500 Hz default. Every sample is streamed since the UDP transport,
+        so the algorithm mirrors must run at this rate — the serial-era SPO2_RECEIVED_FS
+        (50 Hz) fed to them until lab v1.87 made every time constant 10× too long."""
+        try:
+            fs = float(str(self._last_cfg.get("sr", "")).strip())
+        except (ValueError, AttributeError):
+            fs = 0.0
+        return fs if fs > 0.0 else 500.0
+
     def _process_frames_tick(self):
         """Drain serial and UDP queues and run per-sample algorithms.
         Timing budget: PythonTimingWindow._SERIAL_TICK_BUDGET_MS.
@@ -16097,14 +15759,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _ps500 = int(float(_p500[22]))
                                 _sc500 = int(_p500[1])
                                 if self.hr1test_window is not None:
-                                    self.hr1test_calc.update(_ot500, 500.0, _ps500, _sc500)
+                                    self.hr1test_calc.update(_ot500, self.afe_fs(), _ps500, _sc500)
                                 # HR1LAB: every variant gets the same sample in the same call,
                                 # which is what makes a live comparison between them fair.
                                 if self.hr1lab_window is not None:
-                                    self.hr1lab_window.feed_sample(_ot500, 500.0, _ps500, _sc500)
+                                    self.hr1lab_window.feed_sample(_ot500, self.afe_fs(), _ps500, _sc500)
                                 # XYLAB: the whole field list, any field may be on an axis.
                                 if self.xylab_window is not None:
-                                    self.xylab_window.feed_frame(_p500, 500.0)
+                                    self.xylab_window.feed_frame(_p500, self.afe_fs())
                             except (ValueError, IndexError):
                                 pass
 
@@ -16299,18 +15961,18 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                                 self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                                 self.data_ch_masks.append(0)
-                            self.hr3_calc.update(p[7], SPO2_RECEIVED_FS, int(p[0]))  # LED1_SUB for HR3Lab diagnostics
+                            self.hr3_calc.update(p[7], self.afe_fs(), int(p[0]))  # LED1_SUB for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 # EXPERIMENT (OT-domain input): OT_LED1 only in $M4 (parts[31]);
                                 # feed 0.0 while in $M3 (mirror stays invalid, same as M1/M2 below).
                                 _ot_led1 = float(parts[31]) if lib_id == "M4" and len(parts) >= 34 else 0.0
-                                self.hr3test_calc.update(_ot_led1, SPO2_RECEIVED_FS,
+                                self.hr3test_calc.update(_ot_led1, self.afe_fs(),
                                                           int(float(parts[22])), int(p[0]))
                             if self.pilab_window is not None and lib_id == "M4" and len(parts) >= 34:
                                 # OT_LED1 / OT_LED2 (parts[31] / parts[32]), as the library: only
                                 # $M4 carries OT, so PILAB is fed nothing in $M1-$M3.
                                 self.pilab_window.feed_sample(
-                                    float(parts[31]), float(parts[32]), SPO2_RECEIVED_FS, p[1])
+                                    float(parts[31]), float(parts[32]), self.afe_fs(), p[1])
                             if self.afe_sweep_window is not None:
                                 _m4 = lib_id == "M4" and len(parts) >= 31
                                 self.afe_sweep_window.feed_sample(
@@ -16372,9 +16034,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                             self.data_ch_masks.append(0)
-                            self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                            self.hr3_calc.update(0.0, self.afe_fs(), int(p[0]))
                             if self.hr3test_window is not None:
-                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, int(p[9]), int(p[0]))
+                                self.hr3test_calc.update(0.0, self.afe_fs(), int(p[9]), int(p[0]))
                             for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
@@ -16403,9 +16065,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                             self.data_ch_masks.append(0)
-                            self.hr3_calc.update(0.0, SPO2_RECEIVED_FS, int(p[0]))
+                            self.hr3_calc.update(0.0, self.afe_fs(), int(p[0]))
                             if self.hr3test_window is not None:
-                                self.hr3test_calc.update(0.0, SPO2_RECEIVED_FS, 0, int(p[0]))
+                                self.hr3test_calc.update(0.0, self.afe_fs(), 0, int(p[0]))
                             for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
