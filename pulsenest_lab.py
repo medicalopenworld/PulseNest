@@ -7940,6 +7940,16 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                     "regression's correlation r is below this. Default 0.8,\n"
                                                     "provisional: with a pulse r never fell below 0.83 on\n"
                                                     "HOSPNAV; not yet measured on pulse-less input. -1 = off.",   2,  -1.0,  1.0, "",    1.0),
+        ("spo2_window_s",     "SpO2 window",        "SpO2 averaging time [s] (lib v0.102): a true sliding\n"
+                                                    "window over R's products, so the value means what the\n"
+                                                    "literature means (an EMA of tau averages like 2*tau). The\n"
+                                                    "window IS the warm-up: first SpO2 when it is full. The\n"
+                                                    "library clamps to 2-12 s; a change empties the window.\n"
+                                                    "Default 6 s (Nellcor Normal 5-7 s; NICU default 8 s).",     1,   2.0, 12.0, " s",  1.0),
+        ("pi_window_s",       "PI window",          "PI averaging time [s] (lib v0.102): AC and DC from the\n"
+                                                    "same sliding window; independent of the SpO2 window.\n"
+                                                    "Clamped 2-12 s by the library; a change empties the\n"
+                                                    "window (PI NaN for one window length). Default 6 s.",       1,   2.0, 12.0, " s",  1.0),
     ]
 
     def __init__(self, parent=None):
@@ -8033,8 +8043,8 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
             self._add_param_row(hgac_form, p)
         vbox.addWidget(hgac_grp)
 
-        # SpO2 R method group (lib v0.100)
-        spo2_grp = QtWidgets.QGroupBox("SpO2 R method")
+        # SpO2 / PI group (lib v0.100: R method and gate; v0.102: averaging windows)
+        spo2_grp = QtWidgets.QGroupBox("SpO2 / PI")
         spo2_grp.setStyleSheet(self._GRP_SS)
         spo2_form = QtWidgets.QFormLayout(spo2_grp)
         spo2_form.setSpacing(6)

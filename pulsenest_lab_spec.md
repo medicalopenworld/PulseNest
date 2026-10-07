@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.84
+# pulsenest_lab — Specification v1.85
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -370,11 +370,13 @@ $LCFG,rsqm_ot_thr=<v>,rsqm_disconn_led_sub_thr=<v>,rsqm_disconn_i_pd_thr=<v>,
       rsqm_probe_state_min_s=<v>,
       hgac_enable=<0|1>,hgac_v_tia_high2=<v>,hgac_v_tia_high1=<v>,hgac_v_tia_low1=<v>,
       hgac_ema_fast_tau_s=<v>,hgac_ema_slow_tau_s=<v>,hgac_ema_ambient_tau_s=<v>,
-      spo2_r_method=<1|2>,spo2_r_corr_min=<v>*XX
+      spo2_r_method=<1|2>,spo2_r_corr_min=<v>,spo2_window_s=<v>,pi_window_s=<v>*XX
 ```
 
 (`spo2_r_method` and `spo2_r_corr_min` since fw 0.18 / lib v0.100; `$SET,spo2_r_method,<1|2>` also
-re-emits `$CFG`, whose `spo2_r_method_id` names the method in force.) Emitted after a library
+re-emits `$CFG`, whose `spo2_r_method_id` names the method in force. `spo2_window_s` and
+`pi_window_s` since fw 0.20 / lib v0.102: the averaging windows in seconds, clamped 2–12 by the
+library, so the echo is the value in force.) Emitted after a library
 `$SET` command and in response to `$LCFG?`. Parsed by
 `_on_lcfg_frame_received()` → updates `LIBConfigWindow`.
 
@@ -2318,9 +2320,11 @@ Purpose: view and change RSQM / HGAC / SpO2 library parameters in real time via 
 - Slow EMA τ (`hgac_ema_slow_tau_s`) [s] — leveling estimator
 - Ambient EMA τ (`hgac_ema_ambient_tau_s`) [s] — ALED estimator for the AMBIENT_HIGH alarm
 
-**Contents (SpO2 R method group, v1.83 / lib v0.100):** — see incunest_afe4490 §5.1, *R methods and R curves*
+**Contents (SpO2 / PI group, v1.83 / lib v0.100; windows v1.85 / lib v0.102):** — see incunest_afe4490 §5.1
 - R method (`spo2_r_method`) — 1 = R-METHOD-1 (RMS ratio), 2 = R-METHOD-2 (regression on derivatives, default); the switch is immediate, and `$CFG` (re-emitted by the firmware on this `$SET`) shows `spo2_r_method_id` and whether the curve in force was fitted with it
 - r gate (`spo2_r_corr_min`) — R-METHOD-2 only: SpO2 withheld while the regression's correlation r is below it (default 0.8, provisional; −1 = off)
+- SpO2 window (`spo2_window_s`) [s] — the SpO2 averaging time, a true sliding window (lib v0.102); 2–12 s, default 6; the window is the warm-up and a change empties it
+- PI window (`pi_window_s`) [s] — PI's averaging time, independent of SpO2's; 2–12 s, default 6
 
 - [Read from chip ($LCFG?)] — requests `$LCFG?` from firmware
 - [Set all] — sends `$SET` for `hgac_enable` and every RSQM, HGAC and SpO2 parameter in the window
@@ -2729,6 +2733,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.85 — 2026-10-07
+
+**LIB CONFIG gains the two averaging windows** (§7.17): `spo2_window_s` and `pi_window_s`, the
+`$SET`/`$LCFG` keys fw 0.20 adds for lib v0.102, in which SpO2 is averaged over a true sliding
+window (the EMA of τ 6 s it replaces averaged like a 12 s window) and PI's window became
+runtime. Both 2–12 s, clamped by the library, independent of each other; the group is now
+titled "SpO2 / PI". The capture dictionary gains `spo2_window_ms` / `pi_window_ms` (integer ms, as every snapshot time; they ride in every `alg:` record).
 
 ### v1.84 — 2026-10-06
 

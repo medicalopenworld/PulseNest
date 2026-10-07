@@ -42,7 +42,7 @@ for k in D.KEYS:
     check(k.provenance in PROV, f"key provenance {k.name}")
     check(k.domain in DOMAINS, f"key domain {k.name}")
     if k.domain in ("afe", "timing", "alg"):
-        check(k.name.startswith(("afe_", "ppgdisp_", "hr2_", "hr3_", "spo2_", "rsqm_", "hgac_")),
+        check(k.name.startswith(("afe_", "ppgdisp_", "hr2_", "hr3_", "spo2_", "pi_", "rsqm_", "hgac_")),   # pi_ since lib v0.101 (PI decoupled)
               f"snapshot key {k.name} has a domain prefix")
     # R24a: reals only in alg:, and only for dimensionless coefficients
     if k.type == "float":

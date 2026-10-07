@@ -50,7 +50,8 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.19"   // 0.19: $M4 field 36 = R_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
+#define PULSENEST_FW_VERSION "0.20"   // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
+                                      // 0.19: $M4 field 36 = R_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
                                       // 0.17: $M4 OT_LED1/OT_LED2 with 7 significant figures (%.6e; was %.4e)
                                       // 0.16: $CFG names the R method and the R curve (spo2_r_method_id, spo2_r_curve_*; was spo2a/spo2b)
@@ -854,23 +855,27 @@ static void send_cfg_frame(const char* cause) {
     send_tcfg_frame();  // always emit timing config alongside $CFG
 }
 
-// Emit a $LCFG frame with the current RSQM / HGAC algorithm library parameters.
+// Emit a $LCFG frame with the current RSQM / HGAC / SpO2 / PI algorithm library parameters.
+// A control line, not a data frame: it leaves through udp_send_line() as one datagram, so the
+// 320 B data-queue slot does not bound it (the $CFG line is 450-490 B). ~330 B since fw 0.20.
 static void send_lcfg_frame() {
     AFE4490Config cfg = afe.getConfig();
-    char buf[320];
+    char buf[384];
     int n = snprintf(buf, sizeof(buf) - 6,
         "$LCFG,rsqm_ot_thr=%.4e"
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
         ",rsqm_probe_state_min_s=%.3f"
         ",hgac_enable=%d,hgac_v_tia_high2=%.3f,hgac_v_tia_high1=%.3f,hgac_v_tia_low1=%.3f"
         ",hgac_ema_fast_tau_s=%.3f,hgac_ema_slow_tau_s=%.3f,hgac_ema_ambient_tau_s=%.3f"
-        ",spo2_r_method=%u,spo2_r_corr_min=%.2f",
+        ",spo2_r_method=%u,spo2_r_corr_min=%.2f"
+        ",spo2_window_s=%.1f,pi_window_s=%.1f",          // fw 0.20 / lib v0.102: averaging windows
         cfg.rsqm_ot_thr,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
         cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_high2, cfg.hgac_v_tia_high1, cfg.hgac_v_tia_low1,
         cfg.hgac_ema_fast_tau_s, cfg.hgac_ema_slow_tau_s, cfg.hgac_ema_ambient_tau_s,
-        (unsigned)cfg.spo2_r_method, cfg.spo2_r_corr_min);
+        (unsigned)cfg.spo2_r_method, cfg.spo2_r_corr_min,
+        cfg.spo2_window_s, cfg.pi_window_s);
     if (frame_finish(buf, sizeof(buf), n, "LCFG")) Serial_print_locked(buf);
 }
 
@@ -1065,6 +1070,18 @@ static void apply_set_cmd(const char* key, const char* val) {
     } else if (strcmp(key, "spo2_r_corr_min") == 0) {
         afe.setSpO2RCorrMin(atof(val));
         Serial_printf("# SET spo2_r_corr_min=%.2f\n", atof(val));
+        send_lcfg_frame();
+        return;
+    // Averaging windows (fw 0.20 / lib v0.102): the library clamps to 2-12 s, so the echo reads
+    // the value actually in force; a change empties that window (NaN for one window length).
+    } else if (strcmp(key, "spo2_window_s") == 0) {
+        afe.setSpO2WindowS(atof(val));
+        Serial_printf("# SET spo2_window_s=%.1f\n", afe.getConfig().spo2_window_s);
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "pi_window_s") == 0) {
+        afe.setPIWindowS(atof(val));
+        Serial_printf("# SET pi_window_s=%.1f\n", afe.getConfig().pi_window_s);
         send_lcfg_frame();
         return;
     } else if (strcmp(key, "rsqm_ot_thr") == 0) {
