@@ -1,7 +1,12 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.25 — native/offline (no hardware), library API v0.99
+// Runner version: v0.26 — native/offline (no hardware), library API v0.102
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
+//
+// v0.26 (2026-10-07): `--input ot` also feeds PI (test_feed_pi, before SpO2 as _process_sample()
+//   does). Since lib v0.101 PI has its own function and SpO2's SQI reads it; without the call every
+//   OT replay printed PI = 0 and SpO2_SQI = 0 while SpO2 itself was valid (the spo2_pi_max gate
+//   passes a 0). Found while validating the lab's SPO2TEST mirror against this runner's output.
 //
 // v0.25 (2026-10-04): (1) every replay from raw codes now checks itself against the board: when the
 //   capture carries OT_LED1/OT_LED2, the replayed OT of every row is compared with the recorded one
@@ -694,6 +699,7 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
             ps_e = have ? (ProbeState)r.fw_ps : ProbeState::PROBE_DISCONNECTED;
             oi  = have ? r.ot1 : 0.0f;
             orr = have ? r.ot2 : 0.0f;
+            afe.test_feed_pi(oi, ps_e);          // v0.26: PI first, as _process_sample() — SpO2's SQI reads it
             afe.test_feed_spo2(oi, orr, ps_e);
             afe.test_feed_hr1(oi, ps_e);
             afe.test_feed_hr2(oi, ps_e);

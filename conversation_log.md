@@ -26449,3 +26449,30 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   restaurado 6,0/6,0. 5/5. Dos tropiezos del script, no del firmware: `$SET` lleva checksum XOR (`*XX`) y el hub
   reenvía al unirse el último `$LCFG` de cada placa, que se leía como eco (vaciar la cola, acotado en tiempo).
 - Lab relanzado con v1.85.
+
+## 2026-10-07 — lab v1.86: mirror de SPO2 TEST alineado con lib v0.102; celda SpO2 de SIGNAL STATS coloreada por SQI; runner v0.26
+
+- **Alex pide alinear el mirror de SPO2 TEST con la lib v0.102** y colorear la media de SpO2 en SIGNAL STATS como las
+  de HR1/HR2/HR3. `SpO2TestCalc` reescrito: R-METHOD-2 (paso-banda 0,5-5 Hz de un biquad precargado, normalizado por
+  la media `EmaChannel` τ 2 s, primeras diferencias, Σdx·dy/Σdx² y su correlación r sobre ventana deslizante de 6 s con
+  cadencia de bloque a 50 Hz, totales reconstruidos al dar la vuelta) y PI desacoplado (paso-banda 0,5-15 Hz, AC² y DC
+  en su propia ventana de 6 s, unidades pico a pico); curva 123,98 − 39,13·R, puerta r ≥ 0,8, PI ≤ 20 %, 70-103 %.
+  Parámetros = los de `$SET` (a, b, DC τ, ventana SpO2, ventana PI, r min; ventanas 2-12 s); AC τ y warm-up
+  desaparecen con los EMA. Ventana: gráficas SpO2, delta, R, r (con la puerta), PI fw/py, SQI; tabla con r y DC en ppm;
+  línea de tasa (`fs 500 Hz · decim ÷10 → 50 Hz · 300 blk`). Exportación añade `r_py`, `pi_fw`, `pi_py`.
+- **Dos defectos aparecidos por el camino.** (1) El mirror recibía `SPO2_RECEIVED_FS` = 50 Hz, constante de la era serie
+  (`SERIAL_DOWNSAMPLING_RATIO` 10): desde el transporte UDP se emite cada muestra `$M4` (el fw tiene ratio 1), así que las
+  constantes de tiempo iban 10× largas. Ahora la tasa sale del `sr` del último `$CFG` (o del paso de timestamps). HR2TEST
+  y HR3TEST siguen pasando la constante (pendiente). (2) El runner en `--input ot` no alimentaba PI: PI = 0 y SQI = 0 en
+  toda réplica OT con SpO2 válido (la puerta `spo2_pi_max` deja pasar un 0). Runner v0.26 añade `test_feed_pi` antes
+  de SpO2, como `_process_sample()`; spec lib §9 anotado.
+- **Verificación:** mirror frente a la salida del propio runner (lib v0.102) en la réplica de SUBJ09 1238 p01 a 500 Hz,
+  29 986 muestras: R 8,7·10⁻⁶ (5 decimales impresos), r 5,1·10⁻⁵ (4 decimales), PI/SpO2 ≤ 0,0051 (2 decimales), SQI
+  exacto, mismo patrón de validez (primer SpO2 en la muestra 3009 en ambos); 3 µs/muestra. Smoke offscreen de la
+  ventana 21/21 (tasa desde `$CFG`, decimación, primer SpO2 a 6,02 s, tabla, ida y vuelta de parámetros, exportación,
+  `_STATS_SQI_ROWS` = {7, 11, 13, 15}); `disable_plots_test` 13/13. En SIGNAL STATS la celda Mean de SpO2 usa
+  `SpO2_SQI` > 0,9 → verde oscuro, si no granate (mismo mecanismo que HR).
+- **Observación para Alex (no tocada):** el paso-banda de PI (un biquad 0,5-15 Hz) no es plano en la banda cardíaca:
+  |H| = 0,97 a 1,5 Hz (90 lpm), 0,91 a 1 Hz (60 lpm), 0,71 en la esquina de 0,5 Hz. La PI de la lib lee un 3-9 % baja
+  entre 60 y 90 lpm; en el rango neonatal (2-2,7 Hz) ≈ 1,0. Rationale §11 midió el extremo alto (220 lpm), no el bajo.
+- Spec lab v1.86 (§5.2, §6.3, §7.7, §8, changelog). Lab relanzado.

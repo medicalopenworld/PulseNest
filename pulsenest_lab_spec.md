@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.85
+# pulsenest_lab — Specification v1.86
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1203,37 +1203,66 @@ whenever the library changes its SpO2 defaults.
 
 ### 5.2 SpO2TestCalc
 
-Extended version of `SpO2LocalCalc` with user-adjustable parameters (used in SpO2TestWindow).
-All constants are exposed as instance attributes overridable at runtime from the UI spinboxes.
+**v1.86 — the mirror of lib v0.102: R-METHOD-2 and PI over sliding windows.** An independent
+Python reimplementation of the firmware's `_spo2_update()` and `_pi_update_sample()`
+(incunest_afe4490 §5.1), used by SpO2TestWindow (§7.7). `update(ot_ir, ot_red, probe_state, fs)`
+takes `OT_LED1`/`OT_LED2` [A/A] (gain-invariant optical transmittance, `$M4` only), RSQM's
+`ProbeState` ordinal and the AFE rate, and returns one dict (the same object every call) with
+`dc_ir`, `dc_red`, `R`, `r`, `pi`, `spo2`, `sqi`, `valid`, `filling`. `NaN` means "no value"
+throughout and `sqi` is 0 then — the firmware's output contract.
 
-**EXPERIMENT (OT-domain input, branch `experiment/ot-domain-inputs`, mirrors lib v0.41):**
-`update(ot_ir, ot_red, probe_state, fs)` — input is `OT_LED1`/`OT_LED2` [A/A] (gain-invariant
-optical transmittance), not the raw ambient-corrected `LED1_SUB`/`LED2_SUB` used before this
-migration, plus `probe_state` (RSQM's `ProbeState` ordinal — 0/1/2 for
-DISCONNECTED/OT_HIGH/APPLIED/AMB_SATURATING/ONLY_LED_SATURATING, read from the already-parsed `ProbeState` column/field).
-`OT_LED1`/`OT_LED2` only travel in the `$M4` frame — SpO2TestWindow requires `$M4` (live) or
-a CSV captured in `$M4`; it shows a status-bar warning and stops feeding the calc otherwise.
+Chain, per applied sample, everything at the AFE rate:
+
+- **DC**: `EmaChannel` mean per channel, τ = `dc_ema_tau_s` (2 s), seeded on the first sample.
+- **R (R-METHOD-2)**: x = BP(ot_ir)/DC_ir, y = BP(ot_red)/DC_red with the library's one-biquad
+  band-pass 0.5–5 Hz (`_Biquad`, the port of `BiquadFilter::init_bp`, precharged). On the first
+  differences dx, dy the products dx·dy, dx², dy² are summed over each decimation block (target
+  50 Hz) and the block sums over a sliding window of `spo2_window_s` seconds — circular buffers
+  with O(1) running totals, rebuilt at every wrap. R = Σdx·dy / Σdx², r = Σdx·dy / √(Σdx²·Σdy²).
+- **PI**: its own band-pass 0.5–15 Hz; AC² of each decimated sample and the block mean of the raw
+  OT (DC) over a sliding window of `pi_window_s` seconds; PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100,
+  peak-to-peak units. Run **before** SpO2 on every sample, as `_process_sample()` does, because
+  SpO2's SQI reads the PI of the same sample.
+- **SpO2**: a − b·R, published when r ≥ `r_corr_min`, PI is known and ≤ 20 % and
+  70 ≤ SpO2 ≤ 103 (clamped to 100); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise `NaN`,
+  SQI 0 — R and r stay reported so the reason is visible.
+
+Outputs refresh at the decimated cadence and hold between blocks; they are `NaN` while their
+window is still filling: **the window is the warm-up**, there is no warm-up parameter. Decimation
+factor and window lengths derive from `fs` exactly as the library's `Decimator` and
+`_window_len()` do — factor = round(fs/50), N = round(window_s·fs/factor), capped at 600 — so
+the mirror is right at any PRF of the grid.
+
+**Parameters** (`SpO2TestCalc.PARAMS`, each with its library default as a class attribute):
+`spo2_r_curve_a`/`spo2_r_curve_b` (123.98 / 39.13, R-CURVE-STS0163-HOSPNAV-20260923),
+`dc_ema_tau_s` (2.0), `spo2_window_s` (6.0), `pi_window_s` (6.0), `r_corr_min` (0.8). They are
+the ones the library exposes at runtime through `$SET`; the window lengths are clamped to 2–12 s
+as the library's setters do. Everything else (band-pass corners, decimation target, SQI
+thresholds, `spo2_pi_max`, the numerical guards) is a constant here as in the library.
+`using_defaults` compares every parameter with its default; `reset()` keeps the parameters and
+re-derives the state; `reset_to_defaults()` restores them.
 
 **Presence detection is RSQM's responsibility alone — `SpO2TestCalc` never classifies
-presence itself.** Two earlier attempts at a self-contained "no-finger"/"no-signal" gate
-inside this class were tried and removed in turn: `spo2_min_i_pd_a` (absolute
-`I_PD_LED1`/`I_PD_LED2` magnitude, mirroring firmware v0.38) and `spo2_min_ot_dc` (absolute OT
-DC floor, mirroring firmware v0.40) — both mostly duplicated RSQM's own
-disconnected/not-applied classification with a weaker, uncalibrated criterion (a
-transmittance probe with no finger shows HIGH OT, not low i_pd/DC).
+presence itself.** While `probe_state != PROBE_APPLIED` (2) the whole state is reset
+(idempotent, cheap: a flag skips the reallocation once clean) and every output is `NaN`. Two
+earlier attempts at a self-contained "no-finger" gate inside this class (`spo2_min_i_pd_a`,
+`spo2_min_ot_dc`) were tried and removed — both duplicated RSQM's own classification with a
+weaker criterion (a transmittance probe with no finger shows HIGH OT, not low i_pd/DC). The only
+guards left are the library's numerical epsilons on the actual divisors.
 
-While `probe_state != PROBE_APPLIED` (2) — covering every absent state (OT_HIGH, ONLY_LED_SATURATING, DISCONNECTED) and AMB_SATURATING
-identically: internal state (`_dc_ir`/`_dc_red`/`_ac2_ir`/`_ac2_red`/`_sample_count`) is reset
-every sample (idempotent, no stored "previous probe_state" needed — mirrors lib v0.41), and
-`pi`/`spo2`/`spo2_r` are `nan`. What remains inside the class is only a purely numerical
-division-safety guard, `FW_SPO2_DIV_EPS` (`1e-9`, not user-adjustable) — on `dc_ir` (PI calc
-divisor) and `dc_red`/`rms_ac_ir` (R calc divisors). No UI parameter for presence detection
-exists anymore — the "Min OT DC [ppm]"/"Min I_PD [µA]" spinboxes from earlier versions were
-both removed; SpO2TestWindow's parameter panel is back to its original five: a, b, DC τ, AC τ,
-warmup.
+**Verified against the library itself (2026-10-07):** fed with the OT and ProbeState the
+offline runner (v0.26, lib v0.102) replayed from a HOSPNAV capture at 500 Hz, the mirror
+agrees with the runner's columns to their print quantisation — R 8.7·10⁻⁶ (5 decimals printed),
+r 5.1·10⁻⁵ (4 decimals), PI, SpO2 and SQI within 0.01 — with the same validity pattern sample by
+sample (first SpO2 at sample 3009 in both, 6.018 s) and runs at 3.5 µs per sample.
 
-`DC LED1/LED2` and `RMS AC LED1/LED2` are displayed in ppm (×1e6) in SpO2TestWindow's plots
-and value table, consistent with `OT_LED1`/`OT_LED2` in SIGNAL STATS.
+**History.** Until v1.85 this class mirrored R-METHOD-1 with EMAs (DC τ, AC τ 6 s, an 18 s warm-up,
+the MS100 curve 114.9208 − 30.5547·R; five spinboxes: a, b, DC τ, AC τ, warmup) — lib v0.99's
+design, two library generations behind the boards. It was also fed `SPO2_RECEIVED_FS` = 50 Hz, a
+constant from the serial era (`SERIAL_DOWNSAMPLING_RATIO` 10): since the UDP transport every
+`$M4` sample is streamed, so the mirror ran its time constants 10× too long on a 500 Hz stream.
+The live rate now comes from the `sr` of the last `$CFG` (the frame timestamps as a fallback) and
+the window shows it (§7.7). The HR2TEST/HR3TEST mirrors still pass that constant (open).
 
 ### 5.3 HR1 variants — `HR1Variant` framework
 
@@ -1684,7 +1713,9 @@ Effects when a channel was CLIPPED at any point in the stats window:
 Visual rule: **gray text = "this number is not real"**, uniform across the whole table.
 Backgrounds are reserved for semantic gauges (voltage ranges, SQI).
 
-**SQI colour coding (Mean column, col 4):** HR1, HR2, HR3 rows (indices 11, 13, 15):
+**SQI colour coding (Mean column, col 4):** SpO2, HR1, HR2, HR3 rows (indices 7, 11, 13, 15 —
+`_STATS_SQI_ROWS`; SpO2 since v1.86, Alex), each judged by its own `<name>_SQI` row over the same
+stats window:
 - Mean SQI > 0.9 → background `#1A5C1A` (dark green)
 - Mean SQI ≤ 0.9 → background `#5C001A` (dark maroon)
 
@@ -1924,27 +1955,40 @@ Layout: left 4 plots (rolling 60 s) + right control panel.
 
 ### 7.7 SpO2TestWindow — "SPO2TEST"
 
-Purpose: verify Python SpO2 replica matches firmware output in real time.
+Purpose: verify that the Python replica of the firmware's SpO2 and PI (`SpO2TestCalc`, §5.2,
+lib v0.102 since v1.86) matches the board's output in real time, and explore the parameters.
 
-Layout: left 6 stacked plots + right parameter/values panel.
+Layout: left 6 stacked plots (X linked) + right parameter/values panel.
 
-**Plots:**
+**Plots (v1.86):**
 1. SpO2 fw (green) + SpO2 py (yellow)
 2. Delta SpO2 (fw − py)
-3. R ratio fw + R ratio py
-4. SpO2 SQI
-5. DC OT_LED1 (IR) + DC OT_LED2 (RED) [ppm]
-6. RMS AC OT_LED1 (IR) + RMS AC OT_LED2 (RED) [ppm]
+3. R fw + R py (R-METHOD-2)
+4. r py — the regression correlation, with the `r_corr_min` gate as a dashed line. Python only:
+   `$M4` does not carry `spo2_r_corr`.
+5. PI fw + PI py (%) — the firmware's PI travels in `$M4`, so the PI window is verified too
+6. SQI fw + SQI py
 
-**Right panel:** parameter spinboxes (DC tau, AC tau, A, B, warmup — no presence-detection
-parameter anymore, see §5.2), live current-values table, [EXPORT CSV] button, [LOAD CSV] for
-offline reprocessing.
+The DC and RMS-AC plots of the EMA-era mirror are gone: R-METHOD-2 has no per-channel AC, and the
+DC of each channel stays in the value table (ppm).
 
-**EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`/`OT_LED2`
-and `ProbeState`, none of which travel in `$M1`/`$M2`/`$M3`. Live mode shows a status-bar
-warning and stops feeding the calc when the active mode is not `$M4`. [LOAD CSV] only accepts
-`$M4` rows — a file with no `$M4` samples raises a clear error instead of silently
-reprocessing stale/zero data.
+**Right panel:** six spinboxes — SpO2 a, SpO2 b, DC τ, SpO2 window, PI window, r min (the
+library's runtime parameters, §5.2; the windows are limited to 2–12 s like the library) —,
+[RESET TO DEFAULTS], the current-values table (SpO2, R, r, PI, SQI, DC IR, DC RED; firmware /
+Python / delta, the delta green or red against a per-row threshold: SpO2 1 point, R 0.05,
+PI 0.1 %) and a rate line: `fs 500 Hz · decim ÷10 → 50 Hz · SpO2 window 300 blk · PI window
+300 blk`, so a wrong rate is visible at a glance. Any parameter off its default turns the toolbar
+indicator to CUSTOM PARAMS; a change resets the mirror and clears the buffers.
+
+**Rate.** The mirror runs at the AFE rate the samples arrive at: live, the `sr` of the last
+`$CFG` (exact), else the timestamp step of the batch snapped to an integer Hz; offline, the median
+timestamp step of the file. Until v1.85 it was fed a nominal 50 Hz (§5.2, History). The live
+rolling buffer holds 60 s at 500 Hz.
+
+**Requires frame mode `$M4`** — feeds on `OT_LED1`/`OT_LED2`, `PI` and `ProbeState`, none of
+which travel in `$M1`/`$M2`/`$M3`. Live mode shows a status-bar warning when the active mode is
+not `$M4`. [LOAD CSV] only accepts `$M4` rows — a file with no `$M4` samples raises a clear error
+instead of silently reprocessing stale/zero data. [EXPORT CSV] writes the comparison (§8).
 
 ### 7.8 HR1TestWindow — "HR1TEST"
 
@@ -2556,7 +2600,7 @@ at startup (`os.makedirs(CAPTURES_DIR, exist_ok=True)`).
 | Snapshot | `ppg_data_snap_YYYYMMDD_HHMMSS.csv` | SAVE toggle (while paused) | Current rolling buffer contents (last 10 s) |
 | CHK diagnostic | `ppg_chk_YYYYMMDD_HHMMSS.csv` | RECORD CHK toggle | `Timestamp_PC`, `Diff_us_PC`, `CHK_OK` (0/1), `RawFrame` |
 | SpO2 calibration | `spo2_cal_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in SpO2LabWindow | Calibration table + regression coefficients |
-| SpO2 test export | `spo2test_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in SpO2TestWindow | `t_s`, `spo2_fw`, `spo2_py`, `spo2_delta`, `R_fw`, `R_py` |
+| SpO2 test export | `spo2test_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in SpO2TestWindow | `t_s`, `spo2_fw`, `spo2_py`, `spo2_delta`, `R_fw`, `R_py`, `r_py`, `pi_fw`, `pi_py` (the last three since v1.86) |
 | HR1 test export | `hr1test_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in HR1TestWindow | HR1 fw vs py time series |
 | HR2 test export | `hr2test_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in HR2TestWindow | `t_s`, `hr_fw`, `hr_py`, `delta`, `sqi_fw`, `sqi_py` |
 | HR3 test export | `hr3test_YYYYMMDD_HHMMSS.csv` | EXPORT CSV in HR3TestWindow | `t_s`, `hr_fw`, `hr_py`, `delta`, `sqi_fw`, `sqi_py` |
@@ -2733,6 +2777,23 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.86 — 2026-10-07
+
+**SPO2TEST mirror aligned with lib v0.102** (§5.2, §7.7, Alex): `SpO2TestCalc` reimplements
+R-METHOD-2 (band-pass 0.5–5 Hz, DC-normalised first differences, Σdx·dy/Σdx² and its correlation
+r over a 6 s sliding window at the 50 Hz block cadence) and the decoupled PI (band-pass
+0.5–15 Hz, AC² and DC over their own 6 s window, peak-to-peak units), with the library's curve
+123.98 − 39.13·R and the r ≥ 0.8 gate. Parameters are the library's runtime ones (a, b, DC τ,
+SpO2 window, PI window, r min); AC τ and warm-up are gone with the EMAs. Plots: SpO2, delta, R,
+r (with the gate), PI fw/py, SQI. Verified against the offline runner's own lib v0.102 output on
+a HOSPNAV replay: R to 9·10⁻⁶, r to 5·10⁻⁵, PI/SpO2/SQI to 0.01, identical validity. Two defects
+surfaced on the way: the mirror had been fed a nominal 50 Hz while every `$M4` sample streams at
+the AFE rate (time constants 10× off; now `sr` from `$CFG`), and the runner's `--input ot` mode
+never fed PI (PI = 0, SQI = 0 on every OT replay; runner v0.26 fixes it).
+
+**SIGNAL STATS: the SpO2 Mean cell is coloured by `SpO2_SQI`** like HR1/HR2/HR3's (§6.3, Alex):
+dark green above 0.9, dark maroon otherwise.
 
 ### v1.85 — 2026-10-07
 
