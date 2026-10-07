@@ -26420,3 +26420,9 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
 - **Pendiente:** OTA a las tres V18 (apagadas al cerrar; binario listo). Claves `$SET`/`$LCFG` para `spo2_window_s`
   / `pi_window_s` (tarea aparte, cruza fw y lab); el lab sigue mostrando los parámetros antiguos en SPO2 TEST (mirror
   local de R-METHOD-1 con EMA; solo comparativo). PulseNest `7f713ed` (tests).
+
+## 2026-10-07 — OTA fw 0.19 / lib 0.102 a las tres V18
+
+- Banco encendido por Alex; IP nuevas (`82:5C` .133, `87:A4` .141, `88:50` .182). Binario `build_V18/pulsenest.bin` de la
+  noche anterior (fw 0.19, `libsha=15992be`). Las tres aceptan (HTTP 200, 4-5,5 s) y reportan `lib=0.102`,
+  `elfsha=ee774dd8676bef7e` idéntico, verificado con `tools/udp_fw_versions.py`. `docs/boards.md` actualizado.
