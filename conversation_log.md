@@ -26426,3 +26426,7 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
 - Banco encendido por Alex; IP nuevas (`82:5C` .133, `87:A4` .141, `88:50` .182). Binario `build_V18/pulsenest.bin` de la
   noche anterior (fw 0.19, `libsha=15992be`). Las tres aceptan (HTTP 200, 4-5,5 s) y reportan `lib=0.102`,
   `elfsha=ee774dd8676bef7e` idéntico, verificado con `tools/udp_fw_versions.py`. `docs/boards.md` actualizado.
+- **Cabeceras de la lib (Alex):** la primera línea de `.h`/`.cpp` lista ahora "(HR, SpO2, PI)" — PI es salida de primera
+  clase desde v0.101 — y la línea de versión pasa de v0.101 a v0.102 (estaba desactualizada). `library.json` gana la
+  palabra clave "perfusion index" y la descripción dice PPG/SpO2/PI, igual que el README. Solo documentación, sin subir
+  versión (commit en la lib).
