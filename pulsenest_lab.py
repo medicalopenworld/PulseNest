@@ -9183,9 +9183,10 @@ class XYLabWindow(QtWidgets.QMainWindow):
         self._spin_win.setToolTip(_make_tooltip(
             "Window",
             "How many seconds of samples the XY trace and the time plot hold; the least-squares "
-            "line is fitted over the same samples. The candidate itself averages with an EMA of "
-            "tau 6 s, so the slope here is a shorter-window estimate of its R. Changing it keeps "
-            "the newest samples.",
+            "line is fitted over the same samples. The library sums its regression over a "
+            "spo2_window_s window (6 s by default; here the fit also goes through the centroid, the "
+            "library's through the origin), so set 6 s to compare slopes with its R. Changing it "
+            "keeps the newest samples.",
             src="XYLabWindow._win_s"))
         pf.addRow("BPF lo [Hz]", self._spin_lo)
         pf.addRow("BPF hi [Hz]", self._spin_hi)
