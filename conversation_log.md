@@ -26545,3 +26545,31 @@ de 400/512 muestras "a 50 Hz") y además eran reimplementaciones aproximadas y a
   el HPS de una senoide pura es ~0, HR3 no engancha sin armónicos; y `QMessageBox` segfaultea offscreen).
   SPO2TEST sin regresión (21/21, mirror 5/5).
 - Spec del lab §5.4, §5.5, §7.6, §7.9, §7.10, §7.12, changelog v1.88.
+
+---
+
+## 2026-10-08 (3) — ¿De verdad un salto de RF contamina R? Medida con el simulador MS100 (82:5C)
+
+**Pregunta de Alex.** Al argumentar la cadencia de bloques escribí "tras un salto de RF del HGAC la EMA de DC
+de 2 s contamina R durante varios segundos". Alex: "diseñamos OT_LED para que los cambios de RF apenas se
+notaran; si hace falta, mide con el simulador MS100 de la 82:5C provocando cambios de RF".
+
+**Medida.** `rf_step_bench.py` (scratchpad): lab cerrado, control del hub, HGAC off (ya lo estaba en esa
+placa), `$SET tiagain1`/`tiagain2` 50K→25K→50K→10K→50K por color, 30 s por paso, sin subir a 100K (V_TIA
+habría llegado a 0,85/0,99 V > `hgac_v_tia_high1` 0,75). 141 k filas `$M4` sin pérdidas; placa restaurada
+(50K/50K, HGAC como estaba). Análisis `rf_step_analyze.py`; modelo sintético `rf_step_model.py` con el
+mirror SpO2TestCalc.
+
+**Resultado.**
+- OT es invariante a la ganancia salvo la tolerancia del RF real: escalón de OT ≈ 1 % entre 50K y 25K
+  (−0,9/+0,8 % IR, −1,0/+0,9 % RED) y ≈ 4,5 % entre 50K y 10K; el otro color no se mueve (< 0,2 %).
+- La frase era errónea en el mecanismo: no es la EMA de DC de 2 s. La congelación de settling (~20 ms)
+  no cubre el escalón de nivel; el paso-banda lo convierte en un transitorio de ~1 s comparable al AC que
+  pesa en Sxx/Sxy mientras su bloque está en la ventana: exactamente 6 s, y a los 8 s no queda nada.
+- Magnitud en el MS100 (PI 4,7 %, R 0,61): 1 tap → ΔR 0,005-0,013, SpO2 −0,2/−0,5 pts, r −0,01;
+  2 taps → ΔR 0,03-0,09, SpO2 −2,2 pts o inválido 6 s (curva > 103, `spo2_clamp_margin`), r −0,05/−0,15,
+  PI +0,6-0,75 %. Escala con escalón/AC: con PI 1 % un tap valdría ~2 pts durante 6 s.
+
+**Decisión.** Ninguna todavía: Alex decide si mitigar (excluir ~1 s de bloques tras un cambio de RF —
+para esto nació la exclusión por bloques — o compensar BPF/DC en `_hgac_change_rf()`). Memoria
+`project_spo2_ema_rf_change_bias_task` actualizada a "medido"; rationale §12 con la medida.
