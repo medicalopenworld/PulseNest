@@ -26516,3 +26516,6 @@ por bloque, como SpO2 (RMS exacto de la ventana; misma esperanza, menos varianza
   de tasa `block 50 smp → 10 Hz · 60 blk`; verificado contra el runner v0.27: R 7,7e-6, r 5e-5, PI/SpO2
   5e-3, SQI exacto, validez idéntica; smoke 21/21. Spec §5.2, §7.7, changelog.
 - fw 0.21 (lib v0.103) compilado para V18 (897 088 B). **OTA pendiente de que Alex lo pida.**
+
+**OTA 2026-10-08 (pedido por Alex):** fw 0.21 / lib 0.103 en las tres V18 (88:50, 87:A4, 82:5C), `build=f73b10c`,
+`libsha=b97b945`, `elfsha=5cac9204719dba20`, verificado con tools/udp_fw_versions.py, mismo `elfsha` en las tres.
