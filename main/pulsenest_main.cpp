@@ -50,7 +50,8 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.20"   // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
+#define PULSENEST_FW_VERSION "0.21"   // 0.21: lib v0.103 (SpO2/PI windows in 100 ms blocks instead of the 50 Hz cadence; PI AC² at full rate)
+                                      // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
                                       // 0.17: $M4 OT_LED1/OT_LED2 with 7 significant figures (%.6e; was %.4e)

@@ -535,33 +535,33 @@ class SpO2TestCalc:
     Independent Python reimplementation of the firmware's `_spo2_update()` and
     `_pi_update_sample()` (incunest_afe4490_spec.md §5.1), fed with the same OT samples at the
     same rate, for post-implementation verification against the values the board sends.
-    Verified against the offline runner (v0.26, lib v0.102) on a HOSPNAV replay at 500 Hz: R to
-    9e-6, r to 5e-5, PI/SpO2 to 0.01 (the runner's print quantisation), SQI exact, identical
-    validity sample by sample (lab v1.86).
+    Verified against the offline runner (v0.27, lib v0.103) on a HOSPNAV replay at 500 Hz: R to
+    1e-5, r to 1e-4, PI/SpO2 to 0.01 (the runner's print quantisation), SQI exact, identical
+    validity sample by sample (lab v1.86, re-verified v1.87).
 
     Chain, per applied sample (probe_state == PROBE_APPLIED), everything at the AFE rate:
       DC    : EmaChannel mean per channel, τ = dc_ema_tau_s (2 s), seeded on the first sample.
       R     : x = BP(ot_ir)/DC_ir, y = BP(ot_red)/DC_red — the library's one-biquad band-pass
               0.5–5 Hz, precharged. On the first differences dx, dy the products dx·dy, dx², dy²
-              are summed over each decimation block (target 50 Hz) and the block sums over a
+              are summed over each 100 ms block (alg_window_block_s) and the block sums over a
               sliding window of spo2_window_s seconds (circular buffer, O(1) totals rebuilt at
               every wrap). R = Σdx·dy / Σdx² (slope of dy on dx through the origin) and
               r = Σdx·dy / √(Σdx²·Σdy²) (its correlation, the validity gate r ≥ r_corr_min).
-      PI    : its own band-pass 0.5–15 Hz; AC² of each decimated sample and the block mean of
-              the raw OT (DC) over a sliding window of pi_window_s seconds;
-              PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100  (peak-to-peak units).
+      PI    : its own band-pass 0.5–15 Hz; AC² and the raw OT (DC) summed at the full rate over
+              each 100 ms block, the block sums over a sliding window of pi_window_s seconds;
+              PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100  (N = samples in the window; peak-to-peak units).
       SpO2  : a − b·R; valid when r ≥ r_corr_min, PI known and ≤ 20 %, 70 ≤ SpO2 ≤ 103
               (clamped to 100); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise NaN, SQI 0.
-    The outputs refresh at the decimated cadence and hold between blocks; they are NaN while
+    The outputs refresh at the block cadence (10 Hz) and hold between blocks; they are NaN while
     their window is still filling — the window is the warm-up, there is no warm-up parameter.
     The firmware runs PI before SpO2 on every sample (SpO2's SQI reads the PI of the same
     sample); so does update().
 
     While probe_state != PROBE_APPLIED the whole state is reset (idempotent) and the outputs are
     NaN — presence detection is RSQM's job alone, never this class's (firmware §5.1; two local
-    attempts were tried and removed in earlier versions). The decimation factor and the window
-    lengths derive from the sample rate the caller passes, as the library's Decimator does:
-    factor = round(fs / 50 Hz), N = round(window_s · fs / factor), capped at 600 blocks.
+    attempts were tried and removed in earlier versions). The block length and the window
+    lengths derive from the sample rate the caller passes, as the library's WindowBlock does:
+    block = round(fs · 0.1 s) samples, N = round(window_s · fs / block), capped at 120 blocks.
 
     Only R-METHOD-2, the firmware default since lib v0.100, is mirrored. The adjustable
     parameters are the ones the library exposes at runtime (`$SET`): the R curve a/b, the DC τ,
@@ -576,7 +576,7 @@ class SpO2TestCalc:
     PROBE_AMB_SATURATING      = 3   # lib v0.90: was PROBE_SATURATING
     PROBE_ONLY_LED_SATURATING = 4   # lib v0.90: split out of PROBE_NOT_APPLIED
 
-    # Firmware defaults — must match incunest_afe4490.cpp's constants (lib v0.102, spec §5.1)
+    # Firmware defaults — must match incunest_afe4490.cpp's constants (lib v0.103, spec §5.1)
     FW_DC_EMA_TAU_S    = 2.0      # spo2_ema_mean_tau_s (EmaChannel τ_mean, DC of both channels)
     FW_SPO2_WINDOW_S   = 6.0      # spo2_window_s — SpO2 averaging window
     FW_PI_WINDOW_S     = 6.0      # pi_window_s   — PI averaging window, independent length
@@ -588,8 +588,8 @@ class SpO2TestCalc:
     # Library constants with no runtime setter (not user-adjustable here either)
     SPO2_BP_HZ         = (0.5, 5.0)    # spo2_bp_f_low_hz / spo2_bp_f_high_hz
     PI_BP_HZ           = (0.5, 15.0)   # pi_bp_f_low_hz / pi_bp_f_high_hz
-    DECIM_TARGET_HZ    = 50.0          # spo2_decim_target_rate_hz = pi_decim_target_rate_hz
-    WINDOW_BUF_LEN_MAX = 600           # alg_window_buf_len_max (12 s at 50 Hz)
+    WINDOW_BLOCK_S     = 0.1           # alg_window_block_s — block cadence of both windows (lib v0.103)
+    WINDOW_BUF_LEN_MAX = 120           # alg_window_buf_len_max (12 s / 0.1 s)
     SPO2_DIV_EPS       = 1e-9          # spo2_div_eps — numerical guard only, not physiological
     SPO2_REG_EPS       = 1e-30         # spo2_reg_eps — Σdx² / Σdy² at or below this: no slope yet
     PI_DIV_EPS         = 1e-9          # pi_div_eps
@@ -620,7 +620,7 @@ class SpO2TestCalc:
         self._bp_pi  = _Biquad()
         self._fs     = 0.0
         self._alpha  = 0.0
-        self._factor = 1
+        self._block_len = 1
         self._spo2_n = 1
         self._pi_n   = 1
         self._reset_state()
@@ -629,15 +629,15 @@ class SpO2TestCalc:
 
     @staticmethod
     def _window_len(window_s, rate_hz, n_max=WINDOW_BUF_LEN_MAX):
-        """Mirrors INCUNEST_AFE4490::_window_len(): round(window_s · rate), clamped to 1..600."""
+        """Mirrors INCUNEST_AFE4490::_window_len(): round(window_s · rate), clamped to 1..120."""
         return max(1, min(n_max, int(round(window_s * rate_hz))))
 
     def _recalc_params(self, fs):
         """Derive the rate-dependent state from fs (the library does this in _recalc_rate_params)."""
         self._fs     = fs
         self._alpha  = 1.0 - math.exp(-1.0 / (self.dc_ema_tau_s * fs))
-        self._factor = max(1, int(round(fs / self.DECIM_TARGET_HZ)))     # Decimator::configure
-        rate = fs / self._factor
+        self._block_len = max(1, int(round(fs * self.WINDOW_BLOCK_S)))   # WindowBlock::configure
+        rate = fs / self._block_len
         self._spo2_n = self._window_len(min(max(self.spo2_window_s, self.WINDOW_S_MIN), self.WINDOW_S_MAX), rate)
         self._pi_n   = self._window_len(min(max(self.pi_window_s,   self.WINDOW_S_MIN), self.WINDOW_S_MAX), rate)
         self._bp_ir.init_bp(self.SPO2_BP_HZ[0], self.SPO2_BP_HZ[1], fs)
@@ -665,8 +665,8 @@ class SpO2TestCalc:
         return all(getattr(self, attr) == getattr(self, fw_attr) for attr, fw_attr in self.PARAMS)
 
     @property
-    def decim_factor(self):
-        return self._factor
+    def block_len(self):
+        return self._block_len
 
     @property
     def spo2_window_n(self):
@@ -694,15 +694,15 @@ class SpO2TestCalc:
         self._spo2_sum   = [0.0, 0.0, 0.0]
         self._spo2_idx   = 0
         self._spo2_count = 0
-        # PI window: AC² per decimated sample, block mean of the raw OT (DC) + O(1) totals
+        # PI window: block sums of AC² and of the raw OT (DC) + O(1) totals
         self._pi_phase  = 0
-        self._pi_dc_blk = 0.0
+        self._pi_ac_blk = self._pi_dc_blk = 0.0
         self._pi_ac_buf = [0.0] * self._pi_n
         self._pi_dc_buf = [0.0] * self._pi_n
         self._pi_ac_sum = self._pi_dc_sum = 0.0
         self._pi_idx    = 0
         self._pi_count  = 0
-        # Outputs hold between decimated samples (as the firmware's AFE4490Data fields do)
+        # Outputs hold between blocks (as the firmware's AFE4490Data fields do)
         self._out = {'dc_ir': nan, 'dc_red': nan, 'R': nan, 'r': nan, 'pi': nan,
                      'spo2': nan, 'sqi': 0.0, 'valid': False, 'filling': True}
         self._clean = True
@@ -751,16 +751,16 @@ class SpO2TestCalc:
         # ── PI (_pi_update_sample, runs before _spo2_update in the firmware) ──
         self._pi_dc_blk += ot_ir
         filtered = self._bp_pi.process(ot_ir)
+        self._pi_ac_blk += filtered * filtered
         self._pi_phase += 1
-        if self._pi_phase >= self._factor:
+        if self._pi_phase >= self._block_len:
             self._pi_phase = 0
-            sq       = filtered * filtered
-            dc_block = self._pi_dc_blk / self._factor
-            self._pi_dc_blk = 0.0
+            ac_block, dc_block = self._pi_ac_blk, self._pi_dc_blk
+            self._pi_ac_blk = self._pi_dc_blk = 0.0
             i = self._pi_idx
-            self._pi_ac_sum += sq       - self._pi_ac_buf[i]
+            self._pi_ac_sum += ac_block - self._pi_ac_buf[i]
             self._pi_dc_sum += dc_block - self._pi_dc_buf[i]
-            self._pi_ac_buf[i] = sq
+            self._pi_ac_buf[i] = ac_block
             self._pi_dc_buf[i] = dc_block
             self._pi_idx += 1
             if self._pi_idx >= self._pi_n:          # wrap: rebuild the totals (drift guard)
@@ -771,8 +771,9 @@ class SpO2TestCalc:
                 self._pi_count += 1
                 out['pi'] = nan
             else:
-                dc    = self._pi_dc_sum / self._pi_n
-                ac_pp = self.PI_RMS_TO_PP * math.sqrt(max(0.0, self._pi_ac_sum / self._pi_n))
+                n_raw = self._pi_n * self._block_len
+                dc    = self._pi_dc_sum / n_raw
+                ac_pp = self.PI_RMS_TO_PP * math.sqrt(max(0.0, self._pi_ac_sum / n_raw))
                 out['pi'] = (ac_pp / dc) * 100.0 if dc > self.PI_DIV_EPS else nan
         elif self._pi_count < self._pi_n:
             out['pi'] = nan                         # holding "no value", never a stale 0
@@ -788,9 +789,9 @@ class SpO2TestCalc:
         self._x_prev, self._y_prev = x, y
         self._reg_count += 1
 
-        # ── SpO2 window update at the decimated cadence ──
+        # ── SpO2 window update at the block cadence ──
         self._spo2_phase += 1
-        if self._spo2_phase < self._factor:
+        if self._spo2_phase < self._block_len:
             if self._spo2_count < self._spo2_n:
                 out['R'] = out['r'] = out['spo2'] = nan
                 out['sqi'] = 0.0
@@ -2554,9 +2555,9 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._lbl_rate.setToolTip(_make_tooltip(
             "Mirror rate",
             "Sample rate the mirror runs at (live: `sr` of the last $CFG, else from the frame "
-            "timestamps; offline: from the file), the decimation factor to the ~50 Hz window "
-            "cadence and the resulting window lengths in blocks — the same derivation as the "
-            "library's Decimator and _window_len()."))
+            "timestamps; offline: from the file), the samples per 100 ms window block and the "
+            "resulting window lengths in blocks — the same derivation as the library's "
+            "WindowBlock and _window_len()."))
         right_vbox.addWidget(self._lbl_rate)
 
         right_vbox.addStretch()
@@ -2610,7 +2611,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         c = self._calc
         if fs > 0:
             self._lbl_rate.setText(
-                f"fs {fs:.0f} Hz  ·  decim ÷{c.decim_factor} → {fs / c.decim_factor:.0f} Hz  ·  "
+                f"fs {fs:.0f} Hz  ·  block {c.block_len} smp → {fs / c.block_len:.0f} Hz  ·  "
                 f"SpO2 window {c.spo2_window_n} blk  ·  PI window {c.pi_window_n} blk")
         else:
             self._lbl_rate.setText("fs: ---")

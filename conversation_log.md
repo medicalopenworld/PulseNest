@@ -26476,3 +26476,43 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   |H| = 0,97 a 1,5 Hz (90 lpm), 0,91 a 1 Hz (60 lpm), 0,71 en la esquina de 0,5 Hz. La PI de la lib lee un 3-9 % baja
   entre 60 y 90 lpm; en el rango neonatal (2-2,7 Hz) ≈ 1,0. Rationale §11 midió el extremo alto (220 lpm), no el bajo.
 - Spec lab v1.86 (§5.2, §6.3, §7.7, §8, changelog). Lab relanzado.
+
+## 2026-10-08 — lib v0.103: cadencia de bloque de las ventanas SpO2/PI 50 Hz → 100 ms; lab v1.87; runner v0.27; fw 0.21
+
+**Preguntas de Alex.** (1) ¿XYLAB diezma a 50 Hz? No: ajusta la recta sobre todas las muestras de la
+ventana a 500 Hz. (2) ¿`_spo2_update()` procesa a 500 Hz y actualiza a 50 Hz, y por qué 20 ms? Sí:
+productos a tasa completa, sumas de bloque cada 10 muestras. (3) "¿Por qué 50 Hz y no otra frecuencia?
+Piénsalo bien y no contestes sesgadamente justificando decisiones ya tomadas."
+
+**Respuesta honesta.** El 50 Hz no salía de ningún requisito de SpO2: PI (v0.101) copió la estructura
+de los `Decimator` de HR2/HR3 y la ventana de SpO2 (v0.102) copió la de PI. En HR2/HR3 el 50 Hz tiene
+razones de procesado (spec §5.3.1) porque el diezmador descarta muestras; en las ventanas no se descarta
+nada, el contador solo decide cada cuánto entra una suma de bloque en el buffer. Lo que la cadencia
+determina de verdad: divisibilidad de la rejilla de PRF (MCD 50 Hz → {50, 25, 10, 5, 2, 1} Hz, un
+techo), RAM (17 KB a 50 Hz), latencia/resolución (indistinguibles sobre 6 s) y la granularidad de una
+futura exclusión de bloques marcados como artefacto. Alex: 50 Hz "hace pensar que mantienen algún tipo
+de relación [con HR2/HR3] y no es así"; el criterio determinante es la granularidad; los otros solo
+restringen. Acordado con el matiz de que "cuanto más fino mejor" devuelve al techo: el criterio útil es
+el bloque más grueso con pérdida despreciable en los bordes de una exclusión (2·bloque/ventana: 3,3 %
+a 100 ms sobre 6 s), claramente por debajo del ciclo cardíaco de 250 ms a 240 lpm. **Decisión de Alex:
+10 Hz (bloques de 100 ms)**, misma constante para SpO2 y PI.
+
+**Hallazgo al implementarlo.** El AC de PI sí estaba diezmado de verdad (una muestra paso-banda al
+cuadrado por bloque de 20 ms); a 100 ms aliasaría la banda 0,5-15 Hz. Ahora PI suma AC² a tasa completa
+por bloque, como SpO2 (RMS exacto de la ventana; misma esperanza, menos varianza).
+
+**Hecho.**
+- lib v0.103 (`incunest_afe4490`): `WindowBlock` (reloj de bloque por duración, no un `Decimator`)
+  sustituye a `_spo2_decim`/`_pi_decim` y sus `*_decim_target_rate_hz`; `alg_window_block_s` = 0,1 s;
+  `alg_window_buf_len_max` 600 → 120 (≈ 3,4 KB); PI AC² y DC como sumas de bloque; accesores de test
+  renombrados (`test_spo2_block_rate_hz`, `test_pi_block_len`, `test_pi_block_rate_hz`). Spec §5.1,
+  nota de alcance en §5.3.1, §10, §14; rationale §12 "Block cadence" (criterios, tabla, PI, medida).
+- Tests host: constantes de bloque (50 muestras a 500 Hz, ventanas de 60/120 bloques); 10/10 suites.
+- Runner v0.27 (API v0.103, sin cambio de código). Réplica SUBJ09 v0.102 vs v0.103 (29 946 muestras
+  comunes): R diferencia media 0, SD 0,0006 (máx 0,006 por el borde de ventana en pasos de 100 ms);
+  SpO2 SD 0,02 pts (máx 0,19); PI SD 0,02 % (máx 0,31 %); ruido de R (SD en 8 s) 0,00510 → 0,00506.
+  Primera estimación a 6,1 s (ventana + un bloque) en vez de 6,02 s.
+- lab v1.87: `SpO2TestCalc` con `WINDOW_BLOCK_S`/`WINDOW_BUF_LEN_MAX` 120, PI AC² por bloque, línea
+  de tasa `block 50 smp → 10 Hz · 60 blk`; verificado contra el runner v0.27: R 7,7e-6, r 5e-5, PI/SpO2
+  5e-3, SQI exacto, validez idéntica; smoke 21/21. Spec §5.2, §7.7, changelog.
+- fw 0.21 (lib v0.103) compilado para V18 (897 088 B). **OTA pendiente de que Alex lo pida.**

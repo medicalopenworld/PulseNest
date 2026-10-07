@@ -11,9 +11,9 @@
 // the same 6 s window): for a sine of amplitude A on a DC of D, PI = 2A/D × 100 exactly (up to
 // the band-pass's in-band gain). probe_state (RSQM's classification) is consumed, never computed.
 
-static constexpr int PI_BUF_LEN      = 300;   // 6 s at PI's decimated rate (50 Hz) — pi_window_s default
-static constexpr int PI_DECIM_FACTOR = 10;    // @ 500 Hz AFE rate
-static constexpr int PI_BUF_RAW      = PI_BUF_LEN * PI_DECIM_FACTOR;  // 3000 raw samples
+static constexpr int PI_BUF_LEN   = 60;    // 6 s of 100 ms blocks (alg_window_block_s, v0.103) — pi_window_s default
+static constexpr int PI_BLOCK_RAW = 50;    // raw samples per block @ 500 Hz AFE rate
+static constexpr int PI_BUF_RAW   = PI_BUF_LEN * PI_BLOCK_RAW;  // 3000 raw samples
 
 static constexpr float OT_DC = 1.4e-5f;
 static constexpr float SCALE = 1.4e-10f;
@@ -72,16 +72,16 @@ void test_pi_flat_signal_is_zero() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, afe.test_pi());
 }
 
-// ── Test 5: the decimated rate is invariant to the AFE sample rate (§5.3.1) ──
-// Same mechanism and the same regression this guards for HR2
-// (test_hr2_decimated_rate_invariant_to_sample_rate): _pi_decim derives its factor from its own
-// target rate, so pi_buf_len (6 s) keeps meaning 6 seconds — and the DC block mean divides by the
-// factor actually in force — whatever the AFE rate does.
-void test_pi_decimated_rate_invariant_to_sample_rate() {
+// ── Test 5: the block rate is invariant to the AFE sample rate ──────────────
+// Same regression this guards for HR2's decimation (test_hr2_decimated_rate_invariant_to_sample_rate):
+// _pi_block derives its length from the block DURATION (alg_window_block_s = 100 ms), so
+// pi_buf_len (6 s) keeps meaning 6 seconds — and the window sums divide by the samples actually
+// in the window — whatever the AFE rate does.
+void test_pi_block_rate_invariant_to_sample_rate() {
     INCUNEST_AFE4490 afe;
     afe.setSampleRate(1000);
-    TEST_ASSERT_EQUAL_UINT16(20, afe.test_pi_decim_factor());
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 50.0f, afe.test_pi_decim_rate_hz());
+    TEST_ASSERT_EQUAL_UINT16(100, afe.test_pi_block_len());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 10.0f, afe.test_pi_block_rate_hz());
     feed_pi_sine(afe, A_IR, 2.0f, 1000.0f, PI_BUF_RAW * 2 + 2000);
     TEST_ASSERT_FLOAT_WITHIN(0.30f, 5.0f, afe.test_pi());
 }
@@ -117,16 +117,16 @@ void test_pi_window_setter() {
     TEST_ASSERT_EQUAL_INT(PI_BUF_LEN, afe.test_pi_buf_n());
     afe.setPIWindowS(1.0f);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.0f, afe.getConfig().pi_window_s);
-    TEST_ASSERT_EQUAL_INT(100, afe.test_pi_buf_n());
+    TEST_ASSERT_EQUAL_INT(20, afe.test_pi_buf_n());
     afe.setPIWindowS(20.0f);
-    TEST_ASSERT_EQUAL_INT(600, afe.test_pi_buf_n());
+    TEST_ASSERT_EQUAL_INT(120, afe.test_pi_buf_n());
     afe.setPIWindowS(3.0f);
-    TEST_ASSERT_EQUAL_INT(150, afe.test_pi_buf_n());
+    TEST_ASSERT_EQUAL_INT(30, afe.test_pi_buf_n());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.0f, afe.getConfig().spo2_window_s);   // SpO2's untouched
     // 3 s window: NaN one block short, 2A/D one block after; same value as with 6 s.
-    feed_pi_sine(afe, A_IR, 2.0f, 500.0f, 1500 - PI_DECIM_FACTOR);
+    feed_pi_sine(afe, A_IR, 2.0f, 500.0f, 1500 - PI_BLOCK_RAW);
     TEST_ASSERT_TRUE(isnan(afe.test_pi()));
-    feed_pi_sine(afe, A_IR, 2.0f, 500.0f, 2 * PI_DECIM_FACTOR);
+    feed_pi_sine(afe, A_IR, 2.0f, 500.0f, 2 * PI_BLOCK_RAW);
     TEST_ASSERT_FLOAT_WITHIN(0.30f, 5.0f, afe.test_pi());
     // Changing the length mid-stream empties the window.
     afe.setPIWindowS(6.0f);
@@ -141,7 +141,7 @@ int main() {
     RUN_TEST(test_pi_peak_to_peak_units);
     RUN_TEST(test_pi_scales_linearly_with_ac_amplitude);
     RUN_TEST(test_pi_flat_signal_is_zero);
-    RUN_TEST(test_pi_decimated_rate_invariant_to_sample_rate);
+    RUN_TEST(test_pi_block_rate_invariant_to_sample_rate);
     RUN_TEST(test_pi_not_applied_resets);
     RUN_TEST(test_pi_window_setter);
     return UNITY_END();

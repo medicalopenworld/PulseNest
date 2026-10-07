@@ -1,8 +1,11 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.26 — native/offline (no hardware), library API v0.102
+// Runner version: v0.27 — native/offline (no hardware), library API v0.103
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 //
+// v0.27 (2026-10-08): library API v0.103 — SpO2/PI window blocks of 100 ms (alg_window_block_s)
+//   instead of the 50 Hz cadence inherited from HR2/HR3; PI's AC² summed at the full rate per
+//   block. R, r, PI, SpO2 now refresh every 100 ms (held between blocks). No runner code change.
 // v0.26 (2026-10-07): `--input ot` also feeds PI (test_feed_pi, before SpO2 as _process_sample()
 //   does). Since lib v0.101 PI has its own function and SpO2's SQI reads it; without the call every
 //   OT replay printed PI = 0 and SpO2_SQI = 0 while SpO2 itself was valid (the spo2_pi_max gate

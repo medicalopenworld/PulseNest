@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.86
+# pulsenest_lab — Specification v1.87
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1216,22 +1216,23 @@ Chain, per applied sample, everything at the AFE rate:
 - **DC**: `EmaChannel` mean per channel, τ = `dc_ema_tau_s` (2 s), seeded on the first sample.
 - **R (R-METHOD-2)**: x = BP(ot_ir)/DC_ir, y = BP(ot_red)/DC_red with the library's one-biquad
   band-pass 0.5–5 Hz (`_Biquad`, the port of `BiquadFilter::init_bp`, precharged). On the first
-  differences dx, dy the products dx·dy, dx², dy² are summed over each decimation block (target
-  50 Hz) and the block sums over a sliding window of `spo2_window_s` seconds — circular buffers
+  differences dx, dy the products dx·dy, dx², dy² are summed over each 100 ms block
+  (`alg_window_block_s`, lib v0.103) and the block sums over a sliding window of `spo2_window_s` seconds — circular buffers
   with O(1) running totals, rebuilt at every wrap. R = Σdx·dy / Σdx², r = Σdx·dy / √(Σdx²·Σdy²).
-- **PI**: its own band-pass 0.5–15 Hz; AC² of each decimated sample and the block mean of the raw
-  OT (DC) over a sliding window of `pi_window_s` seconds; PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100,
-  peak-to-peak units. Run **before** SpO2 on every sample, as `_process_sample()` does, because
+- **PI**: its own band-pass 0.5–15 Hz; AC² and the raw OT (DC) summed at the full rate over each
+  100 ms block, the block sums over a sliding window of `pi_window_s` seconds;
+  PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100 with N the samples in the window, peak-to-peak units. Run **before** SpO2 on every sample, as `_process_sample()` does, because
   SpO2's SQI reads the PI of the same sample.
 - **SpO2**: a − b·R, published when r ≥ `r_corr_min`, PI is known and ≤ 20 % and
   70 ≤ SpO2 ≤ 103 (clamped to 100); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise `NaN`,
   SQI 0 — R and r stay reported so the reason is visible.
 
-Outputs refresh at the decimated cadence and hold between blocks; they are `NaN` while their
-window is still filling: **the window is the warm-up**, there is no warm-up parameter. Decimation
-factor and window lengths derive from `fs` exactly as the library's `Decimator` and
-`_window_len()` do — factor = round(fs/50), N = round(window_s·fs/factor), capped at 600 — so
-the mirror is right at any PRF of the grid.
+Outputs refresh at the block cadence (10 Hz) and hold between blocks; they are `NaN` while their
+window is still filling: **the window is the warm-up**, there is no warm-up parameter. Block
+length and window lengths derive from `fs` exactly as the library's `WindowBlock` and
+`_window_len()` do — block = round(fs·0.1 s) samples, N = round(window_s·fs/block), capped at
+120 — so the mirror is right at any PRF of the grid. (Lab v1.86 mirrored lib v0.102's 20 ms
+blocks with PI's AC² taken once per block; v1.87 follows lib v0.103.)
 
 **Parameters** (`SpO2TestCalc.PARAMS`, each with its library default as a class attribute):
 `spo2_r_curve_a`/`spo2_r_curve_b` (123.98 / 39.13, R-CURVE-STS0163-HOSPNAV-20260923),
@@ -1976,8 +1977,8 @@ DC of each channel stays in the value table (ppm).
 library's runtime parameters, §5.2; the windows are limited to 2–12 s like the library) —,
 [RESET TO DEFAULTS], the current-values table (SpO2, R, r, PI, SQI, DC IR, DC RED; firmware /
 Python / delta, the delta green or red against a per-row threshold: SpO2 1 point, R 0.05,
-PI 0.1 %) and a rate line: `fs 500 Hz · decim ÷10 → 50 Hz · SpO2 window 300 blk · PI window
-300 blk`, so a wrong rate is visible at a glance. Any parameter off its default turns the toolbar
+PI 0.1 %) and a rate line: `fs 500 Hz · block 50 smp → 10 Hz · SpO2 window 60 blk · PI window
+60 blk`, so a wrong rate is visible at a glance. Any parameter off its default turns the toolbar
 indicator to CUSTOM PARAMS; a change resets the mirror and clears the buffers.
 
 **Rate.** The mirror runs at the AFE rate the samples arrive at: live, the `sr` of the last
@@ -2777,6 +2778,15 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.87 — 2026-10-08
+
+**SPO2TEST mirror follows lib v0.103** (§5.2, §7.7): the SpO2 and PI windows advance in 100 ms
+blocks (`alg_window_block_s`; `WINDOW_BLOCK_S` = 0.1, `WINDOW_BUF_LEN_MAX` = 120) instead of the
+50 Hz decimation cadence inherited from HR2/HR3, and PI's AC² is summed at the full rate over each
+block (one band-passed sample per block until v1.86). Rate line reads `block 50 smp → 10 Hz · 60 blk`.
+Re-verified against the offline runner v0.27 (lib v0.103) on the SUBJ09 HOSPNAV replay: R to 8·10⁻⁶,
+r to 5·10⁻⁵, PI/SpO2 to 0.01, SQI exact, identical validity (first estimate 6.1 s: window + one block).
 
 ### v1.86 — 2026-10-07
 

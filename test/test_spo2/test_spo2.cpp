@@ -22,14 +22,14 @@
 // referenced by any assertion. Derive from afe.getConfig() instead of re-hardcoding, per the
 // same fix applied to test_hgac.cpp's WEAK_CODE/SAT_CODE — see conversation_log.md.)
 //
-// Since v0.102 the averaging is a true sliding window (spo2_window_s, default 6 s at the 50 Hz
-// block cadence): the first estimate appears when the window is full (3000 raw samples at
-// 500 Hz, plus one decimation block) and is exact from then on — the only remaining transient
+// Since v0.102 the averaging is a true sliding window (spo2_window_s, default 6 s in 100 ms
+// blocks, v0.103): the first estimate appears when the window is full (3000 raw samples at
+// 500 Hz, plus one block) and is exact from then on — the only remaining transient
 // is the 2 s DC EMA, seeded on the first sample. 40000 samples (80 s) is kept as a generous
 // "fully converged" budget for the accuracy tests; it is no longer a necessity.
 static constexpr int CONVERGED_SAMPLES = 40000;
 static constexpr int WINDOW_RAW        = 3000;    // 6 s × 500 Hz — spo2_window_s default
-static constexpr int DECIM_RAW         = 10;      // raw samples per decimated (block) sample at 500 Hz
+static constexpr int DECIM_RAW         = 50;      // raw samples per 100 ms block at 500 Hz (alg_window_block_s)
 
 // Typical OT DC magnitude (per spec: APPLIED ~1.4e-5).
 static constexpr float OT_DC = 1.4e-5f;
@@ -88,9 +88,9 @@ void test_spo2_window_setter_clamps_and_resets() {
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.0f, afe.getConfig().spo2_window_s);
     afe.setSpO2WindowS(20.0f);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 12.0f, afe.getConfig().spo2_window_s);
-    TEST_ASSERT_EQUAL_INT(600, afe.test_spo2_buf_n());
+    TEST_ASSERT_EQUAL_INT(120, afe.test_spo2_buf_n());
     afe.setSpO2WindowS(4.0f);
-    TEST_ASSERT_EQUAL_INT(200, afe.test_spo2_buf_n());
+    TEST_ASSERT_EQUAL_INT(40, afe.test_spo2_buf_n());
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.0f, afe.getConfig().pi_window_s);   // independent of PI's
     // 4 s window: valid after 2000 raw (+ one block), with the same R.
     feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, 2000 + 2 * DECIM_RAW);
