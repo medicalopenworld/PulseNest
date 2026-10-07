@@ -26430,3 +26430,22 @@ turno a turno contra el transcript, el código y los datos. Lo que queda corregi
   clase desde v0.101 — y la línea de versión pasa de v0.101 a v0.102 (estaba desactualizada). `library.json` gana la
   palabra clave "perfusion index" y la descripción dice PPG/SpO2/PI, igual que el README. Solo documentación, sin subir
   versión (commit en la lib).
+
+## 2026-10-07 — fw 0.20 + lab v1.85: claves `$SET`/`$LCFG` `spo2_window_s` y `pi_window_s`; OTA a las tres V18
+
+- **Alex pide exponer las dos ventanas.** Patrón de fw 0.18 (`spo2_r_method`/`spo2_r_corr_min`): `$LCFG` añade
+  `spo2_window_s=%.1f,pi_window_s=%.1f` (buffer 320→384 B; es línea de control por `udp_send_line`, no la acota el hueco
+  de datos de 320 B); `$SET` llama a los setters y ecoa el valor que la librería ha recortado a 2-12 s. Lab: grupo de
+  LIB CONFIG renombrado "SpO2 / PI" con las dos ventanas (2-12 s, paso 0,1). Spec del lab §7.17, trama `$LCFG`,
+  changelog v1.85.
+- **Diccionario de capturas:** el test exige tiempos de snapshot en ms enteros, prefijo de dominio registrado y presencia
+  en el ejemplo del Apéndice B → claves `spo2_window_ms`/`pi_window_ms` (wire s ×1000), prefijo `pi_` añadido a la lista
+  del test (PI es dominio desde v0.101), ejemplo del Apéndice B ampliado. Tests: diccionario 1316/1316, grabador
+  126/126, conversor 11/11, v04 45/45, csv 15/15, flota 37/37. Commit `9270a56`.
+- **OTA fw 0.20 / lib 0.102** a `88:50` (.182), `87:A4` (.141), `82:5C` (.133): `build=9270a56`, `libsha=2535d2c`,
+  `elfsha=f325b188ede18fab` idéntico en las tres (la 88:50 se flasheó primero con una compilación dirty y se reflasheó
+  limpia). **Ida y vuelta real en 88:50** (script del scratchpad, controlador del hub con el lab cerrado): `$LCFG?` trae
+  las dos ventanas; `$SET spo2_window_s 4` → eco 4,0 con PI intacta; `pi_window_s 20` → 12,0; `spo2_window_s 1` → 2,0;
+  restaurado 6,0/6,0. 5/5. Dos tropiezos del script, no del firmware: `$SET` lleva checksum XOR (`*XX`) y el hub
+  reenvía al unirse el último `$LCFG` de cada placa, que se leía como eco (vaciar la cola, acotado en tiempo).
+- Lab relanzado con v1.85.
