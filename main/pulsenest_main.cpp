@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.21"   // 0.21: lib v0.103 (SpO2/PI windows in 100 ms blocks instead of the 50 Hz cadence; PI AC² at full rate)
+#define PULSENEST_FW_VERSION "0.22"   // 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch); 0.21: lib v0.103 (100 ms window blocks)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
@@ -861,7 +861,7 @@ static void send_cfg_frame(const char* cause) {
 // 320 B data-queue slot does not bound it (the $CFG line is 450-490 B). ~330 B since fw 0.20.
 static void send_lcfg_frame() {
     AFE4490Config cfg = afe.getConfig();
-    char buf[384];
+    char buf[448];   // ~360 B since fw 0.22
     int n = snprintf(buf, sizeof(buf) - 6,
         "$LCFG,rsqm_ot_thr=%.4e"
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
@@ -869,14 +869,16 @@ static void send_lcfg_frame() {
         ",hgac_enable=%d,hgac_v_tia_high2=%.3f,hgac_v_tia_high1=%.3f,hgac_v_tia_low1=%.3f"
         ",hgac_ema_fast_tau_s=%.3f,hgac_ema_slow_tau_s=%.3f,hgac_ema_ambient_tau_s=%.3f"
         ",spo2_r_method=%u,spo2_r_corr_min=%.2f"
-        ",spo2_window_s=%.1f,pi_window_s=%.1f",          // fw 0.20 / lib v0.102: averaging windows
+        ",spo2_window_s=%.1f,pi_window_s=%.1f"           // fw 0.20 / lib v0.102: averaging windows
+        ",afe_settle_freeze_enable=%d",                   // fw 0.22 / lib v0.104: bench switch (spec §5.8.4)
         cfg.rsqm_ot_thr,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
         cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_high2, cfg.hgac_v_tia_high1, cfg.hgac_v_tia_low1,
         cfg.hgac_ema_fast_tau_s, cfg.hgac_ema_slow_tau_s, cfg.hgac_ema_ambient_tau_s,
         (unsigned)cfg.spo2_r_method, cfg.spo2_r_corr_min,
-        cfg.spo2_window_s, cfg.pi_window_s);
+        cfg.spo2_window_s, cfg.pi_window_s,
+        cfg.afe_settle_freeze_enable ? 1 : 0);
     if (frame_finish(buf, sizeof(buf), n, "LCFG")) Serial_print_locked(buf);
 }
 
@@ -1119,6 +1121,18 @@ static void apply_set_cmd(const char* key, const char* val) {
             send_lcfg_frame();
         } else {
             Serial_printf("$ERR,hgac_enable,invalid (0 or 1)\r\n");
+        }
+        return;
+    } else if (strcmp(key, "afe_settle_freeze_enable") == 0) {
+        // Bench switch (lib v0.104, spec §5.8.4): 0 lets the real post-gain-change transient through
+        // so tools/rf_tap_bench.py can measure it. Never 0 in clinical use.
+        int v = atoi(val);
+        if (v == 0 || v == 1) {
+            afe.setSettleFreezeEnable(v == 1);
+            Serial_printf("# SET afe_settle_freeze_enable=%d\n", v);
+            send_lcfg_frame();
+        } else {
+            Serial_printf("$ERR,afe_settle_freeze_enable,invalid (0 or 1)\r\n");
         }
         return;
     } else if (strcmp(key, "hgac_v_tia_high2") == 0) {

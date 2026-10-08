@@ -125,6 +125,19 @@ void test_rf_change_freezes_input_for_settle_window() {
     TEST_ASSERT_FALSE(afe.test_should_freeze_input());
 }
 
+// ── The bench switch lets the transient through but keeps the countdown/flag (v0.104) ──
+void test_settle_freeze_switch_disables_freeze_only() {
+    INCUNEST_AFE4490 afe;
+    afe.setSettleFreezeEnable(false);
+    afe.test_hgac_change_rf_led1(AFE4490RF::RF_10K);
+    TEST_ASSERT_TRUE(afe.test_settling_countdown() > 0);     // still armed and flagged
+    TEST_ASSERT_FALSE(afe.test_should_freeze_input());        // but the input is not frozen
+    afe.setSettleFreezeEnable(true);
+    TEST_ASSERT_TRUE(afe.test_should_freeze_input());         // default behaviour restored at once
+    TEST_ASSERT_FALSE(afe.getConfig().hgac_enable && false);  // (keeps -Werror quiet about unused cfg)
+    TEST_ASSERT_TRUE(afe.getConfig().afe_settle_freeze_enable);
+}
+
 // ── A manual RF change (not via HGAC) also arms the settle window (v0.74) ──
 // Before this, only _hgac_change_rf() armed _switched_rc_settling_countdown - a manual RF change (e.g. a
 // $SET,tiagain1,... from the script) got no input-freeze protection at all, even though the same
@@ -306,5 +319,6 @@ int main() {
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
     RUN_TEST(test_hgac_led_only_sat_is_probe_in_air);
     RUN_TEST(test_hgac_rf_change_is_counted_and_stamped);
+    RUN_TEST(test_settle_freeze_switch_disables_freeze_only);
     return UNITY_END();
 }
