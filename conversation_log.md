@@ -26573,3 +26573,16 @@ mirror SpO2TestCalc.
 **Decisión.** Ninguna todavía: Alex decide si mitigar (excluir ~1 s de bloques tras un cambio de RF —
 para esto nació la exclusión por bloques — o compensar BPF/DC en `_hgac_change_rf()`). Memoria
 `project_spo2_ema_rf_change_bias_task` actualizada a "medido"; rationale §12 con la medida.
+
+---
+
+## 2026-10-09 — Tarea pendiente: medir la resistencia real de cada tap de RF
+
+Tras la medida del MS100 (el escalón de OT al cambiar de RF es la tolerancia del RF real, ~1 % entre taps
+vecinos en la 82:5C, hasta ±7 % por tap según el datasheet), Alex pide anotar como pendiente **analizar si
+es posible y si merece la pena medir la resistencia real de cada tap de RF** (en el arranque o
+periódicamente). Si la librería conociera k_tap = RF_real/RF_nominal, OT sería continuo al cambiar de
+ganancia y el transitorio de 6 s en R/SpO2 desaparecería de raíz. Memoria
+`project_rf_tap_self_calibration_task` con las cuestiones a analizar (señal estable necesaria, taps
+medibles sin saturar, arranque sin sonda, calibración de fábrica en NVS frente a medida oportunista en
+los saltos del HGAC, comparación con la exclusión de bloques). Sin decidir nada.
