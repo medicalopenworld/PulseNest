@@ -26576,7 +26576,7 @@ para esto nació la exclusión por bloques — o compensar BPF/DC en `_hgac_chan
 
 ---
 
-## 2026-10-09 — Tarea pendiente: medir la resistencia real de cada tap de RF
+## 2026-10-08 (4) — Tarea pendiente: medir la resistencia real de cada tap de RF
 
 Tras la medida del MS100 (el escalón de OT al cambiar de RF es la tolerancia del RF real, ~1 % entre taps
 vecinos en la 82:5C, hasta ±7 % por tap según el datasheet), Alex pide anotar como pendiente **analizar si
@@ -26586,3 +26586,30 @@ ganancia y el transitorio de 6 s en R/SpO2 desaparecería de raíz. Memoria
 `project_rf_tap_self_calibration_task` con las cuestiones a analizar (señal estable necesaria, taps
 medibles sin saturar, arranque sin sonda, calibración de fábrica en NVS frente a medida oportunista en
 los saltos del HGAC, comparación con la exclusión de bloques). Sin decidir nada.
+
+---
+
+## 2026-10-08 (5) — Ensayo de iluminación constante: escalera de RF en las tres tarjetas, CSV patrón
+
+**Corrección de Alex.** El ensayo de hoy no es con PPG: ha tapado los LEDs de las tres sondas, el fotodiodo
+solo ve luz ambiente, idéntica en las cuatro fases y parecida entre tarjetas. Pide un CSV patrón con los
+saltos de RF (ratios por tolerancia, asentamientos, "todo lo que se te ocurra") para análisis futuros.
+
+**Hecho.** `tools/rf_tap_bench.py` (selección por MAC — las IP habían cambiado —, HGAC off, escalera
+10K→1M→10K en las tres tarjetas en paralelo, 10 s por peldaño, raw en `captures/rf_taps/`, restaura) y
+`tools/rf_tap_analyze.py` (ajuste conjunto V_TIA = I_amb(t)·RF·(1+ε_tap) + V_off_fase; escribe
+`docs/rf_taps/rf_tap_levels.csv`, `rf_tap_tolerance.csv`, `rf_tap_steps.csv`; README en `docs/rf_taps/`).
+Nota en `docs/boards.md` (sección nueva de caracterización).
+
+**Hallazgos.**
+- Un **offset aditivo** de la cadena analógica, distinto por chip (+1,0 / −5,0 / −6,6 mV) e igual en las
+  cuatro fases, domina a ganancias bajas: comparar niveles por cociente da −45 % a 10K. Hay que ajustar
+  el offset; hecho, el residuo es 0,25-0,45 % RMS.
+- **ε por tap casi igual en los tres chips**: 10K +0,2, 25K −0,4, 50K −0,3, 100K −0,7, 250K +1,1,
+  500K 0,0 % (patrón sistemático del diseño, muy dentro del ±7 %). Salto de un tap: 100K→250K +1,4…+2,2 %,
+  250K→500K −1 %, el resto < 0,7 %. Las dos ganancias (RF1/RF2) comparten resistencia física.
+- 1M saturado con esta luz (1,3-1,5 µA); asentamiento tras la congelación de la lib: primera muestra libre
+  a 2-3,5 % del escalón, mediana 0 s; deriva de la luz −1,6 %/min.
+- Artefacto propio: LED2 cambiaba 0,45 s después de LED1 (comandos secuenciales); banco corregido.
+- **Discrepancia abierta** con el ensayo del simulador: allí 50K↔25K daba ≈ 1 % en OT; aquí ≈ 0,1 %.
+  Posible dependencia del nivel (0,4 V frente a 0,07 V); pendiente con más luz.

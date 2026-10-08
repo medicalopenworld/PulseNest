@@ -223,3 +223,18 @@ the PC.
 
 The V17 board (`10:20:BA:14:75:60`) dropped off the WiFi while powered both from 12 V and from
 USB, so the supply is not what explains it.
+
+## Bench characterisation of the analog chain (constant light, LEDs covered)
+
+Reference data in `docs/rf_taps/` (README there), produced by `tools/rf_tap_bench.py` +
+`tools/rf_tap_analyze.py`. Per board, 2026-10-08 (fw 0.21 / lib 0.103):
+
+| Board | `V_TIA` offset (4 phases) | ε of the taps 10K/25K/50K/100K/250K/500K [%] | 1M |
+|---|---|---|---|
+| `88:50` | −6.6 mV | +0.2 / −0.4 / −0.2 / −0.5 / +0.9 / 0.0 | saturated (ambient 1.3 µA) |
+| `87:A4` | −5.0 mV | +0.3 / −0.4 / −0.4 / −0.9 / +1.3 / +0.1 | saturated (1.35 µA) |
+| `82:5C` | +1.0 mV (ALED phases +0.4 mV) | +0.2 / −0.3 / −0.4 / −0.7 / +1.1 / 0.0 | saturated (1.5 µA) |
+
+ε = real/nominal − 1 of each feedback resistor, anchored to a zero mean over the measured taps.
+The offset is what makes `V_TIA`-based thresholds board-dependent at low gain; the ε pattern is
+what an HGAC move adds to OT as a level step (one tap: −1.2 … +2.2 %).
