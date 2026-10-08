@@ -26613,3 +26613,31 @@ Nota en `docs/boards.md` (sección nueva de caracterización).
 - Artefacto propio: LED2 cambiaba 0,45 s después de LED1 (comandos secuenciales); banco corregido.
 - **Discrepancia abierta** con el ensayo del simulador: allí 50K↔25K daba ≈ 1 % en OT; aquí ≈ 0,1 %.
   Posible dependencia del nivel (0,4 V frente a 0,07 V); pendiente con más luz.
+
+---
+
+## 2026-10-08 (6) — Ensayo de taps RF completo: propuesta, lib v0.104, banco A–G, informe
+
+**Crítica de Alex** al entregable anterior: sin propuesta previa, sin informe con conclusiones, "1M saturado"
+era falso (él lo había puesto a media escala), y el CSV pedido era el crudo a 500 Hz de los 4 canales de las 3
+tarjetas. Pidió una propuesta completa. Propuesta hecha (6 preguntas, interruptor de congelación en la
+librería, fases A–G, entregables, decisiones); **Alex: sí al interruptor, 1M a 0,6 V (nubes), CSV plano,
+tiempos OK, "mide con la que haya"**. Memoria `feedback_propose_report_rawdata`.
+
+**Hecho.**
+- lib v0.104 (`82444cd`): `afe_settle_freeze_enable` / `setSettleFreezeEnable()` (interruptor de banco, default
+  true, campo en `AFE4490Config`, el diagnóstico no es conmutable); spec v0.104 §5.8.4 + historial; rationale
+  §12; test host `test_settle_freeze_switch_disables_freeze_only` (10/10 suites). fw 0.22 (`385ae27`): clave
+  `$SET`/`$LCFG`, buffer LCFG 448 B. OTA en las 3 V18 (`elfsha=cd1ccf587e65b403`), `docs/boards.md`.
+- `tools/rf_tap_bench.py` v2 (fases A–G, por MAC, dos colores seguidos, crudos a `docs/rf_taps/raw/`) y
+  `tools/rf_tap_analyze.py` v2 (ajuste no lineal con referencia 100K intercalada, `--extra-run` para un
+  segundo nivel de luz, toggles, transitorios, figuras, esqueleto del informe). Crudos de las tres tarjetas
+  versionados (22 MB cada uno). Informe `docs/rf_taps/rf_tap_report_2026-10-08.md`; README; boards.md.
+
+**Conclusiones (informe).** Asentamiento tras cambio de RF = exponencial k ≈ 0,29/muestra, 1 % a 4 muestras,
+0,1 % a 6, igual en taps, direcciones y chips; la congelación de 8 deja 0,005 % → **el barrido rápido es viable**
+(7 taps ~650 ms, 0,06 %). Offset aditivo por chip +1,6/−4,5/−6,4 mV igual en las 4 fases; **con un solo nivel
+de luz no es separable del patrón ε** (el análisis de la mañana estaba mal); con dos niveles (10:08 y 10:50)
+ε queda en ±3 %, similar entre chips a 25K–1M. Saltos de un tap sobre OT: 100K→250K +2–3 %, 25K→50K +0,5–0,8 %,
+resto < 0,5 %; RF1 = RF2 (misma resistencia). El simulador de anoche queda confirmado. En producto, calibrar
+sobre OT (el offset se cancela), o tabla constante, o exclusión de bloques. **Decisión de Alex pendiente.**
