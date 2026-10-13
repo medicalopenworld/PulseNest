@@ -71,6 +71,12 @@ for i in range(10):
 fl.tick(t0 + 10.0)
 check("a phone has a frame rate and an age of its own", abs(fl.phones["J6plusACM"].rate - 1.1) < 0.3
       and fl.phones["J6plusACM"].age(t0 + 20) > 10, str(fl.phones["J6plusACM"].rate))
+fl.feed("192.168.137.9", VN, t0 + 11, epoch_ms=1758500486261 + 1234)
+check("last frame kept raw, offset = arrival - emission", fl.phones["J6plusACM"].last_frame == VN.decode().strip()
+      and fl.phones["J6plusACM"].last_offset_ms == 1234, str(fl.phones["J6plusACM"].last_offset_ms))
+fl.feed("192.168.137.9", b"$VN1,13,97.0,0.91,1758500487000,J6plusACM*5A\r\n", t0 + 12, epoch_ms=1758500487500)
+check("one-stamp (old) shape: frame kept, offset blank", fl.phones["J6plusACM"].last_frame.startswith("$VN1,13,")
+      and fl.phones["J6plusACM"].last_offset_ms is None)
 
 tmp = tempfile.mkdtemp()
 open(os.path.join(tmp, "subj01.toml"), "w", encoding="utf-8").write(
@@ -157,6 +163,8 @@ check("cot 2 still not on the air, its phone not heard", w.table.item(r2, 3).tex
 check("firmware line OK for one board", w.firmware.text().startswith("OK"))
 check("phones table lists the phone with its IP", w.phones.rowCount() == 1 and w.phones.item(0, 0).text() == "J6plusACM"
       and w.phones.item(0, 1).text() == "192.168.137.9" and w.phones.item(0, 3).text() == "live")
+check("phones table shows the raw last frame and an offset", w.phones.item(0, 5).text() == VN.decode().strip()
+      and w.phones.item(0, 4).text().lstrip("-").isdigit(), w.phones.item(0, 4).text())
 
 
 def colour(item):

@@ -37,7 +37,8 @@ from pulsenest.net import UDP_DATA_PORT, script_name                     # noqa:
 from pulsenest.hub_client import (HubClient, console_python, windowed_python,  # noqa: E402
                                   spawn_detached as spawn)
 from pulsenest.fleet_trace import GREEN, RED, GREY                        # noqa: E402
-from tools.pulsenest_recorder import load_session_config, mac_compact, vn_device_id  # noqa: E402
+from tools.pulsenest_recorder import (load_session_config, mac_compact,   # noqa: E402
+                                      vn_device_id, vn_offset_ms)
 from PyQt5 import QtCore, QtGui, QtWidgets                                # noqa: E402
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -95,12 +96,14 @@ def seen_text(age):
 
 class Seen:
     """One source heard through the hub: a board (by IP) or a phone (by device id)."""
-    __slots__ = ("ip", "fields", "dgrams", "first_seen", "last_seen", "rate", "_rate_n", "_rate_t")
+    __slots__ = ("ip", "fields", "dgrams", "first_seen", "last_seen", "rate", "_rate_n", "_rate_t",
+                 "last_frame", "last_offset_ms")
 
     def __init__(self, ip, now):
         self.ip, self.fields = ip, {}
         self.dgrams, self.first_seen, self.last_seen = 0, now, now
         self.rate, self._rate_n, self._rate_t = 0.0, 0, now
+        self.last_frame, self.last_offset_ms = "", None     # phones: the raw $VN1 and its offset
 
     @property
     def mac(self):
@@ -134,7 +137,9 @@ class Fleet:
         self.boards = {}     # ip -> Seen
         self.phones = {}     # device id -> Seen (ip = the phone's address)
 
-    def feed(self, ip, data, now):
+    def feed(self, ip, data, now, epoch_ms=None):
+        """One datagram from the hub. `epoch_ms` is the wall-clock arrival (default: now), the
+        reference for a phone frame's offset, as in the recorder."""
         if data.startswith(b"$VN1"):
             dev = vn_device_id(data)
             if dev:
@@ -143,6 +148,8 @@ class Fleet:
                     p = self.phones[dev] = Seen(ip, now)
                 p.ip = ip
                 p.heard(now)
+                p.last_frame = data.split(b"\n", 1)[0].decode("ascii", "replace").strip()
+                p.last_offset_ms = vn_offset_ms(data, time.time() * 1000 if epoch_ms is None else epoch_ms)
             return
         b = self.boards.get(ip)
         if b is None:
@@ -318,7 +325,7 @@ def _item(text, colour=None, mono=False):
 
 class Launcher(QtWidgets.QMainWindow):
     BOARD_COLS = ("IP", "MAC", "fw", "lib", "build", "elfsha", "dgrams/s", "seen")
-    PHONE_COLS = ("device id", "IP", "frames/s", "seen")
+    PHONE_COLS = ("device id", "IP", "frames/s", "seen", "offset ms", "last frame (raw, as it arrived)")
     COT_COLS = ("file", "subject", "board", "on the air", "phone", "status", "", "")
 
     def __init__(self, configs_dir, hub, client):
@@ -388,7 +395,12 @@ class Launcher(QtWidgets.QMainWindow):
         self.phones = self._table(self.PHONE_COLS)
         self.phones.setToolTip("A phone that is not here is not sending: app closed or backgrounded, "
                                "phone off the WiFi, wrong destination address. The hub replays nothing "
-                               "for phones, so a phone appears once it has sent since this window opened.")
+                               "for phones, so a phone appears once it has sent since this window opened.\n"
+                               "offset ms = arrival on this PC minus the emission stamp in the frame: "
+                               "network (milliseconds) plus the offset between the phone's clock and "
+                               "ours, positive when ours is ahead -- the recorder's offset_ms column. "
+                               "Blank for a frame without the emission stamp.\n"
+                               "last frame: the $VN1 exactly as it arrived, uninterpreted.")
         glp.addWidget(self.phones)
         self.splitter.addWidget(gbp)
 
@@ -489,9 +501,10 @@ class Launcher(QtWidgets.QMainWindow):
         for r, (dev, p) in enumerate(phones):
             seen, seen_colour = seen_text(p.age(now))
             col = GREY if p.silent(now) else None
-            vals = (dev, p.ip, "%.1f" % (0 if p.silent(now) else p.rate), seen)
+            vals = (dev, p.ip, "%.1f" % (0 if p.silent(now) else p.rate), seen,
+                    "" if p.last_offset_ms is None else str(p.last_offset_ms), p.last_frame)
             for c, val in enumerate(vals):
-                self.phones.setItem(r, c, _item(val, seen_colour if c == 3 else col, mono=c == 0))
+                self.phones.setItem(r, c, _item(val, seen_colour if c == 3 else col, mono=c in (0, 5)))
 
         sig = configs_signature(self.configs_dir)
         if sig != self._configs_sig:

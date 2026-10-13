@@ -346,6 +346,17 @@ def vn_device_id(datagram):
 _VN_FRAME_RE = re.compile(
     rb"^\$VN1,(\d+),(-?[\d.]+),(-?[\d.]+),([^,*]+)(?:,(\d+),([01]))?,([A-Za-z0-9_-]{1,32})"
     rb"\*([0-9A-Fa-f]{2})\s*$")
+def vn_offset_ms(datagram, arrival_epoch_ms):
+    """-> arrival - emission in ms for a two-stamp $VN1 frame (network plus the offset between
+    the phone's clock and ours, positive when ours is ahead), or None for the older shape without
+    an emission stamp or a frame that does not parse. The same number the CSV's offset_ms column
+    carries; shared with the session launcher."""
+    m = _VN_FRAME_RE.match(datagram.split(b"\n", 1)[0].rstrip(b"\r"))
+    if m is None or not m.group(5):
+        return None
+    return int(arrival_epoch_ms) - int(m.group(5))
+
+
 # reference_spo2.csv: the commercial monitor's reading, by OCR (videonest) and by a person
 # (operator), one row each, in one file. `source` says which; `id` is the device id or the
 # operator; `kind` is reading | correction | retraction, and `supersedes` names the event a

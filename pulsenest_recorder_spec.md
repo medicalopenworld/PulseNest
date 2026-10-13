@@ -934,8 +934,10 @@ launcher, as a detached process.
 rate, live/SILENT (5 s, the recorder's own threshold; red past 60 s), merged by MAC as the
 recorder binds them; one line says whether every identified board runs the same image (`fw` +
 `elfsha`), amber if not. (b) *Phones heard*: a table of the VideoNest device ids seen in `$VN1`
-frames, with IP, frame rate and the same live/SILENT ageing (the hub replays nothing for phones,
-so a phone is listed once it has sent since the launcher opened). The three tables sit in a
+frames, with IP, frame rate, the same live/SILENT ageing, the `offset ms` of the last frame
+(arrival − emission, the CSV's `offset_ms`; blank for the one-stamp shape) and the last frame
+itself, raw, as it arrived — the one place to see what the phone sends (the hub replays nothing
+for phones, so a phone is listed once it has sent since the launcher opened). The three tables sit in a
 vertical splitter and every column is sized to its contents (Alex, 2026-10-14).
 (c) *Disk*: free space where sessions are written, as hours of recording for the boards on the
 air at 17 MB/min each (§1 of the runbook); red below the 2 GB floor at which the recorder refuses

@@ -26847,3 +26847,12 @@ la ventana no se ha abierto en pantalla, solo offscreen.
    proceso.
 6. Todas las columnas con `ResizeToContents` + última estirada (la tabla de tarjetas tenía anchos fijos).
 `tests/pulsenest_session_test.py` 54/54 (silencios, colores, vigilancia de ficheros, splitter). Spec §14 y runbook.
+
+### Misma sesión: tabla de teléfonos con `offset ms` y la última trama `$VN1` en crudo
+
+Alex preguntó cómo ver las tramas `$VN1` y si llevan la hora del teléfono (sí: captura como hora local en texto,
+`emit_ms` en época y bandera NTP; el grabador escribe `offset_ms` = llegada − emisión y `drift_ms` por trama en
+`reference_spo2.csv`; la foto del CLOCK ANCHOR del runbook es la comprobación independiente). Propuso una columna
+con la última trama; acordadas dos: `offset ms` (misma aritmética que el grabador, ahora en `vn_offset_ms()` público
+junto a `vn_device_id()`; vacío para la forma antigua de un solo sello) y `last frame` cruda, sin interpretar, en
+monoespaciada. Test 57/57; spec §14.
