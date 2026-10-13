@@ -59,7 +59,7 @@ The folder says what a Python file *is*, not when it was written:
 | Folder | What lives there | Rule |
 |---|---|---|
 | repo root | `pulsenest_lab.py`, `pulsenest_hub.py` | The two programs launched by hand every day |
-| `pulsenest/` | `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set` | Importable package: anything more than one program imports (`from pulsenest.net import ...`) |
+| `pulsenest/` | `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set`, `fleet_trace`, `fleet_widgets` | Importable package: anything more than one program imports (`from pulsenest.net import ...`) |
 | `tools/` | recorder, recorder GUI, converter, fleet monitor, PPG viewer, UDP utilities, capture index | Programs an operator or maintainer runs on purpose; importable as `tools.<name>` |
 | `tests/` | `*_test.py` | Python tests, one per module they check (`python tests/<name>.py`). C++ host tests stay in `test/` |
 | `experiments/` | one-off studies and bench campaigns | Dated, with the result recorded in the docstring; not maintained as tools |

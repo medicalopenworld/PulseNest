@@ -54,8 +54,8 @@ from pulsenest.hub_client import HubClient                               # noqa:
 from tools.pulsenest_recorder import (Recorder, NotEnoughSpace,                # noqa: E402, F401
                                 add_session_args, apply_session_config, CONFIG_FIELDS,
                                 mac_compact, normalise_subject)
-from tools.fleet_ppg_viewer import (BoardTrace, make_stats_widget, stats_width,  # noqa: E402
-                              stats_columns, MIN_PLOT_W, RED)
+from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, RED          # noqa: E402
+from pulsenest.fleet_widgets import make_stats_widget, stats_width, stats_columns  # noqa: E402
 import pyqtgraph as pg                                                   # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                               # noqa: E402
 

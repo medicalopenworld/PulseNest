@@ -31,7 +31,7 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 ## Herramientas del proyecto
 - **Firmware ESP32-S3:** validación de señal PPG y SpO2 en las placas IncuNest V17/V18
 - **`pulsenest_lab.py`:** script Python para visualizar, analizar y capturar las señales PPG (forma parte del proyecto, no es un script auxiliar). Ver `pulsenest_lab_spec.md` antes de modificarlo.
-- **Dónde va cada `.py` (regla desde 2026-10-13, tabla en README):** raíz = solo `pulsenest_lab.py` y `pulsenest_hub.py`; `pulsenest/` = paquete con lo que importa más de un programa; `tools/` = programas que un operador ejecuta a propósito; `tests/` = tests Python (`*_test.py`); `experiments/` = estudios puntuales con fecha y resultado en el docstring; `scripts/` = solo build. Todo script fuera de la raíz lleva UNA línea `sys.path.insert(0, <raíz>)` e importa `pulsenest.x` / `tools.x`. Nunca dos líneas ni rutas absolutas.
+- **Dónde va cada `.py` (regla desde 2026-10-13, tabla en README):** raíz = solo `pulsenest_lab.py` y `pulsenest_hub.py`; `pulsenest/` = paquete con lo que importa más de un programa (un programa de `tools/` no importa a otro programa; excepción conocida: el núcleo `Recorder` de `tools/pulsenest_recorder.py`, que importan `pulsenest_convert` y la GUI); `tools/` = programas que un operador ejecuta a propósito; `tests/` = tests Python (`*_test.py`); `experiments/` = estudios puntuales con fecha y resultado en el docstring; `scripts/` = solo build. Todo script fuera de la raíz lleva UNA línea `sys.path.insert(0, <raíz>)` e importa `pulsenest.x` / `tools.x`. Nunca dos líneas ni rutas absolutas.
 
 ## Log de conversaciones
 - Ver `conversation_log.md` — historial de decisiones de diseño tomadas en cada sesión

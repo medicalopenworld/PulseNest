@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest.net import UDP_DATA_PORT, script_name          # noqa: E402
 from pulsenest.hub_client import HubClient       # noqa: E402
 from pulsenest_hub import AUX_PREFIXES           # noqa: E402  (one rule, one place)
+from pulsenest.fleet_trace import fit            # noqa: E402  (one rule, one place: the cell rule)
 
 # idfver is read but not shown: it is the same on every board of a fleet until a toolchain
 # change, and this table is width-constrained. tools/udp_fw_versions.py prints it.
@@ -182,27 +183,6 @@ class BoardView:
 GREEN, RED, RESET = "\x1b[32m", "\x1b[31m", "\x1b[0m"
 
 
-def fit(text, width):
-    """Right-align `text` in EXACTLY `width` characters. A cell must never widen the table.
-
-    A number too long loses decimals first -- "100.00" in a 5-wide column becomes "100.0", which
-    is the honest thing to drop: SpO2 is specified to a few percent, so the second decimal was
-    never information. Only if the integer part alone does not fit does the cell give up, and
-    then it shows "#####" rather than a truncated number: a cut-off digit string is a different
-    number, and a monitor that quietly reports the wrong value is worse than one that says it
-    cannot show it.
-    """
-    if len(text) <= width:
-        return f"{text:>{width}s}"
-    whole, dot, frac = text.partition(".")
-    if dot:
-        for n in range(len(frac) - 1, 0, -1):
-            shorter = f"{whole}.{frac[:n]}"
-            if len(shorter) <= width:
-                return f"{shorter:>{width}s}"
-        if len(whole) <= width:
-            return f"{whole:>{width}s}"
-    return "#" * width
 
 
 def sqi_cell(text, mean, width, colors):

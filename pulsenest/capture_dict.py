@@ -204,6 +204,7 @@ KEYS = [
     Key("spo2_r_corr_min",      "alg", (LCFG, ("spo2_r_corr_min",), 1),      "R-METHOD-2 validity gate: SpO2 withheld while the regression's r is below this (fw 0.18)", "ratio", "float", CONFIG, "0.4"),
     Key("spo2_window_ms",       "alg", (LCFG, ("spo2_window_s",), 1000),     "SpO2 averaging window, a true sliding window over R's products; 2-12 s, the window is the warm-up (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),
     Key("pi_window_ms",         "alg", (LCFG, ("pi_window_s",), 1000),       "PI averaging window (AC and DC), independent of spo2_window_ms; 2-12 s (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),
+    Key("afe_settle_freeze_enable", "alg", (LCFG, ("afe_settle_freeze_enable",), 1), "settling freeze after an RF/CF change; bench switch, never off in clinical use (fw 0.22, lib v0.104, spec 5.8.4)", "flag", "int", CONFIG, "0.4"),
     # telemetry about events, not a parameter: it rides on the $CFG that announces a move and is
     # never written into a snapshot (an alg: line must not change when only RF moved, R24)
     Key("hgac_rf_changes",      "clock", (CFG, ("hgac_rf_changes",), 1), "RF moves HGAC has applied since boot (fw 0.15); a jump > 1 between two $CFG means moves landed inside one 50 ms tick", "count", "int", FW_COMPUTED, "0.4"),

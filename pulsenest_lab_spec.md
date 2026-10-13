@@ -1095,8 +1095,10 @@ Three more properties are deliberate:
   redraw rate would cost ten times the work for the same table *and* fight the reader's
   scrollbar. The scroll position is preserved across the rewrite.
 
-`fit()` is imported from the monitor, not copied, so the rule that was argued out there cannot
-drift here. On the bench display (≈190 dpi effective) the panel is 523 px wide at 8 pt, leaving
+`fit()` is imported, not copied, so the rule that was argued out in the monitor cannot drift
+here (since 2026-10-13 it lives in `pulsenest/fleet_trace.py`, with `BoardTrace`, the statistics
+rows and the panel constants; the Qt-measured widgets in `pulsenest/fleet_widgets.py`; both the
+viewer and the recorder GUI import from there, so neither imports the other program). On the bench display (≈190 dpi effective) the panel is 523 px wide at 8 pt, leaving
 a 1200 px window about 370 px of waveform with three boards — widen the window and the waveform
 takes everything that is added.
 

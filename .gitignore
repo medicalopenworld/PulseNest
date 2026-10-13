@@ -49,6 +49,17 @@ captures/*
 # one, with an explicit exception below, when a regression test depends on them: a test
 # whose inputs live on a single machine is not reproducible. Nothing enters by accident.
 #   e.g.  !captures/T1_SIM_STEADY_60BPM_96SPO2_20260905_101500.csv
+#
+# Analysis CODE of a campaign (captures/sessions/<campaign>_ANALYSIS/*.py) IS versioned: it is the
+# method behind a number in the log (the HOSPNAV SpO2 bias, the R-method comparison) and holds no
+# data -- it reads the CSVs beside it, which stay ignored, and names subjects only by their SUBJnn
+# code. Git cannot re-include a file under an excluded directory, so the chain below un-excludes
+# the directories level by level and re-excludes their contents, letting only *.py through.
+!captures/sessions/
+captures/sessions/*
+!captures/sessions/*_ANALYSIS/
+captures/sessions/*_ANALYSIS/*
+!captures/sessions/*_ANALYSIS/*.py
 
 # Offline runner — build y ficheros generados
 tools/offline_runner/build/

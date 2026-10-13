@@ -26676,3 +26676,27 @@ que copiarlos a `experiments/` los rompe; la vía sería una excepción en `.git
 `*_ANALYSIS/`. Contienen `SUBJ08/09` (códigos) y el nombre de un teléfono (`Pixel8aACM`); revisar antes.
 Tampoco se ha extraído lo que `pulsenest_recorder_gui` importa de `fleet_ppg_viewer`/`fleet_monitor` al paquete,
 ni retirado `frame_size_bounds.py` (lee `src/main.cpp`, que ya no existe).
+
+### Misma sesión: lab y hub se quedan en la raíz; pendientes ejecutados
+
+**Decisión de Alex.** `pulsenest_lab.py` y `pulsenest_hub.py` siguen en la raíz (no lo tiene claro; se puede
+revisar). Criterio honesto en README: la raíz contiene el programa principal del proyecto y su infraestructura.
+
+**Hechos.**
+- `pulsenest/capture_dict.py`: clave `afe_settle_freeze_enable` (LCFG, dominio `alg`, flag, fw 0.22 / lib v0.104);
+  `capture_csv_format_spec.md` §R18 lista y ejemplo del Apéndice B (`afe_settle_freeze_enable=1` en las dos líneas
+  `alg:`). `tests/pulsenest_capture_dict_test.py` 1329/1329.
+- `experiments/frame_size_bounds.py`: solo el docstring estaba obsoleto (ya leía `main/pulsenest_main.cpp`); corregido.
+- `.gitignore`: cadena de excepciones para versionar SOLO `*.py` bajo `captures/sessions/*_ANALYSIS/` (git no
+  reincluye bajo un directorio excluido: se desexcluye nivel a nivel). Los 11 scripts de SUBJ08/09 revisados
+  (códigos SUBJnn, sin nombres; `Pixel8aACM` es la etiqueta del teléfono del operador) y versionados en su sitio,
+  porque leen los datos de su propia carpeta. CSV/PNG/TXT siguen ignorados (verificado con `git add -n`).
+- Extracción: `pulsenest/fleet_trace.py` (sin Qt: `fit`, posiciones de campo $M*, colores, filas de estadísticas,
+  `Stat`, `BoardTrace`, `merge_by_mac`) y `pulsenest/fleet_widgets.py` (Qt: `panel_width`, `stats_*`,
+  `make_stats_widget`). `fleet_ppg_viewer.py` 788→329 líneas; `fleet_monitor.py` importa `fit` del paquete; la GUI
+  del grabador ya no importa el visor (que abría su faulthandler y su ruta de `.ini` al importarse). Test del visor
+  lee los nombres movidos de los módulos nuevos. Spec lab §4.11 y spec recorder actualizadas.
+- Excepción que queda: `pulsenest_convert` y la GUI importan el núcleo `Recorder` de `tools/pulsenest_recorder.py`
+  (2015 líneas, spec propia). Anotado en CLAUDE.md; extraerlo a `pulsenest/` sería otro cambio.
+
+**Verificación.** 12/12 tests Python OK; py_compile de todo (incluidos los 11 scripts); `--help` de los dos visores.

@@ -21,6 +21,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import tools.fleet_ppg_viewer as V  # noqa: E402
+import pulsenest.fleet_trace as T    # noqa: E402
+import pulsenest.fleet_widgets as W  # noqa: E402
 
 # Before anything constructs a Viewer: its closeEvent writes settings, and a test must never
 # land in the user's real fleet_ppg_viewer.ini.
@@ -46,10 +48,10 @@ def frame(ppg, probe="2", mode="M4", spo2="97.5", spo2_sqi="0.99",
     `extra` is {field index: text} for the statistics rows, which read the whole frame.
     """
     p = [mode, "1000", "0"] + ["0"] * 33
-    p[V.PPG_FIELD] = ppg
-    p[V.PROBE_FIELD] = probe
-    p[V.SPO2_FIELD], p[V.SPO2_SQI_FIELD] = spo2, spo2_sqi
-    p[V.HR3_FIELD], p[V.HR3_SQI_FIELD] = hr3, hr3_sqi
+    p[T.PPG_FIELD] = ppg
+    p[T.PROBE_FIELD] = probe
+    p[T.SPO2_FIELD], p[T.SPO2_SQI_FIELD] = spo2, spo2_sqi
+    p[T.HR3_FIELD], p[T.HR3_SQI_FIELD] = hr3, hr3_sqi
     for idx, text in (extra or {}).items():
         p[idx] = text
     return ("$" + ",".join(p) + "*00\r\n").encode()
@@ -62,18 +64,18 @@ CFG = (b"$CFG,sr=500,board=incunest_V18,mac=10:51:DB:50:87:A4,fw=0.13,lib=0.93*0
 now = time.monotonic()
 
 # ── the field it reads, and the decimation ────────────────────────────────────────────────
-tr = V.BoardTrace("192.168.137.128", now)
+tr = T.BoardTrace("192.168.137.128", now)
 tr.feed(CFG, now)
-for i in range(V.DECIM):
+for i in range(T.DECIM):
     tr.feed(frame(f"{1e-5 * (i + 1):.6e}"), now)
-check(len(tr.y) == 1, f"1 point kept per {V.DECIM} samples", f"{len(tr.y)} points")
-check(tr.samples == V.DECIM, "every sample counted before decimation", str(tr.samples))
+check(len(tr.y) == 1, f"1 point kept per {T.DECIM} samples", f"{len(tr.y)} points")
+check(tr.samples == T.DECIM, "every sample counted before decimation", str(tr.samples))
 check(abs(tr.y[-1] - 1e-4) < 1e-9, "the value comes from PPG_DISP (field 9)", str(tr.y[-1]))
 check(tr.probe == "APPLIED", "ProbeState read and named by its enumerator", tr.probe)
 check(tr.label() == "50:87:A4 incunest_V18", "labelled by MAC tail and board", tr.label())
 
 # ── the window is trimmed by time, not by a point count ───────────────────────────────────
-old = V.BoardTrace("192.168.137.9", now - 60, window_s=2.0)
+old = T.BoardTrace("192.168.137.9", now - 60, window_s=2.0)
 for k in range(30):                       # 3 points, spread over 30 decimated samples
     old.feed(frame("1.0e-05"), now - 3.0)
 for k in range(30):
@@ -85,35 +87,35 @@ check(before == 6 and len(old.y) == 3,
       f"{before} -> {len(old.y)}")
 
 # ── state, colour and silence ─────────────────────────────────────────────────────────────
-check(tr.state_colour(now) == V.GREEN, "APPLIED is green")
+check(tr.state_colour(now) == T.GREEN, "APPLIED is green")
 tr.feed(frame("1.0e-05", probe="4"), now)
-check(tr.probe == "ONLY_LED_SAT" and tr.state_colour(now) == V.RED,
+check(tr.probe == "ONLY_LED_SAT" and tr.state_colour(now) == T.RED,
       "any other probe state is red", tr.probe)
 check(not tr.is_lost(now) and tr.is_lost(now + 3),
       "LOST after 2 s of silence, not before")
 check("LOST" in tr.title(now + 7) and "7 s" in tr.title(now + 7),
       "the title says how long it has been quiet", tr.title(now + 7))
-fresh = V.BoardTrace("192.168.137.50", now)
-check(fresh.state_colour(now) == V.GREY, "grey until a frame says what the probe is doing")
+fresh = T.BoardTrace("192.168.137.50", now)
+check(fresh.state_colour(now) == T.GREY, "grey until a frame says what the probe is doing")
 
 # ── the bedside numbers ───────────────────────────────────────────────────────────────────
-num = V.BoardTrace("192.168.137.80", now)
+num = T.BoardTrace("192.168.137.80", now)
 num.feed(CFG, now)
 num.feed(frame("1.0e-05", spo2="97.5", spo2_sqi="0.99", hr3="61.4", hr3_sqi="0.95"), now)
 html = num.numbers_html(now)
 check(">98<" in html or ">97<" in html, "SpO2 shown as whole digits", html[:200])
 check("61</nobr>" in html, "HR3 shown as whole digits")
-check(V.SPO2_COLOUR in html and V.HR_COLOUR in html,
+check(T.SPO2_COLOUR in html and T.HR_COLOUR in html,
       "both bright: each SQI is above the 0.9 threshold")
 check("% SpO2" in html and "bpm HR3" in html,
       "the unit line names the measurement, so no separate label is needed", html[:200])
 check(html.index("bpm HR3") < html.index("61</nobr>"),
       "the unit line sits above its digits, not under them", html[:200])
 # The heart is beside the rate and nowhere else: SpO2 has no pulse to announce.
-check(V.HEART in html and html.index(V.HEART) < html.index("61</nobr>"),
+check(T.HEART in html and html.index(T.HEART) < html.index("61</nobr>"),
       "a heart to the left of the rate", html[:200])
-check(V.HEART not in html.split("bpm HR3")[0], "and no heart beside the SpO2")
-check(V.RED in html, "the heart is red while the reading is good")
+check(T.HEART not in html.split("bpm HR3")[0], "and no heart beside the SpO2")
+check(T.RED in html, "the heart is red while the reading is good")
 # A table cell's valign, not a span's vertical-align: Qt accepts the latter into the char
 # format and paints the glyph on the baseline regardless (measured in pixels, 2026-09-19).
 check("valign='top'" in html, "and it rides at the top of the digits, not on the baseline")
@@ -130,13 +132,13 @@ num.feed(frame("1.0e-05", spo2="-1.00", spo2_sqi="0.00", hr3="-1.00", hr3_sqi="0
 html = num.numbers_html(now)
 check(html.count("--") == 2 and "-1" not in html,
       "an invalid reading shows -- , never the -1.00 sentinel", html[:200])
-check(V.DASH_COLOUR in html and V.SPO2_COLOUR not in html,
+check(T.DASH_COLOUR in html and T.SPO2_COLOUR not in html,
       "and it is greyed, not coloured as if it were a reading")
 
 # Below the SQI threshold the digits dim: still shown, visibly less trustworthy.
 num.feed(frame("1.0e-05", spo2="95.0", spo2_sqi="0.40", hr3="61.0", hr3_sqi="0.99"), now)
 html = num.numbers_html(now)
-check(V.SPO2_DIM in html and V.HR_COLOUR in html,
+check(T.SPO2_DIM in html and T.HR_COLOUR in html,
       "a low-SQI SpO2 dims while a good HR3 stays bright", html[:200])
 
 # A board that fell silent must not keep displaying its last numbers.
@@ -144,16 +146,16 @@ check(num.numbers_html(now + 9).count("--") == 2,
       "once LOST, both numbers go to --")
 
 # ── the statistics panel ──────────────────────────────────────────────────────────────────
-st = V.BoardTrace("192.168.137.70", now)
+st = T.BoardTrace("192.168.137.70", now)
 st.feed(CFG, now)
-for i in range(V.DECIM):                       # a ramp 1..10 in PI, one full decimation group
+for i in range(T.DECIM):                       # a ramp 1..10 in PI, one full decimation group
     st.feed(frame("1.0e-05", extra={PI_FIELD: f"{i + 1}.0"}), now)
 check(st.stats_shot == {} and st.stats_rows_text()[1][1:] == ["---"] * 4,
       "before the first window closes there is no statistic, and the panel says ---",
       str(st.stats_rows_text()[1]))
 check(st.maybe_snapshot(now + 0.5) is False, "the window does not close early", "0.5 s")
-check(st.maybe_snapshot(now + V.STATS_WINDOW_S) is True,
-      f"it closes after STATS_WINDOW_S ({V.STATS_WINDOW_S} s), on its own clock and not the redraw")
+check(st.maybe_snapshot(now + T.STATS_WINDOW_S) is True,
+      f"it closes after STATS_WINDOW_S ({T.STATS_WINDOW_S} s), on its own clock and not the redraw")
 mean, sd, lo, hi = st.stats_shot[PI_FIELD]
 # The point of doing this before the decimation gate: 10 samples went in, 1 point reached the
 # curve, and the statistic must describe the signal, not the 50 Hz picture of it.
@@ -166,7 +168,7 @@ check(st.stats[PI_FIELD].n == 0, "and the accumulator restarts for the next wind
 
 # Nothing arrives in the next window: the panel must go back to --- rather than keep showing a
 # second-old mean as if it were current. This is what a silent board looks like.
-st.maybe_snapshot(now + 2 * V.STATS_WINDOW_S)
+st.maybe_snapshot(now + 2 * T.STATS_WINDOW_S)
 check(all(row[1:] == ["---"] * 4 for row in st.stats_rows_text()[1:]),
       "a window with no samples shows ---, never the previous one",
       str(st.stats_rows_text()[1]))
@@ -174,18 +176,18 @@ check(all(row[1:] == ["---"] * 4 for row in st.stats_rows_text()[1:]),
 # One table, always the four statistics.
 for i in range(4):
     st.feed(frame("1.0e-05", extra={PI_FIELD: "2.0", 4: "1048576", 31: "1.2300e-05"}), now)
-st.maybe_snapshot(now + 3 * V.STATS_WINDOW_S)
+st.maybe_snapshot(now + 3 * T.STATS_WINDOW_S)
 full = st.stats_rows_text()
-check(len(full) == len(V.STATS_ROWS) + 1,
-      f"one table with all {len(V.STATS_ROWS)} signals (plus a header), no mode to choose",
+check(len(full) == len(T.STATS_ROWS) + 1,
+      f"one table with all {len(T.STATS_ROWS)} signals (plus a header), no mode to choose",
       str(len(full) - 1))
 check(full[0] == ["signal", "mean", "sd", "min", "max"],
       "mean, SD, min and max, always the four", repr(full[0]))
 check(len({len(row) for row in full}) == 1,
       "every row has the same cells", str(sorted({len(row) for row in full})))
-check(all(len(c) <= len(V.VAL_CHARS) for row in full[1:] for c in row[1:]),
+check(all(len(c) <= len(T.VAL_CHARS) for row in full[1:] for c in row[1:]),
       "and no cell is longer than the width its column was measured for",
-      str([c for row in full[1:] for c in row[1:] if len(c) > len(V.VAL_CHARS)]))
+      str([c for row in full[1:] for c in row[1:] if len(c) > len(T.VAL_CHARS)]))
 by_label = {row[0]: row[1:] for row in full}
 check(by_label["PI %"] == ["2.00", "0.00", "2.00", "2.00"],
       "a steady signal reads mean=min=max and SD 0", str(by_label["PI %"]))
@@ -198,31 +200,31 @@ check(by_label["LED1"][0] == "1048576", "raw ADC rows keep every digit",
 # padded spaces do not align in a proportional font.
 label_w, value_w = 90, 70
 html = st.stats_html(label_w, value_w)
-check(html.count("<tr") == len(V.STATS_ROWS) + 1 and "<pre" not in html,
+check(html.count("<tr") == len(T.STATS_ROWS) + 1 and "<pre" not in html,
       "every signal is a table row, not a padded line", html[:80])
-check(html.count(f"width='{value_w}'") == 4 * (len(V.STATS_ROWS) + 1)
-      and html.count("align='right'") == 4 * (len(V.STATS_ROWS) + 1),
+check(html.count(f"width='{value_w}'") == 4 * (len(T.STATS_ROWS) + 1)
+      and html.count("align='right'") == 4 * (len(T.STATS_ROWS) + 1),
       "the four value columns are a measured width and right-aligned")
-check(V.STATS_HEAD_BG in html and V.STATS_BODY in html,
+check(T.STATS_HEAD_BG in html and T.STATS_BODY in html,
       "and it wears SIGNAL STATS's colours")
 
 # ── one band per MAC across a DHCP change ─────────────────────────────────────────────────
 traces = {}
-a = traces["192.168.137.7"] = V.BoardTrace("192.168.137.7", now - 30)
+a = traces["192.168.137.7"] = T.BoardTrace("192.168.137.7", now - 30)
 a.feed(CFG, now - 30)
-check(V.merge_by_mac(traces, a) is None, "nothing to merge with a single board")
-b = traces["192.168.137.99"] = V.BoardTrace("192.168.137.99", now)
+check(T.merge_by_mac(traces, a) is None, "nothing to merge with a single board")
+b = traces["192.168.137.99"] = T.BoardTrace("192.168.137.99", now)
 b.feed(frame("1.0e-05"), now)
-check(V.merge_by_mac(traces, b) is None and len(traces) == 2,
+check(T.merge_by_mac(traces, b) is None and len(traces) == 2,
       "without a MAC yet, the new address is its own band")
 b.feed(CFG, now)
-gone = V.merge_by_mac(traces, b)
+gone = T.merge_by_mac(traces, b)
 check(gone == "192.168.137.7" and set(traces) == {"192.168.137.99"},
       "its $CFG arrives: same MAC, so the old band goes", f"{gone}, {set(traces)}")
 check(b.moved_from == "192.168.137.7", "and it remembers where it came from", str(b.moved_from))
 
 # ── a malformed line must never take the viewer down ──────────────────────────────────────
-junk = V.BoardTrace("192.168.137.60", now)
+junk = T.BoardTrace("192.168.137.60", now)
 for bad in (b"$M4,broken\r\n", b"$M4," + b"," * 40 + b"\r\n", b"$M4,1,2,3,x,y,z*00\r\n",
             b"\r\n", b"rubbish", b"$CFG,mac=\r\n"):
     junk.feed(bad, now)          # must not raise
@@ -236,9 +238,9 @@ V.HubClient.connect = lambda self, timeout=1.0: False      # no hub in a test
 win = V.Viewer(("127.0.0.1", 15999), 15.0)
 t0 = time.monotonic()
 for ip, mac in (("192.168.137.1", "AA:AA:AA:AA:AA:01"), ("192.168.137.2", "BB:BB:BB:BB:BB:02")):
-    tr = win.traces[ip] = V.BoardTrace(ip, t0)
+    tr = win.traces[ip] = T.BoardTrace(ip, t0)
     tr.feed(CFG.replace(b"10:51:DB:50:87:A4", mac.encode()), t0)
-    for _ in range(V.DECIM * 5):
+    for _ in range(T.DECIM * 5):
         tr.feed(frame("1.5e-05"), t0)
 win.redraw()
 check(len(win.bands) == 2, "one band per board", str(len(win.bands)))
@@ -274,7 +276,7 @@ check(all("SpO2" in b[2].item.toHtml() for b in win.bands.values()),
 # a band was dropped the next board landed on a row that was still occupied and was drawn on
 # top of it. Boards change IP here daily, so this was reachable.
 rows_before = {id(b[0]): win.layout_widget.ci.items[b[0]][0][0] for b in win.bands.values()}
-third = win.traces["192.168.137.3"] = V.BoardTrace("192.168.137.3", time.monotonic())
+third = win.traces["192.168.137.3"] = T.BoardTrace("192.168.137.3", time.monotonic())
 third.feed(CFG.replace(b"10:51:DB:50:87:A4", b"CC:CC:CC:CC:CC:03"), time.monotonic())
 third.feed(frame("1.0e-05"), time.monotonic())
 win.redraw()
@@ -282,7 +284,7 @@ check(len(win.bands) == 3, "a board that appears while running gets its band, no
       str(len(win.bands)))
 
 win.drop_band("192.168.137.2")                       # as a DHCP merge would
-fourth = win.traces["192.168.137.4"] = V.BoardTrace("192.168.137.4", time.monotonic())
+fourth = win.traces["192.168.137.4"] = T.BoardTrace("192.168.137.4", time.monotonic())
 fourth.feed(CFG.replace(b"10:51:DB:50:87:A4", b"DD:DD:DD:DD:DD:04"), time.monotonic())
 fourth.feed(frame("1.0e-05"), time.monotonic())
 win.redraw()
@@ -321,9 +323,9 @@ check(win.layout_widget.minimumWidth() == 0 and win.layout_widget.minimumHeight(
 # The panel columns are fixed width, so a window narrower than they are does not squeeze them
 # -- it overflows, and what is past the edge is simply not drawn. The WINDOW carries the
 # minimum instead, which makes that state unreachable rather than merely detectable.
-check(win.minimumWidth() >= V.panel_width() + V.stats_width(),
+check(win.minimumWidth() >= W.panel_width() + W.stats_width(),
       "the window cannot be made narrower than its own panels",
-      f"min {win.minimumWidth()} px vs panels {V.panel_width() + V.stats_width()} px")
+      f"min {win.minimumWidth()} px vs panels {W.panel_width() + W.stats_width()} px")
 win.resize(400, 900)                     # refused down to the minimum
 win.show()                               # a window that was never shown has no layout pass,
 app.processEvents()                      # and then every geometry below is the pre-layout one
@@ -336,7 +338,7 @@ check(all(b[0].geometry().width() > 100 for b in win.bands.values()),
       "and the waveform still has room to be a waveform",
       str([round(b[0].geometry().width()) for b in win.bands.values()]))
 # What a squeezed panel loses must be what a reader can reconstruct: LED1 = LED1_SUB + ALED1.
-tail = [r[0] for r in V.STATS_ROWS[-4:]]
+tail = [r[0] for r in T.STATS_ROWS[-4:]]
 check(tail == ["LED1", "LED2", "ALED1", "ALED2"],
       "the raw converter codes are last, so they are the first rows to go", str(tail))
 heights = [round(b[0].geometry().height()) for b in win.bands.values()]

@@ -1,4 +1,4 @@
-"""Worst-case length of every $M frame, derived from the format strings in src/main.cpp.
+"""Worst-case length of every $M frame, derived from the format strings in main/pulsenest_main.cpp.
 
 The frames carry numbers as variable-length text, so what a frame *measured on the bench* takes is
 not what the format *can* produce. This computes the provable upper bound per mode and compares it

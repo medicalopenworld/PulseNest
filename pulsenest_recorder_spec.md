@@ -564,7 +564,7 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   probe it is; new `--probe`/`probe=` launch field, top-level (not inside `[ref]`, which is about
   the commercial monitor, not ours), applied the moment the subject is known, shown **PROBE**
   read-only beside MONITOR. Named `probe_model` internally, never bare `probe`: `BoardTrace.probe`
-  in `fleet_ppg_viewer.py` already means the firmware's real-time ProbeState
+  in `pulsenest/fleet_trace.py` (until 2026-10-13 in `fleet_ppg_viewer.py`) already means the firmware's real-time ProbeState
   (APPLIED/DISCONNECTED/…), an entirely different concept the two must never be confused with.
   Written into the CSV header as `# probe=<model>`, next to the identity notes and ahead of the
   raw `from-board:` evidence line — `capture_csv_format_spec.md` R23/R26 already designed this
