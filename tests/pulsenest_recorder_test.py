@@ -741,7 +741,7 @@ try:
 
     # ── Part 2: real hub in-process, two fake boards, the recorder's I/O pieces ────────────
     import socket
-    import pulsenest_hub as H
+    import tools.pulsenest_hub as H
     import pulsenest.hub_client as C
     C.AUTOSTART_ENABLED = False
     H.CFG_RETRY_S = 0.3

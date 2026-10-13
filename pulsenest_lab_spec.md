@@ -890,7 +890,7 @@ ever read the stream: every bench tool (`udp_fw_versions.py`, `tia_linearity_swe
 silence), and nothing could be watched from another PC. Alex's request (2026-09-16): let other
 processes and scripts read what the boards send, most of them without the right to send commands.
 
-**The design.** `pulsenest_hub.py` is the one program that binds `UDP_DATA_PORT`. It re-sends
+**The design.** `pulsenest_hub.py` (`tools/pulsenest_hub.py` since 2026-10-13; `AUX_PREFIXES` moved to `pulsenest/net.py` the same day so the fleet tools do not import the hub program) is the one program that binds `UDP_DATA_PORT`. It re-sends
 every datagram, byte for byte, to whoever subscribed, with one line in front naming the board it
 came from. Nothing on the air changes: the boards keep sending one stream to one IP; the copies
 travel over loopback or over the wired/LAN side of the PC, which is free. Two things follow from
@@ -1110,7 +1110,7 @@ measured for, the table markup and its colours, that every row is in the panel w
 band's height, that the bands stay equal, that no panel ends outside the window at any size, and
 the real window built offscreen with a band and a fed curve per board).
 
-**Stopping it by hand: `python pulsenest_hub.py --stop` (v1.67).** The running hub is detached
+**Stopping it by hand: `python tools/pulsenest_hub.py --stop` (v1.67).** The running hub is detached
 and has no window, so there is no Ctrl+C and no console to close, and `taskkill /IM python.exe`
 would take the monitor and every other tool with it — the only alternative was hunting its PID by
 command line, which is the kind of incantation nobody remembers. `--stop` sends `@STOP` over the
@@ -3119,7 +3119,7 @@ value quietly is worse than one saying it cannot show it. `tests/fleet_monitor_t
 
 ### v1.67 — 2026-09-18
 
-**`python pulsenest_hub.py --stop` (§4.11).** The hub runs detached, without a window: until now
+**`python tools/pulsenest_hub.py --stop` (§4.11).** The hub runs detached, without a window: until now
 the only way to stop it by hand was a PowerShell line filtering processes by command line. It
 answers `@STOP` from a local address now and exits cleanly through `serve_forever()`. The flag
 reports three distinct outcomes — stopped, nobody answered, or a hub answered and refused — the

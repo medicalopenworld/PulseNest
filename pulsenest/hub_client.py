@@ -49,7 +49,8 @@ CTRL_RETRY_S      = 5.0        # a client that wants the control and was refused
                                # without this the refused one stayed read-only until restarted
 CONNECT_TIMEOUT_S = 1.0        # wait for @OK after @SUB/@CTRL
 RECONNECT_EVERY_S = 2.0
-HUB_SCRIPT        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_hub.py")
+HUB_SCRIPT        = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "tools", "pulsenest_hub.py")
 
 # Tests flip this off: they start their own Hub on a spare port, in-process.
 AUTOSTART_ENABLED = True
@@ -311,7 +312,7 @@ if __name__ == "__main__":
     # the question itself when someone tries.
     print(__doc__.split("\n\n")[0])
     print("\nThis is a LIBRARY: import it, do not run it.\n"
-          "  the hub itself        python pulsenest_hub.py      (usually started by the first client)\n"
+          "  the hub itself        python tools/pulsenest_hub.py      (usually started by the first client)\n"
           "  a read-only viewer    python tools/fleet_monitor.py\n"
           "  the versions report   python tools/udp_fw_versions.py\n"
           "  the lab               start pythonw pulsenest_lab.py\n"

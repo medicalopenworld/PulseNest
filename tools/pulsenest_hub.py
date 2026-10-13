@@ -63,8 +63,8 @@ Rules.
 Run it by hand for the log on the console, or let a subscriber start it (pulsenest_hub_client
 launches it detached, with python.exe so a `taskkill /IM pythonw.exe` of the lab leaves it alive):
 
-    python pulsenest_hub.py [--port 5005] [--allow-remote-control] [--idle-exit-min 5]
-    python pulsenest_hub.py --stop          # ask the running one to exit
+    python tools/pulsenest_hub.py [--port 5005] [--allow-remote-control] [--idle-exit-min 5]
+    python tools/pulsenest_hub.py --stop          # ask the running one to exit
 
 --stop exists because the running hub is detached and has no window: there is no Ctrl+C and no
 console to close, and `taskkill /IM python.exe` would take the monitor and every tool with it.
@@ -86,7 +86,8 @@ import sys
 import threading
 import time
 
-from pulsenest.net import UDP_DATA_PORT, UDP_CMD_PORT, banner, script_name  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+from pulsenest.net import UDP_DATA_PORT, UDP_CMD_PORT, AUX_PREFIXES, banner, script_name  # noqa: E402
 
 HUB_SIGIL      = b"@"
 PING_S         = 2.0     # what a subscriber is expected to send (pulsenest_hub_client does)
@@ -96,12 +97,6 @@ BOARD_LOST_S   = 2.0     # a board silent for this long is LOST: @STATUS says so
 CFG_RETRY_S    = 3.0     # gap between identity queries to a board that has not answered yet
 CFG_MAX_REQUESTS = 3     # ... and how many times in total, per appearance
 
-# Sources that are NOT boards, recognised by the prefix of their first datagram (D1 of
-# pulsenest_recorder_spec.md, closed 2026-09-20). An auxiliary source is forwarded exactly like a
-# board -- the hub still does not interpret anything -- but it is never asked "$CFG?", because it
-# has no configuration to give and the query would just land on a port it does not listen to, and
-# it is labelled `aux` in @STATUS so the fleet tools stop drawing a phone as if it were a board.
-AUX_PREFIXES = {b"$VN1": "videonest"}    # VideoNest: on-device OCR of the commercial monitor
 CFG_PREFIXES   = (b"$CFG,", b"$TCFG,", b"$LCFG,")
 RATE_WINDOW_S  = 2.0     # datagram rate window for @STATUS
 DEFAULT_IDLE_EXIT_MIN = 5.0   # the CLI's --idle-exit-min default (Hub.__init__'s own default
@@ -109,7 +104,8 @@ DEFAULT_IDLE_EXIT_MIN = 5.0   # the CLI's --idle-exit-min default (Hub.__init__'
                               # unaffected): the auto-started hub inherits this by not passing
                               # the flag at all, and Alex found one that had been left running
                               # 34+ hours with nobody subscribed -- nothing was watching for that
-LOG_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulsenest_hub.log")
+LOG_FILE       = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "pulsenest_hub.log")   # repo root, beside the lab's logs
 
 log = logging.getLogger("pulsenest_hub")
 
@@ -362,7 +358,7 @@ class Hub:
         elif verb == b"STATUS":
             self._send(addr, self.status_text().encode("utf-8", "replace"))
         elif verb == b"STOP":
-            # `python pulsenest_hub.py --stop`. The process is detached and has no window, so
+            # `python tools/pulsenest_hub.py --stop`. The process is detached and has no window, so
             # without this the only way to stop it was hunting its PID by command line — the
             # kind of incantation nobody remembers. LOCALHOST ONLY, and deliberately not opened
             # up by --allow-remote-control: that flag is about commanding boards, and whoever

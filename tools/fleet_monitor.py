@@ -51,7 +51,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest.net import UDP_DATA_PORT, script_name          # noqa: E402
 from pulsenest.hub_client import HubClient       # noqa: E402
-from pulsenest_hub import AUX_PREFIXES           # noqa: E402  (one rule, one place)
+from pulsenest.net import AUX_PREFIXES           # noqa: E402  (one rule, one place)
 from pulsenest.fleet_trace import fit            # noqa: E402  (one rule, one place: the cell rule)
 
 # idfver is read but not shown: it is the same on every board of a fleet until a toolchain

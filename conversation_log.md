@@ -26700,3 +26700,22 @@ revisar). Criterio honesto en README: la raíz contiene el programa principal de
   (2015 líneas, spec propia). Anotado en CLAUDE.md; extraerlo a `pulsenest/` sería otro cambio.
 
 **Verificación.** 12/12 tests Python OK; py_compile de todo (incluidos los 11 scripts); `--help` de los dos visores.
+
+### Misma sesión: el hub a `tools/`, `AUX_PREFIXES` a `pulsenest/net.py`
+
+**Pregunta de Alex.** Opinión sobre mover `pulsenest_hub.py` a `tools/`. Respuesta: defendible (es un proceso de
+servicio, no el producto), pero solo si `AUX_PREFIXES` sale antes del hub, porque el monitor de flota y el visor la
+importaban y pasarían a ser "herramienta importa herramienta". Alex: adelante con las dos cosas.
+
+**Hecho.** `git mv` a `tools/pulsenest_hub.py` (línea única de ruta; `LOG_FILE` sigue en la raíz junto a los logs del
+lab). `AUX_PREFIXES` y su comentario en `pulsenest/net.py`; hub, monitor y visor la importan de ahí. Tests
+`hub_test`, `udp_multiboard_test`, `pulsenest_recorder_test` importan `tools.pulsenest_hub`. Spec lab §4.11 (diseño y
+`--stop`), README (raíz = solo el lab; criterio: programa principal, ficheros de estado y hooks a su lado), CLAUDE.md.
+
+**Fallo encontrado y corregido.** `pulsenest/hub_client.py` arranca el hub por la ruta `HUB_SCRIPT`, construida como
+"junto a este fichero": al mover `hub_client` al paquete en el primer commit de hoy (`0a9f93f`) pasó a apuntar a
+`pulsenest/pulsenest_hub.py`, que no existe → el lab no habría podido arrancar el hub automáticamente. Ningún test lo
+cubría (los tests sustituyen el cliente por uno falso). Ahora `HUB_SCRIPT` = `<raíz>/tools/pulsenest_hub.py` y
+`tests/hub_test.py` comprueba que esa ruta existe.
+
+**Verificación.** 12/12 tests; `python tools/pulsenest_hub.py --help` desde otro cwd; `AUX_PREFIXES` en `net`.

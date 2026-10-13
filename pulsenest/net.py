@@ -29,6 +29,14 @@ import sys
 UDP_DATA_PORT = 5005
 UDP_CMD_PORT = 5006
 
+# Lived in pulsenest_hub.py until 2026-10-13; here so the fleet tools need not import the hub program.
+# Sources that are NOT boards, recognised by the prefix of their first datagram (D1 of
+# pulsenest_recorder_spec.md, closed 2026-09-20). An auxiliary source is forwarded exactly like a
+# board -- the hub still does not interpret anything -- but it is never asked "$CFG?", because it
+# has no configuration to give and the query would just land on a port it does not listen to, and
+# it is labelled `aux` in the hub's @STATUS so the fleet tools stop drawing a phone as if it were a board.
+AUX_PREFIXES = {b"$VN1": "videonest"}    # VideoNest: on-device OCR of the commercial monitor
+
 
 def script_name(path):
     """-> the file name a running program should show, e.g. "fleet_monitor.py". Pass __file__."""

@@ -92,7 +92,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest.net import UDP_DATA_PORT, banner, script_name  # noqa: E402
-from pulsenest_hub import AUX_PREFIXES           # noqa: E402  (one rule, one place)
+from pulsenest.net import AUX_PREFIXES           # noqa: E402  (one rule, one place)
 from pulsenest.hub_client import HubClient                    # noqa: E402
 import pyqtgraph as pg                                        # noqa: E402
 from PyQt5 import QtCore, QtWidgets                           # noqa: E402

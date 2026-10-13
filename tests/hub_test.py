@@ -18,7 +18,7 @@ import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
-import pulsenest_hub as H          # noqa: E402
+import tools.pulsenest_hub as H          # noqa: E402
 import pulsenest.hub_client as C   # noqa: E402
 
 DATA_PORT, CMD_PORT = 15105, 15106
@@ -99,6 +99,10 @@ def drain(client, seconds):
 
 def main():
     print(f"== {os.path.basename(__file__)} ==  hub + client, in process, on :{DATA_PORT}")
+    # The client starts the hub by a path built from its own location; a move of either file
+    # breaks the lab's auto-start silently (it did on 2026-10-13), and every other check here
+    # runs the hub in-process, so this is the one place that looks at the path itself.
+    check("HubClient.HUB_SCRIPT points at an existing file", os.path.isfile(C.HUB_SCRIPT), C.HUB_SCRIPT)
     hub = H.Hub(port=DATA_PORT, cmd_port=CMD_PORT)
     hub.open()
     hub_thread = threading.Thread(target=hub.serve_forever, daemon=True)

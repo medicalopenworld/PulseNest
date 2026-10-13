@@ -40,7 +40,7 @@ sys.path.insert(0, _ROOT)
 os.chdir(_ROOT)
 
 import pulsenest_lab as P  # noqa: E402
-import pulsenest_hub as H  # noqa: E402
+import tools.pulsenest_hub as H  # noqa: E402
 import pulsenest.hub_client as HC  # noqa: E402
 from PyQt5 import QtCore, QtWidgets  # noqa: E402
 
