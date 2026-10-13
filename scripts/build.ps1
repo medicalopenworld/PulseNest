@@ -16,7 +16,9 @@
     and into every capture header).
 .PARAMETER Ota
     IP of a board already running PulseNest (ESP-IDF firmware, fw >= 0.11 IDF): POST the raw image to
-    http://<ip>/update. Verify the MAC first (tools/udp_fw_versions.py). A board still on the Arduino
+    http://<ip>/update, then wait for the board to come back and verify through the hub that it reports
+    the elfsha of the image just built (tools/udp_fw_versions.py); exit code 2 if it does not within
+    ~65 s. Verify the MAC first (tools/udp_fw_versions.py). A board still on the Arduino
     firmware needs the multipart form once instead: curl -F update=@build_V18/pulsenest.bin http://<ip>/update
 .PARAMETER Usb
     COM port of a blank board: `idf.py flash` (bootloader + partition table + app).
@@ -66,7 +68,33 @@ if ($Ota) {
     Write-Host "`nOTA -> http://$Ota/update (raw body)"
     curl.exe -sS -m 120 -w "`nhttp=%{http_code} t=%{time_total}s`n" --data-binary "@$bin" "http://$Ota/update"
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
-    Write-Host "The board restarts in ~0.3 s and joins the WiFi again in ~15-25 s; check with tools/udp_fw_versions.py"
+
+    # Verify, do not trust the HTTP 200: the board's $CFG carries elfsha=, the first 8 bytes of the
+    # image's own ELF SHA-256, which sits in the app descriptor at 0x20 + 0x90 of the .bin. The board
+    # restarts in ~0.3 s and is back on the WiFi in 15-25 s; the hub asks it $CFG? again when it
+    # returns, and tools/udp_fw_versions.py (a read-only hub subscriber, works with the lab open)
+    # reports it. Three looks over ~65 s, then give up with exit code 2 -- docs/boards.md records
+    # the elfsha of every OTA, so a flash that cannot be verified must not look like one that was.
+    $want = (([IO.File]::ReadAllBytes($bin))[0xB0..0xB7] | ForEach-Object { $_.ToString('x2') }) -join ''
+    Write-Host "`nWaiting for $Ota to come back with elfsha=$want ..."
+    $verified = $false
+    foreach ($wait in 20, 15, 15) {
+        Start-Sleep -Seconds $wait
+        $report = (& python (Join-Path $root 'tools/udp_fw_versions.py') --discover 5 2>&1 | Out-String) -split "`r?`n"
+        $line = $report | Where-Object { $_ -match ('^\s*' + [regex]::Escape($Ota) + '\s') -and $_ -match 'elfsha=' } | Select-Object -First 1
+        if ($line) {
+            Write-Host $line.TrimEnd()
+            if ($line -match ('elfsha=' + $want)) { $verified = $true; break }
+        } else {
+            Write-Host "  $Ota not reporting yet"
+        }
+    }
+    if ($verified) {
+        Write-Host "OTA VERIFIED: $Ota runs the image just built (elfsha=$want). Record it in docs/boards.md."
+    } else {
+        Write-Host "OTA NOT VERIFIED: $Ota did not report elfsha=$want. Check by hand: python tools/udp_fw_versions.py"
+        exit 2
+    }
 }
 if ($Usb) {
     idf.py -B $build -p $Usb flash

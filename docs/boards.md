@@ -131,7 +131,9 @@ into `build_<Board>/`; `-Ota <ip>` flashes it over the air, `-Usb COMxx` over US
 
 ```powershell
 python tools/udp_fw_versions.py             # lists every board streaming: IP, MAC, fw, lib, hashes
-.\scripts\build.ps1 V18 -Ota <ip>           # build, then POST the raw image to http://<ip>/update
+.\scripts\build.ps1 V18 -Ota <ip>           # build, POST the raw image to http://<ip>/update, then verify
+                                            # (since 2026-10-13) that <ip> comes back reporting the elfsha
+                                            # of the image just built; exit code 2 if it does not in ~65 s
 ```
 
 `-Ota` sends the image as a **raw body** (`curl --data-binary`), which is what the ESP-IDF firmware's
@@ -154,8 +156,10 @@ form field and nothing is written either.
 
 The bootloader is not touched by OTA; the Arduino-era bootloader (IDF 4.4) boots the IDF v6 image
 without complaint (verified on both V18 boards and the V17, 2026-09-15). The board answers `OK`,
-restarts 300 ms later and is back on the WiFi in 15–25 s. `tools/udp_fw_versions.py` needs UDP port
-5005, so close `pulsenest_lab.py` before running it (`taskkill /F /IM pythonw.exe`).
+restarts 300 ms later and is back on the WiFi in 15–25 s. `build.ps1 -Ota` waits for that and checks the
+`elfsha=` the board reports against the `.bin` it sent (the hub asks `$CFG?` again when a board returns
+after 2 s of silence, so the value is fresh, not the cache). `tools/udp_fw_versions.py` reads through the
+hub, so it works with `pulsenest_lab.py` open (until 2026-09-16 both wanted UDP port 5005).
 
 Verify the MAC before every OTA. A board was flashed with the wrong build on 2026-06-12 by
 targeting an IP without checking.

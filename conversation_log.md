@@ -26725,3 +26725,18 @@ both boards" (41/42); tres repeticiones seguidas 42/42. Es una comprobación de 
 el primer lote de datagramas en una ventana fija) y venía precedida de cinco tests Qt en la misma tanda; no depende
 de nada movido hoy. **Pendiente:** hacer esa comprobación tolerante (esperar hasta ver ambas tarjetas o agotar un
 plazo) en vez de leer una ventana fija.
+
+### Misma sesión: `build.ps1 -Ota` verifica el flasheo por sí mismo
+
+**Pregunta de Alex.** Qué herramientas de `tools/` tiene en el hospital (respuesta: GUI del grabador + monitor de
+flota; visor PPG opcional; el resto son de banco o de vuelta a casa) y si `udp_fw_versions`, `udp_cmd_latency` y
+`measure_timing` las lanza algún script (no: las tres a mano; el build solo sugería la primera en un mensaje).
+
+**Decisión.** `scripts/build.ps1 -Ota <ip>` ejecuta `tools/udp_fw_versions.py` tras el OTA y comprueba que la tarjeta
+vuelve reportando el `elfsha` de la imagen recién construida: lee los 8 primeros bytes del SHA-256 del ELF en el
+descriptor de aplicación del `.bin` (offset 0x20 + 0x90; comprobado contra `cd1ccf587e65b403` de fw 0.22) y los
+compara con el campo `elfsha=` que el hub recoge del `$CFG` fresco (el hub vuelve a pedir `$CFG?` a una tarjeta que
+reaparece tras 2 s de silencio, así que no es la caché). Tres intentos en ~65 s (20+5, 15+5, 15+5 s); si no coincide,
+`OTA NOT VERIFIED` y exit 2, para que un flasheo sin verificar no parezca verificado. Probado en seco contra las
+tres V18 en vivo (las tres reportan el elfsha del `.bin` de `build_V18`). `docs/boards.md` (procedimiento OTA; nota
+obsoleta de "cerrar el lab por el puerto 5005" sustituida) y README.

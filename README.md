@@ -31,7 +31,8 @@ Requires [ESP-IDF v6.0.1](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/
 # Build — select the preset matching your board (V15 / V16 / V17 / V18)
 .\scripts\build.ps1 V18
 
-# Build and flash over the air (board already running PulseNest; verify its MAC first)
+# Build and flash over the air (board already running PulseNest; verify its MAC first).
+# Waits for the board to come back and checks it reports the elfsha of the image just built.
 .\scripts\build.ps1 V18 -Ota 192.168.137.14
 
 # Build and flash a blank board over USB
