@@ -63,6 +63,14 @@ fl.feed("192.168.137.77", CFG_A, t0 + 5)
 check("same MAC on a new address is one board, the freshest address",
       fl.by_mac()["10:51:DB:50:88:50"].ip == "192.168.137.77")
 check("silent after LOST_S", fl.boards["192.168.137.24"].silent(t0 + S.LOST_S + 1) and not fl.boards["192.168.137.24"].silent(t0 + 1))
+check("seen text: live / SILENT amber / SILENT red past PHONE_STALE_S",
+      S.seen_text(1.0) == ("live", S.GREEN) and S.seen_text(12.0) == ("SILENT 12 s", S.AMBER)
+      and S.seen_text(S.PHONE_STALE_S + 5) == ("SILENT 65 s", S.RED))
+for i in range(10):
+    fl.feed("192.168.137.9", VN, t0 + 5 + i * 0.5)
+fl.tick(t0 + 10.0)
+check("a phone has a frame rate and an age of its own", abs(fl.phones["J6plusACM"].rate - 1.1) < 0.3
+      and fl.phones["J6plusACM"].age(t0 + 20) > 10, str(fl.phones["J6plusACM"].rate))
 
 tmp = tempfile.mkdtemp()
 open(os.path.join(tmp, "subj01.toml"), "w", encoding="utf-8").write(
@@ -144,10 +152,58 @@ app.processEvents()
 check("boards table shows the board with its MAC and elfsha",
       w.boards.rowCount() == 1 and w.boards.item(0, 1).text() == "10:51:DB:50:88:50" and w.boards.item(0, 5).text() == "cd1ccf587e65b403")
 check("cot 1 matched to its MAC", w.table.item(r1, 3).text() == "10:51:DB:50:88:50")
-check("cot 1's phone heard", w.table.item(r1, 4).text() == "J6plusACM heard")
+check("cot 1's phone heard, with its age", w.table.item(r1, 4).text().startswith("J6plusACM heard 0 s ago"), w.table.item(r1, 4).text())
 check("cot 2 still not on the air, its phone not heard", w.table.item(r2, 3).text() == "not on the air" and "NOT heard" in w.table.item(r2, 4).text())
 check("firmware line OK for one board", w.firmware.text().startswith("OK"))
-check("phones line names the phone", "J6plusACM" in w.phones.text())
+check("phones table lists the phone with its IP", w.phones.rowCount() == 1 and w.phones.item(0, 0).text() == "J6plusACM"
+      and w.phones.item(0, 1).text() == "192.168.137.9" and w.phones.item(0, 3).text() == "live")
+
+
+def colour(item):
+    return item.foreground().color().name().upper()
+
+
+# a board switched off: its cot row must say so, not stay green (Alex, 2026-10-14)
+w.fleet.boards["192.168.137.8"].last_seen -= 12
+w.refresh()
+check("board silent 12 s: boards table says SILENT in amber, dgrams/s 0",
+      w.boards.item(0, 7).text() == "SILENT 12 s" and colour(w.boards.item(0, 7)) == S.AMBER and w.boards.item(0, 6).text() == "0")
+check("cot row: MAC + SILENT in amber, not green",
+      w.table.item(r1, 3).text() == "10:51:DB:50:88:50  SILENT 12 s" and colour(w.table.item(r1, 3)) == S.AMBER)
+w.fleet.boards["192.168.137.8"].last_seen -= 100
+w.refresh()
+check("board silent 112 s: red", colour(w.table.item(r1, 3)) == S.RED and colour(w.boards.item(0, 7)) == S.RED)
+w.fleet.phones["J6plusACM"].last_seen -= 20
+w.refresh()
+check("phone 20 s old: 'heard 20 s ago' in amber", w.table.item(r1, 4).text() == "J6plusACM heard 20 s ago" and colour(w.table.item(r1, 4)) == S.AMBER
+      and w.phones.item(0, 3).text() == "SILENT 20 s")
+w.fleet.phones["J6plusACM"].last_seen -= 60
+w.refresh()
+check("phone 80 s old: red", colour(w.table.item(r1, 4)) == S.RED and colour(w.phones.item(0, 3)) == S.RED)
+w.fleet.boards["192.168.137.8"].last_seen = time.monotonic()
+w.fleet.phones["J6plusACM"].last_seen = time.monotonic()
+w.refresh()
+check("back on the air: green again", colour(w.table.item(r1, 3)) == S.GREEN and colour(w.table.item(r1, 4)) == S.GREEN)
+
+# the files are watched: a new or edited .toml shows up without a button
+open(os.path.join(tmp, "subj03.toml"), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "87A4"\nsubject = "SUBJ03"\n')
+w.refresh()
+check("a new .toml appears by itself (no RELOAD button)", w.table.rowCount() == 5 and not hasattr(w, "btn_reload")
+      and any(c.name == "subj03.toml" for c in w.cots))
+time.sleep(0.05)
+open(os.path.join(tmp, "subj03.toml"), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "87A4"\nsubject = "SUBJ33"\n')
+os.utime(os.path.join(tmp, "subj03.toml"))
+w.refresh()
+r3 = [c.name for c in w.cots].index("subj03.toml")
+check("an edited .toml is re-read by itself", w.table.item(r3, 1).text() == "SUBJ33", w.table.item(r3, 1).text())
+os.remove(os.path.join(tmp, "subj03.toml"))
+w.refresh()
+check("a removed .toml disappears", w.table.rowCount() == 4)
+r1 = [c.name for c in w.cots].index("subj01.toml")
+r2 = [c.name for c in w.cots].index("subj02.toml")
+check("three tables in a splitter, every column sized to its contents",
+      w.splitter.count() == 3 and all(t.horizontalHeader().sectionResizeMode(0) == QtWidgets.QHeaderView.ResizeToContents
+                                      for t in (w.boards, w.phones, w.table)))
 rb = [c.name for c in w.cots].index("broken.toml")
 check("broken file: error in the row, START disabled",
       "TOMLDecodeError" in w.table.item(rb, 1).text() and not w.table.cellWidget(rb, 6).isEnabled())

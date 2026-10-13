@@ -61,7 +61,8 @@ large digits, and one row per `.toml` in `docs/session_configs` saying which liv
 phone it matches. Press **START** on a row, or **START ALL COTS**, and **FLEET MONITOR** for the
 console overview. Every START is exactly the command line below, run as a process of its own: the
 launcher can be closed, or crash, and the recordings continue. **EDIT** opens a cot's file in the
-system editor; after saving press **RELOAD**.
+system editor; the window re-reads the files by itself when one changes. A board that goes quiet
+turns its row amber (`SILENT`) and red after a minute, and so does a phone.
 
 The same thing from a terminal opened in `C:\PRJ\MOW\PulseNest`, **one window per baby**:
 

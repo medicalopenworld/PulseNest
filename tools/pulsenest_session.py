@@ -83,7 +83,18 @@ def parse_cfg(line):
     return out
 
 
-class BoardSeen:
+PHONE_STALE_S = 60.0    # a phone not heard for this long is a failed reference, not a late one
+
+
+def seen_text(age):
+    """'live' / 'SILENT 12 s' and the colour, for a source whose last datagram is `age` s old."""
+    if age <= LOST_S:
+        return "live", GREEN
+    return "SILENT %.0f s" % age, (RED if age > PHONE_STALE_S else AMBER)
+
+
+class Seen:
+    """One source heard through the hub: a board (by IP) or a phone (by device id)."""
     __slots__ = ("ip", "fields", "dgrams", "first_seen", "last_seen", "rate", "_rate_n", "_rate_t")
 
     def __init__(self, ip, now):
@@ -95,42 +106,59 @@ class BoardSeen:
     def mac(self):
         return self.fields.get("mac", "?")
 
+    def heard(self, now):
+        self.last_seen = now
+        self.dgrams += 1
+        self._rate_n += 1
+
+    def age(self, now):
+        return now - self.last_seen
+
     def silent(self, now):
-        return now - self.last_seen > LOST_S
+        return self.age(now) > LOST_S
+
+    def tick(self, now):
+        dt = now - self._rate_t
+        if dt >= 1.0:
+            self.rate = self._rate_n / dt
+            self._rate_n, self._rate_t = 0, now
+
+
+BoardSeen = Seen      # the test and the docstrings call a board's entry by this name
 
 
 class Fleet:
     """Boards and phones heard through the hub, and the checks the runbook asks for."""
 
     def __init__(self):
-        self.boards = {}     # ip -> BoardSeen
-        self.phones = {}     # device id -> (ip, last_seen)
+        self.boards = {}     # ip -> Seen
+        self.phones = {}     # device id -> Seen (ip = the phone's address)
 
     def feed(self, ip, data, now):
         if data.startswith(b"$VN1"):
             dev = vn_device_id(data)
             if dev:
-                self.phones[dev] = (ip, now)
+                p = self.phones.get(dev)
+                if p is None:
+                    p = self.phones[dev] = Seen(ip, now)
+                p.ip = ip
+                p.heard(now)
             return
         b = self.boards.get(ip)
         if b is None:
-            b = self.boards[ip] = BoardSeen(ip, now)
-        b.last_seen = now
+            b = self.boards[ip] = Seen(ip, now)
         if data[:2] == b"$M":
-            b.dgrams += 1
-            b._rate_n += 1
+            b.heard(now)
         else:
+            b.last_seen = now
             for line in data.decode("ascii", "replace").splitlines():
                 if line.startswith("$CFG,"):
                     b.fields = parse_cfg(line)
 
     def tick(self, now):
-        """Once a second: the datagram rate of every board over the last interval."""
-        for b in self.boards.values():
-            dt = now - b._rate_t
-            if dt >= 1.0:
-                b.rate = b._rate_n / dt
-                b._rate_n, b._rate_t = 0, now
+        """Once a second: the datagram rate of every source over the last interval."""
+        for s in list(self.boards.values()) + list(self.phones.values()):
+            s.tick(now)
 
     def by_mac(self):
         """Boards that have said who they are, merged by MAC (a new DHCP lease is the same
@@ -156,7 +184,8 @@ class Fleet:
 
     def match_board(self, suffix):
         """A cot's `board` (MAC suffix of any length) against what is on the air.
-        -> ("ok", mac) | ("none", "") | ("ambiguous", "mac1, mac2") | ("blank", "")."""
+        -> ("ok", mac) | ("none", "") | ("ambiguous", "mac1, mac2") | ("blank", "").
+        An "ok" match may be a board that has gone SILENT: the caller asks board_of(mac)."""
         suffix = mac_compact(suffix or "")
         if not suffix:
             return "blank", ""
@@ -166,6 +195,9 @@ class Fleet:
         if not hits:
             return "none", ""
         return "ambiguous", ", ".join(hits)
+
+    def board_of(self, mac):
+        return self.by_mac().get(mac)
 
     def phone_heard(self, dev):
         return bool(dev) and dev in self.phones
@@ -213,6 +245,21 @@ def cots_in(directory):
         return []
     names.sort(key=lambda n: (n == EXAMPLE_NAME, n))
     return [Cot(os.path.join(directory, n)) for n in names]
+
+
+def configs_signature(directory):
+    """What the folder looks like: (name, mtime, size) per .toml. The window re-reads the files
+    when this changes -- polled once a second rather than QFileSystemWatcher, which misses an
+    editor that saves by writing a new file and renaming it over the old one."""
+    try:
+        out = []
+        for n in sorted(os.listdir(directory)):
+            if n.lower().endswith(".toml"):
+                st = os.stat(os.path.join(directory, n))
+                out.append((n, st.st_mtime_ns, st.st_size))
+        return tuple(out)
+    except OSError:
+        return ()
 
 
 # ── starting programs ──────────────────────────────────────────────────────────────────────
@@ -271,6 +318,7 @@ def _item(text, colour=None, mono=False):
 
 class Launcher(QtWidgets.QMainWindow):
     BOARD_COLS = ("IP", "MAC", "fw", "lib", "build", "elfsha", "dgrams/s", "seen")
+    PHONE_COLS = ("device id", "IP", "frames/s", "seen")
     COT_COLS = ("file", "subject", "board", "on the air", "phone", "status", "", "")
 
     def __init__(self, configs_dir, hub, client):
@@ -282,10 +330,15 @@ class Launcher(QtWidgets.QMainWindow):
         self.setWindowTitle(f"{script_name(__file__)}  —  session launcher  —  hub {hub[0]}:{hub[1]}")
         self.setStyleSheet(DARK_QSS)
         self._build()
+        self._configs_sig = configs_signature(configs_dir)
         self.reload_configs()
-        saved = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("geometry")
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        saved = s.value("geometry")
         if saved is None or not self.restoreGeometry(saved):
             self.resize(1100, 700)
+        split = s.value("splitter")
+        if split is not None:
+            self.splitter.restoreState(split)
         self._drain_timer = QtCore.QTimer(self, interval=DRAIN_MS, timeout=self.drain)
         self._refresh_timer = QtCore.QTimer(self, interval=REFRESH_MS, timeout=self.refresh)
         self._drain_timer.start()
@@ -314,34 +367,35 @@ class Launcher(QtWidgets.QMainWindow):
         top.addWidget(self.disk, 1)
         v.addLayout(top)
 
+        # Three tables in a vertical splitter: each one's height is the user's to drag, and the
+        # saved geometry remembers the split.
+        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        v.addWidget(self.splitter, 1)
+
         gb = QtWidgets.QGroupBox("BOARDS ON THE AIR  (read-only: this window cannot change a board)")
         gl = QtWidgets.QVBoxLayout(gb)
-        self.boards = QtWidgets.QTableWidget(0, len(self.BOARD_COLS))
-        self.boards.setHorizontalHeaderLabels(self.BOARD_COLS)
-        self.boards.verticalHeader().setVisible(False)
-        self.boards.horizontalHeader().setStretchLastSection(True)
-        self.boards.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        self.boards.setMaximumHeight(150)
+        self.boards = self._table(self.BOARD_COLS)
         gl.addWidget(self.boards)
         self.firmware = QtWidgets.QLabel("")
         self.firmware.setToolTip("docs/hospital_runbook.md section 1: all boards should report the "
                                  "same fw, build and elfsha. elfsha is the fingerprint of the image "
                                  "itself; two boards with the same elfsha run the same binary.")
         gl.addWidget(self.firmware)
-        self.phones = QtWidgets.QLabel("")
-        self.phones.setToolTip("VideoNest phones heard through the hub, by the device id each one "
-                               "puts in its $VN1 frames. A phone that is not here is not sending: app "
-                               "closed or backgrounded, phone off the WiFi, wrong destination address.")
-        gl.addWidget(self.phones)
-        v.addWidget(gb)
+        self.splitter.addWidget(gb)
 
-        gb2 = QtWidgets.QGroupBox(f"COTS  (one .toml per cot in {self.configs_dir})")
+        gbp = QtWidgets.QGroupBox("PHONES HEARD  (VideoNest, by the device id in its $VN1 frames)")
+        glp = QtWidgets.QVBoxLayout(gbp)
+        self.phones = self._table(self.PHONE_COLS)
+        self.phones.setToolTip("A phone that is not here is not sending: app closed or backgrounded, "
+                               "phone off the WiFi, wrong destination address. The hub replays nothing "
+                               "for phones, so a phone appears once it has sent since this window opened.")
+        glp.addWidget(self.phones)
+        self.splitter.addWidget(gbp)
+
+        gb2 = QtWidgets.QGroupBox(f"COTS  (one .toml per cot in {self.configs_dir}; the files are re-read "
+                                  "by themselves when they change)")
         g2 = QtWidgets.QVBoxLayout(gb2)
-        self.table = QtWidgets.QTableWidget(0, len(self.COT_COLS))
-        self.table.setHorizontalHeaderLabels(self.COT_COLS)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.table = self._table(self.COT_COLS)
         g2.addWidget(self.table)
         row = QtWidgets.QHBoxLayout()
         self.btn_all = QtWidgets.QPushButton("START ALL COTS")
@@ -359,16 +413,24 @@ class Launcher(QtWidgets.QMainWindow):
         self.btn_viewer.clicked.connect(lambda: self.start_extra("viewer"))
         self.btn_folder = QtWidgets.QPushButton("OPEN CONFIGS FOLDER")
         self.btn_folder.clicked.connect(lambda: open_in_system(self.configs_dir))
-        self.btn_reload = QtWidgets.QPushButton("RELOAD")
-        self.btn_reload.setToolTip("Re-read the .toml files (after editing one by hand).")
-        self.btn_reload.clicked.connect(self.reload_configs)
-        for b in (self.btn_all, self.btn_monitor, self.btn_viewer, self.btn_folder, self.btn_reload):
+        for b in (self.btn_all, self.btn_monitor, self.btn_viewer, self.btn_folder):
             row.addWidget(b)
         row.addStretch(1)
         self.extra_status = QtWidgets.QLabel("")
         row.addWidget(self.extra_status)
         g2.addLayout(row)
-        v.addWidget(gb2, 1)
+        self.splitter.addWidget(gb2)
+        self.splitter.setStretchFactor(2, 1)
+
+    @staticmethod
+    def _table(cols):
+        t = QtWidgets.QTableWidget(0, len(cols))
+        t.setHorizontalHeaderLabels(cols)
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        t.horizontalHeader().setStretchLastSection(True)
+        t.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        return t
 
     # -- data in --
     def drain(self):
@@ -411,27 +473,31 @@ class Launcher(QtWidgets.QMainWindow):
         boards = sorted(self.fleet.boards.values(), key=lambda b: (b.mac, b.ip))
         self.boards.setRowCount(len(boards))
         for r, b in enumerate(boards):
-            silent = b.silent(now)
-            col = GREY if silent else None
-            seen = "SILENT %.0f s" % (now - b.last_seen) if silent else "live"
+            seen, seen_colour = seen_text(b.age(now))
+            col = GREY if b.silent(now) else None
             vals = (b.ip, b.mac, b.fields.get("fw", "?"), b.fields.get("lib", "?"),
                     b.fields.get("build", "?"), b.fields.get("elfsha", "?"),
-                    "%.0f" % b.rate, seen)
+                    "%.0f" % (0 if b.silent(now) else b.rate), seen)
             for c, val in enumerate(vals):
-                self.boards.setItem(r, c, _item(val, RED if (c == 7 and silent) else col, mono=c in (1, 5)))
+                self.boards.setItem(r, c, _item(val, seen_colour if c == 7 else col, mono=c in (1, 5)))
         ok, text = self.fleet.firmware_agreement()
         self.firmware.setText(("OK  " if ok else "CHECK  ") + text)
         self.firmware.setStyleSheet(f"color: {GREEN if ok else AMBER};")
-        if self.fleet.phones:
-            parts = []
-            for dev, (ip, last) in sorted(self.fleet.phones.items()):
-                age = now - last
-                parts.append(f"{dev} ({ip}{', silent %.0f s' % age if age > LOST_S else ''})")
-            self.phones.setText("Phones heard: " + ", ".join(parts))
-            self.phones.setStyleSheet(f"color: {FG};")
-        else:
-            self.phones.setText("Phones heard: none yet (VideoNest not sending, or no phone in this campaign)")
-            self.phones.setStyleSheet(f"color: {FG_DIM};")
+
+        phones = sorted(self.fleet.phones.items())
+        self.phones.setRowCount(len(phones))
+        for r, (dev, p) in enumerate(phones):
+            seen, seen_colour = seen_text(p.age(now))
+            col = GREY if p.silent(now) else None
+            vals = (dev, p.ip, "%.1f" % (0 if p.silent(now) else p.rate), seen)
+            for c, val in enumerate(vals):
+                self.phones.setItem(r, c, _item(val, seen_colour if c == 3 else col, mono=c == 0))
+
+        sig = configs_signature(self.configs_dir)
+        if sig != self._configs_sig:
+            self._configs_sig = sig
+            self.reload_configs()      # calls refresh() again on the fresh list; nothing below is stale
+            return
 
         for r, cot in enumerate(self.cots):
             self._cot_row(r, cot)
@@ -454,6 +520,7 @@ class Launcher(QtWidgets.QMainWindow):
             self.table.setItem(r, 1, _item(cot.field("subject") or "(chosen in the window)",
                                            None if cot.field("subject") else FG_DIM))
             self.table.setItem(r, 2, _item(cot.field("board"), mono=True))
+            now = time.monotonic()
             kind, detail = self.fleet.match_board(cot.field("board"))
             text, colour = {
                 "ok":        (detail, GREEN),
@@ -461,14 +528,22 @@ class Launcher(QtWidgets.QMainWindow):
                 "ambiguous": (f"AMBIGUOUS: {detail}", RED),
                 "blank":     ("(no board in the file)", FG_DIM),
             }[kind]
+            if kind == "ok":
+                b = self.fleet.board_of(detail)
+                if b is not None and b.silent(now):        # a board switched off is not on the air
+                    seen, colour = seen_text(b.age(now))
+                    text = f"{detail}  {seen}"
             self.table.setItem(r, 3, _item(text, colour, mono=kind == "ok"))
             dev = cot.field("ref_videonest")
+            p = self.fleet.phones.get(dev) if dev else None
             if not dev:
                 self.table.setItem(r, 4, _item("(none declared)", FG_DIM))
-            elif self.fleet.phone_heard(dev):
-                self.table.setItem(r, 4, _item(f"{dev} heard", GREEN))
-            else:
+            elif p is None:
                 self.table.setItem(r, 4, _item(f"{dev} NOT heard", AMBER))
+            else:
+                age = p.age(now)
+                _, colour = seen_text(age)
+                self.table.setItem(r, 4, _item(f"{dev} heard {age:.0f} s ago", colour))
         text, colour = cot.status()
         self.table.setItem(r, 5, _item(text, colour))
         btn = self.table.cellWidget(r, 6)
@@ -505,6 +580,7 @@ class Launcher(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         s.setValue("geometry", self.saveGeometry())
+        s.setValue("splitter", self.splitter.saveState())
         s.sync()
         self._drain_timer.stop()
         self._refresh_timer.stop()

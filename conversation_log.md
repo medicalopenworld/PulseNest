@@ -26833,3 +26833,17 @@ pide; lo que falta es la ecuación de transferencia del monitor comercial, no he
 
 **No ejecutado.** El acceso directo no se ha creado en este portátil (lo crea `.\scripts\make_session_shortcut.ps1`);
 la ventana no se ha abierto en pantalla, solo offscreen.
+
+### Misma sesión: seis comentarios de Alex sobre el lanzador, en pantalla
+
+1. Tarjeta apagada seguía verde en "on the air" → la fila de la cuna muestra `MAC  SILENT n s` (ámbar a partir de 5 s,
+   rojo a partir de 60 s), y la tabla de tarjetas pone datagramas/s a 0 mientras calla.
+2. Columna "phone": `heard n s ago` con el mismo envejecimiento (verde/ámbar/rojo).
+3. Tabla de teléfonos entre las dos tablas (opinión: sí, hace coherente el punto 2 con la tabla de tarjetas): id,
+   IP, frames/s, seen.
+4. Las tres tablas en un `QSplitter` vertical; el reparto se guarda con la geometría.
+5. RELOAD eliminado (opinión: sí): los `.toml` se vigilan por (nombre, mtime, tamaño) una vez por segundo, que no
+   lo engaña un editor que guarda renombrando; nuevo/editado/borrado aparece solo; una cuna en marcha conserva su
+   proceso.
+6. Todas las columnas con `ResizeToContents` + última estirada (la tabla de tarjetas tenía anchos fijos).
+`tests/pulsenest_session_test.py` 54/54 (silencios, colores, vigilancia de ficheros, splitter). Spec §14 y runbook.

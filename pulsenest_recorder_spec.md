@@ -931,18 +931,22 @@ nothing a session depends on may depend on it. The lab's **SESSION** button only
 launcher, as a detached process.
 
 **What it shows.** (a) *Boards on the air*: IP, MAC, `fw`, `lib`, `build`, `elfsha`, datagram
-rate, live/SILENT (5 s, the recorder's own threshold), merged by MAC as the recorder binds them;
-one line says whether every identified board runs the same image (`fw` + `elfsha`), amber if not.
-(b) *Phones heard*: the VideoNest device ids seen in `$VN1` frames, through the hub (the hub
-replays nothing for phones, so a phone is listed once it has sent since the launcher opened).
+rate, live/SILENT (5 s, the recorder's own threshold; red past 60 s), merged by MAC as the
+recorder binds them; one line says whether every identified board runs the same image (`fw` +
+`elfsha`), amber if not. (b) *Phones heard*: a table of the VideoNest device ids seen in `$VN1`
+frames, with IP, frame rate and the same live/SILENT ageing (the hub replays nothing for phones,
+so a phone is listed once it has sent since the launcher opened). The three tables sit in a
+vertical splitter and every column is sized to its contents (Alex, 2026-10-14).
 (c) *Disk*: free space where sessions are written, as hours of recording for the boards on the
 air at 17 MB/min each (§1 of the runbook); red below the 2 GB floor at which the recorder refuses
 to start. (d) *The clock*, large, for the CLOCK ANCHOR photograph. (e) *Cots*: one row per
 `.toml` in `docs/session_configs` (Alex, 2026-10-14: the files stay there and are edited by
 hand), read with the recorder's own `load_session_config`, so a file the recorder would refuse is
 shown with its error instead of a START. Per row: subject, `board` suffix, the live MAC it
-matches (amber *not on the air*, red *AMBIGUOUS* naming both — the recorder would stop on it),
-the declared phone and whether it has been heard, and the state of the process started from here.
+matches (amber *not on the air*, red *AMBIGUOUS* naming both — the recorder would stop on it;
+a matched board that has gone quiet shows `SILENT n s` instead of staying green), the declared
+phone as *heard n s ago* (green, amber past 5 s, red past 60 s) or *NOT heard*, and the state of
+the process started from here.
 
 **What it does.** START runs **exactly** the runbook's command line —
 `pythonw tools/pulsenest_recorder_gui.py --config <file>` (`--hub` only when not the default) —
@@ -950,7 +954,9 @@ as a detached process: a new process group, no inherited stdio, the same flags w
 `hub_client.launch_hub` starts the hub. So one process per baby survives, the launcher can be
 closed or crash, and FULL substitution holds (nothing from the launcher is merged into a cot).
 A running cot cannot be started twice; a cot that exited shows its return code and can be
-started again; RELOAD re-reads the files without forgetting a running process. START ALL COTS
+started again. The `.toml` files are watched (name, mtime, size polled once a second, which an
+editor that saves by rename cannot fool): a new, edited or removed file changes the table by
+itself, and a running cot keeps its process across a re-read. START ALL COTS
 skips `example.toml`, the broken files and the running ones. FLEET MONITOR starts
 `tools/fleet_monitor.py` under console python in a console of its own; PPG VIEWER starts
 `tools/fleet_ppg_viewer.py` detached. EDIT and OPEN CONFIGS FOLDER hand the file or the folder
