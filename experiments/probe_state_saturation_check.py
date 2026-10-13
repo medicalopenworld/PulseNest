@@ -17,7 +17,7 @@ Reads a Lab Capture CSV, decodes CH_MASKS per sample, and reports:
 CH_MASKS is %04X: bits[3:0]=adc_sat_pos, [7:4]=adc_sat_neg, [11:8]=tia_over_fs, [15:12]=tia_over_lin.
 Within each nibble: bit0=LED1, bit1=ALED1, bit2=LED2, bit3=ALED2 (enum AFE4490Ch).
 
-Usage:  python tools/probe_state_saturation_check.py captures/SATCHECK_*.csv
+Usage:  python experiments/probe_state_saturation_check.py captures/SATCHECK_*.csv
 """
 import sys
 import numpy as np

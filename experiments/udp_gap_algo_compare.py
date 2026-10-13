@@ -14,7 +14,7 @@ even when a whole datagram is removed, while NEW reports the 5 lost samples. Rep
 both agree. Whether OLD cries wolf or goes blind depends on the counter difference versus its
 0 < gap <= 5000 window: boards booted within ~10 s of each other produce false gaps instead.
 
-Usage:  python tools/udp_gap_algo_compare.py [seconds]
+Usage:  python experiments/udp_gap_algo_compare.py [seconds]
 Run with pulsenest_lab.py closed (it binds the data port).
 """
 import socket

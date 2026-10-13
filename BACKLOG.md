@@ -90,7 +90,7 @@ has not been triaged yet.
 
 - Plan de contingencia ante el riesgo de posible crash aleatorio de pulsenest_lab.py mientras se mide en un hospital:
 	1. [x] Desarrollar una app de captura robusta sin Qt — HECHO 2026-09-20/22: `tools/pulsenest_recorder.py` (`.pnraw` + CSV en vivo, v0.4 por defecto) y su ventana `pulsenest_recorder_gui.py`; conversor `tools/pulsenest_convert.py` reproduce el CSV byte a byte desde el `.pnraw`
-	2. [x] Opción de desactivar gráficos — HECHO 2026-09-17 (v1.63, spec §6.5.2): botón PLOTS, cierra y bloquea las 14 subventanas con pyqtgraph; SIGNAL STATS/HW CONFIG/LAB CAPTURE/hub intactos; persiste tras reinicio; `tools/disable_plots_test.py` 13/13
+	2. [x] Opción de desactivar gráficos — HECHO 2026-09-17 (v1.63, spec §6.5.2): botón PLOTS, cierra y bloquea las 14 subventanas con pyqtgraph; SIGNAL STATS/HW CONFIG/LAB CAPTURE/hub intactos; persiste tras reinicio; `tests/disable_plots_test.py` 13/13
 - [x] Añadir zoom a VideoNest
 - [x] **`esp_wifi_set_ps(WIFI_PS_NONE)`** → APLICADO y MEDIDO 2026-09-10. PulseNest no lo configuraba (defecto Arduino `WIFI_PS_MIN_MODEM`); motherBoard sí, con el comentario *"Mobile hotspots often drop power-saving clients"*. Añadido `WiFi.setSleep(WIFI_PS_NONE)` en `src/main.cpp` tras `WiFi.mode(WIFI_STA)`, flasheado en 16.A y 17.A. **El efecto depende por completo de si la placa está emitiendo**, y se midieron los dos regímenes con `tools/udp_cmd_latency.py` (ida y vuelta de `$CFG?`, ruta de bajada):
 	- **Emitiendo 100 datagramas/s, operación normal: no cuesta nada medible.** 16.A p50 19 ms sin el cambio, 16-22 ms con él. Una placa que transmite cada 10 ms casi nunca duerme de verdad y el suelo lo pone el ciclo de 50 ms de `Cmd_Task`.

@@ -13,9 +13,9 @@ The firmware side is `include/wifi_config.h` (UDP_TARGET_PORT / UDP_CMD_PORT). T
 the WiFi credentials and is gitignored, so it cannot be the repository's source of truth; this
 module is. Running it checks that the local wifi_config.h agrees:
 
-    python pulsenest_net.py
+    python pulsenest/net.py
 
-Every host-side program imports from here -- pulsenest_lab.py, tools/tia_linearity_sweep.py and
+Every host-side program imports from here -- pulsenest_lab.py, experiments/tia_linearity_sweep.py and
 the rest of tools/. Until 2026-09-16 each of them carried its own copy of both numbers.
 
 It also holds script_name()/banner(), so that a running program always says which file it is:
@@ -54,7 +54,7 @@ _FIRMWARE_MIRROR = {
 
 def check_firmware_mirror(path=None):
     """-> list of mismatch strings, empty when include/wifi_config.h agrees with this module."""
-    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+    path = path or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "include", "wifi_config.h")
     try:
         text = open(path, encoding="utf-8", errors="replace").read()
@@ -73,7 +73,7 @@ def check_firmware_mirror(path=None):
 if __name__ == "__main__":
     issues = check_firmware_mirror()
     if issues:
-        print("MISMATCH between pulsenest_net.py and include/wifi_config.h:")
+        print("MISMATCH between pulsenest/net.py and include/wifi_config.h:")
         for line in issues:
             print("  " + line)
         sys.exit(1)

@@ -1,17 +1,17 @@
-"""Offline checks for pulsenest_capture_csv.py -- the piece whose mistakes are silent.
+"""Offline checks for pulsenest/capture_csv.py -- the piece whose mistakes are silent.
 
 A column indexed wrong does not raise: it writes a well-formed row of the wrong numbers, and
 nobody notices until the analysis. So the indexing, the frame-mode fallbacks, the RF conversion
 and the refusal to turn a non-data line into a row are checked here, with no board and no hub:
 
-    python tools/capture_csv_test.py
+    python tests/capture_csv_test.py
 """
 import os
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_capture_csv import (CaptureCsvWriter, CAPTURE_COLS, col_spec_all,  # noqa: E402
+from pulsenest.capture_csv import (CaptureCsvWriter, CAPTURE_COLS, col_spec_all,  # noqa: E402
                                    col_spec_mandatory)
 
 print(f"== {os.path.basename(__file__)} ==  the shared capture CSV writer")
@@ -25,8 +25,8 @@ def check(name, cond, detail=""):
 
 # $M4 with a recognisable value in every field: field k holds k, except the last two (RF strings).
 M4 = "$M4," + ",".join(str(i) for i in range(1, 34)) + ",500K,10K*06"
-from pulsenest_capture_csv import COLUMN_MIN_FW  # noqa: E402
-import pulsenest_capture_dict as D  # noqa: E402
+from pulsenest.capture_csv import COLUMN_MIN_FW  # noqa: E402
+import pulsenest.capture_dict as D  # noqa: E402
 M1 = "$M1,7,8,9*00"
 M2 = "$M2,11,12,13,14,15,16,17,18,19,20*00"
 

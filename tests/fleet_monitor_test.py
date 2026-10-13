@@ -3,7 +3,7 @@
 Feeds synthetic $CFG and $M4 datagrams straight into BoardView/render(), so it needs neither a
 hub nor a board and runs in a fraction of a second:
 
-    python tools/fleet_monitor_test.py
+    python tests/fleet_monitor_test.py
 
 Covers what the columns promise (2026-09-17): the shortened IP/MAC/probe labels and the fallback
 to full addresses across subnets, the column order SpO2 HR1 HR2 HR3 RF1 TIA1 RF2 TIA2, the fields
@@ -16,9 +16,8 @@ import re
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import fleet_monitor as F  # noqa: E402
+import tools.fleet_monitor as F  # noqa: E402
 
 print(f"== {os.path.basename(__file__)} ==  offline checks of the fleet_monitor table")
 

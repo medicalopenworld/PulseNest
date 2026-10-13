@@ -26641,3 +26641,38 @@ de luz no es separable del patrón ε** (el análisis de la mañana estaba mal);
 ε queda en ±3 %, similar entre chips a 25K–1M. Saltos de un tap sobre OT: 100K→250K +2–3 %, 25K→50K +0,5–0,8 %,
 resto < 0,5 %; RF1 = RF2 (misma resistencia). El simulador de anoche queda confirmado. En producto, calibrar
 sobre OT (el offset se cancela), o tabla constante, o exclusión de bloques. **Decisión de Alex pendiente.**
+
+## 2026-10-13 — Reorganización de los `.py`: paquete `pulsenest/`, `tests/`, `experiments/`
+
+**Pregunta de Alex.** Por qué unos `.py` están en la raíz y otros en `tools/`; propuesta de organización.
+
+**Análisis.** La regla implícita (raíz = módulos que importan varios programas + lab/hub; `tools/` = el resto)
+no estaba escrita en ningún sitio y fallaba: `tools/` mezclaba programas de operador, 12 tests, 13 experimentos
+puntuales y módulos compartidos (`capture_set`, `fleet_monitor`, `fleet_ppg_viewer`, `pulsenest_recorder`);
+30 de 36 ficheros llevaban `sys.path.insert` (dos líneas los que importaban hermanos), `hr1_probepert_sweep.py`
+con ruta absoluta `C:\PRJ\MOW\PulseNest` y `udpcom_view_test.py` dependiente del cwd; dos convenciones de tests
+(C++ en `test/`, Python junto al código).
+
+**Decisiones.**
+- Carpeta = qué es el fichero. Raíz: solo `pulsenest_lab.py` y `pulsenest_hub.py`. `pulsenest/` (paquete):
+  `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set`. `tools/`: programas de operador, importable
+  como `tools.<x>`. `tests/`: los 12 `*_test.py`. `experiments/`: hr1_*, tia_linearity_sweep, opengl_paint_bench,
+  udp_gap_algo_compare, frame_size_bounds, probe_state_saturation_check, rf_tap_bench/analyze, agent_sweep_batch.
+  `scripts/` sin cambios. Nombre `pulsenest/` y no `lib/`/`shared/`: en Python la carpeta es el nombre de import,
+  `lib/` ya es el componente C++ y un nombre genérico puede chocar con paquetes instalados.
+- Línea única de ruta (`sys.path.insert(0, <raíz>)`) en vez de `pyproject.toml` + `pip install -e .`: clonar y
+  ejecutar sin paso de instalación en banco y hospital. Migrable a pyproject sin tocar nada más.
+- Imports raíz-relativos en todo: `pulsenest.x`, `tools.x`, `pulsenest_hub`. `tools/__init__.py` explícito.
+- Regla escrita en README (tabla) y CLAUDE.md. `.claudeignore` limpiado de entradas de la era PlatformIO.
+- `git mv` (historial conservado), 47 ficheros reescritos; specs y docs con las rutas nuevas (no el log).
+
+**Verificación.** Los 12 tests desde `tests/` y desde otro cwd: 11 OK, igual que antes del traslado.
+`pulsenest_capture_dict_test` ya fallaba antes: falta `afe_settle_freeze_enable` (fw 0.22) en el diccionario
+R18 — **pendiente**, no es de esta tarea. `python pulsenest/net.py` OK. py_compile de todo OK.
+
+**Fuera de alcance, pendiente de Alex.** Los 11 `.py` de `captures/sessions/20260923_HOSPNAV_SUBJ0{8,9}_ANALYSIS/`
+(método del sesgo −11/−8,7) no están versionados (`captures/*`). Leen datos relativos a su propia carpeta, así
+que copiarlos a `experiments/` los rompe; la vía sería una excepción en `.gitignore` para `*.py` dentro de
+`*_ANALYSIS/`. Contienen `SUBJ08/09` (códigos) y el nombre de un teléfono (`Pixel8aACM`); revisar antes.
+Tampoco se ha extraído lo que `pulsenest_recorder_gui` importa de `fleet_ppg_viewer`/`fleet_monitor` al paquete,
+ni retirado `frame_size_bounds.py` (lee `src/main.cpp`, que ya no existe).

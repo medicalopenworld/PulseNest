@@ -150,9 +150,9 @@ Related: `captures/CAPTURE_SET_SPEC.md` (§2.3 ranking of sources, §2.4 naming,
 ## D. Columns and dictionary
 
 - **R18 — A versioned canonical dictionary**, one for every profile, **covering columns and
-  configuration keys alike** — **exists since 2026-09-22: `pulsenest_capture_dict.py`**, data only
+  configuration keys alike** — **exists since 2026-09-22: `pulsenest/capture_dict.py`**, data only
   (37 columns with every name ever written as a synonym, 92 keys across `id`/`session`/`clock`/`afe`/
-  `timing`/`alg` with their wire origin and scale), checked by `tools/pulsenest_capture_dict_test.py`
+  `timing`/`alg` with their wire origin and scale), checked by `tests/pulsenest_capture_dict_test.py`
   against `CAPTURE_COLS`, the firmware's three frame format strings (both directions, so a new wire
   key fails the test until it is named) and Appendix B. *Original requirement:* covering columns and
   configuration keys alike** (v0.4): name, meaning, unit, type, range, sentinel, provenance
@@ -550,7 +550,7 @@ seen**, never invented.
 
 ### Phase 1 — The dictionary, R18 (and it closes D2/R19)
 
-Deliverable: `pulsenest_capture_dict.py` — data, no logic — one entry per column and per
+Deliverable: `pulsenest/capture_dict.py` — data, no logic — one entry per column and per
 configuration key: name, meaning, unit, type, range, sentinel, provenance (`fw measured` /
 `fw computed` / `host` / `derivable` / `config`), domain, version introduced. Columns: the 35 of
 `CAPTURE_COLS` under canonical names (R19 grammar `[<origin>_]<quantity>[_<channel>][_<unit>]`,
@@ -565,9 +565,9 @@ line resolves; no two entries share a name; the dictionary is what `header()` wi
 
 ### Phase 2 — The writer, `CaptureCsvWriter` v0.4 (shared by lab, recorder, converter — R3)
 
-**Done 2026-09-22 as `CaptureCsvWriterV04`, a second class in `pulsenest_capture_csv.py`** (the
+**Done 2026-09-22 as `CaptureCsvWriterV04`, a second class in `pulsenest/capture_csv.py`** (the
 legacy class is untouched — a second class was less risk than a mode switch inside every method),
-38 checks in `tools/capture_csv_v04_test.py`, replaying the frozen corpus too. Wired into
+38 checks in `tests/capture_csv_v04_test.py`, replaying the frozen corpus too. Wired into
 `pulsenest_recorder.py` and the window as **`--csv v04`** (default still `on`); a 25 s bench
 session writes the header below, three snapshots, anchors every 10 s, `end:` on close. Departures
 from the list that follows, all deliberate: (a) **item 8 is void — RF left the columns**, because
@@ -604,7 +604,7 @@ Same class, new mode; `legacy` stays as the other branch of the same methods. In
    columns are today the only record of those moves, and R21a-as-event would silently lose them.
    The header says so: `# rf_as_columns=1 reason=fw-prereq-6`. When the firmware announces RF, the
    flag flips and the columns go, exactly as R21a specifies.
-Tests: extend `tools/capture_csv_test.py` — one fixture per special line; the Appendix B example
+Tests: extend `tests/capture_csv_test.py` — one fixture per special line; the Appendix B example
 regenerated from the writer, byte for byte, so the spec's example is the test's expected output.
 
 ### Phase 3 — The converter, `tools/pulsenest_convert.py` (.pnraw → v0.4 CSV)
@@ -616,7 +616,7 @@ an `@E` fired before a stream opened is in no `.pnraw`) and re-applying the stat
 (subject binding, condition, probe, reference fields, phone id). **Acceptance test met**: with
 `--csv on` the three live CSVs of the frozen corpus (3 × 20 000 rows, three boards) come back
 **byte for byte identical**, and so does a scripted session with console commands, a gap and a
-`# STAT` line, in both formats (`tools/pulsenest_convert_test.py`, 10 checks). `--csv v04` on the
+`# STAT` line, in both formats (`tests/pulsenest_convert_test.py`, 10 checks). `--csv v04` on the
 same corpus writes the v0.4 container: 60 042 lines per board, header off the board's own `$CFG`,
 `afe:`/`timing:` at `@row 0` (no `alg:` — that session predates D14, so no `$LCFG` is in its
 record: the converter invents nothing), anchors every 10 s. Byte-equality in `v04` is between the
@@ -697,7 +697,7 @@ Alex asked why the `#` lines at the top of a capture differ between `pulsenest_l
 `tools/pulsenest_recorder(_gui).py`, and whether v0.4 is meant for both. Both questions have
 concrete answers.
 
-**They share one writer class** — `CaptureCsvWriter` in `pulsenest_capture_csv.py` (`LabCaptureWriter`
+**They share one writer class** — `CaptureCsvWriter` in `pulsenest/capture_csv.py` (`LabCaptureWriter`
 is its old name, kept as an alias) — so the difference is not in the writer, it is in what each
 caller hands it as `pre_notes`. Today, three genuinely different shapes exist, none of them v0.4:
 
@@ -755,7 +755,7 @@ header now follows it too, without waiting for the rest of the migration.
    the R26 identity/provenance keys parsed out of `$CFG`, the three snapshots of R24 built from
    `$CFG`/`$TCFG`/`$LCFG` at open and on every change (`from-board:` verbatim optional), live
    gap/stall checks, anchors, `# end` summary, fixed-point `OT1/OT2` computed from codes.
-   **1b. DONE 2026-09-22 — `pulsenest_capture_dict.py`.** The dictionary (R18) must exist first: every `afe_*`, `timing`, `alg` key named, with
+   **1b. DONE 2026-09-22 — `pulsenest/capture_dict.py`.** The dictionary (R18) must exist first: every `afe_*`, `timing`, `alg` key named, with
    unit and type, before a single snapshot is written — a snapshot with unnamed keys is a wire
    frame again.
 2. Firmware: `FW_Ts_us` as 64-bit (F1) — no longer blocking, still a defect.

@@ -1,10 +1,10 @@
 """Compare HR1 beat detectors on recorded captures: current threshold vs SSF vs TERMA.
 
-Usage:  python tools/hr1_detector_experiment.py [capture.csv ...]
+Usage:  python experiments/hr1_detector_experiment.py [capture.csv ...]
         (no arguments: runs the default set from captures/)
 
 WHY THIS EXISTS
-The filter experiment (tools/hr1_filter_experiment.py) showed the detector, not the low-pass, is
+The filter experiment (experiments/hr1_filter_experiment.py) showed the detector, not the low-pass, is
 HR1's weak link: under phototherapy interference, with a true rate of 60 BPM, HR1 reads 75.5 BPM
 with the moving average and 66.1 with a biquad. Both fail; a better filter only masks a detector
 that crosses a threshold without ever asking whether the crossing looks like a pulse.
@@ -314,8 +314,8 @@ def run(path):
 
 # The default working set comes from the capture manifest, not from a list of paths written
 # here: the same list used to be duplicated in hr1_filter_experiment.py, and it carried
-# subject names and ages into a public repository. See tools/capture_set.py.
-from capture_set import hr1_experiment_captures
+# subject names and ages into a public repository. See pulsenest/capture_set.py.
+from pulsenest.capture_set import hr1_experiment_captures
 
 if __name__ == "__main__":
     paths = sys.argv[1:] or hr1_experiment_captures()

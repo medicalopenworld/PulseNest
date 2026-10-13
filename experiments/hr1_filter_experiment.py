@@ -1,6 +1,6 @@
 """Compare HR1's moving average against a Butterworth biquad, on recorded captures.
 
-Usage:  python tools/hr1_filter_experiment.py [capture.csv ...]
+Usage:  python experiments/hr1_filter_experiment.py [capture.csv ...]
         (no arguments: runs the default set from captures/)
 
 WHY THIS EXISTS
@@ -280,8 +280,8 @@ def run(path):
 
 # Shared with hr1_detector_experiment.py through the capture manifest instead of being
 # duplicated here — and without subject names, which this list used to carry into a public
-# repository. See tools/capture_set.py.
-from capture_set import hr1_experiment_captures
+# repository. See pulsenest/capture_set.py.
+from pulsenest.capture_set import hr1_experiment_captures
 
 if __name__ == "__main__":
     paths = sys.argv[1:] or hr1_experiment_captures()

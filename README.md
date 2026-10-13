@@ -54,15 +54,34 @@ pythonw pulsenest_lab.py
 
 ## Project structure
 
+The folder says what a Python file *is*, not when it was written:
+
+| Folder | What lives there | Rule |
+|---|---|---|
+| repo root | `pulsenest_lab.py`, `pulsenest_hub.py` | The two programs launched by hand every day |
+| `pulsenest/` | `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set` | Importable package: anything more than one program imports (`from pulsenest.net import ...`) |
+| `tools/` | recorder, recorder GUI, converter, fleet monitor, PPG viewer, UDP utilities, capture index | Programs an operator or maintainer runs on purpose; importable as `tools.<name>` |
+| `tests/` | `*_test.py` | Python tests, one per module they check (`python tests/<name>.py`). C++ host tests stay in `test/` |
+| `experiments/` | one-off studies and bench campaigns | Dated, with the result recorded in the docstring; not maintained as tools |
+| `scripts/` | `build.ps1`, `gen_build_version.py` | Build system only |
+
+Every script outside the root puts the repo root on `sys.path` with one line and imports from
+`pulsenest.` / `tools.` / the root modules, so it runs from any working directory:
+
+```python
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 ```
-lib/incunest_afe4490/          — AFE4490 library (driver + algorithms)
-  incunest_afe4490.h           — API
-  incunest_afe4490.cpp         — Implementation
-incunest_afe4490_spec.md       — Library design specification
+
+```
+lib/incunest_afe4490/          — AFE4490 library (driver + algorithms), symlink to its own repo
 main/pulsenest_main.cpp        — Test firmware (ESP-IDF); CMakeLists.txt, sdkconfig.defaults, sdkconfig.board.V1x
 examples/basic/main.cpp        — Minimal integration example
-pulsenest_lab.py                 — Real-time PPG/SpO2/HR visualizer
-test/                          — Host unit tests (Unity); built by tools/host_tests/
+pulsenest_lab.py               — Real-time PPG/SpO2/HR visualizer (pulsenest_lab_spec.md)
+pulsenest_hub.py               — Owns the UDP data port, fans the stream out to every host program
+pulsenest/                     — Shared host-side modules (see table)
+tools/                         — Operator programs; tools/pulsenest_recorder.py has pulsenest_recorder_spec.md
+tests/                         — Python tests;  test/ — host unit tests (Unity), built by tools/host_tests/
+experiments/                   — One-off studies;  analysis/ — their figures and CSV outputs
 scripts/build.ps1              — Build / OTA / USB flash per board
 conversation_log.md            — Session-by-session design decisions log
 ```

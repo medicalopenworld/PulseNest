@@ -4,7 +4,7 @@ Builds the real Qt window against a real Recorder writing to a temporary directo
 hub client, then drives the controls the way a person does and reads what reached the FILES.
 Needs neither a hub nor a board:
 
-    python tools/pulsenest_recorder_gui_test.py
+    python tests/pulsenest_recorder_gui_test.py
 
 What it is checking, and why each one earns its place. The window's whole reason to exist is to
 reduce human error, so the checks are about the guard rails rather than about pixels:
@@ -29,10 +29,9 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pulsenest_recorder_gui as G  # noqa: E402
+import tools.pulsenest_recorder_gui as G  # noqa: E402
 from PyQt5 import QtWidgets          # noqa: E402
 
 # Before a window exists: closeEvent saves geometry, and a test must never touch the real .ini.

@@ -48,14 +48,13 @@ import sys
 import time
 import tomllib
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT, script_name                     # noqa: E402
-from pulsenest_hub_client import HubClient                               # noqa: E402
-from pulsenest_recorder import (Recorder, NotEnoughSpace,                # noqa: E402, F401
+from pulsenest.net import UDP_DATA_PORT, script_name                     # noqa: E402
+from pulsenest.hub_client import HubClient                               # noqa: E402
+from tools.pulsenest_recorder import (Recorder, NotEnoughSpace,                # noqa: E402, F401
                                 add_session_args, apply_session_config, CONFIG_FIELDS,
                                 mac_compact, normalise_subject)
-from fleet_ppg_viewer import (BoardTrace, make_stats_widget, stats_width,  # noqa: E402
+from tools.fleet_ppg_viewer import (BoardTrace, make_stats_widget, stats_width,  # noqa: E402
                               stats_columns, MIN_PLOT_W, RED)
 import pyqtgraph as pg                                                   # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                               # noqa: E402

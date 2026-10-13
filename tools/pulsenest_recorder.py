@@ -73,9 +73,9 @@ import tomllib
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
-from pulsenest_net import UDP_DATA_PORT, script_name           # noqa: E402
-from pulsenest_hub_client import HubClient                      # noqa: E402
-from pulsenest_capture_csv import CaptureCsvWriter, CaptureCsvWriterV04, col_spec_all  # noqa: E402
+from pulsenest.net import UDP_DATA_PORT, script_name           # noqa: E402
+from pulsenest.hub_client import HubClient                      # noqa: E402
+from pulsenest.capture_csv import CaptureCsvWriter, CaptureCsvWriterV04, col_spec_all  # noqa: E402
 
 RECORDER_VERSION = "0.1"
 FORMAT_TAG = b"@PNRAW1"

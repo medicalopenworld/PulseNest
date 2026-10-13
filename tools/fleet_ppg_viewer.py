@@ -93,18 +93,17 @@ import time
 from collections import deque
 from html import escape
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT, banner, script_name  # noqa: E402
+from pulsenest.net import UDP_DATA_PORT, banner, script_name  # noqa: E402
 from pulsenest_hub import AUX_PREFIXES           # noqa: E402  (one rule, one place)
-from pulsenest_hub_client import HubClient                    # noqa: E402
+from pulsenest.hub_client import HubClient                    # noqa: E402
 # fit() belongs to the fleet monitor, which is the table tool and where the rule was argued out
 # and debugged (a cell must never widen its column; it drops decimals, then gives up with
 # '#####' rather than print a truncated digit string, which is a different number). Imported
 # rather than copied: two implementations of that rule would drift. Here the column is a real
 # table column measured for VAL_CHARS, so fit() is asked for that many characters and its job
 # is the same one: keep a cell from making its column wider than it was measured to be.
-from fleet_monitor import fit                                 # noqa: E402
+from tools.fleet_monitor import fit                                 # noqa: E402
 import pyqtgraph as pg                                        # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                    # noqa: E402
 

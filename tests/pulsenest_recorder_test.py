@@ -2,10 +2,10 @@
 
 Part 1 drives the Recorder core directly with synthetic datagrams and a fake clock -- no hub, no
 board, a temp directory, a fraction of a second. Part 2 runs the real hub in-process on a spare
-loopback port with two fake boards (the pattern of tools/hub_test.py) and lets the recorder's
+loopback port with two fake boards (the pattern of tests/hub_test.py) and lets the recorder's
 own main loop pieces record them for a moment.
 
-    python tools/pulsenest_recorder_test.py
+    python tests/pulsenest_recorder_test.py
 
 What is checked (pulsenest_recorder_spec.md, sections in brackets):
 [3] the directory and session.json exist before the first datagram; the session id shape
@@ -28,9 +28,8 @@ import tempfile
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import pulsenest_recorder as R  # noqa: E402
+import tools.pulsenest_recorder as R  # noqa: E402
 
 print(f"== {os.path.basename(__file__)} ==  recorder core + in-process hub")
 
@@ -743,7 +742,7 @@ try:
     # ── Part 2: real hub in-process, two fake boards, the recorder's I/O pieces ────────────
     import socket
     import pulsenest_hub as H
-    import pulsenest_hub_client as C
+    import pulsenest.hub_client as C
     C.AUTOSTART_ENABLED = False
     H.CFG_RETRY_S = 0.3
     DATA_PORT, CMD_PORT = 15205, 15206

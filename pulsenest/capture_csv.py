@@ -6,7 +6,7 @@ and the recorder exists precisely to have no Qt in it. R3 of `capture_csv_format
 one writer per platform, shared by the lab, the recorder and the converter; this module is that
 one writer, and moving it here is what makes the rule true rather than aspirational.
 
-    from pulsenest_capture_csv import CaptureCsvWriter, CAPTURE_COLS, col_spec_all
+    from pulsenest.capture_csv import CaptureCsvWriter, CAPTURE_COLS, col_spec_all
 
     w = CaptureCsvWriter(path, col_spec_all(), host_t_us=True, label="10:51:DB:50:88:50")
     w.open(pre_notes="# CFG ...")
@@ -24,7 +24,7 @@ already read, and what `--csv on` selects. `CaptureCsvWriterV04` (2026-09-22) wr
 `.pnraw` keeps everything needed to regenerate either.
 """
 import re
-import pulsenest_capture_dict as D
+import pulsenest.capture_dict as D
 
 # The canonical column table: (UI label, CSV name, index in the $M1 field list, mandatory).
 # The index is the position in the comma-separated frame after the '$', so 1 = the first field

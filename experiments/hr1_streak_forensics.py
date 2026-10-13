@@ -33,7 +33,7 @@ never fails). The resulting 2.323 s interval then sits in the 5-RR buffer for fi
 of SQI=0. tau=1.5 s (the value already recommended from the perturbed MS100 sweep) removes the
 miss on all three boards with zero extra detections.
 
-Usage:  python tools/hr1_streak_forensics.py [pattern] [--png]
+Usage:  python experiments/hr1_streak_forensics.py [pattern] [--png]
         pattern defaults to MULTI_IDF_PROBE_*.csv
 """
 

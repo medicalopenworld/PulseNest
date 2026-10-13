@@ -86,8 +86,7 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT, banner, script_name  # noqa: E402
+from pulsenest.net import UDP_DATA_PORT, UDP_CMD_PORT, banner, script_name  # noqa: E402
 
 HUB_SIGIL      = b"@"
 PING_S         = 2.0     # what a subscriber is expected to send (pulsenest_hub_client does)

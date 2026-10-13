@@ -29,7 +29,7 @@ the magnitude is still bounded by a float's range):
   %04X packed uint8_t masks      -> 5   (four uint8_t OR-ed at shifts 0/4/8/12 reach 0xFFFFF)
   %s   afeRFToStr()              -> 4   ("100K"/"250K"/"500K")
 
-Usage:  python tools/frame_size_bounds.py
+Usage:  python experiments/frame_size_bounds.py
 Exit code 1 if any mode's worst case exceeds any of its limits.
 """
 import os

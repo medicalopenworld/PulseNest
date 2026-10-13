@@ -3,8 +3,8 @@
 Reference data for the seven TIA gain taps of the AFE4490 (10K … 1M) on every IncuNest board,
 measured under constant illumination: the LEDs of the probe covered, the photodiode seeing ambient
 light only, so the four phases (LED1, ALED1, LED2, ALED2) carry the same current and
-`V_TIA = I_amb(t) · RF_nominal · (1 + ε_tap) + V_off_phase`. Produced by `tools/rf_tap_bench.py`
-(protocol A–G below, every board in parallel, HGAC off) and `tools/rf_tap_analyze.py` (fit,
+`V_TIA = I_amb(t) · RF_nominal · (1 + ε_tap) + V_off_phase`. Produced by `experiments/rf_tap_bench.py`
+(protocol A–G below, every board in parallel, HGAC off) and `experiments/rf_tap_analyze.py` (fit,
 tables, figures, report skeleton). **Report with conclusions: `rf_tap_report_<date>.md`.**
 
 ## Files
@@ -23,7 +23,7 @@ tables, figures, report skeleton). **Report with conclusions: `rf_tap_report_<da
 A re-run of the same date and board replaces its rows in the derived tables; other dates and
 boards accumulate. Raw files are versioned on purpose (≈ 22 MB per board per run).
 
-## Protocol (`tools/rf_tap_bench.py`)
+## Protocol (`experiments/rf_tap_bench.py`)
 
 A precheck · B slow ladder 10K → 1M → 10K, 10 s per rung, a 100K reference rung between taps
 (light drift) · C fast ladder, 100 ms per rung, 10× · D neighbouring pairs toggled 20× at 200 ms

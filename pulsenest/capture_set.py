@@ -14,7 +14,7 @@ the manifest is two files:
 
 Typical use:
 
-    from capture_set import select
+    from pulsenest.capture_set import select
     for cap in select(condition="R2"):
         run(cap.path)
 """

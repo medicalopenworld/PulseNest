@@ -1,7 +1,7 @@
 """Offscreen check of the three UDP COM view modes (v1.52)."""
 import os, sys, tempfile
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-sys.path.insert(0, os.path.abspath("."))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 import pulsenest_lab as P
 
 P.SETTINGS_FILE = os.path.join(tempfile.gettempdir(), "pulsenest_udpcom_test.ini")

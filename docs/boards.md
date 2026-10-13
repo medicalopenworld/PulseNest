@@ -227,7 +227,7 @@ USB, so the supply is not what explains it.
 ## Bench characterisation of the analog chain (constant light, LEDs covered)
 
 Reference data and report in `docs/rf_taps/` (`rf_tap_report_2026-10-08.md`), produced by
-`tools/rf_tap_bench.py` + `tools/rf_tap_analyze.py`. Per board, 2026-10-08 (fw 0.22 / lib 0.104,
+`experiments/rf_tap_bench.py` + `experiments/rf_tap_analyze.py`. Per board, 2026-10-08 (fw 0.22 / lib 0.104,
 two light levels):
 
 | Board | `V_TIA` offset (LED phases / ALED phases) | ε of the taps 10K / 25K / 50K / 100K / 250K / 500K / 1M [%] |

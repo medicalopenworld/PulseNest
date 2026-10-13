@@ -20,7 +20,7 @@ Scenario
   11. A rival program holds the hub's control: the lab still receives, its UDP button says
      READ-ONLY, its $SET is not sent, and the control comes back on its own when the rival leaves.
 
-Usage:  python tools/udp_multiboard_test.py [--live-template]
+Usage:  python tests/udp_multiboard_test.py [--live-template]
 Exit code 0 when every check passes.
 """
 import io
@@ -41,7 +41,7 @@ os.chdir(_ROOT)
 
 import pulsenest_lab as P  # noqa: E402
 import pulsenest_hub as H  # noqa: E402
-import pulsenest_hub_client as HC  # noqa: E402
+import pulsenest.hub_client as HC  # noqa: E402
 from PyQt5 import QtCore, QtWidgets  # noqa: E402
 
 DATA_PORT, CMD_PORT = 15005, 15006

@@ -20,8 +20,8 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import UDP_DATA_PORT, banner, script_name  # noqa: E402  (the one place the ports live)
-from pulsenest_hub_client import HubClient       # noqa: E402
+from pulsenest.net import UDP_DATA_PORT, banner, script_name  # noqa: E402  (the one place the ports live)
+from pulsenest.hub_client import HubClient       # noqa: E402
 
 # elfsha/idfver (firmware 2026-09-18): the image fingerprint and the toolchain. build and
 # libsha are commits and answer "from what source"; elfsha answers "is it the same binary".

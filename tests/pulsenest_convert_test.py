@@ -1,5 +1,5 @@
 """Checks for tools/pulsenest_convert.py -- the record replayed equals the file written live.
-    python tools/pulsenest_convert_test.py
+    python tests/pulsenest_convert_test.py
 A synthetic session is recorded with a scripted clock (three boards' worth of frames from one
 fake board, configuration frames, console commands mid-way, a gap), in today's format and in
 v0.4; each is converted from its own .pnraw and compared byte for byte. Then the frozen bench
@@ -7,9 +7,9 @@ corpus, if present: its live legacy CSVs must come back identical.
 """
 import glob, io, logging, os, sys, tempfile
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [os.path.dirname(_HERE), _HERE]
-from pulsenest_recorder import Recorder                       # noqa: E402
-import pulsenest_convert as C                                 # noqa: E402
+sys.path.insert(0, os.path.dirname(_HERE))  # repo root
+from tools.pulsenest_recorder import Recorder                       # noqa: E402
+import tools.pulsenest_convert as C                                 # noqa: E402
 
 print(f"== {os.path.basename(__file__)} ==  .pnraw -> CSV, byte for byte")
 ok = []

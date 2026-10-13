@@ -51,7 +51,7 @@ published HR is 40.0 exactly (median, p5 and p95). It publishes only ~27 % of th
 a low rate one missed beat poisons the 5-interval RR buffer, and 5 beats at 40 BPM is 7.5 s of
 silence. That belongs to `hr1_sqi_cv_max` and the RR buffer length, not to tau.
 
-Usage:  python tools/hr1_decay_sweep.py [--quick]
+Usage:  python experiments/hr1_decay_sweep.py [--quick]
 """
 
 import argparse

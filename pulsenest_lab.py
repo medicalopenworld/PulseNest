@@ -216,12 +216,12 @@ def _estimate_hr_autocorr_v2(seg, fs, max_lag_n, min_lag_s=0.22, min_corr=0.5,
 # --- CONFIGURACIÓN ---
 PORT             = 'COM15'
 BAUD             = 921600
-# UDP ports live in pulsenest_net.py, the host-side source of truth (the firmware mirror is
-# include/wifi_config.h, gitignored; `python pulsenest_net.py` checks they agree).
-from pulsenest_net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
-from pulsenest_capture_csv import CaptureCsvWriter, LabCaptureWriter, CAPTURE_COLS  # noqa: F401
-import pulsenest_hub_client as _hubc  # noqa: E402  (the lab is a hub subscriber and its controller)
-from pulsenest_net import script_name as _script_name  # noqa: E402
+# UDP ports live in pulsenest/net.py, the host-side source of truth (the firmware mirror is
+# include/wifi_config.h, gitignored; `python pulsenest/net.py` checks they agree).
+from pulsenest.net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
+from pulsenest.capture_csv import CaptureCsvWriter, LabCaptureWriter, CAPTURE_COLS  # noqa: F401
+import pulsenest.hub_client as _hubc  # noqa: E402  (the lab is a hub subscriber and its controller)
+from pulsenest.net import script_name as _script_name  # noqa: E402
 
 
 def _win(title):
@@ -11441,7 +11441,7 @@ class _FullClickCheckBox(QtWidgets.QCheckBox):
         return self.rect().contains(pos)
 
 
-# LabCaptureWriter now lives in pulsenest_capture_csv.py (2026-09-20): tools/pulsenest_recorder.py
+# LabCaptureWriter now lives in pulsenest/capture_csv.py (2026-09-20): tools/pulsenest_recorder.py
 # writes the same CSV live in a hospital and cannot import this module, which pulls in Qt. R3 of
 # capture_csv_format_spec.md asks for one writer shared by the lab, the recorder and the converter;
 # the move is what makes that true. The name is re-exported there, so nothing else changed.
@@ -11471,7 +11471,7 @@ class LabCaptureWindow(QtWidgets.QMainWindow):
     #   [9]=PPG  [10]=SpO2  [11]=SpO2_SQI  [12]=R  [13]=PI
     #   [14]=HR1  [15]=HR1_SQI  [16]=HR2  [17]=HR2_SQI  [18]=HR3  [19]=HR3_SQI
     #   [20]=RSQI  [21]=DiagCode  [22]=ProbeState   (v0.27+)
-    # The canonical column table lives in pulsenest_capture_csv.py, so the recorder and the
+    # The canonical column table lives in pulsenest/capture_csv.py, so the recorder and the
     # converter index the frame exactly as this window does -- the one place where a mistake
     # is silent (a wrong index writes a well-formed row of garbage).
     _COLS = CAPTURE_COLS
@@ -16609,7 +16609,7 @@ if __name__ == "__main__":
     #     _getFillPathList, for curves with a fill, which these plots do not have. So for us
     #     useOpenGL only swapped the QGraphicsView viewport (QOpenGLWidget instead of QWidget):
     #     the same QPainter calls, a different rasteriser.
-    #   - Measured by tools/opengl_paint_bench.py (same process, same data, viewport swapped in
+    #   - Measured by experiments/opengl_paint_bench.py (same process, same data, viewport swapped in
     #     place): raster sustains MORE redraws per second at every size tried — x1.58 at 3x500
     #     points, x1.12 at 2000, x1.23 at 5000 — and its paint is no slower.
     # pyqtgraph itself defaults useOpenGL to False on every platform: "in general openGL is

@@ -1,12 +1,12 @@
-"""Offline checks for CaptureCsvWriterV04 (pulsenest_capture_csv.py) -- the v0.4 container of
+"""Offline checks for CaptureCsvWriterV04 (pulsenest/capture_csv.py) -- the v0.4 container of
 capture_csv_format_spec.md. Same reason as capture_csv_test.py: a wrong special line or a wrong
 column does not raise, it writes a well-formed file that means something else.
-    python tools/capture_csv_v04_test.py
+    python tests/capture_csv_v04_test.py
 """
 import io, os, re, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_capture_csv import CaptureCsvWriterV04, CAPTURE_COLS, COLUMN_MIN_FW   # noqa: E402
-import pulsenest_capture_dict as D                                     # noqa: E402
+from pulsenest.capture_csv import CaptureCsvWriterV04, CAPTURE_COLS, COLUMN_MIN_FW   # noqa: E402
+import pulsenest.capture_dict as D                                     # noqa: E402
 
 print(f"== {os.path.basename(__file__)} ==  the v0.4 capture CSV writer")
 ok = []
@@ -207,8 +207,7 @@ parts = sorted(p for root, _d, files in os.walk(corpus) for p in
 # a first part (_0001) always carries the opening $CFG/$TCFG/$LCFG, so a fresh writer replaying it
 # alone produces the afe:/timing: snapshots; a later part would not (config arrives once, up front).
 if parts:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from pulsenest_recorder import read_pnraw
+    from tools.pulsenest_recorder import read_pnraw
     recs = [r for r in read_pnraw(parts[-1]) if r[0] == "D"]
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, "c.csv")

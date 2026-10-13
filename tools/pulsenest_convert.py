@@ -38,9 +38,9 @@ import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [os.path.dirname(_HERE), _HERE]
-from pulsenest_recorder import Recorder, read_pnraw, normalise_subject   # noqa: E402
-from pulsenest_capture_dict import KEY_SYNONYMS                          # noqa: E402
+sys.path.insert(0, os.path.dirname(_HERE))  # repo root
+from tools.pulsenest_recorder import Recorder, read_pnraw, normalise_subject   # noqa: E402
+from pulsenest.capture_dict import KEY_SYNONYMS                          # noqa: E402
 
 _SESSION_RE = re.compile(r"^(\d{8}_\d{4})_([A-Z0-9]+)(?:_([A-Za-z0-9]+))?$")
 _EVENT_TEXT_RE = re.compile(r"^subject=(\S*) board=(\S*)(?: value=(\S*))?(?: value2=(\S*))?"

@@ -5,7 +5,7 @@ light only -- the same current in the four phases (LED1, ALED1, LED2, ALED2) and
 on the three boards. With a constant source V_TIA = I_amb x RF_nominal x (1 + eps_tap) + V_off at
 each tap: the +/-7 % feedback-resistor tolerance of the datasheet, the additive offset of the
 analog chain and the switched-RC settling after a gain change become measurable with no pulse in
-the way. Analyse with tools/rf_tap_analyze.py; the plan and the results are in docs/rf_taps/.
+the way. Analyse with experiments/rf_tap_analyze.py; the plan and the results are in docs/rf_taps/.
 
 Protocol, every selected board in parallel, HGAC off throughout, both colours switched back to back:
   A  precheck: --hold s at the taps found (level, noise, ProbeState)
@@ -23,7 +23,7 @@ phases, RF1, RF2, DiagCode, protocol phase) and every command and $CFG/$LCFG to
 <out>/<date>_events.csv. Boards are selected by MAC (hotspot IPs change between sessions). Needs the
 hub's control: close pulsenest_lab.py first.
 
-    python tools/rf_tap_bench.py [--mac 82:5C 87:A4 88:50] [--hold 10] [--fast 0.1 --fast-reps 10]
+    python experiments/rf_tap_bench.py [--mac 82:5C 87:A4 88:50] [--hold 10] [--fast 0.1 --fast-reps 10]
                                  [--toggles 20 --toggle 0.2] [--out docs/rf_taps/raw]
 """
 import argparse
@@ -33,8 +33,8 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import banner, script_name  # noqa: E402
-from pulsenest_hub_client import HubClient      # noqa: E402
+from pulsenest.net import banner, script_name  # noqa: E402
+from pulsenest.hub_client import HubClient      # noqa: E402
 
 TAPS = ["10K", "25K", "50K", "100K", "250K", "500K", "1M"]
 REF = "100K"

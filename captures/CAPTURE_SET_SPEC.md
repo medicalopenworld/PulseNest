@@ -240,8 +240,8 @@ of minors. The repository is public (`github.com/medicalopenworld/PulseNest`).
 
 * Capture files are **not** committed (`.gitignore:40` — `captures/*`), so the CSVs themselves are
   not exposed.
-* But **filenames are**: `tools/hr1_detector_experiment.py:245-248` and
-  `tools/hr1_filter_experiment.py:241-244` list capture paths containing full name + age, three of
+* But **filenames are**: `experiments/hr1_detector_experiment.py:245-248` and
+  `experiments/hr1_filter_experiment.py:241-244` list capture paths containing full name + age, three of
   them minors. That is enough to identify a person and link them to a physiological measurement.
 * Adopt coded identifiers (`SUBJ01`…) with the mapping kept **outside** the repository, and record
   consent for any capture that leaves the lab.
@@ -446,7 +446,7 @@ the whole of §3 with hand-pasted headers would reproduce, on brand-new data, ex
 that makes the current 93 unusable.
 
 Existing captures are **not** to be renamed retroactively for convenience: their names appear in
-`tools/hr1_detector_experiment.py` and `tools/hr1_filter_experiment.py`. They **are** to be renamed
+`experiments/hr1_detector_experiment.py` and `experiments/hr1_filter_experiment.py`. They **are** to be renamed
 for the reason in §2.7 — the cost is eight lines across those two files, and contrary to an earlier
 draft of this document the names do **not** appear in `conversation_log.md` (verified: zero
 occurrences). The naming convention of §2.4 applies from here on.

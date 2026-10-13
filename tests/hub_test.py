@@ -1,6 +1,6 @@
 """In-process test of pulsenest_hub + pulsenest_hub_client on spare loopback ports.
 
-Two fake boards (127.0.0.2 / 127.0.0.3, the addresses tools/udp_multiboard_test.py uses), a hub
+Two fake boards (127.0.0.2 / 127.0.0.3, the addresses tests/udp_multiboard_test.py uses), a hub
 on :15105, a controller client and a read-only client. Checks the contract the lab and the tools
 will rely on: origin tagging, datagram boundaries, cache replay, single controller, read-only
 enforcement, liveness (ping/pong), expiry, auxiliary sources ($VN1: forwarded, never queried,
@@ -8,7 +8,7 @@ labelled `aux`), and the hub's bounded identity query ($CFG?, retried
 while unanswered).
 No real bench involved; run any time:
 
-    python tools/hub_test.py
+    python tests/hub_test.py
 """
 import os
 import socket
@@ -19,7 +19,7 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 import pulsenest_hub as H          # noqa: E402
-import pulsenest_hub_client as C   # noqa: E402
+import pulsenest.hub_client as C   # noqa: E402
 
 DATA_PORT, CMD_PORT = 15105, 15106
 C.AUTOSTART_ENABLED = False

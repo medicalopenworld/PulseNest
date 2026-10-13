@@ -28,7 +28,7 @@ Two numbers, because one of them alone lies:
   stretch of wall clock, new data every frame. This one includes the GPU and the buffer swap,
   and it is the number that decides whether a plot window can keep up.
 
-    python tools/opengl_paint_bench.py [--curves 3] [--points 500 2000 5000] [--seconds 3]
+    python experiments/opengl_paint_bench.py [--curves 3] [--points 500 2000 5000] [--seconds 3]
 
 It opens a real on-screen window on purpose: measured offscreen, both configurations would go
 through a software path and answer a different question from the one asked.
@@ -40,7 +40,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest_net import banner  # noqa: E402
+from pulsenest.net import banner  # noqa: E402
 
 import numpy as np                              # noqa: E402
 import pyqtgraph as pg                          # noqa: E402

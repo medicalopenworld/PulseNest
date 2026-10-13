@@ -1,14 +1,14 @@
-"""Checks on tools/pulsenest_capture_dict.py -- the R18 dictionary is data, so the tests are about
+"""Checks on pulsenest/capture_dict.py -- the R18 dictionary is data, so the tests are about
 the data holding together with what surrounds it: the live column list, the firmware's own wire
-frames, and the spec's worked example. Run:  python tools/pulsenest_capture_dict_test.py"""
+frames, and the spec's worked example. Run:  python tests/pulsenest_capture_dict_test.py"""
 import io, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path[:0] = [ROOT, HERE]
+sys.path.insert(0, ROOT)
 
-from pulsenest_capture_csv import CAPTURE_COLS                         # noqa: E402
-import pulsenest_capture_dict as D                                     # noqa: E402
+from pulsenest.capture_csv import CAPTURE_COLS                         # noqa: E402
+import pulsenest.capture_dict as D                                     # noqa: E402
 
 n_ok = n_bad = 0
 def check(cond, what):

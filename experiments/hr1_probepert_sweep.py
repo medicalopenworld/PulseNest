@@ -7,7 +7,7 @@ Two metrics per cell:
             tau pays equally.
 """
 import os, sys
-sys.path.insert(0, r"C:\PRJ\MOW\PulseNest"); sys.path.insert(0, r"C:\PRJ\MOW\PulseNest\tools")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import pulsenest_lab as P
