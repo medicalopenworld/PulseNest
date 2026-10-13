@@ -437,12 +437,17 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
 * **What the window holds (phase 1, c147310).** One row per board that folds to its header
   line (title coloured by ProbeState, subject or `UNBOUND`, datagrams, gaps, CSV rows, part, and
   an amber/red warning field: no subject, no condition, gaps, SILENT, restarts). The body:
-  waveform, SIGNAL STATS, then the **session values** (SUBJECT, REFERENCES as five tick boxes,
-  CONDITION, NOTE) and the **reading entry** (SpO2 spinbox 50–100, optional PR, `RECORD`). Every
-  control but SUBJECT is disabled until a subject is bound, which is the `UNBOUND` guard rail in
-  its cheapest form. The session bar carries LOCATION (the coded site, asked once at start-up),
-  OPERATOR, CONSENT, free disk, `CLOCK ANCHOR`, `PLOTS` and `STOP SESSION`, which asks before
-  closing; so does the window's close button, and Ctrl+C no longer exists. Pending for phase 2:
+  waveform, SIGNAL STATS, then the **session values** (SUBJECT, REFERENCE, CONDITION, NOTE, and
+  read-only MONITOR, PROBE, LOCATION, OPERATOR — since 2026-10-14 the last two read here, beside
+  everything else the session is about, instead of in the window's bar) and the **reading entry**
+  (SpO2 spinbox 50–100, optional PR, `RECORD`). Every control but SUBJECT is disabled until a
+  subject is bound, which is the `UNBOUND` guard rail in its cheapest form. **What was given at
+  launch is read-only in the panel** (Alex, 2026-10-14): a subject from `--subject` / the `.toml`
+  locks the SUBJECT box the way `--ref-videonest` already locked REFERENCE; the panel shows it so
+  a typo is visible, and changing it means stopping the session and relaunching with the right
+  file. A window started without a subject keeps the box, since binding has to happen somewhere.
+  The session bar carries free disk, `CLOCK ANCHOR`, `PLOTS` and `STOP SESSION`, which asks
+  before closing; so does the window's close button, and Ctrl+C no longer exists. Pending for phase 2:
   the annotation list with edit and delete, implemented as *correcting events* over the
   append-only files (an edit writes a new `REF_SPO2` that names the event it supersedes; a delete
   writes a retraction), so the operator sees the effective list and the file keeps both.

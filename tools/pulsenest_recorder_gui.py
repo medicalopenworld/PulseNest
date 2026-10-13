@@ -27,7 +27,8 @@ Layout, from fleet_ppg_viewer.py with three changes Alex asked for:
     numbers in a session are read off the COMMERCIAL monitor, and a big number of our own
     beside the entry box invites copying it;
   * a control panel to the right of each SIGNAL STATS table: the values that do not change
-    during the session (subject, references, condition, a note line), then the reading entry;
+    during the session (subject, references, condition, a note line, and read-only: monitor,
+    probe, location, operator), then the reading entry;
   * every row folds to a single header line, so three boards fit on a laptop screen and a row
     that needs no attention takes no room.
 
@@ -279,6 +280,22 @@ class BoardRow(QtWidgets.QFrame):
                                     "the command line (--probe), shown here read-only so a typo\n"
                                     "is visible instead of silent.")
         form.addRow("PROBE", self.probe_label)
+
+        # Where and by whom, read-only, in the same panel as the rest of what this board's session
+        # is about (Alex, 2026-10-14: they were in the window's bar, apart from SUBJECT and the
+        # monitor; everything typed at launch now reads in one place). Changing them means a new
+        # session: both name the session directory and the CSV.
+        rec = self.win.rec
+        self.location_label = QtWidgets.QLabel(rec.site or "(not set)")
+        self.location_label.setStyleSheet(f"color:{FG_DIM};")
+        self.location_label.setToolTip("Site CODE (--location / `location` in the .toml), never a place\n"
+                                       "name. Names the session directory and the CSV; set at launch.")
+        form.addRow("LOCATION", self.location_label)
+        self.operator_label = QtWidgets.QLabel(rec.operator or "(not set)")
+        self.operator_label.setStyleSheet(f"color:{FG_DIM};")
+        self.operator_label.setToolTip("Initials or role (--operator / `operator` in the .toml), never a\n"
+                                       "full name. Set at launch.")
+        form.addRow("OPERATOR", self.operator_label)
         self._set_dependents_enabled(False)
         return g
 
@@ -443,6 +460,16 @@ class BoardRow(QtWidgets.QFrame):
                 if self.vn_id.findText(vn) < 0:
                     self.vn_id.addItem(vn)                      # declared before it was heard
                 self.vn_id.setCurrentText(vn)
+        if rec.want_subject and src.subject == rec.want_subject:
+            # A subject given at launch (--subject / `subject` in the .toml) is read-only here
+            # (Alex, 2026-10-14): one session is one baby, and the file was the whole story. To
+            # change it, stop the session and relaunch with the other file. Only a window started
+            # WITHOUT a subject offers the box, because then binding has to happen somewhere.
+            if self.subject.isEnabled():
+                self.subject.setEnabled(False)
+                self.subject.setToolTip("Set at launch (--subject or `subject` in the .toml) and "
+                                        "read-only here: one session is one baby. To change it, "
+                                        "stop the session and relaunch with the right file.")
         if rec.expected_videonest_id:
             # A phone declared at launch (--ref-videonest / [ref].videonest) is read-only here, same
             # principle as MONITOR/PROBE below: shown so a typo is visible, not offered for the
@@ -745,14 +772,8 @@ class RecorderWindow(QtWidgets.QMainWindow):
         bar = QtWidgets.QGroupBox("Session")
         h = QtWidgets.QHBoxLayout(bar)
 
-        def field(label, value):
-            h.addWidget(QtWidgets.QLabel(label))
-            w = QtWidgets.QLabel(f"<b>{value}</b>")
-            h.addWidget(w)
-            h.addSpacing(16)
-            return w
-        field("LOCATION", self.rec.site)
-        field("OPERATOR", self.rec.operator or "-")
+        # LOCATION and OPERATOR used to be here; since 2026-10-14 they read in each board's panel,
+        # beside SUBJECT, MONITOR and PROBE, so everything a session is about sits in one place.
         self.disk = QtWidgets.QLabel()
         h.addWidget(self.disk)
         h.addStretch(1)

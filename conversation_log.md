@@ -26856,3 +26856,20 @@ Alex preguntó cómo ver las tramas `$VN1` y si llevan la hora del teléfono (s�
 con la última trama; acordadas dos: `offset ms` (misma aritmética que el grabador, ahora en `vn_offset_ms()` público
 junto a `vn_device_id()`; vacío para la forma antigua de un solo sello) y `last frame` cruda, sin interpretar, en
 monoespaciada. Test 57/57; spec §14.
+
+### Misma sesión: GUI del grabador — campos de lanzamiento de solo lectura, LOCATION/OPERATOR en el panel, CONDITION
+
+Comentarios de Alex sobre `pulsenest_recorder_gui.py`:
+1. Campos editables que no deberían serlo (solo por `.toml` + reinicio): el SUBJECT dado al lanzar queda de solo
+   lectura en el panel, igual que REFERENCE ya lo hacía con `--ref-videonest`; una ventana lanzada sin sujeto
+   conserva la caja (algo tiene que vincular). NOTE sigue editable: es la entrada de eventos en vivo, no el `note`
+   del fichero.
+2. LOCATION y OPERATOR pasan de la barra de la ventana al recuadro "This board…", como etiquetas de solo lectura
+   junto a MONITOR y PROBE.
+3. CONDITION "obsoleto": **comprobado, NO está sin uso.** Cadena viva: combo de la GUI → comando `cond` del grabador
+   → evento META `cond=` → `session.json` → columna `condition` de la cabecera CSV v0.4 (`pulsenest/capture_csv.py`,
+   diccionario R18) → `tools/pulsenest_convert.py` (lo reproduce) → `tools/build_capture_index.py` (columna
+   `condition`, avisa si falta) → runbook §2/§3 y `CAPTURE_SET_SPEC.md`. Retirarlo es una decisión de formato (la
+   cabecera v0.4 perdería un campo o lo dejaría vacío) y de dónde vive la condición (¿solo `truth.csv` a posteriori?).
+   Pendiente de Alex; no se ha tocado.
+GUI test +4 checks; spec §9.

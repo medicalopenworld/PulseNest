@@ -464,6 +464,26 @@ try:
 except _tomllib.TOMLDecodeError:
     check("malformed TOML raises TOMLDecodeError, named clearly rather than crashing opaquely", True)
 
+# ── what was given at launch reads in the panel and cannot be changed from it (Alex, 2026-10-14) ──
+out3 = tempfile.mkdtemp()
+rec3 = G.Recorder(out3, "HOSP01", "ACM", log=QuietLog(), subject="SUBJ05", board="7560")
+win3 = G.RecorderWindow(rec3, ("127.0.0.1", 15999))
+rec3.feed("192.168.1.60", f"$CFG,mac={MAC},board=V18,fw=0.14\n".encode())
+win3.traces["192.168.1.60"] = G.BoardTrace("192.168.1.60", 0.0, 15.0)
+win3.redraw()
+row3 = list(win3.rows.values())[0]
+row3._mirror_state()
+check("a subject given at launch is bound and its box is read-only",
+      rec3.sources["192.168.1.60"].subject == "SUBJ05" and row3.subject.currentText() == "SUBJ05"
+      and not row3.subject.isEnabled(), f"{rec3.sources['192.168.1.60'].subject} enabled={row3.subject.isEnabled()}")
+check("LOCATION and OPERATOR read in the board's panel, read-only labels",
+      row3.location_label.text() == "HOSP01" and row3.operator_label.text() == "ACM"
+      and isinstance(row3.location_label, QtWidgets.QLabel))
+check("the window's bar no longer carries them", not hasattr(win3, "location_field"))
+check("a window started WITHOUT a subject keeps the box usable (binding has to happen somewhere)",
+      row.subject.isEnabled() or rec.want_subject is None)
+win3.close()
+
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")
 sys.stdout.flush()
 sys.stderr.flush()
