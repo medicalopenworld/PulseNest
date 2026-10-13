@@ -26719,3 +26719,9 @@ cubría (los tests sustituyen el cliente por uno falso). Ahora `HUB_SCRIPT` = `<
 `tests/hub_test.py` comprueba que esa ruta existe.
 
 **Verificación.** 12/12 tests; `python tools/pulsenest_hub.py --help` desde otro cwd; `AUX_PREFIXES` en `net`.
+
+**Nota.** En la pasada completa tras el commit `2320a43`, `tests/hub_test.py` falló una vez en "data forwarded from
+both boards" (41/42); tres repeticiones seguidas 42/42. Es una comprobación de tiempo sobre UDP en bucle local (lee
+el primer lote de datagramas en una ventana fija) y venía precedida de cinco tests Qt en la misma tanda; no depende
+de nada movido hoy. **Pendiente:** hacer esa comprobación tolerante (esperar hasta ver ambas tarjetas o agotar un
+plazo) en vez de leer una ventana fija.
