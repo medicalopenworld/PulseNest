@@ -1,32 +1,32 @@
 # One of these per cot, prepared the day before. --location, --board and --subject are the only
 # lines every campaign session needs; the rest can be left out and typed in the window instead.
 #
-# Launch with:  pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj01.toml
+# Session launcher (START per cot):   pythonw .\tools\pulsenest_session.py   (desktop icon: scripts\make_session_shortcut.ps1)
+# Launch this recording session with: pythonw .\tools\pulsenest_recorder_gui.py --config docs/session_configs/subjXX.toml
+# View all systems console:           python  .\tools\fleet_monitor.py
+# View all ppg graphically:           pythonw .\tools\fleet_ppg_viewer.py
+# PulseNest Lab:                      pythonw .\pulsenest_lab.py
+# Hidden hub (auto launched):         .\tools\pulsenest_hub.py
 #
 # FULL SUBSTITUTION: any of these fields typed on the command line alongside --config is refused,
 # not merged, so the file is never silently overridden by a stray flag.
 
+subject   = "SUBJ67"         # coded subject, never a name
 location  = "HOSPNAV"        # coded site, never a place name (pulsenest_recorder_spec.md section 11)
 operator  = "ACM"             # initials or role, never a full name
 board     = "8850"           # last hex digits of this cot's board MAC (docs/boards.md)
-subject   = "SUBJ67"         # coded subject, never a name
-note      = "preterm neonate, 27+3 weeks"
+probe     = "Medle ST-S0163-26 LOT:260521002 SN:PPG-001"  # confirm against the physical probe actually clipped on this baby
+note      = "age:30w(birth)+2w(from birth), weigth:1.5kg(birth), skin:WHITE"
 # ^ free text, written verbatim as a NOTE event and nothing else: it never sets the CONDITION
 # and never reaches a filename. The CSV is named <subject>_<location>_<date>_<time>_pNN.csv.
-# CONDITION is set in the window (or with the `cond` console command) whenever it changes.
-#
-# Also works with the console recorder:  python tools/pulsenest_recorder.py --config <this file>
-probe     = "Medle ST-S0163-26"      # OUR probe's physical model -- ISO 80601-2-61 calibrates the
-# monitor+probe pair together, and the library cannot know which sensor is clipped onto the baby;
-# only a person can. Not the same as [ref].probe-site below, which is the COMMERCIAL monitor's
-# probe placement, and not the same as ProbeState (APPLIED/DISCONNECTED), which is real-time and
-# comes from the firmware, not typed here.
 
 # Everything about the ONE commercial monitor beside this baby -- including which phone is
 # filming it, since a phone reads that same monitor's screen rather than being a separate fact.
 # Every line here is optional; leave the table out entirely if there is no reference monitor.
 [ref]
 model      = "Mindray BeneVision N17"
-##avg        = 8                   # its averaging window, in seconds -- decides if the two SpO2 compare at all
-probe-site = "left foot"         # (left/right + thumb/index-finger/middle-finger/ring-finger/little-finger/baby-foot) where ITS probe is, not ours -- as specific as the photo lets you be
-videonest  = "Pixel8aACM"        # device id of the phone filming THIS monitor -- omit if none
+probe-site = "foot"         # (left/right + thumb/index-finger/middle-finger/ring-finger/little-finger/baby-foot) where ITS probe is, not ours -- as specific as the photo lets you be
+videonest  = "J6plusACM"         # device id of the phone filming THIS monitor -- omit if none
+#videonest  = "Pixel8aACM"        # device id of the phone filming THIS monitor -- omit if none
+#avg        = 8                   # its averaging window, in seconds -- decides if the two SpO2 compare at all
+

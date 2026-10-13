@@ -325,6 +325,13 @@ def safe_condition(text):
 # 2026-09-20 shape, six since the phone added emission time and an NTP flag (2026-09-22).
 _VN_ID_RE = re.compile(rb"^\$VN1(?:,[^,*]*){4,6},([A-Za-z0-9_-]{1,32})\*")
 _VN_IDCHARS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def vn_device_id(datagram):
+    """-> the device id of a $VN1 datagram (the phone's own name for itself), or None if the
+    line is not a well-formed VideoNest frame. One reader, shared with the session launcher."""
+    m = _VN_ID_RE.match(datagram.split(b"\n", 1)[0].rstrip(b"\r"))
+    return m.group(1).decode("ascii") if m else None
 # $VN1,<seq>,<spo2>,<conf>,<phone time>,<id>*<checksum>
 # The fourth field is the phone's own clock. Measured on the real phone 2026-09-22 it is LOCAL
 # TIME as text -- `2026-09-22 00:21:26.261` -- not the epoch milliseconds an earlier build sent

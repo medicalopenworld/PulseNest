@@ -997,6 +997,13 @@ Every numeric cell goes through `fit()`, which **guarantees** the column width (
 too long drops decimals rather than shifting every column to its right, and one that still does
 not fit shows `#####` rather than a truncated digit string, which would be a different number.
 
+**`tools/pulsenest_session.py` (2026-10-14)** is the campaign launcher — the cots (one `.toml` each),
+the boards on the air with their firmware, the phones heard, disk and clock, and a START per cot that
+runs the runbook's own recorder command line as a detached process. Specified in
+`pulsenest_recorder_spec.md` §14. The lab has a **SESSION** button in the sidebar that starts it as a
+process of its own and nothing more: the lab is the controller and has crashed in pyqtgraph, so nothing
+a session depends on is embedded here.
+
 **`tools/fleet_ppg_viewer.py` (v1.69, statistics panel v1.71, numbers panel v1.72)** is the second purpose-built
 subscriber and the first with
 a GUI: one live `PPG_DISP` band per board, stacked, for the question the numbers answer slowly —

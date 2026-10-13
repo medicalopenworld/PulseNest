@@ -915,3 +915,53 @@ What the implementation fixed in this document's wording, or added:
 
 Not yet: the live CSV (§2), the converter (§10), the panel process (§9), `--compress-on-close`
 (D2), and the hub-side classification of the phone (D1).
+
+
+---
+
+## 14. The session launcher — `tools/pulsenest_session.py` (2026-10-14)
+
+**What it is for.** The runbook (§2) asked the person at the cot side to open a terminal and type
+one `--config` line per cot, and to check the day before, on paper, that the boards run the same
+firmware, that the phones send, that the disk and the clock are right. For anyone who is not the
+author the terminal is the hard part. The launcher is that checklist, checked live, with a START
+button per cot. It was proposed as a function of `pulsenest_lab.py` and deliberately is not one:
+the lab is the controller (it can `$SET` a board), it is the program pyqtgraph has crashed, and
+nothing a session depends on may depend on it. The lab's **SESSION** button only starts the
+launcher, as a detached process.
+
+**What it shows.** (a) *Boards on the air*: IP, MAC, `fw`, `lib`, `build`, `elfsha`, datagram
+rate, live/SILENT (5 s, the recorder's own threshold), merged by MAC as the recorder binds them;
+one line says whether every identified board runs the same image (`fw` + `elfsha`), amber if not.
+(b) *Phones heard*: the VideoNest device ids seen in `$VN1` frames, through the hub (the hub
+replays nothing for phones, so a phone is listed once it has sent since the launcher opened).
+(c) *Disk*: free space where sessions are written, as hours of recording for the boards on the
+air at 17 MB/min each (§1 of the runbook); red below the 2 GB floor at which the recorder refuses
+to start. (d) *The clock*, large, for the CLOCK ANCHOR photograph. (e) *Cots*: one row per
+`.toml` in `docs/session_configs` (Alex, 2026-10-14: the files stay there and are edited by
+hand), read with the recorder's own `load_session_config`, so a file the recorder would refuse is
+shown with its error instead of a START. Per row: subject, `board` suffix, the live MAC it
+matches (amber *not on the air*, red *AMBIGUOUS* naming both — the recorder would stop on it),
+the declared phone and whether it has been heard, and the state of the process started from here.
+
+**What it does.** START runs **exactly** the runbook's command line —
+`pythonw tools/pulsenest_recorder_gui.py --config <file>` (`--hub` only when not the default) —
+as a detached process: a new process group, no inherited stdio, the same flags with which
+`hub_client.launch_hub` starts the hub. So one process per baby survives, the launcher can be
+closed or crash, and FULL substitution holds (nothing from the launcher is merged into a cot).
+A running cot cannot be started twice; a cot that exited shows its return code and can be
+started again; RELOAD re-reads the files without forgetting a running process. START ALL COTS
+skips `example.toml`, the broken files and the running ones. FLEET MONITOR starts
+`tools/fleet_monitor.py` under console python in a console of its own; PPG VIEWER starts
+`tools/fleet_ppg_viewer.py` detached. EDIT and OPEN CONFIGS FOLDER hand the file or the folder
+to the system (no editor of ours).
+
+**What it cannot do.** It is a read-only hub subscriber, like the fleet monitor: no `$SET`, no
+`$MODE`, by construction. It has no pyqtgraph. It writes nothing but its window geometry
+(`tools/pulsenest_session.ini`, per machine).
+
+**Test.** `tests/pulsenest_session_test.py`: the model with synthetic `$CFG`/`$M4`/`$VN1`
+datagrams and a temporary configs folder (matching, ambiguity, a new DHCP lease, a broken file,
+the command lines), then the real window offscreen with a fake hub client and a fake spawner
+(START once, never twice, START ALL's exclusions, RELOAD keeping a process, the monitor's own
+console, the client closed and the processes left alone at close).

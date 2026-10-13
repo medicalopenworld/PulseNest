@@ -13283,6 +13283,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
             src="PythonTimingWindow"))
         self.sidebar_layout.addWidget(self.btn_python_timing)
 
+        # SESSION: the campaign launcher (tools/pulsenest_session.py), started as a process of its
+        # own. Only a start button here, nothing embedded: the lab is the controller and has
+        # crashed in pyqtgraph, and nothing a hospital session depends on may depend on it.
+        self.btn_session = QtWidgets.QPushButton("SESSION")
+        self.btn_session.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_session.clicked.connect(self._open_session_launcher)
+        self.btn_session.setToolTip(_make_tooltip(
+            "SESSION — Campaign launcher",
+            "Starts tools/pulsenest_session.py in its own process: the cots (one .toml each in "
+            "docs/session_configs), the boards on the air with their firmware, the VideoNest "
+            "phones heard, free disk, and a START button per cot that opens one recorder window "
+            "per baby. Read-only. Independent of this window: closing or crashing the lab does "
+            "not touch it or the recordings it started.",
+            src="pulsenest_session.py"))
+        self.sidebar_layout.addWidget(self.btn_session)
+
         self.btn_hw_config = QtWidgets.QPushButton("HW CONFIG")
         self.btn_hw_config.setCheckable(True)
         self.btn_hw_config.setStyleSheet(ACTION_BUTTON_STYLE)
@@ -14248,6 +14264,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _open_timing_default(self):
         self.btn_esp32_timing.setChecked(True)
         self.toggle_esp32_timing()
+
+    def _open_session_launcher(self):
+        """tools/pulsenest_session.py as a detached process (the launcher's own spawn rule, so the
+        lab and the launcher agree on what 'independent' means)."""
+        try:
+            launcher = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "pulsenest_session.py")
+            _hubc.spawn_detached([_hubc.windowed_python(), launcher])
+            self.log("[SESSION] launcher started (tools/pulsenest_session.py)")
+        except Exception as exc:   # a missing tool must be a log line, never a dead lab
+            self.log(f"[SESSION] could not start the launcher: {exc}")
 
     def _open_hw_config_default(self):
         self.btn_hw_config.setChecked(True)

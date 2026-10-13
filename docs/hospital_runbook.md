@@ -53,12 +53,22 @@ monitor from the photo taken in §1. Nothing about these files is secret and not
 name — `location` and `subject` are codes — so they can sit anywhere convenient, e.g. next to the
 runbook, or on a USB stick brought to site.
 
-Open one terminal in `C:\PRJ\MOW\PulseNest` and launch **one window per baby**:
+**Double-click `PulseNest Session` on the desktop** (`tools/pulsenest_session.py`; the icon is made
+once per laptop with `.\scripts\make_session_shortcut.ps1`). The window is the checklist above,
+checked live: the boards on the air with their firmware (one line says whether all three run the
+same image), the VideoNest phones heard, the free disk as hours of recording, the laptop clock in
+large digits, and one row per `.toml` in `docs/session_configs` saying which live board and which
+phone it matches. Press **START** on a row, or **START ALL COTS**, and **FLEET MONITOR** for the
+console overview. Every START is exactly the command line below, run as a process of its own: the
+launcher can be closed, or crash, and the recordings continue. **EDIT** opens a cot's file in the
+system editor; after saving press **RELOAD**.
+
+The same thing from a terminal opened in `C:\PRJ\MOW\PulseNest`, **one window per baby**:
 
 ```
-pythonw tools/pulsenest_recorder_gui.py --config subj01.toml
-pythonw tools/pulsenest_recorder_gui.py --config subj02.toml
-pythonw tools/pulsenest_recorder_gui.py --config subj03.toml
+pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj01.toml
+pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj02.toml
+pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj03.toml
 ```
 
 `--config` reads `location`, `operator`, `board`, `subject`, `videonest`, `note`, `probe` and the

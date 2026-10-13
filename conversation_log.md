@@ -26779,3 +26779,57 @@ hasta el plazo. Aplicado a las cinco comprobaciones de LLEGADA (registro de tarj
 reenvío al controlador, flujo al lector, pong, `@STATUS`). Las comprobaciones de AUSENCIA (comando rechazado, expiración
 de un suscriptor silencioso) conservan su ventana fija: ahí el tiempo es el enunciado. Un fallo real sigue fallando,
 tras 3 s en vez de 0,5. Cinco pasadas seguidas 42/42 y tres más con ocho hilos saturando la CPU.
+- **Corrección (misma sesión):** el informe se había convertido en español porque el HTML de agosto lo
+  estaba; Alex lo señaló. La regla 6 (inglés en cualquier fichero del proyecto) aplica también a `docs/`,
+  y el resto de estudios ya la cumplen. Informe traducido íntegro al inglés; las citas literales de los
+  fabricantes ya estaban en inglés.
+
+### Misma sesión: propuesta de lanzador de sesión (decisión de Alex pendiente)
+
+**Pregunta de Alex.** Para que otros usuarios hagan una sesión de medida (3 cunas, pulsioxímetro comercial de
+referencia, ¿"transfer standard" de la ISO?) sin dificultad: ¿integrar en `pulsenest_lab.py` el lanzamiento de
+`pulsenest_recorder_gui.py`, `fleet_monitor.py` (y quizá `fleet_ppg_viewer.py`) y la edición de los `.toml`, sin que
+un fallo del lab les afecte?
+
+**Propuesta entregada (resumen).** No dentro del lab: es el programa frágil (pyqtgraph, 28 caídas), el controlador
+del hub y una herramienta de experto que el runbook mantiene deliberadamente fuera del hospital; arrancarlo desde
+un terminal no es más fácil que arrancar otra cosa. Un lanzador pequeño `tools/pulsenest_session.py` (QtWidgets sin
+pyqtgraph, suscriptor de solo lectura): lista/nuevo/editar TOML por cuna con formulario validado por las reglas del
+grabador (el fichero sigue siendo la fuente; se regenera desde la plantilla `example.toml`, comentarios a mano se
+pierden), panel pre-vuelo (tarjetas vivas con fw/elfsha iguales, teléfonos VideoNest oídos, disco libre, reloj),
+botones Start cuna / Start todas / Fleet monitor / PPG viewer como procesos DETACHED (mismas banderas con las que
+`hub_client` arranca el hub; consola con CREATE_NEW_CONSOLE), estado por proceso. El lab gana un solo ítem de menú
+que lanza el lanzador. Acceso directo en el escritorio. Fases F1 núcleo de lanzamiento, F2 formulario, F3 pre-vuelo,
+F4 ítem en el lab + acceso directo + runbook. Annex JJ: lo que ya se registra (modelo+sonda, promediado) es lo que JJ
+pide; lo que falta es la ecuación de transferencia del monitor comercial, no herramientas.
+
+## 2026-10-14 — Lanzador de sesión `tools/pulsenest_session.py` (F1 + F3 + F4; F2 descartada)
+
+**Decisiones de Alex.** Los TOML se quedan en `docs/session_configs`; se editan a mano (sin formulario, F2 cae).
+
+**Hecho.**
+- `tools/pulsenest_session.py`: ventana QtWidgets sin pyqtgraph, suscriptor del hub de solo lectura. Tarjetas en el
+  aire (IP, MAC, fw, lib, build, elfsha, datagramas/s, viva/SILENT a 5 s), fusionadas por MAC; línea de acuerdo de
+  firmware (fw+elfsha iguales → OK, si no CHECK nombrando la discrepante); teléfonos VideoNest oídos por id de `$VN1`;
+  disco libre como horas de grabación (17 MB/min/tarjeta, rojo bajo el suelo de 2 GB); reloj grande. Una fila por
+  `.toml` leída con `load_session_config` del grabador (fichero roto → su error, sin START): sujeto, sufijo de
+  tarjeta → MAC viva / "not on the air" / AMBIGUOUS, teléfono declarado oído o no, estado del proceso. START = la
+  línea exacta del runbook (`pythonw tools/pulsenest_recorder_gui.py --config <f>`, `--hub` solo si no es el
+  defecto) como proceso independiente; no dos veces; START ALL salta example/rotos/en marcha; FLEET MONITOR con
+  consola propia; PPG VIEWER; EDIT y OPEN FOLDER abren con el sistema; RELOAD no olvida procesos. Geometría en
+  `tools/pulsenest_session.ini` (gitignore).
+- Regla única de proceso independiente: `pulsenest/hub_client.py` gana `spawn_detached(cmd, console, cwd)` y
+  `windowed_python()`; `launch_hub` la usa; el lanzador la importa como `spawn`; el lab la usa en el botón SESSION.
+  `console_python` pasa a público. Verificado: el hijo sobrevive a la salida del padre (tasklist).
+- `tools/pulsenest_recorder.py`: `vn_device_id()` público junto a `_VN_ID_RE` (un solo lector del id del teléfono).
+- Lab: botón **SESSION** en la barra lateral, encima de HW CONFIG; arranca el lanzador SIN importarlo (importar el
+  módulo habilitaría su faulthandler dentro del lab; detectado al revisar el primer parche).
+- `scripts/make_session_shortcut.ps1`: icono "PulseNest Session" en el escritorio (pythonw, cwd = raíz).
+- Docs: runbook §2 (icono primero, terminal como alternativa), spec grabador §14, spec lab §4.11, README,
+  `example.toml` (cabecera; "Hiden hub" → ruta nueva del hub).
+- `tests/pulsenest_session_test.py` 42/42 (modelo con datagramas sintéticos + ventana offscreen con cliente y
+  spawner falsos). Humo offscreen contra las 3 V18 reales: 3 tarjetas, misma imagen (0.22/cd1ccf…), 5 cunas casadas
+  con su MAC, teléfonos no oídos (no hay VideoNest emitiendo). hub/recorder/gui/multiboard/disable_plots OK.
+
+**No ejecutado.** El acceso directo no se ha creado en este portátil (lo crea `.\scripts\make_session_shortcut.ps1`);
+la ventana no se ha abierto en pantalla, solo offscreen.

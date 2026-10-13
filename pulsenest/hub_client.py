@@ -56,7 +56,7 @@ HUB_SCRIPT        = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 AUTOSTART_ENABLED = True
 
 
-def _console_python():
+def console_python():
     """python.exe next to whatever runs us (pythonw.exe under the lab), so the detached hub is
     not a pythonw process."""
     exe = sys.executable or "python"
@@ -68,17 +68,41 @@ def _console_python():
     return exe
 
 
-def launch_hub(port=UDP_DATA_PORT, extra_args=()):
-    """Start pulsenest_hub.py detached. Returns the Popen (the caller usually ignores it)."""
-    cmd = [_console_python(), HUB_SCRIPT, "--port", str(port), "--quiet", *extra_args]
-    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-              cwd=os.path.dirname(HUB_SCRIPT), close_fds=True)
+def windowed_python():
+    """pythonw.exe next to whatever runs us, so a window has no console behind it."""
+    exe = sys.executable or "python"
+    d, base = os.path.split(exe)
+    if os.name == "nt" and not base.lower().startswith("pythonw"):
+        cand = os.path.join(d, "pythonw" + base[6:])
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
+def spawn_detached(cmd, console=False, cwd=None):
+    """Start `cmd` as an INDEPENDENT process: its own process group, detached from the caller, so
+    that the caller closing or crashing leaves it running. `console=True` gives it a console of
+    its own (for a console program such as the fleet monitor); otherwise no window and no stdio.
+    The one rule, used for the hub, the session launcher and everything the launcher starts."""
+    kw = dict(cwd=cwd or os.path.dirname(os.path.dirname(os.path.abspath(__file__))), close_fds=True)
     if os.name == "nt":
-        kw["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-                               | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if console:
+            kw["creationflags"] = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kw["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                                   | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            kw.update(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         kw["start_new_session"] = True
+        if not console:
+            kw.update(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return subprocess.Popen(cmd, **kw)
+
+
+def launch_hub(port=UDP_DATA_PORT, extra_args=()):
+    """Start tools/pulsenest_hub.py detached. Returns the Popen (the caller usually ignores it)."""
+    return spawn_detached([console_python(), HUB_SCRIPT, "--port", str(port), "--quiet", *extra_args],
+                          cwd=os.path.dirname(HUB_SCRIPT))
 
 
 class HubClient:

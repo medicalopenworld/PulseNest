@@ -94,3 +94,5 @@ tools/fleet_ppg_viewer_faulthandler.log
 tools/fleet_ppg_viewer.ini
 tools/pulsenest_recorder_gui.ini
 tools/pulsenest_recorder_gui_faulthandler.log
+tools/pulsenest_session.ini
+tools/pulsenest_session_faulthandler.log
