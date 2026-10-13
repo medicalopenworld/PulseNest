@@ -88,13 +88,43 @@ class FakeBoard(threading.Thread):
 
 
 def drain(client, seconds):
-    """Collect (ip, payload) items for `seconds`."""
+    """Collect (ip, payload) items for `seconds` -- a FIXED window, for checks that something does
+    NOT happen (a refused command, an expired subscriber). For "it arrives" use drain_until."""
     out, t_end = [], time.monotonic() + seconds
     while time.monotonic() < t_end:
         item = client.recv(0.05)
         if item is not None:
             out.append(item)
     return out
+
+
+def drain_until(client, done, deadline_s=3.0):
+    """Collect (ip, payload) items until `done(out)` is true or `deadline_s` has passed.
+
+    The old fixed 0.5 s window failed once in a dozen runs on 2026-10-13 ("data forwarded from both
+    boards", 41/42) with nothing wrong in the hub: five Qt tests had just run in the same batch and
+    the process was simply not scheduled for part of the window. Waiting for the event, bounded by
+    a deadline, keeps the test honest (a board never forwarded still fails, after `deadline_s`)
+    without tying it to how busy the machine is.
+    """
+    out, t_end = [], time.monotonic() + deadline_s
+    while not done(out) and time.monotonic() < t_end:
+        item = client.recv(0.05)
+        if item is not None:
+            out.append(item)
+    return out
+
+
+def wait_until(cond, deadline_s=3.0):
+    """Poll `cond()` until true or `deadline_s`; -> the final value."""
+    t_end = time.monotonic() + deadline_s
+    while not cond() and time.monotonic() < t_end:
+        time.sleep(0.02)
+    return cond()
+
+
+def ips_of(items, prefix):
+    return {ip for ip, p in items if p.startswith(prefix)}
 
 
 def main():
@@ -111,7 +141,8 @@ def main():
     a = FakeBoard("127.0.0.2", "AA:AA:AA:AA:AA:02")
     b = FakeBoard("127.0.0.3", "AA:AA:AA:AA:AA:03")
     a.start(); b.start()
-    time.sleep(0.6)
+    wait_until(lambda: set(hub.boards) == {"127.0.0.2", "127.0.0.3"}
+               and all(bd.cfg.get(b"$CFG,") and bd.cfg.get(b"$LCFG,") for bd in hub.boards.values()))
 
     # ── the hub alone: boards registered, one $CFG? each, cache filled ──────────────────────
     check("hub registered both boards", set(hub.boards) == {"127.0.0.2", "127.0.0.3"}, str(set(hub.boards)))
@@ -131,7 +162,8 @@ def main():
     ctrl = C.HubClient("lab", hub=("127.0.0.1", DATA_PORT), control=True, log=logs.append)
     check("controller connects", ctrl.connect())
     check("controller granted", ctrl.controller)
-    first = drain(ctrl, 0.5)
+    first = drain_until(ctrl, lambda out: ips_of(out, b"$CFG,") == {"127.0.0.2", "127.0.0.3"}
+                        and ips_of(out, b"$M4,") == {"127.0.0.2", "127.0.0.3"})
     cfgs = [(ip, p) for ip, p in first if p.startswith(b"$CFG,")]
     check("cache replayed to the new subscriber: one $CFG per board, tagged with its IP",
           sorted(ip for ip, _ in cfgs) == ["127.0.0.2", "127.0.0.3"] and len(cfgs) == 2, str(cfgs)[:120])
@@ -153,7 +185,7 @@ def main():
     reader = C.HubClient("monitor", hub=("127.0.0.1", DATA_PORT), control=False, log=rlogs.append)
     check("reader connects", reader.connect())
     check("reader is not controller", not reader.controller)
-    rdata = drain(reader, 0.4)
+    rdata = drain_until(reader, lambda out: ips_of(out, b"$M4,") == {"127.0.0.2", "127.0.0.3"})
     check("reader receives the same stream", {ip for ip, _ in rdata} == {"127.0.0.2", "127.0.0.3"})
     nb0 = len(b.cmds)
     check("reader's send_to_board is refused client-side", reader.send_to_board("127.0.0.3", b"$SET,x,1\r\n") is False)
@@ -176,7 +208,7 @@ def main():
     check("hub sees exactly one controller", sum(s.is_controller for s in hub.subs.values()) == 1)
 
     # ── liveness: pong bookkeeping; expiry of a silent subscriber releases control ─────────
-    drain(ctrl2, 0.8)
+    drain_until(ctrl2, lambda out: ctrl2.hub_alive and ctrl2.last_pong is not None)
     check("pongs arrive (hub alive, last_pong parsed)", ctrl2.hub_alive and ctrl2.last_pong is not None
           and ctrl2.last_pong.get(b"ctrl") == b"sweep", str(ctrl2.last_pong))
     # ctrl2 goes silent (no recv → no pings): the hub must forget it and free the control.
@@ -189,8 +221,9 @@ def main():
           f"ctrl={hub.controller} subs={[s.name for s in hub.subs.values()]}")
 
     # ── @STATUS ────────────────────────────────────────────────────────────────────────────
+    ctrl.last_status = None
     ctrl.request_status()
-    drain(ctrl, 0.3)
+    drain_until(ctrl, lambda out: ctrl.last_status is not None)
     st = ctrl.last_status or ""
     check("@STATUS lists both boards and the live subscribers",
           st.startswith("@STATUS") and "board 127.0.0.2" in st and "board 127.0.0.3" in st and "sub " in st, st[:200])

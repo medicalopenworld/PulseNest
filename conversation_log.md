@@ -26740,3 +26740,42 @@ reaparece tras 2 s de silencio, así que no es la caché). Tres intentos en ~65 
 `OTA NOT VERIFIED` y exit 2, para que un flasheo sin verificar no parezca verificado. Probado en seco contra las
 tres V18 en vivo (las tres reportan el elfsha del `.bin` de `build_V18`). `docs/boards.md` (procedimiento OTA; nota
 obsoleta de "cerrar el lab por el puerto 5005" sustituida) y README.
+
+## 2026-10-13 (2) — Informe de fabricantes PPG: sección 0 (panorama del mercado) y paso a Markdown
+
+**Pregunta de Alex:** lista mínima de fabricantes de pulsioxímetros hospitalarios y sus modelos
+principales; dónde guardarla; propuso usar `.md` en lugar del HTML + PDF de agosto.
+
+**Lista (8, ampliable a 10):** propietarios de tecnología SpO2: Masimo (SET; Radical-7, Rad-97, Root),
+Medtronic/Nellcor (OxiMax; PM1000N, PM100N), Nihon Kohden (BluPRO; Life Scope, OLV-3100), Philips
+(FAST-SpO2; IntelliVue MX), GE HealthCare (TruSignal; CARESCAPE), Mindray (uSpO2; BeneVision N), Nonin
+(PureSAT; 7500, OEM III). Licenciatarios: Dräger (Infinity M540, Vista 120). Siguientes: Edan, Spacelabs;
+Konica Minolta solo histórico. Para IncuNest: Masimo, Nellcor y Nihon Kohden publican datos neonatales
+propios; Mindray y Edan como comparables de coste.
+
+**Decisiones:**
+- La lista va como **sección 0** del informe de fabricantes, que ya tenía un capítulo por cada propietario
+  de tecnología. Descartados: `third_party_references.md` (índice de documentos, no contenido),
+  `project_info.md` (describe IncuNest) y un fichero nuevo (duplicaría el informe).
+- **El informe pasa de HTML + PDF a `docs/ppg_neonatal_manufacturer_references.md`.** El PDF de agosto
+  se hizo como entregable imprimible A4 con hipervínculos; ese motivo ya no pesa: el resto de estudios
+  de `docs/` son Markdown, GitHub lo renderiza y los cambios se revisan en el diff en lugar de en un
+  binario. Se pierden solo los dos recuadros de color (ahora citas). Los 15 enlaces se conservan;
+  HTML y PDF retirados del repo (quedan en el historial). Añadido también el resultado publicado del
+  ensayo GE NCT03383757 (A_rms 2,57 %, 117 neonatos), que estaba en memoria pero no en el informe.
+- Cuando se genere el informe pendiente sobre algoritmos de los fabricantes (04-10), la sección 0 será
+  su primera sección.
+
+### Misma sesión: `hub_test` intermitente, arreglado
+
+**Problema.** Las tarjetas falsas emiten un datagrama cada 20 ms y el test comprobaba "llegaron datos de ambas" sobre
+una ventana FIJA de 0,5 s (`drain(ctrl, 0.5)`), igual que "ambas registradas" tras `sleep(0.6)` y "el lector recibe
+el mismo flujo" en 0,4 s. En nominal sobran 25 datagramas por tarjeta, pero si el proceso no es planificado durante
+parte de la ventana (cinco tests Qt acababan de pasar en la misma tanda), la ventana expira con una sola tarjeta
+vista y el test falla sin que el hub haya hecho nada mal. Un plazo fijo confunde "no llegó" con "no llegó todavía".
+
+**Arreglo.** `drain_until(client, done, deadline_s=3)` y `wait_until(cond, 3)`: recoger hasta que el evento se ve o
+hasta el plazo. Aplicado a las cinco comprobaciones de LLEGADA (registro de tarjetas y caché `$CFG`/`$LCFG`,
+reenvío al controlador, flujo al lector, pong, `@STATUS`). Las comprobaciones de AUSENCIA (comando rechazado, expiración
+de un suscriptor silencioso) conservan su ventana fija: ahí el tiempo es el enunciado. Un fallo real sigue fallando,
+tras 3 s en vez de 0,5. Cinco pasadas seguidas 42/42 y tres más con ocho hilos saturando la CPU.
