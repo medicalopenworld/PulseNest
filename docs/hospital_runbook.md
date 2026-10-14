@@ -128,7 +128,7 @@ Then, in each window:
       choose its device id. **The list only shows phones actually heard on the wire**, so if the id
       is not there, VideoNest is not sending — that is the answer, before you open any menu. Leave
       it unticked in the other two windows.
-- [ ] **NEW NOTE**: where our probe is, e.g. `probe on left foot`. This matters more than it looks —
+- [ ] **NEW EVENT**: where our probe is, e.g. `probe on left foot`. This matters more than it looks —
       in a baby with a patent ductus, a foot and a right hand genuinely read differently, and an
       unrecorded difference is read later as our error.
 - [ ] **Clock anchor**, once per session (twice — start and end — also measures drift): press
@@ -154,7 +154,7 @@ Then, in each window:
       mistyped number, or select it and `DELETE selected` to withdraw it. Nothing is erased: the
       file keeps the original and the correction, and a corrected reading keeps its own time.
       `DELETE LAST` withdraws the most recent.
-- [ ] **Mark what happens to the baby** in the NOTE box: a feed, a nappy change, an alarm on the
+- [ ] **Mark what happens to the baby** in the NEW EVENT box: a feed, a nappy change, an alarm on the
       monitor, a probe that was moved, a desaturation. None of it can be reconstructed afterwards.
 - [ ] **Watch the header line of each window.** `gaps` climbing means datagrams were lost on the
       air; `SILENT` means nothing has arrived for five seconds.

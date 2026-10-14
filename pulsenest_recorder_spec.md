@@ -439,7 +439,8 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   an amber/red warning field: no subject, gaps, SILENT, restarts). The body:
   waveform, SIGNAL STATS, then the **session panel** — everything the session was launched with,
   in the `.toml`'s own order (Alex, 2026-10-14): SUBJECT, LOCATION, OPERATOR, BOARD, PROBE, NOTE
-  (the launch note, read-only), MONITOR, REFERENCE, then the one live control, NEW NOTE — and the
+  (the launch note, read-only), MONITOR, REFERENCE, then the one live control, NEW EVENT (Alex,
+  2026-10-14: the file it feeds is `session_events.csv`; what is typed becomes an event of kind NOTE) — and the
   **reading entry** (SpO2 spinbox 50–100, optional PR, `RECORD`). **CONDITION left the window the
   same day**: what the operator typed there was stored in four places (a `cond=` META event,
   `session.json`, the CSV header's `condition`, `index.csv`) and read by nothing — the experiments

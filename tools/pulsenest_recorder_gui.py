@@ -28,7 +28,7 @@ Layout, from fleet_ppg_viewer.py with three changes Alex asked for:
     beside the entry box invites copying it;
   * a control panel to the right of each SIGNAL STATS table: the values that do not change
     at launch, read-only in the .toml's order (SUBJECT and REFERENCE as controls that lock),
-    then NEW NOTE, then the reading entry;
+    then NEW EVENT, then the reading entry;
   * every row folds to a single header line, so three boards fit on a laptop screen and a row
     that needs no attention takes no room.
 
@@ -187,7 +187,7 @@ class BoardRow(QtWidgets.QFrame):
         # Everything the session was launched with (--config / the .toml, or the flags), in the
         # file's own order (Alex, 2026-10-14, after example.toml: subject, location, operator,
         # board, probe, note; then [ref] model, probe-site, videonest, avg), read-only here so a
-        # typo is visible instead of silent -- then the one live control, NEW NOTE. SUBJECT and
+        # typo is visible instead of silent -- then the one live control, NEW EVENT. SUBJECT and
         # REFERENCE are the two a window started without them must still be able to set, so they
         # are controls that lock once a launch value is in force (see _mirror_state). CONDITION
         # left the panel the same day: it was stored in four places and read by none (the
@@ -247,7 +247,7 @@ class BoardRow(QtWidgets.QFrame):
         self.launch_note_label = ro("NOTE", rec.want_note or "(none)",
                                     "`note` in the .toml / --note: written once, verbatim, as a NOTE\n"
                                     "event when the board binds to its subject. This is that text.\n"
-                                    "Anything that happens later goes in NEW NOTE below.")
+                                    "Anything that happens later goes in NEW EVENT below.")
         self.ref_label = ro("MONITOR", "(not set)",
                             "The commercial monitor beside this baby: make and model, its\n"
                             "averaging window in seconds, where ITS probe is, and any note.\n"
@@ -282,10 +282,12 @@ class BoardRow(QtWidgets.QFrame):
 
         self.note = QtWidgets.QLineEdit()
         self.note.setPlaceholderText("free text, Enter to record. Coded subjects only, no names.")
-        self.note.setToolTip("A timestamped NOTE event: a feed, a nappy change, an alarm, a probe "
-                             "moved, a desaturation. None of it can be reconstructed afterwards.")
+        self.note.setToolTip("What happened, in a few words: a feed, a nappy change, an alarm, a "
+                             "probe moved, a desaturation. Enter writes it to session_events.csv "
+                             "as an event of kind NOTE, with the time and this board's subject. "
+                             "None of it can be reconstructed afterwards.")
         self.note.returnPressed.connect(self._note_entered)
-        form.addRow("NEW NOTE", self.note)
+        form.addRow("NEW EVENT", self.note)
         self._set_dependents_enabled(False)
         return g
 

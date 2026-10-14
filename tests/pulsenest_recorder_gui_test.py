@@ -484,8 +484,8 @@ check("BOARD, PROBE and the launch NOTE read in the panel too, in the file's ord
       f"{row3.board_label.text()} | {row3.launch_note_label.text()} | {row3.probe_label.text()}")
 labels = [row3.findChild(QtWidgets.QFormLayout).itemAt(i, QtWidgets.QFormLayout.LabelRole).widget().text()
           for i in range(row3.findChild(QtWidgets.QFormLayout).rowCount())]
-check("panel order = example.toml order, then NEW NOTE",
-      labels == ["SUBJECT", "LOCATION", "OPERATOR", "BOARD", "PROBE", "NOTE", "MONITOR", "REFERENCE", "NEW NOTE"], str(labels))
+check("panel order = example.toml order, then NEW EVENT",
+      labels == ["SUBJECT", "LOCATION", "OPERATOR", "BOARD", "PROBE", "NOTE", "MONITOR", "REFERENCE", "NEW EVENT"], str(labels))
 check("a window started WITHOUT a subject keeps the box usable (binding has to happen somewhere)",
       row.subject.isEnabled() or rec.want_subject is None)
 win3.close()

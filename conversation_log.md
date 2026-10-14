@@ -26886,3 +26886,11 @@ REFERENCE, NEW NOTE. CONDITION: combo, `_condition_changed`, espejo, lista de de
 la constante eliminados de la GUI; el comando `cond` de consola, el evento y la columna de cabecera siguen (formato
 intacto). Tooltip obsoleto del combo (decía que el nombre del fichero toma la condición) desaparece con él.
 GUI test 76/76 (orden de etiquetas comprobado). Runbook §2/§3 y spec §9.
+
+### Misma sesión: NEW NOTE → NEW EVENT; qué hace ABNORMAL CONDITION
+
+Alex preguntó por el nombre (opinión: mejor NEW EVENT, el fichero es `session_events.csv`; tooltip aclara que se
+registra con tipo NOTE) y qué hace ABNORMAL CONDITION: `flag on|off <subj>` → `ANOMALY_START`/`ANOMALY_END` en
+`session_events.csv` + `session.json`; la grabación no se detiene nunca. Como CONDITION, hoy nadie lee los eventos
+ANOMALY; a diferencia de CONDITION, conviene conservarlos (intervalos sospechosos con inicio y fin para excluir
+tramos en el análisis de sesgo); falta el lado lector. Renombrado hecho: GUI, test, runbook, spec §9.
