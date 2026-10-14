@@ -26920,3 +26920,29 @@ porque sí tienen uso previsto (excluir tramos). (6) "Evento" es la palabra para
 **Pendientes.** Probar el lanzador y la GUI en pantalla con un teléfono VideoNest emitiendo; crear el icono en el
 portátil de hospital; lado lector de los eventos ANOMALY en el análisis de sesgo; `Recorder` sigue importándose
 desde `tools/` (excepción anotada); `hub_test` queda con esperas acotadas (verificado bajo carga).
+
+## 2026-10-14 — Qué tiene cada fabricante de específico para neonatos (sensores, modo, alarmas, pantallas)
+
+**Pregunta de Alex:** por fabricante, qué es específico de neonatos: sensores, configuración en pantalla,
+alarmas; comprobar si la pantalla es específica de neonatos (suponía que no).
+
+**Método:** cuatro agentes en paralelo (Masimo+Nonin, Nellcor+Philips, NK+Dräger, GE+Mindray) leyendo
+manuales de operador e IFU actuales con URL por hecho y etiqueta de confianza.
+
+**Conclusión transversal:** la pantalla base es idéntica para todas las categorías en los ocho
+fabricantes; lo neonatal son vistas o aplicaciones aparte (OxyCRG en Philips, Mindray, Dräger Delta y
+NK; Pathway y Eve en Masimo; NER y test de silla en Philips), algunas solo accesibles con categoría Neo.
+Solo Philips declara que la categoría cambia el cálculo de SpO2; el resto mantiene los ajustes del
+algoritmo para todas las categorías (Nellcor lo llama literalmente "Alarm Mode"; GE ni siquiera tiene
+tipo de paciente, usa paquete de software NICU; Nonin no tiene nada). Consenso de alarmas neonatales:
+SpO2 85/95, Desat 75-80, PR 80-200 según marca; Nellcor apaga SatSeconds y prohíbe SPD en neonato.
+
+**Correcciones al informe de agosto:** (1) Mindray no tiene "SpO2 screen" neonatal; es la familia
+OxyCRG (OxyCRG Expand lleva un área de estadísticas de tiempo por rango de SpO2). (2) NK: 8 h máximo
+por sitio para la familia adhesiva TL-27xT (antes 4 h; 4 h es para el reutilizable de dedo).
+(3) Masimo: los defaults neonatales 85/95 y PR 100-200 no aparecen en los manuales actuales de
+Radical-7 ni Rad-97 (una sola columna de fábrica: 88/Off, PR 50-140); anotado como discrepancia.
+
+**Decisión:** todo va como **§8** de `docs/ppg_neonatal_manufacturer_references.md` (tabla transversal,
+un apartado por fabricante con fuentes, lista de "no encontrado"), y las tres correcciones anotadas en
+§1, §4 y §5 sin borrar el texto original.
