@@ -1,195 +1,107 @@
 # Hospital campaign runbook — recording a session
 
-What to do, in order, to record a session with `tools/pulsenest_recorder_gui.py`. Written for the
-person at the cot side, to be followed without reading any other document. The reasoning behind
-each rule is in `pulsenest_recorder_spec.md`; this page only says what to do.
+What to do, in order, for the person at the cot side. The reasoning behind each rule is in
+`pulsenest_recorder_spec.md`; this page only says what to do.
 
-Campaign shape: **three boards on three babies**, each baby also wearing a commercial pulse
-oximeter, a phone running VideoNest pointed at one monitor, one laptop.
-
-**One window per baby.** A session is a baby, not a run of the program, so there is one window per
-cot and finishing with one baby does not touch the other two. Each window records exactly one
-board and writes its own session directory.
+**The shape of a campaign:** three boards on three babies, each baby also wearing a commercial
+pulse oximeter, a phone running VideoNest pointed at each monitor, one laptop. **One window per
+baby**, each recording one board into its own session directory. Finishing one baby does not
+touch the other two.
 
 ---
 
 ## 1. The day before
 
-- [ ] **Boards flashed and verified.** `docs/boards.md` lists MAC, revision and last build. All
-      three should report the same `fw`, `build` and `elfsha`.
-- [ ] **Write down which board goes to which cot**, by the **last four hex digits of its MAC** —
-      that is what you will type. The three V18 are `8850`, `825C` and `87A4`.
-- [ ] **Write down which probe model goes on each baby** (e.g. `Medle-neo`) — ISO 80601-2-61
-      calibrates a **monitor+probe pair**, never the monitor alone, and nothing electrical tells
-      the library which physical sensor is clipped on. `--probe` records it once at launch.
-- [ ] **Disk**: measured, **17 MB per minute per board** (`.pnraw` plus the live CSV), so about
-      **1 GB per board per hour**. Three boards for eight hours ≈ **24 GB**. Leave at least twice
-      that free; the recorder refuses to start below 2 GB and stops cleanly if it gets there.
-      `--raw off` halves it and gives up the verbatim copy of what arrived on the wire.
-- [ ] **Laptop clock synchronised** (Windows: Settings → Time → Sync now). Everything is aligned
-      afterwards through the laptop's clock; a laptop that is ten minutes off makes the photos
-      useless.
-- [ ] **Phone**: VideoNest installed and pointed at the right monitor, battery charged, **cloud
-      photo sync OFF** (§11 of the spec: the photos are health data).
-- [ ] **Know the phone's device id** — the word VideoNest puts in every frame and in every
-      photograph's filename, e.g. `J6plusACM`. Tape it to the case. You will choose it in the
-      window, and it is what says which cot that phone is filming.
-- [ ] **Photograph the commercial monitor's SpO2 settings screen and its model label**, for each
-      monitor. The **averaging time** is the number that decides whether our SpO2 can be compared
-      with theirs at all, and it is not recorded anywhere else. Beware: Nellcor's *SatSeconds* is
-      an alarm delay, **not** an averaging window.
-- [ ] **Consent** obtained beforehand, on paper. The recorder does not ask and does not check;
-      it is written into the `consent` column of `captures/truth.csv` afterwards.
-- [ ] Subject codes agreed in advance: `SUBJ01`, `SUBJ02`, `SUBJ03`. **Never a name**, anywhere,
-      not even in a free-text note. The window refuses anything that is not `SUBJ` plus digits.
+- [ ] **Boards flashed and verified** — `docs/boards.md`. The launcher (§2) will say whether the
+      three run the same firmware.
+- [ ] **One `.toml` per cot** in `docs/session_configs/`: copy `example.toml` to `subj01.toml`,
+      `subj02.toml`, `subj03.toml` and fill in, for that baby:
+      `subject` (`SUBJnn`, **never a name**), `location` (a site code), `operator` (initials),
+      `board` (last four hex digits of the board's MAC: `8850`, `825C`, `87A4`), `probe` (our
+      probe's model), `note` (free text, written once at start), and under `[ref]` the commercial
+      monitor: `model`, `probe-site`, `videonest` (the phone's device id), `avg` (its averaging
+      time in seconds — photograph the monitor's SpO2 settings screen to get it; it decides
+      whether the two SpO2 can be compared at all).
+- [ ] **Disk**: about **1 GB per board per hour**. Three boards for eight hours ≈ 24 GB; leave
+      twice that free. The recorder refuses to start below 2 GB.
+- [ ] **Laptop clock synchronised** (Settings → Time → Sync now). Everything is aligned through
+      this clock.
+- [ ] **Phones**: VideoNest installed and pointed at the right monitor, battery charged, **cloud
+      photo sync OFF** (the photos are health data). Tape the device id to the case.
+- [ ] **Consent** on paper beforehand. The recorder does not ask.
+- [ ] Subject codes agreed: `SUBJ01`, `SUBJ02`, `SUBJ03`. The code-to-person list stays in the
+      private file, never in the repository, never in a note.
 
 ---
 
 ## 2. Starting
 
-**Prepare one TOML file per cot the day before** — copy `docs/session_configs/example.toml` to
-`subj01.toml`, `subj02.toml`, `subj03.toml`, and fill in that baby's board, subject, phone and
-monitor from the photo taken in §1. Nothing about these files is secret and nothing in them is a
-name — `location` and `subject` are codes — so they can sit anywhere convenient, e.g. next to the
-runbook, or on a USB stick brought to site.
+**Double-click `PulseNest Session` on the desktop** (made once per laptop with
+`.\scripts\make_session_shortcut.ps1`). The window is the checklist, checked live:
 
-**Double-click `PulseNest Session` on the desktop** (`tools/pulsenest_session.py`; the icon is made
-once per laptop with `.\scripts\make_session_shortcut.ps1`). The window is the checklist above,
-checked live: the boards on the air with their firmware (one line says whether all three run the
-same image), the VideoNest phones heard, the free disk as hours of recording, the laptop clock in
-large digits, and one row per `.toml` in `docs/session_configs` saying which live board and which
-phone it matches. Press **START** on a row, or **START ALL COTS**, and **FLEET MONITOR** for the
-console overview. Every START is exactly the command line below, run as a process of its own: the
-launcher can be closed, or crash, and the recordings continue. **EDIT** opens a cot's file in the
-system editor; the window re-reads the files by itself when one changes. A board that goes quiet
-turns its row amber (`SILENT`) and red after a minute, and so does a phone.
+- **BOARDS ON THE AIR** — every board streaming, and one line saying whether all run the same
+  firmware. A board that goes quiet turns amber (`SILENT`), red after a minute.
+- **PHONES HEARD** — every VideoNest phone sending, with its last frame and clock offset.
+- **Disk** as hours of recording, and the **laptop clock** in large digits.
+- **COTS** — one row per `.toml`: which live board it matches and whether its phone has been
+  heard. Files are re-read by themselves when edited (**EDIT** opens one in the system editor).
 
-The same thing from a terminal opened in `C:\PRJ\MOW\PulseNest`, **one window per baby**:
+Press **START** on each cot, or **START ALL COTS**, and **FLEET MONITOR** for the console
+overview. Each START opens one recorder window, as a process of its own: the launcher can be
+closed afterwards and the recordings continue. The hub starts by itself.
+
+From a terminal, the same thing is:
 
 ```
 pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj01.toml
-pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj02.toml
-pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj03.toml
 ```
 
-`--config` reads `location`, `operator`, `board`, `subject`, `videonest`, `note`, `probe` and the
-four `ref.*` fields in one go — everything a session needs to say who it is about, as opposed to
-`--hub`/`--out`/`--raw`/`--split-min`/`--duration`, which are how the tool behaves and are the
-same for all three cots. **Full substitution**: typing any of those on the command line
-*alongside* `--config` is refused outright, never silently merged, so the file is always the
-whole story or none of it. If a value needs to change on the day — the phone died, a different
-oximeter arrived — edit the file, or drop `--config` for that window and type the flags by hand
-(below); do not mix the two.
+Then, in each recorder window:
 
-Without a prepared file, the equivalent by hand is:
-
-```
-pythonw tools/pulsenest_recorder_gui.py --location HOSP01 --operator AC --board 8850 --subject SUBJ01 --ref-videonest J6plusACM --note "term neonate, resting after a feed" --probe "Medle ST-S0163-26" --ref-model "Masimo Radical-7" --ref-avg 8 --ref-probe-site "left thumb"
-```
-
-`--location` is a **coded** place, never a described one: `BENCH` for our bench, `HOSP01`,
-`HOSP02`… for clinical sites, `SITE01`… for anywhere else. A place plus a date plus a subject
-identifies a person even with no name written anywhere; what the code means lives in the private
-mapping file, beside the `SUBJnn` one.
-
-`--board` is a MAC suffix of any length. If it matches two boards the session refuses to start,
-rather than recording a baby nobody asked for. `--subject`, `--ref-videonest` and `--note` can be
-left out and chosen in the window instead — but `--ref-videonest`, unlike the other two, is a
-one-way door once given: **it locks the reference phone for the whole session**, and neither the
-window nor the console can switch it to another id afterwards (2026-09-23, after a session
-recorded with the wrong cot's phone — see §5). Give it here when you know the phone in advance;
-leave it out and choose it in the window if you don't. `--note` is worth typing here anyway: it is written
-verbatim as a NOTE event, and that is all it does — it reads under NOTE in the window's panel and never
-reaches a filename. The CSV is named `<SUBJECT>_<LOCATION>_<date>_<time>_pNN.csv` from the
-subject and location alone, from the moment it opens.
-
-`--probe` is OUR probe's physical model — ISO 80601-2-61 calibrates a monitor+probe pair, never a
-monitor alone, and the library has no way to know which sensor is clipped onto the baby. Shown
-under **PROBE**, read-only, same reason as MONITOR below.
-
-`--ref-model`, `--ref-avg`, `--ref-probe-site` and `--ref-note` describe the commercial monitor
-beside that baby, from the photograph you took the day before (§1). They do not change during the
-session, so they are typed once, in the file or on the command line, rather than in the window —
-the window shows them under **MONITOR**, read-only, so a typo is visible instead of silent.
-`--ref-avg` is the number that
-decides whether our SpO2 can be compared with theirs at all; leave it out and correct it later
-from the console tool (`ref SUBJ01 avg 8`) if you did not have the photo to hand yet.
-
-The hub starts on its own if it is not already running.
-
-Then, in each window:
-
-- [ ] **Wait for its board.** The window says `waiting for board *8850` until the board speaks.
-      When it appears, the header line shows the MAC, the subject, `dgrams` climbing and `part`.
-- [ ] **A header that says `UNBOUND`, or warns in amber, is a window that needs you.** That is the
-      whole point of the header: no subject, gaps, a silent board, a board that
-      rebooted.
-- [ ] **REFERENCE**: tick `VideoNest UDP` in the window watching the cot the phone is filming, and
-      choose its device id. **The list only shows phones actually heard on the wire**, so if the id
-      is not there, VideoNest is not sending — that is the answer, before you open any menu. Leave
-      it unticked in the other two windows.
-- [ ] **NEW EVENT**: where our probe is, e.g. `probe on left foot`. This matters more than it looks —
-      in a baby with a patent ductus, a foot and a right hand genuinely read differently, and an
-      unrecorded difference is read later as our error.
-- [ ] **Clock anchor**, once per session (twice — start and end — also measures drift): press
-      `CLOCK ANCHOR`; the window fills with the laptop's clock in big digits with milliseconds.
-      **Photograph that screen with the VideoNest phone**, then click to close. The digits in the
-      photo are the laptop's time; the photo's filename (`VideoNest_frame_<id>_<date>_<time>_<ms>.jpg`)
-      is the phone's; their difference is the offset between the two clocks, which is what places
-      every phone reading on our timeline. Nothing to type: the event is written when you press.
-- [ ] **MONITOR** shows what `--ref-*` recorded. If it says `(not set)`, either you did not pass
-      those flags or something in them was wrong — correct it from the console tool rather than
-      losing the reference for the whole session.
+- [ ] **Wait for its board.** The header says `waiting for board *8850` until the board speaks;
+      then it shows the MAC, the subject, `dgrams` climbing and `part`.
+- [ ] **Check the panel "This board: the session, as launched".** It shows what the `.toml`
+      said — SUBJECT, LOCATION, OPERATOR, BOARD, PROBE, NOTE, MONITOR, REFERENCE — read-only. A
+      typo means: close the window, fix the file, START again. Nothing is edited in the window.
+- [ ] **REFERENCE** shows the phone named in the file. If the file named none, tick
+      `VideoNest UDP` here and choose the phone — the list only shows phones actually heard.
+- [ ] **A header that says `UNBOUND` or warns in amber needs you**: no subject, gaps, a silent
+      board, a board that rebooted.
+- [ ] **CLOCK ANCHOR**, once per session (twice, start and end, also measures drift): press it,
+      the window fills with the laptop's clock in large digits; **photograph that screen with the
+      VideoNest phone**, then click to close. The event is written when you press.
 
 ---
 
 ## 3. During the session
 
-- [ ] **Read the commercial monitor and press `RECORD` often.** Type the SpO2 in the spinbox,
-      the pulse rate too if the monitor shows one and you want a pulse reference; leave it at `--`
-      otherwise. A reading per baby every few minutes, and always around anything interesting.
-      **Read the number off the monitor's own screen, never off ours.** Do not correct for delay:
-      the instant of the click is what is recorded, and the monitor averages over seconds anyway.
-- [ ] **The list beside `RECORD` is every reading you have taken.** Double-click one to correct a
-      mistyped number, or select it and `DELETE selected` to withdraw it. Nothing is erased: the
-      file keeps the original and the correction, and a corrected reading keeps its own time.
-      `DELETE LAST` withdraws the most recent.
-- [ ] **Mark what happens to the baby** in the NEW EVENT box: a feed, a nappy change, an alarm on the
-      monitor, a probe that was moved, a desaturation. None of it can be reconstructed afterwards.
-- [ ] **Watch the header line of each window.** `gaps` climbing means datagrams were lost on the
-      air; `SILENT` means nothing has arrived for five seconds.
-- [ ] **A phone that stops is the likeliest failure of a session** — battery, app backgrounded,
-      camera nudged. Nothing on our side will say so loudly, so glance at the phone itself.
-- [ ] Each window writes a new part on every **10-minute wall-clock boundary**, in both the
-      `.pnraw` and the CSV (`…_p02.csv` at 10:20, `…_p03` at 10:30). That is normal, and it is
-      what keeps a CSV small enough to open.
-
-- [ ] **`ABNORMAL CONDITION`**, if the data is briefly suspect — probe loosely applied, motion,
-      an alarm interfering — and not worth losing. Press it on; recording never stops. Press it
-      off again once it passes. **Never a pause**: a pause risks forgetting to resume, which loses
-      data that was perfectly good; a wrong flag costs nothing to undo. The button turns purple
-      while active, so it cannot be forgotten silently the way a paused recording could be.
+- [ ] **Read the commercial monitor and press `RECORD` often** — the SpO2 from the monitor's own
+      screen, the pulse rate too if you want a pulse reference. A reading every few minutes per
+      baby, and always around anything interesting. Do not correct for delay.
+- [ ] **The list beside `RECORD` is every reading taken.** Double-click to correct, select and
+      `DELETE selected` to withdraw. The file keeps the original and the correction.
+- [ ] **NEW EVENT**: type what happens and press Enter — a feed, a nappy change, an alarm on the
+      monitor, the probe moved (`probe on left foot`), a desaturation. None of it can be
+      reconstructed afterwards.
+- [ ] **ABNORMAL CONDITION** when the data is briefly suspect — probe loose, motion, an alarm
+      interfering. Recording never stops; the button turns purple and writes a start/end pair.
+      Press again when it passes. **Never a pause.**
+- [ ] **Watch each header**: `gaps` climbing means datagrams lost on the air; `SILENT` means
+      nothing for five seconds. **A phone that stops is the likeliest failure** — glance at the
+      phone itself, or at PHONES HEARD in the launcher.
+- [ ] A new part is written every **10 minutes** (`…_p02.csv`, `…_p03`). That is normal.
 
 ---
 
 ## 4. Closing
 
-- [ ] Press **`STOP SESSION`**, or close the window: it asks first, so a stray click cannot end a
-      recording. There is no Ctrl+C to get wrong.
-- [ ] **Open one CSV in Flow CSV Viewer before leaving.** This is the check that says the session
-      is good *here* instead of a week later. Each part is about 60 MB. The CSV is the v0.4 format
-      (`capture_csv_format_spec.md`) since 2026-09-22; Flow opened a full 10-minute part of it on
-      the bench. **If a file will not open on site, add `--csv on` to the launch line** for the next
-      session: that is the format every tool read until today, and the `.pnraw` lets the v0.4 file be
-      rebuilt later anyway (`python tools/pulsenest_convert.py <session dir> --csv v04`).
-- [ ] Each CSV is named `SUBJ01_HOSP01_<date>_<time>_pNN.csv`. A file called `<MAC>_…` means the
-      board was never bound to a subject (it is renamed at close if the subject is bound later).
-- [ ] **Copy the whole session directory** to a second disk before leaving. Each baby has its own,
-      under `captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>_<SUBJnn>/`.
-- [ ] Copy the phone's photos and videos to the same place. They never reach the laptop by
+- [ ] **`STOP SESSION`** or close the window; it asks first.
+- [ ] **Open one CSV before leaving** (Flow CSV Viewer): the check that the session is good here,
+      not a week later.
+- [ ] **Copy the whole session directory** — `captures/sessions/<date>_<time>_<SITE>_<SUBJnn>/` —
+      and the phone's photos and videos to a second disk. The photos never reach the laptop by
       themselves.
-- [ ] Nothing of this is committed to the repository (`captures/` is git-ignored, and session
-      directories are never committed — not even `session.json`).
+- [ ] Nothing of this is committed to the repository.
 
 ---
 
@@ -197,27 +109,21 @@ Then, in each window:
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `waiting for board *8850` and it never appears | The board is not reaching the laptop: power, WiFi, or a new lease that has not sent a `$CFG` yet | Wait a few seconds, then check the board's power and the hotspot |
-| The device id is missing from the REFERENCE list | VideoNest is not sending: app closed or backgrounded, phone off the WiFi, wrong destination address | Wake the phone and check VideoNest; the boards are unaffected |
-| `SILENT` in the header | No datagram for five seconds | Usually the board rebooted or lost WiFi. It is recorded as a note and recording continues; when it comes back, **even on a new address**, it continues in the same file |
-| `gaps` climbing | Datagrams lost on the air | Usually the hotspot. The rows are not recoverable but the gap is recorded, so the capture stays honest |
-| `dgrams` climbing with no baby connected | Normal: the board streams with no probe | Nothing |
-| The window closes by itself | Disk below the floor, or `--duration` expired | The session closed cleanly and is intact |
-| The waveform freezes or the window dies | pyqtgraph, which has killed the lab window 28 times | Only that baby's recording stops; the other two are separate programs. Everything written is on disk. Relaunch, and press `PLOTS` to record without the waveform |
-| A crash of any kind | | The `.pnraw` and the CSV are append-only and end on a complete record. What is lost is metadata: `SESSION_END` and the clock drift; a board never bound to a subject also keeps its provisional `<MAC>_…` name |
-| REFERENCE is greyed out and shows the wrong phone | `--ref-videonest` was typed at launch with the wrong id (or the wrong cot's), and it is now locked for this session | Close the window and relaunch: either the correct `--ref-videonest`/`[ref].videonest`, or none at all — leave it out and pick the phone live from the REFERENCE list instead |
+| `waiting for board *8850` never ends | The board is not reaching the laptop | Check the board's power and the hotspot; the launcher shows what is on the air |
+| The phone is missing from the REFERENCE list or from PHONES HEARD | VideoNest is not sending | Wake the phone, check the app; the boards are unaffected |
+| `SILENT` in the header | No datagram for five seconds | Usually a reboot or lost WiFi; recording continues in the same file when it comes back |
+| `gaps` climbing | Datagrams lost on the air | Usually the hotspot; the gap is recorded |
+| The window closes by itself | Disk below the floor, or `--duration` expired | The session closed cleanly |
+| The waveform freezes or the window dies | pyqtgraph, which has crashed before | Only that baby stops; everything written is on disk. START again from the launcher, press `PLOTS` off |
+| REFERENCE is greyed and shows the wrong phone | `[ref].videonest` in the file was wrong | Close the window, fix the file, START again |
+| Any crash | | The `.pnraw` and the CSV are append-only and end on a complete record |
 
-**The recorder never writes to a board.** It cannot change a setting or reboot anything, by
-construction. Configuration is done from the lab before the session.
+**The recorder never writes to a board.** Configuration is done from the lab before the session.
 
 ---
 
 ## 6. Afterwards
 
-Off-site, the converter turns each `.pnraw` back into the capture CSV and reports how the phone's
-readings compared with what the operator typed. That tool is being written; until then, keep the
-session directories exactly as they are.
-
-`reference_spo2.csv` is already written during the session: the phone's readings and yours, one
-row each, side by side, so the phone's can be reviewed against the photographs — with what you
-typed at that same minute right beside them — without waiting for anything.
+`tools/pulsenest_convert.py <session dir> --csv v04` rebuilds the CSVs from the `.pnraw` and
+proves they match. `reference_spo2.csv` in the session directory holds the phone's readings and
+yours side by side, with the clock offset per frame.

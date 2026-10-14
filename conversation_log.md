@@ -26894,3 +26894,9 @@ registra con tipo NOTE) y qué hace ABNORMAL CONDITION: `flag on|off <subj>` →
 `session_events.csv` + `session.json`; la grabación no se detiene nunca. Como CONDITION, hoy nadie lee los eventos
 ANOMALY; a diferencia de CONDITION, conviene conservarlos (intervalos sospechosos con inicio y fin para excluir
 tramos en el análisis de sesgo); falta el lado lector. Renombrado hecho: GUI, test, runbook, spec §9.
+
+### Misma sesión: `docs/hospital_runbook.md` reescrito, breve
+
+223 → ~125 líneas. Mismo orden (día antes, inicio, durante, cierre, problemas, después), con el lanzador como
+entrada, los campos del `.toml` en una sola lista, el panel de solo lectura, NEW EVENT, ABNORMAL CONDITION, sin
+CONDITION ni líneas de terminal salvo una de ejemplo. El razonamiento sigue en la spec del grabador.
