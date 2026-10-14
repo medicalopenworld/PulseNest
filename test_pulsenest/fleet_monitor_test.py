@@ -3,7 +3,7 @@
 Feeds synthetic $CFG and $M4 datagrams straight into BoardView/render(), so it needs neither a
 hub nor a board and runs in a fraction of a second:
 
-    python tests/fleet_monitor_test.py
+    python test_pulsenest/fleet_monitor_test.py
 
 Covers what the columns promise (2026-09-17): the shortened IP/MAC/probe labels and the fallback
 to full addresses across subnets, the column order SpO2 HR1 HR2 HR3 RF1 TIA1 RF2 TIA2, the fields

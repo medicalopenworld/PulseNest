@@ -5,7 +5,7 @@ a temporary configs folder. Part 2 builds the real window offscreen against a fa
 a fake process spawner, presses the buttons the way a person does and reads the table back: what
 is on the air, which cot matches which board, which phone was heard, and that START runs exactly
 the runbook's command line as a detached process and never twice for the same cot.
-    python tests/pulsenest_session_test.py
+    python test_pulsenest/pulsenest_session_test.py
 """
 import os
 import sys

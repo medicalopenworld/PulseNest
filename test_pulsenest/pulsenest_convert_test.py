@@ -1,5 +1,5 @@
 """Checks for tools/pulsenest_convert.py -- the record replayed equals the file written live.
-    python tests/pulsenest_convert_test.py
+    python test_pulsenest/pulsenest_convert_test.py
 A synthetic session is recorded with a scripted clock (three boards' worth of frames from one
 fake board, configuration frames, console commands mid-way, a gap), in today's format and in
 v0.4; each is converted from its own .pnraw and compared byte for byte. Then the frozen bench

@@ -4,7 +4,7 @@ A column indexed wrong does not raise: it writes a well-formed row of the wrong 
 nobody notices until the analysis. So the indexing, the frame-mode fallbacks, the RF conversion
 and the refusal to turn a non-data line into a row are checked here, with no board and no hub:
 
-    python tests/capture_csv_test.py
+    python test_pulsenest/capture_csv_test.py
 """
 import os
 import sys

@@ -111,7 +111,7 @@ whichever subscriber asks first and refuses it to the rest, by name and since wh
 on every retry). It clears on its own when the holder closes: `HubClient` re-claims the control
 every `CTRL_RETRY_S` (5 s) while it wants it and does not have it — found while writing the test
 for this: without the retry, a refused instance stayed read-only until restarted, because it had
-only ever asked once, at connect(). Verified by `tests/udp_multiboard_test.py` phase 11: a rival
+only ever asked once, at connect(). Verified by `test_pulsenest/udp_multiboard_test.py` phase 11: a rival
 subscriber takes the control, the lab still receives and feeds the pipeline, its button reads
 READ-ONLY, its `$SET` is not sent, and control returns on its own when the rival leaves.
 
@@ -641,7 +641,7 @@ lines, same MTU guard). Consequences the host can rely on:
 - `frm/dgram` in `# NET` divides by `data_datagrams`, so a perfect link reads **5.00** (4.99 when
   every datagram counted). Cost of the change on the wire: one ~210 B datagram every 5 s, +0.2 %.
 Verified on the bench 2026-09-15 (see conversation_log) with a raw-datagram recording of the three
-boards: zero mixed datagrams. `tests/udp_multiboard_test.py`: `FakeBoard` emits the burst in its
+boards: zero mixed datagrams. `test_pulsenest/udp_multiboard_test.py`: `FakeBoard` emits the burst in its
 own datagram every 100 data datagrams; phase 1 checks `frames == 5 × data_datagrams` and
 `datagrams == data_datagrams + bursts`.
 
@@ -654,7 +654,7 @@ with nothing dropped and exactly one `$CFG` reaching the main thread. Live, **bo
 (17.A and 16.A, the case F1 exists for): 2 boards registered, one ACTIVE one PRESENT, both
 identified by MAC, the PRESENT one dropped in full, 0 gaps on either board, longest frame 264 / 265
 bytes, and the source switch verified in both directions (§4.8 F2). Loopback,
-`tests/udp_multiboard_test.py` (simulated boards on 127.0.0.1/.2/.3, real `$M4` template, ports
+`test_pulsenest/udp_multiboard_test.py` (simulated boards on 127.0.0.1/.2/.3, real `$M4` template, ports
 15005/15006 so the bench does not interfere): 21 checks — A active, B present and identified by
 query, B fully dropped, no cross-board gaps, A LOST without switching, A back from a new IP with
 the same MAC followed, stale entry removed.
@@ -698,7 +698,7 @@ Rules added to §4.8:
    is silent, back to ON when data resumes (`_refresh_source_combo()` handles the ON ↔ LOST pair;
    OFF and LISTEN are set by the connect paths and by the SERIAL choice).
 
-Verification: `tests/udp_multiboard_test.py` phases 4–7 (pick B → B active and A' dropped,
+Verification: `test_pulsenest/udp_multiboard_test.py` phases 4–7 (pick B → B active and A' dropped,
 preference stored; pick SERIAL → both dropped, button LISTEN; active silent → button LOST, no
 promotion; fresh connection with B preferred → A' speaks first, B promoted on identification).
 
@@ -876,7 +876,7 @@ The signal itself is not "reset": after a restart the board's HGAC re-converges 
 gain for a few seconds and SpO2 goes through its 18 s warm-up. That is the instrument settling and
 it stays visible — the point of v1.50 is that the host no longer adds a splice on top of it.
 
-Verified by `tests/udp_multiboard_test.py` phase 9: the active simulated board restarts its counter
+Verified by `test_pulsenest/udp_multiboard_test.py` phase 9: the active simulated board restarts its counter
 → one event, reason names the counter, no old counter left in the buffers, logged; the user picks
 the other board → a second event, reason names the source.
 
@@ -1109,7 +1109,7 @@ viewer and the recorder GUI import from there, so neither imports the other prog
 a 1200 px window about 370 px of waveform with three boards — widen the window and the waveform
 takes everything that is added.
 
-Verified by `tests/fleet_ppg_viewer_test.py` (70 offline checks, no hub and no board: the field it
+Verified by `test_pulsenest/fleet_ppg_viewer_test.py` (70 offline checks, no hub and no board: the field it
 reads, decimation, trimming by time rather than by point count, state colouring, LOST, one band
 per MAC across a lease change, malformed lines never raising, the bedside numbers, the statistics
 arithmetic and its window, the four columns and that no cell can outgrow the width it was
@@ -1139,12 +1139,12 @@ Found by Alex: the hub `launch_hub()` starts has no CLI flags of its own, so it 
 whatever `pulsenest_hub.py`'s own `--idle-exit-min` default was -- and that default was `0`
 (never exit). One instance ran **34+ hours** after every subscriber that had ever used it was
 gone. `DEFAULT_IDLE_EXIT_MIN = 5.0` is now that default; `Hub.__init__`'s own default stays `0`
-so a test building a `Hub()` directly (`tests/hub_test.py`, `tests/udp_multiboard_test.py`) is
+so a test building a `Hub()` directly (`test_pulsenest/hub_test.py`, `test_pulsenest/udp_multiboard_test.py`) is
 unaffected -- only the CLI entry point changed, and the auto-started hub goes through the CLI.
 `--idle-exit-min 0` still disables it, for a bench session meant to run for hours with gaps
 between captures. The "listening on" log line now states the setting
 (`idle exit after 300s` / `idle exit disabled`) so `pulsenest_hub.log` says which policy is in
-force without having to read the source. Verified: `tests/hub_test.py` starts a `Hub` with
+force without having to read the source. Verified: `test_pulsenest/hub_test.py` starts a `Hub` with
 `idle_exit_s=0.3` and nobody ever subscribing, and checks `serve_forever()` returns within 3 s.
 
 **Every subscriber registers with its own running file (v1.64), not a hand-typed short name.**
@@ -1157,11 +1157,11 @@ passes the raw `hub .../sub ...` lines through: each is relabelled with an expli
 `subscriber` column so the role is never inferred from being first in the list or from a
 one-word prefix — a distinction Alex found himself unable to make from the old rendering.
 
-**Verification.** `tests/hub_test.py` (in-process hub on a spare port, two fake boards, a
+**Verification.** `test_pulsenest/hub_test.py` (in-process hub on a spare port, two fake boards, a
 controller and a reader): 27 checks — origin tagging, boundaries, cache replay, one `$CFG?` per
 board, single controller, read-only enforcement both client- and hub-side, ping/pong, expiry
 releasing the control, `@STATUS`, hub death detected and reconnection to a new hub, duplicate bind
-refused. `tests/udp_multiboard_test.py` runs unchanged with the hub between the fake boards and
+refused. `test_pulsenest/udp_multiboard_test.py` runs unchanged with the hub between the fake boards and
 the lab: 93/93.
 
 **What this decides about the ports (the first half of the request).** `5005` is the port the
@@ -1815,7 +1815,7 @@ window is open yet at that point, so this only paints the button and locks the f
 point being that the setting outlives a crash-triggered relaunch without anyone having to
 remember to reapply it.
 
-**Verification:** `tests/disable_plots_test.py`, offscreen, no board and no hub — opens
+**Verification:** `test_pulsenest/disable_plots_test.py`, offscreen, no board and no hub — opens
 `HR1LAB`, `SPO2TEST` and `LIB CONFIG`, toggles the button on and checks all three close through
 their own `toggle_xxx()` and all fifteen buttons lock; checks a locked button truly cannot be
 clicked open; toggles off and checks the buttons unlock and nothing reopens on its own; then a
@@ -2591,7 +2591,7 @@ half-written files, and unchecks the sidebar button (parent `None`, as every sub
 
 Persisted: `MultiCaptureWindow/geometry`, `/samples`, `/prefix`.
 
-Verification: phase 8 of `tests/udp_multiboard_test.py` (two simulated boards, exactly 1000 rows
+Verification: phase 8 of `test_pulsenest/udp_multiboard_test.py` (two simulated boards, exactly 1000 rows
 each, `HOST_T_US` present and monotonic with one stamp per datagram, `$MODE` sent to both, notes
 in both files, filenames carrying each MAC, and the corrupting board's frames rejected by
 checksum and missing from its CSV). Live on one real board: 900 rows for a target of 900, analog
@@ -2890,7 +2890,7 @@ gains the `PILAB` row that was missing since PILAB got its own timing key, and `
 offscreen: on a synthetic IR/RED pair with AC ratio 0.55 (80 BPM, 500 Hz, 10 s, with 5 % and 3 %
 linear drift) the d(AC/DC) fit over 4 s reads slope 0.557, r 1.000 (the drift through the 2 s DC EMA
 is the 0.007); the same-processing lock, window change, PAUSE/CONTINUE, stream discontinuity and the
-settings round trip behave as specified (25/25); `tests/disable_plots_test.py` 13/13.
+settings round trip behave as specified (25/25); `test_pulsenest/disable_plots_test.py` 13/13.
 
 ### v1.81 — 2026-10-03
 
@@ -3052,7 +3052,7 @@ that guards the panel's height — with the separating `&nbsp;` written outside 
 `<span>` it rendered at 44 pt instead of 18, exceeded the width `panel_width()` had measured, and
 the rate wrapped at three digits (188 → 258 px, every row out of line). Moving the space inside
 the span fixed it, and `panel_width()` now measures the rate line as heart-plus-digits.
-`tests/fleet_ppg_viewer_test.py` 70/70, with four new checks: the unit above the digits, a heart
+`test_pulsenest/fleet_ppg_viewer_test.py` 70/70, with four new checks: the unit above the digits, a heart
 to the left of the rate, no heart beside the SpO2, and the heart red while the reading is good.
 
 ### v1.71 — 2026-09-19
@@ -3083,7 +3083,7 @@ not fit are reachable by **scrollbar**, so the panel became a read-only `QTextEd
 item instead of a drawn label. And the **bands are equal again**: they had stopped being so
 because the label asked the layout for its document's height (measured 497/497/445 for three
 identical boards; 480/480/480 once the panel's preferred height is zero and every row carries
-the same stretch). `tests/fleet_ppg_viewer_test.py` 66/66; live against the three boards.
+the same stretch). `test_pulsenest/fleet_ppg_viewer_test.py` 66/66; live against the three boards.
 
 ### v1.70 — 2026-09-18
 
@@ -3101,7 +3101,7 @@ redraw rate): **raster sustains more redraws per second at every size** — ×1.
 False on every platform and calls OpenGL "poorly supported with Qt+GraphicsView", and
 `AxisItem.paint()`'s `picture.play(p)` — the authors' own "sometimes we get a segfault here" —
 paints onto that viewport, where 18 of the lab's 28 crashes happened. It cost speed and bought
-the crash site. `tests/udp_multiboard_test.py` 100/100, `tests/disable_plots_test.py` 13/13.
+the crash site. `test_pulsenest/udp_multiboard_test.py` 100/100, `test_pulsenest/disable_plots_test.py` 13/13.
 
 ### v1.69 — 2026-09-18
 
@@ -3110,7 +3110,7 @@ whether a probe has moved — read-only subscriber, one `PPG_DISP` trace per boa
 axis, a common seconds-ago X from arrival time, decimated to 50 Hz, coloured by `ProbeState`, one
 band per MAC. It doubles as the deferred `useOpenGL` experiment: OpenGL off by default, `--opengl`
 to compare, its own faulthandler log, and nothing to lose if it crashes.
-`tests/fleet_ppg_viewer_test.py`: 20/20 offline. Live against three boards: subscribed, ~11k
+`test_pulsenest/fleet_ppg_viewer_test.py`: 20/20 offline. Live against three boards: subscribed, ~11k
 datagrams in, no crash.
 
 ### v1.68 — 2026-09-18
@@ -3122,7 +3122,7 @@ special-casing the value 100: the same trap was waiting in `diag` and in the HR 
 3-digit rate. A value too long loses decimals first (`100.00` → `100.0`, and the second decimal
 of an SpO2 specified to a few percent was never information); one that still does not fit shows
 `#####`, because a cut-off digit string is a different number and a monitor reporting the wrong
-value quietly is worse than one saying it cannot show it. `tests/fleet_monitor_test.py`: 23/23.
+value quietly is worse than one saying it cannot show it. `test_pulsenest/fleet_monitor_test.py`: 23/23.
 
 ### v1.67 — 2026-09-18
 
@@ -3131,7 +3131,7 @@ the only way to stop it by hand was a PowerShell line filtering processes by com
 answers `@STOP` from a local address now and exits cleanly through `serve_forever()`. The flag
 reports three distinct outcomes — stopped, nobody answered, or a hub answered and refused — the
 last because a hub predating the flag replies `unknown-verb`, and calling that "nothing to stop"
-while one is visibly running is worse than saying nothing. `tests/hub_test.py`: 35/35 (four new:
+while one is visibly running is worse than saying nothing. `test_pulsenest/hub_test.py`: 35/35 (four new:
 non-local refusal driven through the handler, the acknowledged stop, the empty port, and a socket
 that answers a refusal).
 
@@ -3159,8 +3159,8 @@ default was 0 (never exit) -- so the only hub that ever runs in practice (the au
 never had an exit path. One instance ran 34+ hours after everyone using it was gone. New
 `DEFAULT_IDLE_EXIT_MIN = 5.0` is the CLI default now; `Hub.__init__`'s own default is untouched
 at 0, so nothing that builds a `Hub()` directly in a test is affected. `--idle-exit-min 0` still
-means never, for a long bench session. `tests/hub_test.py`: 30/30 (new check: idle_exit_s=0.3,
-nobody subscribes, `serve_forever()` returns within 3 s). `tests/udp_multiboard_test.py`: 100/100.
+means never, for a long bench session. `test_pulsenest/hub_test.py`: 30/30 (new check: idle_exit_s=0.3,
+nobody subscribes, `serve_forever()` returns within 3 s). `test_pulsenest/udp_multiboard_test.py`: 100/100.
 
 ### v1.64 — 2026-09-18
 
@@ -3182,7 +3182,7 @@ crash loses the recording. The button closes and locks the fifteen plot-bearing 
 (everything fed by `_refresh_plots_tick()`, plus `LIB CONFIG`) through their own existing
 `toggle_xxx()`, so nothing about how a window closes is duplicated; `SIGNAL STATS`, `HW CONFIG`,
 `LAB CAPTURE`, `MULTI CAPTURE` and the hub connection are untouched. State persists across a
-relaunch. `tests/disable_plots_test.py`: 13/13, offscreen.
+relaunch. `test_pulsenest/disable_plots_test.py`: 13/13, offscreen.
 
 ### v1.62 — 2026-09-17
 
@@ -3192,7 +3192,7 @@ the running file (`pulsenest_lab.py - HR1LAB`) through a `_win()` helper built o
 `pulsenest_net.script_name()`; console tools print a first `== <file> ==  <what it does>` line
 via `pulsenest_net.banner()`, ASCII-only on purpose — these lines reach a Windows console that
 may be `cp1252`, where a non-ASCII character raises `UnicodeEncodeError` on the very first
-`print()` (found the hard way today, in `tests/disable_plots_test.py`'s own checks: the "●"
+`print()` (found the hard way today, in `test_pulsenest/disable_plots_test.py`'s own checks: the "●"
 button-state dot is fine inside Qt, since it never reaches a console, but crashes an offline
 test that prints it to redirected stdout without `sys.stdout.reconfigure(encoding="utf-8")` —
 now the convention every test in `tools/` follows). The main window's title also changed from
@@ -3205,7 +3205,7 @@ library" (what it is for) — every algorithm window here is a mirror of that li
 control.** Amber, not red: data is flowing and the algorithms run exactly as in ON — what is
 missing is the right to write, because another subscriber (in practice, almost always a second
 lab instance) is the hub's controller. Found and fixed together: writing the regression phase for
-it (`tests/udp_multiboard_test.py` phase 11) exposed that a refused client never asked for the
+it (`test_pulsenest/udp_multiboard_test.py` phase 11) exposed that a refused client never asked for the
 control again, so a lab that lost a race stayed read-only until restarted even after the rival
 closed; `HubClient` now re-claims every `CTRL_RETRY_S` while it wants the control and lacks it.
 
@@ -3222,7 +3222,7 @@ never the data stream; no `SO_REUSEADDR`. `pulsenest/hub_client.py` is the share
 datagrams from the client and every UDP command goes through `_hub_send()`; an unsolicited `$CFG`
 no longer lands in the Lab Capture notes. `udp_fw_versions.py` runs next to the lab now;
 `udp_cmd_latency.py` and `tia_linearity_sweep.py` claim the control; new `tools/fleet_monitor.py`.
-`tests/hub_test.py` 27/27, `tests/udp_multiboard_test.py` with the hub in the middle 93/93. The
+`test_pulsenest/hub_test.py` 27/27, `test_pulsenest/udp_multiboard_test.py` with the hub in the middle 93/93. The
 5005/5006 unification is settled as "not on its own" (§4.11, last paragraph).
 
 ### v1.59 — 2026-09-16
@@ -3230,7 +3230,7 @@ no longer lands in the Lab Capture notes. `udp_fw_versions.py` runs next to the 
 **One source of truth for the UDP ports: `pulsenest/net.py` (§2).** `UDP_DATA_PORT` (5005, the
 host's listening port) and `UDP_CMD_PORT` (5006, each board's) were copied by hand into five
 programs — the lab, `tia_linearity_sweep.py`, `tools/udp_cmd_latency.py`, `tools/udp_fw_versions.py`
-and `tests/udp_multiboard_test.py` — and the firmware's copy sits in a gitignored file, so nothing
+and `test_pulsenest/udp_multiboard_test.py` — and the firmware's copy sits in a gitignored file, so nothing
 tracked held the number. All five import the module now; `python pulsenest/net.py` verifies the
 local `wifi_config.h` against it. The lab's `UDP_DEFAULT_PORT` is renamed `UDP_DATA_PORT`: the
 two are the listening port of each END of the link, and the old name hid that. Phase 0 of the
@@ -3302,7 +3302,7 @@ them with the full five lines, zero genuine short batches. The counter now needs
 n_lines < UDP_BATCH_SIZE`. Same class of fix as `dropped` → `not_active` in v1.49: a counter whose
 name promises a fault it is not measuring costs attention on every read. Separately, `$TASK` and
 `$TASKS_END` are now echoed to UDP COM like `$TIMING` — the three lines travel together and only
-one of them was visible. Checks: `tests/udp_multiboard_test.py` phase 10, 89/89.
+one of them was visible. Checks: `test_pulsenest/udp_multiboard_test.py` phase 10, 89/89.
 
 ### v1.52 — 2026-09-15
 
@@ -3315,7 +3315,7 @@ console for events only, 2000 blocks ≈ hours), `LIVE AT BOTTOM` (live line rew
 console's last row, events above it) and `SCROLL` (the pre-v1.52 behaviour, for reading frame by
 frame). Only the last data frame per drain tick is displayed: one Qt operation per tick instead of
 ~100. Events are never diverted — `_is_data_line()` sends only `$M…` frames to the live line.
-Checked offscreen in `tests/udpcom_view_test.py` (19 checks).
+Checked offscreen in `test_pulsenest/udpcom_view_test.py` (19 checks).
 
 ### v1.51 — 2026-09-15
 
@@ -3341,7 +3341,7 @@ decimation; the signal that needs no `#` line), on the banner or `# RESET_REASON
 active source, and on any source change; it refills the monitor's 34 rolling buffers in place,
 notes the event in a running LAB CAPTURE (post-notes, `# event @row N`), and calls
 `on_stream_discontinuity()` on the ten windows that hold state. Parameters, gap counters and
-the live frame mode are untouched. Test: `tests/udp_multiboard_test.py` phase 9 (+15 checks).
+the live frame mode are untouched. Test: `test_pulsenest/udp_multiboard_test.py` phase 9 (+15 checks).
 
 ### v1.49 — 2026-09-15
 
@@ -3351,7 +3351,7 @@ and it read like packet loss. It never was — it counts the lines of a board th
 while it was not the active source and therefore not forwarded to the algorithm pipeline
 (decision D2), cumulative since registration. A counter whose name suggests a fault it does not
 measure costs attention every time the line is read, so the name now says what it is. Snapshot
-key and `tests/udp_multiboard_test.py` renamed alike; behaviour unchanged. Same session, for the
+key and `test_pulsenest/udp_multiboard_test.py` renamed alike; behaviour unchanged. Same session, for the
 record: first `# NET` reading with the bench on firmware 0.10 / library v0.91 — 100.3 dgram/s,
 5.00 frm/dgram, `maxlen` 271/270/269 B, 0 gaps, 0 bad checksums on all three boards.
 
@@ -3417,7 +3417,7 @@ lines are discarded and HW CONFIG is refreshed via `$CFG?`. The chosen board is 
 itself, unless the user has already picked a source by hand (`_udp_auto_promote()`, which also
 carries the v1.44 DHCP follow). The UDP button gains a red **LOST** state mirroring the active
 board (`_set_udp_button()` now paints OFF / LISTEN / ON / LOST). Test: phases 4–7 of
-`tests/udp_multiboard_test.py`.
+`test_pulsenest/udp_multiboard_test.py`.
 
 ### v1.44 — 2026-09-09
 
@@ -3435,7 +3435,7 @@ board boundary and were either counted as false gaps (counters close) or silentl
 air. Measured with `experiments/udp_gap_algo_compare.py`; see §4.8.
 Constants `UDP_BATCH_SIZE`, `UDP_LOST_TIMEOUT_S`, `UDP_NET_SUMMARY_S`, `UDP_CFG_RETRY_S`,
 `UDP_CFG_MAX_REQUESTS` (§3). Cross-references in §4.1 and §4.7. Test:
-`tests/udp_multiboard_test.py`.
+`test_pulsenest/udp_multiboard_test.py`.
 
 **Fix: the crash handler (§2.1) opened `crash.log` with the console code page.** On Windows
 (cp1252) any traceback containing an arrow or a Greek letter from a log message raised

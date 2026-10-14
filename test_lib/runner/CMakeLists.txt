@@ -1,6 +1,6 @@
 # PulseNest host unit tests — builds the incunest_afe4490 library for the host (hal_host, UNIT_TEST)
-# and one executable per test/test_*/ directory, linked against Unity (vendored, MIT, ./unity).
-# Replaces PlatformIO's [env:native] + `pio test -e native`. Run with test/runner/run_host_tests.py.
+# and one executable per test_lib/test_*/ directory, linked against Unity (vendored, MIT, ./unity).
+# Replaces PlatformIO's [env:native] + `pio test -e native`. Run with test_lib/runner/run_host_tests.py.
 cmake_minimum_required(VERSION 3.20)
 project(pulsenest_host_tests C CXX)
 
@@ -13,7 +13,7 @@ endif()
 
 set(PULSENEST_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
 set(INCUNEST_LIB_DIR "${PULSENEST_ROOT}/lib/incunest_afe4490")
-set(PULSENEST_TEST_DIR "${PULSENEST_ROOT}/test")
+set(PULSENEST_TEST_DIR "${PULSENEST_ROOT}/test_lib")
 
 # Unity 2.6.0 (from ESP-IDF components/unity/unity, unmodified)
 add_library(unity STATIC unity/unity.c)
@@ -30,7 +30,7 @@ target_include_directories(incunest_afe4490_host PUBLIC "${INCUNEST_LIB_DIR}")
 target_compile_definitions(incunest_afe4490_host PUBLIC UNIT_TEST INCUNEST_TIMING_STATS=1)
 target_compile_options(incunest_afe4490_host PRIVATE -Wall -Wextra -Werror)
 
-# One executable per suite: test/test_<name>/*.cpp -> test_<name>
+# One executable per suite: test_lib/test_<name>/*.cpp -> test_<name>
 enable_testing()
 file(GLOB PULSENEST_TEST_SUITES LIST_DIRECTORIES true "${PULSENEST_TEST_DIR}/test_*")
 foreach(suite_dir IN LISTS PULSENEST_TEST_SUITES)

@@ -20,7 +20,7 @@ Scenario
   11. A rival program holds the hub's control: the lab still receives, its UDP button says
      READ-ONLY, its $SET is not sent, and the control comes back on its own when the rival leaves.
 
-Usage:  python tests/udp_multiboard_test.py [--live-template]
+Usage:  python test_pulsenest/udp_multiboard_test.py [--live-template]
 Exit code 0 when every check passes.
 """
 import io

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build and run the PulseNest host unit tests (Unity, one executable per test/test_*/ suite).
+"""Build and run the PulseNest host unit tests (Unity, one executable per test_lib/test_*/ suite).
 
-    python test/runner/run_host_tests.py            # configure + build + run every suite
-    python test/runner/run_host_tests.py hr1 spo2   # only suites whose name contains a filter
-    python test/runner/run_host_tests.py --clean    # wipe test/runner/build first
+    python test_lib/runner/run_host_tests.py            # configure + build + run every suite
+    python test_lib/runner/run_host_tests.py hr1 spo2   # only suites whose name contains a filter
+    python test_lib/runner/run_host_tests.py --clean    # wipe test_lib/runner/build first
 
 Needs cmake, ninja and a host g++ on PATH (MinGW-w64 on Windows). Exit code = number of failing
 suites. Replaces `pio test -e native`.

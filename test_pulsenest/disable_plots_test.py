@@ -10,7 +10,7 @@ plotting back on.
 
 Run any time, no board and no hub needed:
 
-    python tests/disable_plots_test.py
+    python test_pulsenest/disable_plots_test.py
 
 Exit code 0 when every check passes.
 """

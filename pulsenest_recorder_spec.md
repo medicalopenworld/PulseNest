@@ -697,7 +697,7 @@ a new writer, a firmware notice when HGAC moves RF) do not fit before the campai
 raw `$M4` frames carry every field, RF per sample included, so nothing recorded raw is lost and
 the converter can produce the v0.4 CSV, `afe:` snapshots included, off-site afterwards.
 
-Verified 2026-09-20: `tests/pulsenest_recorder_test.py`, **80 offline and in-process checks**, plus the 15 of `tests/capture_csv_test.py`
+Verified 2026-09-20: `test_pulsenest/pulsenest_recorder_test.py`, **80 offline and in-process checks**, plus the 15 of `test_pulsenest/capture_csv_test.py`
 (a fake clock drives the core; then the real hub on a spare loopback port with two fake boards),
 a 25 min session on the bench with the three V18 boards (the three split at 18:20:00.000, .008 and .014 — a 14 ms spread, which is the alignment the wall-clock boundary buys), and an earlier 8 s session: identified by MAC at once from the
 hub's cache replay, 500,3 samples/s per board, 0 counter gaps, 5 frames per `@D`, 0,50 GB/h per
@@ -773,7 +773,7 @@ What the implementation fixed in this document's wording, or added:
   (`CaptureCsvWriter`, `CAPTURE_COLS`): it lived inside a 16 000-line module that imports Qt,
   which the recorder exists to avoid. That is R3 of the CSV spec made true rather than
   aspirational — the lab, the recorder and the converter now index the frame with the same table,
-  the one place where a mistake is silent. Checked by `tests/capture_csv_test.py`, 15 offline
+  the one place where a mistake is silent. Checked by `test_pulsenest/capture_csv_test.py`, 15 offline
   checks of exactly that: each column reading its own field, `$M1`/`$M2` fallbacks, RF converted
   to ohms from a closed table, and a `$CFG` or `# STAT` refused instead of written as a
   well-formed row of garbage.
@@ -978,7 +978,7 @@ to the system (no editor of ours).
 `$MODE`, by construction. It has no pyqtgraph. It writes nothing but its window geometry
 (`tools/pulsenest_session.ini`, per machine).
 
-**Test.** `tests/pulsenest_session_test.py`: the model with synthetic `$CFG`/`$M4`/`$VN1`
+**Test.** `test_pulsenest/pulsenest_session_test.py`: the model with synthetic `$CFG`/`$M4`/`$VN1`
 datagrams and a temporary configs folder (matching, ambiguity, a new DHCP lease, a broken file,
 the command lines), then the real window offscreen with a fake hub client and a fake spawner
 (START once, never twice, START ALL's exclusions, RELOAD keeping a process, the monitor's own

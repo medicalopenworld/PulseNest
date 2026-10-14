@@ -2,10 +2,10 @@
 
 Part 1 drives the Recorder core directly with synthetic datagrams and a fake clock -- no hub, no
 board, a temp directory, a fraction of a second. Part 2 runs the real hub in-process on a spare
-loopback port with two fake boards (the pattern of tests/hub_test.py) and lets the recorder's
+loopback port with two fake boards (the pattern of test_pulsenest/hub_test.py) and lets the recorder's
 own main loop pieces record them for a moment.
 
-    python tests/pulsenest_recorder_test.py
+    python test_pulsenest/pulsenest_recorder_test.py
 
 What is checked (pulsenest_recorder_spec.md, sections in brackets):
 [3] the directory and session.json exist before the first datagram; the session id shape

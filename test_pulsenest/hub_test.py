@@ -1,6 +1,6 @@
 """In-process test of pulsenest_hub + pulsenest_hub_client on spare loopback ports.
 
-Two fake boards (127.0.0.2 / 127.0.0.3, the addresses tests/udp_multiboard_test.py uses), a hub
+Two fake boards (127.0.0.2 / 127.0.0.3, the addresses test_pulsenest/udp_multiboard_test.py uses), a hub
 on :15105, a controller client and a read-only client. Checks the contract the lab and the tools
 will rely on: origin tagging, datagram boundaries, cache replay, single controller, read-only
 enforcement, liveness (ping/pong), expiry, auxiliary sources ($VN1: forwarded, never queried,
@@ -8,7 +8,7 @@ labelled `aux`), and the hub's bounded identity query ($CFG?, retried
 while unanswered).
 No real bench involved; run any time:
 
-    python tests/hub_test.py
+    python test_pulsenest/hub_test.py
 """
 import os
 import socket

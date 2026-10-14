@@ -4,7 +4,7 @@ Builds the real Qt window against a real Recorder writing to a temporary directo
 hub client, then drives the controls the way a person does and reads what reached the FILES.
 Needs neither a hub nor a board:
 
-    python tests/pulsenest_recorder_gui_test.py
+    python test_pulsenest/pulsenest_recorder_gui_test.py
 
 What it is checking, and why each one earns its place. The window's whole reason to exist is to
 reduce human error, so the checks are about the guard rails rather than about pixels:

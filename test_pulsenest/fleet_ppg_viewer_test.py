@@ -4,7 +4,7 @@ Feeds synthetic $CFG and $M4 datagrams into BoardTrace directly, so it needs nei
 board, then builds the real Qt window offscreen to check a band appears per board and the curves
 receive the points. Runs in a couple of seconds:
 
-    python tests/fleet_ppg_viewer_test.py
+    python test_pulsenest/fleet_ppg_viewer_test.py
 
 Covers what the viewer promises: PPG read from the right field, decimation, the window trimmed by
 TIME (not by a point count), identity and colour by ProbeState, LOST after 2 s of silence, one

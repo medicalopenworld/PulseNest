@@ -1,6 +1,6 @@
 """Checks on pulsenest/capture_dict.py -- the R18 dictionary is data, so the tests are about
 the data holding together with what surrounds it: the live column list, the firmware's own wire
-frames, and the spec's worked example. Run:  python tests/pulsenest_capture_dict_test.py"""
+frames, and the spec's worked example. Run:  python test_pulsenest/pulsenest_capture_dict_test.py"""
 import io, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))

@@ -1,7 +1,7 @@
 """Offline checks for CaptureCsvWriterV04 (pulsenest/capture_csv.py) -- the v0.4 container of
 capture_csv_format_spec.md. Same reason as capture_csv_test.py: a wrong special line or a wrong
 column does not raise, it writes a well-formed file that means something else.
-    python tests/capture_csv_v04_test.py
+    python test_pulsenest/capture_csv_v04_test.py
 """
 import io, os, re, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

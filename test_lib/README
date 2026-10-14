@@ -1,7 +1,7 @@
 PulseNest host unit tests (Unity)
 =================================
 
-One directory per suite: test/test_<name>/test_<name>.cpp. Each suite is a plain Unity program
+One directory per suite: test_lib/test_<name>/test_<name>.cpp. Each suite is a plain Unity program
 (setUp/tearDown/main with UNITY_BEGIN/RUN_TEST/UNITY_END) that includes only incunest_afe4490.h,
 unity.h and the C standard library, so it builds and runs on the host PC.
 
@@ -10,8 +10,8 @@ incunest_afe4490_hal_host.cpp (no-op GPIO/SPI, fake FreeRTOS/esp_log/esp_timer).
 
 Build and run everything (needs cmake, ninja and a host g++ on PATH — MinGW-w64 on Windows):
 
-    python test/runner/run_host_tests.py
-    python test/runner/run_host_tests.py hr1 spo2    # only suites matching a filter
-    python test/runner/run_host_tests.py --clean     # rebuild from scratch
+    python test_lib/runner/run_host_tests.py
+    python test_lib/runner/run_host_tests.py hr1 spo2    # only suites matching a filter
+    python test_lib/runner/run_host_tests.py --clean     # rebuild from scratch
 
-Build system: test/runner/CMakeLists.txt (Unity 2.6.0 vendored in test/runner/unity).
+Build system: test_lib/runner/CMakeLists.txt (Unity 2.6.0 vendored in test_lib/runner/unity).

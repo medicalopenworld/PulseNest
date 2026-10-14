@@ -43,7 +43,7 @@ Requires [ESP-IDF v6.0.1](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/
 idf.py -B build_V18 -p COM15 -b 921600 monitor
 
 # Host unit tests (CMake + Unity, needs cmake/ninja/g++ on PATH)
-python test/runner/run_host_tests.py
+python test_lib/runner/run_host_tests.py
 ```
 
 ## Running it
@@ -112,7 +112,8 @@ The folder says what a Python file *is*, not when it was written:
 | repo root | `pulsenest_lab.py` | The project's main program (its state files and the launch hooks live beside it) |
 | `pulsenest/` | `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set`, `fleet_trace`, `fleet_widgets` | Importable package: anything more than one program imports (`from pulsenest.net import ...`) |
 | `tools/` | session launcher, hub, recorder, recorder GUI, converter, fleet monitor, PPG viewer, UDP utilities, capture index | Programs an operator or maintainer runs on purpose; importable as `tools.<name>` |
-| `tests/` | `*_test.py` | Python tests, one per module they check (`python tests/<name>.py`). C++ host tests stay in `test/` |
+| `test_pulsenest/` | `*_test.py` | Python tests of this repo's own software, one per module (`python test_pulsenest/<name>.py`) |
+| `test_lib/` | `test_<name>/` suites, `runner/` | C++ unit tests of the `incunest_afe4490` library, run on the PC (`python test_lib/runner/run_host_tests.py`) |
 | `experiments/` | one-off studies and bench campaigns | Dated, with the result recorded in the docstring; not maintained as tools |
 | `scripts/` | `build.ps1`, `gen_build_version.py` | Build system only |
 
@@ -131,7 +132,8 @@ pulsenest_lab.py               — Real-time PPG/SpO2/HR visualizer (pulsenest_l
 pulsenest/                     — Shared host-side modules (see table)
 tools/                         — Operator programs and the hub (tools/pulsenest_hub.py); tools/pulsenest_recorder.py has pulsenest_recorder_spec.md
 tools/pulsenest_session.py     — Campaign launcher (desktop icon: scripts/make_session_shortcut.ps1); docs/hospital_runbook.md
-tests/                         — Python tests;  test/ — host unit tests (Unity), built and run by test/runner/
+test_pulsenest/                — Python tests of the repo's own software
+test_lib/                      — C++ unit tests of the library (Unity), built and run by test_lib/runner/
 experiments/                   — One-off studies;  analysis/ — their figures and CSV outputs
 scripts/build.ps1              — Build / OTA / USB flash per board
 conversation_log.md            — Session-by-session design decisions log
