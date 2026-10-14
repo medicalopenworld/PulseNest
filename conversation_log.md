@@ -26946,3 +26946,43 @@ Radical-7 ni Rad-97 (una sola columna de fábrica: 88/Off, PR 50-140); anotado c
 **Decisión:** todo va como **§8** de `docs/ppg_neonatal_manufacturer_references.md` (tabla transversal,
 un apartado por fabricante con fuentes, lista de "no encontrado"), y las tres correcciones anotadas en
 §1, §4 y §5 sin borrar el texto original.
+
+## 2026-10-14 (2) — README de uso, carpetas de tests y el informe de fabricantes al repo
+
+**Pregunta de Alex:** qué se ha hecho últimamente y cuál es el plan; luego, actualizar `README.md`
+con los programas principales y la forma más sencilla de lanzarlos.
+
+**Hecho (commits `6eeae49` → `c5c7489`, todos en `origin/master`):**
+
+- **Informe de fabricantes** (`6eeae49`): `docs/ppg_neonatal_manufacturer_references.md` entra en el
+  repo (la sesión de consulta pulsenest-67 lo convirtió a Markdown en inglés, con §0 panorama de
+  mercado, §8 rasgos neonatales por fabricante y tres correcciones anotadas). El `.html` y el `.pdf`
+  antiguos se habían borrado en `c41ee10` sin que la sesión de desarrollo lo supiera; ahora el repo
+  vuelve a tener el informe. Su bloque de log del 14-10 (escrito directamente por esa sesión) se
+  acepta tal cual. Acuerdo: a partir de ahora esa sesión pasa los cambios como propuesta por mensaje.
+- **README** (`29ee0a3`…`125089c`): sección «Running it» en lugar de la línea «PPG Plotter»:
+  requisitos (Python ≥ 3.11, cinco paquetes), el hub que arranca solo, el lanzador de sesión (icono
+  de escritorio, un `.toml` por cuna, dónde caen las grabaciones), el lab (barra, ventanas,
+  SESSION), tabla de las demás herramientas. En la introducción, una frase (Alex, afinada en cuatro
+  pasos): la librería tiene «a hardware abstraction layer (HAL) for three platforms: ESP-IDF,
+  Arduino-ESP32 and the PC (unit tests); this test firmware uses the ESP-IDF one».
+- **Ficheros de sonda** (`29ee0a3`): fotos del datasheet de Medle a `docs/Medle_probe/Datasheet/`;
+  los dos ficheros de calibración de marzo de la raíz a `docs/UpnMed_probe/UpnMed_calibration/`;
+  `example.toml` con `Pixel8aACM` activo. **`docs/UpnMed_probe/UpnMed_catalog/` (catálogo comercial,
+  14 MB) queda fuera del repo** por decisión de Alex («no le veo utilidad») y por la regla de no
+  versionar documentos de terceros en un repo público.
+- **Tests de host** (`629469d`, `c5c7489`): ejecutados a petición de Alex, 10/10 conjuntos, 107
+  casos; no necesitan placa (HAL de PC con SPI/GPIO vacíos y FreeRTOS simulado). El runner CMake
+  pasa de `tools/host_tests/` a `test/runner/` (estaba en `tools/` por analogía con
+  `offline_runner`, sin razón documentada). Después, **`test/` → `test_lib/` y `tests/` →
+  `test_pulsenest/`** (propuesta de Alex: el nombre dice qué se prueba; singular/plural no decía
+  nada). 23 ficheros con rutas corregidas; CLAUDE.md y la tabla del README nombran las dos
+  carpetas. Verificado: 10/10 C++ desde cero y 13/13 Python.
+
+**Señalado, sin encargo:** los tests de la librería viven en PulseNest y no en el repo de
+`incunest_afe4490`; el sitio natural a largo plazo sería ese repo. `tools/offline_runner` se queda
+en `tools/` porque es un programa, no infraestructura de tests.
+
+**Pendientes (sin cambio):** probar el lanzador y la GUI con un VideoNest emitiendo; icono en el
+portátil de hospital; lector de eventos ANOMALY; un OTA real para ver `build.ps1` verificar;
+decisión sobre la autocalibración de taps RF.
