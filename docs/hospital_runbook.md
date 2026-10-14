@@ -99,7 +99,7 @@ one-way door once given: **it locks the reference phone for the whole session**,
 window nor the console can switch it to another id afterwards (2026-09-23, after a session
 recorded with the wrong cot's phone — see §5). Give it here when you know the phone in advance;
 leave it out and choose it in the window if you don't. `--note` is worth typing here anyway: it is written
-verbatim as a NOTE event, and that is all it does — it does not set the CONDITION and never
+verbatim as a NOTE event, and that is all it does — it reads under NOTE in the window's panel and never
 reaches a filename. The CSV is named `<SUBJECT>_<LOCATION>_<date>_<time>_pNN.csv` from the
 subject and location alone, from the moment it opens.
 
@@ -122,15 +122,13 @@ Then, in each window:
 - [ ] **Wait for its board.** The window says `waiting for board *8850` until the board speaks.
       When it appears, the header line shows the MAC, the subject, `dgrams` climbing and `part`.
 - [ ] **A header that says `UNBOUND`, or warns in amber, is a window that needs you.** That is the
-      whole point of the header: no subject, no condition, gaps, a silent board, a board that
+      whole point of the header: no subject, gaps, a silent board, a board that
       rebooted.
 - [ ] **REFERENCE**: tick `VideoNest UDP` in the window watching the cot the phone is filming, and
       choose its device id. **The list only shows phones actually heard on the wire**, so if the id
       is not there, VideoNest is not sending — that is the answer, before you open any menu. Leave
       it unticked in the other two windows.
-- [ ] **CONDITION**: `RESTING`, `FEEDING`, `HANDLING`… Change it whenever it changes; each change
-      is a timestamped event. It is not part of the filename.
-- [ ] **NOTE**: where our probe is, e.g. `probe on left foot`. This matters more than it looks —
+- [ ] **NEW NOTE**: where our probe is, e.g. `probe on left foot`. This matters more than it looks —
       in a baby with a patent ductus, a foot and a right hand genuinely read differently, and an
       unrecorded difference is read later as our error.
 - [ ] **Clock anchor**, once per session (twice — start and end — also measures drift): press

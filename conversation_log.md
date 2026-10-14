@@ -26873,3 +26873,16 @@ Comentarios de Alex sobre `pulsenest_recorder_gui.py`:
    cabecera v0.4 perdería un campo o lo dejaría vacío) y de dónde vive la condición (¿solo `truth.csv` a posteriori?).
    Pendiente de Alex; no se ha tocado.
 GUI test +4 checks; spec §9.
+
+### Misma sesión: panel de la GUI del grabador en el orden del `.toml`; CONDITION fuera; NOTE de lanzamiento visible
+
+Alex preguntó dónde se usa CONDITION (respuesta: se guarda en META `cond=`, `session.json`, cabecera CSV `condition`
+e `index.csv`, y no lo lee nada: los experimentos seleccionan por `truth.csv`) y por qué el `note` del `.toml` no
+aparece en la caja NOTE (se envía una vez como evento al vincular; la caja es solo de entrada). Decisiones: mostrar
+la nota de lanzamiento de solo lectura y renombrar la caja a NEW NOTE; quitar CONDITION de la ventana; ordenar el
+panel como `example.toml` (subject, location, operator, board, probe, note; [ref] model, probe-site, videonest, avg).
+Hecho: panel "This board: the session, as launched" = SUBJECT, LOCATION, OPERATOR, BOARD, PROBE, NOTE, MONITOR,
+REFERENCE, NEW NOTE. CONDITION: combo, `_condition_changed`, espejo, lista de dependientes, aviso "no condition" y
+la constante eliminados de la GUI; el comando `cond` de consola, el evento y la columna de cabecera siguen (formato
+intacto). Tooltip obsoleto del combo (decía que el nombre del fichero toma la condición) desaparece con él.
+GUI test 76/76 (orden de etiquetas comprobado). Runbook §2/§3 y spec §9.

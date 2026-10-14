@@ -436,11 +436,15 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   continuation. The headless console remains, so a session can still run with no GUI at all.
 * **What the window holds (phase 1, c147310).** One row per board that folds to its header
   line (title coloured by ProbeState, subject or `UNBOUND`, datagrams, gaps, CSV rows, part, and
-  an amber/red warning field: no subject, no condition, gaps, SILENT, restarts). The body:
-  waveform, SIGNAL STATS, then the **session values** (SUBJECT, REFERENCE, CONDITION, NOTE, and
-  read-only MONITOR, PROBE, LOCATION, OPERATOR — since 2026-10-14 the last two read here, beside
-  everything else the session is about, instead of in the window's bar) and the **reading entry**
-  (SpO2 spinbox 50–100, optional PR, `RECORD`). Every control but SUBJECT is disabled until a
+  an amber/red warning field: no subject, gaps, SILENT, restarts). The body:
+  waveform, SIGNAL STATS, then the **session panel** — everything the session was launched with,
+  in the `.toml`'s own order (Alex, 2026-10-14): SUBJECT, LOCATION, OPERATOR, BOARD, PROBE, NOTE
+  (the launch note, read-only), MONITOR, REFERENCE, then the one live control, NEW NOTE — and the
+  **reading entry** (SpO2 spinbox 50–100, optional PR, `RECORD`). **CONDITION left the window the
+  same day**: what the operator typed there was stored in four places (a `cond=` META event,
+  `session.json`, the CSV header's `condition`, `index.csv`) and read by nothing — the experiments
+  select captures by the condition in `truth.csv`, authored afterwards. The console `cond`
+  command, the event and the header column stay as they are, so the format is unchanged. Every control but SUBJECT is disabled until a
   subject is bound, which is the `UNBOUND` guard rail in its cheapest form. **What was given at
   launch is read-only in the panel** (Alex, 2026-10-14): a subject from `--subject` / the `.toml`
   locks the SUBJECT box the way `--ref-videonest` already locked REFERENCE; the panel shows it so

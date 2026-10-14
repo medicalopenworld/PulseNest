@@ -27,8 +27,8 @@ Layout, from fleet_ppg_viewer.py with three changes Alex asked for:
     numbers in a session are read off the COMMERCIAL monitor, and a big number of our own
     beside the entry box invites copying it;
   * a control panel to the right of each SIGNAL STATS table: the values that do not change
-    during the session (subject, references, condition, a note line, and read-only: monitor,
-    probe, location, operator), then the reading entry;
+    at launch, read-only in the .toml's order (SUBJECT and REFERENCE as controls that lock),
+    then NEW NOTE, then the reading entry;
   * every row folds to a single header line, so three boards fit on a laptop screen and a row
     that needs no attention takes no room.
 
@@ -104,7 +104,6 @@ QMessageBox, QDialog {{ background-color: {BG}; color: {FG}; }}
 # A menu for the common case, not a ceiling: the combo is editable, so a campaign that reaches
 # SUBJ13 types it. Twelve was a cap that would simply have blocked the thirteenth baby.
 SUBJECTS = [f"SUBJ{n:02d}" for n in range(1, 13)]
-CONDITIONS = ["RESTING", "FEEDING", "HANDLING", "KANGAROO", "PHOTOTHERAPY", "SLEEPING"]
 PR_NONE = 0     # the pulse-rate spinbox at its minimum reads "--": not recorded
 CELL_PAD = 14   # a table cell's own left+right margins, on top of the text it holds
 
@@ -185,11 +184,27 @@ class BoardRow(QtWidgets.QFrame):
 
     # ── the controls ──
     def _session_values_group(self):
-        # NOT "values that do not change": they can all be changed, and each change is its own
-        # timestamped META event. What a later change cannot do is give the file two names.
-        g = QtWidgets.QGroupBox("This board: who, against what, doing what")
+        # Everything the session was launched with (--config / the .toml, or the flags), in the
+        # file's own order (Alex, 2026-10-14, after example.toml: subject, location, operator,
+        # board, probe, note; then [ref] model, probe-site, videonest, avg), read-only here so a
+        # typo is visible instead of silent -- then the one live control, NEW NOTE. SUBJECT and
+        # REFERENCE are the two a window started without them must still be able to set, so they
+        # are controls that lock once a launch value is in force (see _mirror_state). CONDITION
+        # left the panel the same day: it was stored in four places and read by none (the
+        # console `cond` command and the META event remain for anyone who wants it).
+        g = QtWidgets.QGroupBox("This board: the session, as launched")
         form = QtWidgets.QFormLayout(g)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
+        rec = self.win.rec
+
+        def ro(label, text, tip):
+            w = QtWidgets.QLabel(text)
+            w.setWordWrap(True)
+            w.setStyleSheet(f"color:{FG_DIM};")
+            w.setToolTip(tip)
+            form.addRow(label, w)
+            return w
+
         self.subject = QtWidgets.QComboBox()
         self.subject.setEditable(True)
         self.subject.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
@@ -199,9 +214,10 @@ class BoardRow(QtWidgets.QFrame):
         self.subject.setToolTip("The coded subject this board is on. Codes only, never a name: "
                                 "the code-to-person list lives outside the repository. Everything "
                                 "else in this panel waits for this.\n\n"
-                                "This is the one value not to change mid-session: one capture file "
-                                "belongs to one baby. If the probe moves to another baby, stop the "
-                                "session and start a new one.\n\n"
+                                "Given at launch (`subject` in the .toml / --subject) it is "
+                                "read-only here: one capture file belongs to one baby. If the "
+                                "probe moves to another baby, stop the session and start a new "
+                                "one with the other file.\n\n"
                                 "The menu is a shortcut, not a limit -- type SUBJ13 and it is "
                                 "accepted. What is NOT accepted is anything that is not SUBJ "
                                 "followed by digits: no names, no initials, no bed numbers.")
@@ -211,6 +227,33 @@ class BoardRow(QtWidgets.QFrame):
         self.subject.activated.connect(lambda _i: self._subject_changed())
         self.subject.lineEdit().editingFinished.connect(self._subject_changed)
         form.addRow("SUBJECT", self.subject)
+
+        self.location_label = ro("LOCATION", rec.site or "(not set)",
+                                 "Site CODE (`location` in the .toml / --location), never a place\n"
+                                 "name. Names the session directory and the CSV; set at launch.")
+        self.operator_label = ro("OPERATOR", rec.operator or "(not set)",
+                                 "Initials or role (`operator` in the .toml / --operator), never a\n"
+                                 "full name. Set at launch.")
+        self.board_label = ro("BOARD", f"*{rec.board_filter}" if rec.board_filter else "(any board)",
+                              "MAC suffix this window records (`board` in the .toml / --board).\n"
+                              "The header line shows the full MAC once the board speaks.")
+        # OUR probe, not the reference monitor's -- ISO 80601-2-61 calibrates a monitor+probe pair,
+        # and the library cannot know which physical sensor is clipped onto the baby, only a person
+        # can. Top-level --probe, not --ref-probe: it says nothing about the commercial monitor.
+        self.probe_label = ro("PROBE", "(not set)",
+                              "OUR probe's physical model, e.g. Medle-neo. Set once, at launch\n"
+                              "(`probe` in the .toml / --probe), shown here read-only so a typo\n"
+                              "is visible instead of silent.")
+        self.launch_note_label = ro("NOTE", rec.want_note or "(none)",
+                                    "`note` in the .toml / --note: written once, verbatim, as a NOTE\n"
+                                    "event when the board binds to its subject. This is that text.\n"
+                                    "Anything that happens later goes in NEW NOTE below.")
+        self.ref_label = ro("MONITOR", "(not set)",
+                            "The commercial monitor beside this baby: make and model, its\n"
+                            "averaging window in seconds, where ITS probe is, and any note.\n"
+                            "Set once, at launch ([ref] in the .toml / --ref-model, --ref-avg,\n"
+                            "--ref-probe-site, --ref-note). Shown here read-only so you can\n"
+                            "see it was typed correctly, not to be edited from the window.")
 
         # One reference control, not five (Alex, 2026-09-22). `operator annotation` was always on
         # -- it is the panel to the right -- and `simulator`, `VideoNest CSV` and `VideoNest
@@ -223,7 +266,8 @@ class BoardRow(QtWidgets.QFrame):
         vn.setContentsMargins(0, 0, 0, 0)
         self.vn_on = QtWidgets.QCheckBox("VideoNest UDP")
         self.vn_on.setToolTip("Tick when a phone running VideoNest is filming this baby's "
-                              "monitor and sending to the hub. Then choose which phone.")
+                              "monitor and sending to the hub. Then choose which phone. Given at "
+                              "launch ([ref].videonest / --ref-videonest) it is locked here.")
         self.vn_id = QtWidgets.QComboBox()
         self.vn_id.setMinimumWidth(120)
         self.vn_id.setToolTip("The device id the phone puts in its own frames -- the same word "
@@ -236,66 +280,12 @@ class BoardRow(QtWidgets.QFrame):
         vn.addWidget(self.vn_id, 1)
         form.addRow("REFERENCE", vn_box)
 
-        self.condition = QtWidgets.QComboBox()
-        self.condition.setEditable(True)
-        self.condition.addItem("")
-        self.condition.addItems(CONDITIONS)
-        self.condition.setToolTip("What the baby is doing, one word. Change it whenever it "
-                                  "changes -- each change is a timestamped event in the files, so "
-                                  "the history is kept. But the CSV FILENAME takes the last value "
-                                  "only, so if a baby goes from RESTING to FEEDING, the name will "
-                                  "say FEEDING for the whole capture. Reuse the same words across "
-                                  "sessions.")
-        # `activated` is the operator picking from the list; `editingFinished` is a typed
-        # word plus Enter. Not `currentTextChanged`: that is one command per keystroke.
-        self.condition.activated.connect(self._condition_changed)
-        self.condition.lineEdit().editingFinished.connect(self._condition_changed)
-        form.addRow("CONDITION", self.condition)
-
         self.note = QtWidgets.QLineEdit()
         self.note.setPlaceholderText("free text, Enter to record. Coded subjects only, no names.")
+        self.note.setToolTip("A timestamped NOTE event: a feed, a nappy change, an alarm, a probe "
+                             "moved, a desaturation. None of it can be reconstructed afterwards.")
         self.note.returnPressed.connect(self._note_entered)
-        form.addRow("NOTE", self.note)
-
-        # Read-only, and typed on the command line (--ref-model etc.), not here (Alex, 2026-09-22):
-        # these four do not change during a session, so a live control for them would sit idle.
-        # Shown anyway, so a typo on the command line is visible instead of silently wrong.
-        self.ref_label = QtWidgets.QLabel("(not set)")
-        self.ref_label.setWordWrap(True)
-        self.ref_label.setStyleSheet(f"color:{FG_DIM};")
-        self.ref_label.setToolTip("The commercial monitor beside this baby: make and model, its\n"
-                                  "averaging window in seconds, where ITS probe is, and any note.\n"
-                                  "Set once, on the command line: --ref-model, --ref-avg,\n"
-                                  "--ref-probe-site, --ref-note. Shown here read-only so you can\n"
-                                  "see it was typed correctly, not to be edited from the window.")
-        form.addRow("MONITOR", self.ref_label)
-
-        # Same principle, one field: OUR probe, not the reference monitor's -- ISO 80601-2-61
-        # calibrates a monitor+probe pair, and the library cannot know which physical sensor is
-        # clipped onto the baby, only a person can. Top-level --probe, not --ref-probe: it says
-        # nothing about the commercial monitor.
-        self.probe_label = QtWidgets.QLabel("(not set)")
-        self.probe_label.setStyleSheet(f"color:{FG_DIM};")
-        self.probe_label.setToolTip("OUR probe's physical model, e.g. Medle-neo. Set once, on\n"
-                                    "the command line (--probe), shown here read-only so a typo\n"
-                                    "is visible instead of silent.")
-        form.addRow("PROBE", self.probe_label)
-
-        # Where and by whom, read-only, in the same panel as the rest of what this board's session
-        # is about (Alex, 2026-10-14: they were in the window's bar, apart from SUBJECT and the
-        # monitor; everything typed at launch now reads in one place). Changing them means a new
-        # session: both name the session directory and the CSV.
-        rec = self.win.rec
-        self.location_label = QtWidgets.QLabel(rec.site or "(not set)")
-        self.location_label.setStyleSheet(f"color:{FG_DIM};")
-        self.location_label.setToolTip("Site CODE (--location / `location` in the .toml), never a place\n"
-                                       "name. Names the session directory and the CSV; set at launch.")
-        form.addRow("LOCATION", self.location_label)
-        self.operator_label = QtWidgets.QLabel(rec.operator or "(not set)")
-        self.operator_label.setStyleSheet(f"color:{FG_DIM};")
-        self.operator_label.setToolTip("Initials or role (--operator / `operator` in the .toml), never a\n"
-                                       "full name. Set at launch.")
-        form.addRow("OPERATOR", self.operator_label)
+        form.addRow("NEW NOTE", self.note)
         self._set_dependents_enabled(False)
         return g
 
@@ -382,7 +372,7 @@ class BoardRow(QtWidgets.QFrame):
         return g
 
     def _set_dependents_enabled(self, on):
-        for w in [self.vn_on, self.vn_id, self.condition, self.note, self.flag_btn]:
+        for w in [self.vn_on, self.vn_id, self.note, self.flag_btn]:
             w.setEnabled(on)
         if hasattr(self, "record"):
             for w in (self.record, self.delete_last, self.delete_sel):
@@ -413,7 +403,6 @@ class BoardRow(QtWidgets.QFrame):
         self._set_dependents_enabled(True)
         # Re-apply what the operator may already have chosen while the subject was blank.
         self._videonest_changed()
-        self._condition_changed()
 
     def _flag_toggled(self, on):
         if not self.flag_btn.isEnabled():
@@ -477,10 +466,6 @@ class BoardRow(QtWidgets.QFrame):
             # `videonest` command), but a disabled control also cannot be clicked by mistake.
             self.vn_on.setEnabled(False)
             self.vn_id.setEnabled(False)
-        if not self.condition.hasFocus() and (src.condition or "") != self.condition.currentText().strip():
-            self.condition.blockSignals(True)
-            self.condition.setCurrentText(src.condition or "")
-            self.condition.blockSignals(False)
 
     def refresh_phones(self):
         """The device list fills itself from the phones actually heard. A phone that is not
@@ -500,12 +485,6 @@ class BoardRow(QtWidgets.QFrame):
         self.vn_id.addItems(seen)
         if current in seen:
             self.vn_id.setCurrentText(current)
-
-    def _condition_changed(self, *_):
-        subj, cond = self.subject.currentText(), self.condition.currentText().strip()
-        if subj and cond and self.condition.isEnabled():
-            if self.src is not None and self.src.condition != cond.upper():
-                self.win.command(f"cond {cond} {subj}")
 
     def _note_entered(self):
         text, subj = self.note.text().strip(), self.subject.currentText()
@@ -620,8 +599,6 @@ class BoardRow(QtWidgets.QFrame):
             warns = []
             if not src.subject:
                 warns.append("no subject bound")
-            elif not src.condition:
-                warns.append("no condition")
             if src.gaps:
                 warns.append(f"{src.gaps} gap(s), {src.samples_lost} samples lost")
             if src.silent:

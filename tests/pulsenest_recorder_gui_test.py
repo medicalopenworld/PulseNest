@@ -95,7 +95,7 @@ check("one row per board, keyed by its MAC once the board says who it is",
       list(win.rows) == [MAC] and row.src is not None and row.src.mac == MAC, list(win.rows))
 check("nothing but SUBJECT is usable before a subject is bound",
       row.subject.isEnabled() and not row.record.isEnabled()
-      and not row.condition.isEnabled() and not row.vn_on.isEnabled())
+      and not row.note.isEnabled() and not row.vn_on.isEnabled())
 check("the header says UNBOUND and warns, without anyone asking",
       "UNBOUND" in row.counters.text() and "no subject" in row.warn.text(),
       row.counters.text() + " | " + row.warn.text())
@@ -176,14 +176,11 @@ check("and shows the laptop clock with milliseconds, ticking",
 dlg.close()
 check("a click or Esc closes it and stops its timer", not dlg.timer.isActive())
 
-# ── condition ────────────────────────────────────────────────────────────────────────────────
-row.condition.setCurrentIndex(1)
-row.condition.activated.emit(1)
-check("the condition reaches the recorder when it is chosen, not per keystroke",
-      src.condition == "RESTING", str(src.condition))
+# ── header (CONDITION left the window 2026-10-14; the console `cond` command remains) ──────
 win.redraw()          # the header is written by redraw(), ten times a second in a real session
-check("the header stops warning once subject and condition are known",
+check("the header stops warning once the subject is known",
       row.warn.text() == "" and "SUBJ01" in row.counters.text(), repr(row.warn.text()))
+check("no CONDITION control in the panel any more", not hasattr(row, "condition"))
 
 # ── readings ─────────────────────────────────────────────────────────────────────────────────
 for spo2, pr in ((96, 140), (97, G.PR_NONE), (95, 138)):
@@ -466,7 +463,8 @@ except _tomllib.TOMLDecodeError:
 
 # ── what was given at launch reads in the panel and cannot be changed from it (Alex, 2026-10-14) ──
 out3 = tempfile.mkdtemp()
-rec3 = G.Recorder(out3, "HOSP01", "ACM", log=QuietLog(), subject="SUBJ05", board="7560")
+rec3 = G.Recorder(out3, "HOSP01", "ACM", log=QuietLog(), subject="SUBJ05", board="7560",
+                  note="probe on left foot", probe="Medle ST-S0163-26")
 win3 = G.RecorderWindow(rec3, ("127.0.0.1", 15999))
 rec3.feed("192.168.1.60", f"$CFG,mac={MAC},board=V18,fw=0.14\n".encode())
 win3.traces["192.168.1.60"] = G.BoardTrace("192.168.1.60", 0.0, 15.0)
@@ -480,6 +478,14 @@ check("LOCATION and OPERATOR read in the board's panel, read-only labels",
       row3.location_label.text() == "HOSP01" and row3.operator_label.text() == "ACM"
       and isinstance(row3.location_label, QtWidgets.QLabel))
 check("the window's bar no longer carries them", not hasattr(win3, "location_field"))
+check("BOARD, PROBE and the launch NOTE read in the panel too, in the file's order",
+      row3.board_label.text() == "*7560" and row3.launch_note_label.text() == "probe on left foot"
+      and row3.probe_label.text() == "Medle ST-S0163-26",
+      f"{row3.board_label.text()} | {row3.launch_note_label.text()} | {row3.probe_label.text()}")
+labels = [row3.findChild(QtWidgets.QFormLayout).itemAt(i, QtWidgets.QFormLayout.LabelRole).widget().text()
+          for i in range(row3.findChild(QtWidgets.QFormLayout).rowCount())]
+check("panel order = example.toml order, then NEW NOTE",
+      labels == ["SUBJECT", "LOCATION", "OPERATOR", "BOARD", "PROBE", "NOTE", "MONITOR", "REFERENCE", "NEW NOTE"], str(labels))
 check("a window started WITHOUT a subject keeps the box usable (binding has to happen somewhere)",
       row.subject.isEnabled() or rec.want_subject is None)
 win3.close()
