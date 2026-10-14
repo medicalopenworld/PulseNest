@@ -2,7 +2,7 @@
 
 **PulseNest** is a validation tool for the library incunest_afe4490.
 
-**incunest_afe4490** is a library (driver + algorithms) for AFE4490, implemented in `incunest_afe4490.h` and `incunest_afe4490.cpp`. It has a hardware abstraction layer (HAL) for Arduino-ESP32, ESP-IDF and the host (unit tests); this test firmware uses the ESP-IDF one.
+**incunest_afe4490** is a library (driver + algorithms) for AFE4490, implemented in `incunest_afe4490.h` and `incunest_afe4490.cpp`. It has a hardware abstraction layer (HAL) for ESP-IDF, Arduino-ESP32 and the host (unit tests); this test firmware uses the ESP-IDF one.
 
 **AFE4490** is an Analog Front End chip designed by Texas Instruments for pulse oximetry applications using photoplethysmography (PPG)
 
