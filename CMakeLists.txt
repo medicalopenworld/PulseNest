@@ -22,5 +22,5 @@ project(pulsenest)
 # Per-algorithm timing instrumentation inside the library ($TIMING / $TASKS frames over the
 # console). A project-wide definition because the library compiles it in, not only main. This is
 # the instrument that measures the SPI cost per sample under ESP-IDF — one of the reasons for the
-# port — so it stays on in every PulseNest build. The host tests set it too (tools/host_tests).
+# port — so it stays on in every PulseNest build. The host tests set it too (test/runner).
 idf_build_set_property(COMPILE_DEFINITIONS "INCUNEST_TIMING_STATS=1" APPEND)

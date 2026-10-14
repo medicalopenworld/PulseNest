@@ -1,6 +1,6 @@
 # PulseNest host unit tests — builds the incunest_afe4490 library for the host (hal_host, UNIT_TEST)
 # and one executable per test/test_*/ directory, linked against Unity (vendored, MIT, ./unity).
-# Replaces PlatformIO's [env:native] + `pio test -e native`. Run with tools/host_tests/run_host_tests.py.
+# Replaces PlatformIO's [env:native] + `pio test -e native`. Run with test/runner/run_host_tests.py.
 cmake_minimum_required(VERSION 3.20)
 project(pulsenest_host_tests C CXX)
 

@@ -10,8 +10,8 @@ incunest_afe4490_hal_host.cpp (no-op GPIO/SPI, fake FreeRTOS/esp_log/esp_timer).
 
 Build and run everything (needs cmake, ninja and a host g++ on PATH — MinGW-w64 on Windows):
 
-    python tools/host_tests/run_host_tests.py
-    python tools/host_tests/run_host_tests.py hr1 spo2    # only suites matching a filter
-    python tools/host_tests/run_host_tests.py --clean     # rebuild from scratch
+    python test/runner/run_host_tests.py
+    python test/runner/run_host_tests.py hr1 spo2    # only suites matching a filter
+    python test/runner/run_host_tests.py --clean     # rebuild from scratch
 
-Build system: tools/host_tests/CMakeLists.txt (Unity 2.6.0 vendored in tools/host_tests/unity).
+Build system: test/runner/CMakeLists.txt (Unity 2.6.0 vendored in test/runner/unity).

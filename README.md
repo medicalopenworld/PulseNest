@@ -43,7 +43,7 @@ Requires [ESP-IDF v6.0.1](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/
 idf.py -B build_V18 -p COM15 -b 921600 monitor
 
 # Host unit tests (CMake + Unity, needs cmake/ninja/g++ on PATH)
-python tools/host_tests/run_host_tests.py
+python test/runner/run_host_tests.py
 ```
 
 ## Running it
@@ -131,7 +131,7 @@ pulsenest_lab.py               — Real-time PPG/SpO2/HR visualizer (pulsenest_l
 pulsenest/                     — Shared host-side modules (see table)
 tools/                         — Operator programs and the hub (tools/pulsenest_hub.py); tools/pulsenest_recorder.py has pulsenest_recorder_spec.md
 tools/pulsenest_session.py     — Campaign launcher (desktop icon: scripts/make_session_shortcut.ps1); docs/hospital_runbook.md
-tests/                         — Python tests;  test/ — host unit tests (Unity), built by tools/host_tests/
+tests/                         — Python tests;  test/ — host unit tests (Unity), built and run by test/runner/
 experiments/                   — One-off studies;  analysis/ — their figures and CSV outputs
 scripts/build.ps1              — Build / OTA / USB flash per board
 conversation_log.md            — Session-by-session design decisions log

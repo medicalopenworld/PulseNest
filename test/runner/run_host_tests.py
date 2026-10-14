@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build and run the PulseNest host unit tests (Unity, one executable per test/test_*/ suite).
 
-    python tools/host_tests/run_host_tests.py            # configure + build + run every suite
-    python tools/host_tests/run_host_tests.py hr1 spo2   # only suites whose name contains a filter
-    python tools/host_tests/run_host_tests.py --clean    # wipe tools/host_tests/build first
+    python test/runner/run_host_tests.py            # configure + build + run every suite
+    python test/runner/run_host_tests.py hr1 spo2   # only suites whose name contains a filter
+    python test/runner/run_host_tests.py --clean    # wipe test/runner/build first
 
 Needs cmake, ninja and a host g++ on PATH (MinGW-w64 on Windows). Exit code = number of failing
 suites. Replaces `pio test -e native`.
@@ -38,7 +38,7 @@ def main(argv):
     if r.returncode:
         return 1
 
-    suites = sorted(d for d in os.listdir(os.path.join(HERE, "..", "..", "test")) if d.startswith("test_"))
+    suites = sorted(d for d in os.listdir(os.path.join(HERE, "..")) if d.startswith("test_"))
     if filters:
         suites = [s for s in suites if any(f in s for f in filters)]
     failed = []

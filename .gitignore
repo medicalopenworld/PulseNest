@@ -87,7 +87,7 @@ build_V1[5-8]/
 sdkconfig
 sdkconfig.old
 managed_components/
-tools/host_tests/build/
+test/runner/build/
 
 # Faulthandler log of the PPG viewer (per machine, like faulthandler.log)
 tools/fleet_ppg_viewer_faulthandler.log
