@@ -26900,3 +26900,23 @@ tramos en el análisis de sesgo); falta el lado lector. Renombrado hecho: GUI, t
 223 → ~125 líneas. Mismo orden (día antes, inicio, durante, cierre, problemas, después), con el lanzador como
 entrada, los campos del `.toml` en una sola lista, el panel de solo lectura, NEW EVENT, ABNORMAL CONDITION, sin
 CONDITION ni líneas de terminal salvo una de ejemplo. El razonamiento sigue en la spec del grabador.
+
+### Cierre de la sesión 2026-10-13/14 — resumen
+
+**Commits (todos en `origin/master`):** `0a9f93f` paquete `pulsenest/`, `tests/`, `experiments/`, línea única de ruta ·
+`fa21ff1` `fleet_trace`/`fleet_widgets`, scripts de análisis versionados, clave fw 0.22 · `2320a43` hub a `tools/`,
+`AUX_PREFIXES` a `net`, `HUB_SCRIPT` corregido · `534eb5a`/`c41ee10` `hub_test` sin ventanas fijas · `c79914b`
+`build.ps1 -Ota` verifica `elfsha` · `b885ffd` lanzador `tools/pulsenest_session.py` + botón SESSION + icono ·
+`9dad3f8` silencios, tabla de teléfonos, splitter, vigilancia de `.toml` · `dcd203f` `offset ms` y trama cruda ·
+`ad29e30` sujeto de lanzamiento de solo lectura, LOCATION/OPERATOR al panel · `9199034` panel en el orden del
+`.toml`, CONDITION fuera · `bae766d` NEW EVENT · `04cf119` runbook breve.
+
+**Decisiones de Alex que fijan criterio.** (1) Lab en la raíz, hub en `tools/` (revisable). (2) Línea única de ruta,
+sin `pyproject`. (3) TOML en `docs/session_configs`, editados a mano. (4) Lo que viene del fichero se muestra en un
+solo panel, en el orden del fichero, y no se edita en la ventana: se corrige el fichero y se relanza. (5) Un campo
+que se guarda pero ningún programa lee es obsoleto para la ventana (CONDITION); los eventos ANOMALY se conservan
+porque sí tienen uso previsto (excluir tramos). (6) "Evento" es la palabra para lo que el operador apunta en vivo.
+
+**Pendientes.** Probar el lanzador y la GUI en pantalla con un teléfono VideoNest emitiendo; crear el icono en el
+portátil de hospital; lado lector de los eventos ANOMALY en el análisis de sesgo; `Recorder` sigue importándose
+desde `tools/` (excepción anotada); `hub_test` queda con esperas acotadas (verificado bajo carga).
