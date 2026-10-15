@@ -1109,3 +1109,16 @@ va a cambiar y por qué"). Since fw 0.23 the boards come back by themselves when
 when a `$CFG` arrives with a MAC already listed under another address (a reboot, a new lease, a
 board reset from the home router onto in3wifi), the old row is dropped, not left `SILENT` for
 ever beside the live one (Alex, same day).
+
+**The sessions folder (2026-10-16).** A property of the laptop (an external SSD at 1 GB per board
+and hour), not of the cot, so it is the launcher's: a line under the free space, `sessions in
+<folder>` as a link that opens it, **CHANGE FOLDER…** beside it (a folder dialog: the folder is
+the thing), remembered in `pulsenest_session.ini` as `sessions_dir`, `--sessions DIR` on the
+command line winning over it, and handed to every recorder started from here as `--out` (omitted
+while it is the recorder's own default, so the cot's command line stays the runbook's). The free
+space is measured there, at the folder or its nearest existing ancestor. A chosen folder is proven
+writable first (created if need be, a temporary file written and removed) or refused with the
+reason; a remembered folder that is not there at start falls back to the default **and says so in
+amber** -- an unplugged disk must not silently become the internal one. Not in the `.toml` (per
+cot: it would scatter a campaign) nor in the recorder's `.ini` (each window would read its own,
+and the launcher would not know which disk to measure).

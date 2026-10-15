@@ -23,6 +23,10 @@ directory. Finishing one baby does not touch the other two.
       this kit). **Leave `[subject]`, `note` and the rest of `[ref]` out**: they are the baby's and
       are filled in on the day (§2). A file without `subject` shows `(missing: add it to the
       file)` in the launcher; that is the expected state the day before.
+- [ ] **Where the sessions go**: the launcher's **sessions in** line, under the free space, names
+      the folder every START writes to (`captures/sessions` by default); **CHANGE FOLDER…** beside
+      it points it at an external disk and remembers it. A remembered folder that is not there at
+      start (the disk unplugged) falls back to the default and says so in amber.
 - [ ] **Disk**: about **1 GB per board per hour**. Three boards for eight hours ≈ 24 GB; leave
       twice that free. The recorder refuses to start below 2 GB.
 - [ ] **Laptop clock synchronised** (Settings → Time → Sync now). Everything is aligned through
@@ -175,7 +179,8 @@ Then, in each recorder window:
 - [ ] **`STOP SESSION`** or close the window; it asks first.
 - [ ] **Open one CSV before leaving** (Flow CSV Viewer): the check that the session is good here,
       not a week later.
-- [ ] **Copy the whole session directory** — `captures/sessions/<date>_<time>_<SITE>_<SUBJnn>/` —
+- [ ] **Copy the whole session directory** — `<date>_<time>_<SITE>_<SUBJnn>/` in the folder the
+      launcher names on its **sessions in** line (`captures/sessions` unless changed) —
       and the phone's photos and videos to a second disk. The photos never reach the laptop by
       themselves.
 - [ ] Nothing of this is committed to the repository.

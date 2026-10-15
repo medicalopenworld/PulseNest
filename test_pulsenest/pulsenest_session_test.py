@@ -8,6 +8,7 @@ the runbook's command line as a detached process and never twice for the same co
     python test_pulsenest/pulsenest_session_test.py
 """
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -109,6 +110,14 @@ check("fleet monitor runs under console python (never pythonw)",
 check("viewer command", S.viewer_command(hub)[1] == S.PPG_VIEWER)
 text, colour = S.disk_line(3)
 check("disk line says GB free and hours for 3 boards", "GB free" in text and "for 3 board" in text, text)
+# the sessions folder (2026-10-16): --out only when it is not the default; the disk measured there
+check("the default sessions folder adds no --out: the runbook's command line",
+      S.cot_command(c1, hub, S.SESSIONS_DIR) == cmd and S.out_args(S.SESSIONS_DIR) == [])
+check("another sessions folder is handed to the recorder as --out",
+      S.cot_command(c1, hub, tmp)[-2:] == ["--out", tmp])
+check("the disk is measured at the folder or its nearest existing ancestor",
+      S.nearest_dir(os.path.join(tmp, "not", "yet")) == os.path.abspath(tmp)
+      and "GB free" in S.disk_line(1, os.path.join(tmp, "not", "yet"))[0])
 
 # ── Part 2: the window ─────────────────────────────────────────────────────────────────────
 S.SETTINGS_FILE = os.path.join(tmp, "session_test.ini")
@@ -368,6 +377,45 @@ w2.close()
 os.remove(os.path.join(other, "ward2.toml")); os.rmdir(other)
 check("a remembered folder that no longer exists falls back to the default",
       S.saved_configs_dir() == S.DEFAULT_CONFIGS)
+
+# ── the sessions folder, chosen in the launcher (Alex, 2026-10-16) ───────────────────────────
+w3 = S.Launcher(tmp, hub, FakeClient())
+check("by default: 'sessions in captures/sessions' as a link, no note, START without --out",
+      "sessions in" in w3.sessions_link.text() and 'href="open"' in w3.sessions_link.text()
+      and os.path.join("captures", "sessions") in w3.sessions_link.text()
+      and w3.sessions_dir == os.path.abspath(S.SESSIONS_DIR) and S.saved_sessions_dir() == (S.SESSIONS_DIR, ""),
+      w3.sessions_link.text())
+ssd = os.path.join(tempfile.mkdtemp(), "ssd", "pulsenest")      # does not exist yet: created
+check("CHANGE FOLDER: a writable folder is taken, created if need be, shown, remembered, and measured",
+      w3.set_sessions_dir(ssd) and w3.sessions_dir == os.path.abspath(ssd) and os.path.isdir(ssd)
+      and ssd in w3.sessions_link.text() and S.saved_sessions_dir() == (os.path.abspath(ssd), "")
+      and w3.disk.text().startswith(S.disk_line(1, ssd)[0][:12]),
+      f"{w3.sessions_dir} | {w3.sessions_link.text()}")
+_c = [c for c in w3.cots if c.name == "subj01.toml"][0]
+_before = len(spawned)
+w3.start_cot(_c)
+check("START from here hands the chosen folder to the recorder as --out",
+      len(spawned) == _before + 1 and spawned[-1].cmd[-2:] == ["--out", os.path.abspath(ssd)], str(spawned[-1].cmd))
+spawned[-1].rc = 0
+_warned = []
+QtWidgets.QMessageBox.warning = staticmethod(lambda parent, title, text, *a, **k: _warned.append(text))
+_blocker = os.path.join(tmp, "a_file_not_a_folder")
+open(_blocker, "w").close()
+check("an unwritable choice is refused and said; the folder stays",
+      w3.set_sessions_dir(os.path.join(_blocker, "inside")) is False and w3.sessions_dir == os.path.abspath(ssd)
+      and len(_warned) == 1 and "unchanged" in _warned[0], str(_warned))
+buttons3 = [w3.sessions_link.toolTip(), w3.btn_sessions.toolTip()]
+check("the sessions line and its button carry tooltips", all(buttons3))
+w3.close()
+shutil.rmtree(os.path.dirname(os.path.dirname(ssd)))
+_d, _note = S.saved_sessions_dir()
+check("a remembered sessions folder that is gone (the SSD unplugged): the default, with a note",
+      _d == S.SESSIONS_DIR and "not there" in _note and ssd in _note, _note)
+w4 = S.Launcher(tmp, hub, FakeClient(), _d, _note)
+check("and the launcher starts on the default saying so in amber",
+      w4.sessions_dir == os.path.abspath(S.SESSIONS_DIR) and "not there" in w4.sessions_link.text()
+      and S.AMBER in w4.sessions_link.text(), w4.sessions_link.text())
+w4.close()
 
 n = len(ok)
 print(f"\n{sum(ok)}/{n} checks passed -- " + ("OK" if all(ok) else "FAILURES"))

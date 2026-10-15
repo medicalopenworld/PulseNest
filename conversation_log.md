@@ -27447,3 +27447,22 @@ a in3wifi. **Hecho:** en `_row_for`, si la clave es una MAC y existe una fila pa
 MAC cuando ésta no tiene fila y se elimina cuando sí la tiene; además la traza de la dirección vieja se saca
 de `traces` al apuntar la fila a la nueva. Test: placa de vuelta en 10.0.0.7, primero `$M4` y luego `$CFG` →
 una fila (la MAC) y una traza (la nueva). GUI 102/102. Spec, sección de la ventana.
+
+## 2026-10-16 (4) - Lanzador: carpeta de sesiones configurable
+
+**Alex:** «Adelante, hazlo» (propuesta: configurable en el lanzador y solo ahí; es una propiedad del portátil
+—SSD externo a 1 GB por placa y hora—, no de la cuna; el `.toml` dispersaría la campaña y el `.ini` del
+grabador lo leería cada ventana por su cuenta sin que el lanzador supiera qué disco medir).
+
+**Hecho (`tools/pulsenest_session.py`):** línea «sessions in <carpeta>» bajo el disco libre, carpeta como
+enlace (relativa al repo si está dentro) y CHANGE FOLDER… al lado (diálogo de carpeta: aquí la carpeta es la
+cosa, no hay fichero que la identifique). `set_sessions_dir` la prueba escribible antes de aceptarla
+(`makedirs` + fichero temporal) o la rechaza con `QMessageBox.warning` y el motivo; guarda `sessions_dir` en
+`pulsenest_session.ini`. `saved_sessions_dir()` → (carpeta, nota): si la recordada no existe (SSD
+desenchufado) vuelve al defecto y la nota sale en ÁMBAR en la línea. `--sessions DIR` manda sobre lo
+recordado. `cot_command(cot, hub, sessions_dir)` añade `--out` solo cuando no es el defecto del grabador
+(la línea de comandos de la cuna sigue siendo la del runbook). `disk_line(n, sessions_dir)` mide en la
+carpeta o su ancestro existente más cercano (`nearest_dir`). Tests 87/87 (out_args, nearest_dir, ventana por
+defecto, carpeta nueva creada/mostrada/recordada/medida, START con `--out`, rechazo de carpeta no
+escribible, tooltips, carpeta desaparecida → defecto con nota ámbar). Runbook §1 («Where the sessions go»)
+y §4 (copiar la carpeta que nombra el lanzador), README, spec §14 párrafo «The sessions folder».

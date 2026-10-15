@@ -1,6 +1,7 @@
 """The session launcher -- the one window a person opens to run a campaign without a terminal.
 
-    pythonw tools/pulsenest_session.py [--configs docs/session_configs] [--hub IP[:PORT]]
+    pythonw tools/pulsenest_session.py [--configs docs/session_configs] [--sessions captures/sessions]
+                                       [--hub IP[:PORT]]
 
 Why it exists (Alex, 2026-10-13). A campaign is three recorder windows, one per cot, each started
 from a terminal with `--config <cot>.toml`, plus the fleet monitor; docs/hospital_runbook.md asks
@@ -31,6 +32,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -303,8 +305,16 @@ def hub_args(hub):
     return [] if hub == ("127.0.0.1", UDP_DATA_PORT) else ["--hub", f"{hub[0]}:{hub[1]}"]
 
 
-def cot_command(cot, hub):
-    return [windowed_python(), RECORDER_GUI, "--config", cot.path, *hub_args(hub)]
+def out_args(sessions_dir):
+    """--out only when it is not the recorder's own default, so a cot's command line stays the
+    runbook's until a folder is chosen (2026-10-16)."""
+    if os.path.normcase(os.path.abspath(sessions_dir)) == os.path.normcase(SESSIONS_DIR):
+        return []
+    return ["--out", sessions_dir]
+
+
+def cot_command(cot, hub, sessions_dir=SESSIONS_DIR):
+    return [windowed_python(), RECORDER_GUI, "--config", cot.path, *hub_args(hub), *out_args(sessions_dir)]
 
 
 def monitor_command(hub):
@@ -326,9 +336,20 @@ def launcher_command(hub):
     return [windowed_python(), os.path.abspath(__file__), *hub_args(hub)]
 
 
-def disk_line(n_boards):
+def nearest_dir(path):
+    """`path` or its nearest existing ancestor: where a disk is measured before the folder exists."""
+    p = os.path.abspath(path)
+    while not os.path.isdir(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return _ROOT
+        p = parent
+    return p
+
+
+def disk_line(n_boards, sessions_dir=SESSIONS_DIR):
     """Free space where sessions are written, as hours of recording for `n_boards` boards."""
-    where = SESSIONS_DIR if os.path.isdir(SESSIONS_DIR) else _ROOT
+    where = nearest_dir(sessions_dir)
     free_gb = shutil.disk_usage(where).free / 1e9
     hours = free_gb * 1000 / (MB_PER_MIN_PER_BOARD * 60 * max(1, n_boards))
     colour = RED if free_gb < DISK_FLOOR_GB else AMBER if hours < 10 else GREEN
@@ -483,9 +504,14 @@ class Launcher(QtWidgets.QMainWindow):
         "already running keeps the values it was started with.",
     )
 
-    def __init__(self, configs_dir, hub, client):
+    def __init__(self, configs_dir, hub, client, sessions_dir=None, sessions_note=""):
         super().__init__()
         self.configs_dir, self.hub, self.client = configs_dir, hub, client
+        # Where every recorder started from here writes (Alex, 2026-10-16: a property of the
+        # laptop -- an external SSD at 1 GB per board and hour -- not of the cot, so it is chosen
+        # here, remembered in this window's .ini, and handed to each recorder as --out).
+        self.sessions_dir = os.path.abspath(sessions_dir or SESSIONS_DIR)
+        self._sessions_note = sessions_note      # amber: a remembered folder that is not there
         self.fleet = Fleet()
         self.cots = []
         self.extra = {}          # "monitor"/"viewer" -> Popen
@@ -530,10 +556,23 @@ class Launcher(QtWidgets.QMainWindow):
                               "this clock in large digits.")
         self.disk = QtWidgets.QLabel("")
         self.disk.setWordWrap(True)
-        self.disk.setToolTip(f"Free space where sessions are written ({SESSIONS_DIR}), as hours of "
-                             f"recording at {MB_PER_MIN_PER_BOARD} MB/min per board (raw stream + live "
-                             f"CSV, measured). Amber under 10 h; red under {DISK_FLOOR_GB} GB, where "
-                             "the recorder refuses to start.")
+        self.disk.setToolTip("Free space where sessions are written (the folder named below), as "
+                             f"hours of recording at {MB_PER_MIN_PER_BOARD} MB/min per board (raw "
+                             f"stream + live CSV, measured). Amber under 10 h; red under {DISK_FLOOR_GB} "
+                             "GB, where the recorder refuses to start.")
+        # The sessions folder (2026-10-16): a link that opens it, CHANGE FOLDER... beside it.
+        self.sessions_link = QtWidgets.QLabel(self._sessions_line())
+        self.sessions_link.setOpenExternalLinks(False)
+        self.sessions_link.linkActivated.connect(lambda _: open_in_system(self.sessions_dir))
+        self.sessions_link.setToolTip("Where every recorder started from here writes its session "
+                                      "directory (handed to it as --out). Click to open the folder. "
+                                      "Default: captures/sessions in the repository.")
+        self.btn_sessions = QtWidgets.QPushButton("CHANGE FOLDER\u2026")
+        self.btn_sessions.setToolTip("Pick another folder for the sessions -- an external disk, say. "
+                                     "Remembered for the next start; the free-space line follows. A "
+                                     "folder that cannot be written to is refused. Sessions already "
+                                     "running keep writing where they started.")
+        self.btn_sessions.clicked.connect(self.change_sessions_folder)
         # NETWORK: is in3wifi up (2026-10-16). Red with a button when it is down and nothing is
         # on the air; amber, no button, when sources arrive by another network; green when up.
         self.net = QtWidgets.QLabel("")
@@ -550,7 +589,13 @@ class Launcher(QtWidgets.QMainWindow):
         self.btn_net.setVisible(False)
         top.addWidget(self.clock)
         top.addSpacing(20)
-        top.addWidget(self.disk, 1)
+        diskcol = QtWidgets.QVBoxLayout()
+        diskcol.addWidget(self.disk)
+        sess = QtWidgets.QHBoxLayout()
+        sess.addWidget(self.sessions_link, 1)
+        sess.addWidget(self.btn_sessions)
+        diskcol.addLayout(sess)
+        top.addLayout(diskcol, 1)
         netcol = QtWidgets.QVBoxLayout()
         netcol.addWidget(self.net)
         netcol.addWidget(self.btn_net)
@@ -655,6 +700,46 @@ class Launcher(QtWidgets.QMainWindow):
         return (f'.toml in <a href="open" style="color:{LINK};">{d}</a>   '
                 "\u2014   a session reads its file once, at START")
 
+    def _sessions_line(self):
+        """'sessions in <folder>' with the folder as a link (relative to the repo when inside it),
+        and the amber note when a remembered folder was not there at start."""
+        d = self.sessions_dir
+        if os.path.normcase(d).startswith(os.path.normcase(_ROOT + os.sep)):
+            d = os.path.relpath(d, _ROOT)
+        line = f'sessions in <a href="open" style="color:{LINK};">{d}</a>'
+        if self._sessions_note:
+            line += f'   <span style="color:{AMBER};">{self._sessions_note}</span>'
+        return line
+
+    def set_sessions_dir(self, directory):
+        """Point every future START at another folder, once it is proven writable: a folder that
+        only looks right would be found out at the first START, at the cot side."""
+        directory = os.path.abspath(directory)
+        try:
+            os.makedirs(directory, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=directory, prefix=".pulsenest_write_test_"):
+                pass
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, "folder not usable",
+                                          f"Cannot write in {directory}:\n{exc}\n\nThe sessions folder is "
+                                          f"unchanged: {self.sessions_dir}")
+            return False
+        self.sessions_dir = directory
+        self._sessions_note = ""
+        self.sessions_link.setText(self._sessions_line())
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("sessions_dir", self.sessions_dir)
+        s.sync()
+        self.refresh()
+        return True
+
+    def change_sessions_folder(self):
+        # A folder dialog is right here: the folder itself is the thing, there is no file in it
+        # to recognise it by (unlike the .toml folder, Alex 2026-10-15).
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(self, "Folder for the sessions", self.sessions_dir)
+        if chosen:
+            self.set_sessions_dir(chosen)
+
     def set_configs_dir(self, directory):
         """Point the table at another folder: title, table and the remembered choice follow."""
         self.configs_dir = os.path.abspath(directory)
@@ -722,7 +807,7 @@ class Launcher(QtWidgets.QMainWindow):
         self.clock.setText(datetime.datetime.now().strftime("%H:%M:%S"))
         # boards that will record: the ones on the air; before any is heard, the cots prepared
         n = len(self.fleet.by_mac()) or len([c for c in self.cots if not c.is_example]) or 1
-        text, colour = disk_line(n)
+        text, colour = disk_line(n, self.sessions_dir)
         self.disk.setText(text)
         self.disk.setStyleSheet(f"color: {colour};")
         self._refresh_network(now)
@@ -882,7 +967,7 @@ class Launcher(QtWidgets.QMainWindow):
     def start_cot(self, cot):
         if cot.running or not cot.cfg:
             return
-        cot.proc = spawn(cot_command(cot, self.hub))
+        cot.proc = spawn(cot_command(cot, self.hub, self.sessions_dir))
         cot.started_at = time.time()
         self.refresh()
 
@@ -915,6 +1000,19 @@ def saved_configs_dir():
     return saved if saved and os.path.isdir(saved) else DEFAULT_CONFIGS
 
 
+def saved_sessions_dir():
+    """-> (folder, note): the folder chosen last time with the sessions CHANGE FOLDER if it is
+    still there, else the default with a note saying so -- an unplugged external disk must not
+    silently become the internal one (Alex, 2026-10-16)."""
+    s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+    saved = s.value("sessions_dir")
+    if not saved:
+        return SESSIONS_DIR, ""
+    if os.path.isdir(saved):
+        return saved, ""
+    return SESSIONS_DIR, f"the remembered folder {saved} is not there: back to the default"
+
+
 def parse_hub(text):
     host, _, port = text.partition(":")
     return (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
@@ -926,13 +1024,17 @@ def main(argv=None):
     ap.add_argument("--configs", default=None, metavar="DIR",
                     help="folder with one .toml per cot (default: the folder chosen last time with "
                          "CHANGE FOLDER, else docs/session_configs)")
+    ap.add_argument("--sessions", default=None, metavar="DIR",
+                    help="folder where every recorder started from here writes (default: the folder "
+                         "chosen last time with the sessions CHANGE FOLDER, else captures/sessions)")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     args = ap.parse_args(argv)
     hub = parse_hub(args.hub)
     app = QtWidgets.QApplication(sys.argv)
     client = HubClient(script_name(__file__), hub=hub, control=False)
     client.connect()          # starts the hub if none answers; reconnects by itself otherwise
-    w = Launcher(os.path.abspath(args.configs or saved_configs_dir()), hub, client)
+    sessions_dir, note = (os.path.abspath(args.sessions), "") if args.sessions else saved_sessions_dir()
+    w = Launcher(os.path.abspath(args.configs or saved_configs_dir()), hub, client, sessions_dir, note)
     w.show()
     return app.exec_()
 
