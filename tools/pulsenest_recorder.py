@@ -28,6 +28,9 @@ with no GUI at all):
                               the commercial monitor beside that baby: model, averaging in
                               seconds, and ITS probe site -- pre- vs postductal differ in a
                               neonate, and an unrecorded difference is read later as our error
+    subj SUBJ01 gest_age|age|weight_g|skin <value>
+                              the subject, as the SpO2 bias analysis stratifies it: gestational
+                              age at birth (30w+2d), age (14d, 6m, 34y), grams, Monk skin 1-10
     help [command]            the list, or the detail of one: `help mark`
     status                    one line per source: datagrams, bytes, last seen
     q | quit                  close the session (Ctrl+C does the same)
@@ -35,7 +38,7 @@ with no GUI at all):
 The same lines are accepted on a local UDP port (--event-port) so that a separate panel process
 can send them (§9, process isolation): if the panel dies, recording continues.
 
-Layout (§3): captures/sessions/<YYYYMMDD>_<HHMM>_<SITE>/ with session.json, session_events.csv,
+Layout (§3): captures/sessions/<YYYYMMDD>_<HHMMSS>_<SITE>/ with session.json, session_events.csv,
 pulsenest_recorder.log and raw/board_<MAC>_<NNNN>.pnraw. A source is named by its MAC as soon as its $CFG
 arrives (the hub replays the cached $CFG on subscription, so normally at once); until then its
 datagrams wait in memory for up to 3 s, after which they go to unknown_<IP>_<NNNN>.pnraw rather
@@ -248,6 +251,30 @@ COMMAND_HELP = {
         "be averaged over before the two numbers can be compared at all; the site decides whether\n"
         "a difference is physiology or error (see `help site`).",
     ),
+    "subj": (
+        "subj SUBJ01 gest_age|age|weight_g|skin <value>",
+        "the subject, as the SpO2 bias analysis will stratify it",
+        "  subj SUBJ01 gest_age 30w+2d   gestational age at birth, as the chart writes it\n"
+        "  subj SUBJ01 age 14d           age: a number and its unit, d/w/m/y (3w+2d, 6m, 34y)\n"
+        "  subj SUBJ01 weight_g 1500     current weight, in grams\n"
+        "  subj SUBJ01 skin 3            Monk Skin Tone scale, 1 (lightest) to 10 (darkest)\n"
+        "\n"
+        "Four values, structured so the converter reads them back instead of a person re-reading\n"
+        "a free-text note per session: gestational and postnatal age (fetal haemoglobin, the R\n"
+        "curve), weight (tissue the probe sees), skin tone (the best documented SpO2 bias). Set\n"
+        "at launch ([subject] in the .toml) or here, once known -- same path either way.\n"
+        "`subj`, not `subject`: `subject <MAC> SUBJ01` binds a board; this one describes.\n"
+        "\n"
+        "skin: Monk Skin Tone (MST) scale, a whole number 1-10: 1 the lightest tone, 10 the darkest.\n"
+        "Ten swatches published by Google with Dr Ellis Monk (Harvard, 2022), free at\n"
+        "https://skintone.google -- print them, or open the page on the phone. Judge it AT THE\n"
+        "PROBE SITE (the foot), not the face, under daylight or the room's white light, holding\n"
+        "the swatch against the skin; write the closest number. Why MST and not Fitzpatrick:\n"
+        "Fitzpatrick grades sun reactivity with few dark tones; the FDA's January 2025 draft\n"
+        "guidance for pulse-oximeter clinical studies asks for MST. Why per session: a newborn's\n"
+        "pigmentation darkens over the first weeks, so this is the day's value, not the birth's.\n"
+        "Torn between two? Pick one and say so in `note`. It is the best documented SpO2 bias.",
+    ),
     "status": (
         "status",
         "one line per source: datagrams, gaps, CSV rows, last seen",
@@ -297,6 +324,47 @@ _KV_RE = re.compile(rb"[,\s]([a-z_]+)=([^,\s*]+)")
 # the app and taped to the phone: identity that survives a DHCP lease, which is what
 # the MAC does for a board.
 _SUBJ_RE = re.compile(r"^SUBJ\d+$", re.I)
+
+# What describes the subject for the SpO2 bias analysis (Alex, 2026-10-14): the `[subject]` table
+# of the session file after `id`, the `subj` console command, `session.json` (`launch.subject_info`
+# and `sources[].subject_info`) and a META event `subject.<field>=<value>` each. Checked where
+# SET, like the subject code: a typo here would stratify the whole analysis wrong. Not "baby":
+# a later campaign may measure children or adults (Alex, 2026-10-14), hence an age with its unit
+# rather than a count of days.
+SUBJECT_FIELDS = ("gest_age", "age", "weight_g", "skin")
+_AGE_RE = re.compile(r"^\d+[dwmy](\+\d+[dwmy])*$")        # 14d, 30w+2d, 6m, 34y
+_DAYS_PER = {"d": 1, "w": 7, "m": 365.25 / 12, "y": 365.25}
+_AGE_RANGE = {"gest_age": (20 * 7, 45 * 7, "20w-45w at birth"), "age": (0, 130 * 365, "0d-130y")}
+_SUBJECT_RANGE = {"weight_g": (300, 300000, "grams"), "skin": (1, 10, "Monk Skin Tone 1-10")}
+
+
+def age_to_days(text):
+    """`30w+2d` -> 212.0; the grammar of _AGE_RE is assumed."""
+    return sum(float(part[:-1]) * _DAYS_PER[part[-1]] for part in text.split("+"))
+
+
+def parse_subject_value(key, text):
+    """An age as a number with its unit (d/w/m/y, joined with `+`), kept as typed once checked;
+    a whole number within range for weight_g and skin. Raises ValueError with the reason,
+    worded for the person typing it."""
+    t = str(text).strip()
+    if key in ("gest_age", "age"):
+        t = re.sub(r"\s+", "", t).lower()
+        if not _AGE_RE.match(t):
+            raise ValueError(f"{key} {text!r}: a number with its unit d/w/m/y, joined with +: "
+                             f"14d, 30w+2d, 6m, 34y")
+        lo, hi, what = _AGE_RANGE[key]
+        if not lo <= age_to_days(t) <= hi:
+            raise ValueError(f"{key} {t!r}: outside {what}")
+        return t
+    lo, hi, unit = _SUBJECT_RANGE[key]
+    try:
+        n = int(t)
+    except ValueError:
+        raise ValueError(f"{key} {t!r}: a whole number ({unit})") from None
+    if not lo <= n <= hi:
+        raise ValueError(f"{key} {n}: outside {lo}-{hi} ({unit})")
+    return n
 
 
 def normalise_subject(text):
@@ -397,6 +465,13 @@ def nmea_checksum(body):
 class NotEnoughSpace(RuntimeError):
     """Refusing to start: less free space than the floor. Its own type so main() can report it as
     one line rather than a traceback -- what an operator at a cot side needs to read."""
+
+
+class SessionExists(RuntimeError):
+    """Refusing to start: the session directory is already there. One directory is one session:
+    appending to it restarted event_id at 1 and wrote a second set of rows under the first set's
+    ids (2026-10-14, session 1937, when the id was the minute of the start and STOP + START inside
+    one minute named the same directory). The id now carries the second; this stays as the net."""
 
 
 def _free_bytes(path):
@@ -609,6 +684,7 @@ class Source:
         # otherwise be read as OUR error; and `averaging_s`, which sets the window our own SpO2
         # has to be averaged over before the two numbers can be compared at all.
         self.reference = {"make_model": None, "averaging_s": None, "probe_site": None, "notes": ""}
+        self.subject_info = dict.fromkeys(SUBJECT_FIELDS)   # the `subj` command / [subject] table
 
     def label(self):
         if self.kind == "videonest":
@@ -638,6 +714,7 @@ class Source:
         if self.kind == "board":
             d["mac"] = self.mac
             d["condition"] = self.condition
+            d["subject_info"] = dict(self.subject_info)
             d["reference_monitor"] = self.reference
             d["board_rev"] = self.ident.get("board")
             d["firmware"] = {k: self.ident.get(k) for k in ("fw", "lib", "build", "libsha",
@@ -655,7 +732,8 @@ class Recorder:
                  split_s=SPLIT_MIN_DEFAULT * 60, split_bytes=SPLIT_MB_DEFAULT * 1024 * 1024,
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
                  board=None, subject=None, videonest=None, note=None, probe=None,
-                 ref_model=None, ref_avg=None, ref_probe_site=None, ref_note=None):
+                 ref_model=None, ref_avg=None, ref_probe_site=None, ref_note=None,
+                 gest_age=None, age=None, weight_g=None, skin=None, session_id=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
         if csv_mode not in ("on", "off", "v04"):
@@ -708,10 +786,20 @@ class Recorder:
         self.want_ref = {k: v for k, v in
                          (("model", ref_model), ("avg", ref_avg), ("site", ref_probe_site), ("note", ref_note))
                          if v}
+        # Checked NOW, not at binding: a bad value refuses the launch (a dialog in the window)
+        # instead of a console reply nobody reads ten minutes later.
+        self.want_subject_info = {k: parse_subject_value(k, v) for k, v in
+                                  (("gest_age", gest_age), ("age", age), ("weight_g", weight_g),
+                                   ("skin", skin))
+                                  if v not in (None, "")}
         # The tag is not decoration: three windows launched in the same minute would otherwise
         # share a directory and overwrite each other's session.json.
         tag = self.want_subject or self.board_filter
-        self.session_id = f"{stamp:%Y%m%d_%H%M}_{self.site}" + (f"_{tag}" if tag else "")
+        # To the second, like the live CSV names (Alex, 2026-10-14; to the minute until then, a
+        # choice from v0.1 nobody had aligned with the CSVs' seconds of 09-29). A replay passes
+        # the record's own id: it is a header key in every CSV, and the record's may be the old form.
+        self.session_id = session_id or (f"{stamp:%Y%m%d_%H%M%S}_{self.site}"
+                                         + (f"_{tag}" if tag else ""))
         self.dir = os.path.join(out_root, self.session_id)
         self.raw_dir = os.path.join(self.dir, "raw")
         self.operator = operator
@@ -736,7 +824,10 @@ class Recorder:
         if self.min_free_bytes and self.free_bytes is not None and self.free_bytes < self.min_free_bytes:
             raise NotEnoughSpace(f"{self.free_bytes / 1e9:.1f} GB free on {os.path.abspath(out_root)}, "
                                  f"floor is {self.min_free_bytes / 1e9:.1f} GB")
-        os.makedirs(self.dir, exist_ok=True)
+        if os.path.exists(self.dir):
+            raise SessionExists(f"a session with this id already exists: {self.dir}. "
+                                f"One directory is one session: start again")
+        os.makedirs(self.dir)
         self.log = log or self._make_logger()
         self._check_free_space(force=True)
         self.events_path = os.path.join(self.dir, "session_events.csv")
@@ -996,6 +1087,8 @@ class Recorder:
             self.console(f"probe {src.subject} {self.want_probe}")
         for key, value in self.want_ref.items():
             self.console(f"ref {src.subject} {key} {value}")
+        for key, value in self.want_subject_info.items():
+            self.console(f"subj {src.subject} {key} {value}")
 
     def _open_csv(self, src, t_epoch_us):
         """The live capture CSV of section 2, one per board, in the format every tool in this
@@ -1444,6 +1537,26 @@ class Recorder:
                            note=f"reference_monitor.{field}={value}")
                 self.write_session_json()
                 return f"{subj} reference_monitor.{field} = {value}"
+            if cmd == "subj":
+                # The subject as the SpO2 bias analysis stratifies it (spec section 7,
+                # 2026-10-14). The same path as `ref`, so a value learnt after START still
+                # reaches session.json and the converter, instead of a free-text note.
+                if len(args) < 3 or args[1].lower() not in SUBJECT_FIELDS:
+                    return "usage: subj SUBJ01 gest_age|age|weight_g|skin <value>"
+                subj, key, value = args[0].upper(), args[1].lower(), " ".join(args[2:])
+                targets = [s for s in self._owners() if s.subject == subj]
+                if not targets:
+                    return f"no board bound to {subj} (use: subject <MAC suffix> {subj})"
+                try:
+                    value = parse_subject_value(key, value)
+                except ValueError as exc:
+                    return str(exc)
+                for s in targets:
+                    s.subject_info[key] = value
+                self.event("META", subject=subj, board_mac=targets[0].mac or "*",
+                           note=f"subject.{key}={value}")
+                self.write_session_json()
+                return f"{subj} subject.{key} = {value}"
             if cmd in ("help", "?"):
                 if args:
                     what = args[0].lower().lstrip("-")
@@ -1560,7 +1673,8 @@ class Recorder:
             # values and let it regenerate those events, instead of replaying them from the
             # log at a moment that no longer exists (they fired before the CSV opened).
             "launch": {"subject": self.want_subject, "note": self.want_note, "probe": self.want_probe,
-                       "ref": dict(self.want_ref), "videonest": self.videonest_id},
+                       "ref": dict(self.want_ref), "videonest": self.videonest_id,
+                       "subject_info": dict(self.want_subject_info)},
             "videonest_id": self.videonest_id,
             "videonest_seen": sorted(self.by_vn),
             "operator": self.operator,
@@ -1798,25 +1912,34 @@ class _ConsoleReader(threading.Thread):
 # (--hub, --out, --raw, --split-min, --duration, --min-free-gb stay command-line only: they are
 # the same for all three cots and belong to the laptop, not the baby).
 CONFIG_FIELDS = ("location", "operator", "board", "subject", "ref_videonest", "note", "probe",
-                 "ref_model", "ref_avg", "ref_probe_site", "ref_note")
+                 "ref_model", "ref_avg", "ref_probe_site", "ref_note",
+                 "gest_age", "age", "weight_g", "skin")
 
 
 def load_session_config(path):
     """A TOML session file -> {field: value}, every value a string ("" if absent).
 
-    [ref] groups everything about the ONE commercial monitor a session is checked against --
-    including which phone is filming it, since a phone reads that same monitor's screen rather
-    than being a fact about the baby on its own (Alex, 2026-09-22, thinking ahead to a possible
-    second physical oximeter some day: this is the shape that could grow into `[[ref]]`, one
-    table per monitor, without a second reshape of the file):
+    [subject] groups everything about the subject (Alex, 2026-10-14): `id` is the coded subject,
+    the other four are what the SpO2 bias analysis stratifies by (see SUBJECT_FIELDS). [ref] groups
+    everything about the ONE commercial monitor a session is checked against -- including which
+    phone is filming it, since a phone reads that same monitor's screen rather than being a fact
+    about the baby on its own (Alex, 2026-09-22, thinking ahead to a possible second physical
+    oximeter some day: this is the shape that could grow into `[[ref]]`, one table per monitor,
+    without a second reshape of the file):
 
         location = "HOSP01"
         operator = "AC"
         board    = "8850"
-        subject  = "SUBJ01"
-        note     = "term neonate, resting after a feed"
         probe    = "Medle ST-S0163-26"   # OUR probe's model -- ISO 80601-2-61 calibrates monitor+
                                  # probe together, and the library cannot know which sensor is on the baby
+        note     = "resting after a feed"
+
+        [subject]
+        id       = "SUBJ01"
+        gest_age = "30w+2d"              # at birth
+        age      = "14d"                 # a number and its unit: d/w/m/y (3w+2d, 6m, 34y)
+        weight_g = 1500
+        skin     = 3                     # Monk Skin Tone scale 1-10 (`help subj`)
 
         [ref]
         model      = "Masimo Radical-7"
@@ -1825,7 +1948,9 @@ def load_session_config(path):
         videonest  = "J6plusACM"
 
     `note` is free text, written verbatim as a NOTE event and nothing else. There is no `cond`
-    field: the condition is set in the window or with the `cond` console command.
+    field: the condition is set in the window or with the `cond` console command. A top-level
+    `subject = "..."` (the shape before 2026-10-14) is refused with the new shape spelt out,
+    rather than silently read as a session with no subject.
 
     Raises OSError if the file cannot be read, tomllib.TOMLDecodeError if it is not valid TOML.
     Neither is caught here -- the caller decides how to report it.
@@ -1833,16 +1958,23 @@ def load_session_config(path):
     with open(path, "rb") as f:
         data = tomllib.load(f)
     ref = data.get("ref") or {}
+    subj = data.get("subject")
+    if subj is not None and not isinstance(subj, dict):
+        raise ValueError(f"{path}: `subject = {subj!r}` is now a table -- write it as\n"
+                         f"    [subject]\n    id = {subj!r}\n(after the top-level lines, before [ref])")
+    subj = subj or {}
 
     def text(v):
         return "" if v is None else str(v)
     return {
         "location": text(data.get("location")), "operator": text(data.get("operator")),
-        "board": text(data.get("board")), "subject": text(data.get("subject")),
+        "board": text(data.get("board")), "subject": text(subj.get("id")),
         "ref_videonest": text(ref.get("videonest")), "note": text(data.get("note")),
         "probe": text(data.get("probe")),
         "ref_model": text(ref.get("model")), "ref_avg": text(ref.get("avg")),
         "ref_probe_site": text(ref.get("probe-site")), "ref_note": text(ref.get("note")),
+        "gest_age": text(subj.get("gest_age")), "age": text(subj.get("age")),
+        "weight_g": text(subj.get("weight_g")), "skin": text(subj.get("skin")),
     }
 
 
@@ -1902,6 +2034,17 @@ def add_session_args(ap):
     ap.add_argument("--probe", default="", metavar="MODEL",
                     help="OUR probe's physical model (e.g. Medle ST-S0163-26) -- the library "
                          "cannot know which sensor is plugged in, applied once the subject is known")
+    subject_group = ap.add_argument_group(
+        "the subject, as the SpO2 bias analysis stratifies it",
+        "All optional; also settable as the [subject] table of --config (with `id` = --subject), "
+        "or later on the console (`subj SUBJ01 weight_g 1500`) once known. Checked at launch.")
+    subject_group.add_argument("--gest-age", default="", metavar="AGE",
+                               help="gestational age at birth, as the chart writes it (30w+2d)")
+    subject_group.add_argument("--age", default="", metavar="AGE",
+                               help="a number and its unit, d/w/m/y, joined with +: 14d, 3w+2d, 6m, 34y")
+    subject_group.add_argument("--weight-g", default="", metavar="GRAMS", help="current weight")
+    subject_group.add_argument("--skin", default="", metavar="1-10",
+                               help="Monk Skin Tone scale, 1 (lightest) to 10 (darkest); `help subj`")
     ref_group = ap.add_argument_group(
         "the commercial monitor beside this baby",
         "All optional; also settable in one go as the [ref] table of --config. --ref-videonest "
@@ -1959,10 +2102,14 @@ def main(argv=None):
                        board=args.board, subject=args.subject, videonest=args.ref_videonest,
                        note=args.note, probe=args.probe, ref_model=args.ref_model,
                        ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
-                       ref_note=args.ref_note)
+                       ref_note=args.ref_note, gest_age=args.gest_age, age=args.age,
+                       weight_g=args.weight_g, skin=args.skin)
     except NotEnoughSpace as exc:
         print(f"NOT STARTING: {exc}.", file=sys.stderr)
         print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)
+        return 2
+    except SessionExists as exc:
+        print(f"NOT STARTING: {exc}.", file=sys.stderr)
         return 2
     except OSError as exc:
         print(f"NOT STARTING: cannot write to {args.out}: {exc}", file=sys.stderr)

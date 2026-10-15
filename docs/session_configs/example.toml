@@ -1,5 +1,7 @@
-# One of these per cot, prepared the day before. --location, --board and --subject are the only
-# lines every campaign session needs; the rest can be left out and typed in the window instead.
+# One of these per kit (board + phone), prepared the day before with what does not depend on
+# the baby; subject, note and the monitor's [ref] lines are added on the day, once the baby is
+# chosen (docs/hospital_runbook.md section 2). --location is the only line the recorder refuses
+# to start without; without `subject` the window stays locked (the phone alone can be chosen there).
 #
 # Session launcher (START per cot):   pythonw .\tools\pulsenest_session.py   (desktop icon: scripts\make_session_shortcut.ps1)
 # Launch this recording session with: pythonw .\tools\pulsenest_recorder_gui.py --config docs/session_configs/subjXX.toml
@@ -11,21 +13,42 @@
 # FULL SUBSTITUTION: any of these fields typed on the command line alongside --config is refused,
 # not merged, so the file is never silently overridden by a stray flag.
 
-subject   = "SUBJ67"         # coded subject, never a name
 location  = "HOSPNAV"        # coded site, never a place name (pulsenest_recorder_spec.md section 11)
 operator  = "ACM"             # initials or role, never a full name
 board     = "8850"           # last hex digits of this cot's board MAC (docs/boards.md)
 probe     = "Medle ST-S0163-26 LOT:260521002 SN:PPG-001"  # confirm against the physical probe actually clipped on this baby
-note      = "age:30w(birth)+2w(from birth), weigth:1.5kg(birth), skin:WHITE"
+note      = "resting after a feed"
 # ^ free text, written verbatim as a NOTE event and nothing else: it never sets the CONDITION
 # and never reaches a filename. The CSV is named <subject>_<location>_<date>_<time>_pNN.csv.
+
+# Everything about the subject. `id` is the coded subject; the other four are what the SpO2
+# bias analysis stratifies by, so they are values here and not words in `note`. Fill them in on
+# the day, once the subject is chosen; a line left out is simply unknown (it can be given later
+# on the recorder console: `subj SUBJ67 weight_g 1500`). Ages take a number and its unit --
+# d, w, m or y -- joined with "+" when needed: "14d", "3w+2d", "6m", "34y".
+#
+# skin -- Monk Skin Tone (MST) scale, a whole number 1-10: 1 the lightest tone, 10 the darkest.
+#   Ten swatches published by Google with Dr Ellis Monk (Harvard, 2022), free at
+#   https://skintone.google -- print them, or open the page on the phone. Judge it AT THE PROBE
+#   SITE (the foot), not the face, under daylight or the room's white light, holding the swatch
+#   against the skin; write the closest number. Why MST and not Fitzpatrick: Fitzpatrick grades
+#   sun reactivity with few dark tones; the FDA's January 2025 draft guidance for pulse-oximeter
+#   clinical studies asks for MST. Why per session: a newborn's pigmentation darkens over the
+#   first weeks, so this is the day's value, not the birth's. Torn between two? Pick one and say
+#   so in `note`. It is the best documented SpO2 bias, which is why it is a number and not a word.
+[subject]
+id        = "SUBJ67"         # coded subject, never a name
+gest_age  = "30w+2d"         # gestational age at birth, as the chart writes it
+age       = "14d"            # age with its unit: 14d, 3w+2d, 6m, 34y
+weight_g  = 1500             # current weight, grams
+skin      = 3                # Monk Skin Tone scale 1-10, see above
 
 # Everything about the ONE commercial monitor beside this baby -- including which phone is
 # filming it, since a phone reads that same monitor's screen rather than being a separate fact.
 # Every line here is optional; leave the table out entirely if there is no reference monitor.
 [ref]
 model      = "Mindray BeneVision N17"
-probe-site = "foot"         # (left/right + thumb/index-finger/middle-finger/ring-finger/little-finger/baby-foot) where ITS probe is, not ours -- as specific as the photo lets you be
+#probe-site = "right hand"      # where ITS probe is, not ours: leave out on a foot (the usual); say so when not (right hand = preductal)
 #videonest  = "J6plusACM"         # device id of the phone filming THIS monitor -- omit if none
 videonest  = "Pixel8aACM"        # device id of the phone filming THIS monitor -- omit if none
 #avg        = 8                   # its averaging window, in seconds -- decides if the two SpO2 compare at all

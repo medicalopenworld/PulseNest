@@ -23,6 +23,7 @@ the lab puts it in every window title, the console tools print it as their first
 dozen scripts around, that is the one thing the screen could not tell you.
 """
 import os
+import subprocess
 import re
 import sys
 
@@ -87,3 +88,12 @@ if __name__ == "__main__":
         sys.exit(1)
     print(banner(__file__, "the host-side source of truth for the UDP ports"))
     print(f"OK: wifi_config.h agrees (data :{UDP_DATA_PORT}, commands :{UDP_CMD_PORT})")
+
+
+def open_in_system(path):
+    """Open a file or folder with the system's own editor / file browser; never ours.
+    Shared by tools/pulsenest_session.py (EDIT, FOLDER) and tools/pulsenest_recorder_gui.py (FILE)."""
+    if os.name == "nt":
+        os.startfile(path)          # noqa: S606  (Windows: the registered application)
+    else:
+        subprocess.Popen(["xdg-open", path])

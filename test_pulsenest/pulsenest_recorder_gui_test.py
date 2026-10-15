@@ -32,7 +32,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import tools.pulsenest_recorder_gui as G  # noqa: E402
-from PyQt5 import QtWidgets          # noqa: E402
+from PyQt5 import QtWidgets, QtCore  # noqa: E402
+from PyQt5.QtTest import QTest       # noqa: E402
 
 # Before a window exists: closeEvent saves geometry, and a test must never touch the real .ini.
 G.SETTINGS_FILE = os.path.join(tempfile.gettempdir(), "pulsenest_recorder_gui_test.ini")
@@ -44,12 +45,12 @@ print(f"== {os.path.basename(__file__)} ==  offscreen checks of the recorder win
 ok = []
 
 
-def type_subject(row, text):
-    """What an operator does: type into the box and press Enter. `setCurrentText` alone changes
-    the text without emitting `editingFinished`, so a test that used it was not exercising the
-    path the window actually runs."""
-    row.subject.setCurrentText(text)
-    row.subject.lineEdit().editingFinished.emit()
+def bind(rec, row, text):
+    """Binding goes through the Recorder's console (the window has no SUBJECT control since
+    2026-10-14); the row then mirrors what the Recorder holds."""
+    reply = rec.console(f"subject 7560 {text}")
+    row.refresh(time.monotonic(), False)
+    return reply
 
 
 def check(msg, cond, detail=""):
@@ -93,37 +94,33 @@ row = list(win.rows.values())[0]
 # ── a row appears per board, keyed by MAC ────────────────────────────────────────────────────
 check("one row per board, keyed by its MAC once the board says who it is",
       list(win.rows) == [MAC] and row.src is not None and row.src.mac == MAC, list(win.rows))
-check("nothing but SUBJECT is usable before a subject is bound",
-      row.subject.isEnabled() and not row.record.isEnabled()
-      and not row.note.isEnabled() and not row.vn_on.isEnabled())
+check("nothing is usable before a subject is bound, and SUBJECT reads (not set)",
+      not row.record.isEnabled() and not row.note.isEnabled() and not row.vn_on.isEnabled()
+      and row.subject_label.text() == "(not set)" and not hasattr(row, "subject"),
+      row.subject_label.text())
 check("the header says UNBOUND and warns, without anyone asking",
       "UNBOUND" in row.counters.text() and "no subject" in row.warn.text(),
       row.counters.text() + " | " + row.warn.text())
 
 # ── binding a subject goes through the console, and opens the rest ───────────────────────────
-type_subject(row, "SUBJ01")
-check("choosing a subject binds the board through the console command",
-      rec.sources["192.168.1.50"].subject == "SUBJ01" and row.record.isEnabled())
+bind(rec, row, "SUBJ01")
+check("a subject bound on the console shows in the panel and opens the rest",
+      rec.sources["192.168.1.50"].subject == "SUBJ01" and row.subject_label.text() == "SUBJ01"
+      and row.record.isEnabled() and row.note.isEnabled())
 
-# The subject code is the only link between a capture and a person, so what the box REFUSES
-# matters more than what it accepts. A free-text subject is how a real name reaches every file.
+# The subject code is the only link between a capture and a person. The check lives in the
+# Recorder (the one code path), not in the window, which only shows what the Recorder holds.
 for bad in ("Maria", "bed 4", "SUBJ", "S01", "12"):
-    type_subject(row, bad)
+    reply = bind(rec, row, bad)
     if rec.sources["192.168.1.50"].subject != "SUBJ01":
         break
-check("a name, a bed number or a malformed code is refused and changes nothing",
-      rec.sources["192.168.1.50"].subject == "SUBJ01" and row.subject.currentText() == "",
-      rec.sources["192.168.1.50"].subject)
-check("and the refusal says so instead of failing silently",
-      "not a subject code" in win.log_line.text(), win.log_line.text())
-type_subject(row, "subj7")
+check("a name, a bed number or a malformed code is refused by the Recorder and changes nothing",
+      rec.sources["192.168.1.50"].subject == "SUBJ01" and row.subject_label.text() == "SUBJ01"
+      and "not a subject code" in reply, rec.sources["192.168.1.50"].subject + " | " + reply)
+bind(rec, row, "subj7")
 check("a short code is normalised, so SUBJ7 and SUBJ07 cannot become two babies",
       rec.sources["192.168.1.50"].subject == "SUBJ07", rec.sources["192.168.1.50"].subject)
-type_subject(row, "SUBJ13")
-check("the menu is not a ceiling: the thirteenth baby of a campaign can be typed",
-      rec.sources["192.168.1.50"].subject == "SUBJ13" and row.subject.findText("SUBJ13") >= 0
-      and len(G.SUBJECTS) == 12, str(len(G.SUBJECTS)))
-type_subject(row, "SUBJ01")
+bind(rec, row, "SUBJ01")
 
 # ── the one reference control: which phone is filming THIS cot ───────────────────────────────
 # Five tick boxes became one (Alex, 2026-09-22). `operator annotation` was always on -- it is the
@@ -150,12 +147,12 @@ row.vn_on.setChecked(True)
 rec.console("subject 7560 SIM")
 rec.console("videonest none")
 row.refresh(time.monotonic(), False)
-check("after a console change the SUBJECT box shows what the Recorder holds (SIM), added to the menu",
-      row.subject.currentText() == "SIM" and rec.sources["192.168.1.50"].subject == "SIM", row.subject.currentText())
+check("after a console change SUBJECT shows what the Recorder holds (SIM)",
+      row.subject_label.text() == "SIM" and rec.sources["192.168.1.50"].subject == "SIM", row.subject_label.text())
 check("and the VideoNest box is unticked because the Recorder has no phone", not row.vn_on.isChecked())
 n_events = rec.event_id
-row.subject.lineEdit().editingFinished.emit()      # focus leaves the box: no command, nothing changes
-check("leaving the SUBJECT box without typing issues no command: SIM stays, no new event",
+row.refresh(time.monotonic(), False)               # a refresh is a mirror, never a command
+check("a refresh issues no command: SIM stays, no new event",
       rec.sources["192.168.1.50"].subject == "SIM" and rec.event_id == n_events and rec.videonest_id is None)
 rec.console("videonest J6plusACM")
 row.refresh(time.monotonic(), False)
@@ -411,9 +408,15 @@ open(cfg_path, "w", encoding="utf-8").write("""
 location  = "HOSP01"
 operator  = "AC"
 board     = "8850"
-subject   = "SUBJ01"
 note      = "term neonate, resting after a feed"
 probe     = "Medle-neo"
+
+[subject]
+id       = "SUBJ01"
+gest_age = "30w+2d"
+age      = "14d"
+weight_g = 1500
+skin     = 3
 
 [ref]
 model = "Masimo Radical-7"
@@ -429,11 +432,21 @@ def blank_args():
 
 ns = blank_args()
 G.apply_session_config(ns, cfg_path)
-check("--config fills all eleven fields from the file, avg as a string like a typed flag would be",
+check("--config fills all fifteen fields from the file, numbers as strings like a typed flag would be",
       vars(ns) == {"location": "HOSP01", "operator": "AC", "board": "8850", "subject": "SUBJ01",
                    "ref_videonest": "J6plusACM", "note": "term neonate, resting after a feed",
                    "probe": "Medle-neo", "ref_model": "Masimo Radical-7", "ref_avg": "8",
-                   "ref_probe_site": "left thumb", "ref_note": ""}, vars(ns))
+                   "ref_probe_site": "left thumb", "ref_note": "",
+                   "gest_age": "30w+2d", "age": "14d", "weight_g": "1500", "skin": "3"}, vars(ns))
+old_path = os.path.join(tempfile.gettempdir(), "pulsenest_old_shape.toml")
+open(old_path, "w", encoding="utf-8").write('location = "HOSP01"\nsubject = "SUBJ01"\n')
+try:
+    G.apply_session_config(blank_args(), old_path)
+    ok.append(False)
+    print("FAIL a top-level `subject = ...` (the shape before 2026-10-14) must be refused")
+except ValueError as exc:
+    check("a top-level `subject = ...` (the old shape) is refused, and the reply spells out [subject]",
+          "[subject]" in str(exc) and "id = 'SUBJ01'" in str(exc), str(exc))
 
 for field in G.CONFIG_FIELDS:
     conflicting = blank_args()
@@ -444,7 +457,7 @@ for field in G.CONFIG_FIELDS:
         print(f"FAIL --config must refuse when --{field.replace('_','-')} is also given")
     except ValueError as exc:
         ok.append(f"--{field.replace('_','-')}" in str(exc))
-check("full substitution: EVERY one of the ten fields, given alongside --config, is refused",
+check("full substitution: EVERY one of the fifteen fields, given alongside --config, is refused",
       True)  # the loop above recorded one PASS/FAIL per field; this line is just a section marker
 
 try:
@@ -464,16 +477,68 @@ except _tomllib.TOMLDecodeError:
 # ── what was given at launch reads in the panel and cannot be changed from it (Alex, 2026-10-14) ──
 out3 = tempfile.mkdtemp()
 rec3 = G.Recorder(out3, "HOSP01", "ACM", log=QuietLog(), subject="SUBJ05", board="7560",
-                  note="probe on left foot", probe="Medle ST-S0163-26")
+                  note="probe on left foot", probe="Medle ST-S0163-26",
+                  gest_age="30w+2d", age="14d", weight_g="1500", skin="3")
 win3 = G.RecorderWindow(rec3, ("127.0.0.1", 15999))
 rec3.feed("192.168.1.60", f"$CFG,mac={MAC},board=V18,fw=0.14\n".encode())
 win3.traces["192.168.1.60"] = G.BoardTrace("192.168.1.60", 0.0, 15.0)
 win3.redraw()
 row3 = list(win3.rows.values())[0]
 row3._mirror_state()
-check("a subject given at launch is bound and its box is read-only",
-      rec3.sources["192.168.1.60"].subject == "SUBJ05" and row3.subject.currentText() == "SUBJ05"
-      and not row3.subject.isEnabled(), f"{rec3.sources['192.168.1.60'].subject} enabled={row3.subject.isEnabled()}")
+check("a subject given at launch is bound and read in the panel as a plain label",
+      rec3.sources["192.168.1.60"].subject == "SUBJ05" and row3.subject_label.text() == "SUBJ05"
+      and isinstance(row3.subject_label, QtWidgets.QLabel), rec3.sources["192.168.1.60"].subject)
+# Built for a finger (Alex, 2026-10-15): RECORD three times a button's height, the SpO2 box as
+# high, and its own 14 x 16 px arrows replaced by two push buttons beside it that step the box.
+_plain = QtWidgets.QPushButton("RECORD"); _plain.setFont(row.record.font())
+_v = row.spo2.value()
+row.spo2_up.click(); row.spo2_up.click(); row.spo2_down.click()
+check("RECORD is three times a button's height, the SpO2 box as high, its arrow buttons half that and wide, and they step the box",
+      row.record.minimumHeight() == 3 * _plain.sizeHint().height()
+      and row.spo2.minimumHeight() == row.record.minimumHeight()
+      and row.spo2_up.minimumHeight() == row.record.minimumHeight() // 2
+      and row.spo2_up.width() == G.SPIN_BTN_W and row.spo2_down.width() == G.SPIN_BTN_W
+      and row.spo2.buttonSymbols() == QtWidgets.QAbstractSpinBox.NoButtons
+      and row.spo2.value() == _v + 1 and row.spo2_up.isEnabled(),
+      f"record {row.record.minimumHeight()} plain {_plain.sizeHint().height()} spo2 {row.spo2.minimumHeight()} "
+      f"up {row.spo2_up.width()}x{row.spo2_up.minimumHeight()} value {_v}->{row.spo2.value()}")
+row.spo2.setValue(_v)
+
+# Keys + / - / R from anywhere in the window (a live recorder: win3) (Alex, 2026-10-15); typing into NEW EVENT keeps them.
+_n, _v = row3.listing.rowCount(), row3.spo2.value()
+row3.record.setFocus()
+QTest.keyClick(row3.record, QtCore.Qt.Key_Plus); QTest.keyClick(row3.record, QtCore.Qt.Key_Plus)
+QTest.keyClick(row3.record, QtCore.Qt.Key_Minus)
+QTest.keyClick(row3.record, QtCore.Qt.Key_R)
+check("keys + and - step the SpO2 box and R records, with the focus on a button",
+      row3.spo2.value() == _v + 1 and row3.listing.rowCount() == _n + 1
+      and row3.listing.item(0, 1).text() == str(_v + 1),
+      f"value {_v}->{row3.spo2.value()} rows {_n}->{row3.listing.rowCount()}")
+row3.spo2.setFocus()
+QTest.keyClick(row3.spo2, QtCore.Qt.Key_Minus); QTest.keyClick(row3.spo2, QtCore.Qt.Key_R)
+check("the same keys work with the focus in the SpO2 box itself",
+      row3.spo2.value() == _v and row3.listing.rowCount() == _n + 2,
+      f"value {row3.spo2.value()} rows {row3.listing.rowCount()}")
+row3.note.setFocus()
+QTest.keyClick(row3.note, QtCore.Qt.Key_R); QTest.keyClick(row3.note, QtCore.Qt.Key_Plus)
+check("typed into NEW EVENT, r and + are text: nothing recorded, the box unchanged",
+      row3.note.text() == "r+" and row3.listing.rowCount() == _n + 2 and row3.spo2.value() == _v,
+      f"note {row3.note.text()!r} rows {row3.listing.rowCount()}")
+row3.note.clear()
+check("the keys are said on a visible line and in the three tooltips",
+      "+" in row3.keys_help.text() and "R" in row3.keys_help.text()
+      and "Key R" in row3.record.toolTip() and "Keys + and -" in row3.spo2.toolTip()
+      and "Key +" in row3.spo2_up.toolTip() and "Key -" in row3.spo2_down.toolTip())
+
+
+check("the four [subject] values read in the panel with their units, read-only labels",
+      [row3.subject_labels[k].text() for k in ("gest_age", "age", "weight_g", "skin")]
+      == ["30w+2d", "14d", "1500 g", "Monk 3"] and isinstance(row3.subject_labels["skin"], QtWidgets.QLabel),
+      str([row3.subject_labels[k].text() for k in row3.subject_labels]))
+rec3.console("subj SUBJ05 weight_g 1620")
+row3.refresh(time.monotonic(), False)
+check("a value set later on the console (`subj ... weight_g`) is mirrored into the panel",
+      row3.subject_labels["weight_g"].text() == "1620 g", row3.subject_labels["weight_g"].text())
 check("LOCATION and OPERATOR read in the board's panel, read-only labels",
       row3.location_label.text() == "HOSP01" and row3.operator_label.text() == "ACM"
       and isinstance(row3.location_label, QtWidgets.QLabel))
@@ -484,10 +549,34 @@ check("BOARD, PROBE and the launch NOTE read in the panel too, in the file's ord
       f"{row3.board_label.text()} | {row3.launch_note_label.text()} | {row3.probe_label.text()}")
 labels = [row3.findChild(QtWidgets.QFormLayout).itemAt(i, QtWidgets.QFormLayout.LabelRole).widget().text()
           for i in range(row3.findChild(QtWidgets.QFormLayout).rowCount())]
-check("panel order = example.toml order, then NEW EVENT",
-      labels == ["SUBJECT", "LOCATION", "OPERATOR", "BOARD", "PROBE", "NOTE", "MONITOR", "REFERENCE", "NEW EVENT"], str(labels))
-check("a window started WITHOUT a subject keeps the box usable (binding has to happen somewhere)",
-      row.subject.isEnabled() or rec.want_subject is None)
+check("panel order = the file first, then example.toml order, then NEW EVENT",
+      labels == ["FILE", "LOCATION", "OPERATOR", "BOARD", "PROBE", "SUBJECT", "GEST AGE", "AGE", "WEIGHT", "SKIN",
+                 "NOTE", "MONITOR", "REFERENCE"], str(labels))
+check("NEW EVENT sits in the operator's box, under the readings table, full width",
+      row3.note.parentWidget() is row3.delete_sel.parentWidget() and
+      row3.delete_sel.parentWidget().layout().getItemPosition(
+          row3.delete_sel.parentWidget().layout().indexOf(row3.note))[:2] == (6, 1)
+      and row3.note.parentWidget().title() == "Readings from the monitor, and events"
+      and row3.subject_labels["skin"].parentWidget().title() == "TOML session configuration")
+check("the FILE row says '(no --config: flags only)' when there is no .toml",
+      row3.findChild(QtWidgets.QFormLayout).itemAt(0, QtWidgets.QFormLayout.FieldRole).widget().text()
+      == "(no --config: flags only)")
+win3c = G.RecorderWindow(rec3, ("127.0.0.1", 15999), config=os.path.join("docs", "session_configs", "cot1.toml"))
+check("with --config, the title bar carries the .toml's base name",
+      " — cot1.toml" in win3c.windowTitle(), win3c.windowTitle())
+rec3.feed("192.168.1.60", f"$CFG,mac={MAC},board=V18,fw=0.14\n".encode())
+win3c.traces["192.168.1.60"] = G.BoardTrace("192.168.1.60", 0.0, 15.0)
+win3c.redraw()
+row3c = list(win3c.rows.values())[0]
+check("with --config, FILE is a link named after the file; a click opens it in the system editor",
+      "cot1.toml</a>" in row3c.file_label.text() and row3c.file_label.receivers(row3c.file_label.linkActivated) == 1,
+      row3c.file_label.text())
+win3c.close()
+check("DELETE selected sits under DELETE LAST and the table spans every row",
+      row3.delete_sel.parentWidget().layout().getItemPosition(
+          row3.delete_sel.parentWidget().layout().indexOf(row3.delete_sel))[:2] == (4, 0) and
+      row3.delete_sel.parentWidget().layout().getItemPosition(
+          row3.delete_sel.parentWidget().layout().indexOf(row3.listing))[2] == 6)
 win3.close()
 
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")

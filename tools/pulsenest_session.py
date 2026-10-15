@@ -28,15 +28,14 @@ import faulthandler
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
-from pulsenest.net import UDP_DATA_PORT, script_name                     # noqa: E402
+from pulsenest.net import UDP_DATA_PORT, script_name, open_in_system     # noqa: E402
 from pulsenest.hub_client import (HubClient, console_python, windowed_python,  # noqa: E402
                                   spawn_detached as spawn)
-from pulsenest.fleet_trace import GREEN, RED, GREY                        # noqa: E402
+from pulsenest.fleet_trace import GREEN, RED, GREY, LINK                  # noqa: E402
 from tools.pulsenest_recorder import (load_session_config, mac_compact,   # noqa: E402
                                       vn_device_id, vn_offset_ms)
 from PyQt5 import QtCore, QtGui, QtWidgets                                # noqa: E402
@@ -52,7 +51,8 @@ SESSIONS_DIR    = os.path.join(_ROOT, "captures", "sessions")   # the recorder's
 RECORDER_GUI    = os.path.join(_HERE, "pulsenest_recorder_gui.py")
 FLEET_MONITOR   = os.path.join(_HERE, "fleet_monitor.py")
 PPG_VIEWER      = os.path.join(_HERE, "fleet_ppg_viewer.py")
-EXAMPLE_NAME    = "example.toml"      # the template: listed, never started by START ALL
+LAB_SCRIPT      = os.path.join(_ROOT, "pulsenest_lab.py")
+EXAMPLE_NAME    = "example.toml"      # the template: listed, not for starting
 
 MB_PER_MIN_PER_BOARD = 17     # measured (docs/hospital_runbook.md section 1): .pnraw + live CSV
 DISK_FLOOR_GB        = 2      # the recorder refuses to start below this
@@ -237,11 +237,20 @@ class Cot:
         rc = self.proc.poll()
         if rc is None:
             return f"running (pid {self.proc.pid})", GREEN
-        return (f"exited rc={rc}", RED if rc else FG_DIM)
+        return ended_text(rc)
 
     @property
     def running(self):
         return self.proc is not None and self.proc.poll() is None
+
+
+def ended_text(rc):
+    """What a process that is no longer running tells the operator, from its return code: the
+    recorder window exits 0 when its session was closed, 1 when its start dialog was cancelled,
+    2 when it refused to start (its own message said why); anything else is a crash (Alex,
+    2026-10-15: "exited rc=..." meant nothing at the cot side)."""
+    return {0: ("ended", FG_DIM), 1: ("cancelled", FG_DIM),
+            2: ("refused to start (see its message)", RED)}.get(rc, (f"crashed (code {rc})", RED))
 
 
 def cots_in(directory):
@@ -292,6 +301,12 @@ def viewer_command(hub):
     return [windowed_python(), PPG_VIEWER, *hub_args(hub)]
 
 
+def lab_command():
+    """pulsenest_lab.py, detached, from the repo root (its state files live beside it). No --hub:
+    the lab has no such flag; it subscribes to the default port by itself."""
+    return [windowed_python(), LAB_SCRIPT]
+
+
 def launcher_command(hub):
     """This window itself, for the lab's SESSION button (started with spawn(), like everything)."""
     return [windowed_python(), os.path.abspath(__file__), *hub_args(hub)]
@@ -327,6 +342,54 @@ class Launcher(QtWidgets.QMainWindow):
     BOARD_COLS = ("IP", "MAC", "fw", "lib", "build", "elfsha", "dgrams/s", "seen")
     PHONE_COLS = ("device id", "IP", "frames/s", "seen", "offset ms", "last frame (raw, as it arrived)")
     COT_COLS = ("file", "subject", "board", "on the air", "phone", "status", "", "")
+    # Every column header carries what the operator needs to read it (Alex, 2026-10-15: the
+    # launcher's tooltips must say everything an operator has to know).
+    BOARD_TIPS = (
+        "The board's address on the WiFi, given by the phone's hotspot (DHCP): it can change "
+        "between days, which is why a .toml names the board by its MAC, never by IP.",
+        "The board's hardware address, printed on it and listed in docs/boards.md. Fixed for "
+        "life: the `board` field of a .toml is the end of this value (the last 4 digits do).",
+        "Firmware version the board reports in its $CFG. All boards should agree (see the line "
+        "under the table).",
+        "Version of the incunest_afe4490 library built into that firmware.",
+        "Short git hash of the firmware build.",
+        "Fingerprint of the firmware image itself: two boards with the same elfsha run the "
+        "same binary, whatever the version numbers say.",
+        "Datagrams per second arriving from the board, about 100 when it streams. 0 and "
+        "SILENT: switched off, out of WiFi range, or on another network.",
+        "live = a datagram in the last 5 s. SILENT n s = nothing for n seconds: amber, red "
+        "after a minute.",
+    )
+    PHONE_TIPS = (
+        "The id the VideoNest app was given in its settings; the .toml's `videonest` field "
+        "must be exactly this.",
+        "The phone's WiFi address, for finding it; the recorder names phones by id, not IP.",
+        "Frames per second from the phone, about 1 when it films a monitor.",
+        "live = a frame in the last 5 s; SILENT n s otherwise: app closed or in the "
+        "background, phone off the WiFi.",
+        "Arrival on this PC minus the emission stamp in the frame, in milliseconds: the "
+        "network delay plus the offset between the phone's clock and ours, positive when ours "
+        "is ahead. Blank when the frame carries no stamp.",
+        "The last $VN1 frame exactly as it arrived, to see what the phone is actually sending.",
+    )
+    COT_TIPS = (
+        "The .toml file, one per kit (board + phone). Its name is not used anywhere: "
+        "example.toml is the template and cannot be started.",
+        "The coded subject in the file ([subject] id). Missing = add it to the file before "
+        "START: the recorder refuses to start without one.",
+        "The MAC suffix the file names (`board`). The session records that board only.",
+        "Which board on the air matches the file: its MAC and whether it is live, 'not on "
+        "the air' (amber) when none matches, AMBIGUOUS (red) when the suffix fits two boards: "
+        "lengthen it in the file.",
+        "The phone the file names ([ref].videonest) and whether it has been heard.",
+        "The recorder window this launcher started for this file: running (pid), ended, "
+        "cancelled, refused to start, or crashed. Blank = not started from here.",
+        "START opens one recorder window for this file, as a process of its own: this "
+        "launcher can be closed afterwards and the recording continues. One session per "
+        "file at a time: RUNNING while it is.",
+        "EDIT opens the file in the system editor. Save, and this table follows; a session "
+        "already running keeps the values it was started with.",
+    )
 
     def __init__(self, configs_dir, hub, client):
         super().__init__()
@@ -369,6 +432,10 @@ class Launcher(QtWidgets.QMainWindow):
                               "this clock in large digits.")
         self.disk = QtWidgets.QLabel("")
         self.disk.setWordWrap(True)
+        self.disk.setToolTip(f"Free space where sessions are written ({SESSIONS_DIR}), as hours of "
+                             f"recording at {MB_PER_MIN_PER_BOARD} MB/min per board (raw stream + live "
+                             f"CSV, measured). Amber under 10 h; red under {DISK_FLOOR_GB} GB, where "
+                             "the recorder refuses to start.")
         top.addWidget(self.clock)
         top.addSpacing(20)
         top.addWidget(self.disk, 1)
@@ -381,7 +448,9 @@ class Launcher(QtWidgets.QMainWindow):
 
         gb = QtWidgets.QGroupBox("BOARDS ON THE AIR  (read-only: this window cannot change a board)")
         gl = QtWidgets.QVBoxLayout(gb)
-        self.boards = self._table(self.BOARD_COLS)
+        self.boards = self._table(self.BOARD_COLS, self.BOARD_TIPS)
+        self.boards.setToolTip("Every board the hub hears, whether or not a file names it. "
+                               "Read-only: nothing here changes a board.")
         gl.addWidget(self.boards)
         self.firmware = QtWidgets.QLabel("")
         self.firmware.setToolTip("docs/hospital_runbook.md section 1: all boards should report the "
@@ -392,7 +461,7 @@ class Launcher(QtWidgets.QMainWindow):
 
         gbp = QtWidgets.QGroupBox("PHONES HEARD  (VideoNest, by the device id in its $VN1 frames)")
         glp = QtWidgets.QVBoxLayout(gbp)
-        self.phones = self._table(self.PHONE_COLS)
+        self.phones = self._table(self.PHONE_COLS, self.PHONE_TIPS)
         self.phones.setToolTip("A phone that is not here is not sending: app closed or backgrounded, "
                                "phone off the WiFi, wrong destination address. The hub replays nothing "
                                "for phones, so a phone appears once it has sent since this window opened.\n"
@@ -404,16 +473,43 @@ class Launcher(QtWidgets.QMainWindow):
         glp.addWidget(self.phones)
         self.splitter.addWidget(gbp)
 
-        gb2 = QtWidgets.QGroupBox(f"COTS  (one .toml per cot in {self.configs_dir}; the files are re-read "
-                                  "by themselves when they change)")
+        # One line (Alex, 2026-10-15): what the files are, where, and the one thing to know
+        # about editing them -- the recorder reads its .toml once, at START.
+        self.files_box = gb2 = QtWidgets.QGroupBox("SESSION / SUBJECT config files")
         g2 = QtWidgets.QVBoxLayout(gb2)
-        self.table = self._table(self.COT_COLS)
+        # The folder is a link that opens it (OPEN CONFIGS FOLDER stood among the buttons until
+        # 2026-10-15), with CHANGE FOLDER... right beside it: the two speak of the same folder.
+        head = QtWidgets.QHBoxLayout()
+        self.files_link = QtWidgets.QLabel(self._files_line())
+        self.files_link.setOpenExternalLinks(False)
+        self.files_link.linkActivated.connect(lambda _: open_in_system(self.configs_dir))
+        self.files_link.setToolTip("Click the folder to open it in the file manager: to copy "
+                                   "example.toml into a new file, or to delete one.")
+        self.btn_change = QtWidgets.QPushButton("CHANGE FOLDER\u2026")
+        self.btn_change.setToolTip("Pick ANY .toml inside the folder you want (the dialog shows "
+                                   "the files, so you can tell the folder by them); its folder is "
+                                   "taken. The table and the link follow, and the choice is "
+                                   "remembered for the next start. A session already running "
+                                   "keeps running; it just leaves this table.")
+        self.btn_change.clicked.connect(self.change_folder)
+        head.addWidget(self.files_link)
+        head.addWidget(self.btn_change)
+        head.addStretch(1)
+        g2.addLayout(head)
+        self.table = self._table(self.COT_COLS, self.COT_TIPS)
+        self.table.setToolTip("One row per .toml in the folder. A session reads its file once, "
+                              "at START; edit before, not after.")
         g2.addWidget(self.table)
         row = QtWidgets.QHBoxLayout()
-        self.btn_all = QtWidgets.QPushButton("START ALL COTS")
-        self.btn_all.setToolTip("One recorder window per .toml (the example is skipped). Each is "
-                                "its own process; this window can be closed afterwards.")
-        self.btn_all.clicked.connect(self.start_all)
+        # START ALL COTS stood here until 2026-10-15: one click could open a session on every
+        # cot file in the folder, wanted or not (Alex). A cot is started one at a time, from its
+        # own row. The engineer's tool takes the place.
+        self.btn_lab = QtWidgets.QPushButton("PULSENEST LAB")
+        self.btn_lab.setToolTip("pulsenest_lab.py, the engineer's tool: live plots, the library's "
+                                "Python replicas, $SET control of a board. Not needed for a "
+                                "session. One copy at a time from here; if the lab is already "
+                                "open (it may have started this window), use that one.")
+        self.btn_lab.clicked.connect(lambda: self.start_extra("lab"))
         self.btn_monitor = QtWidgets.QPushButton("FLEET MONITOR")
         self.btn_monitor.setToolTip("tools/fleet_monitor.py in a console of its own: one line per "
                                     "board, refreshed every second. Read-only.")
@@ -423,21 +519,51 @@ class Launcher(QtWidgets.QMainWindow):
                                    "whether a probe has moved. Read-only. Optional -- the recorder "
                                    "window shows its own waveform.")
         self.btn_viewer.clicked.connect(lambda: self.start_extra("viewer"))
-        self.btn_folder = QtWidgets.QPushButton("OPEN CONFIGS FOLDER")
-        self.btn_folder.clicked.connect(lambda: open_in_system(self.configs_dir))
-        for b in (self.btn_all, self.btn_monitor, self.btn_viewer, self.btn_folder):
+        for b in (self.btn_lab, self.btn_monitor, self.btn_viewer):
             row.addWidget(b)
         row.addStretch(1)
         self.extra_status = QtWidgets.QLabel("")
+        self.extra_status.setToolTip("The programs started from the buttons on the left: running, "
+                                     "ended, cancelled, refused to start, or crashed.")
         row.addWidget(self.extra_status)
         g2.addLayout(row)
         self.splitter.addWidget(gb2)
         self.splitter.setStretchFactor(2, 1)
 
+    def _files_line(self):
+        """The line under the box title: the folder as a link (relative to the repo when inside
+        it, so it fits; the full path otherwise), and the one thing to know about editing."""
+        d = self.configs_dir
+        if os.path.normcase(d).startswith(os.path.normcase(_ROOT + os.sep)):
+            d = os.path.relpath(d, _ROOT)
+        return (f'.toml in <a href="open" style="color:{LINK};">{d}</a>   '
+                "\u2014   a session reads its file once, at START")
+
+    def set_configs_dir(self, directory):
+        """Point the table at another folder: title, table and the remembered choice follow."""
+        self.configs_dir = os.path.abspath(directory)
+        self.files_link.setText(self._files_line())
+        self._configs_sig = configs_signature(self.configs_dir)
+        self.reload_configs()
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.setValue("configs_dir", self.configs_dir)
+        s.sync()
+
+    def change_folder(self):
+        # A file dialog, not a folder dialog: the system's "select folder" shows folders only,
+        # so the operator could not tell the right one by what is in it (Alex, 2026-10-15). Any
+        # .toml of the wanted folder will do; its folder is what is taken.
+        chosen, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Pick any .toml in the folder to use", self.configs_dir, "Session files (*.toml)")
+        if chosen:
+            self.set_configs_dir(os.path.dirname(chosen))
+
     @staticmethod
-    def _table(cols):
+    def _table(cols, tips=()):
         t = QtWidgets.QTableWidget(0, len(cols))
         t.setHorizontalHeaderLabels(cols)
+        for c, tip in enumerate(tips):
+            t.horizontalHeaderItem(c).setToolTip(tip)
         t.verticalHeader().setVisible(False)
         t.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         t.horizontalHeader().setStretchLastSection(True)
@@ -462,11 +588,13 @@ class Launcher(QtWidgets.QMainWindow):
         self.table.setRowCount(len(self.cots))
         for r, cot in enumerate(self.cots):
             btn = QtWidgets.QPushButton("START")
+            btn.setToolTip("One recorder window for this file, as a process of its own. Check the "
+                           "row first: subject present, board on the air, phone heard.")
             btn.clicked.connect(lambda _=False, c=cot: self.start_cot(c))
             self.table.setCellWidget(r, 6, btn)
             edit = QtWidgets.QPushButton("EDIT")
-            edit.setToolTip("Opens the file in the system's editor. Edit, save, then RELOAD here; a "
-                            "cot already running keeps the values it was started with.")
+            edit.setToolTip("Opens the file in the system's editor. Save, and this table follows; "
+                            "a session already running keeps the values it was started with.")
             edit.clicked.connect(lambda _=False, c=cot: open_in_system(c.path))
             self.table.setCellWidget(r, 7, edit)
         self.refresh()
@@ -514,14 +642,14 @@ class Launcher(QtWidgets.QMainWindow):
 
         for r, cot in enumerate(self.cots):
             self._cot_row(r, cot)
-        self.btn_all.setEnabled(any(not c.is_example and not c.running and c.cfg for c in self.cots))
         parts = []
         for key, proc in self.extra.items():
             rc = proc.poll()
-            parts.append(f"{key}: " + ("running" if rc is None else f"exited rc={rc}"))
+            parts.append(f"{key}: " + ("running" if rc is None else ended_text(rc)[0]))
         self.extra_status.setText("   ".join(parts))
         self.btn_monitor.setEnabled(not self._extra_running("monitor"))
         self.btn_viewer.setEnabled(not self._extra_running("viewer"))
+        self.btn_lab.setEnabled(not self._extra_running("lab"))
 
     def _cot_row(self, r, cot):
         self.table.setItem(r, 0, _item(cot.name, FG_DIM if cot.is_example else None))
@@ -530,7 +658,7 @@ class Launcher(QtWidgets.QMainWindow):
             for c in (2, 3, 4):
                 self.table.setItem(r, c, _item(""))
         else:
-            self.table.setItem(r, 1, _item(cot.field("subject") or "(chosen in the window)",
+            self.table.setItem(r, 1, _item(cot.field("subject") or "(missing: add it to the file)",
                                            None if cot.field("subject") else FG_DIM))
             self.table.setItem(r, 2, _item(cot.field("board"), mono=True))
             now = time.monotonic()
@@ -576,16 +704,13 @@ class Launcher(QtWidgets.QMainWindow):
         cot.started_at = time.time()
         self.refresh()
 
-    def start_all(self):
-        for cot in self.cots:
-            if not cot.is_example and cot.cfg and not cot.running:
-                self.start_cot(cot)
-
     def start_extra(self, key):
         if self._extra_running(key):
             return
         if key == "monitor":
             self.extra[key] = spawn(monitor_command(self.hub), console=True)
+        elif key == "lab":
+            self.extra[key] = spawn(lab_command())
         else:
             self.extra[key] = spawn(viewer_command(self.hub))
         self.refresh()
@@ -601,12 +726,11 @@ class Launcher(QtWidgets.QMainWindow):
         event.accept()        # the processes started here are detached: they keep running
 
 
-def open_in_system(path):
-    """The system's own editor / file browser; never ours."""
-    if os.name == "nt":
-        os.startfile(path)          # noqa: S606  (Windows: the registered application)
-    else:
-        subprocess.Popen(["xdg-open", path])
+def saved_configs_dir():
+    """The folder chosen last time with CHANGE FOLDER, if it still exists; else the default."""
+    s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+    saved = s.value("configs_dir")
+    return saved if saved and os.path.isdir(saved) else DEFAULT_CONFIGS
 
 
 def parse_hub(text):
@@ -617,15 +741,16 @@ def parse_hub(text):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="PulseNest session launcher: the cots, what is on the air, "
                                              "and a START button per cot. Read-only.")
-    ap.add_argument("--configs", default=DEFAULT_CONFIGS, metavar="DIR",
-                    help="folder with one .toml per cot (default docs/session_configs)")
+    ap.add_argument("--configs", default=None, metavar="DIR",
+                    help="folder with one .toml per cot (default: the folder chosen last time with "
+                         "CHANGE FOLDER, else docs/session_configs)")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     args = ap.parse_args(argv)
     hub = parse_hub(args.hub)
     app = QtWidgets.QApplication(sys.argv)
     client = HubClient(script_name(__file__), hub=hub, control=False)
     client.connect()          # starts the hub if none answers; reconnects by itself otherwise
-    w = Launcher(os.path.abspath(args.configs), hub, client)
+    w = Launcher(os.path.abspath(args.configs or saved_configs_dir()), hub, client)
     w.show()
     return app.exec_()
 

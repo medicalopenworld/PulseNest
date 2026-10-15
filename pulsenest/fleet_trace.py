@@ -54,6 +54,7 @@ PROBE_STATES = {"0": "DISCONNECTED", "1": "OT_HIGH", "2": "APPLIED",
                 "3": "AMB_SAT", "4": "ONLY_LED_SAT"}
 APPLIED      = "APPLIED"
 GREEN, RED, GREY = "#44FF88", "#FF4444", "#888888"
+LINK = "#44AAFF"           # a clickable path or file name; the same blue as the PPG trace
 # Bedside-monitor palette: SpO2 cyan, pulse rate green. That pairing is the de facto convention
 # of the multiparameter monitors (Philips IntelliVue, GE CARESCAPE) rather than anything
 # standardised — no standard assigns colours to numerics. What IS standardised is the alarm

@@ -26986,3 +26986,216 @@ en `tools/` porque es un programa, no infraestructura de tests.
 **Pendientes (sin cambio):** probar el lanzador y la GUI con un VideoNest emitiendo; icono en el
 portátil de hospital; lector de eventos ANOMALY; un OTA real para ver `build.ps1` verificar;
 decisión sobre la autocalibración de taps RF.
+
+## 2026-10-14 (3) — Icono del lanzador en el portátil de hospital y runbook §1 bis
+
+**Pregunta de Alex:** qué era la tarea pendiente «crear el icono en el portátil de hospital». Respuesta: el
+script `scripts/make_session_shortcut.ps1` existía desde el 14-10 pero no se había ejecutado en ninguna
+máquina; es un paso de campo, no de código.
+
+**Hecho:** este portátil es el de hospital. Ejecutado el script: acceso directo «PulseNest Session» en el
+escritorio (`pythonw.exe`, cwd = raíz del repo). Verificado abriéndolo: ventana del lanzador sin consola y
+hub arrancado solo; ambos procesos cerrados después.
+
+**Documentado:** `docs/hospital_runbook.md` gana la **§1 bis «Preparing a laptop (once per machine)»**:
+Python ≥ 3.11 con «Add to PATH», los cinco paquetes (PyQt5, no PyQt6: corregido un desliz mío), repo en
+carpeta fija, el script del icono, comprobación por doble clic. §2 remite a ella. Sin commit (Alex no lo pidió).
+
+**Pendientes (sin cambio):** probar el lanzador con un VideoNest emitiendo; lector de eventos ANOMALY; un
+OTA real para ver `build.ps1` verificar; decisión sobre la autocalibración de taps RF.
+
+**Corrección de Alex al runbook:** §1 daba a entender que el día anterior ya se sabe cuántos bebés y
+cuáles; no es así, se decide el mismo día en la cuna. Verificado en código que el flujo ya lo admite:
+el lanzador relee los `.toml` al editarlos, muestra `(chosen in the window)` sin `subject`, y el grabador
+solo rehúsa arrancar sin `location` (el sujeto y el teléfono pueden elegirse en la ventana). Reescrito:
+introducción («hasta tres placas; qué bebés y cuántos se decide el día»), §1 = un `.toml` **por kit**
+(placa + teléfono) con solo lo que no depende del bebé, consentimientos de sobra y «conocer los próximos
+códigos libres»; §2 empieza con «el día, elegido el bebé»: consentimiento, código, sonda, foto del ajuste
+de promediado, EDIT del fichero (`subject`, `note`, `[ref]`), START. Nombres de ejemplo `cot1.toml`… en
+vez de `subj01.toml` (el nombre del fichero no se usa en ningún sitio). README y cabecera de
+`example.toml` alineados.
+
+**Preguntas de Alex sobre la ventana del grabador.** (1) ¿Cómo se gestionan los datos que se conocen
+después de START (peso, edad, piel, modelo y promediado del monitor)? Respuesta (sin cambio): el `.toml` se
+lee una vez; `note` y `[ref]` se aplican al vincular la placa (NOTE y META `reference_monitor.*` en
+`session_events.csv` y `session.json`); después solo hay NEW EVENT (texto libre). Peso/edad/piel tardíos
+por NEW EVENT equivalen en los datos a `note`; modelo/promediado tardíos no llegan a `reference_monitor`
+(el comando de consola `ref SUBJ avg 8` existe pero la ventana no lo expone). Propuesto: procedimiento
+(monitor antes de START, resto por NEW EVENT con redacción fija) y/o extender a `[ref]` la regla «dado en
+el fichero = solo lectura; omitido = rellenable en la ventana». Decisión de Alex pendiente.
+(2) ¿Por qué SUBJECT es un combobox? Es caja editable con menú de atajo SUBJ01-12 y validador `SUBJ`+dígitos;
+activa solo si el fichero no trae `subject`, bloqueada al vincular si lo trae (decisión 14-10).
+(3) **La ventana no decía qué `.toml` usaba.** Hecho: fila FILE al principio del panel «as launched»
+(nombre base, ruta completa en el tooltip) y nombre base en la barra de título. `RecorderWindow(...,
+config=)`; test del orden del panel actualizado + 2 comprobaciones nuevas (78/78); verificado en pantalla
+con `example.toml`; spec §13 fase 1 actualizada. Sin commit.
+
+**Tres tareas de Alex en la ventana del grabador (`tools/pulsenest_recorder_gui.py`).**
+(1) DELETE selected debajo de DELETE LAST; la tabla de lecturas ocupa las seis filas de la rejilla y
+una fila de reserva absorbe la altura sobrante, así llega al fondo del panel. (2) **SUBJECT deja de ser
+un combobox**: etiqueta de solo lectura con lo que dice el `.toml` («(not set)» si falta), sin menú ni
+comprobación de formato en la ventana. La comprobación `SUBJ`+dígitos sigue en el `Recorder` (al lanzar
+y en el comando `subject` de consola): es el único sitio que la hace. Consecuencia: una ventana lanzada
+sin `subject` queda bloqueada (ya no se vincula desde la ventana; el sujeto va en el fichero). Las
+acciones (RECORD, NEW EVENT, flag) leen el sujeto del `Recorder`, no de un control. (3) **FILE es un
+enlace**: clic abre el `.toml` en el editor del sistema. `open_in_system` pasa de `pulsenest_session.py`
+a `pulsenest/net.py` (lo importan los dos programas). Limpieza: `suffix`, `mac_compact`, `SUBJECTS`,
+`normalise_subject` y `subprocess` sin uso. Tests reescritos (vincular por consola): 77/77 ventana,
+57/57 lanzador. Render offscreen comprobado. Runbook §1/§2, `example.toml`, lanzador («(missing: add it
+to the file)») y spec §13 alineados. Sin commit.
+
+**Retoques de Alex:** FILE en azul (`LINK = #44AAFF`, el azul de la traza) y un punto más grande; SUBJECT
+pasa a quinta posición, tras PROBE (Alex movió `subject` en `example.toml`; el panel sigue el fichero).
+Tests 77/77. **Propuesta de Alex, opinión dada, decisión pendiente:** tres campos AGE, WEIGHT, SKIN antes
+de NOTE (hoy van en `note` como texto libre). Opinión: sí si el análisis de sesgo va a estratificar por
+ellos (edad → HbF/curva R; piel → sesgo por pigmentación; peso → grosor de tejido), y entonces como
+`[ref]`: clave en el `.toml`, comando de consola, evento META y `session.json`, que además resuelve
+«se conoce después de START». Formatos: edad gestacional `30+2` y días postnatales por separado, peso
+actual en gramos, piel en escala Monk 1-10 (FDA 2025 para pulsioximetría) en vez de «WHITE».
+
+## 2026-10-14 (4) — Tabla `[subject]` en el fichero de sesión y comando `baby`
+
+**Preguntas de Alex antes de empezar.** (1) ¿Sección `[subject]` como `[ref]`, con id, age, gest_age,
+weight, skin? Sí; decidido con unidades en el nombre de las numéricas: `id`, `gest_age` ("30+2"),
+`age_days`, `weight_g`, `skin` (Monk 1-10). El `subject = "..."` de primer nivel se rechaza con el error
+que dicta la forma nueva. (2) ¿Quitar `probe-site` de `[ref]` (siempre en el pie)? No: opcional y
+comentado en el ejemplo; ausente cuesta cero, quitarlo toca el formato de sesiones grabadas y la
+distinción pre/postductal es real cuando se da.
+
+**Hecho.** `tools/pulsenest_recorder.py`: `BABY_FIELDS`, `parse_baby_value` (semanas+días; enteros en
+rango: días 0-400, gramos 300-10000, Monk 1-10), `Source.baby`, `Recorder.want_baby` (validado al
+lanzar: un valor malo rehúsa el arranque con diálogo), comando de consola `baby SUBJ01 <campo> <valor>`
+(evento META `baby.<campo>=<valor>` + `session.json`), aplicado al vincular como `ref`; `launch.baby` y
+`sources[].baby` en `session.json`; flags `--gest-age --age-days --weight-g --skin`; loader lee
+`[subject]`. `tools/pulsenest_convert.py` replica. Ventana: cuatro filas GEST AGE/AGE/WEIGHT/SKIN tras
+SUBJECT, espejo de lo que tiene el Recorder (un `baby` por consola se ve). `example.toml` con la tabla;
+los cuatro `.toml` de cuna locales convertidos (campos nuevos comentados). Runbook §1/§2, README, spec
+§7 (JSON), §9 (bullet con el porqué) y §13 (panel). Tests: recorder 132/132 (+6), ventana 84/84 (+7),
+lanzador 57/57, conversor 11/11. Sin commit.
+
+**Incidente de método:** un parche no idempotente se aplicó tres veces y duplicó bloques; se recuperaron
+de git los ficheros sin trabajo previo y se deduplicaron los demás por línea. Lección: `edit()` debe
+saltar cuando el texto nuevo ya está, no cuando el viejo falta.
+
+**Comentarios de Alex, segunda ronda.** (1) Caja izquierda retitulada «TOML session configuration»;
+NEW EVENT pasa a la caja derecha («Readings from the monitor, and events»), a lo ancho bajo la tabla de
+lecturas: lo que el operador hace, en un solo sitio; ABNORMAL CONDITION sigue en la cabecera de la fila.
+(2) ¿Qué es `baby`? El comando de consola del grabador para dar los campos de `[subject]` después de
+START (el mismo camino que `ref`). (3) Como en el futuro puede haber sujetos no bebés: `age_days` → `age`
+con unidad obligatoria (`14d`, `3w+2d`, `6m`, `34y`; también `gest_age = "30w+2d"`), guardado tal cual
+tras validar, `age_to_days()` para el análisis; rangos `gest_age` 20-45 semanas, `age` 0-130 años,
+`weight_g` hasta 300 kg. Y todo el nombre «baby» desaparece del código: comando `subj` (no `subject`,
+que ya vincula placas), `subject_info` en `session.json`, META `subject.<campo>=`, `SUBJECT_FIELDS`,
+`parse_subject_value`. (4) `skin` documentado en cuatro sitios con el mismo texto (example.toml,
+`help subj`, tooltip SKIN, spec §9): escala Monk Skin Tone 1-10, swatches en https://skintone.google,
+juzgar en el sitio de la sonda con luz blanca, por sesión porque el recién nacido se oscurece en las
+primeras semanas, Monk y no Fitzpatrick (guía borrador FDA enero 2025). Tests: 133/85/57/11. Sin commit.
+
+**event_id duplicado en reference_spo2.csv (Alex, revisando las últimas sesiones).** Dos cosas. (a) Por
+diseño: el `event_id` del fichero es el contador único de la sesión (clave de cruce con
+`session_events.csv` y con las copias `@E` del raw), así que la primera lectura no es la 1 sino la que
+sigue a SESSION_START, NOTE y los META del lanzamiento (6 antes de `[subject]`, 9 ahora). (b) Fallo
+real: la sesión 1937 tenía STOP a las 19:37:17 y START a las 19:37:19; el id de sesión es el minuto del
+arranque, la carpeta se creaba con `exist_ok=True` y los CSV se abrían en modo añadir, así que la segunda
+sesión escribió en la misma carpeta con el contador reiniciado a 1: lecturas 9-12 dos veces, dos series
+de eventos bajo el mismo `session_id`, `session.json` solo de la segunda, pie `# rows` en mitad del CSV.
+Arreglo: una carpeta es una sesión. `SessionExists` en `tools/pulsenest_recorder.py` (comprobación antes
+de `os.makedirs`, sin `exist_ok`): mensaje "a session with this id already exists: <dir>. The id is the
+minute of the start, so start again at HH:MM"; la ventana lo muestra en el diálogo "not starting" y la
+consola como `NOT STARTING:` con salida 2. Descartado poner segundos en el id: cambiaría el formato de
+nombre de sesión que usan el análisis y el diccionario de nomenclatura. Test [3] nuevo (134/134), spec §3
+párrafo "One directory is one session". Carpeta `20261014_1937_HOSPNAV_SUBJ67` borrada a petición de Alex
+(su grabador había cerrado a las 21:03). Sin commit.
+
+**Segundos en el nombre de la carpeta de sesión (Alex: "no entiendo por qué no tiene segundos, los CSV
+sí").** No había razón: el minuto venía de v0.1 y los CSV con segundos del 29-09, sin alinear. Ahora
+`SESSION_ID = <YYYYMMDD>_<HHMMSS>_<SITE>[_<SUBJECT>]` (`20261014_193701_HOSPNAV_SUBJ67`), carpeta y
+ficheros cuentan la misma hora y STOP+START ya no colisionan; `SessionExists` se queda como red (mensaje
+"start again", sin minuto). `pulsenest_convert` lee ambas formas (regex 4 o 6 dígitos, `strptime` según
+longitud) y el `Recorder` de reproducción recibe `session_id=` del registro en vez de sellar uno nuevo
+(el id es cabecera de cada CSV; las sesiones anteriores conservan su nombre, nada renombrado). Spec §3,
+§9 (ejemplo), §11 (replay), ejemplo JSON §7; memoria de nomenclatura actualizada. Tests 134/85/57/11/45.
+Hallazgo aparte, sin tocar: el conversor por defecto (`--csv on`, "formato de hoy") reconstruye el
+formato antiguo mientras el grabador escribe v04 por defecto, así que su verificación sobre una sesión
+real dice DIFFERS; con `--csv v04` la sesión 1933 se reproduce byte a byte (comprobado hoy). Sin commit.
+
+**Conversor alineado con el formato vivo (Alex: "¿qué es v04? alinea lo que creas").** `v04` es el
+contenedor v0.4 de `capture_csv_format_spec.md` (cabecera `# format=incunest_csv/1`, perfil P1, claves
+en vez de notas, snapshots `afe:`/`timing:`/`alg:`), formato por defecto del grabador desde el 22-09;
+`on` es el formato anterior a v0.4, el que escribía `pulsenest_lab.py`. El conversor seguía con `on`
+por defecto y solo comparaba en ese modo, así que sobre cualquier sesión de hospital reconstruía el
+formato equivocado y decía DIFFERS. Ahora `--csv auto` (por defecto) detecta el formato de los CSV vivos
+(`live_csv_mode`, primera línea) y compara en él; `on`/`v04` explícitos producen ese formato y comparan
+solo si coincide con el vivo. `board_csvs` sube a nivel de módulo; el test del corpus usa el mismo
+detector. Sesión 1933 real: 1/1 idéntico con el valor por defecto. Spec §10. Tests 134/85/57/11/45.
+Sin commit.
+
+## 2026-10-15 — Entrada manual de SpO2 pensada para el dedo (comentarios de Alex)
+
+(1) RECORD el triple de alto (`RECORD_H_FACTOR = 3` sobre el `sizeHint` del botón; antes 27 px). (2) Las
+flechas del selector de SpO2 más clicables. Medido antes: los botones propios del QSpinBox eran de
+14×16 px. Dos intentos: ensanchar los botones por stylesheet funciona (40 px) pero el glifo de la flecha
+de Qt se queda en 7 px pase lo que pase, y el truco del triángulo CSS dibuja una barra tanto en
+windowsvista como en fusion (render comprobado). Solución: la caja de SpO2 sin botones propios
+(`NoButtons`) y dos QPushButton ▲ ▼ a su lado (`spo2_up`/`spo2_down`), 44 px de ancho, cada uno la mitad
+de la altura de la caja (que es la de RECORD), flecha como texto con fuente +4 pt, auto-repeat al
+mantener pulsado, sin foco para que la caja conserve el teclado; se habilitan con el resto al vincular.
+PR y el diálogo de corrección se quedan como estaban (no son lo que se hace una y otra vez). Render
+nativo (windowsvista, ventana no mostrada, `WA_DontShowOnScreen`) verificado. Test nuevo en la GUI
+(86/86), spec §9. Sin commit.
+
+**Teclas + / - / R (Alex, 2026-10-15).** `+` y `-` cambian el valor de SpO2 y `R`/`r` equivale a pulsar
+RECORD, desde cualquier sitio de la ventana (el operador mira el monitor, no qué widget tiene el foco).
+Un filtro de eventos a nivel de aplicación en `RecorderWindow` ve la tecla antes que el widget con foco
+(un QShortcut no serviría: un QLineEdit se traga las teclas imprimibles); escribir en NEW EVENT conserva
+sus r, + y -; con varias placas en una ventana actúan sobre la fila que tiene el foco, si no la primera
+que puede grabar; el filtro se retira al cerrar. Dicho en los tres tooltips (caja SpO2, ▲, ▼ y RECORD)
+y en una línea visible bajo los botones: "keys:  +  -  change SpO2      R  = RECORD". Tests GUI 90/90
+(teclas con foco en botón, en la caja, y tecleadas en NEW EVENT), spec §9. Sin commit.
+
+**START ALL COTS fuera, PULSENEST LAB dentro (Alex, 2026-10-15).** Un clic podía abrir una sesión por
+cada fichero de la carpeta, quisiera o no; las cunas se arrancan una a una desde su fila. En su lugar
+un botón que lanza `pulsenest_lab.py` separado, desde la raíz del repo (sus ficheros de estado viven
+allí; `spawn_detached` ya usa la raíz como cwd), sin `--hub` porque el lab no tiene esa opción; una
+copia a la vez desde el lanzador (`extra["lab"]`, botón deshabilitado mientras corre, "lab: running" en
+la línea de estado). Limitación conocida: si el lab ya estaba abierto y fue él quien arrancó el
+lanzador (botón SESSION), el lanzador no lo sabe; el tooltip lo dice. Runbook §2, spec §11 (lanzador),
+test del lanzador reescrito (sin START ALL, el segundo cot desde su fila; el botón del lab). Sin commit.
+(Retoque posterior al párrafo anterior: quitada la línea `btn_all.setEnabled` que el parche había saltado;
+tests del lanzador 58/58.) Estado al cierre del bloque 15-10: tests 134/90/58/11/45; 14 ficheros sin commit.
+
+**Título de la caja de ficheros del lanzador (Alex, 2026-10-15).** "COTS (one .toml per cot ...; the
+files are re-read by themselves when they change)" → "SESSION / SUBJECT config files (.toml in <dir>;
+this table follows the files as they are edited; a running session keeps the values it was started
+with)". Pregunta de Alex: ¿se pueden cambiar en vivo durante la sesión? No: la relectura (sondeo de
+nombre/mtime/tamaño cada segundo) solo refresca la tabla del lanzador; el grabador lee su .toml una vez,
+al START. Runbook §2 y spec §11 lo dicen igual. Tests del lanzador 58/58. Sin commit.
+
+**Lanzador: tooltips, carpeta cambiable, título en una línea (Alex, 2026-10-15).** (1) Tooltip en todo
+lo que ve el operador: cada cabecera de columna de las tres tablas (`BOARD_TIPS`, `PHONE_TIPS`,
+`COT_TIPS`, aplicados por `_table(cols, tips)`), las tablas, la línea de disco, la de estado de los
+programas, START y EDIT de cada fila, OPEN CONFIGS FOLDER; EDIT ya no habla de un RELOAD que no existe.
+(2) La carpeta de configuraciones solo se fijaba con `--configs`: botón CHANGE FOLDER… (QFileDialog) →
+`set_configs_dir` cambia título, tabla y lo guarda en el `.ini` (`configs_dir`); al arrancar,
+`--configs` manda, si no la carpeta recordada si existe (`saved_configs_dir`), si no la de siempre. Una
+sesión ya arrancada sigue corriendo; solo sale de la tabla. (3) Título de la caja en una línea:
+"SESSION / SUBJECT config files (.toml in docs\session_configs) — a session reads its file once, at
+START" (ruta relativa al repo cuando está dentro, para que quepa). Runbook §2, spec §11. Tests 61/61.
+Sin commit.
+(Retoque posterior: `_files_title` muestra la carpeta relativa al repo cuando está dentro, para que el
+título quepa en la ventana; render nativo comprobado. Tests del lanzador 61/61.)
+
+**Lanzador: "exited rc", enlace a la carpeta, CHANGE FOLDER al lado (Alex, 2026-10-15).** (1) "exited
+rc=N" era el código de salida del proceso que arrancó el lanzador; ahora `ended_text(rc)` lo dice en
+palabras: 0 "ended", 1 "cancelled" (diálogo de inicio cancelado), 2 "refused to start (see its message)"
+(el "not starting" del grabador), otro "crashed (code N)"; mismo texto en la fila y en la línea de
+estado de los programas, tooltips acordes. (2) OPEN CONFIGS FOLDER fuera: bajo el título de la caja,
+una línea ".toml in <carpeta como enlace> — a session reads its file once, at START"; el clic abre la
+carpeta con `open_in_system`. `LINK` pasa de la GUI del grabador a `pulsenest/fleet_trace.py` (lo usan
+dos ventanas). (3) CHANGE FOLDER… en esa misma línea, pegado al enlace. Render nativo comprobado.
+Runbook §2, spec §11. Tests lanzador 62/62, GUI 90/90. Sin commit.
+
+**CHANGE FOLDER… como diálogo de fichero (Alex, 2026-10-15).** El diálogo nativo de carpeta no enseña
+ficheros, así que el operador no podía reconocer la carpeta por su contenido. Ahora es
+`getOpenFileName` filtrado a `*.toml` ("Pick any .toml in the folder to use"): se elige cualquier
+fichero de la carpeta deseada y se toma su carpeta. Tooltip y spec §11 acordes. Tests 62/62. Sin commit.

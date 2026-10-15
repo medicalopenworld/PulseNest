@@ -100,8 +100,8 @@ try:
 
     check("[3] session dir and session.json exist before any datagram",
           os.path.isdir(rec.dir) and os.path.exists(os.path.join(rec.dir, "session.json")))
-    check("[3] session id = <YYYYMMDD>_<HHMM>_<SITE>, site sanitised",
-          rec.session_id.endswith("_BENCH01") and len(rec.session_id) == len("20260926_0930_BENCH01"),
+    check("[3] session id = <YYYYMMDD>_<HHMMSS>_<SITE>, site sanitised",
+          rec.session_id.endswith("_BENCH01") and len(rec.session_id) == len("20260926_093000_BENCH01"),
           rec.session_id)
     check("[6] session_events.csv has the header and SESSION_START",
           open(rec.events_path, encoding="utf-8").read().startswith(",".join(R.EVENTS_HEADER))
@@ -327,6 +327,44 @@ try:
     sjP = json.load(open(os.path.join(recP.dir, "session.json"), encoding="utf-8"))
     check("[3] session.json carries probe_model too",
           sjP["sources"][0]["probe_model"] == "Medle-neo", sjP["sources"][0].get("probe_model"))
+
+    # [subject] / `subj` (Alex, 2026-10-14): the four covariates of the SpO2 bias analysis,
+    # structured, checked where set, applied at binding like --note/--probe/--ref.
+    recY = R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock(),
+                      board="8850", subject="SUBJ01", gest_age="30w+2d", age="14d",
+                      weight_g="1500", skin="3")
+    recY.feed("10.0.0.1", CFG_8850)
+    recY.feed("10.0.0.1", M4)
+    y = [x for x in recY.owners() if x.kind == "board"][0]
+    check("[7] the [subject] values are applied at binding, numbers as numbers",
+          y.subject_info == {"gest_age": "30w+2d", "age": "14d", "weight_g": 1500, "skin": 3}, str(y.subject_info))
+    check("[7] `subj` refuses a Monk tone of 11, an age without its unit, a gest_age of '30 weeks'",
+          "outside 1-10" in recY.console("subj SUBJ01 skin 11")
+          and "unit" in recY.console("subj SUBJ01 age 14")
+          and "unit" in recY.console("subj SUBJ01 gest_age 30 weeks")
+          and "outside" in recY.console("subj SUBJ01 gest_age 10w")
+          and y.subject_info["skin"] == 3 and y.subject_info["gest_age"] == "30w+2d")
+    check("[7] an age takes d/w/m/y joined with +, spaces and case forgiven, kept as typed",
+          recY.console("subj SUBJ01 age 3W + 2d") == "SUBJ01 subject.age = 3w+2d"
+          and recY.console("subj SUBJ01 age 34y") == "SUBJ01 subject.age = 34y"
+          and R.age_to_days("30w+2d") == 212 and recY.console("subj SUBJ01 age 14d").endswith("14d"))
+    check("[7] a value learnt later lands through the same command",
+          recY.console("subj SUBJ01 weight_g 1620") == "SUBJ01 subject.weight_g = 1620"
+          and y.subject_info["weight_g"] == 1620)
+    recY.stop("t")
+    recY.close()
+    sjY = json.load(open(os.path.join(recY.dir, "session.json"), encoding="utf-8"))
+    check("[7] session.json carries them twice: what was launched, and what the board holds now",
+          sjY["launch"]["subject_info"] == {"gest_age": "30w+2d", "age": "14d", "weight_g": 1500, "skin": 3}
+          and sjY["sources"][0]["subject_info"]["weight_g"] == 1620, str(sjY["launch"].get("subject_info")))
+    evY = open(os.path.join(recY.dir, "session_events.csv"), encoding="utf-8").read()
+    check("[6] each one is a META event `subject.<field>=<value>`",
+          "subject.skin=3" in evY and "subject.weight_g=1620" in evY)
+    try:
+        R.Recorder(_tf.mkdtemp(), "HOSP01", "AC", log=QuietLog(), clock=FakeClock(), skin="0")
+        check("[7] a bad [subject] value refuses the launch", False)
+    except ValueError as exc:
+        check("[7] a bad [subject] value refuses the launch, with the reason", "outside 1-10" in str(exc), str(exc))
 
     # reference_spo2.csv (Alex, 2026-09-22): what the commercial monitor showed, read by OCR and
     # read by a person, one file, side by side. Phone rows only from the DECLARED phone.
@@ -726,6 +764,25 @@ try:
         refused = "floor is" in str(exc)
     check("[8] refuses to start below the free-space floor, leaving no session directory",
           refused and not os.path.exists(nodisk))
+
+    # one directory is one session: a START inside the minute of a STOP names the same directory
+    # (2026-10-14 session 1937: event_id restarted at 1, reference rows written twice under the
+    # first set's ids) -- refused, the first session's files untouched
+    once = os.path.join(tmp, "once")
+    recA = R.Recorder(once, "TWICE", "AC", log=QuietLog(), clock=FakeClock(), subject="SUBJ01")
+    recA.console("spo2 SUBJ01 95 140")
+    recA.close()
+    events_before = open(recA.events_path, encoding="utf-8").read()
+    ref_before = open(recA.ref_path, encoding="utf-8").read()
+    try:
+        R.Recorder(once, "TWICE", "AC", log=QuietLog(), clock=FakeClock(), subject="SUBJ01")
+        twice = False
+    except R.SessionExists as exc:
+        twice = "already exists" in str(exc) and "start again" in str(exc)
+    check("[3] refuses to open a session whose directory exists, "
+          "and the first session's events and reference rows are untouched",
+          twice and open(recA.events_path, encoding="utf-8").read() == events_before
+          and open(recA.ref_path, encoding="utf-8").read() == ref_before)
 
     # --raw off: no raw/ directory at all
     rec3 = R.Recorder(tmp, "OFF", raw_mode="off", log=QuietLog(), clock=FakeClock())

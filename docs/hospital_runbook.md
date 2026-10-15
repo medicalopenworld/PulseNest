@@ -3,10 +3,11 @@
 What to do, in order, for the person at the cot side. The reasoning behind each rule is in
 `pulsenest_recorder_spec.md`; this page only says what to do.
 
-**The shape of a campaign:** three boards on three babies, each baby also wearing a commercial
-pulse oximeter, a phone running VideoNest pointed at each monitor, one laptop. **One window per
-baby**, each recording one board into its own session directory. Finishing one baby does not
-touch the other two.
+**The shape of a campaign:** up to three boards, one per baby, each baby also wearing a
+commercial pulse oximeter, a phone running VideoNest pointed at each monitor, one laptop.
+**Which babies, and how many, is decided on the day**, at the cot side; the day before prepares
+the kits, not the babies. **One window per baby**, each recording one board into its own session
+directory. Finishing one baby does not touch the other two.
 
 ---
 
@@ -14,46 +15,95 @@ touch the other two.
 
 - [ ] **Boards flashed and verified** — `docs/boards.md`. The launcher (§2) will say whether the
       three run the same firmware.
-- [ ] **One `.toml` per cot** in `docs/session_configs/`: copy `example.toml` to `subj01.toml`,
-      `subj02.toml`, `subj03.toml` and fill in, for that baby:
-      `subject` (`SUBJnn`, **never a name**), `location` (a site code), `operator` (initials),
+- [ ] **One `.toml` per kit** (board + its phone) in `docs/session_configs/`: copy `example.toml`
+      to `cot1.toml`, `cot2.toml`, `cot3.toml` (the file name is not used anywhere) and fill in
+      only what does not depend on the baby: `location` (a site code), `operator` (initials),
       `board` (last four hex digits of the board's MAC: `8850`, `825C`, `87A4`), `probe` (our
-      probe's model), `note` (free text, written once at start), and under `[ref]` the commercial
-      monitor: `model`, `probe-site`, `videonest` (the phone's device id), `avg` (its averaging
-      time in seconds — photograph the monitor's SpO2 settings screen to get it; it decides
-      whether the two SpO2 can be compared at all).
+      probe's model) and, under `[ref]`, `videonest` (the device id of the phone that goes with
+      this kit). **Leave `[subject]`, `note` and the rest of `[ref]` out**: they are the baby's and
+      are filled in on the day (§2). A file without `subject` shows `(missing: add it to the
+      file)` in the launcher; that is the expected state the day before.
 - [ ] **Disk**: about **1 GB per board per hour**. Three boards for eight hours ≈ 24 GB; leave
       twice that free. The recorder refuses to start below 2 GB.
 - [ ] **Laptop clock synchronised** (Settings → Time → Sync now). Everything is aligned through
       this clock.
-- [ ] **Phones**: VideoNest installed and pointed at the right monitor, battery charged, **cloud
-      photo sync OFF** (the photos are health data). Tape the device id to the case.
-- [ ] **Consent** on paper beforehand. The recorder does not ask.
-- [ ] Subject codes agreed: `SUBJ01`, `SUBJ02`, `SUBJ03`. The code-to-person list stays in the
+- [ ] **Phones**: VideoNest installed, battery charged, **cloud photo sync OFF** (the photos are
+      health data). Tape the device id to the case, and the kit's board digits next to it.
+- [ ] **Consent forms** on paper, enough for the babies that may be chosen. The recorder does
+      not ask.
+- [ ] **Know the next free subject codes** (`SUBJnn`, in order, from the private code-to-person
+      list). The codes are given out on the day, one per baby chosen; the list stays in the
       private file, never in the repository, never in a note.
+
+---
+
+## 1 bis. Preparing a laptop (once per machine)
+
+The laptop needs Python, the repository and the desktop icon. Done once; nothing here is
+repeated on the day.
+
+- [ ] **Python 3.11 or newer** from python.org, with the installer's **"Add python.exe to PATH"**
+      box ticked. Without it the icon script stops and says so (`pythonw.exe not on PATH`).
+- [ ] **The five packages**, from any terminal:
+      ```
+      pip install PyQt5 pyqtgraph numpy scipy pyserial
+      ```
+- [ ] **The repository** cloned into a fixed folder, e.g. `C:\PRJ\MOW\PulseNest`. The icon points
+      at that folder: if the folder is moved, repeat the next step.
+- [ ] **The desktop icon**: open PowerShell in the repository folder and run
+      ```
+      .\scripts\make_session_shortcut.ps1
+      ```
+      It prints the shortcut it wrote and the program it launches. Running it again just
+      rewrites the icon.
+- [ ] **Check**: double-click `PulseNest Session` on the desktop. The launcher window opens
+      (BOARDS ON THE AIR, PHONES HEARD, SESSION / SUBJECT config files) with no console behind it; the hub starts by itself.
+      Close it. The `.toml` files of §1 can be written now or on the day before.
 
 ---
 
 ## 2. Starting
 
-**Double-click `PulseNest Session` on the desktop** (made once per laptop with
-`.\scripts\make_session_shortcut.ps1`). The window is the checklist, checked live:
+**On the day, once the babies are chosen**, and for each one:
+
+- [ ] Consent signed. Give the baby the next free subject code and write the pair in the
+      private list.
+- [ ] Clip our probe on, put the kit's phone in front of that baby's monitor, and photograph the
+      monitor's SpO2 settings screen (its averaging time).
+- [ ] In the launcher (below), press **EDIT** on that kit's row and complete the file: the
+      `[subject]` table — `id` (`SUBJnn`, **never a name**), `gest_age` at birth as the chart
+      writes it (`"30w+2d"`), `age` with its unit (`"14d"`), `weight_g` (current), `skin` (Monk
+      Skin Tone 1–10, judged at the probe site against the swatches; how, in `example.toml`) — `note` (free
+      text, written once at start), and under `[ref]` the monitor: `model`, `avg` (the averaging
+      time from the photo, in seconds — it decides whether the two SpO2 can be compared at all),
+      `probe-site` only if *its* probe is not on a foot. Save; the row updates by itself. A
+      `[subject]` line not known yet can be left out and given later on the recorder console
+      (`subj SUBJ01 weight_g 1500`).
+      Everything is read from the file at START; the recorder window only shows it (the phone
+      is the one thing it can still choose, from the phones heard). A typo means: close the
+      window, fix the file, START again.
+
+**Double-click `PulseNest Session` on the desktop** (made once per laptop, §1 bis). The window
+is the checklist, checked live:
 
 - **BOARDS ON THE AIR** — every board streaming, and one line saying whether all run the same
   firmware. A board that goes quiet turns amber (`SILENT`), red after a minute.
 - **PHONES HEARD** — every VideoNest phone sending, with its last frame and clock offset.
 - **Disk** as hours of recording, and the **laptop clock** in large digits.
-- **COTS** — one row per `.toml`: which live board it matches and whether its phone has been
-  heard. Files are re-read by themselves when edited (**EDIT** opens one in the system editor).
+- **SESSION / SUBJECT config files** — one row per `.toml`: which live board it matches and
+  whether its phone has been heard. A session reads its file once, at START: edit before
+  (**EDIT** opens one in the system editor; the table follows). The folder named above the
+  table is a link that opens it; **CHANGE FOLDER…** beside it points the table at another
+  folder and remembers it. Hover anything for its tooltip.
 
-Press **START** on each cot, or **START ALL COTS**, and **FLEET MONITOR** for the console
+Press **START** on each cot, and **FLEET MONITOR** for the console
 overview. Each START opens one recorder window, as a process of its own: the launcher can be
 closed afterwards and the recordings continue. The hub starts by itself.
 
 From a terminal, the same thing is:
 
 ```
-pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/subj01.toml
+pythonw tools/pulsenest_recorder_gui.py --config docs/session_configs/cot1.toml
 ```
 
 Then, in each recorder window:

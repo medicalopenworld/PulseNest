@@ -80,11 +80,11 @@ check("one-stamp (old) shape: frame kept, offset blank", fl.phones["J6plusACM"].
 
 tmp = tempfile.mkdtemp()
 open(os.path.join(tmp, "subj01.toml"), "w", encoding="utf-8").write(
-    'location = "HOSP01"\noperator = "AC"\nboard = "8850"\nsubject = "SUBJ01"\n[ref]\nvideonest = "J6plusACM"\n')
+    'location = "HOSP01"\noperator = "AC"\nboard = "8850"\n[subject]\nid = "SUBJ01"\n[ref]\nvideonest = "J6plusACM"\n')
 open(os.path.join(tmp, "subj02.toml"), "w", encoding="utf-8").write(
-    'location = "HOSP01"\noperator = "AC"\nboard = "1234"\nsubject = "SUBJ02"\n[ref]\nvideonest = "Pixel8aACM"\n')
+    'location = "HOSP01"\noperator = "AC"\nboard = "1234"\n[subject]\nid = "SUBJ02"\n[ref]\nvideonest = "Pixel8aACM"\n')
 open(os.path.join(tmp, "broken.toml"), "w", encoding="utf-8").write('location = "HOSP01\nboard = \n')
-open(os.path.join(tmp, S.EXAMPLE_NAME), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "8850"\nsubject = "SUBJ67"\n')
+open(os.path.join(tmp, S.EXAMPLE_NAME), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "8850"\n[subject]\nid = "SUBJ67"\n')
 cots = S.cots_in(tmp)
 check("every .toml listed, example last", [c.name for c in cots] == ["broken.toml", "subj01.toml", "subj02.toml", S.EXAMPLE_NAME], str([c.name for c in cots]))
 c1 = next(c for c in cots if c.name == "subj01.toml")
@@ -194,12 +194,12 @@ w.refresh()
 check("back on the air: green again", colour(w.table.item(r1, 3)) == S.GREEN and colour(w.table.item(r1, 4)) == S.GREEN)
 
 # the files are watched: a new or edited .toml shows up without a button
-open(os.path.join(tmp, "subj03.toml"), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "87A4"\nsubject = "SUBJ03"\n')
+open(os.path.join(tmp, "subj03.toml"), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "87A4"\n[subject]\nid = "SUBJ03"\n')
 w.refresh()
 check("a new .toml appears by itself (no RELOAD button)", w.table.rowCount() == 5 and not hasattr(w, "btn_reload")
       and any(c.name == "subj03.toml" for c in w.cots))
 time.sleep(0.05)
-open(os.path.join(tmp, "subj03.toml"), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "87A4"\nsubject = "SUBJ33"\n')
+open(os.path.join(tmp, "subj03.toml"), "w", encoding="utf-8").write('location = "HOSP01"\nboard = "87A4"\n[subject]\nid = "SUBJ33"\n')
 os.utime(os.path.join(tmp, "subj03.toml"))
 w.refresh()
 r3 = [c.name for c in w.cots].index("subj03.toml")
@@ -226,14 +226,20 @@ check("row shows running, START disabled",
 w.table.cellWidget(r1, 6).click()
 w.start_cot(w.cots[r1])
 check("a running cot cannot be started twice", len(spawned) == 1)
-w.start_all()
+# START ALL COTS is gone (Alex, 2026-10-15: one click could open sessions nobody wanted); the
+# second cot is started from its own row, like the first
+w.start_cot(w.cots[r2])
 app.processEvents()
-check("START ALL starts the other valid cot only (not the running one, not the broken, not the example)",
-      len(spawned) == 2 and spawned[1].cmd[3] == w.cots[r2].path)
+check("no START ALL: cots start one at a time from their rows",
+      not hasattr(w, "btn_all") and not hasattr(w, "start_all")
+      and len(spawned) == 2 and spawned[1].cmd[3] == w.cots[r2].path)
 spawned[0].rc = 0
 w.refresh()
-check("a cot that exited shows rc and can be started again",
-      w.table.item(r1, 5).text() == "exited rc=0" and w.table.cellWidget(r1, 6).isEnabled())
+check("a cot that ended says so in words and can be started again",
+      w.table.item(r1, 5).text() == "ended" and w.table.cellWidget(r1, 6).isEnabled())
+check("return codes read as words: cancelled, refused to start, crashed",
+      S.ended_text(1)[0] == "cancelled" and S.ended_text(2)[0].startswith("refused to start")
+      and S.ended_text(3221225477)[0].startswith("crashed"))
 w.reload_configs()
 check("RELOAD keeps the process handle of a running cot", w.cots[r2].running and w.table.item(r2, 5).text().startswith("running"))
 w.btn_monitor.click()
@@ -243,12 +249,42 @@ check("FLEET MONITOR spawns with a console of its own", spawned[-1].console is T
 w.btn_viewer.click()
 app.processEvents()
 check("PPG VIEWER spawns detached", spawned[-1].console is False and spawned[-1].cmd[1] == S.PPG_VIEWER)
-check("extra status line", "monitor: running" in w.extra_status.text() and "viewer: running" in w.extra_status.text())
+w.btn_lab.click()
+app.processEvents()
+check("PULSENEST LAB spawns the lab detached, no --hub (the lab has no such flag), one copy at a time",
+      spawned[-1].console is False and spawned[-1].cmd == [S.windowed_python(), S.LAB_SCRIPT]
+      and S.LAB_SCRIPT.endswith("pulsenest_lab.py") and not w.btn_lab.isEnabled())
+check("extra status line", "monitor: running" in w.extra_status.text() and "viewer: running" in w.extra_status.text()
+      and "lab: running" in w.extra_status.text())
 w.close()
 app.processEvents()
 check("closing the launcher closes its hub client and leaves the processes alone",
       client.closed and all(p.rc is None for p in spawned[1:]))
 check("geometry saved", os.path.exists(S.SETTINGS_FILE))
+
+# CHANGE FOLDER (Alex, 2026-10-15): another folder, remembered; tooltips on every header and button
+other = tempfile.mkdtemp()
+with open(os.path.join(other, "ward2.toml"), "w", encoding="utf-8") as f:
+    f.write('location = "HOSP01"\noperator = "AC"\nboard = "7560"\n[subject]\nid = "SUBJ09"\n')
+w2 = S.Launcher(tmp, hub, FakeClient())
+w2.set_configs_dir(other)
+app.processEvents()
+check("CHANGE FOLDER: the table lists the new folder, the title names it, and it is remembered",
+      w2.table.rowCount() == 1 and w2.cots[0].name == "ward2.toml"
+      and other in w2.files_link.text() and 'href="open"' in w2.files_link.text()
+      and "once, at START" in w2.files_link.text() and not hasattr(w2, "btn_folder")
+      and S.saved_configs_dir() == os.path.abspath(other))
+headers = [t.horizontalHeaderItem(c).toolTip() for t in (w2.boards, w2.phones, w2.table)
+           for c in range(t.columnCount())]
+buttons = [b.toolTip() for b in (w2.btn_lab, w2.btn_monitor, w2.btn_viewer, w2.btn_change, w2.files_link,
+                                  w2.table.cellWidget(0, 6), w2.table.cellWidget(0, 7))]
+check("every column header and every button carries a tooltip, and so do the clock, disk and status line",
+      all(headers) and all(buttons) and w2.clock.toolTip() and w2.disk.toolTip() and w2.extra_status.toolTip(),
+      f"headers {sum(1 for h in headers if not h)} empty, buttons {sum(1 for b in buttons if not b)} empty")
+w2.close()
+os.remove(os.path.join(other, "ward2.toml")); os.rmdir(other)
+check("a remembered folder that no longer exists falls back to the default",
+      S.saved_configs_dir() == S.DEFAULT_CONFIGS)
 
 n = len(ok)
 print(f"\n{sum(ok)}/{n} checks passed -- " + ("OK" if all(ok) else "FAILURES"))

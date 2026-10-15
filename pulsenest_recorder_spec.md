@@ -140,9 +140,11 @@ captures/sessions/<SESSION_ID>/
                                                 (and `_ot<thr>` when the threshold is overridden)
 ```
 
-`SESSION_ID` = `<YYYYMMDD>_<HHMM>_<SITE>[_<SUBJECT>]` with `SITE` a short code typed at start.
+`SESSION_ID` = `<YYYYMMDD>_<HHMMSS>_<SITE>[_<SUBJECT>]` with `SITE` a short code typed at start.
 (Until 2026-09-24 this line said `<YYYYMMDD>_<HHMM>_<SITE>`; the writer had been appending the
-subject tag all along — the spec was stale, not the code.)
+subject tag all along — the spec was stale, not the code. Until 2026-10-14 the stamp was to the
+minute, a v0.1 choice nobody had aligned with the live CSV names, which carry seconds since 09-29;
+Alex asked why the directory did not, and there was no reason. `pulsenest_convert` reads both.)
 
 **Vocabulary (decided 2026-09-24).** A **session** is one start/stop interval of the recorder and
 covers at most **one subject**. Subjects measured at the same time are separate sessions from
@@ -178,6 +180,12 @@ is empty); the discipline is the operator's.
 
 **The directory is created and `session.json` is written before the first datagram is recorded.**
 A session directory that exists but is empty is a sound state; data without metadata is not.
+
+**One directory is one session.** The recorder refuses to open a directory that already exists
+(`SessionExists`, "not starting") rather than append to it: appending restarts `event_id` at 1 and
+writes a second set of rows under the first set's ids, which is what a session of 2026-10-14 looked
+like when the id was still the minute of the start and a STOP and a START inside the same minute
+named the same directory. With the second in the id the refusal is the net, not the rule.
 
 ---
 
@@ -339,7 +347,7 @@ session: the part no machine can produce). Proposed shape:
 ```jsonc
 {
   "schema": "pulsenest_session/1",
-  "session_id": "20260926_0930_HOSP01",
+  "session_id": "20260926_093000_HOSP01",
   "site_code": "HOSP01",
   "operator": "AC",                     // initials or role, never a full name
   "started": { "iso": "2026-09-26T09:30:12+02:00", "t_mono_us": 812345678,
@@ -365,7 +373,9 @@ session: the part no machine can produce). Proposed shape:
         "averaging_s": null,            // Masimo defaults to 8 s; Nellcor normal/fast
         "probe_site": "right hand",     // pre- vs post-ductal matters, see below
         "notes": ""
-      }
+      },
+      "subject_info": { "gest_age": "30w+2d", "age": "14d", "weight_g": 1500, "skin": 3 }
+                                        // the [subject] table / `subj` command (2026-10-14), see §9
     },
     { "kind": "videonest", "ips": [...], "app_version": "...", "frame_format": "VN1",
       "watching_subject": "SUBJ01", "files": [ "raw/aux_vn_192.168.137.45_0001.pnraw" ] }
@@ -415,6 +425,18 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
 * **Range 50–100 %**, step 1, not 60–100: a neonatal desaturation goes below 60, and a value the
   operator cannot enter is a value that gets written in a notebook and lost. An optional pulse
   rate field beside it (`value2`), skippable.
+* **Built for a finger, not a mouse** (Alex, 2026-10-15): `RECORD` is three times a button's
+  height, the SpO2 box is as high, and its own arrow buttons (14 × 16 px, Qt's glyph stays 7 px
+  whatever a stylesheet asks, and the CSS-triangle trick draws a bar) are replaced by two push
+  buttons beside it, ▲ and ▼ as text, each half the box's height and 44 px wide, auto-repeat on
+  hold, no focus so the box keeps the keyboard. Before: 27 px for `RECORD`. The PR box and the
+  correction dialog keep the plain size; they are not the thing done again and again.
+* **Keys `+`, `-` and `R`** (same day) step the SpO2 box and press `RECORD` from anywhere in the
+  window: the operator looks at the monitor, not at which widget is current. An application-level
+  event filter in `RecorderWindow` sees the key before the focused widget does (a `QShortcut`
+  would not: a line edit swallows printable keys); typing into NEW EVENT keeps its `r`, `+`, `-`.
+  With several boards in one window the keys act on the row holding the focus, else the first
+  that can record. Said on a dim line under the buttons and in the three tooltips.
 * **Which board/subject the reading belongs to** is chosen on the panel — with three babies, an
   unattributed reading is nearly worthless. Default: the last one used.
 * **The panel must not show our own SpO2.** A person reading a screen while a second number sits
@@ -438,17 +460,23 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   line (title coloured by ProbeState, subject or `UNBOUND`, datagrams, gaps, CSV rows, part, and
   an amber/red warning field: no subject, gaps, SILENT, restarts). The body:
   waveform, SIGNAL STATS, then the **session panel** — everything the session was launched with,
-  in the `.toml`'s own order (Alex, 2026-10-14): SUBJECT, LOCATION, OPERATOR, BOARD, PROBE, NOTE
-  (the launch note, read-only), MONITOR, REFERENCE, then the one live control, NEW EVENT (Alex,
-  2026-10-14: the file it feeds is `session_events.csv`; what is typed becomes an event of kind NOTE) — and the
-  **reading entry** (SpO2 spinbox 50–100, optional PR, `RECORD`). **CONDITION left the window the
+  in the `.toml`'s own order (Alex, 2026-10-14): FILE (the `.toml`'s base name, full path in the
+  tooltip, also in the title bar — Alex, same day: with one window per cot, the file is how they
+  are told apart before a subject is bound), LOCATION, OPERATOR, BOARD, PROBE, SUBJECT, GEST AGE,
+  AGE, WEIGHT, SKIN (the `[subject]` table, 2026-10-14, see §7), NOTE
+  (the launch note, read-only), MONITOR, REFERENCE — and, in the right-hand box, the
+  **reading entry** (SpO2 spinbox 50–100, optional PR, `RECORD`) with NEW EVENT under its table
+  (the file it feeds is `session_events.csv`; what is typed becomes an event of kind NOTE). **CONDITION left the window the
   same day**: what the operator typed there was stored in four places (a `cond=` META event,
   `session.json`, the CSV header's `condition`, `index.csv`) and read by nothing — the experiments
   select captures by the condition in `truth.csv`, authored afterwards. The console `cond`
-  command, the event and the header column stay as they are, so the format is unchanged. Every control but SUBJECT is disabled until a
+  command, the event and the header column stay as they are, so the format is unchanged. Every control is disabled until a
   subject is bound, which is the `UNBOUND` guard rail in its cheapest form. **What was given at
-  launch is read-only in the panel** (Alex, 2026-10-14): a subject from `--subject` / the `.toml`
-  locks the SUBJECT box the way `--ref-videonest` already locked REFERENCE; the panel shows it so
+  launch is read-only in the panel** (Alex, 2026-10-14): **SUBJECT is a plain label** showing
+  what the file says (Alex, same day: no box, no menu, no format check in the window — the
+  Recorder checks the code, at launch and on its `subject` command, and a window launched
+  without one stays locked: the subject goes in the file); `--ref-videonest` locks REFERENCE the
+  same way; the panel shows it so
   a typo is visible, and changing it means stopping the session and relaunching with the right
   file. A window started without a subject keeps the box, since binding has to happen somewhere.
   The session bar carries free disk, `CLOCK ANCHOR`, `PLOTS` and `STOP SESSION`, which asks
@@ -482,8 +510,8 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   stops one baby's recording instead of three.
   Three details it has to get right, all tested: an **ambiguous suffix is refused**, not resolved
   by taking the first match; a board that is not streaming yet is **waited for**, not an error;
-  and the session directory carries the subject (`20260923_1030_HOSP01_SUBJ01`) because three
-  windows launched in the same minute would otherwise share a directory and overwrite each other's
+  and the session directory carries the subject (`20260923_103000_HOSP01_SUBJ01`) because three
+  windows launched in the same second would otherwise share a directory and overwrite each other's
   `session.json`. Verified on the bench: three windows, three boards, three directories, ~20 000
   rows each and no source in any of them but its own.
   **Room-wide events are not implemented and are not planned** -- Alex, same day: phototherapy is
@@ -600,18 +628,57 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   reference, 0.56 s after hearing it first, 9.3 s before the correct phone was even heard.
   `Recorder.expected_videonest_id` fixes it: once given, `--ref-videonest`/`[ref].videonest` is
   locked for the whole session — not a default the window (or a GUI shortcut) can drift away from.
+* **`[subject]` table and the `subj` command (Alex, 2026-10-14).** The subject code moves from a
+  top-level `subject = "..."` to `[subject] id = "..."` (the old shape is refused with the new one
+  spelt out), and the table gains the four covariates the SpO2 bias analysis stratifies by, which
+  until then travelled as words inside `note`: `gest_age` (at birth, as the chart writes it,
+  `"30w+2d"`), `age`, `weight_g` (current), `skin` (Monk Skin Tone scale 1–10). Same machinery as
+  `[ref]`: `--gest-age/--age/--weight-g/--skin`, the console command `subj SUBJ01 <field> <value>`
+  (so a value learnt after START still lands structured; `subj` and not `subject` because
+  `subject <MAC> SUBJ01` already binds a board), a META event `subject.<field>=<value>`,
+  `session.json` `launch.subject_info` (what was launched) and `sources[].subject_info` (what the
+  board holds now), four read-only rows in the window after SUBJECT, and the converter replays
+  them. Checked where set (`parse_subject_value`); a bad launch value refuses the launch.
+  **Ages carry their unit** (Alex, same day: a later campaign may measure children or adults):
+  a number and `d`/`w`/`m`/`y`, joined with `+` when needed — `14d`, `30w+2d`, `6m`, `34y` —
+  kept as typed once checked; `age_to_days()` turns one into days for the analysis (month =
+  365.25/12). Ranges: `gest_age` 20–45 weeks, `age` 0–130 years, `weight_g` 300–300 000, `skin`
+  1–10. The name is `subject_info`, not `baby`, for the same reason. **`skin` is the Monk Skin
+  Tone (MST) scale**: ten swatches published by Google with Dr Ellis Monk (Harvard, 2022), free
+  at https://skintone.google; 1 the lightest, 10 the darkest; judged at the probe site, not the
+  face, under daylight or white room light, swatch against the skin, closest number recorded;
+  per session because a newborn's pigmentation darkens over the first weeks. MST and not
+  Fitzpatrick because Fitzpatrick grades sun reactivity with few dark tones and the FDA's
+  January 2025 draft guidance for pulse-oximeter clinical studies asks for MST (a source, not a
+  certification). The same text is in `example.toml`, in `help subj` and in the SKIN tooltip.
+  Why structured and not `note`: a free-text note is re-read by a person per session; a value is
+  read by the converter and lands in the corpus. Why these four: gestational and postnatal age
+  set the fetal-haemoglobin fraction and with it the R curve; weight approximates the tissue the
+  probe sees in a preterm foot; skin tone is the best documented SpO2 bias. `probe-site` in
+  `[ref]` stays, optional: Alex asked whether to drop it (the monitor's probe is always on a
+  foot in this campaign); kept because absent it costs nothing, removing it would touch the
+  format of recorded sessions, and the pre-/postductal distinction is real when it occurs.
+* **The window's two boxes (Alex, 2026-10-14).** The left box is titled "TOML session
+  configuration" and only shows; NEW EVENT moved to the right box, "Readings from the monitor,
+  and events", under the readings table and full width — what the operator does, in one place.
 
 ---
 
 ## 10. What the converter produces (off-site)
 
-**Exists since 2026-09-22: `tools/pulsenest_convert.py <session dir> [--csv on|v04] [--out DIR]`.**
+**Exists since 2026-09-22: `tools/pulsenest_convert.py <session dir> [--csv auto|on|v04] [--out DIR]`.**
 It is not a second implementation of anything: it constructs the same `Recorder` with a clock
 that reads the `.pnraw` stamps, feeds it the recorded datagrams and re-issues the events of
 `session_events.csv`, so the CSVs it writes are the live writer's output by construction. `--csv
-on` (default) rebuilds today's format and compares each board CSV with the live one byte for
-byte — verified on the frozen bench corpus, 3/3 identical — and `--csv v04` turns any session
-into the v0.4 container of `capture_csv_format_spec.md`. Output under `<session>/derived/`.
+auto` (default) rebuilds in the format the live files are in and compares each board CSV with the
+live one byte for byte — verified on the frozen bench corpus in both formats — while `--csv v04`
+and `--csv on` produce that format whatever the live one (the comparison runs only when it is the
+live format). Until 2026-10-14 the default was `on`, the pre-v0.4 format, and the comparison ran
+only then: every hospital session is recorded in v0.4 (the recorder's default since 09-22), so the
+default run rebuilt the wrong format and reported DIFFERS; aligned the day Alex asked.
+Output under `<session>/derived/`.
+The replay `Recorder` takes the record's own `session_id` rather than stamping a new one: the id
+is a header key in every CSV, and a record from before 2026-10-14 carries the minute form (§3).
 
 Run after the session, never during it. Input: a session directory. Output: `derived/`.
 With the live CSV in place (§2) the converter is no longer on the critical path: its first job is
@@ -965,14 +1032,27 @@ the process started from here.
 as a detached process: a new process group, no inherited stdio, the same flags with which
 `hub_client.launch_hub` starts the hub. So one process per baby survives, the launcher can be
 closed or crash, and FULL substitution holds (nothing from the launcher is merged into a cot).
-A running cot cannot be started twice; a cot that exited shows its return code and can be
+A running cot cannot be started twice; a cot that ended says how (see below) and can be
 started again. The `.toml` files are watched (name, mtime, size polled once a second, which an
 editor that saves by rename cannot fool): a new, edited or removed file changes the table by
-itself, and a running cot keeps its process across a re-read. START ALL COTS
-skips `example.toml`, the broken files and the running ones. FLEET MONITOR starts
+itself, and a running cot keeps its process across a re-read -- and the values it was started
+with, since the recorder reads its `.toml` once, at START (the box is titled "SESSION / SUBJECT
+config files (.toml in <folder>) -- a session reads its file once, at START", Alex 2026-10-15).
+CHANGE FOLDER… (same day) points the table at another folder, remembered in the launcher's
+`.ini`; `--configs` on the command line still wins. It is a file dialog filtered to `*.toml`, not
+a folder dialog: the system's folder dialog shows no files, so the operator could not tell the
+right folder by its contents (Alex); any `.toml` inside is picked and its folder taken. Every column header, button and status
+label carries a tooltip: the launcher is the operator's only screen before START. A cot is started
+one at a time, from its row: START ALL COTS stood beside the table until 2026-10-15, when Alex
+removed it because one click could open a session on every file in the folder, wanted or not.
+PULSENEST LAB took its place and starts `pulsenest_lab.py` detached (the engineer's tool, not
+needed for a session; one copy at a time from here). FLEET MONITOR starts
 `tools/fleet_monitor.py` under console python in a console of its own; PPG VIEWER starts
-`tools/fleet_ppg_viewer.py` detached. EDIT and OPEN CONFIGS FOLDER hand the file or the folder
-to the system (no editor of ours).
+`tools/fleet_ppg_viewer.py` detached. EDIT and the folder link above the table (OPEN CONFIGS
+FOLDER until 2026-10-15) hand the file or the folder to the system (no editor of ours). A process
+that is no longer running is described in words from its return code -- ended (0), cancelled (1),
+refused to start (2, the recorder's own "not starting"), crashed (anything else) -- not as
+`exited rc=N`, which meant nothing at the cot side (Alex, same day).
 
 **What it cannot do.** It is a read-only hub subscriber, like the fleet monitor: no `$SET`, no
 `$MODE`, by construction. It has no pyqtgraph. It writes nothing but its window geometry
@@ -981,5 +1061,5 @@ to the system (no editor of ours).
 **Test.** `test_pulsenest/pulsenest_session_test.py`: the model with synthetic `$CFG`/`$M4`/`$VN1`
 datagrams and a temporary configs folder (matching, ambiguity, a new DHCP lease, a broken file,
 the command lines), then the real window offscreen with a fake hub client and a fake spawner
-(START once, never twice, START ALL's exclusions, RELOAD keeping a process, the monitor's own
+(START once, never twice, no START ALL, the lab button, RELOAD keeping a process, the monitor's own
 console, the client closed and the processes left alone at close).

@@ -1,18 +1,21 @@
 """pulsenest_convert.py -- rebuild a session's CSVs from its .pnraw record, and prove it.
 
-    python tools/pulsenest_convert.py captures/sessions/20260922_1210_BENCH            # verify
+    python tools/pulsenest_convert.py captures/sessions/20260922_121000_BENCH          # verify
     python tools/pulsenest_convert.py <session dir> --csv v04                          # v0.4 files
-    python tools/pulsenest_convert.py <session dir> --csv v04 --out /some/where
+    python tools/pulsenest_convert.py <session dir> --csv on --out /some/where         # pre-v0.4 files
 
 Recorder spec section 10, capture_csv_format_spec.md Phase 3. The .pnraw is the record: every
 datagram verbatim with its arrival stamps, plus the session's events (@E). This tool feeds those
 records, in order and with their own stamps, through the SAME `Recorder` that wrote them live --
 same class, same writers, same naming, same splitting on the same wall-clock boundaries -- so
 its output is not "similar to" the live files, it is the live files. Which is the check it runs
-by default: with `--csv on` it rebuilds today's format and compares every board CSV byte for
-byte with the one written live (`identical` / `DIFFERS` per file, exit code = files that
-differ). With `--csv v04` it produces the v0.4 container for a session that was recorded live in
-today's format -- how every campaign file becomes v0.4 without the live path ever moving.
+by default (`--csv auto`): it rebuilds in the format the live files are in -- v0.4 (`# format=
+incunest_csv`, the recorder's default since 2026-09-22) or the pre-v0.4 format -- and compares
+every board CSV byte for byte with the one written live (`identical` / `DIFFERS` per file, exit
+code = files that differ). `--csv v04` or `--csv on` produces that format whatever the live one;
+the comparison then runs only when it is the live format. (Until 2026-10-14 the default was `on`
+and the comparison ran only in that mode, so on every hospital session, recorded in v0.4, the
+default run rebuilt the other format and reported DIFFERS; Alex asked, and it was aligned.)
 
 What is replayed and what is not:
   * @D datagrams: all of them, through `Recorder.feed()` with their recorded stamps.
@@ -39,10 +42,11 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))  # repo root
-from tools.pulsenest_recorder import Recorder, read_pnraw, normalise_subject   # noqa: E402
+from tools.pulsenest_recorder import Recorder, read_pnraw, normalise_subject, parse_subject_value  # noqa: E402
 from pulsenest.capture_dict import KEY_SYNONYMS                          # noqa: E402
 
-_SESSION_RE = re.compile(r"^(\d{8}_\d{4})_([A-Z0-9]+)(?:_([A-Za-z0-9]+))?$")
+# The stamp is to the second since 2026-10-14 and was to the minute before: both are read.
+_SESSION_RE = re.compile(r"^(\d{8}_\d{4}(?:\d{2})?)_([A-Z0-9]+)(?:_([A-Za-z0-9]+))?$")
 _EVENT_TEXT_RE = re.compile(r"^subject=(\S*) board=(\S*)(?: value=(\S*))?(?: value2=(\S*))?"
                             r" source=(\S*)(?: note=(.*))?$")
 
@@ -92,13 +96,14 @@ def load_session(session_dir):
 
 
 def session_start_epoch_us(session_id, session_dir):
-    """The instant the live Recorder was constructed, to the minute: its session id carries it,
-    and the id must come out identical (it is a header key in every file)."""
+    """The instant the live Recorder was constructed, to the second (to the minute in sessions
+    before 2026-10-14): its session id carries it, and the id must come out identical (it is a
+    header key in every file)."""
     m = _SESSION_RE.match(session_id or "")
     if not m:
-        raise SystemExit(f"session id {session_id!r} does not look like <YYYYMMDD_HHMM>_<SITE>[_<tag>]")
+        raise SystemExit(f"session id {session_id!r} does not look like <YYYYMMDD_HHMMSS>_<SITE>[_<tag>]")
     stamp, site, tag = m.groups()
-    t0 = _dt.datetime.strptime(stamp, "%Y%m%d_%H%M").astimezone()
+    t0 = _dt.datetime.strptime(stamp, "%Y%m%d_%H%M%S" if len(stamp) == 15 else "%Y%m%d_%H%M").astimezone()
     meta = {}
     sj = os.path.join(session_dir, "session.json")
     if os.path.exists(sj):
@@ -145,6 +150,11 @@ def _apply_state(rec, kind, subject, board, note):
         for s in rec._owners():
             if s.kind == "board" and s.subject == subject:
                 s.reference[field] = float(value) if field == "averaging_s" else value
+    elif note.startswith("subject."):
+        field, _, value = note[len("subject."):].partition("=")
+        for s in rec._owners():
+            if s.kind == "board" and s.subject == subject:
+                s.subject_info[field] = parse_subject_value(field, value)
     elif note.startswith("videonest="):
         v = note[len("videonest="):]
         rec.videonest_id = None if v == "none" else v
@@ -169,6 +179,7 @@ def convert(session_dir, out_root=None, csv_mode="on", split_min=None, log=None)
     subject = normalise_subject(launch.get("subject") or "") or (normalise_subject(tag) if tag else None)
     board = meta.get("board_filter") or (None if subject else (tag or None))
     ref = launch.get("ref") or {}
+    info = launch.get("subject_info") or {}
     kw = {}
     if split_min is not None:
         kw["split_s"] = split_min * 60
@@ -178,7 +189,10 @@ def convert(session_dir, out_root=None, csv_mode="on", split_min=None, log=None)
                    board=board, subject=subject, videonest=launch.get("videonest"),
                    note=launch.get("note"), probe=launch.get("probe"),
                    ref_model=ref.get("model"), ref_avg=ref.get("avg"),
-                   ref_probe_site=ref.get("site"), ref_note=ref.get("note"), **kw)
+                   ref_probe_site=ref.get("site"), ref_note=ref.get("note"),
+                   gest_age=info.get("gest_age"), age=info.get("age"),
+                   weight_g=info.get("weight_g"), skin=info.get("skin"),
+                   session_id=session_id, **kw)
     regenerates = bool(launch)
     if regenerates:
         # Recorded before 2026-09-29: the launch note also seeded the condition, as a META
@@ -230,6 +244,24 @@ def convert(session_dir, out_root=None, csv_mode="on", split_min=None, log=None)
     return rec
 
 
+def board_csvs(d):
+    """The live board CSVs of a session directory: every .csv but the two session-wide ones."""
+    return sorted(f for f in glob.glob(os.path.join(d, "*.csv"))
+                  if os.path.basename(f) not in ("reference_spo2.csv", "session_events.csv")
+                  and not f.endswith("_replay.csv"))           # tools/offline_runner output
+
+
+def live_csv_mode(session_dir):
+    """The csv_mode the live files are in: a v0.4 file starts `# format=incunest_csv`; anything
+    else is the pre-v0.4 format ("on"). A session with no board CSV (`--csv off`) is "v04", the
+    recorder's default, since there is nothing to compare with either way."""
+    live = board_csvs(session_dir)
+    if not live:
+        return "v04"
+    first = io.open(live[0], encoding="utf-8", errors="replace").readline()
+    return "v04" if first.startswith("# format=incunest_csv") else "on"
+
+
 def verify(session_dir, rec):
     """Compare every live board CSV with its rebuilt twin, byte for byte. Returns
     [(name, 'identical' | 'DIFFERS' | 'missing')].
@@ -241,11 +273,7 @@ def verify(session_dir, rec):
         parts = os.path.basename(path).split("_")
         return (parts[0], "_".join(parts[-3:])) if len(parts) >= 4 else (os.path.basename(path),)
 
-    def board_csvs(d):
-        return sorted(f for f in glob.glob(os.path.join(d, "*.csv"))
-                      if os.path.basename(f) not in ("reference_spo2.csv", "session_events.csv")
-                      and not f.endswith("_replay.csv"))       # tools/offline_runner output
-    rebuilt ={key(f): f for f in board_csvs(rec.dir)}
+    rebuilt = {key(f): f for f in board_csvs(rec.dir)}
     by_tail = {}
     for k, f in rebuilt.items():
         by_tail.setdefault(k[-1], []).append(f)
@@ -269,14 +297,17 @@ def verify(session_dir, rec):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("session", help="a session directory (with raw/*.pnraw)")
-    ap.add_argument("--csv", default="on", choices=("on", "v04"),
-                    help="on = today's format, compared byte for byte with the live files; v04 = the v0.4 container")
+    ap.add_argument("--csv", default="auto", choices=("auto", "on", "v04"),
+                    help="auto = the format the live files are in, compared with them byte for byte "
+                         "(default); v04 = the v0.4 container; on = the pre-v0.4 format")
     ap.add_argument("--out", default="", metavar="DIR", help="output root (default <session>/derived)")
     ap.add_argument("--split-min", type=float, default=None, help="part length; default = the recorder's")
     args = ap.parse_args(argv)
-    rec = convert(args.session, args.out or None, args.csv, args.split_min)
-    print(f"rebuilt -> {rec.dir}")
-    if args.csv == "on":
+    live_mode = live_csv_mode(args.session)
+    mode = live_mode if args.csv == "auto" else args.csv
+    rec = convert(args.session, args.out or None, mode, args.split_min)
+    print(f"rebuilt -> {rec.dir} ({mode})")
+    if mode == live_mode:
         results = verify(args.session, rec)
         for name, verdict in results:
             print(f"  {verdict:9s} {name}")

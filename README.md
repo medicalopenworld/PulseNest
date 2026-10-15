@@ -71,9 +71,11 @@ its own, so closing the launcher never touches a recording.
 pythonw tools\pulsenest_session.py       # the same, from a terminal
 ```
 
-To use it: copy `docs/session_configs/example.toml` to one file per cot (`subj01.toml`, …), fill
-in the subject code, the board (last four hex digits of its MAC), the probe and the reference
-monitor, then open the launcher and press START on each cot. Files are re-read when edited.
+To use it: copy `docs/session_configs/example.toml` to one file per kit (`cot1.toml`, …) with
+the board (last four hex digits of its MAC), the probe and the phone; on the day, once a baby is
+chosen, add the `[subject]` table (code, gestational and postnatal age, weight, skin tone) and
+the reference monitor to that file (EDIT in the launcher; files are re-read when edited) and
+press START on that cot.
 Recordings land in `captures/sessions/<date>_<time>_<site>_<subject>/`. The step-by-step checklist
 for the person at the cot side is **[docs/hospital_runbook.md](docs/hospital_runbook.md)**.
 

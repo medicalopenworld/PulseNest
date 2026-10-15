@@ -111,9 +111,8 @@ if corpus:
         sdir = os.path.dirname(raw_dir)
         if not board_csvs(sdir):
             continue
-        # convert in the format the live files are in: a v0.4 file starts "# format=incunest_csv"
-        first = io.open(board_csvs(sdir)[0], encoding="utf-8", errors="replace").readline()
-        mode = "v04" if first.startswith("# format=incunest_csv") else "on"
+        # convert in the format the live files are in, as `--csv auto` (the default) does
+        mode = C.live_csv_mode(sdir)
         with tempfile.TemporaryDirectory() as td:
             log = logging.getLogger("k"); log.addHandler(logging.NullHandler()); log.propagate = False
             rec = C.convert(sdir, td, csv_mode=mode, log=log)

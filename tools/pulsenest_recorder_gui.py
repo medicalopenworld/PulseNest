@@ -3,7 +3,7 @@ a capture usable, beside the waveform that says whether the probe is still on th
 
     python tools/pulsenest_recorder_gui.py [--location HOSP01] [--operator AC] [--hub IP[:PORT]]
                                           [--split-min 10] [--duration S]
-    python tools/pulsenest_recorder_gui.py --config docs/session_configs/subj01.toml
+    python tools/pulsenest_recorder_gui.py --config docs/session_configs/cot1.toml
 
 Its arguments are pulsenest_recorder.add_session_args(), the console recorder's own, so the two
 --help texts are the same by construction; the console adds only --event-port.
@@ -27,7 +27,7 @@ Layout, from fleet_ppg_viewer.py with three changes Alex asked for:
     numbers in a session are read off the COMMERCIAL monitor, and a big number of our own
     beside the entry box invites copying it;
   * a control panel to the right of each SIGNAL STATS table: the values that do not change
-    at launch, read-only in the .toml's order (SUBJECT and REFERENCE as controls that lock),
+    at launch, read-only in the .toml's order (REFERENCE as a control that locks),
     then NEW EVENT, then the reading entry;
   * every row folds to a single header line, so three boards fit on a laptop screen and a row
     that needs no attention takes no room.
@@ -50,12 +50,11 @@ import time
 import tomllib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pulsenest.net import UDP_DATA_PORT, script_name                     # noqa: E402
+from pulsenest.net import UDP_DATA_PORT, script_name, open_in_system     # noqa: E402
 from pulsenest.hub_client import HubClient                               # noqa: E402
-from tools.pulsenest_recorder import (Recorder, NotEnoughSpace,                # noqa: E402, F401
-                                add_session_args, apply_session_config, CONFIG_FIELDS,
-                                mac_compact, normalise_subject)
-from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, RED          # noqa: E402
+from tools.pulsenest_recorder import (Recorder, NotEnoughSpace, SessionExists,  # noqa: E402, F401
+                                add_session_args, apply_session_config, CONFIG_FIELDS)
+from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, RED, LINK    # noqa: E402
 from pulsenest.fleet_widgets import make_stats_widget, stats_width, stats_columns  # noqa: E402
 import pyqtgraph as pg                                                   # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                               # noqa: E402
@@ -75,6 +74,43 @@ FLAG_COLOUR = "#CC66FF"   # deliberately not red/amber: those mean "this needs f
 # statistics panel that are dark whatever the desktop says, and its state colours (APPLIED green,
 # amber warnings) are chosen for a dark ground.
 BG, BG_RAISED, FG, FG_DIM = "#121212", "#1E1E1E", "#E0E0E0", "#AAAAAA"
+
+# The four [subject] rows after SUBJECT, in the file's order (Alex, 2026-10-14).
+SUBJECT_ROWS = (
+    ("gest_age", "GEST AGE", "Gestational age at birth, as the chart writes it: 30w+2d\n"
+                             "(`gest_age` in [subject] / --gest-age). Fetal haemoglobin, hence\n"
+                             "the R curve, follows it."),
+    ("age", "AGE", "Age as a number with its unit, d/w/m/y, joined with +: 14d, 3w+2d, 6m,\n"
+                   "34y (`age` in [subject] / --age). A unit, not a count of days, because a\n"
+                   "later campaign may measure children or adults."),
+    ("weight_g", "WEIGHT", "Current weight in grams (`weight_g` in [subject] / --weight-g):\n"
+                           "the tissue the probe sees."),
+    ("skin", "SKIN", "`skin` in [subject] / --skin.\n" + "Monk Skin Tone (MST) scale, a whole number 1-10: 1 the lightest tone, 10 the darkest.\n"
+                     "Ten swatches published by Google with Dr Ellis Monk (Harvard, 2022), free at\n"
+                     "https://skintone.google -- print them, or open the page on the phone. Judge it AT THE\n"
+                     "PROBE SITE (the foot), not the face, under daylight or the room's white light, holding\n"
+                     "the swatch against the skin; write the closest number. Why MST and not Fitzpatrick:\n"
+                     "Fitzpatrick grades sun reactivity with few dark tones; the FDA's January 2025 draft\n"
+                     "guidance for pulse-oximeter clinical studies asks for MST. Why per session: a newborn's\n"
+                     "pigmentation darkens over the first weeks, so this is the day's value, not the birth's.\n"
+                     "Torn between two? Pick one and say so in `note`. It is the best documented SpO2 bias."),
+)
+
+
+def subject_text(key, value):
+    """How a [subject] value reads in the panel: with its unit, or (not set)."""
+    if value in (None, ""):
+        return "(not set)"
+    return {"gest_age": f"{value}", "age": f"{value}", "weight_g": f"{value} g",
+            "skin": f"Monk {value}"}[key]
+# The SpO2 entry is the one thing an operator does again and again at the cot side, so it is
+# built for a finger, not a mouse (Alex, 2026-10-15): RECORD three times the height of a
+# button, the SpO2 box the same height, and its own 14 x 16 px arrow buttons replaced by two
+# push buttons beside it, each half that height and SPIN_BTN_W wide, with the arrow as text so
+# it grows with the font. A stylesheet cannot do it: Qt's arrow glyph stays 7 px whatever the
+# button measures, and the CSS-triangle trick draws a bar on windowsvista and on fusion (tried).
+RECORD_H_FACTOR = 3
+SPIN_BTN_W = 44
 DARK_QSS = f"""
 QWidget {{ background-color: {BG}; color: {FG}; }}
 QGroupBox {{ color: {FG_DIM}; font-weight: bold; border: 1px solid #333333;
@@ -101,15 +137,8 @@ QScrollBar:vertical {{ background: #111111; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: #3A3A3A; min-height: 20px; border-radius: 4px; }}
 QMessageBox, QDialog {{ background-color: {BG}; color: {FG}; }}
 """
-# A menu for the common case, not a ceiling: the combo is editable, so a campaign that reaches
-# SUBJ13 types it. Twelve was a cap that would simply have blocked the thirteenth baby.
-SUBJECTS = [f"SUBJ{n:02d}" for n in range(1, 13)]
 PR_NONE = 0     # the pulse-rate spinbox at its minimum reads "--": not recorded
 CELL_PAD = 14   # a table cell's own left+right margins, on top of the text it holds
-
-
-def suffix(mac):
-    return mac_compact(mac)[-4:] if mac else "????"
 
 
 # ============================================================================================
@@ -185,14 +214,16 @@ class BoardRow(QtWidgets.QFrame):
     # ── the controls ──
     def _session_values_group(self):
         # Everything the session was launched with (--config / the .toml, or the flags), in the
-        # file's own order (Alex, 2026-10-14, after example.toml: subject, location, operator,
-        # board, probe, note; then [ref] model, probe-site, videonest, avg), read-only here so a
-        # typo is visible instead of silent -- then the one live control, NEW EVENT. SUBJECT and
+        # file's own order (Alex, 2026-10-14, after example.toml: location, operator, board,
+        # probe, note; [subject] id, gest_age, age, weight_g, skin; [ref] model, probe-site,
+        # videonest, avg), read-only here so a
+        # typo is visible instead of silent. NEW EVENT moved to the operator's box (2026-10-14).
+        # SUBJECT and
         # REFERENCE are the two a window started without them must still be able to set, so they
         # are controls that lock once a launch value is in force (see _mirror_state). CONDITION
         # left the panel the same day: it was stored in four places and read by none (the
         # console `cond` command and the META event remain for anyone who wants it).
-        g = QtWidgets.QGroupBox("This board: the session, as launched")
+        g = QtWidgets.QGroupBox("TOML session configuration")
         form = QtWidgets.QFormLayout(g)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         rec = self.win.rec
@@ -205,29 +236,26 @@ class BoardRow(QtWidgets.QFrame):
             form.addRow(label, w)
             return w
 
-        self.subject = QtWidgets.QComboBox()
-        self.subject.setEditable(True)
-        self.subject.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
-        self.subject.addItem("")
-        self.subject.addItems(SUBJECTS)
-        self.subject.lineEdit().setPlaceholderText("SUBJ01")
-        self.subject.setToolTip("The coded subject this board is on. Codes only, never a name: "
-                                "the code-to-person list lives outside the repository. Everything "
-                                "else in this panel waits for this.\n\n"
-                                "Given at launch (`subject` in the .toml / --subject) it is "
-                                "read-only here: one capture file belongs to one baby. If the "
-                                "probe moves to another baby, stop the session and start a new "
-                                "one with the other file.\n\n"
-                                "The menu is a shortcut, not a limit -- type SUBJ13 and it is "
-                                "accepted. What is NOT accepted is anything that is not SUBJ "
-                                "followed by digits: no names, no initials, no bed numbers.")
-        # `activated` for a pick from the menu, `editingFinished` for a typed code plus Enter.
-        # NOT currentTextChanged: that fires on every keystroke, and "S", "SU", "SUB" are each a
-        # refusal the operator did not ask for.
-        self.subject.activated.connect(lambda _i: self._subject_changed())
-        self.subject.lineEdit().editingFinished.connect(self._subject_changed)
-        form.addRow("SUBJECT", self.subject)
-
+        # The file first (Alex, 2026-10-14: "the window said nowhere which .toml it was using"):
+        # with three windows open, one per cot, the file name is how an operator tells them apart
+        # before the subject is bound. Base name shown, full path in the tooltip.
+        cfg = self.win.config
+        if cfg:
+            # A link (Alex, 2026-10-14): click opens the file in the system's editor, the same
+            # EDIT the launcher offers. The window keeps running on what it read at launch;
+            # an edit takes effect on the next START, as everywhere else.
+            self.file_label = QtWidgets.QLabel(f'<a href="open" style="color:{LINK};">'
+                                               f'{os.path.basename(cfg)}</a>')
+            f = self.file_label.font()
+            f.setPointSize(f.pointSize() + 1)        # a link reads as one: blue, a point larger
+            self.file_label.setFont(f)
+            self.file_label.setToolTip("The .toml this window was launched with. Click to open "
+                                       f"it in the system's editor.\n{cfg}")
+            self.file_label.linkActivated.connect(lambda _l, p=cfg: open_in_system(p))
+            form.addRow("FILE", self.file_label)
+        else:
+            self.file_label = ro("FILE", "(no --config: flags only)",
+                                 "Launched from flags, not from a .toml (--config).")
         self.location_label = ro("LOCATION", rec.site or "(not set)",
                                  "Site CODE (`location` in the .toml / --location), never a place\n"
                                  "name. Names the session directory and the CSV; set at launch.")
@@ -244,6 +272,23 @@ class BoardRow(QtWidgets.QFrame):
                               "OUR probe's physical model, e.g. Medle-neo. Set once, at launch\n"
                               "(`probe` in the .toml / --probe), shown here read-only so a typo\n"
                               "is visible instead of silent.")
+        # SUBJECT is what the file says, nothing more (Alex, 2026-10-14: no box, no menu, no
+        # format check in the window). The Recorder is the one place a code is checked (SUBJ +
+        # digits, never a name), at launch and on its `subject` console command; a window
+        # launched without one shows "(not set)" and stays locked, since binding from here is
+        # gone -- the file is the whole story, so the subject goes in the file.
+        self.subject_label = ro("SUBJECT", rec.want_subject or "(not set)",
+                                "The coded subject this board is on (`subject` in the .toml /\n"
+                                "--subject). Codes only, never a name: the code-to-person list\n"
+                                "lives outside the repository. Shown as the file says; to change\n"
+                                "it, stop the session and relaunch with the right file.")
+
+        # The subject, as the bias analysis stratifies it ([subject] in the .toml / --gest-age
+        # --age --weight-g --skin; the `subj` console command once known). Read-only labels
+        # like the rest; refresh() mirrors what the Recorder holds.
+        self.subject_labels = {}
+        for key, title, tip in SUBJECT_ROWS:
+            self.subject_labels[key] = ro(title, subject_text(key, rec.want_subject_info.get(key)), tip)
         self.launch_note_label = ro("NOTE", rec.want_note or "(none)",
                                     "`note` in the .toml / --note: written once, verbatim, as a NOTE\n"
                                     "event when the board binds to its subject. This is that text.\n"
@@ -280,6 +325,13 @@ class BoardRow(QtWidgets.QFrame):
         vn.addWidget(self.vn_id, 1)
         form.addRow("REFERENCE", vn_box)
 
+        return g
+
+    def _reading_group(self):
+        # What the operator DOES, in one box (Alex, 2026-10-14): readings from the monitor and
+        # the events typed as they happen. The TOML box to the left only shows.
+        g = QtWidgets.QGroupBox("Readings from the monitor, and events")
+        lay = QtWidgets.QGridLayout(g)
         self.note = QtWidgets.QLineEdit()
         self.note.setPlaceholderText("free text, Enter to record. Coded subjects only, no names.")
         self.note.setToolTip("What happened, in a few words: a feed, a nappy change, an alarm, a "
@@ -287,22 +339,29 @@ class BoardRow(QtWidgets.QFrame):
                              "as an event of kind NOTE, with the time and this board's subject. "
                              "None of it can be reconstructed afterwards.")
         self.note.returnPressed.connect(self._note_entered)
-        form.addRow("NEW EVENT", self.note)
-        self._set_dependents_enabled(False)
-        return g
-
-    def _reading_group(self):
-        g = QtWidgets.QGroupBox("Reading from the commercial monitor")
-        lay = QtWidgets.QGridLayout(g)
         self.spo2 = QtWidgets.QSpinBox()
         self.spo2.setRange(50, 100)
         self.spo2.setValue(95)
         self.spo2.setSuffix(" %")
         self.spo2.setToolTip("SpO2 as shown on the COMMERCIAL monitor's screen, never a number "
-                             "of ours. Range 50-100: a neonatal desaturation goes below 60.")
+                             "of ours. Range 50-100: a neonatal desaturation goes below 60.\n"
+                             "Keys + and - change it from anywhere in the window; R records it.")
         big = self.spo2.font()
         big.setPointSize(big.pointSize() + 8)
         self.spo2.setFont(big)
+        self.spo2.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)   # the two buttons below
+        self.spo2_up = QtWidgets.QPushButton("\u25B2")
+        self.spo2_down = QtWidgets.QPushButton("\u25BC")
+        af = self.spo2_up.font()
+        af.setPointSize(af.pointSize() + 4)       # the arrow is text: a bigger font, a bigger arrow
+        self.spo2_up.setToolTip("One more. Key + does the same from anywhere in the window.")
+        self.spo2_down.setToolTip("One less. Key - does the same from anywhere in the window.")
+        for b, step in ((self.spo2_up, self.spo2.stepUp), (self.spo2_down, self.spo2.stepDown)):
+            b.setFont(af)
+            b.setFixedWidth(SPIN_BTN_W)
+            b.setAutoRepeat(True)                  # hold it to run through the values
+            b.setFocusPolicy(QtCore.Qt.NoFocus)    # the box keeps the keyboard: digits, arrows
+            b.clicked.connect(step)
         self.pr = QtWidgets.QSpinBox()
         self.pr.setRange(PR_NONE, 250)
         self.pr.setSpecialValueText("--")
@@ -312,12 +371,18 @@ class BoardRow(QtWidgets.QFrame):
                            "this box is the only pulse reference a session can have.")
         self.record = QtWidgets.QPushButton("RECORD")
         self.record.setToolTip("Write the reading above as a REF_SPO2 event, stamped now. Check "
-                               "the number against the monitor first; do not correct for delay.")
+                               "the number against the monitor first; do not correct for delay.\n"
+                               "Key R (or r) does the same from anywhere in the window.")
         self.record.clicked.connect(self._record)
         self.record.setDefault(True)
         rb = self.record.font()
         rb.setBold(True)
         self.record.setFont(rb)
+        tall = RECORD_H_FACTOR * self.record.sizeHint().height()
+        self.record.setMinimumHeight(tall)
+        self.spo2.setMinimumHeight(tall)           # same height; the two buttons share it
+        for b in (self.spo2_up, self.spo2_down):
+            b.setMinimumHeight(tall // 2)
         self.delete_last = QtWidgets.QPushButton("DELETE LAST")
         self.delete_last.setToolTip("Withdraw the most recent reading of this subject -- you pressed "
                                     "twice, or read the wrong monitor. Nothing is erased: a RETRACT "
@@ -361,55 +426,50 @@ class BoardRow(QtWidgets.QFrame):
         self.delete_sel.clicked.connect(self._delete_selected)
         self._listed = None            # signature of what the table shows, to redraw only on change
         lay.addWidget(QtWidgets.QLabel("SpO2"), 0, 0)
-        lay.addWidget(self.spo2, 0, 1)
+        entry = QtWidgets.QHBoxLayout()
+        entry.setSpacing(2)
+        entry.addWidget(self.spo2, 1)
+        arrows = QtWidgets.QVBoxLayout()
+        arrows.setSpacing(2)
+        arrows.addWidget(self.spo2_up)
+        arrows.addWidget(self.spo2_down)
+        entry.addLayout(arrows)
+        lay.addLayout(entry, 0, 1)
         lay.addWidget(QtWidgets.QLabel("PR"), 1, 0)
         lay.addWidget(self.pr, 1, 1)
         lay.addWidget(self.record, 2, 0, 1, 2)
         lay.addWidget(self.delete_last, 3, 0, 1, 2)
-        lay.addWidget(self.listing, 0, 2, 4, 1)
-        lay.addWidget(self.delete_sel, 4, 2)
+        lay.addWidget(self.delete_sel, 4, 0, 1, 2)      # under DELETE LAST (Alex, 2026-10-14)
+        lay.addWidget(self.listing, 0, 2, 6, 1)         # ... so the table runs to the bottom
+        # The keys, where the eye lands between readings (Alex, 2026-10-15). The window's event
+        # filter does the work; this line and the three tooltips only say so.
+        self.keys_help = QtWidgets.QLabel("keys:  +  -  change SpO2      R  = RECORD")
+        self.keys_help.setStyleSheet(f"color:{FG_DIM};")
+        self.keys_help.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+        lay.addWidget(self.keys_help, 5, 0, 1, 2)
+        lay.setRowStretch(5, 1)                         # spare height goes below the buttons
+        lay.addWidget(QtWidgets.QLabel("NEW EVENT"), 6, 0)
+        lay.addWidget(self.note, 6, 1, 1, 2)            # the full width, under the table
         lay.setColumnStretch(2, 1)
-        for w in (self.record, self.delete_last, self.delete_sel):
-            w.setEnabled(False)
+        self._set_dependents_enabled(False)
         return g
 
     def _set_dependents_enabled(self, on):
         for w in [self.vn_on, self.vn_id, self.note, self.flag_btn]:
             w.setEnabled(on)
         if hasattr(self, "record"):
-            for w in (self.record, self.delete_last, self.delete_sel):
+            for w in (self.record, self.delete_last, self.delete_sel, self.spo2_up, self.spo2_down):
                 w.setEnabled(on)
 
     # ── actions: every one is a console command, so there is one code path ──
-    def _subject_changed(self, *_):
-        text = self.subject.currentText().strip()
-        if not text or self.src is None or not self.src.mac:
-            self._set_dependents_enabled(False)
-            return
-        subj = normalise_subject(text)
-        if subj is None:
-            # Refused, and said out loud. The alternative -- silently accepting it -- is how a
-            # name or a bed number ends up in every file of the session.
-            self.win.log_line.setText(f"{text!r} is not a subject code: SUBJ01, SUBJ12, …")
-            self.subject.setCurrentText("")
-            self._set_dependents_enabled(False)
-            return
-        if self.subject.findText(subj) < 0:
-            self.subject.addItem(subj)          # a code beyond the menu, kept for the session
-        self.subject.setCurrentText(subj)
-        if self.src.subject == subj:
-            self._set_dependents_enabled(True)
-            return
-        self.win.command(f"subject {suffix(self.src.mac)} {subj}")
-        self._videonest_changed()
-        self._set_dependents_enabled(True)
-        # Re-apply what the operator may already have chosen while the subject was blank.
-        self._videonest_changed()
+    def _subj(self):
+        """The subject the Recorder holds for this board; '' until bound."""
+        return (self.src.subject or "") if self.src is not None else ""
 
     def _flag_toggled(self, on):
         if not self.flag_btn.isEnabled():
             return
-        subj = self.subject.currentText()
+        subj = self._subj()
         if subj:
             self.win.command(f"flag {'on' if on else 'off'} {subj}")
 
@@ -427,19 +487,17 @@ class BoardRow(QtWidgets.QFrame):
         Found in the 2026-09-22 rehearsal: a window launched from a TOML with subject=SIM and
         videonest=J6plusACM showed SUBJ01 (the combo's first item) and an unticked VideoNest box,
         because nothing ever wrote the Recorder's values INTO the widgets. One click into and out
-        of SUBJECT then "applied" what the box displayed: the baby was re-bound to SUBJ01 and
+        of SUBJECT (then a box) "applied" what it displayed: the baby was re-bound to SUBJ01 and
         the phone dropped (`videonest none`) -- two launch values destroyed by a stray click.
         So on every refresh, each control that does not have keyboard focus is set to what the
         Recorder holds, with its signals blocked: mirroring is not a command."""
         src, rec = self.src, self.win.rec
         if src is None or not src.mac:
             return
-        if not self.subject.hasFocus() and (src.subject or "") != self.subject.currentText().strip():
-            if src.subject and self.subject.findText(src.subject) < 0:
-                self.subject.addItem(src.subject)            # SIM, or a code beyond the menu
-            self.subject.blockSignals(True)
-            self.subject.setCurrentText(src.subject or "")
-            self.subject.blockSignals(False)
+        shown = src.subject or rec.want_subject or "(not set)"
+        if self.subject_label.text() != shown:
+            self.subject_label.setText(shown)                # SIM from the console, or bound late
+        if self.note.isEnabled() != bool(src.subject):
             self._set_dependents_enabled(bool(src.subject))
         vn = rec.videonest_id or ""
         if not (self.vn_on.hasFocus() or self.vn_id.hasFocus()):
@@ -451,16 +509,6 @@ class BoardRow(QtWidgets.QFrame):
                 if self.vn_id.findText(vn) < 0:
                     self.vn_id.addItem(vn)                      # declared before it was heard
                 self.vn_id.setCurrentText(vn)
-        if rec.want_subject and src.subject == rec.want_subject:
-            # A subject given at launch (--subject / `subject` in the .toml) is read-only here
-            # (Alex, 2026-10-14): one session is one baby, and the file was the whole story. To
-            # change it, stop the session and relaunch with the other file. Only a window started
-            # WITHOUT a subject offers the box, because then binding has to happen somewhere.
-            if self.subject.isEnabled():
-                self.subject.setEnabled(False)
-                self.subject.setToolTip("Set at launch (--subject or `subject` in the .toml) and "
-                                        "read-only here: one session is one baby. To change it, "
-                                        "stop the session and relaunch with the right file.")
         if rec.expected_videonest_id:
             # A phone declared at launch (--ref-videonest / [ref].videonest) is read-only here, same
             # principle as MONITOR/PROBE below: shown so a typo is visible, not offered for the
@@ -489,13 +537,13 @@ class BoardRow(QtWidgets.QFrame):
             self.vn_id.setCurrentText(current)
 
     def _note_entered(self):
-        text, subj = self.note.text().strip(), self.subject.currentText()
+        text, subj = self.note.text().strip(), self._subj()
         if text and subj:
             self.win.command(f"note {subj} {text}")
             self.note.clear()
 
     def _record(self):
-        subj = self.subject.currentText()
+        subj = self._subj()
         if not subj:
             return
         pr = self.pr.value()
@@ -504,7 +552,7 @@ class BoardRow(QtWidgets.QFrame):
 
     # ── the annotation list ──
     def _readings(self):
-        subj = self.subject.currentText()
+        subj = self._subj()
         return list(reversed(self.win.rec.readings(subj))) if subj else []
 
     def refresh_listing(self):
@@ -623,6 +671,10 @@ class BoardRow(QtWidgets.QFrame):
                 self.ref_label.setToolTip(self.ref_label.toolTip().split("\n\n")[0]
                                           + f"\n\nNote: {ref['notes']}")
             self.probe_label.setText(src.probe_model or "(not set)")
+            for key, w in self.subject_labels.items():
+                w.setText(subject_text(key, src.subject_info.get(key)
+                                       if src.subject_info.get(key) is not None
+                                       else self.win.rec.want_subject_info.get(key)))
             if self.flag_btn.isChecked() != src.flagged:
                 self.flag_btn.blockSignals(True)     # reflect state, do not re-fire the command
                 self.flag_btn.setChecked(src.flagged)
@@ -701,16 +753,17 @@ class ClockAnchorDialog(QtWidgets.QDialog):
 # the window
 # ============================================================================================
 class RecorderWindow(QtWidgets.QMainWindow):
-    def __init__(self, rec, hub, duration_s=0.0):
+    def __init__(self, rec, hub, duration_s=0.0, config=None):
         super().__init__()
         self.rec = rec
+        self.config = config      # the .toml path (None when launched from flags)
         # A timed run stops the RECORDER, and tick() then closes the window the same way a full
         # disk does -- one path out of a session, not two.
         self.end_at = time.monotonic() + duration_s if duration_s > 0 else None
         self.hub_text = f"{hub[0]}:{hub[1]}"
         waiting = f" — waiting for board *{rec.board_filter}" if rec.board_filter else ""
-        self.setWindowTitle(f"{script_name(__file__)} — {rec.session_id}{waiting}"
-                            f"  (hub {hub[0]}:{hub[1]})")
+        self.setWindowTitle(f"{script_name(__file__)} — {rec.session_id}{self.config_title()}"
+                            f"{waiting}  (hub {hub[0]}:{hub[1]})")
         self.rows = {}            # key (mac, or ip until identified) -> BoardRow
         self.traces = {}          # ip -> BoardTrace
         self.aux_ips = set()
@@ -718,6 +771,10 @@ class RecorderWindow(QtWidgets.QMainWindow):
         self._closing = False
         self.client = HubClient(script_name(__file__), hub=hub, control=False, log=rec.log.info)
         self.client.connect()
+        # Keys + / - / R act wherever the focus is (Alex, 2026-10-15: the operator looks at the
+        # monitor, not at which widget is current). An application filter sees the key before the
+        # focused widget does, which a QShortcut would not: a line edit swallows printable keys.
+        QtWidgets.QApplication.instance().installEventFilter(self)
 
         self.setStyleSheet(DARK_QSS)
         central = QtWidgets.QWidget()
@@ -780,11 +837,47 @@ class RecorderWindow(QtWidgets.QMainWindow):
         h.addWidget(stop)
         return bar
 
+    def config_title(self):
+        """' — cot1.toml' for the title bar, '' when launched from flags."""
+        return f" — {os.path.basename(self.config)}" if self.config else ""
+
     # ── one code path for every action ──
     def _clock_anchor(self):
         self.command("anchor")
         self.clock_dialog = ClockAnchorDialog(self, self.rec.session_id)
         self.clock_dialog.showMaximized()
+
+    # ── keys: + and - step the SpO2 box, R records (Alex, 2026-10-15) ──
+    KEY_STEP = {QtCore.Qt.Key_Plus: 1, QtCore.Qt.Key_Minus: -1}
+
+    def _key_row(self, target):
+        """The row the keys act on: the one holding the key's target (the focused widget), else
+        the first that can record."""
+        for row in self.rows.values():
+            if row.isAncestorOf(target):
+                return row
+        for row in self.rows.values():
+            if row.record.isEnabled():
+                return row
+        return None
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QtCore.QEvent.KeyPress and isinstance(obj, QtWidgets.QWidget)                 and obj.window() is self:                 # auto-repeat included: hold + to run up
+            # `obj` is the widget the key goes to, i.e. the focused one. Typing into NEW EVENT
+            # (or any free-text field) must keep its r, + and -; the SpO2 and PR boxes hold a
+            # QLineEdit too, but no text of theirs needs those keys.
+            typing = isinstance(obj, QtWidgets.QLineEdit) and                 not isinstance(obj.parent(), QtWidgets.QAbstractSpinBox)
+            if not typing and ev.modifiers() in (QtCore.Qt.NoModifier, QtCore.Qt.KeypadModifier,
+                                                 QtCore.Qt.ShiftModifier):
+                row = self._key_row(obj)
+                if row is not None:
+                    if ev.key() in self.KEY_STEP and row.spo2_up.isEnabled():
+                        (row.spo2.stepUp if self.KEY_STEP[ev.key()] > 0 else row.spo2.stepDown)()
+                        return True
+                    if ev.key() == QtCore.Qt.Key_R:
+                        row.record.click()            # a click: nothing if RECORD is disabled
+                        return True
+        return super().eventFilter(obj, ev)
 
     def command(self, line):
         reply = self.rec.console(line)
@@ -874,7 +967,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
             row = self.rows[key] = BoardRow(self, key, tr)
             self.rows_box.addWidget(row)
             self.setWindowTitle(f"{script_name(__file__)} — {self.rec.session_id}"
-                                f"  (hub {self.hub_text})")
+                                f"{self.config_title()}  (hub {self.hub_text})")
         row.trace, row.src = tr, src
         return row
 
@@ -911,6 +1004,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
                 return
             self.rec.stop("operator")
         self._closing = True
+        QtWidgets.QApplication.instance().removeEventFilter(self)   # the keys die with the window
         for t in self.timers:          # BEFORE the socket is closed, or they fire on a dead one
             t.stop()
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("geometry", self.saveGeometry())
@@ -989,11 +1083,12 @@ def main(argv=None):
                        board=args.board, subject=args.subject, videonest=args.ref_videonest,
                        note=args.note, probe=args.probe, ref_model=args.ref_model,
                        ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
-                       ref_note=args.ref_note)
-    except (NotEnoughSpace, OSError) as exc:
+                       ref_note=args.ref_note, gest_age=args.gest_age, age=args.age,
+                       weight_g=args.weight_g, skin=args.skin)
+    except (NotEnoughSpace, SessionExists, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2
-    win = RecorderWindow(rec, hub, duration_s=args.duration)
+    win = RecorderWindow(rec, hub, duration_s=args.duration, config=args.config)
     win.show()
     return app.exec_()
 
