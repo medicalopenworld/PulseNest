@@ -77,10 +77,13 @@ repeated on the day.
 
 **On the day, first**, from PowerShell in the repository folder:
 
-- [ ] **`.\scripts\hotspot.ps1 on`** — in3wifi comes up with the laptop at `192.168.137.1`; the
-      line `clients` lists the boards as they join (by MAC, `docs/boards.md`). `status` shows the
-      same at any time, `off` at the end. No internet is needed or shared. (Settings → Mobile
-      hotspot, sharing "Ethernet", does the same by hand.) Boards powered before this are fine:
+- [ ] **in3wifi up.** The launcher (next step) watches it on its NETWORK line: green when the
+      laptop is `192.168.137.1`; red, with **TURN ON in3wifi…**, when it is down and nothing is
+      on the air. The button explains what will change and asks before doing it; the same by
+      hand is `.\scripts\hotspot.ps1 on` (its `status` lists the boards as they join, by MAC;
+      `off` at the end). No internet is needed or shared. If the launcher says the loopback
+      adapter is missing, it offers to open the Add Hardware wizard (§1 bis); it never installs
+      it itself. Boards powered before this are fine:
       since fw 0.23 a board keeps looking for its networks and joins within 30 s; if the hotspot
       drops and comes back, the boards come back with it, no power cycle needed.
 - [ ] **Phones on in3wifi.** Mobile data can stay on: VideoNest sends through the Wi-Fi network

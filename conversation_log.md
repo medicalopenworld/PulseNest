@@ -27389,3 +27389,61 @@ actualizado. **Prueba de aceptación superada:** hotspot OFF → a los 35 s las 
 (192.168.50.x) sin tocarlas; hotspot ON → siguen en la de casa (solo se mueven al caer). Hotspot dejado
 encendido como estaba. Mejora pendiente (no pedida): `build.ps1 -Ota` podría verificar por MAC en vez de
 por IP, que cambia cuando la placa reinicia en otra red.
+
+## 2026-10-16 (2) - Lanzador: detección de in3wifi con aprobación; OTA verificada por MAC
+
+**Alex:** «Sigue con la detección de in3wifi en el lanzador y también la mejora: que la verificación del build
+por OTA busque la placa por MAC y no por IP».
+
+**Lanzador (`tools/pulsenest_session.py`):** línea NETWORK en la barra superior, junto al disco: verde
+«in3wifi up: this laptop is 192.168.137.1»; rojo «in3wifi DOWN and nothing on the air» con botón TURN ON
+in3wifi…; ámbar «DOWN; N source(s) on the air by another network — leave it, or they would move», sin botón
+(salvaguarda del laboratorio: las placas prueban in3wifi primero y se irían). Detección con la librería
+estándar (`laptop_ips()`: `getaddrinfo` del propio nombre, una dirección por adaptador; cada 2 s en el tic).
+`offer_hotspot()`: diálogo con `hotspot_offer_text()` (qué cambia, qué no, sin internet, sin administrador,
+nada se instala, equivalente a Settings o `hotspot.ps1 on`), Yes/No, por defecto No; se abre solo UNA vez por
+ejecución, el botón se queda. Con Yes, `run_hotspot("on")` en un hilo (hasta ~25 s) y señal
+`hotspot_done(rc, text)` al hilo Qt. Resultado: 0 → «is on; waiting for its address» y relectura de IPs;
+2 → «no loopback adapter…» en rojo y segundo diálogo (`adapter_missing_text()`, pasos de hdwwiz) que con Yes
+abre `hdwwiz.exe` elevado (`Start-Process -Verb RunAs`; el UAC lo pregunta Windows); el lanzador NUNCA
+instala; otro → «could not turn in3wifi on: <última línea>». Un fallo se queda en la línea entre tics
+(`_net_note`) hasta el siguiente intento, hasta que in3wifi sube, o hasta que hay tráfico por otra red.
+Fuera de Windows la línea queda vacía. `hotspot.ps1`: códigos de salida fijos en la cabecera (0 on, 3 off,
+2 sin adaptador, 1 fallo) para no leer prosa; `on` sale 1 si no sube en 20 s. Tests 76/76 (línea pura en
+los 4 estados, comando, textos, ventana: pregunta una vez sola, No no ejecuta nada, Yes desde el botón corre
+«on» en el hilo y pone verde al llegar la IP, rc 2 → guía y hdwwiz, rc 1 → fallo que persiste, ámbar con
+fuentes en el aire, tooltips). Render nativo de los dos estados.
+
+**`scripts/build.ps1 -Ota` por MAC:** antes del POST lee el `mac=` de la placa en esa IP vía
+`udp_fw_versions.py`; tras el reinicio busca `mac=<MAC>` + `elfsha=` en el informe, con la IP que traiga;
+sin MAC conocida, por IP como antes. Probado en real: OTA a 88:50 en in3wifi → «OTA VERIFIED:
+mac=10:51:DB:50:88:50» a la primera. Como el binario post-commit es limpio (`build=3ccad36`,
+`elfsha=92e7101794e62747`), flasheadas también 87:A4 y 82:5C para que las tres lleven el mismo; `boards.md`
+al día. (Un primer intento a 192.168.50.3 dio http=000: las placas ya estaban en in3wifi, Alex las había
+reiniciado.)
+
+**Docs:** runbook §2 (paso «in3wifi up» ahora vía el lanzador; el script sigue como manual); spec §14,
+párrafo «The network». No probado: el código de salida 3 de `hotspot.ps1 off` (habría apagado el hotspot de
+Alex con las placas dentro).
+
+**Alex (16-10):** al resetear las placas desde el router de casa a in3wifi, BOARDS ON THE AIR enseñaba las IPs
+nuevas y dejaba las viejas en SILENT. **Hecho:** `Fleet.feed`, al parsear un `$CFG` con una MAC ya listada en
+otra dirección, borra la fila vieja (una placa es su MAC; la fila vieja era un fantasma para siempre). Test:
+la dirección vieja desaparece; el check de «silent» pasa a la dirección nueva. Spec §14, párrafo «One row
+per board».
+Test del lanzador 77/77 tras corregir mi comprobación: la «dirección vieja» que esperaba borrada
+(192.168.137.24) era la de OTRA placa (CFG_B); la de la placa A era 192.168.137.8, que sí desaparece. La fila
+de la otra placa se comprueba intacta.
+
+## 2026-10-16 (3) - Grabador: «a veces aparece una nueva fila» = la misma placa en otra dirección
+
+**Alex:** en `pulsenest_recorder_gui.py` a veces aparece una fila nueva (plot, tabla, toml…) sin saber por qué.
+**Causa:** las filas van por MAC una vez identificada la placa y por IP antes. Una placa que vuelve en otra IP
+(reinicio en otra red, nuevo lease) manda datagramas antes que su `$CFG`: `redraw` → `_row_for(ip_nueva)` sin
+MAC → fila nueva con clave la IP. Al llegar el `$CFG`, la MAC ya tiene su fila (la de la IP vieja), así que
+`_row_for` devolvía esa y la fila de la IP se quedaba huérfana, congelada, sin que nadie la refrescara ni la
+quitara; y la traza de la IP vieja seguía en `traces`. Encaja con hoy: placas reseteadas del router de casa
+a in3wifi. **Hecho:** en `_row_for`, si la clave es una MAC y existe una fila para la IP, se re-clava a la
+MAC cuando ésta no tiene fila y se elimina cuando sí la tiene; además la traza de la dirección vieja se saca
+de `traces` al apuntar la fila a la nueva. Test: placa de vuelta en 10.0.0.7, primero `$M4` y luego `$CFG` →
+una fila (la MAC) y una traza (la nueva). GUI 102/102. Spec, sección de la ventana.

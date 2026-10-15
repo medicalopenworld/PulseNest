@@ -1041,10 +1041,24 @@ class RecorderWindow(QtWidgets.QMainWindow):
         src = self.rec.sources.get(ip)
         key = src.mac if (src is not None and src.mac) else ip
         row = self.rows.get(key)
-        if row is None and key != ip and ip in self.rows:
-            row = self.rows.pop(ip)          # identified: re-key from IP to MAC
-            row.key = key
-            self.rows[key] = row
+        if key != ip:
+            # Identified. A board's first datagrams arrive before its $CFG, so a row keyed by the
+            # address may already exist: it becomes the MAC's row when the MAC has none, and goes
+            # when it has one -- the same board back on a new address (a reboot onto another
+            # network, a new lease). Until 2026-10-16 that second row stayed, frozen, beside the
+            # live one (Alex: "a veces aparece una nueva fila ... no sé el por qué").
+            early = self.rows.get(ip)
+            if early is not None:
+                if row is None:
+                    row = self.rows.pop(ip)          # re-key from IP to MAC
+                    row.key = key
+                    self.rows[key] = row
+                else:
+                    self.rows.pop(ip)
+                    early.setParent(None)
+                    early.deleteLater()
+            if row is not None and row.trace is not tr and row.trace.ip != ip:
+                self.traces.pop(row.trace.ip, None)  # the old address: frozen, and gone with it
         if row is None:
             if self.empty is not None:
                 self.empty.setParent(None)

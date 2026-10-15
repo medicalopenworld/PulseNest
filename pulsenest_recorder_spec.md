@@ -494,6 +494,12 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   are kept in the window and written to `pulsenest_recorder_gui.ini` at close (`split_body`,
   `split_readings`) beside `geometry`, and a new window starts its rows from them. Handles are
   6 px, blue under the mouse.
+  **One row per board, also across addresses** (2026-10-16). Rows are keyed by MAC once the
+  board has said who it is, by address before; a board back on a new address (a reboot onto
+  another network, a new lease) sends datagrams before its `$CFG`, so a row keyed by the new
+  address can exist when the MAC's row already does. It folds into the MAC's row and the old
+  address's trace is dropped; until then that second row stayed, frozen, beside the live one
+  (Alex, same day: "a veces aparece una nueva fila").
   **The bottom line** names the session folder as a link that opens it in the file manager, three
   points larger than the body text (Alex, 2026-10-15: it was dim and small and could not be
   clicked); console replies and hints have a dim line of their own under it, so a reply never
@@ -1082,3 +1088,24 @@ datagrams and a temporary configs folder (matching, ambiguity, a new DHCP lease,
 the command lines), then the real window offscreen with a fake hub client and a fake spawner
 (START once, never twice, no START ALL, the lab button, RELOAD keeping a process, the monitor's own
 console, the client closed and the processes left alone at close).
+
+**The network (2026-10-16).** Every board and phone sends to `192.168.137.1`, the address Windows
+gives the Mobile Hotspot; in a hospital there is no internet to share, so the hotspot shares the
+KM-TEST loopback adapter (`scripts/hotspot.ps1`, runbook §1 bis). The launcher watches whether the
+laptop has that address (`laptop_ips()`, standard library, every 2 s) and says so on a NETWORK
+line: green up; red, with **TURN ON in3wifi…**, when down **and nothing is on the air**; amber,
+no button, when sources arrive by another network (the lab's router: turning the hotspot on would
+move them, since a board tries in3wifi first). The dialog (`hotspot_offer_text()`) says what
+changes, what does not, that no internet, no administrator and no install are involved, and asks;
+only on Yes does a worker thread run `hotspot.ps1 on` (`run_hotspot()`, exit codes 0 on / 3 off /
+2 no adapter / 1 failed, fixed in the script's header so no prose is parsed). It opens by itself
+once per run; the button stays. A missing loopback adapter is **never installed by the launcher**
+(a device install from a session launcher is what a hospital's IT rightly fears): it is said in
+red and, on request, `hdwwiz.exe` is opened elevated with the steps in the dialog (Alex,
+2026-10-15/16: "siempre solicitando la aprobación del usuario antes del cambio y explicando qué se
+va a cambiar y por qué"). Since fw 0.23 the boards come back by themselves when the hotspot does.
+
+**One row per board (2026-10-16).** The boards table is keyed by address, but a board is its MAC:
+when a `$CFG` arrives with a MAC already listed under another address (a reboot, a new lease, a
+board reset from the home router onto in3wifi), the old row is dropped, not left `SILENT` for
+ever beside the live one (Alex, same day).

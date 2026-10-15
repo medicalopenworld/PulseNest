@@ -464,6 +464,22 @@ winF.drain()
 winF.redraw()
 check("and stays that way as the wrong boards keep talking",
       list(winF.rows) == ["10:51:DB:50:88:50"], list(winF.rows))
+# The same board back on a new address (reboot onto another network, new lease), its first
+# datagrams before its $CFG (Alex, 2026-10-16: "a veces aparece una nueva fila").
+_m4 = b"$M4,4,1,1," + b",".join([b"1"] * 20) + b",2\n"
+qc.queue.append(("10.0.0.7", _m4))
+winF.drain()
+winF.redraw()
+_rows_mid = list(winF.rows)
+qc.queue.append(("10.0.0.7", b"$CFG,mac=10:51:DB:50:88:50,board=V18\n"))
+qc.queue.append(("10.0.0.7", _m4))
+winF.drain()
+winF.redraw()
+check("a board back on a new address: the row made before its $CFG folds into the MAC's row, "
+      "the old address's trace goes, one row and one trace remain",
+      list(winF.rows) == ["10:51:DB:50:88:50"] and list(winF.traces) == ["10.0.0.7"]
+      and winF.rows["10:51:DB:50:88:50"].trace.ip == "10.0.0.7",
+      f"mid={_rows_mid} rows={list(winF.rows)} traces={list(winF.traces)}")
 winF._closing = True
 recF.stop("test")
 winF.client.close()

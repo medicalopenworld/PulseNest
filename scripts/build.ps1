@@ -17,7 +17,8 @@
 .PARAMETER Ota
     IP of a board already running PulseNest (ESP-IDF firmware, fw >= 0.11 IDF): POST the raw image to
     http://<ip>/update, then wait for the board to come back and verify through the hub that it reports
-    the elfsha of the image just built (tools/udp_fw_versions.py); exit code 2 if it does not within
+    the elfsha of the image just built (tools/udp_fw_versions.py), found by its MAC whatever
+    address it comes back on (it may choose another network after the restart); exit code 2 if it does not within
     ~65 s. Verify the MAC first (tools/udp_fw_versions.py). A board still on the Arduino
     firmware needs the multipart form once instead: curl -F update=@build_V18/pulsenest.bin http://<ip>/update
 .PARAMETER Usb
@@ -76,23 +77,34 @@ if ($Ota) {
     # reports it. Three looks over ~65 s, then give up with exit code 2 -- docs/boards.md records
     # the elfsha of every OTA, so a flash that cannot be verified must not look like one that was.
     $want = (([IO.File]::ReadAllBytes($bin))[0xB0..0xB7] | ForEach-Object { $_.ToString('x2') }) -join ''
-    Write-Host "`nWaiting for $Ota to come back with elfsha=$want ..."
+    # By MAC, not by IP (2026-10-16): the board reboots and chooses its network again, and on
+    # 2026-10-16 the three V18 came back on in3wifi after an OTA sent over the home router --
+    # verified by hand, "NOT VERIFIED" by this script, which waited on the old address. The MAC
+    # is read from the board's own $CFG before the restart, and the report is searched for it
+    # whatever address it carries now. No MAC known (no $CFG in the hub's cache): by IP, as before.
+    $who = $Ota
+    $report = (& python (Join-Path $root 'tools/udp_fw_versions.py') --discover 3 2>&1 | Out-String) -split "`r?`n"
+    $line = $report | Where-Object { $_ -match ('^\s*' + [regex]::Escape($Ota) + '\s') -and $_ -match 'mac=' } | Select-Object -First 1
+    if ($line -and $line -match 'mac=([0-9A-Fa-f:]{17})') { $who = "mac=$($Matches[1])" }
+    else { Write-Host "  (no MAC known for $Ota before the restart: verifying by IP)" }
+    Write-Host "`nWaiting for $who to come back with elfsha=$want ..."
     $verified = $false
     foreach ($wait in 20, 15, 15) {
         Start-Sleep -Seconds $wait
         $report = (& python (Join-Path $root 'tools/udp_fw_versions.py') --discover 5 2>&1 | Out-String) -split "`r?`n"
-        $line = $report | Where-Object { $_ -match ('^\s*' + [regex]::Escape($Ota) + '\s') -and $_ -match 'elfsha=' } | Select-Object -First 1
+        if ($who -like 'mac=*') { $line = $report | Where-Object { $_ -match [regex]::Escape($who) -and $_ -match 'elfsha=' } | Select-Object -First 1 }
+        else { $line = $report | Where-Object { $_ -match ('^\s*' + [regex]::Escape($Ota) + '\s') -and $_ -match 'elfsha=' } | Select-Object -First 1 }
         if ($line) {
             Write-Host $line.TrimEnd()
             if ($line -match ('elfsha=' + $want)) { $verified = $true; break }
         } else {
-            Write-Host "  $Ota not reporting yet"
+            Write-Host "  $who not reporting yet"
         }
     }
     if ($verified) {
-        Write-Host "OTA VERIFIED: $Ota runs the image just built (elfsha=$want). Record it in docs/boards.md."
+        Write-Host "OTA VERIFIED: $who runs the image just built (elfsha=$want). Record it in docs/boards.md."
     } else {
-        Write-Host "OTA NOT VERIFIED: $Ota did not report elfsha=$want. Check by hand: python tools/udp_fw_versions.py"
+        Write-Host "OTA NOT VERIFIED: $who did not report elfsha=$want. Check by hand: python tools/udp_fw_versions.py"
         exit 2
     }
 }

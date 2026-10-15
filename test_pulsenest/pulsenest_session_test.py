@@ -58,10 +58,14 @@ fl.feed("192.168.137.30", b"$CFG,mac=AA:BB:CC:DD:88:50,fw=0.22,elfsha=cd1ccf587e
 check("two boards ending in 8850 -> AMBIGUOUS, both named",
       fl.match_board("8850")[0] == "ambiguous" and "AA:BB:CC:DD:88:50" in fl.match_board("8850")[1])
 check("blank board field", fl.match_board("") == ("blank", ""))
-# a new DHCP lease: same MAC, newer address wins
+# a new DHCP lease: same MAC, newer address wins, and the old address row is gone (2026-10-16)
 fl.feed("192.168.137.77", CFG_A, t0 + 5)
 check("same MAC on a new address is one board, the freshest address",
       fl.by_mac()["10:51:DB:50:88:50"].ip == "192.168.137.77")
+check("and the old address row is dropped: no SILENT ghost of a board that is on the air",
+      "192.168.137.8" not in fl.boards and len([b for b in fl.boards.values() if b.mac == "10:51:DB:50:88:50"]) == 1
+      and "192.168.137.24" in fl.boards,            # another board's row is untouched
+      str(sorted(fl.boards)))
 check("silent after LOST_S", fl.boards["192.168.137.24"].silent(t0 + S.LOST_S + 1) and not fl.boards["192.168.137.24"].silent(t0 + 1))
 check("seen text: live / SILENT amber / SILENT red past PHONE_STALE_S",
       S.seen_text(1.0) == ("live", S.GREEN) and S.seen_text(12.0) == ("SILENT 12 s", S.AMBER)
@@ -140,12 +144,87 @@ def fake_spawn(cmd, console=False):
 
 
 S.spawn = fake_spawn
+
+# The network, faked before any window exists: what addresses the laptop "has", what the hotspot
+# script "answers", and what the operator "says" to the question (2026-10-16).
+_ips = {"value": ["192.168.50.88"]}            # the home router: in3wifi down
+_hotspot = {"rc": 0, "text": "hotspot : On", "calls": []}
+_answers = {"value": QtWidgets.QMessageBox.No, "asked": []}
+S.laptop_ips = lambda: list(_ips["value"])
+
+
+def fake_run_hotspot(action):
+    _hotspot["calls"].append(action)
+    return _hotspot["rc"], _hotspot["text"]
+
+
+S.run_hotspot = fake_run_hotspot
+QtWidgets.QMessageBox.question = staticmethod(lambda parent, title, text, *a, **k:
+                                              (_answers["asked"].append((title, text)), _answers["value"])[1])
+
+check("network_line: up is green, no offer",
+      S.network_line(True, 0, "win32") == (f"in3wifi up: this laptop is {S.HOTSPOT_IP}", S.GREEN, False))
+check("network_line: down with sources on the air is amber and NOT offered (they would move)",
+      S.network_line(False, 2, "win32")[1:] == (S.AMBER, False) and "would move" in S.network_line(False, 2, "win32")[0])
+check("network_line: down and nothing on the air is red and offered",
+      S.network_line(False, 0, "win32") == ("in3wifi DOWN and nothing on the air", S.RED, True))
+check("network_line: not Windows -> blank", S.network_line(False, 0, "linux") == ("", S.GREY, False))
+check("the hotspot command is the script in Windows PowerShell, bypassing the execution policy",
+      S.hotspot_command("on")[:1] == ["powershell"] and "-ExecutionPolicy" in S.hotspot_command("on")
+      and S.hotspot_command("on")[-2:] == [S.HOTSPOT_SCRIPT, "on"] and S.HOTSPOT_SCRIPT.endswith("hotspot.ps1"))
+check("the offer says what changes, what does not, and that nothing is installed or needs internet",
+      all(s in S.hotspot_offer_text() for s in ("What changes", "What does not", "No internet", "No administrator",
+                                                 "Nothing is installed", "boards and the phones will join")))
+check("the adapter text guides through hdwwiz and says the launcher will not install devices",
+      "will not install devices" in S.adapter_missing_text() and "KM-TEST" in S.adapter_missing_text()
+      and "hdwwiz" in " ".join(S.hdwwiz_command()) and "RunAs" in " ".join(S.hdwwiz_command()))
+
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 client = FakeClient()
 w = S.Launcher(tmp, hub, client)
 w.show()
 app.processEvents()
 check("window builds: one row per cot", w.table.rowCount() == 4, str(w.table.rowCount()))
+w.refresh()
+app.processEvents()
+check("in3wifi down, nothing on the air: NETWORK in red with the TURN ON button, and the question asked once by itself",
+      w.net.text().startswith("in3wifi DOWN and nothing") and S.RED in w.net.styleSheet()
+      and w.btn_net.isVisibleTo(w) and len(_answers["asked"]) == 1 and "in3wifi is down" in _answers["asked"][0][0]
+      and _hotspot["calls"] == [], f"{w.net.text()!r} asked={len(_answers['asked'])} calls={_hotspot['calls']}")
+w.refresh()
+check("No means no: nothing run, and the question is not asked again by itself",
+      _hotspot["calls"] == [] and len(_answers["asked"]) == 1)
+_answers["value"] = QtWidgets.QMessageBox.Yes
+w.btn_net.click()
+w._hotspot_thread.join(5)
+app.processEvents()
+check("Yes from the button runs the script's 'on' in a worker thread, and says the hotspot is on",
+      _hotspot["calls"] == ["on"] and "is on" in w.net.text() and S.GREEN in w.net.styleSheet(), w.net.text())
+_ips["value"] = ["192.168.50.88", S.HOTSPOT_IP]
+w.refresh()
+check("the address arrives: NETWORK green, the button gone",
+      w.net.text().startswith("in3wifi up") and S.GREEN in w.net.styleSheet() and not w.btn_net.isVisibleTo(w))
+_ips["value"] = ["192.168.50.88"]
+_hotspot.update(rc=2, text="No adapter")
+w._net_checked = 0.0
+w.refresh()
+_spawned_before = len(spawned)
+w.btn_net.click()                 # answered Yes: tries 'on', the script says no adapter
+w._hotspot_thread.join(5)
+app.processEvents()               # the result; the adapter question (Yes) opens hdwwiz
+check("no adapter: said in red, the guide asked, hdwwiz opened elevated on Yes, the button back",
+      "no loopback adapter" in w.net.text() and len(_answers["asked"]) == 4 and "loopback adapter missing" in _answers["asked"][-1][0]
+      and len(spawned) == _spawned_before + 1 and "hdwwiz" in " ".join(spawned[-1].cmd) and w.btn_net.isVisibleTo(w),
+      f"{w.net.text()!r} asked={len(_answers['asked'])} spawned={len(spawned) - _spawned_before}")
+_hotspot.update(rc=1, text="could not start: Failed")
+_answers["value"] = QtWidgets.QMessageBox.Yes
+w.btn_net.click(); w._hotspot_thread.join(5); app.processEvents()
+w.refresh()                       # the next tick keeps the failure on the line, not the plain DOWN
+check("a failed start is said with the script's last line, kept across ticks, the button back",
+      w.net.text() == "could not turn in3wifi on: could not start: Failed" and w.btn_net.isVisibleTo(w), w.net.text())
+_hotspot.update(rc=0, text="hotspot : On")
+_answers["value"] = QtWidgets.QMessageBox.No
+spawned.pop()                     # the hdwwiz process: the cot checks below count spawns from zero
 r1 = [c.name for c in w.cots].index("subj01.toml")
 r2 = [c.name for c in w.cots].index("subj02.toml")
 check("no board yet: 'not on the air' in amber", w.table.item(r1, 3).text() == "not on the air")
@@ -155,6 +234,9 @@ client.queue += [("192.168.137.8", CFG_A), ("192.168.137.8", M4), ("192.168.137.
 w.drain()
 w.refresh()
 app.processEvents()
+check("a board on the air by another network: NETWORK amber, no offer",
+      w.net.text().startswith("in3wifi DOWN; 2 source(s)") and S.AMBER in w.net.styleSheet() and not w.btn_net.isVisibleTo(w),
+      w.net.text())
 check("boards table shows the board with its MAC and elfsha",
       w.boards.rowCount() == 1 and w.boards.item(0, 1).text() == "10:51:DB:50:88:50" and w.boards.item(0, 5).text() == "cd1ccf587e65b403")
 check("cot 1 matched to its MAC", w.table.item(r1, 3).text() == "10:51:DB:50:88:50")
@@ -279,7 +361,8 @@ headers = [t.horizontalHeaderItem(c).toolTip() for t in (w2.boards, w2.phones, w
 buttons = [b.toolTip() for b in (w2.btn_lab, w2.btn_monitor, w2.btn_viewer, w2.btn_change, w2.files_link,
                                   w2.table.cellWidget(0, 6), w2.table.cellWidget(0, 7))]
 check("every column header and every button carries a tooltip, and so do the clock, disk and status line",
-      all(headers) and all(buttons) and w2.clock.toolTip() and w2.disk.toolTip() and w2.extra_status.toolTip(),
+      all(headers) and all(buttons) and w2.clock.toolTip() and w2.disk.toolTip() and w2.extra_status.toolTip()
+      and w2.net.toolTip() and w2.btn_net.toolTip(),
       f"headers {sum(1 for h in headers if not h)} empty, buttons {sum(1 for b in buttons if not b)} empty")
 w2.close()
 os.remove(os.path.join(other, "ward2.toml")); os.rmdir(other)

@@ -28,7 +28,10 @@ import faulthandler
 import os
 import re
 import shutil
+import socket
+import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
@@ -52,6 +55,10 @@ RECORDER_GUI    = os.path.join(_HERE, "pulsenest_recorder_gui.py")
 FLEET_MONITOR   = os.path.join(_HERE, "fleet_monitor.py")
 PPG_VIEWER      = os.path.join(_HERE, "fleet_ppg_viewer.py")
 LAB_SCRIPT      = os.path.join(_ROOT, "pulsenest_lab.py")
+HOTSPOT_SCRIPT  = os.path.join(_ROOT, "scripts", "hotspot.ps1")   # the actuator; exit codes in its header
+HOTSPOT_IP      = "192.168.137.1"     # the laptop on in3wifi: the address every board and phone sends to
+HOTSPOT_SSID    = "in3wifi"
+NET_CHECK_S     = 2.0                 # how often the laptop's addresses are read
 EXAMPLE_NAME    = "example.toml"      # the template: listed, not for starting
 
 MB_PER_MIN_PER_BOARD = 17     # measured (docs/hospital_runbook.md section 1): .pnraw + live CSV
@@ -161,6 +168,13 @@ class Fleet:
             for line in data.decode("ascii", "replace").splitlines():
                 if line.startswith("$CFG,"):
                     b.fields = parse_cfg(line)
+                    # A board is its MAC. The same MAC on another address is the same board after
+                    # a reboot or a new lease, and its old row would sit there SILENT for ever
+                    # (Alex, 2026-10-16: boards reset from the home router onto in3wifi left
+                    # their old rows behind). The old address goes; the table shows one row.
+                    if b.mac != "?":
+                        for old_ip in [k for k, o in self.boards.items() if k != ip and o.mac == b.mac]:
+                            del self.boards[old_ip]
 
     def tick(self, now):
         """Once a second: the datagram rate of every source over the last interval."""
@@ -324,6 +338,82 @@ def disk_line(n_boards):
                if free_gb < DISK_FLOOR_GB else ""), colour)
 
 
+# ── the network: is in3wifi up, and what to do when it is not (2026-10-16) ─────────────────
+# The boards and the phones send to HOTSPOT_IP, the address Windows gives the Mobile Hotspot; a
+# hospital has no internet to share, so the hotspot is started sharing the KM-TEST loopback
+# adapter (scripts/hotspot.ps1, docs/hospital_runbook.md section 1 bis). The launcher watches,
+# says, and offers -- it changes nothing without the operator's yes, and it never installs the
+# adapter (a device install from a session launcher is what a hospital's IT rightly fears):
+# missing, it is said, and hdwwiz.exe is opened on request with the steps on screen.
+
+def laptop_ips():
+    """Every IPv4 address this laptop has, from the standard library alone: on Windows the
+    host's own name resolves to one address per connected adapter. Milliseconds; no PowerShell."""
+    try:
+        return sorted({a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)})
+    except OSError:
+        return []
+
+
+def in3wifi_up(ips=None):
+    return HOTSPOT_IP in (laptop_ips() if ips is None else ips)
+
+
+def hotspot_command(action):
+    """scripts/hotspot.ps1 <on|off|status>, in Windows PowerShell (the WinRT calls need it)."""
+    return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", HOTSPOT_SCRIPT, action]
+
+
+def run_hotspot(action):
+    """-> (exit code, text) of the script: 0 on, 3 off, 2 no loopback adapter, 1 failed. Blocks
+    for up to ~25 s on 'on': the window calls it from a worker thread. The test replaces it."""
+    try:
+        r = subprocess.run(hotspot_command(action), capture_output=True, text=True, timeout=90)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+
+
+def network_line(up, n_air, platform=sys.platform):
+    """-> (text, colour, offer) for the NETWORK line. `offer` is True only when in3wifi is down
+    AND nothing is on the air: with boards arriving by another network (the lab's router), turning
+    the hotspot on would pull them over to it -- said in amber, not offered."""
+    if platform != "win32":
+        return "", GREY, False
+    if up:
+        return f"{HOTSPOT_SSID} up: this laptop is {HOTSPOT_IP}", GREEN, False
+    if n_air:
+        return (f"{HOTSPOT_SSID} DOWN; {n_air} source(s) on the air by another network -- "
+                "leave it, or they would move", AMBER, False)
+    return f"{HOTSPOT_SSID} DOWN and nothing on the air", RED, True
+
+
+def hotspot_offer_text():
+    """What the operator reads before saying yes: what will change, what will not, and why."""
+    return (f"{HOTSPOT_SSID} is down: this laptop has no address {HOTSPOT_IP}, so no board and no "
+            "phone can reach it.\n\n"
+            "Turn the Mobile Hotspot on?\n\n"
+            "What changes: Windows starts the hotspot named in3wifi, sharing the loopback adapter. "
+            "The boards and the phones will join it and start sending here.\n"
+            "What does not: your own Wi-Fi connection, if any. No internet is needed or shared. "
+            "No administrator rights. Nothing is installed.\n"
+            "Same as: Settings > Mobile hotspot, or  .\\scripts\\hotspot.ps1 on")
+
+
+def adapter_missing_text():
+    return ("This laptop has no \"Microsoft KM-TEST Loopback Adapter\", the software adapter the "
+            "hotspot shares when there is no internet. It is installed once per laptop, by hand, "
+            "with administrator rights (the launcher will not install devices).\n\n"
+            "Open the Add Hardware wizard now? Then: Next > \"Install the hardware that I manually "
+            "select from a list\" > Network adapters > Microsoft > \"Microsoft KM-TEST Loopback "
+            "Adapter\" > Next > Finish. Afterwards, TURN ON again.")
+
+
+def hdwwiz_command():
+    """The Add Hardware wizard, elevated (Windows asks the UAC question itself)."""
+    return ["powershell", "-NoProfile", "-Command", "Start-Process hdwwiz.exe -Verb RunAs"]
+
+
 # ── the window ─────────────────────────────────────────────────────────────────────────────
 
 def _item(text, colour=None, mono=False):
@@ -339,6 +429,8 @@ def _item(text, colour=None, mono=False):
 
 
 class Launcher(QtWidgets.QMainWindow):
+    hotspot_done = QtCore.pyqtSignal(int, str)     # from the worker thread: (exit code, text)
+
     BOARD_COLS = ("IP", "MAC", "fw", "lib", "build", "elfsha", "dgrams/s", "seen")
     PHONE_COLS = ("device id", "IP", "frames/s", "seen", "offset ms", "last frame (raw, as it arrived)")
     COT_COLS = ("file", "subject", "board", "on the air", "phone", "status", "", "")
@@ -397,6 +489,12 @@ class Launcher(QtWidgets.QMainWindow):
         self.fleet = Fleet()
         self.cots = []
         self.extra = {}          # "monitor"/"viewer" -> Popen
+        self._net_checked = 0.0  # when laptop_ips() was last read (monotonic)
+        self._net_up = None      # None until the first read
+        self._net_offered = False   # the dialog opens by itself once per run; the button stays
+        self._hotspot_thread = None
+        self._net_note = ""      # a failed attempt, kept on the line until the next one
+        self.hotspot_done.connect(self._hotspot_result)
         self.setWindowTitle(f"{script_name(__file__)}  —  session launcher  —  hub {hub[0]}:{hub[1]}")
         self.setStyleSheet(DARK_QSS)
         self._build()
@@ -436,9 +534,27 @@ class Launcher(QtWidgets.QMainWindow):
                              f"recording at {MB_PER_MIN_PER_BOARD} MB/min per board (raw stream + live "
                              f"CSV, measured). Amber under 10 h; red under {DISK_FLOOR_GB} GB, where "
                              "the recorder refuses to start.")
+        # NETWORK: is in3wifi up (2026-10-16). Red with a button when it is down and nothing is
+        # on the air; amber, no button, when sources arrive by another network; green when up.
+        self.net = QtWidgets.QLabel("")
+        self.net.setWordWrap(True)
+        self.net.setToolTip(f"Whether this laptop is {HOTSPOT_IP} on {HOTSPOT_SSID}, the address every "
+                            "board and phone sends to. Green: up. Red: down and nothing on the air -- "
+                            "TURN ON offers to start the hotspot (it asks first). Amber: down, but "
+                            "sources arrive by another network; turning it on would move them.")
+        self.btn_net = QtWidgets.QPushButton(f"TURN ON {HOTSPOT_SSID}\u2026")
+        self.btn_net.setToolTip("Explains what will change and asks before doing it: the Mobile "
+                                "Hotspot sharing the loopback adapter, no internet needed, no "
+                                "administrator. The same as scripts/hotspot.ps1 on.")
+        self.btn_net.clicked.connect(self.offer_hotspot)
+        self.btn_net.setVisible(False)
         top.addWidget(self.clock)
         top.addSpacing(20)
         top.addWidget(self.disk, 1)
+        netcol = QtWidgets.QVBoxLayout()
+        netcol.addWidget(self.net)
+        netcol.addWidget(self.btn_net)
+        top.addLayout(netcol, 1)
         v.addLayout(top)
 
         # Three tables in a vertical splitter: each one's height is the user's to drag, and the
@@ -609,6 +725,7 @@ class Launcher(QtWidgets.QMainWindow):
         text, colour = disk_line(n)
         self.disk.setText(text)
         self.disk.setStyleSheet(f"color: {colour};")
+        self._refresh_network(now)
 
         boards = sorted(self.fleet.boards.values(), key=lambda b: (b.mac, b.ip))
         self.boards.setRowCount(len(boards))
@@ -695,6 +812,71 @@ class Launcher(QtWidgets.QMainWindow):
     def _extra_running(self, key):
         p = self.extra.get(key)
         return p is not None and p.poll() is None
+
+    # -- the network --
+    def _refresh_network(self, now):
+        if now - self._net_checked >= NET_CHECK_S or self._net_up is None:
+            self._net_checked = now
+            self._net_up = in3wifi_up()
+        if self._hotspot_thread is not None and self._hotspot_thread.is_alive():
+            return                                    # "turning on..." stays until the result
+        n_air = len([b for b in self.fleet.boards.values() if not b.silent(now)]) + \
+            len([p for p in self.fleet.phones.values() if not p.silent(now)])
+        text, colour, offer = network_line(self._net_up, n_air)
+        if self._net_up or n_air:                     # up, or traffic by another network: moot
+            self._net_note = ""
+        elif self._net_note:                          # a failed attempt stays said until acted on
+            text, colour, offer = self._net_note, RED, True
+        self.net.setText(text)
+        self.net.setStyleSheet(f"color: {colour}; font-weight: bold;")
+        self.btn_net.setVisible(offer)
+        if offer and not self._net_offered:
+            self._net_offered = True                  # once by itself; the button stays for later
+            self.offer_hotspot()
+
+    def offer_hotspot(self):
+        """Explain, ask, and only then act. Approval is the operator's every time."""
+        ask = QtWidgets.QMessageBox.question(
+            self, f"{HOTSPOT_SSID} is down", hotspot_offer_text(),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if ask == QtWidgets.QMessageBox.Yes:
+            self.start_hotspot()
+
+    def start_hotspot(self):
+        if self._hotspot_thread is not None and self._hotspot_thread.is_alive():
+            return
+        self._net_note = ""
+        self.net.setText(f"turning {HOTSPOT_SSID} on\u2026")
+        self.net.setStyleSheet(f"color: {AMBER}; font-weight: bold;")
+        self.btn_net.setVisible(False)
+
+        def work():
+            rc, text = run_hotspot("on")
+            self.hotspot_done.emit(rc, text)          # queued: lands on the GUI thread
+        self._hotspot_thread = threading.Thread(target=work, name="hotspot-on", daemon=True)
+        self._hotspot_thread.start()
+
+    def _hotspot_result(self, rc, text):
+        last = text.strip().splitlines()[-1] if text.strip() else ""
+        if rc == 0:
+            self._net_checked = 0.0                   # re-read the addresses on the next tick
+            self.net.setText(f"{HOTSPOT_SSID} is on; waiting for its address")
+            self.net.setStyleSheet(f"color: {GREEN}; font-weight: bold;")
+        elif rc == 2:
+            self._net_note = "no loopback adapter: the hotspot cannot be shared from nothing"
+            self.net.setText(self._net_note)
+            self.net.setStyleSheet(f"color: {RED}; font-weight: bold;")
+            ask = QtWidgets.QMessageBox.question(
+                self, "loopback adapter missing", adapter_missing_text(),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+            if ask == QtWidgets.QMessageBox.Yes:
+                spawn(hdwwiz_command())
+            self.btn_net.setVisible(True)
+        else:
+            self._net_note = f"could not turn {HOTSPOT_SSID} on: {last or f'exit code {rc}'}"
+            self.net.setText(self._net_note)
+            self.net.setStyleSheet(f"color: {RED}; font-weight: bold;")
+            self.btn_net.setVisible(True)
 
     # -- actions --
     def start_cot(self, cot):

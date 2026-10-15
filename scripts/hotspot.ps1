@@ -39,6 +39,9 @@
 .NOTES
     Windows PowerShell 5.1 (powershell.exe) is required for the WinRT calls; under PowerShell 7
     (pwsh) the script re-runs itself in powershell.exe.
+    Exit codes, for a program (tools/pulsenest_session.py reads them): 0 the hotspot is on
+    (after 'on', or 'status' when it is), 3 it is off ('status', or 'off'), 2 no loopback
+    adapter or no profile for it, 1 the start or stop failed. The text is for people.
 #>
 param([ValidateSet('on', 'off', 'status')][string]$Action = 'status')
 
@@ -114,6 +117,8 @@ switch ($Action) {
             Start-Sleep -Seconds 2        # the virtual adapter takes its address a moment later
         }
         Show-State
+        if ("$($tm.TetheringOperationalState)" -ne 'On') { Write-Host 'did not come up within 20 s'; exit 1 }
+        exit 0
     }
     'off' {
         if ("$($tm.TetheringOperationalState)" -eq 'Off') { Write-Host 'already off' }
@@ -122,6 +127,10 @@ switch ($Action) {
             if ("$($r.Status)" -ne 'Success') { Write-Host "could not stop: $($r.Status) $($r.AdditionalErrorMessage)"; exit 1 }
         }
         Show-State
+        exit 3
     }
-    'status' { Show-State }
+    'status' {
+        Show-State
+        if ("$($tm.TetheringOperationalState)" -eq 'On') { exit 0 } else { exit 3 }
+    }
 }
