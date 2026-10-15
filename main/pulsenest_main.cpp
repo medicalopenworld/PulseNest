@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.22"   // 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch); 0.21: lib v0.103 (100 ms window blocks)
+#define PULSENEST_FW_VERSION "0.23"   // 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
@@ -455,6 +455,10 @@ static void wifi_sta_begin(const char* ssid, const char* password) {
 
 static inline bool wifi_sta_connected(void) {
     return (xEventGroupGetBits(g_wifi_events) & WIFI_EVT_CONNECTED) != 0;
+}
+
+static inline bool wifi_sta_dropped(void) {
+    return (xEventGroupGetBits(g_wifi_events) & WIFI_EVT_DISCONNECTED) != 0;
 }
 
 // The Arduino build mapped wl_status_t to these labels; esp_wifi gives the 802.11 reason code.
@@ -1352,10 +1356,12 @@ static void process_command(char* cmd_buf, int cmd_len) {
 // Serial: multi-byte commands are accumulated until '\n'.
 // UDP: each datagram contains one complete command line (no accumulation needed).
 // OTA: served by esp_http_server's own task (ota_server_init) — nothing to poll here.
+static void wifi_keepalive(void);     // defined after reset_reason_str(), which wifi_adopt() uses
 void Cmd_Task(void *pvParameters) {
     char cmd_buf[64];
     int  cmd_len = 0;
     for (;;) {
+        wifi_keepalive();                 // fw 0.23: a lost network is tried again, here, not never
         // ── Serial path (always active) ───────────────────────────────────────
         uint8_t rx;
         while (uart_read_bytes(CONSOLE_UART, &rx, 1, 0) == 1) {
@@ -1421,6 +1427,89 @@ static const char* reset_reason_str(esp_reset_reason_t r) {
         case ESP_RST_BROWNOUT:  return "BROWNOUT (supply dip)";
         case ESP_RST_SDIO:      return "SDIO";
         default:                return "UNKNOWN";
+    }
+}
+
+// ── WiFi: adopt the network just joined; keep the station alive (fw 0.23) ──────────────────
+// Until fw 0.22 a board chose its network once, at boot, and WIFI_EVENT_STA_DISCONNECTED only set
+// a bit: nobody called esp_wifi_connect() again, so a board that lost its access point was mute
+// until power-cycled (the Arduino build had reconnected by itself). Seen 2026-10-16: the three
+// V18 on in3wifi went silent when the laptop's hotspot was switched off and never came back.
+// Now Cmd_Task's tick keeps the station alive: after a drop, or after a boot that found no
+// network, it walks WIFI_NETWORKS[] again, 10 s per network, forever, without blocking anything
+// -- so boards can also be powered before the laptop is.
+static int      g_wifi_idx      = -1;        // WIFI_NETWORKS[] entry in use, or being tried
+static bool     g_wifi_trying   = false;     // the retry walk is on
+static int64_t  g_wifi_try_us   = 0;         // when the current attempt began
+static bool     g_wifi_services = false;     // command socket + OTA server exist (once)
+#define WIFI_TRY_US   (10LL * 1000 * 1000)   // per network, as the boot loop's 20 x 500 ms
+
+static void wifi_adopt(int i) {
+    g_wifi_idx    = i;
+    g_wifi_trying = false;
+    // The data socket outlives the network: an unbound UDP socket routes per sendto(). Only the
+    // destination changes. g_wifi_ready is false here (boot, or cleared on the drop), and the
+    // drop path waited one batch length before calling, so UDP_Task is not mid-sendto() on it.
+    g_udp_target_ip = WIFI_NETWORKS[i].udp_target_ip;
+    if (g_udp_sock < 0) {
+        g_udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);   // raw socket for data frames (hot path)
+        if (g_udp_sock < 0) printf("# UDP socket FAILED errno=%d\n", errno);
+    }
+    if (g_udp_sock >= 0) {
+        memset(&g_udp_dest, 0, sizeof(g_udp_dest));
+        g_udp_dest.sin_family = AF_INET;
+        g_udp_dest.sin_port   = htons(UDP_TARGET_PORT);
+        inet_aton(g_udp_target_ip, &g_udp_dest.sin_addr);
+    }
+    g_wifi_ready = true;
+    if (!g_wifi_services) {
+        g_wifi_services = true;
+        g_cmd_sock = udp_listen(UDP_CMD_PORT);  // command frames PC→ESP32; bound to any address
+        if (g_cmd_sock < 0) Serial_printf("# CMD UDP socket FAILED errno=%d\n", errno);
+        ota_server_init();                       // esp_http_server, bound to any address: once
+    }
+    printf("\n# WiFi connected [%s] — IP %s  UDP \u2192 %s:%d\n",
+                  WIFI_NETWORKS[i].ssid, g_wifi_ip, g_udp_target_ip, UDP_TARGET_PORT);
+    printf("# OTA: http://%s/\n", g_wifi_ip);
+    printf("# CMD UDP: listening on port %d\n", UDP_CMD_PORT);
+    // Relay reset reason over UDP so it reaches the host cable-free; on a reconnection the
+    // same line says the board did NOT reboot, which is what the host wants to know.
+    {
+        char rr_buf[80];
+        snprintf(rr_buf, sizeof(rr_buf), "# RESET_REASON: %s\n",
+                 reset_reason_str(esp_reset_reason()));
+        udp_send_line(rr_buf);
+    }
+}
+
+static void wifi_retry_begin(int i) {
+    g_wifi_idx    = i;
+    g_wifi_trying = true;
+    g_wifi_try_us = esp_timer_get_time();
+    printf("# WiFi trying %s\n", WIFI_NETWORKS[i].ssid);
+    wifi_sta_begin(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password);
+}
+
+// Called every Cmd_Task iteration (~50 ms). Never blocks beyond one batch length.
+static void wifi_keepalive(void) {
+    if (g_wifi_trying) {
+        if (wifi_sta_connected()) {
+            wifi_adopt(g_wifi_idx);
+        } else if (esp_timer_get_time() - g_wifi_try_us >= WIFI_TRY_US) {
+            printf("# WiFi FAILED %s — %s\n", WIFI_NETWORKS[g_wifi_idx].ssid, wifi_sta_fail_reason());
+            esp_wifi_disconnect();
+            wifi_retry_begin((g_wifi_idx + 1) % WIFI_NETWORK_COUNT);   // the list, round and round
+        }
+        return;
+    }
+    if (g_wifi_ready && !wifi_sta_connected() && wifi_sta_dropped()) {
+        // Stop the senders first, then give UDP_Task one batch length (UDP_BATCH_SIZE frames at
+        // 50 Hz, ~100 ms) to finish a sendto() it may be in before the destination is rewritten.
+        g_wifi_ready = false;
+        printf("# WiFi LOST [%s] — %s; retrying every network\n",
+               WIFI_NETWORKS[g_wifi_idx].ssid, wifi_sta_fail_reason());
+        vTaskDelay(pdMS_TO_TICKS(150));
+        wifi_retry_begin(0);                     // from the top: in3wifi first, as at boot
     }
 }
 
@@ -1509,33 +1598,7 @@ extern "C" void app_main(void) {
                 printf(".");
             }
             if (wifi_sta_connected()) {
-                g_udp_target_ip = WIFI_NETWORKS[i].udp_target_ip;
-                // Raw socket for data frames (hot path — no endPacket() overhead)
-                g_udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-                if (g_udp_sock >= 0) {
-                    memset(&g_udp_dest, 0, sizeof(g_udp_dest));
-                    g_udp_dest.sin_family = AF_INET;
-                    g_udp_dest.sin_port   = htons(UDP_TARGET_PORT);
-                    inet_aton(g_udp_target_ip, &g_udp_dest.sin_addr);
-                } else {
-                    printf("# UDP socket FAILED errno=%d\n", errno);
-                }
-                g_wifi_ready    = true;
-                g_cmd_sock = udp_listen(UDP_CMD_PORT);  // command frames PC→ESP32
-                if (g_cmd_sock < 0) Serial_printf("# CMD UDP socket FAILED errno=%d\n", errno);
-                ota_server_init();
-                printf("\n# WiFi connected [%s] — IP %s  UDP \u2192 %s:%d\n",
-                              WIFI_NETWORKS[i].ssid, g_wifi_ip,
-                              g_udp_target_ip, UDP_TARGET_PORT);
-                printf("# OTA: http://%s/\n", g_wifi_ip);
-                printf("# CMD UDP: listening on port %d\n", UDP_CMD_PORT);
-                // Relay reset reason over UDP so it reaches the host cable-free.
-                {
-                    char rr_buf[64];
-                    snprintf(rr_buf, sizeof(rr_buf), "# RESET_REASON: %s\n",
-                             reset_reason_str(esp_reset_reason()));
-                    udp_send_line(rr_buf);
-                }
+                wifi_adopt(i);
             } else {
                 const char* reason = wifi_sta_fail_reason();
                 printf("\n# WiFi FAILED %s — %s\n",
@@ -1545,7 +1608,8 @@ extern "C" void app_main(void) {
         }
     }
     if (!g_wifi_ready) {
-        printf("# WiFi FAILED all networks — UART only\n");
+        printf("# WiFi FAILED all networks — UART only; keeps trying in the background\n");
+        wifi_retry_begin(0);
     }
 
     spi_bus_init();

@@ -43,6 +43,7 @@ off for a long session. The 10-minute parts make reopening a session a continuat
 """
 import argparse
 import faulthandler
+import html
 import os
 import datetime as _dt
 import sys
@@ -52,9 +53,9 @@ import tomllib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest.net import UDP_DATA_PORT, script_name, open_in_system     # noqa: E402
 from pulsenest.hub_client import HubClient                               # noqa: E402
-from tools.pulsenest_recorder import (Recorder, NotEnoughSpace, SessionExists,  # noqa: E402, F401
+from tools.pulsenest_recorder import (AUX_SILENT_S, Recorder, NotEnoughSpace, SessionExists,  # noqa: E402, F401
                                 add_session_args, apply_session_config, CONFIG_FIELDS)
-from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, RED, LINK    # noqa: E402
+from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, RED, GREEN, LINK   # noqa: E402
 from pulsenest.fleet_widgets import make_stats_widget, stats_width, stats_columns  # noqa: E402
 import pyqtgraph as pg                                                   # noqa: E402
 from PyQt5 import QtCore, QtGui, QtWidgets                               # noqa: E402
@@ -135,8 +136,12 @@ QHeaderView::section {{ background-color: #2A2A2A; color: {FG_DIM}; border: 0; p
 QToolButton {{ border: none; }}
 QScrollBar:vertical {{ background: #111111; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: #3A3A3A; min-height: 20px; border-radius: 4px; }}
+QSplitter::handle {{ background: #2A2A2A; }}
+QSplitter::handle:hover {{ background: {LINK}; }}
 QMessageBox, QDialog {{ background-color: {BG}; color: {FG}; }}
 """
+SPLIT_HANDLE_W = 6     # px between two panes the operator can drag; the hover colour says so
+SPLIT_KEYS = ("split_body", "split_readings")   # the two splitters' states in the .ini
 PR_NONE = 0     # the pulse-rate spinbox at its minimum reads "--": not recorded
 CELL_PAD = 14   # a table cell's own left+right margins, on top of the text it holds
 
@@ -204,12 +209,23 @@ class BoardRow(QtWidgets.QFrame):
         self.plot_w.setLabel("bottom", "seconds ago")
         self.curve = self.plot_w.plot(pen=pg.mkPen("#44AAFF", width=1))
         self.stats = make_stats_widget(stats_width())
-        self.stats.setFixedWidth(stats_width())
-        body.addWidget(self.plot_w, 1)
-        body.addWidget(self.stats)
-        body.addWidget(self._session_values_group())
-        body.addWidget(self._reading_group())
+        # make_stats_widget fixes the width (the viewer wants that); here it is a floor, not a
+        # fixed width, because the pane is the operator's to drag.
+        self.stats.setMaximumWidth(QtWidgets.QWIDGETSIZE_MAX)
+        self.stats.setMinimumWidth(stats_width())
+        # Five widths the operator can drag (Alex, 2026-10-15), remembered in the .ini and shared
+        # by every row of the window: the plot, SIGNAL STATS, the session panel, and -- inside
+        # the readings box -- the entry and the table (see _reading_group). Nothing collapses: a
+        # pane dragged to nothing would be a control that vanished. Each pane keeps its minimum.
+        self.split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.split.setChildrenCollapsible(False)
+        self.split.setHandleWidth(SPLIT_HANDLE_W)
+        for w in (self.plot_w, self.stats, self._session_values_group(), self._reading_group()):
+            self.split.addWidget(w)
+        self.split.setStretchFactor(0, 1)             # until dragged, spare width goes to the plot
+        body.addWidget(self.split)
         outer.addWidget(self.body)
+        self.win.apply_splits(self)
 
     # ── the controls ──
     def _session_values_group(self):
@@ -226,6 +242,10 @@ class BoardRow(QtWidgets.QFrame):
         g = QtWidgets.QGroupBox("TOML session configuration")
         form = QtWidgets.QFormLayout(g)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
+        # Wide enough for a monitor line and a phone id on one line (2026-10-15): the labels
+        # below word-wrap, so without this floor the box shrank until MONITOR folded in two.
+        fm = QtGui.QFontMetrics(g.font())
+        g.setMinimumWidth(fm.horizontalAdvance("REFERENCE  Mindray BeneVision N17 · avg 8s · foot") + 90)
         rec = self.win.rec
 
         def ro(label, text, tip):
@@ -315,6 +335,7 @@ class BoardRow(QtWidgets.QFrame):
                               "launch ([ref].videonest / --ref-videonest) it is locked here.")
         self.vn_id = QtWidgets.QComboBox()
         self.vn_id.setMinimumWidth(120)
+        self.vn_id.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)   # ids arrive later
         self.vn_id.setToolTip("The device id the phone puts in its own frames -- the same word "
                               "its photographs are named after. The list fills itself as phones "
                               "are heard on the wire, so a phone that is not sending does not "
@@ -323,7 +344,21 @@ class BoardRow(QtWidgets.QFrame):
         self.vn_id.activated.connect(lambda _i: self._videonest_changed())
         vn.addWidget(self.vn_on)
         vn.addWidget(self.vn_id, 1)
+        # What the named phone is sending, on its own row under the control that names it (Alex,
+        # 2026-10-15: the window did not say whether VideoNest was sending, nor what; "below, not
+        # beside"). A mirror of the phone, coloured like a board's header: nothing silent stays
+        # green.
+        self.vn_live = QtWidgets.QLabel("")
+        self.vn_live.setToolTip("The last frame from the phone named on the left: the SpO2 it read "
+                                "off the monitor by OCR, its confidence (0-1), and how long ago it "
+                                "arrived. Green while frames keep coming (the phone speaks about "
+                                "once a second, only when it has a reading); red once it has been "
+                                "quiet for 30 s.\n"
+                                "Not a number to type into RECORD: your reading is a check on this "
+                                "one, not a copy of it.")
         form.addRow("REFERENCE", vn_box)
+        form.addRow(QtWidgets.QLabel(""), self.vn_live)   # a blank label, not no label: a row
+        #                                                   # without one has no label item at all
 
         return g
 
@@ -332,6 +367,11 @@ class BoardRow(QtWidgets.QFrame):
         # the events typed as they happen. The TOML box to the left only shows.
         g = QtWidgets.QGroupBox("Readings from the monitor, and events")
         lay = QtWidgets.QGridLayout(g)
+        # The entry (SpO2, PR, RECORD, the two DELETEs, the keys line) on a widget of its own, so
+        # the width between it and the table is the operator's to drag (2026-10-15).
+        self.entry_w = QtWidgets.QWidget()
+        eg = QtWidgets.QGridLayout(self.entry_w)
+        eg.setContentsMargins(0, 0, 0, 0)
         self.note = QtWidgets.QLineEdit()
         self.note.setPlaceholderText("free text, Enter to record. Coded subjects only, no names.")
         self.note.setToolTip("What happened, in a few words: a feed, a nappy change, an alarm, a "
@@ -425,7 +465,7 @@ class BoardRow(QtWidgets.QFrame):
         self.delete_sel = QtWidgets.QPushButton("DELETE selected")
         self.delete_sel.clicked.connect(self._delete_selected)
         self._listed = None            # signature of what the table shows, to redraw only on change
-        lay.addWidget(QtWidgets.QLabel("SpO2"), 0, 0)
+        eg.addWidget(QtWidgets.QLabel("SpO2"), 0, 0)
         entry = QtWidgets.QHBoxLayout()
         entry.setSpacing(2)
         entry.addWidget(self.spo2, 1)
@@ -434,23 +474,29 @@ class BoardRow(QtWidgets.QFrame):
         arrows.addWidget(self.spo2_up)
         arrows.addWidget(self.spo2_down)
         entry.addLayout(arrows)
-        lay.addLayout(entry, 0, 1)
-        lay.addWidget(QtWidgets.QLabel("PR"), 1, 0)
-        lay.addWidget(self.pr, 1, 1)
-        lay.addWidget(self.record, 2, 0, 1, 2)
-        lay.addWidget(self.delete_last, 3, 0, 1, 2)
-        lay.addWidget(self.delete_sel, 4, 0, 1, 2)      # under DELETE LAST (Alex, 2026-10-14)
-        lay.addWidget(self.listing, 0, 2, 6, 1)         # ... so the table runs to the bottom
+        eg.addLayout(entry, 0, 1)
+        eg.addWidget(QtWidgets.QLabel("PR"), 1, 0)
+        eg.addWidget(self.pr, 1, 1)
+        eg.addWidget(self.record, 2, 0, 1, 2)
+        eg.addWidget(self.delete_last, 3, 0, 1, 2)
+        eg.addWidget(self.delete_sel, 4, 0, 1, 2)       # under DELETE LAST (Alex, 2026-10-14)
+        self.readings_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.readings_split.setChildrenCollapsible(False)
+        self.readings_split.setHandleWidth(SPLIT_HANDLE_W)
+        self.readings_split.addWidget(self.entry_w)
+        self.readings_split.addWidget(self.listing)
+        self.readings_split.setStretchFactor(1, 1)      # until dragged, spare width to the table
+        lay.addWidget(self.readings_split, 0, 0, 1, 2)  # the table runs to the bottom of the box
         # The keys, where the eye lands between readings (Alex, 2026-10-15). The window's event
         # filter does the work; this line and the three tooltips only say so.
         self.keys_help = QtWidgets.QLabel("keys:  +  -  change SpO2      R  = RECORD")
         self.keys_help.setStyleSheet(f"color:{FG_DIM};")
         self.keys_help.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
-        lay.addWidget(self.keys_help, 5, 0, 1, 2)
-        lay.setRowStretch(5, 1)                         # spare height goes below the buttons
-        lay.addWidget(QtWidgets.QLabel("NEW EVENT"), 6, 0)
-        lay.addWidget(self.note, 6, 1, 1, 2)            # the full width, under the table
-        lay.setColumnStretch(2, 1)
+        eg.addWidget(self.keys_help, 5, 0, 1, 2)
+        eg.setRowStretch(5, 1)                          # spare height goes below the buttons
+        lay.addWidget(QtWidgets.QLabel("NEW EVENT"), 1, 0)
+        lay.addWidget(self.note, 1, 1)                  # the full width, under entry | table
+        lay.setColumnStretch(1, 1)        # the splitter and NEW EVENT take the width (col 2 was the table's)
         self._set_dependents_enabled(False)
         return g
 
@@ -516,6 +562,23 @@ class BoardRow(QtWidgets.QFrame):
             # `videonest` command), but a disabled control also cannot be clicked by mistake.
             self.vn_on.setEnabled(False)
             self.vn_id.setEnabled(False)
+
+    def _phone_line(self, now):
+        """-> (text, colour) for the phone named as this baby's reference: its last good reading
+        and how long ago, red once quiet for AUX_SILENT_S. Blank when no phone is named."""
+        rec = self.win.rec
+        if not rec.videonest_id:
+            return "", FG_DIM
+        src = rec.by_vn.get(rec.videonest_id)
+        if src is None:
+            return "not heard yet", AMBER
+        if src.vn_last_mono is None:
+            return "heard, no good reading yet", AMBER
+        age = now - src.vn_last_mono
+        reading = f"SpO2 {src.vn_last_spo2}  conf {src.vn_last_conf}"
+        if age >= AUX_SILENT_S:
+            return f"SILENT {age:.0f} s  (last: {reading})", RED
+        return f"{reading}  {age:.0f} s ago", GREEN
 
     def refresh_phones(self):
         """The device list fills itself from the phones actually heard. A phone that is not
@@ -583,7 +646,7 @@ class BoardRow(QtWidgets.QFrame):
     def _delete_selected(self):
         eid = self._selected_id()
         if eid is None:
-            self.win.log_line.setText("select a reading in the list first")
+            self.win.say("select a reading in the list first")
             return
         r = [x for x in self._readings() if x["id"] == eid]
         if r and self._confirm_delete(r[0]):
@@ -684,6 +747,9 @@ class BoardRow(QtWidgets.QFrame):
                 if src.flagged else "")
         if src is not None:
             self._mirror_state()
+        text, colour = self._phone_line(now)
+        self.vn_live.setText(text)
+        self.vn_live.setStyleSheet(f"color:{colour}; font-weight:bold;")
         if self.body.isVisible():
             self.refresh_phones()
             self.refresh_listing()
@@ -765,6 +831,9 @@ class RecorderWindow(QtWidgets.QMainWindow):
         self.setWindowTitle(f"{script_name(__file__)} — {rec.session_id}{self.config_title()}"
                             f"{waiting}  (hub {hub[0]}:{hub[1]})")
         self.rows = {}            # key (mac, or ip until identified) -> BoardRow
+        # The five draggable widths (two splitters per row), as last left; None until dragged.
+        _s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        self.split_state = {k: _s.value(k) for k in SPLIT_KEYS}
         self.traces = {}          # ip -> BoardTrace
         self.aux_ips = set()
         self.plots_on = True
@@ -789,8 +858,24 @@ class RecorderWindow(QtWidgets.QMainWindow):
         self.empty.setStyleSheet(f"color:{FG_DIM}; font-size:14pt;")
         self.empty.setAlignment(QtCore.Qt.AlignCenter)
         self.rows_box.addWidget(self.empty)
-        self.log_line = QtWidgets.QLabel(f"recording into {rec.dir}")
+        # Where the recording goes: the one line at the bottom an operator looks for, so it is
+        # larger than the body text and the folder is a link that opens it (Alex, 2026-10-15:
+        # it was dim and small, and the path could not be clicked). Points relative to the
+        # default, never px: px shrinks on a scaled screen. Console replies had this label too;
+        # they keep a line of their own below, so a reply never hides the folder.
+        self.dir_line = QtWidgets.QLabel(
+            f'recording into <a href="open" style="color:{LINK};">{html.escape(rec.dir)}</a>')
+        big = self.dir_line.font()
+        big.setPointSize(big.pointSize() + 3)
+        self.dir_line.setFont(big)
+        self.dir_line.setOpenExternalLinks(False)
+        self.dir_line.linkActivated.connect(lambda _l, d=rec.dir: open_in_system(d))
+        self.dir_line.setToolTip("This session's folder: session.json, the CSVs, raw/. Click to "
+                                 "open it in the file manager.")
+        v.addWidget(self.dir_line)
+        self.log_line = QtWidgets.QLabel("")           # console replies and short hints
         self.log_line.setStyleSheet(f"color:{FG_DIM};")
+        self.log_line.setVisible(False)                # an empty framed line is a hole; see say()
         v.addWidget(self.log_line)
         self._restore_geometry()
 
@@ -881,7 +966,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
 
     def command(self, line):
         reply = self.rec.console(line)
-        self.log_line.setText(f"> {line}    {reply}")
+        self.say(f"> {line}    {reply}")
         return reply
 
     def _plots_toggled(self, on):
@@ -978,6 +1063,30 @@ class RecorderWindow(QtWidgets.QMainWindow):
         for ip, tr in sorted(self.traces.items(), key=lambda kv: kv[1].first_seen):
             self._row_for(ip, tr).refresh(now, self.plots_on)
 
+    def say(self, text):
+        """A console reply or a hint on the dim line under the folder; hidden while empty."""
+        self.log_line.setText(text)
+        self.log_line.setVisible(bool(text))
+
+    # ── the draggable widths ──
+    def _splitters(self, row):
+        return {"split_body": row.split, "split_readings": row.readings_split}
+
+    def apply_splits(self, row):
+        """A new row takes the widths as last left (this session or the .ini), and from then on
+        a drag in any row moves every row: three cots, one set of columns."""
+        for key, sp in self._splitters(row).items():
+            if self.split_state.get(key) is not None:
+                sp.restoreState(self.split_state[key])
+            sp.splitterMoved.connect(lambda _pos, _idx, key=key, sp=sp: self._split_moved(key, sp))
+
+    def _split_moved(self, key, sp):
+        self.split_state[key] = sp.saveState()
+        for row in self.rows.values():
+            other = self._splitters(row)[key]
+            if other is not sp:
+                other.restoreState(self.split_state[key])
+
     # ── settings and closing ──
     def _restore_geometry(self):
         saved = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("geometry")
@@ -1007,7 +1116,11 @@ class RecorderWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.instance().removeEventFilter(self)   # the keys die with the window
         for t in self.timers:          # BEFORE the socket is closed, or they fire on a dead one
             t.stop()
-        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("geometry", self.saveGeometry())
+        settings = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        settings.setValue("geometry", self.saveGeometry())
+        for key, state in self.split_state.items():     # the five widths, as last dragged
+            if state is not None:
+                settings.setValue(key, state)
         self.client.close()
         self.rec.close()
         event.accept()

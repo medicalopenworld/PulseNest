@@ -90,6 +90,12 @@ rec.feed("192.168.1.50", f"$CFG,mac={MAC},board=V18,fw=0.14\n".encode())
 win.traces["192.168.1.50"] = G.BoardTrace("192.168.1.50", 0.0, 15.0)
 win.redraw()
 row = list(win.rows.values())[0]
+check("the bottom line names the session folder as a link that opens it, in a larger font; "
+      "console replies have a line of their own",
+      rec.dir in win.dir_line.text() and 'href="open"' in win.dir_line.text()
+      and win.dir_line.receivers(win.dir_line.linkActivated) == 1
+      and win.dir_line.font().pointSize() == win.log_line.font().pointSize() + 3
+      and win.log_line.text() == "" and win.log_line.isHidden(), win.dir_line.text())
 
 # ── a row appears per board, keyed by MAC ────────────────────────────────────────────────────
 check("one row per board, keyed by its MAC once the board says who it is",
@@ -150,6 +156,7 @@ row.refresh(time.monotonic(), False)
 check("after a console change SUBJECT shows what the Recorder holds (SIM)",
       row.subject_label.text() == "SIM" and rec.sources["192.168.1.50"].subject == "SIM", row.subject_label.text())
 check("and the VideoNest box is unticked because the Recorder has no phone", not row.vn_on.isChecked())
+check("no phone named: the line beside REFERENCE is blank", row.vn_live.text() == "")
 n_events = rec.event_id
 row.refresh(time.monotonic(), False)               # a refresh is a mirror, never a command
 check("a refresh issues no command: SIM stays, no new event",
@@ -158,6 +165,22 @@ rec.console("videonest J6plusACM")
 row.refresh(time.monotonic(), False)
 check("a phone declared on the console appears ticked and named in the panel",
       row.vn_on.isChecked() and row.vn_id.currentText() == "J6plusACM")
+# -- beside REFERENCE: what the phone last sent (Alex, 2026-10-15) --
+check("beside REFERENCE: the phone's last SpO2 and confidence, green while frames keep coming",
+      row.vn_live.text().startswith("SpO2 89  conf 0.95") and G.GREEN in row.vn_live.styleSheet(),
+      row.vn_live.text())
+rec.by_vn["J6plusACM"].vn_last_mono -= 40
+row.refresh(time.monotonic(), False)
+check("40 s without a frame: SILENT in red, the last reading still shown",
+      row.vn_live.text().startswith("SILENT 40 s") and "SpO2 89" in row.vn_live.text()
+      and G.RED in row.vn_live.styleSheet(), row.vn_live.text())
+rec.by_vn["J6plusACM"].vn_last_mono += 40
+rec.console("videonest Nokia2")
+row.refresh(time.monotonic(), False)
+check("a phone named but never heard: 'not heard yet' in amber",
+      row.vn_live.text() == "not heard yet" and G.AMBER in row.vn_live.styleSheet(), row.vn_live.text())
+rec.console("videonest J6plusACM")
+row.refresh(time.monotonic(), False)
 rec.console("subject 7560 SUBJ01")
 row.refresh(time.monotonic(), False)
 
@@ -266,6 +289,50 @@ check("a row folds to its header line, and the header keeps updating",
 win.redraw()
 row.fold.setChecked(True)
 
+# ── five widths the operator can drag, remembered in the .ini (Alex, 2026-10-15) ─────────────
+check("the row's body is a splitter of four (plot, stats, session panel, readings box) and the "
+      "readings box splits entry | table: five draggable widths, none collapsible",
+      isinstance(row.split, QtWidgets.QSplitter) and row.split.count() == 4
+      and row.split.widget(0) is row.plot_w and row.split.widget(1) is row.stats
+      and isinstance(row.readings_split, QtWidgets.QSplitter) and row.readings_split.count() == 2
+      and row.readings_split.widget(0) is row.entry_w and row.readings_split.widget(1) is row.listing
+      and not row.split.childrenCollapsible() and not row.readings_split.childrenCollapsible())
+check("the stats panel has a floor, not a fixed width (it is dragged too)",
+      row.stats.maximumWidth() > row.stats.minimumWidth() >= G.stats_width())
+# Shown (offscreen) and wider than the sum of the panes' minimums, or setSizes is clamped to
+# them (the offscreen fonts make those minimums large). The sizes asked for sit above each
+# pane's minimum, so taking them is a choice and not a floor.
+def _min_w(w):
+    return max(w.minimumWidth(), w.minimumSizeHint().width())
+_want = [_min_w(row.split.widget(i)) + extra for i, extra in enumerate((120, 40, 60, 200))]   # the last holds entry+table's extras
+_want_r = [_min_w(row.readings_split.widget(i)) + extra for i, extra in enumerate((50, 70))]
+win.resize(sum(_want) + 4 * 6 + 300, 900)
+win.show()
+app.processEvents()
+_second = G.BoardRow(win, "second", G.BoardTrace("10.9.9.9", 0.0, 15.0))
+win.rows["second"] = _second
+win.rows_box.addWidget(_second)
+app.processEvents()
+row.split.setSizes(_want)
+row.split.splitterMoved.emit(_want[0], 1)
+for _ in range(3):                  # the inner splitter learns its new width through posted layout events
+    app.processEvents()
+row.readings_split.setSizes(_want_r)
+row.readings_split.splitterMoved.emit(_want_r[0], 1)
+for _ in range(3):
+    app.processEvents()
+check("a drag in one row moves every row, and the window keeps the state",
+      _second.split.sizes() == row.split.sizes() and _second.readings_split.sizes() == row.readings_split.sizes()
+      and win.split_state["split_body"] is not None and win.split_state["split_readings"] is not None,
+      f"{row.split.sizes()} vs {_second.split.sizes()}")
+win.rows.pop("second")
+_second.setParent(None)
+app.processEvents()
+_sizes_saved = (row.split.sizes(), row.readings_split.sizes())
+check("the sizes asked for were taken (the window is wide enough for them)",
+      _sizes_saved[0][1:3] == _want[1:3] and _sizes_saved[1][0] == _want_r[0],
+      f"{_sizes_saved} vs {_want} {_want_r}")
+
 # ── closing ──────────────────────────────────────────────────────────────────────────────────
 _answers["value"] = QtWidgets.QMessageBox.No
 win.close()
@@ -283,6 +350,10 @@ check("closing stops every timer, so none can fire on a closed socket",
 check("and a redraw or a drain after closing is a no-op, not a reconnect",
       (win.drain() or win.redraw() or win.tick()) is None and win._closing)
 check("the geometry is remembered for the next session", os.path.exists(G.SETTINGS_FILE))
+_ini = QtCore.QSettings(G.SETTINGS_FILE, QtCore.QSettings.IniFormat)
+check("and so are the five widths, under their two keys",
+      _ini.value("split_body") is not None and _ini.value("split_readings") is not None,
+      str(_ini.allKeys()))
 
 # ── the annotation list's columns fit their content ──────────────────────────────────────────
 # Relative, never in pixels: the offscreen platform has no fonts and falls back to Helvetica 12
@@ -485,6 +556,11 @@ win3.traces["192.168.1.60"] = G.BoardTrace("192.168.1.60", 0.0, 15.0)
 win3.redraw()
 row3 = list(win3.rows.values())[0]
 row3._mirror_state()
+win3.show()                     # same geometry as the last window: restored from the .ini
+app.processEvents()
+check("a new window starts its rows with the widths saved by the last one",
+      (row3.split.sizes(), row3.readings_split.sizes()) == _sizes_saved,
+      f"{row3.split.sizes()} {row3.readings_split.sizes()} vs {_sizes_saved}")
 check("a subject given at launch is bound and read in the panel as a plain label",
       rec3.sources["192.168.1.60"].subject == "SUBJ05" and row3.subject_label.text() == "SUBJ05"
       and isinstance(row3.subject_label, QtWidgets.QLabel), rec3.sources["192.168.1.60"].subject)
@@ -551,11 +627,13 @@ labels = [row3.findChild(QtWidgets.QFormLayout).itemAt(i, QtWidgets.QFormLayout.
           for i in range(row3.findChild(QtWidgets.QFormLayout).rowCount())]
 check("panel order = the file first, then example.toml order, then NEW EVENT",
       labels == ["FILE", "LOCATION", "OPERATOR", "BOARD", "PROBE", "SUBJECT", "GEST AGE", "AGE", "WEIGHT", "SKIN",
-                 "NOTE", "MONITOR", "REFERENCE"], str(labels))
-check("NEW EVENT sits in the operator's box, under the readings table, full width",
-      row3.note.parentWidget() is row3.delete_sel.parentWidget() and
-      row3.delete_sel.parentWidget().layout().getItemPosition(
-          row3.delete_sel.parentWidget().layout().indexOf(row3.note))[:2] == (6, 1)
+                 "NOTE", "MONITOR", "REFERENCE", ""], str(labels))   # "": the phone line under REFERENCE
+check("NEW EVENT sits in the operator's box, under the entry | table splitter, full width",
+      row3.note.parentWidget() is row3.readings_split.parentWidget() and
+      row3.note.parentWidget().layout().getItemPosition(
+          row3.note.parentWidget().layout().indexOf(row3.note))[:2] == (1, 1)
+      and row3.note.parentWidget().layout().getItemPosition(
+          row3.note.parentWidget().layout().indexOf(row3.readings_split))[:2] == (0, 0)
       and row3.note.parentWidget().title() == "Readings from the monitor, and events"
       and row3.subject_labels["skin"].parentWidget().title() == "TOML session configuration")
 check("the FILE row says '(no --config: flags only)' when there is no .toml",
@@ -572,11 +650,10 @@ check("with --config, FILE is a link named after the file; a click opens it in t
       "cot1.toml</a>" in row3c.file_label.text() and row3c.file_label.receivers(row3c.file_label.linkActivated) == 1,
       row3c.file_label.text())
 win3c.close()
-check("DELETE selected sits under DELETE LAST and the table spans every row",
-      row3.delete_sel.parentWidget().layout().getItemPosition(
-          row3.delete_sel.parentWidget().layout().indexOf(row3.delete_sel))[:2] == (4, 0) and
-      row3.delete_sel.parentWidget().layout().getItemPosition(
-          row3.delete_sel.parentWidget().layout().indexOf(row3.listing))[2] == 6)
+check("DELETE selected sits under DELETE LAST in the entry, and the table is the entry's neighbour",
+      row3.delete_sel.parentWidget() is row3.entry_w and
+      row3.entry_w.layout().getItemPosition(row3.entry_w.layout().indexOf(row3.delete_sel))[:2] == (4, 0)
+      and row3.listing.parentWidget() is row3.readings_split)
 win3.close()
 
 print(f"\n{sum(ok)}/{len(ok)} checks passed — {'OK' if all(ok) else 'FAILURES'}")

@@ -464,7 +464,13 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   tooltip, also in the title bar — Alex, same day: with one window per cot, the file is how they
   are told apart before a subject is bound), LOCATION, OPERATOR, BOARD, PROBE, SUBJECT, GEST AGE,
   AGE, WEIGHT, SKIN (the `[subject]` table, 2026-10-14, see §7), NOTE
-  (the launch note, read-only), MONITOR, REFERENCE — and, in the right-hand box, the
+  (the launch note, read-only), MONITOR, REFERENCE — with, on its own row under the control that names
+  the phone, **what that phone last sent** (Alex, 2026-10-15: the window did not say whether VideoNest
+  was sending, nor what): its SpO2 and OCR confidence and how long ago, green while frames keep
+  coming, amber until the named phone is heard, red once quiet for `AUX_SILENT_S` (30 s), the
+  last reading kept on the line. The Recorder keeps each phone's last good frame
+  (`Source.vn_last_*`, checksum verified, every phone whether named or not, nothing written);
+  the tooltip says it is not a number to type into RECORD — and, in the right-hand box, the
   **reading entry** (SpO2 spinbox 50–100, optional PR, `RECORD`) with NEW EVENT under its table
   (the file it feeds is `session_events.csv`; what is typed becomes an event of kind NOTE). **CONDITION left the window the
   same day**: what the operator typed there was stored in four places (a `cond=` META event,
@@ -479,6 +485,19 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   same way; the panel shows it so
   a typo is visible, and changing it means stopping the session and relaunching with the right
   file. A window started without a subject keeps the box, since binding has to happen somewhere.
+  **Five widths are the operator's to drag** (Alex, 2026-10-15): the row's body is a
+  `QSplitter` of plot | SIGNAL STATS | session panel | readings box, and inside the readings box a
+  second one of entry | table, NEW EVENT under both. Nothing collapses (a pane dragged to nothing
+  would be a control that vanished) and each pane keeps its minimum (`MIN_PLOT_W`, the stats
+  width — now a floor, not a fixed width —, the session panel's monitor-line floor, the table's
+  columns). A drag in one row moves every row (three cots, one set of columns), the two states
+  are kept in the window and written to `pulsenest_recorder_gui.ini` at close (`split_body`,
+  `split_readings`) beside `geometry`, and a new window starts its rows from them. Handles are
+  6 px, blue under the mouse.
+  **The bottom line** names the session folder as a link that opens it in the file manager, three
+  points larger than the body text (Alex, 2026-10-15: it was dim and small and could not be
+  clicked); console replies and hints have a dim line of their own under it, so a reply never
+  hides the folder.
   The session bar carries free disk, `CLOCK ANCHOR`, `PLOTS` and `STOP SESSION`, which asks
   before closing; so does the window's close button, and Ctrl+C no longer exists. Pending for phase 2:
   the annotation list with edit and delete, implemented as *correcting events* over the

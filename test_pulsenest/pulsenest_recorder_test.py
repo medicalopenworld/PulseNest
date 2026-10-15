@@ -419,6 +419,10 @@ try:
     check("[2] a frame that fails its checksum is written and FLAGGED, never dropped",
           vrows[0][col["checksum_ok"]] == "1" and vrows[3][col["checksum_ok"]] == "0"
           and phone.vn_bad == 2, f"bad={phone.vn_bad}")
+    check("[2] every phone keeps its last GOOD frame for the window, declared or not (2026-10-15)",
+          phone.vn_last_spo2 == "89" and phone.vn_last_conf == "0.98" and phone.vn_last_mono is not None
+          and other.vn_last_spo2 == "92" and other.vn_last_conf == "0.99",
+          f"{phone.vn_last_spo2}/{phone.vn_last_conf} other {other.vn_last_spo2}/{other.vn_last_conf}")
     check("[2] the phone's timestamp is verbatim -- it is the photograph's name too",
           vrows[0][col["phone_ts"]] == "2026-09-22 00:21:26.261", vrows[0][col["phone_ts"]])
     check("[2] the drift between the phone's clock and arrival here is explicit",

@@ -56,6 +56,17 @@ repeated on the day.
       ```
       It prints the shortcut it wrote and the program it launches. Running it again just
       rewrites the icon.
+- [ ] **The network, in3wifi.** The boards and the phones send to the laptop at `192.168.137.1`,
+      the address of the Windows Mobile Hotspot; a hospital has no internet connection to share,
+      and Settings refuses the hotspot without one. The way round, once per laptop
+      (administrator): run **`hdwwiz.exe`** as administrator (Win+R, `hdwwiz`, Ctrl+Shift+Enter;
+      it is Device Manager → Action → Add legacy hardware) → Next → **Install the hardware that I
+      manually select from a list** → Network adapters → Microsoft → **Microsoft KM-TEST Loopback
+      Adapter** → Next → Finish. No address to set. It stays through reboots and updates. Then
+      Settings → Network & internet → Mobile hotspot: name **in3wifi**, the boards' password, band
+      **2.4 GHz** (the boards have no 5 GHz); remembered too. On the day, `.\scripts\hotspot.ps1 on`
+      (§2) shares that adapter and the hotspot comes up with no internet at all. The hotspot itself
+      is off after every reboot.
 - [ ] **Check**: double-click `PulseNest Session` on the desktop. The launcher window opens
       (BOARDS ON THE AIR, PHONES HEARD, SESSION / SUBJECT config files) with no console behind it; the hub starts by itself.
       Close it. The `.toml` files of §1 can be written now or on the day before.
@@ -64,7 +75,20 @@ repeated on the day.
 
 ## 2. Starting
 
-**On the day, once the babies are chosen**, and for each one:
+**On the day, first**, from PowerShell in the repository folder:
+
+- [ ] **`.\scripts\hotspot.ps1 on`** — in3wifi comes up with the laptop at `192.168.137.1`; the
+      line `clients` lists the boards as they join (by MAC, `docs/boards.md`). `status` shows the
+      same at any time, `off` at the end. No internet is needed or shared. (Settings → Mobile
+      hotspot, sharing "Ethernet", does the same by hand.) Boards powered before this are fine:
+      since fw 0.23 a board keeps looking for its networks and joins within 30 s; if the hotspot
+      drops and comes back, the boards come back with it, no power cycle needed.
+- [ ] **Phones on in3wifi.** Mobile data can stay on: VideoNest sends through the Wi-Fi network
+      itself, whether or not it has internet (since 2026-10-15; before that, a phone with data on
+      sent by the mobile network and nothing arrived). Android asks whether to stay on a network
+      without internet: yes, and "don't ask again".
+
+**Once the babies are chosen**, for each one:
 
 - [ ] Consent signed. Give the baby the next free subject code and write the pair in the
       private list.

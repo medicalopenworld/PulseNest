@@ -27199,3 +27199,193 @@ Runbook §2, spec §11. Tests lanzador 62/62, GUI 90/90. Sin commit.
 ficheros, así que el operador no podía reconocer la carpeta por su contenido. Ahora es
 `getOpenFileName` filtrado a `*.toml` ("Pick any .toml in the folder to use"): se elige cualquier
 fichero de la carpeta deseada y se toma su carpeta. Tooltip y spec §11 acordes. Tests 62/62. Sin commit.
+
+## 2026-10-15 (2) - Red en el hospital: hotspot sin internet (adaptador de bucle) y el socket de VideoNest
+
+**Pregunta de Alex:** `pulsenest_session.py` necesita in3wifi con el portátil en 192.168.137.1, que solo da el
+Mobile Hotspot de Windows; en el hospital no hay WiFi que compartir y comparte los datos del móvil, pero ese
+mismo móvil corre VideoNest sobre in3wifi y hay "problemas de conexión". Opciones por simplicidad; `netsh`
+dice `Hosted network supported: No`; ¿sirve el Microsoft KM-TEST Loopback Adapter?
+
+**Probado hoy (sin tocar nada del repo):**
+- `Hosted network supported: No` solo afecta al hotspot antiguo de `netsh wlan hostednetwork`. El Mobile
+  Hotspot de Settings usa Wi-Fi Direct y no lo necesita (es el que Alex ya usa).
+- El adaptador de bucle KM-TEST ya estaba instalado (adaptador "Ethernet", IP automática 169.254.x). Desde
+  PowerShell, **sin administrador y sin ninguna conexión a internet**, la API WinRT
+  `NetworkOperatorTetheringManager.CreateFromConnectionProfile(<perfil Ethernet>)` + `StartTetheringAsync()`
+  levantó in3wifi (2,4 GHz) y el adaptador virtual cogió **192.168.137.1/24**; la conexión del portátil a
+  ACM-ASUS siguió intacta. Apagado a los 18 s con `StopTetheringAsync()`. Script de prueba en scratchpad
+  (`hotspot_loopback_test.ps1`). `icssvc\Settings\PeerlessTimeoutEnabled = 0`: el apagado por inactividad
+  ya está desactivado.
+- `VideoNest/.../net/UdpManager.kt` abre `DatagramSocket()` sin atarlo a la WiFi: usa la red POR DEFECTO
+  del teléfono. En Android, una WiFi sin internet no es la red por defecto si hay datos móviles: los UDP a
+  192.168.137.1 salen por la red celular y se pierden. Además, el móvil haciendo de upstream del hotspot y a
+  la vez cliente de ese hotspot es un bucle. Explicación probable de los problemas.
+
+**Respuesta (sin cambios de código):** 1) hotspot compartiendo el bucle (gratis, ya funciona) + datos móviles
+APAGADOS en el teléfono durante la sesión, o VideoNest atando el socket a la red WiFi (`requestNetwork`
+TRANSPORT_WIFI + `Network.bindSocket`); 2) router de viaje USB (~20-30 EUR) con SSID in3wifi/12345678, LAN
+192.168.137.0/24 y reserva .1 para el portátil; 3) el móvil como hotspot: descartado, el portátil no sería
+.1 y las placas llevan la IP fija en `wifi_config.h`. Decisión de Alex pendiente.
+
+## 2026-10-15 (3) - `scripts/hotspot.ps1`: in3wifi sin internet, con script
+
+**Alex:** «Explícame cómo puedo ejecutar la opción 1 sin tu ayuda (quizás con un script)».
+
+**Hecho:** `scripts/hotspot.ps1 on | off | status` (junto a `make_session_shortcut.ps1`, los dos ayudantes
+PowerShell del portátil de hospital). Busca el adaptador KM-TEST por descripción (`*KM-TEST*`: la descripción
+está localizada, aquí «Scheda di loopback Microsoft KM-TEST»; el primer patrón exigía «Loopback» detrás y
+fallaba), localiza su perfil de conexión por GUID de adaptador, y usa `NetworkOperatorTetheringManager`
+(WinRT) para encender/apagar; bajo pwsh 7 se relanza en Windows PowerShell 5.1, que es el que tiene la
+proyección WinRT. `status` imprime estado, nombre, banda, la IP del portátil en el hotspot y los clientes
+(MAC + nombre + IP). Si falta el adaptador, dice cómo instalarlo (Device Manager → Add legacy hardware).
+Nada de administrador para on/off. Probado on/status/off/on.
+
+**Incidente:** al probar, el hotspot ya estaba encendido con las 3 V18 conectadas (Alex lo había encendido
+tras el mensaje anterior); el `off` de la prueba las desconectó. Vuelto a encender enseguida y dicho.
+Confirma de paso que las placas eligen in3wifi en cuanto existe (primera red de `wifi_config.h`).
+
+**Docs:** README (bloque de comandos, tabla de carpetas: `scripts/` = build + los dos `.ps1` del portátil,
+lista de ficheros); runbook §1 bis (instalar el adaptador y configurar el hotspot, una vez) y §2 (primer paso
+del día: `hotspot.ps1 on`; teléfonos con datos móviles APAGADOS y por qué).
+
+**Comentarios de Alex (15-10, tarde):** (1) el script no decía cómo crear el adaptador → pasos con
+`hdwwiz.exe` (asistente de hardware heredado) en la cabecera del script, en el mensaje que imprime si falta
+y en el runbook §1 bis. (2) ¿Permanece tras reiniciar? Sí: dispositivo raíz (`ROOT\NET\0000`) con su driver
+en el almacén de drivers; sobrevive a reinicios y actualizaciones; solo se va al quitarlo en el Administrador
+de dispositivos o con «Restablecer este PC». Lo instaló Alex hoy a las 12:44 y no ha habido reinicio desde
+(arranque del 14 a las 11:41), así que en este portátil aún no está visto. El hotspot en sí sí se apaga en
+cada reinicio: `hotspot.ps1 on` cada día.
+
+**VideoNest, decidido aquí (15-10, tarde; lo implementa una sesión en VideoNest):** (a) UDP siempre por
+WiFi: `requestNetwork` TRANSPORT_WIFI sin exigir INTERNET/VALIDATED + `Network.bindSocket`; cuando esté,
+el runbook §2 deja de pedir datos móviles apagados. (b) `Delete Recordings` (Settings) borra todo sin
+preguntar (`CsvLogger.deleteAll()`, respeta solo `activeFile`): se quita; en su lugar papelera por fila en
+«CSV Recordings» con AlertDialog de confirmación y desactivada en la grabación en curso; `Delete Snapshots`,
+igual de expuesto, confirmación o lo mismo.
+
+**15-10, tarde (2):** Alex confirma que VideoNest ya ata el socket a la WiFi (`net/WifiRoute.kt`: TRANSPORT_WIFI,
+sin NET_CAPABILITY_INTERNET ni VALIDATED, `bindSocket`). Runbook §2: el paso «datos móviles OFF» pasa a
+«teléfonos en in3wifi, los datos pueden quedarse encendidos»; cabecera de `scripts/hotspot.ps1` y memoria,
+igual.
+
+## 2026-10-15 (4) - Ventana del grabador: lo que envía el teléfono, al lado de REFERENCE
+
+**Alex:** en `pulsenest_recorder_gui.py` no se ve si VideoNest está enviando ni qué SpO2 envía; ponerlo al
+lado de REFERENCE.
+
+**Hecho:** `Source.vn_last_spo2 / vn_last_conf / vn_last_mono` en el grabador, rellenados por `_vn_peek()`
+para TODO teléfono (declarado o no) con la última trama cuyo checksum es correcto (una trama con checksum
+malo no es una lectura); no escribe nada. En la GUI, `vn_live` (QLabel) tras el desplegable de la fila
+REFERENCE, pintado en `refresh()` por `_phone_line(now)`: vacío sin teléfono declarado; «not heard yet»
+ámbar si está declarado y no se ha oído; «SpO2 94  conf 0.97  N s ago» verde mientras llegan tramas;
+«SILENT N s  (last: …)» rojo a partir de `AUX_SILENT_S` (30 s) — nada en silencio se queda verde. Tooltip:
+no es un número para teclear en RECORD (la lectura manual comprueba la automática, no la copia; misma regla
+que `help spo2`). El desplegable pasa a `AdjustToContents` porque con la línea al lado ya no tenía la fila
+entera y recortaba «Pixel8aACM» (visto en el render nativo). Tests: GUI 94/94 (vacío / verde / SILENT rojo
+a los 40 s / ámbar no oído), grabador 135/135 (último valor por teléfono, declarado o no), conversor 11/11,
+lanzador 62/62. Spec: párrafo de la ventana (§ panel de sesión).
+
+**Reserva dicha a Alex:** ver el número del OCR junto a la entrada manual puede sesgar al operador; por eso
+va en la fila REFERENCE del panel de lanzamiento, no junto al RECORD, y el tooltip lo dice.
+
+**Alex (15-10, tarde):** la línea del teléfono, debajo del desplegable de REFERENCE y no a su derecha → fila
+propia sin etiqueta bajo REFERENCE (`form.addRow("", self.vn_live)`); el desplegable recupera la fila entera
+y sobra el `AdjustToContents`. Spec ajustada.
+Al pasar la línea debajo, la caja de sesión encogió a su mínimo (etiquetas con word-wrap): MONITOR en dos
+líneas y el id del teléfono recortado. La caja pasa a `stretch 1` como el gráfico, y el desplegable conserva
+`AdjustToContents`. Test del orden del panel: una fila más, con etiqueta vacía (`QLabel("")` explícito: con
+`""` Qt no crea el ítem de etiqueta y el test que recorre las filas fallaba).
+El `stretch` no bastó: a 1500 px la ventana ya está en sus mínimos (la tabla de lecturas es ancha) y no hay
+sobrante que repartir. Suelo explícito: `setMinimumWidth` de la caja de sesión = ancho de
+«REFERENCE  Mindray BeneVision N17 · avg 8s · foot» + 90 px. Render nativo: MONITOR y NOTE en una línea, id
+del teléfono entero, la línea viva debajo de REFERENCE. GUI 94/94.
+
+## 2026-10-15 (5) - Ventana del grabador: cinco anchuras arrastrables, guardadas en el .ini
+
+**Alex:** «unas cinco columnas cuyo ancho me gustaría que fuera modificable y quedara registrado en el .ini».
+
+**Hecho:** el cuerpo de cada fila es un `QSplitter` horizontal de cuatro (gráfico | SIGNAL STATS | panel de
+sesión | caja de lecturas) y dentro de la caja de lecturas otro de dos (entrada SpO2/PR/RECORD/DELETE/teclas,
+en un widget propio `entry_w` | tabla), con NEW EVENT debajo de los dos: cinco anchuras. `childrenCollapsible
+False` (un panel arrastrado a cero sería un control desaparecido); cada panel conserva su mínimo. Las
+estadísticas pasan de ancho fijo (lo pone `make_stats_widget`, que el visor quiere así) a suelo. Tiradores de
+6 px, azules bajo el ratón (`QSplitter::handle` en DARK_QSS). Un arrastre en una fila mueve todas las filas
+(`RecorderWindow.apply_splits/_split_moved`, `split_state`), y `closeEvent` escribe `split_body` y
+`split_readings` en `pulsenest_recorder_gui.ini` junto a `geometry`; una ventana nueva arranca sus filas con
+ellos. Causa de una tarde: la rejilla de la caja de lecturas conservaba `setColumnStretch(2, 1)` de cuando la
+tabla ocupaba la columna 2; vacía, se quedaba el ancho y el splitter interior no crecía (diagnóstico en
+scratchpad `debug_split.py`). Tests GUI 100/100: estructura, arrastre propagado a una segunda fila, tamaños
+tomados (ventana offscreen mostrada y más ancha que la suma de mínimos, que en offscreen son grandes), claves
+en el .ini, ventana nueva con los mismos tamaños. Spec: párrafo nuevo en la sección de la ventana.
+
+## 2026-10-15 (6) - Línea inferior del grabador: carpeta como enlace y más grande; ¿carpeta de sesiones configurable?
+
+**Alex:** la línea de abajo («recording into …») que se vea mejor (fuente mayor) y la carpeta como vínculo;
+y ¿la carpeta de sesiones es fija?, ¿debería ser configurable y dónde?
+
+**Hecho:** `RecorderWindow.dir_line`: «recording into <carpeta>» con la carpeta como enlace (`open_in_system`,
+`html.escape` de la ruta), fuente +3 pt sobre el defecto (puntos relativos, nunca px: regla de 10-09); las
+respuestas de consola, que compartían etiqueta, pasan a `log_line` propia debajo, oculta mientras esté vacía
+(`RecorderWindow.say()`; antes una etiqueta vacía con borde era un recuadro hueco). Test 101/101; spec,
+sección de la ventana.
+
+**Respondido (sin código):** la carpeta no es configurable en la práctica: el grabador acepta `--out` (por
+defecto `<repo>/captures/sessions`), pero el lanzador no lo pasa (`cot_command`), su línea de disco mide
+`SESSIONS_DIR` fijo y el runbook/README la nombran. Recomendación: configurable en el LANZADOR (es quien
+arranca cada ventana y quien enseña el disco libre), recordada en su `.ini` como `configs_dir`, pasada como
+`--out` a cada grabador, con la carpeta como enlace y CHANGE FOLDER… junto a la línea de disco; no en el
+`.toml` (es por cuna: dispersaría las sesiones) ni en el `.ini` del grabador (cada ventana lo leería por su
+cuenta). Caso de uso real: un SSD externo en el portátil de hospital (1 GB por placa y hora). Decisión de
+Alex pendiente.
+
+**Alex (15-10, noche):** ¿que `pulsenest_session.py` detecte que in3wifi no funciona, compruebe, intente activarlo
+e instale el bucle si hace falta, siempre pidiendo aprobación y explicando qué y por qué? **Opinión dada, sin
+código:** sí a detectar (IP 192.168.137.1 presente, stdlib, en el tic del lanzador; línea NETWORK in3wifi
+verde/rojo/ámbar), sí a encender con aprobación vía `hotspot.ps1 on` (sin admin; diálogo que explica qué
+cambia, qué no, y que las placas se pasarán a in3wifi); nombre/banda con aprobación en una segunda vuelta
+(necesita la clave de `wifi_config.h`); NO instalar el adaptador desde el lanzador (devcon o SetupDi + UAC,
+una vez por portátil, inquieta a IT): detectar y guiar abriendo `hdwwiz.exe`. Riesgos: en el laboratorio no
+ofrecerlo si hay placas en el aire por otra red (se irían a in3wifi); dar al script códigos de salida fijos
+para que el lanzador no lea prosa. ~150 líneas + tests. Decisión de Alex pendiente.
+
+## 2026-10-16 - fw 0.23: reconexión WiFi (las placas se quedaban mudas al caer el hotspot)
+
+**Pregunta de Alex (15-10, noche):** «¿por qué dices que en casa las placas llegan por el router? Puede que se
+conecten, pero no las veo en el lanzador ni en el lab». Era una deducción mía de `wifi_config.h`, no un hecho.
+Comprobado: hotspot apagado, hub en 0.0.0.0:5005, cortafuegos permite Python en el perfil Public (el de la red
+de casa), ninguna placa llega al hub en 6 s, ninguna en 192.168.50.x. **Causa, en el firmware:** la red se
+elegía una vez al arrancar (lista en orden, 10 s por red) y `WIFI_EVENT_STA_DISCONNECTED` solo ponía un bit;
+nadie volvía a llamar a `esp_wifi_connect()` desde el porte a IDF (15-09; la reasociación del backlog del
+09-09 era de la librería Arduino). Las tres V18 estaban en in3wifi cuando el hotspot se apagó y quedaron mudas
+hasta reiniciarlas. Una placa que arranca con el hotspot apagado sí entra en la red de casa.
+
+**Alex: «Arregla primero la reconexión del firmware».** fw 0.23 (`main/pulsenest_main.cpp`):
+- `wifi_adopt(i)`: lo que hacía el bucle de arranque tras asociarse (destino UDP, socket de datos si no
+  existe, `g_wifi_ready`, socket de comandos + servidor OTA una sola vez, banner, RESET_REASON por UDP, que
+  en una reconexión dice que la placa NO reinició). El socket de datos sobrevive al cambio de red (UDP sin
+  bind: enruta en cada `sendto`); solo cambia el destino.
+- `wifi_keepalive()` en cada vuelta de `Cmd_Task` (~50 ms), sin bloquear: si la estación ha caído
+  (`!connected && dropped`), `g_wifi_ready=false`, mensaje `# WiFi LOST [ssid] — motivo`, 150 ms para que
+  UDP_Task termine el `sendto` en curso, y `wifi_retry_begin(0)`; mientras prueba, 10 s por red
+  (`WIFI_TRY_US`, como los 20×500 ms del arranque) y a la siguiente, dando vueltas a la lista sin fin. Si
+  el arranque no encuentra red, ya no es «UART only» para siempre: sigue probando en segundo plano → las
+  placas pueden encenderse ANTES que el portátil.
+- Declaración adelantada de `wifi_keepalive` antes de `Cmd_Task` (las funciones usan `reset_reason_str`,
+  definida después).
+Compila limpia (`-Wall -Wextra -Werror`), `build_V18/pulsenest.bin` 898 000 B. **OTA pendiente de Alex**
+(las placas están mudas: hay que reiniciarlas con el hotspot encendido, luego `build.ps1 V18 -Ota <ip>` a
+cada una y verificar con `tools/udp_fw_versions.py`; `docs/boards.md` se actualiza entonces). Prueba de
+aceptación: con fw 0.23, apagar el hotspot → en ≤ 30 s las placas aparecen por la red de casa; encenderlo
+→ siguen donde están (solo se mueven al caer). Consecuencia para la detección en el lanzador: tras encender
+el hotspot ya no hace falta reiniciar placas.
+
+**OTA fw 0.23 (16-10, Alex: «flashéalas tú»):** las tres V18 estaban en la red de casa (192.168.50.15/.3/.89,
+fw 0.22); la OTA es HTTP a la IP de la placa, in3wifi no hace falta. Subidas OK (HTTP 200, 8-10 s cada una);
+la verificación automática de `build.ps1` «NOT VERIFIED» porque espera en la misma IP y las placas
+reiniciaron en in3wifi (Alex lo había encendido): verificadas por MAC con `udp_fw_versions.py`, las tres
+fw 0.23 / lib 0.104, `build=c5c7489-dirty` (0.23 aún sin commit), `elfsha=ce7f7be6686307a4`. `docs/boards.md`
+actualizado. **Prueba de aceptación superada:** hotspot OFF → a los 35 s las tres llegan por la red de casa
+(192.168.50.x) sin tocarlas; hotspot ON → siguen en la de casa (solo se mueven al caer). Hotspot dejado
+encendido como estaba. Mejora pendiente (no pedida): `build.ps1 -Ota` podría verificar por MAC en vez de
+por IP, que cambia cuando la placa reinicia en otra red.

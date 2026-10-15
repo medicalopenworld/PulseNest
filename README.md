@@ -69,6 +69,8 @@ its own, so closing the launcher never touches a recording.
 ```powershell
 .\scripts\make_session_shortcut.ps1      # once per laptop: a "PulseNest Session" desktop icon
 pythonw tools\pulsenest_session.py       # the same, from a terminal
+.\scripts\hotspot.ps1 on                 # in3wifi with no internet to share: the laptop's hotspot
+                                         # sharing the KM-TEST loopback adapter (on | off | status)
 ```
 
 To use it: copy `docs/session_configs/example.toml` to one file per kit (`cot1.toml`, …) with
@@ -117,7 +119,7 @@ The folder says what a Python file *is*, not when it was written:
 | `test_pulsenest/` | `*_test.py` | Python tests of this repo's own software, one per module (`python test_pulsenest/<name>.py`) |
 | `test_lib/` | `test_<name>/` suites, `runner/` | C++ unit tests of the `incunest_afe4490` library, run on the PC (`python test_lib/runner/run_host_tests.py`) |
 | `experiments/` | one-off studies and bench campaigns | Dated, with the result recorded in the docstring; not maintained as tools |
-| `scripts/` | `build.ps1`, `gen_build_version.py` | Build system only |
+| `scripts/` | `build.ps1`, `gen_build_version.py`, `*.ps1` | Build system, and the two PowerShell helpers of the hospital laptop (desktop icon, hotspot) |
 
 Every script outside the root puts the repo root on `sys.path` with one line and imports from
 `pulsenest.` / `tools.` / the root modules, so it runs from any working directory:
@@ -138,5 +140,6 @@ test_pulsenest/                — Python tests of the repo's own software
 test_lib/                      — C++ unit tests of the library (Unity), built and run by test_lib/runner/
 experiments/                   — One-off studies;  analysis/ — their figures and CSV outputs
 scripts/build.ps1              — Build / OTA / USB flash per board
+scripts/hotspot.ps1            — in3wifi without internet: Mobile Hotspot sharing the KM-TEST loopback adapter (on | off | status)
 conversation_log.md            — Session-by-session design decisions log
 ```

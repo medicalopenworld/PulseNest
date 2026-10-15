@@ -657,6 +657,9 @@ class Source:
         self._metadata_applied = False        # guards _apply_pending_metadata against re-identify
         self.vn_rows = 0                      # rows this phone contributed to reference_spo2.csv
         self.vn_bad = 0                       # frames that did not parse, or failed the checksum
+        self.vn_last_spo2 = None              # the phone's last GOOD frame (checksum ok), for the
+        self.vn_last_conf = None              # window's REFERENCE line (2026-10-15): SpO2 as text,
+        self.vn_last_mono = None              # OCR confidence as text, arrival (monotonic s)
         self.pending = []                     # (t_mono_us, t_epoch_us, ip, data) until named
         self.first_mono_us = first_mono_us
         self.last_seen_mono = first_mono_us / 1e6
@@ -913,6 +916,7 @@ class Recorder:
             if src.kind == "board":
                 self._watch_counter(src, data, t_mono_us, t_epoch_us)
             else:
+                self._vn_peek(src, data, t_mono_us)
                 self._vn_rows(src, data, t_mono_us, t_epoch_us)
             # The CSV comes last and in its own guard: a malformed frame, an unexpected field
             # count or a bug of ours costs rows HERE and leaves the .pnraw untouched.
@@ -1158,6 +1162,25 @@ class Recorder:
             t_epoch_us, iso_local(t_epoch_us), source, ident, kind, spo2, pr, conf, seq,
             phone_ts, drift_ms, checksum_ok, event_id, supersedes, emit_ts, offset_ms, ntp)) + "\n")
         self.ref_rows[source] += 1
+
+    def _vn_peek(self, src, data, t_mono_us):
+        """The phone's last good frame -> src.vn_last_*: what the recorder window shows beside
+        REFERENCE (Alex, 2026-10-15: the window did not say whether VideoNest was sending, nor
+        what). Every phone, declared or not, so the line can answer as soon as one is named;
+        nothing is written. A frame that fails its checksum is not a reading and does not count.
+        Like everything after _record, it may never break the raw stream."""
+        try:
+            for raw in reversed(data.split(b"\n")):
+                line = raw.strip()
+                m = _VN_FRAME_RE.match(line)
+                if m is None or nmea_checksum(line[1:line.rindex(b"*")]) != int(m.group(8), 16):
+                    continue
+                src.vn_last_spo2 = m.group(2).decode()
+                src.vn_last_conf = m.group(3).decode()
+                src.vn_last_mono = t_mono_us / 1e6
+                return
+        except Exception as exc:
+            self.log.error("VideoNest peek failed for %s: %r", src.label(), exc)
 
     def _vn_rows(self, src, data, t_mono_us, t_epoch_us):
         """One datagram -> its $VN1 rows in reference_spo2.csv. Only from the phone DECLARED as
