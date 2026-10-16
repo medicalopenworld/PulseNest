@@ -271,13 +271,17 @@ COMMAND_HELP = {
         "\n"
         "skin: Monk Skin Tone (MST) scale, a whole number 1-10: 1 the lightest tone, 10 the darkest.\n"
         "Ten swatches published by Google with Dr Ellis Monk (Harvard, 2022), free at\n"
-        "https://skintone.google -- print them, or open the page on the phone. Judge it AT THE\n"
-        "PROBE SITE (the foot), not the face, under daylight or the room's white light, holding\n"
-        "the swatch against the skin; write the closest number. Why MST and not Fitzpatrick:\n"
+        "https://skintone.google -- print them, or open the page on the phone. Judge it on the\n"
+        "DORSAL side of the probe site, where the LEDs sit: the top of the foot on a newborn, the\n"
+        "skin behind the nail on a finger. Never the sole, the palm or the face: palm and sole are\n"
+        "light in everyone, and the face is not what the light crosses. Daylight or the room's white\n"
+        "light, swatch held against the skin, closest number written. Why MST and not Fitzpatrick:\n"
         "Fitzpatrick grades sun reactivity with few dark tones; the FDA's January 2025 draft\n"
         "guidance for pulse-oximeter clinical studies asks for MST. Why per session: a newborn's\n"
-        "pigmentation darkens over the first weeks, so this is the day's value, not the birth's.\n"
-        "Torn between two? Pick one and say so in `note`. It is the best documented SpO2 bias.",
+        "pigmentation darkens over the first weeks (how fast, and how in a preterm, is an open\n"
+        "question for us), so this is the day's value, not the birth's. Torn between two? Pick one\n"
+        "and say so in `note`; nail polish, a false nail or a pigment band at the site go there too.\n"
+        "It is the best documented SpO2 bias, which is why it is a number and not a word.",
     ),
     "status": (
         "status",

@@ -22,6 +22,8 @@ has not been triaged yet.
 ## Inbox
 
 <!-- Add new ideas below. One line each; optional indented context line. -->
+- Investigar la evolución de la pigmentación en prematuros (sobre todo pieles oscuras): cuánto y a qué ritmo oscurece el tono Monk en las primeras semanas, y si difiere del nacido a término
+	(16-10: `skin` se anota por sesión y en el lado dorsal del sitio de la sonda; falta saber si un valor por sesión basta o hay que modelar la deriva para el análisis de sesgo)
 - [x] Añadir a la nomenlatura del proyecto "adc_code" para salidas del ADC (y quizás LSB
   para variaciones/intervalos/errores/tolerancias de adc_code)
   (hecho: convención registrada en la memoria feedback_naming_adc_code_samples; la parte LSB sigue abierta)

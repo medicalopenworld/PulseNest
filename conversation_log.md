@@ -27627,3 +27627,33 @@ mismo valor y en el mismo orden; el resto byte a byte); `None` en cualquier otro
 (cinco casos: añadida → nombrada; valor cambiado, línea de datos distinta, línea de más, claves reordenadas →
 diferencia). En real: las sesiones de SUBJ10 del 13-10 pasan de DIFFERS a `identical
 (+afe_settle_freeze_enable)`, exit 0. Docstring del conversor y spec (sección del conversor) al día.
+
+## 2026-10-16 (10) - Prueba en pantalla del grabador con VideoNest: SUBJ67, todo coherente
+
+**Alex:** ejecutó el punto 1 del plan (lanzador reiniciado, sesión con el móvil Pixel8aACM enviando) y
+pasó la sesión `captures/sessions/SUBJ67/SUBJ67_HOSPNAV_20261016_185433` para revisar. **Revisión (solo
+lectura):** carpeta por sujeto con el id al segundo; `session.toml` copiado (lanzado desde `example.toml`);
+`session.json` con `launch` = el .toml, fuentes, cierre (deriva de reloj 1 µs); 15 eventos
+(NOTE, 6 META del sujeto/sonda/monitor, 6 REF_SPO2 = 95 tecleadas, inicio/fin); `reference_spo2.csv` con 9
+lecturas VideoNest (67 %, conf 0,98→0,50, checksum ok, `ntp=1`) y las 6 del operador; crudo del móvil
+`aux_vn_Pixel8aACM_0001.pnraw` con las 9 tramas `$VN1`; las otras dos V18 ignoradas por filtro de placa.
+`pulsenest_convert` sobre la sesión: `identical` 1/1. Señal: LEDs saturados a 2 096 921 y ProbeState 4, sonda
+sin aplicar (banco), esperado. Única observación: el CSV se llama `…_185434_p01.csv` y la carpeta `…_185433`
+(el CSV toma la hora de la primera muestra de la placa; la carpeta, la del inicio de sesión): por diseño, sin
+cambio. Punto 1 del plan cerrado.
+
+## 2026-10-16 (11) - `skin`: juzgar el lado dorsal del sitio de la sonda; pigmentación en prematuros al BACKLOG
+
+**Alex:** explicar el punto 2 (texto dorsal de `skin`) y hacer el cambio; «en bebés prematuros la evolución de
+la pigmentación (p. ej. pieles oscuras) es un tema que tenemos que investigar». **Explicación:** el texto decía
+«en el sitio de la sonda (el pie), no la cara»; el pie tiene dos caras y la planta, como la palma, es clara en
+todo el mundo (poca melanina, capa córnea gruesa): un operador que mire la planta anota un 2 en un bebé de
+piel oscura y falsea la estratificación del sesgo. La melanina que importa es la que atraviesa la luz, bajo
+los LEDs, que con la orientación ISO 2026 van en el lado de la uña/dorso. **Hecho:** texto nuevo, idéntico en
+`example.toml`, `help subj` (grabador), tooltip SKIN (GUI) y spec §9: «lado DORSAL del sitio de la sonda,
+donde están los LEDs: empeine en el recién nacido, piel tras la uña en un dedo; nunca planta, palma ni cara»;
+esmalte, uña postiza o banda de pigmento → `note`; y la frase de «oscurece en las primeras semanas» pasa a
+decir que cuánto y cómo en un prematuro es una pregunta abierta. BACKLOG inbox: investigar la evolución de
+la pigmentación en prematuros (ritmo del tono Monk, ¿difiere del término?, ¿basta un valor por sesión o hay
+que modelar la deriva?). La marca de procedencia (observador/autodeclarado) no se añade: en neonatos siempre
+es el observador. Tests: grabador 136/136, GUI 88/88. Sin cambio de datos ni de CSV.

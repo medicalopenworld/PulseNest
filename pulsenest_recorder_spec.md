@@ -699,9 +699,14 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   365.25/12). Ranges: `gest_age` 20–45 weeks, `age` 0–130 years, `weight_g` 300–300 000, `skin`
   1–10. The name is `subject_info`, not `baby`, for the same reason. **`skin` is the Monk Skin
   Tone (MST) scale**: ten swatches published by Google with Dr Ellis Monk (Harvard, 2022), free
-  at https://skintone.google; 1 the lightest, 10 the darkest; judged at the probe site, not the
-  face, under daylight or white room light, swatch against the skin, closest number recorded;
-  per session because a newborn's pigmentation darkens over the first weeks. MST and not
+  at https://skintone.google; 1 the lightest, 10 the darkest; judged on the **dorsal side of the
+  probe site, where the LEDs sit** (top of the foot on a newborn, skin behind the nail on a
+  finger), never the sole, the palm or the face: palm and sole are light in everyone, and the
+  face is not what the light crosses (2026-10-16; until then the text said "the foot", which
+  has two very different sides). Daylight or white room light, swatch against the skin, closest
+  number recorded; nail polish, a false nail or a pigment band at the site go in `note`; per
+  session because a newborn's pigmentation darkens over the first weeks -- how fast, and how
+  in a preterm, is an open question for the project (BACKLOG). MST and not
   Fitzpatrick because Fitzpatrick grades sun reactivity with few dark tones and the FDA's
   January 2025 draft guidance for pulse-oximeter clinical studies asks for MST (a source, not a
   certification). The same text is in `example.toml`, in `help subj` and in the SKIN tooltip.
