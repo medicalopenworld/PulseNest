@@ -30,12 +30,17 @@ REPLAY_DIR = os.path.join("derived", "replay_lib0.96")   # runner v0.21 output, 
 SUFFIX = "_replay" if REPLAY else ""
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(HERE)))))  # repo root
+from pulsenest import session_events  # noqa: E402
 SESSIONS_DIR = os.path.dirname(HERE)
 CAMPAIGN_GLOB = "SUBJ08_HOSPNAV_20260923_*"
 
 REF_WINDOW_S = 8.0          # assumed monitor averaging window (model not recorded)
 APPLIED_MIN_FRAC = 0.8      # window usable if >= this fraction of samples probe-on
 VALID_MIN_FRAC = 0.25       # ... and >= this fraction of samples VALID (see below)
+ANOMALY_MAX_FRAC = 0.0      # ... and no part of it flagged ABNORMAL CONDITION by the
+# operator (ANOMALY_START/END in session_events.csv, 2026-10-16). The fraction is kept
+# as a column, so a re-analysis can ignore the flag. The 2026-09-23 campaign has none.
 # Probe-on states accepted FOR THIS CAMPAIGN: 2 (PROBE_APPLIED) and 1 (PROBE_OT_HIGH).
 # On 2026-09-23 the firmware still ran rsqm_ot_thr = 1.0e-4 (raised to 1.5e-4 in lib
 # v0.95 the day after, from this subject's own data): SUBJ08's OT_HIGH stretches were
@@ -147,8 +152,8 @@ def parse_reference(session_dir):
     return np.array(t, dtype=np.float64), np.array(spo2), np.array(conf)
 
 
-def pair_session(name, board, ref_t, ref_spo2, ref_conf):
-    """One output row per reference reading."""
+def pair_session(name, board, ref_t, ref_spo2, ref_conf, anomalies=()):
+    """One output row per reference reading. `anomalies`: [(t0_us, t1_us)] flagged."""
     pairs = []
     w_us = REF_WINDOW_S * 1e6
     for i in range(len(ref_t)):
@@ -160,7 +165,9 @@ def pair_session(name, board, ref_t, ref_spo2, ref_conf):
             "ref_spo2": ref_spo2[i], "ref_conf": ref_conf[i],
             "n_samples": n, "applied_frac": math.nan, "valid_frac": math.nan,
             "r_med": math.nan, "our_spo2_med": math.nan,
-            "sqi_med": math.nan, "pi_med": math.nan, "usable": 0,
+            "sqi_med": math.nan, "pi_med": math.nan,
+            "anomaly_frac": session_events.covered_fraction(anomalies, t1 - w_us, t1),
+            "usable": 0,
         }
         if n:
             ps = board["ps"][sel]
@@ -176,7 +183,8 @@ def pair_session(name, board, ref_t, ref_spo2, ref_conf):
                 row["sqi_med"] = float(np.median(board["sqi"][sel][valid]))
                 row["pi_med"] = float(np.median(board["pi"][sel][valid]))
             row["usable"] = int(row["applied_frac"] >= APPLIED_MIN_FRAC
-                                and row["valid_frac"] >= VALID_MIN_FRAC)
+                                and row["valid_frac"] >= VALID_MIN_FRAC
+                                and row["anomaly_frac"] <= ANOMALY_MAX_FRAC)
         pairs.append(row)
     return pairs
 
@@ -208,7 +216,8 @@ def main():
         name = os.path.basename(d)
         board = parse_board_session(d)
         ref_t, ref_spo2, ref_conf = parse_reference(d)
-        pairs = pair_session(name, board, ref_t, ref_spo2, ref_conf)
+        anomalies = session_events.anomaly_intervals(d, "SUBJ08")
+        pairs = pair_session(name, board, ref_t, ref_spo2, ref_conf, anomalies)
         all_pairs.extend(pairs)
         per_session[name] = (board, ref_t, ref_spo2)
         dur_min = (board["t"][-1] - board["t"][0]) / 60e6
@@ -218,6 +227,9 @@ def main():
             f"{name}: {len(board['t'])} samples ({dur_min:.1f} min), "
             f"probe-on (state 1|2) {100 * app:.1f}%, ref readings {len(pairs)}, "
             f"usable pairs {len(usable)}"
+            + (f", {len(anomalies)} stretch(es) flagged ABNORMAL CONDITION, "
+               f"{sum(p['anomaly_frac'] > ANOMALY_MAX_FRAC for p in pairs)} pairs dropped"
+               if anomalies else "")
         )
         if usable:
             bias = np.array([p["our_spo2_med"] - p["ref_spo2"] for p in usable])

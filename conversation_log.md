@@ -27657,3 +27657,20 @@ decir que cuánto y cómo en un prematuro es una pregunta abierta. BACKLOG inbox
 la pigmentación en prematuros (ritmo del tono Monk, ¿difiere del término?, ¿basta un valor por sesión o hay
 que modelar la deriva?). La marca de procedencia (observador/autodeclarado) no se añade: en neonatos siempre
 es el observador. Tests: grabador 136/136, GUI 88/88. Sin cambio de datos ni de CSV.
+
+## 2026-10-16 (12) - Punto 3: el análisis de sesgo lee los tramos ABNORMAL CONDITION
+
+**Alex:** ¿ANOMALY = el botón ABNORMAL CONDITION? Sí: el conmutador de la ventana (y `flag on|off` en
+consola) escribe `ANOMALY_START`/`ANOMALY_END` en `session_events.csv` sin parar la grabación. Alex: en las
+cuatro campañas de hospital nunca se ha usado (quizá solo en laboratorio); hacerlo por si acaso. Comprobado:
+SUBJ08/09 del 23-09 no tienen ninguno; la segunda sesión de prueba SUBJ67 de hoy (19:00) tiene un par de 1,4 s.
+**Hecho:** `pulsenest/session_events.py` (paquete, lo usarán varios programas): `events(dir)`,
+`anomaly_intervals(dir, subject)` → `[(t0_us, t1_us)]` por sujeto (`*` = toda la sesión; START sin END cierra
+en SESSION_END o va a `math.inf` si no lo hay; START repetido y END huérfano se ignoran con aviso por `warn`),
+`covered_fraction(intervals, t0, t1)` (solapes contados una vez). `test_pulsenest/session_events_test.py`
+21/21, con la sesión real de hoy como caso. Los dos `r_vs_ref_analysis.py` (SUBJ08/SUBJ09 `_ANALYSIS`):
+una línea `sys.path` a la raíz, `ANOMALY_MAX_FRAC = 0.0`, columna `anomaly_frac` en `pairs.csv`, `usable`
+exige 0, el resumen por sesión cuenta tramos y pares descartados. Re-ejecutados: `pairs.csv` idéntico salvo
+la columna nueva (toda a 0), resúmenes iguales salvo los nombres de sesión (id nuevo de hoy). Prueba con una
+ventana sintética marcada: `anomaly_frac` 0,125 → `usable` 0. Spec §6: tabla de `kind` con los dos
+ANOMALY (faltaban) y párrafo del lector; README: módulo en la tabla de `pulsenest/`.

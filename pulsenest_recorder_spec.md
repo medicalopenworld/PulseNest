@@ -323,7 +323,7 @@ session_id,event_id,t_mono_us,t_epoch_us,iso_local,kind,subject,board_mac,value,
 |---|---|
 | `session_id` | the session this row belongs to, repeated on every row — see below |
 | `event_id` | monotonic within the session; the join key for the `@E` copies |
-| `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `META`, `CORRECT`, `RETRACT`, `SESSION_START`, `SESSION_END` |
+| `kind` | `REF_SPO2`, `MARK`, `NOTE`, `PROBE_SITE`, `CARE`, `ALARM`, `CLOCK_ANCHOR`, `META`, `CORRECT`, `RETRACT`, `ANOMALY_START`, `ANOMALY_END`, `SESSION_START`, `SESSION_END` |
 | `subject` | `SUBJ01`… or `*` for a session-wide event |
 | `board_mac` | the board this concerns, or `*` for all (a `MARK` is normally `*`) |
 | `value` | for `REF_SPO2`, the SpO2 % read on the commercial monitor; empty otherwise |
@@ -341,6 +341,19 @@ session id was considered and rejected: it would have to reach the `.pnraw` too
 (`20260920_1812_SOAK_board_1051DB508850_0001.pnraw`), and it would not help the commonest case
 anyway, which is rows merged into one sheet where no filename survives. A column does. It costs
 ~19 bytes on a file with a few dozen rows per session.
+
+**Reading the flagged stretches (2026-10-16).** `pulsenest/session_events.py` is the one reader of
+this file for an analysis: `events(dir)` returns the rows; `anomaly_intervals(dir, subject)` pairs
+each `ANOMALY_START` with the next `ANOMALY_END` of the same subject (`*` = session-wide, returned
+for every subject) into `[(t_start_us, t_end_us)]` on the host epoch clock, a stretch left open
+closing at `SESSION_END` or running to `math.inf` when there is none (a crash: nothing after the
+flag is trusted); a second START while open and an END with nothing open are ignored and reported
+through `warn`, never silently; `covered_fraction(intervals, t0, t1)` is how much of a window they
+cover, overlaps counted once. The bias analyses of the 2026-09-23 campaign (`r_vs_ref_analysis.py`
+in each `*_ANALYSIS` folder) write it as the `anomaly_frac` column of `pairs.csv` and a window is
+`usable` only at 0.0; the column stays so a re-analysis can honour the flag or ignore it, as the
+`flag` help promises. No hospital session so far has a flag (four campaigns); the first real
+stretch is a bench press of 2026-10-16 and is the test's fixture. Test: `session_events_test.py`.
 
 *Files written before 2026-09-20 have no `session_id` column*; a reader takes the session from the
 directory name. Recorded files are not rewritten to add it — append-only applies to what was
