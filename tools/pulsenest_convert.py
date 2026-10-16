@@ -12,7 +12,9 @@ its output is not "similar to" the live files, it is the live files. Which is th
 by default (`--csv auto`): it rebuilds in the format the live files are in -- v0.4 (`# format=
 incunest_csv`, the recorder's default since 2026-09-22) or the pre-v0.4 format -- and compares
 every board CSV byte for byte with the one written live (`identical` / `DIFFERS` per file, exit
-code = files that differ). `--csv v04` or `--csv on` produces that format whatever the live one;
+code = files that differ; `identical (+key)` when the only difference is a snapshot key the
+current library knows and the recorder of the day did not -- the live file predates the key, the
+data is the same). `--csv v04` or `--csv on` produces that format whatever the live one;
 the comparison then runs only when it is the live format. (Until 2026-10-14 the default was `on`
 and the comparison ran only in that mode, so on every hospital session, recorded in v0.4, the
 default run rebuilt the other format and reported DIFFERS; Alex asked, and it was aligned.)
@@ -273,6 +275,42 @@ def live_csv_mode(session_dir):
     return "v04" if first.startswith("# format=incunest_csv") else "on"
 
 
+_SNAPSHOT_RE = re.compile(rb"^# @row \d+ (alg|afe|lib|hw): ")
+
+
+def keys_added_since(live, rebuilt):
+    """-> the keys the rebuilt snapshot lines (`# @row N alg: k=v ...`) carry and the live ones do
+    not, when that is the ONLY difference between the two files; None otherwise.
+
+    A key the current library and converter know and the recorder of the day did not is not a
+    difference in the data: the live file predates the key. Found 2026-10-16 on the 2026-10-13
+    sessions, whose recorder wrote no `afe_settle_freeze_enable` (added to `$LCFG` on 10-08) and
+    which every verify since reported DIFFERS for that reason alone -- and would again for every
+    key that enters `$LCFG`. KEY_SYNONYMS covers a key RENAMED since; this covers one ADDED since.
+    Strict about everything else: the files must pair line for line, the shared keys must carry
+    the same values in the same order, and every other line must be byte-identical."""
+    la, lb = live.split(b"\n"), rebuilt.split(b"\n")
+    if len(la) != len(lb):
+        return None
+    added = set()
+    for x, y in zip(la, lb):
+        if x == y:
+            continue
+        mx, my = _SNAPSHOT_RE.match(x), _SNAPSHOT_RE.match(y)
+        if not mx or not my or mx.group(0) != my.group(0):
+            return None
+        tx, ty = x[mx.end():].split(), y[my.end():].split()
+        kx = dict(t.split(b"=", 1) for t in tx if b"=" in t)
+        ky = dict(t.split(b"=", 1) for t in ty if b"=" in t)
+        extra = set(ky) - set(kx)
+        if not extra or any(k not in ky or ky[k] != v for k, v in kx.items()):
+            return None
+        if [t for t in ty if t.split(b"=", 1)[0] not in extra] != tx:
+            return None                        # same keys, but moved: not merely an addition
+        added |= extra
+    return sorted(k.decode("ascii", "replace") for k in added) if added else None
+
+
 def verify(session_dir, rec):
     """Compare every live board CSV with its rebuilt twin, byte for byte. Returns
     [(name, 'identical' | 'DIFFERS' | 'missing')].
@@ -301,7 +339,11 @@ def verify(session_dir, rec):
         # canonical name (renaming = adding a synonym): compare under today's names.
         for old, new in KEY_SYNONYMS.items():
             a = a.replace(f" {old}=".encode(), f" {new}=".encode())
-        out.append((os.path.basename(f), "identical" if a == b else "DIFFERS"))
+        if a == b:
+            out.append((os.path.basename(f), "identical"))
+            continue
+        added = keys_added_since(a, b)
+        out.append((os.path.basename(f), f"identical (+{','.join(added)})" if added else "DIFFERS"))
     return out
 
 
@@ -322,7 +364,7 @@ def main(argv=None):
         results = verify(args.session, rec)
         for name, verdict in results:
             print(f"  {verdict:9s} {name}")
-        bad = sum(1 for _n, v in results if v != "identical")
+        bad = sum(1 for _n, v in results if not v.startswith("identical"))
         print(f"{len(results) - bad}/{len(results)} live CSVs reproduced byte for byte")
         return bad
     return 0

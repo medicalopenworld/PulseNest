@@ -134,6 +134,20 @@ check("new and old session ids give the same start, site and subject",
       _new[:3] == _old[:3] and _new[1] == "HOSPNAV" and _new[2] == "SUBJ09" and _older[1] == "HOSPNAV" and _older[2] == "SUBJ08",
       f"{_new[:3]} {_old[:3]} {_older[:3]}")
 
+
+# A snapshot key ADDED since the live file was written is not a difference (2026-10-16).
+_live = b"# format=incunest_csv/1\n# @row 0 alg: cause=open spo2_window_ms=6000 pi_window_ms=6000\n1,2,3\n"
+_reb = b"# format=incunest_csv/1\n# @row 0 alg: cause=open spo2_window_ms=6000 pi_window_ms=6000 afe_settle_freeze_enable=1\n1,2,3\n"
+check("keys_added_since: a key only the rebuilt snapshot carries, everything else equal -> named",
+      C.keys_added_since(_live, _reb) == ["afe_settle_freeze_enable"])
+check("a changed value is a difference, not an addition",
+      C.keys_added_since(_live, _reb.replace(b"pi_window_ms=6000", b"pi_window_ms=4000")) is None)
+check("a different data line is a difference",
+      C.keys_added_since(_live, _reb.replace(b"1,2,3", b"1,2,4")) is None)
+check("a missing line is a difference", C.keys_added_since(_live, _reb + b"4,5,6\n") is None)
+check("the same keys in another order are a difference",
+      C.keys_added_since(_live, b"# format=incunest_csv/1\n# @row 0 alg: cause=open pi_window_ms=6000 spo2_window_ms=6000\n1,2,3\n") is None)
+
 n = sum(ok)
 print(f"\n{n}/{len(ok)} checks passed" + (" -- OK" if n == len(ok) else " -- FAILURES"))
 sys.exit(0 if n == len(ok) else 1)

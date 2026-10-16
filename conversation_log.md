@@ -27614,3 +27614,16 @@ de SUBJ09 1309, renombrado a mano el 23-09 y que `board_csvs()` toma por un CSV 
 ignorada por git) hasta que Alex diga. **Pendiente derivado (no pedido):** `verify` del conversor debería
 tolerar una clave que el conversor actual añade y la grabación vieja no tenía (hoy solo tolera renombrados),
 o el corpus/las sesiones de hospital seguirán dando DIFFERS falsos con cada clave nueva de `$LCFG`.
+
+## 2026-10-16 (9) - Push; `verify` del conversor tolera una clave añadida después de la grabación
+
+**Alex:** «push y el pendiente derivado de que el verify del conversor tolere una clave que el grabador viejo
+no escribía». **Push:** `b902bfa..804768d` a `origin/master`. **Conversor:** `keys_added_since(live,
+rebuilt)` → lista de claves que las líneas de snapshot (`# @row N alg|afe|lib|hw: k=v …`) del reconstruido
+llevan y el vivo no, cuando esa es la ÚNICA diferencia (mismo número de líneas; claves compartidas con el
+mismo valor y en el mismo orden; el resto byte a byte); `None` en cualquier otro caso. `verify()` da
+`identical (+clave,…)` en ese caso y `DIFFERS` en los demás; `main` cuenta como bien lo que empieza por
+`identical`. Complementa a `KEY_SYNONYMS` (clave renombrada) con la clave AÑADIDA. Test del conversor 17/17
+(cinco casos: añadida → nombrada; valor cambiado, línea de datos distinta, línea de más, claves reordenadas →
+diferencia). En real: las sesiones de SUBJ10 del 13-10 pasan de DIFFERS a `identical
+(+afe_settle_freeze_enable)`, exit 0. Docstring del conversor y spec (sección del conversor) al día.

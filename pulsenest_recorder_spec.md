@@ -739,7 +739,13 @@ With the live CSV in place (§2) the converter is no longer on the critical path
 to **verify** — rebuild each board's CSV from raw and compare it byte for byte with the live one —
 and only then to produce what the live writer could not. With `--raw exceptions` there is nothing
 to rebuild and it reports on the exceptions instead; with `--raw off` it only handles the
-reference streams below.
+reference streams below. **A key added since (2026-10-16).** The comparison tolerates one thing
+besides a renamed key (`KEY_SYNONYMS`): a snapshot line (`# @row N alg: ...`) of the rebuilt file
+carrying a key the live one lacks, with every shared key equal and in the same order and every
+other line byte-identical — reported as `identical (+key)`, not `DIFFERS`. The live file simply
+predates the key: the 2026-10-13 sessions were written by a recorder that did not know
+`afe_settle_freeze_enable` (in `$LCFG` since 10-08) and every verify since said DIFFERS for that
+alone, as it would for each key that enters `$LCFG` (`keys_added_since()`).
 
 * **One CSV per board**, in the existing capture format — the same columns, the same
   `# ...` note lines, the same `# event @row N: ...` lines that `LabCaptureWriter` writes, so
