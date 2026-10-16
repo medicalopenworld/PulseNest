@@ -122,6 +122,18 @@ if corpus:
 else:
     print("skip corpus: captures/v04_corpus not present")
 
+
+# The two session-id shapes the converter must read (2026-10-16): the new <SUBJ>_<SITE>_<stamp>, and
+# the old <stamp>_<SITE>[_<tag>] of everything recorded before, which is never renamed.
+import tools.pulsenest_convert as _C
+_d = tempfile.mkdtemp()
+_new = _C.session_start_epoch_us("SUBJ09_HOSPNAV_20261016_093012", _d)
+_old = _C.session_start_epoch_us("20261016_093012_HOSPNAV_SUBJ09", _d)
+_older = _C.session_start_epoch_us("20260923_1142_HOSPNAV_SUBJ08", _d)
+check("new and old session ids give the same start, site and subject",
+      _new[:3] == _old[:3] and _new[1] == "HOSPNAV" and _new[2] == "SUBJ09" and _older[1] == "HOSPNAV" and _older[2] == "SUBJ08",
+      f"{_new[:3]} {_old[:3]} {_older[:3]}")
+
 n = sum(ok)
 print(f"\n{n}/{len(ok)} checks passed" + (" -- OK" if n == len(ok) else " -- FAILURES"))
 sys.exit(0 if n == len(ok) else 1)

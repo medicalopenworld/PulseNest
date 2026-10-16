@@ -179,8 +179,9 @@ Then, in each recorder window:
 - [ ] **`STOP SESSION`** or close the window; it asks first.
 - [ ] **Open one CSV before leaving** (Flow CSV Viewer): the check that the session is good here,
       not a week later.
-- [ ] **Copy the whole session directory** — `<date>_<time>_<SITE>_<SUBJnn>/` in the folder the
-      launcher names on its **sessions in** line (`captures/sessions` unless changed) —
+- [ ] **Copy the whole subject folder** — `<SUBJnn>/`, holding that baby's sessions
+      `<SUBJnn>_<SITE>_<date>_<time>/`, in the folder the launcher names on its **sessions in**
+      line (`captures/sessions` unless changed) —
       and the phone's photos and videos to a second disk. The photos never reach the laptop by
       themselves.
 - [ ] Nothing of this is committed to the repository.

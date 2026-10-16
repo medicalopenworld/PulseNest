@@ -1,7 +1,7 @@
 """The operator's face for pulsenest_recorder.py: one row per board, and the controls that make
 a capture usable, beside the waveform that says whether the probe is still on the foot.
 
-    python tools/pulsenest_recorder_gui.py [--location HOSP01] [--operator AC] [--hub IP[:PORT]]
+    python tools/pulsenest_recorder_gui.py --config <cot>.toml [--hub IP[:PORT]] [--out DIR]
                                           [--split-min 10] [--duration S]
     python tools/pulsenest_recorder_gui.py --config docs/session_configs/cot1.toml
 
@@ -54,7 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pulsenest.net import UDP_DATA_PORT, script_name, open_in_system     # noqa: E402
 from pulsenest.hub_client import HubClient                               # noqa: E402
 from tools.pulsenest_recorder import (AUX_SILENT_S, Recorder, NotEnoughSpace, SessionExists,  # noqa: E402, F401
-                                add_session_args, apply_session_config, CONFIG_FIELDS)
+                                add_session_args, load_session_config, recorder_kwargs)
 from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, RED, GREEN, LINK   # noqa: E402
 from pulsenest.fleet_widgets import make_stats_widget, stats_width, stats_columns  # noqa: E402
 import pyqtgraph as pg                                                   # noqa: E402
@@ -79,14 +79,14 @@ BG, BG_RAISED, FG, FG_DIM = "#121212", "#1E1E1E", "#E0E0E0", "#AAAAAA"
 # The four [subject] rows after SUBJECT, in the file's order (Alex, 2026-10-14).
 SUBJECT_ROWS = (
     ("gest_age", "GEST AGE", "Gestational age at birth, as the chart writes it: 30w+2d\n"
-                             "(`gest_age` in [subject] / --gest-age). Fetal haemoglobin, hence\n"
+                             "(`gest_age` in [subject]). Fetal haemoglobin, hence\n"
                              "the R curve, follows it."),
     ("age", "AGE", "Age as a number with its unit, d/w/m/y, joined with +: 14d, 3w+2d, 6m,\n"
                    "34y (`age` in [subject] / --age). A unit, not a count of days, because a\n"
                    "later campaign may measure children or adults."),
     ("weight_g", "WEIGHT", "Current weight in grams (`weight_g` in [subject] / --weight-g):\n"
                            "the tissue the probe sees."),
-    ("skin", "SKIN", "`skin` in [subject] / --skin.\n" + "Monk Skin Tone (MST) scale, a whole number 1-10: 1 the lightest tone, 10 the darkest.\n"
+    ("skin", "SKIN", "`skin` in [subject].\n" + "Monk Skin Tone (MST) scale, a whole number 1-10: 1 the lightest tone, 10 the darkest.\n"
                      "Ten swatches published by Google with Dr Ellis Monk (Harvard, 2022), free at\n"
                      "https://skintone.google -- print them, or open the page on the phone. Judge it AT THE\n"
                      "PROBE SITE (the foot), not the face, under daylight or the room's white light, holding\n"
@@ -274,23 +274,23 @@ class BoardRow(QtWidgets.QFrame):
             self.file_label.linkActivated.connect(lambda _l, p=cfg: open_in_system(p))
             form.addRow("FILE", self.file_label)
         else:
-            self.file_label = ro("FILE", "(no --config: flags only)",
-                                 "Launched from flags, not from a .toml (--config).")
+            # Only a window built without a file (the tests): --config is required at launch.
+            self.file_label = ro("FILE", "(no file)", "A window built without a .toml.")
         self.location_label = ro("LOCATION", rec.site or "(not set)",
-                                 "Site CODE (`location` in the .toml / --location), never a place\n"
-                                 "name. Names the session directory and the CSV; set at launch.")
+                                 "Site CODE (`location` in the .toml), never a place name. Names\n"
+                                 "the session directory and the CSV; set at launch.")
         self.operator_label = ro("OPERATOR", rec.operator or "(not set)",
-                                 "Initials or role (`operator` in the .toml / --operator), never a\n"
-                                 "full name. Set at launch.")
+                                 "Initials or role (`operator` in the .toml), never a full name.\n"
+                                 "Set at launch.")
         self.board_label = ro("BOARD", f"*{rec.board_filter}" if rec.board_filter else "(any board)",
-                              "MAC suffix this window records (`board` in the .toml / --board).\n"
+                              "MAC suffix this window records (`board` in the .toml).\n"
                               "The header line shows the full MAC once the board speaks.")
         # OUR probe, not the reference monitor's -- ISO 80601-2-61 calibrates a monitor+probe pair,
         # and the library cannot know which physical sensor is clipped onto the baby, only a person
         # can. Top-level --probe, not --ref-probe: it says nothing about the commercial monitor.
         self.probe_label = ro("PROBE", "(not set)",
                               "OUR probe's physical model, e.g. Medle-neo. Set once, at launch\n"
-                              "(`probe` in the .toml / --probe), shown here read-only so a typo\n"
+                              "(`probe` in the .toml), shown here read-only so a typo\n"
                               "is visible instead of silent.")
         # SUBJECT is what the file says, nothing more (Alex, 2026-10-14: no box, no menu, no
         # format check in the window). The Recorder is the one place a code is checked (SUBJ +
@@ -298,26 +298,25 @@ class BoardRow(QtWidgets.QFrame):
         # launched without one shows "(not set)" and stays locked, since binding from here is
         # gone -- the file is the whole story, so the subject goes in the file.
         self.subject_label = ro("SUBJECT", rec.want_subject or "(not set)",
-                                "The coded subject this board is on (`subject` in the .toml /\n"
-                                "--subject). Codes only, never a name: the code-to-person list\n"
+                                "The coded subject this board is on (`id` under [subject] in the\n"
+                                ".toml). Codes only, never a name: the code-to-person list\n"
                                 "lives outside the repository. Shown as the file says; to change\n"
                                 "it, stop the session and relaunch with the right file.")
 
-        # The subject, as the bias analysis stratifies it ([subject] in the .toml / --gest-age
-        # --age --weight-g --skin; the `subj` console command once known). Read-only labels
+        # The subject, as the bias analysis stratifies it ([subject] in the .toml; the `subj`
+        # console command once known). Read-only labels
         # like the rest; refresh() mirrors what the Recorder holds.
         self.subject_labels = {}
         for key, title, tip in SUBJECT_ROWS:
             self.subject_labels[key] = ro(title, subject_text(key, rec.want_subject_info.get(key)), tip)
         self.launch_note_label = ro("NOTE", rec.want_note or "(none)",
-                                    "`note` in the .toml / --note: written once, verbatim, as a NOTE\n"
+                                    "`note` in the .toml: written once, verbatim, as a NOTE\n"
                                     "event when the board binds to its subject. This is that text.\n"
                                     "Anything that happens later goes in NEW EVENT below.")
         self.ref_label = ro("MONITOR", "(not set)",
                             "The commercial monitor beside this baby: make and model, its\n"
                             "averaging window in seconds, where ITS probe is, and any note.\n"
-                            "Set once, at launch ([ref] in the .toml / --ref-model, --ref-avg,\n"
-                            "--ref-probe-site, --ref-note). Shown here read-only so you can\n"
+                            "Set once, at launch ([ref] in the .toml). Shown here read-only so you can\n"
                             "see it was typed correctly, not to be edited from the window.")
 
         # One reference control, not five (Alex, 2026-09-22). `operator annotation` was always on
@@ -332,7 +331,7 @@ class BoardRow(QtWidgets.QFrame):
         self.vn_on = QtWidgets.QCheckBox("VideoNest UDP")
         self.vn_on.setToolTip("Tick when a phone running VideoNest is filming this baby's "
                               "monitor and sending to the hub. Then choose which phone. Given at "
-                              "launch ([ref].videonest / --ref-videonest) it is locked here.")
+                              "launch ([ref].videonest) it is locked here.")
         self.vn_id = QtWidgets.QComboBox()
         self.vn_id.setMinimumWidth(120)
         self.vn_id.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)   # ids arrive later
@@ -556,7 +555,7 @@ class BoardRow(QtWidgets.QFrame):
                     self.vn_id.addItem(vn)                      # declared before it was heard
                 self.vn_id.setCurrentText(vn)
         if rec.expected_videonest_id:
-            # A phone declared at launch (--ref-videonest / [ref].videonest) is read-only here, same
+            # A phone declared at launch ([ref].videonest) is read-only here, same
             # principle as MONITOR/PROBE below: shown so a typo is visible, not offered for the
             # operator to override by mistake. The backend refuses a switch anyway (Recorder's
             # `videonest` command), but a disabled control also cannot be clicked by mistake.
@@ -589,7 +588,7 @@ class BoardRow(QtWidgets.QFrame):
         heard so far", not "the only phone in the campaign" -- with two cots' phones both live,
         whichever one happened to speak first inside THIS window's first second won, silently.
         Picking the reference is always an explicit operator action from here on, or a declared
-        --ref-videonest/[ref].videonest at launch (which locks it, see expected_videonest_id)."""
+        [ref].videonest at launch (which locks it, see expected_videonest_id)."""
         seen = sorted(self.win.rec.by_vn)
         if seen == [self.vn_id.itemText(i) for i in range(self.vn_id.count())]:
             return
@@ -923,7 +922,7 @@ class RecorderWindow(QtWidgets.QMainWindow):
         return bar
 
     def config_title(self):
-        """' — cot1.toml' for the title bar, '' when launched from flags."""
+        """' — cot1.toml' for the title bar, '' for a window built without a file."""
         return f" — {os.path.basename(self.config)}" if self.config else ""
 
     # ── one code path for every action ──
@@ -1181,37 +1180,32 @@ def main(argv=None):
     # answer even under plain `python`, where the console can be behind another window.
     pg.setConfigOptions(useOpenGL=False, antialias=False)
     app = QtWidgets.QApplication(sys.argv[:1])
-    if args.config:
-        try:
-            apply_session_config(args, args.config)
-        except ValueError as exc:
-            QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
-            return 2
-        except OSError as exc:
-            QtWidgets.QMessageBox.critical(None, "not starting",
-                                           f"cannot read {args.config}: {exc}")
-            return 2
-        except tomllib.TOMLDecodeError as exc:
-            QtWidgets.QMessageBox.critical(None, "not starting",
-                                           f"{args.config} is not valid TOML: {exc}")
-            return 2
+    try:
+        cfg = load_session_config(args.config)
+    except ValueError as exc:
+        QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
+        return 2
+    except OSError as exc:
+        QtWidgets.QMessageBox.critical(None, "not starting",
+                                       f"cannot read {args.config}: {exc}")
+        return 2
+    except tomllib.TOMLDecodeError as exc:
+        QtWidgets.QMessageBox.critical(None, "not starting",
+                                       f"{args.config} is not valid TOML: {exc}")
+        return 2
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
 
-    location, operator = ask_session(app, args.location, args.operator)
+    location, operator = ask_session(app, cfg["location"], cfg["operator"])   # asks only if the file lacks them
     if not location:
         return 1
     try:
         rec = Recorder(args.out, location, operator, raw_mode=args.raw, csv_mode=args.csv,
+                       config_path=args.config,
                        csv_profile=args.csv_profile,
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
-                       min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject, videonest=args.ref_videonest,
-                       note=args.note, probe=args.probe, ref_model=args.ref_model,
-                       ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
-                       ref_note=args.ref_note, gest_age=args.gest_age, age=args.age,
-                       weight_g=args.weight_g, skin=args.skin)
+                       min_free_bytes=int(args.min_free_gb * 1e9), **recorder_kwargs(cfg))
     except (NotEnoughSpace, SessionExists, OSError) as exc:
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2

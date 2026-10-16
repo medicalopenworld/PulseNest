@@ -100,9 +100,22 @@ try:
 
     check("[3] session dir and session.json exist before any datagram",
           os.path.isdir(rec.dir) and os.path.exists(os.path.join(rec.dir, "session.json")))
-    check("[3] session id = <YYYYMMDD>_<HHMMSS>_<SITE>, site sanitised",
-          rec.session_id.endswith("_BENCH01") and len(rec.session_id) == len("20260926_093000_BENCH01"),
-          rec.session_id)
+    check("[3] session id = <SUBJ>_<SITE>_<YYYYMMDD>_<HHMMSS>, UNBOUND without a subject, site sanitised; "
+          "the folder sits under the subject's (2026-10-16)",
+          rec.session_id.startswith("UNBOUND_BENCH01_") and len(rec.session_id) == len("UNBOUND_BENCH01_20260926_093000")
+          and os.path.basename(os.path.dirname(rec.dir)) == "UNBOUND" and os.path.basename(rec.dir) == rec.session_id,
+          f"{rec.session_id} in {rec.dir}")
+    _cfg = os.path.join(tmp, "cot9.toml")
+    with open(_cfg, "w", encoding="utf-8") as f:
+        f.write('# the kit file\nlocation = "BENCH"\n[subject]\nid = "SUBJ09"\n')
+    recC = R.Recorder(tmp, "bench", subject="SUBJ09", config_path=_cfg, log=log, clock=clk)
+    check("[3] a session launched from a .toml keeps a verbatim copy as session.toml, under its subject's folder",
+          os.path.exists(os.path.join(recC.dir, "session.toml"))
+          and open(os.path.join(recC.dir, "session.toml"), encoding="utf-8").read() == open(_cfg, encoding="utf-8").read()
+          and os.path.basename(os.path.dirname(recC.dir)) == "SUBJ09" and recC.session_id.startswith("SUBJ09_BENCH_")
+          and json.load(open(os.path.join(recC.dir, "session.json"), encoding="utf-8"))["launch"]["config_file"] == _cfg,
+          recC.dir)
+    recC.stop("t"); recC.close()
     check("[6] session_events.csv has the header and SESSION_START",
           open(rec.events_path, encoding="utf-8").read().startswith(",".join(R.EVENTS_HEADER))
           and "SESSION_START" in open(rec.events_path, encoding="utf-8").read())
@@ -278,7 +291,8 @@ try:
     check("[3] --subject binds the baby before the first row, and normalises it",
           kept[0].subject == "SUBJ03" and recB.want_subject == "SUBJ03", str(kept[0].subject))
     check("[3] the session directory carries the subject, so three windows cannot collide",
-          recB.session_id.endswith("_SUBJ03"), recB.session_id)
+          recB.session_id.startswith("SUBJ03_") and os.path.basename(os.path.dirname(recB.dir)) == "SUBJ03",
+          recB.session_id)
     recB.stop("t")
     recB.close()
 

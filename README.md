@@ -78,7 +78,7 @@ the board (last four hex digits of its MAC), the probe and the phone; on the day
 chosen, add the `[subject]` table (code, gestational and postnatal age, weight, skin tone) and
 the reference monitor to that file (EDIT in the launcher; files are re-read when edited) and
 press START on that cot.
-Recordings land in `captures/sessions/<date>_<time>_<site>_<subject>/`, or in the folder chosen
+Recordings land in `captures/sessions/<subject>/<subject>_<site>_<date>_<time>/`, or in the folder chosen
 with the launcher's sessions CHANGE FOLDER… (remembered; `--sessions DIR` on its command line). The step-by-step checklist
 for the person at the cot side is **[docs/hospital_runbook.md](docs/hospital_runbook.md)**.
 

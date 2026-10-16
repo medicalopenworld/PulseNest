@@ -485,7 +485,7 @@ recF.stop("test")
 winF.client.close()
 recF.close()
 
-# ── --config: a TOML session file, full substitution ─────────────────────────────────────────
+# ── --config: a TOML session file, the one source of who a session is about ─────────────────────────────────────────
 import argparse as _argparse
 import tomllib as _tomllib
 
@@ -513,42 +513,39 @@ videonest  = "J6plusACM"
 """)
 
 
-def blank_args():
-    return _argparse.Namespace(**{f: "" for f in G.CONFIG_FIELDS})
-
-
-ns = blank_args()
-G.apply_session_config(ns, cfg_path)
-check("--config fills all fifteen fields from the file, numbers as strings like a typed flag would be",
-      vars(ns) == {"location": "HOSP01", "operator": "AC", "board": "8850", "subject": "SUBJ01",
-                   "ref_videonest": "J6plusACM", "note": "term neonate, resting after a feed",
-                   "probe": "Medle-neo", "ref_model": "Masimo Radical-7", "ref_avg": "8",
-                   "ref_probe_site": "left thumb", "ref_note": "",
-                   "gest_age": "30w+2d", "age": "14d", "weight_g": "1500", "skin": "3"}, vars(ns))
+cfg = G.load_session_config(cfg_path)
+check("the session file fills all fifteen fields, numbers as strings",
+      cfg == {"location": "HOSP01", "operator": "AC", "board": "8850", "subject": "SUBJ01",
+              "ref_videonest": "J6plusACM", "note": "term neonate, resting after a feed",
+              "probe": "Medle-neo", "ref_model": "Masimo Radical-7", "ref_avg": "8",
+              "ref_probe_site": "left thumb", "ref_note": "",
+              "gest_age": "30w+2d", "age": "14d", "weight_g": "1500", "skin": "3"}, str(cfg))
+kw = G.recorder_kwargs(cfg)
+check("and maps onto the Recorder's keyword arguments (the flags are gone, 2026-10-16: the file is the one source)",
+      kw["subject"] == "SUBJ01" and kw["videonest"] == "J6plusACM" and kw["board"] == "8850"
+      and kw["ref_probe_site"] == "left thumb" and kw["weight_g"] == "1500" and len(kw) == 13
+      and not hasattr(G, "apply_session_config") and not hasattr(G, "CONFIG_FIELDS"), str(kw))
 old_path = os.path.join(tempfile.gettempdir(), "pulsenest_old_shape.toml")
 open(old_path, "w", encoding="utf-8").write('location = "HOSP01"\nsubject = "SUBJ01"\n')
 try:
-    G.apply_session_config(blank_args(), old_path)
+    G.load_session_config(old_path)
     ok.append(False)
     print("FAIL a top-level `subject = ...` (the shape before 2026-10-14) must be refused")
 except ValueError as exc:
     check("a top-level `subject = ...` (the old shape) is refused, and the reply spells out [subject]",
           "[subject]" in str(exc) and "id = 'SUBJ01'" in str(exc), str(exc))
-
-for field in G.CONFIG_FIELDS:
-    conflicting = blank_args()
-    setattr(conflicting, field, "x")
-    try:
-        G.apply_session_config(conflicting, cfg_path)
-        ok.append(False)
-        print(f"FAIL --config must refuse when --{field.replace('_','-')} is also given")
-    except ValueError as exc:
-        ok.append(f"--{field.replace('_','-')}" in str(exc))
-check("full substitution: EVERY one of the fifteen fields, given alongside --config, is refused",
-      True)  # the loop above recorded one PASS/FAIL per field; this line is just a section marker
+_ap = _argparse.ArgumentParser()
+G.add_session_args(_ap)
+_flags = {a.option_strings[0] for a in _ap._actions if a.option_strings}
+check("--config is required and the fifteen metadata flags are gone; the tool flags stay",
+      "--config" in _flags and all(f not in _flags for f in ("--location", "--operator", "--board", "--subject",
+                                                              "--note", "--probe", "--gest-age", "--skin",
+                                                              "--ref-videonest", "--ref-model"))
+      and {"--out", "--hub", "--csv", "--raw", "--duration"} <= _flags
+      and next(a for a in _ap._actions if "--config" in a.option_strings).required, str(sorted(_flags)))
 
 try:
-    G.apply_session_config(blank_args(), os.path.join(cfg_dir, "missing.toml"))
+    G.load_session_config(os.path.join(cfg_dir, "missing.toml"))
     check("a missing config file raises", False)
 except OSError:
     check("a missing config file raises OSError, not a traceback the operator has to read", True)
@@ -556,7 +553,7 @@ except OSError:
 bad_path = os.path.join(cfg_dir, "bad.toml")
 open(bad_path, "w", encoding="utf-8").write("this is [[[ not toml")
 try:
-    G.apply_session_config(blank_args(), bad_path)
+    G.load_session_config(bad_path)
     check("malformed TOML raises", False)
 except _tomllib.TOMLDecodeError:
     check("malformed TOML raises TOMLDecodeError, named clearly rather than crashing opaquely", True)
@@ -652,9 +649,9 @@ check("NEW EVENT sits in the operator's box, under the entry | table splitter, f
           row3.note.parentWidget().layout().indexOf(row3.readings_split))[:2] == (0, 0)
       and row3.note.parentWidget().title() == "Readings from the monitor, and events"
       and row3.subject_labels["skin"].parentWidget().title() == "TOML session configuration")
-check("the FILE row says '(no --config: flags only)' when there is no .toml",
+check("the FILE row says '(no file)' for a window built without a .toml (only the tests do)",
       row3.findChild(QtWidgets.QFormLayout).itemAt(0, QtWidgets.QFormLayout.FieldRole).widget().text()
-      == "(no --config: flags only)")
+      == "(no file)")
 win3c = G.RecorderWindow(rec3, ("127.0.0.1", 15999), config=os.path.join("docs", "session_configs", "cot1.toml"))
 check("with --config, the title bar carries the .toml's base name",
       " — cot1.toml" in win3c.windowTitle(), win3c.windowTitle())

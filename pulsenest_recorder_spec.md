@@ -122,8 +122,9 @@ survival is the whole point of the file.
 ## 3. One directory per session
 
 ```
-captures/sessions/<SESSION_ID>/
+captures/sessions/<SUBJECT>/<SESSION_ID>/
     session.json                  metadata, the only hand-edited file (§7)
+    session.toml                  the .toml the session was launched with, verbatim (2026-10-16)
     session_events.csv            operator marks and manual readings (§6)
     pulsenest_recorder.log        the tool's own log: connections, errors, disk, splits
     SUBJ01_HOSP01_20260926_101500_p01.csv   the live capture CSV, one per board, in parts (§2)
@@ -140,11 +141,30 @@ captures/sessions/<SESSION_ID>/
                                                 (and `_ot<thr>` when the threshold is overridden)
 ```
 
-`SESSION_ID` = `<YYYYMMDD>_<HHMMSS>_<SITE>[_<SUBJECT>]` with `SITE` a short code typed at start.
-(Until 2026-09-24 this line said `<YYYYMMDD>_<HHMM>_<SITE>`; the writer had been appending the
-subject tag all along — the spec was stale, not the code. Until 2026-10-14 the stamp was to the
-minute, a v0.1 choice nobody had aligned with the live CSV names, which carry seconds since 09-29;
-Alex asked why the directory did not, and there was no reason. `pulsenest_convert` reads both.)
+`SESSION_ID` = `<SUBJECT>_<SITE>_<YYYYMMDD>_<HHMMSS>` — the same shape as the live CSV names — in a
+folder per subject (Alex, 2026-10-16: in a flat chronological list the sessions of one baby were
+scattered among the others'; the baby is the unit of everything that follows — analysis, consent,
+archive — so it is the one grouping key; not the day, which would split a baby followed for two
+days, nor the site, which a subject belongs to anyway). `UNBOUND` stands for the subject when none
+is known at start, which with a `.toml` never happens. `SITE` is a short code. **The 18 sessions
+recorded before (2026-09-23, 2026-10-13) were rewritten to this id on 2026-10-16** (Alex: one
+convention for all, now that there are 18 sessions and one person, never cheaper): moved into
+their subject's folder first, then the id replaced inside every file that holds it — the first
+line of each `.pnraw` part (rewritten as a new first line, the rest streamed and checked by
+SHA-256), the `# session_id=` line of each live CSV part, column 1 of `session_events.csv`, the
+`# session=` line of `reference_spo2.csv`, `session.json` (which keeps the old id as
+`former_session_id`), the recorder and replay logs (a line appended says what was done), the pairs
+CSVs and the two scripts of the `_ANALYSIS` folders — and the folder renamed; the seconds come
+from `session.json started.iso`, whose minute agreed with every old name. Then every session was
+rebuilt from its raw by `pulsenest_convert` and compared byte for byte with the live CSVs. A full
+copy sits in `captures/sessions_backup_20261016/` until Alex drops it. **Not touched**: the CSV
+file names (the 2026-09-23 ones still carry the condition, as recorded), `derived/replay_lib*/`,
+`captures/v04_corpus` (its old ids are its acceptance test, so the converter keeps reading both
+shapes), and the copies of SUBJ08/SUBJ09 on the external backup disk, which keep the old names:
+same data, former ids. The hand-made `<date>_<SITE>_Phone_<id>` folders stay at the top level:
+one phone serves several subjects. A
+replay keeps the record's own id and lands directly in the folder it is given
+(`<session>/derived/<SESSION_ID>/`), with no subject level.
 
 **Vocabulary (decided 2026-09-24).** A **session** is one start/stop interval of the recorder and
 covers at most **one subject**. Subjects measured at the same time are separate sessions from
@@ -156,7 +176,7 @@ sessions of **one subject** at one site on one day:
 `CAMPAIGN_ID` = `<YYYYMMDD>_<SITE>_<SUBJECT>` — 2026-09-23 was two campaigns,
 `20260923_HOSPNAV_SUBJ08` and `20260923_HOSPNAV_SUBJ09`. A campaign has no file or directory of
 its own: it is derived from the session ids
-(`ls captures/sessions/<YYYYMMDD>_*_<SITE>_<SUBJECT>`); if campaign-level metadata is ever
+(`ls captures/sessions/<SUBJECT>/<SUBJECT>_<SITE>_<YYYYMMDD>_*`); if campaign-level metadata is ever
 needed, add it then, not now.
 
 **`SITE` is a code, not a description** (decided 2026-09-20, the same rule §2.7 of
@@ -614,11 +634,20 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   `CONFIG_FIELDS`/`load_session_config()`/`apply_session_config()` beside it, and both `main()`s
   call it; the console adds only `--event-port`. `--site` is gone: it is `--location`, as in the
   `.toml`. The console refuses to start without a location (flag or file); the window asks.
-  **Full substitution, refused rather than merged**: typing any of these alongside `--config`
-  exits with an error naming which flags conflict, the same discipline as the ambiguous `--board`
-  suffix — one session, one source of truth for who it is. `--config` is optional in both
-  directions: omit it and every flag still works exactly as before; a malformed or missing file is
-  a named exception (`OSError`, `tomllib.TOMLDecodeError`), never a bare traceback.
+  **Full substitution, refused rather than merged** (2026-09-29 to 2026-10-16): typing any of
+  these alongside `--config` exited with an error naming which flags conflicted. **The flags are
+  gone (Alex, 2026-10-16: "quita los flags").** `--config` is required in both recorders and is
+  the only way to say who and what a session is about; `load_session_config()` reads the file and
+  `recorder_kwargs()` hands its fields to the `Recorder` (whose keyword arguments stay: the tests
+  and the converter's replay use them). The fifteen flags (`--location --operator --board
+  --subject --note --probe --gest-age --age --weight-g --skin --ref-*`) were used by nobody — the
+  launcher only ever passed `--config` — and were a second source of truth to keep in step with
+  the file, which is now also copied into every session as `session.toml`. The flags that remain
+  describe the tool: `--out --hub --csv --csv-profile --raw --min-free-gb --split-min --split-mb
+  --duration`, and the console's `--event-port`. A malformed or missing file is a named exception
+  (`ValueError`, `OSError`, `tomllib.TOMLDecodeError`), reported in a dialog by the window and by
+  `ap.error()` by the console, never a bare traceback. A window built without a file (only the
+  tests do) shows `FILE (no file)`.
 * **`probe` and `--probe` (Alex, 2026-09-22).** ISO 80601-2-61 calibrates a **monitor+probe
   pair**, never a monitor alone. Our monitor is the incunest board running `incunest_afe4490`;
   which physical sensor is clipped onto the baby is a fact the library has no way to know —

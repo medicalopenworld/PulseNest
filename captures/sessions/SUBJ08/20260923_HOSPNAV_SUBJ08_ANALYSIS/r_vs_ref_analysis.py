@@ -1,9 +1,4 @@
-"""R -> SpO2 analysis of campaign 20260923_HOSPNAV_SUBJ09.
-
-Session exclusions: 20260923_1309_HOSPNAV_SUBJ09 recorded the WRONG reference phone
-(Pixel8aACM = SUBJ08's; its reference file is renamed WRONG_...) and is excluded from
-pairing; 20260923_1206_HOSPNAV_SUBJ09 has no reference rows (VideoNest not yet
-streaming) and simply yields no pairs. Both still appear in the time series.
+"""R -> SpO2 analysis of campaign 20260923_HOSPNAV_SUBJ08.
 
 Pairs each reference-monitor reading (VideoNest OCR, reference_spo2.csv) with the
 board's R over the monitor's averaging window, then compares the current linear
@@ -22,19 +17,28 @@ import csv
 import glob
 import math
 import os
+import sys
 
 import numpy as np
 
+# --replay: take the board signals from the offline runner's *_replay.csv files
+# (incunest_offline_runner v0.20, lib >= v0.96 with the v0.95 rsqm_ot_thr) instead of
+# the columns the firmware produced that day. Clock anchors still come from the
+# original parts -- replay rows are 1:1 with original rows.
+REPLAY = "--replay" in sys.argv
+REPLAY_DIR = os.path.join("derived", "replay_lib0.96")   # runner v0.21 output, per session
+SUFFIX = "_replay" if REPLAY else ""
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SESSIONS_DIR = os.path.dirname(HERE)
-CAMPAIGN_GLOB = "20260923_*_HOSPNAV_SUBJ09"
+CAMPAIGN_GLOB = "SUBJ08_HOSPNAV_20260923_*"
 
 REF_WINDOW_S = 8.0          # assumed monitor averaging window (model not recorded)
 APPLIED_MIN_FRAC = 0.8      # window usable if >= this fraction of samples probe-on
 VALID_MIN_FRAC = 0.25       # ... and >= this fraction of samples VALID (see below)
 # Probe-on states accepted FOR THIS CAMPAIGN: 2 (PROBE_APPLIED) and 1 (PROBE_OT_HIGH).
 # On 2026-09-23 the firmware still ran rsqm_ot_thr = 1.0e-4 (raised to 1.5e-4 in lib
-# v0.95 the day after, from this subject's own data): SUBJ09's OT_HIGH stretches were
+# v0.95 the day after, from this subject's own data): SUBJ08's OT_HIGH stretches were
 # an applied probe on thin tissue, not a probe in air (Alex, 2026-09-24).
 ACCEPTED_PROBE_STATES = (1, 2)
 # A sample is VALID when the probe is on, R is finite and the SpO2 output is
@@ -55,6 +59,18 @@ def parse_board_session(session_dir):
     parts = sorted(glob.glob(os.path.join(session_dir, "*_p[0-9][0-9].csv")))
     if not parts:
         raise FileNotFoundError(f"no board CSV parts in {session_dir}")
+    replay_cols = {k: [] for k in ("r", "spo2", "sqi", "pi", "ps")}
+    if REPLAY:
+        for path in parts:
+            rp = os.path.join(session_dir, REPLAY_DIR,
+                              os.path.basename(path)[:-4] + "_replay.csv")
+            with open(rp, encoding="utf-8", newline="") as f:
+                for row in csv.DictReader(f):
+                    replay_cols["r"].append(float(row["R"]))
+                    replay_cols["spo2"].append(float(row["SpO2"]))
+                    replay_cols["sqi"].append(float(row["SpO2_SQI"]))
+                    replay_cols["pi"].append(float(row["PI"]))
+                    replay_cols["ps"].append(int(row["ProbeState"]))
     cols = {}
     rows_t = []
     out = {k: [] for k in ("t", "r", "spo2", "sqi", "pi", "ps")}
@@ -90,6 +106,10 @@ def parse_board_session(session_dir):
                 part_row += 1
         base_row += part_row
     n_rows = len(out["r"])
+    if REPLAY:
+        if len(replay_cols["r"]) != n_rows:
+            raise ValueError(f"{session_dir}: replay rows {len(replay_cols['r'])} != original {n_rows}")
+        out = replay_cols
     if len(anchors_row) < 2:
         raise ValueError(f"{session_dir}: fewer than 2 clock anchors")
     # piecewise-linear row -> epoch mapping (numpy interp extrapolates flat, so
@@ -112,20 +132,10 @@ def parse_board_session(session_dir):
     }
 
 
-EXCLUDE_FROM_PAIRING = {
-    "20260923_1309_HOSPNAV_SUBJ09",  # reference was SUBJ08's phone (cross-reference bug)
-}
-
-
 def parse_reference(session_dir):
     """VideoNest OCR readings: arrays t_epoch_us, spo2, conf."""
     t, spo2, conf = [], [], []
-    if os.path.basename(session_dir) in EXCLUDE_FROM_PAIRING:
-        return np.array([]), np.array([]), np.array([])
-    ref_path = os.path.join(session_dir, "reference_spo2.csv")
-    if not os.path.exists(ref_path):
-        return np.array([]), np.array([]), np.array([])
-    with open(ref_path,
+    with open(os.path.join(session_dir, "reference_spo2.csv"),
               encoding="utf-8", newline="") as f:
         rd = csv.DictReader(row for row in f if not row.startswith("#"))
         for row in rd:
@@ -258,7 +268,7 @@ def main():
         )
 
     # ---- pairs.csv ----
-    out_csv = os.path.join(HERE, "pairs.csv")
+    out_csv = os.path.join(HERE, f"pairs{SUFFIX}.csv")
     with open(out_csv, "w", encoding="utf-8", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=list(all_pairs[0].keys()))
         wr.writeheader()
@@ -281,12 +291,30 @@ def main():
                 label=f"offset-only: {a_off:.1f} - {SPO2_B:.1f} R")
         ax.set_xlabel("R (ratio of ratios, median of window)")
         ax.set_ylabel("reference SpO2 [%]")
-        ax.set_title("20260923_HOSPNAV_SUBJ09: R vs reference SpO2 "
+        ax.set_title("20260923_HOSPNAV_SUBJ08: R vs reference SpO2 "
                      f"({REF_WINDOW_S:.0f} s windows, probe-on >= {APPLIED_MIN_FRAC:.0%})")
         ax.grid(True, alpha=0.3)
         ax.legend()
         fig.tight_layout()
-        fig.savefig(os.path.join(HERE, "r_vs_ref.png"), dpi=130)
+        fig.savefig(os.path.join(HERE, f"r_vs_ref{SUFFIX}.png"), dpi=130)
+
+        fig, ax = plt.subplots(figsize=(7, 7))
+        sc = ax.scatter(y, ours, s=12, c=[p["pi_med"] for p in usable],
+                        cmap="viridis")
+        fig.colorbar(sc, ax=ax, label="PI (median in window)")
+        lim = (min(y.min(), ours.min()) - 2, max(y.max(), ours.max()) + 2)
+        ax.plot(lim, lim, "k--", lw=1, label="identity (ours = reference)")
+        ax.set_xlim(lim)
+        ax.set_ylim(lim)
+        ax.set_aspect("equal")
+        ax.set_xlabel("reference SpO2 (VideoNest OCR) [%]")
+        ax.set_ylabel("our SpO2 (library, median of window) [%]")
+        ax.set_title("20260923_HOSPNAV_SUBJ08: our SpO2 vs reference SpO2\n"
+                     f"n={len(y)}, median bias {np.median(bias):+.1f} pts")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left")
+        fig.tight_layout()
+        fig.savefig(os.path.join(HERE, f"spo2_vs_ref{SUFFIX}.png"), dpi=130)
 
     import datetime
     import matplotlib.dates as mdates
@@ -310,7 +338,7 @@ def main():
         ax.text(to_dt([board["t"][0]])[0], 103, "  " + name.split("_")[1],
                 fontsize=8, color="gray", va="top")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-    ax.set_title("20260923_HOSPNAV_SUBJ09: campaign on one clock "
+    ax.set_title("20260923_HOSPNAV_SUBJ08: campaign on one clock "
                  "(dashed lines = session start/end)")
     ax.set_ylabel("SpO2 [%]")
     ax.set_ylim(40, 105)
@@ -318,10 +346,10 @@ def main():
     ax.legend(fontsize=8, loc="lower right")
     ax.set_xlabel("local wall-clock time [HH:MM:SS]")
     fig.tight_layout()
-    fig.savefig(os.path.join(HERE, "timeseries.png"), dpi=130)
+    fig.savefig(os.path.join(HERE, f"timeseries{SUFFIX}.png"), dpi=130)
 
     text = "\n".join(lines) + "\n"
-    with open(os.path.join(HERE, "summary.txt"), "w", encoding="utf-8") as f:
+    with open(os.path.join(HERE, f"summary{SUFFIX}.txt"), "w", encoding="utf-8") as f:
         f.write(text)
     print(text)
 

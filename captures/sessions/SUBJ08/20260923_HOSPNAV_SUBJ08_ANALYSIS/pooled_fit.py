@@ -1,7 +1,7 @@
 """Pooled two-subject calibration fit over the 20260923_HOSPNAV campaigns.
 
 Inputs: this campaign's pairs_replay.csv (SUBJ08 replayed by incunest_offline_runner
-v0.20 with the v0.95 rsqm_ot_thr) and ../20260923_HOSPNAV_SUBJ09_ANALYSIS/pairs.csv
+v0.20 with the v0.95 rsqm_ot_thr) and ../../SUBJ09/20260923_HOSPNAV_SUBJ09_ANALYSIS/pairs.csv
 (SUBJ09, firmware columns — that subject barely spent time in OT_HIGH, so a replay
 changes little). Same stationarity filter and binned inverse regression as
 stationary_bins.py, then one weighted fit over the pooled bins and per-subject
@@ -51,7 +51,9 @@ def binfit(pairs, label):
 
 
 p8 = stationary_pairs(os.path.join(HERE, "pairs_replay.csv"))
-p9 = stationary_pairs(os.path.join(SESSIONS, "20260923_HOSPNAV_SUBJ09_ANALYSIS", "pairs.csv"))
+# Since 2026-10-16 sessions sit under one folder per subject: HERE is .../SUBJ08/<this>, so the
+# other subject's analysis is two levels up, then down into SUBJ09/.
+p9 = stationary_pairs(os.path.join(os.path.dirname(SESSIONS), "SUBJ09", "20260923_HOSPNAV_SUBJ09_ANALYSIS", "pairs.csv"))
 print(f"stationary pairs: SUBJ08 {len(p8)}, SUBJ09 {len(p9)}")
 binfit(p8, "SUBJ08 (replay)   ")
 binfit(p9, "SUBJ09            ")

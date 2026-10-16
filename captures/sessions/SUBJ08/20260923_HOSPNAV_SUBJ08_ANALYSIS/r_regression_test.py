@@ -47,7 +47,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SESSIONS = os.path.dirname(HERE)
 PAIR_FILES = {
     "SUBJ08": os.path.join(HERE, "pairs_replay.csv"),
-    "SUBJ09": os.path.join(SESSIONS, "20260923_HOSPNAV_SUBJ09_ANALYSIS", "pairs.csv"),
+    # one folder per subject since 2026-10-16: SESSIONS is .../SUBJ08, the other subject is beside it
+    "SUBJ09": os.path.join(os.path.dirname(SESSIONS), "SUBJ09", "20260923_HOSPNAV_SUBJ09_ANALYSIS", "pairs.csv"),
 }
 FS_HZ = 500.0
 WINDOW_S = 8.0              # must match REF_WINDOW_S of r_vs_ref_analysis.py

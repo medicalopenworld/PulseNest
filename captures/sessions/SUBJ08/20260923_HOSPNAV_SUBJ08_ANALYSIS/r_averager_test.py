@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, sosfilt, sosfilt_zi
 
-AN = r"C:\PRJ\MOW\PulseNest\captures\sessions\20260923_HOSPNAV_SUBJ08_ANALYSIS"
+AN = os.path.dirname(os.path.abspath(__file__))   # this folder, wherever it sits (it moved under SUBJ08/ on 2026-10-16)
 sys.path.insert(0, AN)
 from r_regression_test import FS_HZ, PAIR_FILES, SESSIONS, WINDOW_S, load_session, stationary_mask  # noqa: E402
 from r_causal_test import ema, evaluate, loso  # noqa: E402

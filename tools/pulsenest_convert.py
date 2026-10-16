@@ -46,7 +46,11 @@ from tools.pulsenest_recorder import Recorder, read_pnraw, normalise_subject, pa
 from pulsenest.capture_dict import KEY_SYNONYMS                          # noqa: E402
 
 # The stamp is to the second since 2026-10-14 and was to the minute before: both are read.
+# Two shapes of session id. Since 2026-10-16: <SUBJ>_<SITE>_<YYYYMMDD>_<HHMMSS> (the folder sits
+# under captures/sessions/<SUBJ>/). Before: <YYYYMMDD>_<HHMM[SS]>_<SITE>[_<tag>]. Recorded sessions
+# are never renamed, so both are read for good.
 _SESSION_RE = re.compile(r"^(\d{8}_\d{4}(?:\d{2})?)_([A-Z0-9]+)(?:_([A-Za-z0-9]+))?$")
+_SESSION_RE_2 = re.compile(r"^([A-Za-z0-9]+)_([A-Z0-9]+)_(\d{8}_\d{6})$")
 _EVENT_TEXT_RE = re.compile(r"^subject=(\S*) board=(\S*)(?: value=(\S*))?(?: value2=(\S*))?"
                             r" source=(\S*)(?: note=(.*))?$")
 
@@ -99,10 +103,17 @@ def session_start_epoch_us(session_id, session_dir):
     """The instant the live Recorder was constructed, to the second (to the minute in sessions
     before 2026-10-14): its session id carries it, and the id must come out identical (it is a
     header key in every file)."""
-    m = _SESSION_RE.match(session_id or "")
-    if not m:
-        raise SystemExit(f"session id {session_id!r} does not look like <YYYYMMDD_HHMMSS>_<SITE>[_<tag>]")
-    stamp, site, tag = m.groups()
+    m2 = _SESSION_RE_2.match(session_id or "")
+    if m2:
+        tag, site, stamp = m2.groups()
+        if tag == "UNBOUND":
+            tag = None          # no subject at start: the stand-in is not a subject nor a board
+    else:
+        m = _SESSION_RE.match(session_id or "")
+        if not m:
+            raise SystemExit(f"session id {session_id!r} does not look like <SUBJ>_<SITE>_<YYYYMMDD_HHMMSS> "
+                             "(nor the older <YYYYMMDD_HHMMSS>_<SITE>[_<tag>])")
+        stamp, site, tag = m.groups()
     t0 = _dt.datetime.strptime(stamp, "%Y%m%d_%H%M%S" if len(stamp) == 15 else "%Y%m%d_%H%M").astimezone()
     meta = {}
     sj = os.path.join(session_dir, "session.json")

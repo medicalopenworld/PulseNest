@@ -9,9 +9,13 @@ exists so that a bad paint never costs a capture again. Format and behaviour are
 come later: the raw stream carries every `$M4` field, RF included, so nothing is lost by
 recording raw first and converting off-site.
 
-    python tools/pulsenest_recorder.py --location HOSP01 [--operator AC] [--raw full|exceptions]
-                                       [--hub 127.0.0.1[:5005]] [--out captures/sessions]
     python tools/pulsenest_recorder.py --config docs/session_configs/subj01.toml
+                                       [--raw full|exceptions] [--hub 127.0.0.1[:5005]] [--out captures/sessions]
+
+Who and what a session is about (location, operator, board, subject, probe, the reference
+monitor) comes from the .toml and nowhere else since 2026-10-16: the fifteen flags that could say
+the same from the command line were used by nobody (the launcher only ever passed --config) and
+were a second source of truth to keep in step. The flags that remain describe the tool.
 
 While it runs, the console accepts one command per line (§9 says a session must be possible
 with no GUI at all):
@@ -38,7 +42,7 @@ with no GUI at all):
 The same lines are accepted on a local UDP port (--event-port) so that a separate panel process
 can send them (§9, process isolation): if the panel dies, recording continues.
 
-Layout (§3): captures/sessions/<YYYYMMDD>_<HHMMSS>_<SITE>/ with session.json, session_events.csv,
+Layout (§3): captures/sessions/<SUBJ>/<SUBJ>_<SITE>_<YYYYMMDD>_<HHMMSS>/ with session.json, session.toml, session_events.csv,
 pulsenest_recorder.log and raw/board_<MAC>_<NNNN>.pnraw. A source is named by its MAC as soon as its $CFG
 arrives (the hub replays the cached $CFG on subscription, so normally at once); until then its
 datagrams wait in memory for up to 3 s, after which they go to unknown_<IP>_<NNNN>.pnraw rather
@@ -736,7 +740,8 @@ class Recorder:
                  identify_wait_s=IDENTIFY_WAIT_S, min_free_bytes=0, log=None, clock=now_us,
                  board=None, subject=None, videonest=None, note=None, probe=None,
                  ref_model=None, ref_avg=None, ref_probe_site=None, ref_note=None,
-                 gest_age=None, age=None, weight_g=None, skin=None, session_id=None):
+                 gest_age=None, age=None, weight_g=None, skin=None, session_id=None,
+                 config_path=None):
         if raw_mode not in ("full", "exceptions", "off"):
             raise ValueError("raw_mode must be full | exceptions | off")
         if csv_mode not in ("on", "off", "v04"):
@@ -767,7 +772,7 @@ class Recorder:
         # but only the declared one writes rows into reference_spo2.csv: one of them is pointed
         # at this baby's monitor, and session.json has to say which.
         self.videonest_id = videonest or None
-        # A phone id given at launch (--ref-videonest / [ref].videonest) is a DECLARATION, not a
+        # A phone id given at launch ([ref].videonest) is a DECLARATION, not a
         # starting guess: once said, no other id may replace it for this session, from the
         # console or the window. Found 2026-09-23: a GUI auto-select ("only one phone heard so
         # far, it must be mine") locked SUBJ09's reference onto SUBJ08's phone 0.56 s after this
@@ -795,15 +800,22 @@ class Recorder:
                                   (("gest_age", gest_age), ("age", age), ("weight_g", weight_g),
                                    ("skin", skin))
                                   if v not in (None, "")}
-        # The tag is not decoration: three windows launched in the same minute would otherwise
-        # share a directory and overwrite each other's session.json.
-        tag = self.want_subject or self.board_filter
-        # To the second, like the live CSV names (Alex, 2026-10-14; to the minute until then, a
-        # choice from v0.1 nobody had aligned with the CSVs' seconds of 09-29). A replay passes
-        # the record's own id: it is a header key in every CSV, and the record's may be the old form.
-        self.session_id = session_id or (f"{stamp:%Y%m%d_%H%M%S}_{self.site}"
-                                         + (f"_{tag}" if tag else ""))
-        self.dir = os.path.join(out_root, self.session_id)
+        # One folder per subject, the session inside it named like its CSVs (Alex, 2026-10-16:
+        # the sessions of one baby were scattered among the others' in a flat chronological
+        # list). <SUBJ>_<SITE>_<YYYYMMDD>_<HHMMSS>; UNBOUND when no subject is known at start,
+        # which with a .toml never happens. The tag is not decoration: three windows started in
+        # the same second would otherwise share a directory. To the second since 2026-10-14. A
+        # replay passes the record's own id (a header key in every CSV, possibly the old
+        # <date>_<time>_<SITE>[_<tag>] shape) and lands directly in the folder it is given:
+        # <session>/derived/<session_id>/, no subject level.
+        tag = self.want_subject or "UNBOUND"
+        if session_id:
+            self.session_id = session_id
+            self.dir = os.path.join(out_root, self.session_id)
+        else:
+            self.session_id = f"{tag}_{self.site}_{stamp:%Y%m%d_%H%M%S}"
+            self.dir = os.path.join(out_root, tag, self.session_id)
+        self.config_path = config_path            # the .toml this session was launched with
         self.raw_dir = os.path.join(self.dir, "raw")
         self.operator = operator
         self.hub_text = hub_text
@@ -831,6 +843,12 @@ class Recorder:
             raise SessionExists(f"a session with this id already exists: {self.dir}. "
                                 f"One directory is one session: start again")
         os.makedirs(self.dir)
+        if config_path:
+            # The file the session was launched with, verbatim, beside what it produced (Alex,
+            # 2026-10-16: "me gustaria que siempre apareciera el fichero .toml en la carpeta de
+            # sesion"). session.json holds the same values plus everything that happened; this
+            # is the operator's own text, comments included, as evidence of what was asked.
+            shutil.copyfile(config_path, os.path.join(self.dir, "session.toml"))
         self.log = log or self._make_logger()
         self._check_free_space(force=True)
         self.events_path = os.path.join(self.dir, "session_events.csv")
@@ -1076,7 +1094,7 @@ class Recorder:
         src.ident = {k.decode(): v.decode("ascii", "replace") for k, v in _KV_RE.findall(data)}
 
     def _apply_pending_metadata(self, src):
-        """`--note`, `--probe` and `--ref-*`, applied once a subject is known, through the ordinary
+        """`note`, `probe` and `[ref]` from the session file, applied once a subject is known, through the ordinary
         `note`, `probe` and `ref` console commands -- so a value typed on the command line is
         validated and event-logged exactly like one typed at the keyboard. Guarded so a board
         re-identifying (a new DHCP lease) does not repeat it."""
@@ -1101,7 +1119,7 @@ class Recorder:
         own try/except (section 2.2), so a parsing bug costs rows here and nothing there.
 
         Named <SUBJECT>_<LOCATION>_<date>_<time>_pNN.csv when the subject is already bound (always,
-        with --subject or --config). A board still waiting for one opens as <MAC>_<date>_<time>_pNN
+        with a session file naming it). A board still waiting for one opens as <MAC>_<date>_<time>_pNN
         and every part is renamed at close (_name_csv)."""
         if self.csv_mode == "off" or src.kind != "board":
             return
@@ -1249,7 +1267,7 @@ class Recorder:
         # the CSV is then named for its baby from its first row, with no unbound window at all.
         if self.want_subject and src.kind == "board" and src.subject is None:
             src.subject = self.want_subject
-            self.log.info("%s -> %s (from --subject)", src.label(), src.subject)
+            self.log.info("%s -> %s (from the session file)", src.label(), src.subject)
         if src.kind == "board" and src.subject:
             self._apply_pending_metadata(src)
         if self.raw_mode == "off":
@@ -1697,7 +1715,8 @@ class Recorder:
             # log at a moment that no longer exists (they fired before the CSV opened).
             "launch": {"subject": self.want_subject, "note": self.want_note, "probe": self.want_probe,
                        "ref": dict(self.want_ref), "videonest": self.videonest_id,
-                       "subject_info": dict(self.want_subject_info)},
+                       "subject_info": dict(self.want_subject_info),
+                       "config_file": self.config_path},       # copied beside as session.toml
             "videonest_id": self.videonest_id,
             "videonest_seen": sorted(self.by_vn),
             "operator": self.operator,
@@ -1934,9 +1953,6 @@ class _ConsoleReader(threading.Thread):
 # The fields a session file can set -- what a baby's session IS, never how the tool behaves
 # (--hub, --out, --raw, --split-min, --duration, --min-free-gb stay command-line only: they are
 # the same for all three cots and belong to the laptop, not the baby).
-CONFIG_FIELDS = ("location", "operator", "board", "subject", "ref_videonest", "note", "probe",
-                 "ref_model", "ref_avg", "ref_probe_site", "ref_note",
-                 "gest_age", "age", "weight_g", "skin")
 
 
 def load_session_config(path):
@@ -2001,31 +2017,24 @@ def load_session_config(path):
     }
 
 
-def apply_session_config(args, path):
-    """Load `path` into `args`, in place. FULL substitution: raises ValueError if any of the
-    fields was ALSO typed on the command line, rather than silently choosing one -- the same
-    discipline as the ambiguous --board suffix (one session, one baby, one source of truth for
-    who it is)."""
-    typed = [f for f in CONFIG_FIELDS if getattr(args, f)]
-    if typed:
-        names = ", ".join("--" + f.replace("_", "-") for f in typed)
-        raise ValueError(f"--config replaces {names} entirely; drop --config or drop {names}")
-    for field, value in load_session_config(path).items():
-        setattr(args, field, value)
+def recorder_kwargs(cfg):
+    """A loaded session file -> the Recorder's keyword arguments for who and what is recorded
+    (location and operator are positional and handled by the caller). Until 2026-10-16 the same
+    values could also arrive as fifteen command-line flags; the file is the one source now."""
+    return dict(board=cfg["board"], subject=cfg["subject"], videonest=cfg["ref_videonest"],
+                note=cfg["note"], probe=cfg["probe"], ref_model=cfg["ref_model"],
+                ref_avg=cfg["ref_avg"], ref_probe_site=cfg["ref_probe_site"], ref_note=cfg["ref_note"],
+                gest_age=cfg["gest_age"], age=cfg["age"], weight_g=cfg["weight_g"], skin=cfg["skin"])
 
 
 def add_session_args(ap):
     """The arguments the console recorder and pulsenest_recorder_gui.py share, defined once so
     their --help cannot drift apart. Each tool adds only what is its own on top."""
-    ap.add_argument("--config", default="", metavar="FILE.toml",
-                    help="read location/operator/board/subject/note/probe/ref-* from this "
-                         "TOML file instead of typing them -- one per cot, prepared the day "
-                         "before. FULL substitution: giving --config together with any of those "
-                         "flags is refused, not merged")
-    ap.add_argument("--location", default="",
-                    help="site CODE, never a place (BENCH, HOSP01): names the session directory "
-                         "and the CSV")
-    ap.add_argument("--operator", default="", help="initials or role, never a full name")
+    ap.add_argument("--config", required=True, metavar="FILE.toml",
+                    help="the session file: location, operator, board, [subject], probe, note and "
+                         "the [ref] monitor -- one per cot, prepared the day before "
+                         "(docs/session_configs/example.toml). The only way to say who and what a "
+                         "session is about; a copy is kept in the session folder as session.toml")
     ap.add_argument("--hub", default="127.0.0.1", metavar="IP[:PORT]")
     ap.add_argument("--out", default=os.path.join(_ROOT, "captures", "sessions"), metavar="DIR",
                     help="where session directories are created (default captures/sessions). "
@@ -2045,42 +2054,6 @@ def add_session_args(ap):
                          "raw/ directory at all. The CSV is unaffected. Off halves the ~17 MB per "
                          "minute per board and gives up the only copy of what arrived on the wire, "
                          "so a parsing bug found later can no longer be repaired from it")
-    ap.add_argument("--board", default="", metavar="SUFFIX",
-                    help="record ONLY the board whose MAC ends in this (any length: 8850, "
-                         "508850). One session, one board, one baby. An ambiguous suffix is refused")
-    ap.add_argument("--subject", default="", metavar="SUBJnn",
-                    help="bind this coded subject as soon as the board is identified, so the "
-                         "session directory and the CSV are named from it from the start")
-    ap.add_argument("--note", default="", metavar="TEXT",
-                    help="a free-text note about this baby's session, written verbatim as a NOTE "
-                         "event once the subject is known. It never reaches a filename")
-    ap.add_argument("--probe", default="", metavar="MODEL",
-                    help="OUR probe's physical model (e.g. Medle ST-S0163-26) -- the library "
-                         "cannot know which sensor is plugged in, applied once the subject is known")
-    subject_group = ap.add_argument_group(
-        "the subject, as the SpO2 bias analysis stratifies it",
-        "All optional; also settable as the [subject] table of --config (with `id` = --subject), "
-        "or later on the console (`subj SUBJ01 weight_g 1500`) once known. Checked at launch.")
-    subject_group.add_argument("--gest-age", default="", metavar="AGE",
-                               help="gestational age at birth, as the chart writes it (30w+2d)")
-    subject_group.add_argument("--age", default="", metavar="AGE",
-                               help="a number and its unit, d/w/m/y, joined with +: 14d, 3w+2d, 6m, 34y")
-    subject_group.add_argument("--weight-g", default="", metavar="GRAMS", help="current weight")
-    subject_group.add_argument("--skin", default="", metavar="1-10",
-                               help="Monk Skin Tone scale, 1 (lightest) to 10 (darkest); `help subj`")
-    ref_group = ap.add_argument_group(
-        "the commercial monitor beside this baby",
-        "All optional; also settable in one go as the [ref] table of --config. --ref-videonest "
-        "is the one of these actually enforced at runtime (2026-09-23: declared once, locked for "
-        "the whole session, never switched by a click or a race) -- the other four are recorded "
-        "and shown read-only, nothing electrical can check them.")
-    ref_group.add_argument("--ref-videonest", default="", metavar="ID",
-                    help="device id of the phone pointed at THIS baby's monitor -- once given, "
-                         "locked: no other id can become this session's reference")
-    ref_group.add_argument("--ref-model", default="", metavar="TEXT", help="make and model")
-    ref_group.add_argument("--ref-avg", default="", metavar="SECONDS", help="its averaging window")
-    ref_group.add_argument("--ref-probe-site", default="", metavar="TEXT", help="where ITS probe is")
-    ref_group.add_argument("--ref-note", default="", metavar="TEXT", help="anything else")
     ap.add_argument("--min-free-gb", type=float, default=2.0,
                     help="refuse to start below this much free disk, and stop cleanly if a "
                          "session reaches it")
@@ -2103,30 +2076,25 @@ def main(argv=None):
     ap.add_argument("--event-port", type=int, default=0,
                     help="local UDP port that accepts the console commands from a panel process")
     args = ap.parse_args(argv)
-    if args.config:
-        try:
-            apply_session_config(args, args.config)
-        except ValueError as exc:
-            ap.error(str(exc))
-        except OSError as exc:
-            ap.error(f"cannot read {args.config}: {exc}")
-        except tomllib.TOMLDecodeError as exc:
-            ap.error(f"{args.config} is not valid TOML: {exc}")
-    if not args.location:
-        ap.error("a location code is required: --location, or `location` in --config")
+    try:
+        cfg = load_session_config(args.config)
+    except ValueError as exc:
+        ap.error(str(exc))
+    except OSError as exc:
+        ap.error(f"cannot read {args.config}: {exc}")
+    except tomllib.TOMLDecodeError as exc:
+        ap.error(f"{args.config} is not valid TOML: {exc}")
+    if not cfg["location"]:
+        ap.error(f"`location` is required in {args.config}: a site CODE, never a place")
 
     host, _, port = args.hub.partition(":")
     hub = (host or "127.0.0.1", int(port) if port else UDP_DATA_PORT)
     try:
-        rec = Recorder(args.out, args.location, args.operator, args.raw, args.csv,
+        rec = Recorder(args.out, cfg["location"], cfg["operator"], args.raw, args.csv,
                        csv_profile=args.csv_profile, hub_text=f"{hub[0]}:{hub[1]}",
+                       config_path=args.config,
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
-                       min_free_bytes=int(args.min_free_gb * 1e9),
-                       board=args.board, subject=args.subject, videonest=args.ref_videonest,
-                       note=args.note, probe=args.probe, ref_model=args.ref_model,
-                       ref_avg=args.ref_avg, ref_probe_site=args.ref_probe_site,
-                       ref_note=args.ref_note, gest_age=args.gest_age, age=args.age,
-                       weight_g=args.weight_g, skin=args.skin)
+                       min_free_bytes=int(args.min_free_gb * 1e9), **recorder_kwargs(cfg))
     except NotEnoughSpace as exc:
         print(f"NOT STARTING: {exc}.", file=sys.stderr)
         print("Free space, or lower the floor with --min-free-gb.", file=sys.stderr)

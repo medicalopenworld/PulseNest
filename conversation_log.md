@@ -27466,3 +27466,151 @@ carpeta o su ancestro existente más cercano (`nearest_dir`). Tests 87/87 (out_a
 defecto, carpeta nueva creada/mostrada/recordada/medida, START con `--out`, rechazo de carpeta no
 escribible, tooltips, carpeta desaparecida → defecto con nota ámbar). Runbook §1 («Where the sessions go»)
 y §4 (copiar la carpeta que nombra el lanzador), README, spec §14 párrafo «The sessions folder».
+
+## 2026-10-16 - Cierre de sesión (Alex se va a dormir)
+
+**Estado:** `master` = `origin/master` = `b902bfa` (push hecho a petición de Alex; regla confirmada: «commit»
+no incluye push). Árbol limpio salvo lo que no se commitea (TOML de cuna, PDF, analysis/, catálogo UpnMed).
+Las tres V18 con fw 0.23 limpio (`elfsha=92e7101794e62747`), en in3wifi; hotspot encendido.
+
+**Pendientes para la próxima sesión (ninguno bloqueante):** probar el lanzador y la GUI con un VideoNest
+emitiendo; lector de eventos ANOMALY en el análisis de sesgo; `hotspot.ps1 off` → código 3 sin probar;
+columna «time» de la tabla de lecturas recortada en el render nativo (observado 15-10, no tocado); texto de
+`skin` «dorsal side at the probe site» en los 4 sitios (ofrecido 15-10, no pedido); caso 2 de la detección
+(nombre/banda del hotspot con aprobación); decisión sobre autocalibración de taps RF; VideoNest: papelera
+por fila en lugar de Delete Recordings (decidido, lo implementa una sesión en VideoNest).
+
+**Alex (16-10, noche):** ¿en qué rama estamos, cuándo se fusiona con main, qué estrategia git? **Respondido:**
+rama `master`, que es la por defecto del remoto; no hay `main` ni fusión: trunk-based en su forma más simple
+(un desarrollador, commits directos a master, 529 commits, dos ramas históricas ya fusionadas —
+`feat/idf-port`, borrable — y una etiqueta). Para un segundo desarrollador: ramas cortas + PR, proteger
+master con los tests en una acción de GitHub, etiquetas `fw-x.y` para lo que llevan las placas; decidir
+`master` vs `main` antes de que entre nadie. Pendiente de Alex.
+
+## 2026-10-16 (5) - Sesiones por sujeto (opción B), session.toml, y ¿quitar los flags?
+
+**Alex:** estructura de `captures\sessions` → propuestas A (plana renombrada), B (por sujeto), C (por
+jornada), D (dejar); eligió **B**. Y: «me gustaría que siempre apareciera el fichero .toml en la carpeta de
+sesión»; «sospecho que nunca voy a usar los flags… piensa si los mantenemos o los quitamos».
+
+**Hecho (B):** `Recorder`: `session_id = <SUBJ>_<SITE>_<YYYYMMDD>_<HHMMSS>` (misma forma que los CSV) y
+`dir = <out>/<SUBJ>/<session_id>/`; `UNBOUND` como sujeto cuando no se conoce al START (con .toml nunca).
+Un replay (`session_id=` dado) conserva el id del registro y cae directamente en la carpeta que se le da
+(`<session>/derived/<id>/`, sin nivel de sujeto). Lo grabado antes no se renombra. Conversor:
+`_SESSION_RE_2` para la forma nueva, `_SESSION_RE` para la vieja, ambas para siempre; `UNBOUND` → sin
+sujeto ni filtro de placa (el primer intento lo tomó como sufijo de placa y el replay no grabó nada:
+«missing» en el test). **session.toml:** `Recorder(config_path=)` copia literal el .toml a la carpeta de
+sesión (`shutil.copyfile`), y `session.json launch.config_file` guarda la ruta; GUI y consola lo pasan desde
+`--config`. session.json tiene los mismos valores que el .toml (sección `launch`) más todo lo ocurrido
+(fuentes, eventos, host, cierre); la copia es la prueba de lo que se pidió, comentarios incluidos. Tests:
+grabador 136/136, conversor 12/12 (ids nueva/vieja/muy vieja dan mismo inicio, sitio y sujeto), GUI 102,
+lanzador 87, CSV 45. Spec §3 reescrita (árbol con `<SUBJECT>/` y `session.toml`, razonamiento B vs
+día/sitio), runbook §4 («copiar la carpeta del sujeto»), README, memoria de nomenclatura.
+
+**Flags (opinión, sin código):** quitar los de METADATOS de la línea de comandos (`--location --operator
+--board --subject --note --probe --gest-age --age --weight-g --skin --ref-*`) y hacer `--config` obligatorio
+en GUI y consola; conservar los de HERRAMIENTA (`--out --hub --csv --csv-profile --raw --split-* --min-free-gb`,
+y `--duration` si existe). Razones: una sola fuente de verdad (el .toml, ahora además copiado en la sesión);
+el lanzador solo usa `--config`; nadie más los usa (grep: solo tests y el propio parser; los tests usan los
+kwargs del constructor, que se quedan); desaparecen `apply_session_config` (conflicto flags vs config), la
+etiqueta «(no --config: flags only)» y 15 argumentos de `--help`. Coste: tocar `add_session_args`, los dos
+`main`, un test de la GUI, spec. Decisión de Alex pendiente.
+
+## 2026-10-16 (6) - Fuera los flags de metadatos: el .toml es la única fuente
+
+**Alex:** «quita los flags». **Hecho:** `add_session_args` conserva solo los de herramienta (`--config`
+OBLIGATORIO, `--hub --out --csv --csv-profile --raw --min-free-gb --split-min --split-mb --duration`; la consola
+añade `--event-port`): 11 en `--help`, antes 26. Fuera `--location --operator --board --subject --note
+--probe --gest-age --age --weight-g --skin --ref-videonest --ref-model --ref-avg --ref-probe-site
+--ref-note`, `CONFIG_FIELDS` y `apply_session_config` (la regla de conflicto flags vs fichero ya no tiene
+objeto). Nuevo `recorder_kwargs(cfg)`: fichero cargado → kwargs del `Recorder` (cuyo constructor no cambia:
+tests y replay del conversor lo usan). Los dos `main` leen el fichero con `load_session_config`, exigen
+`location` en él, y pasan `config_path` siempre; la ventana sigue preguntando sitio/operador solo si el
+fichero no los trae (`ask_session`). Etiqueta FILE sin fichero (solo tests): «(no file)». Textos
+«[ref].videonest / --ref-videonest» → «[ref].videonest». Tests: grabador 136/136, GUI 88/88 (el bucle de 15
+conflictos desaparece; nueva comprobación: `--config` requerido, los 15 ausentes, los de herramienta
+presentes), conversor 12/12, lanzador 87/87. `python tools/pulsenest_recorder.py` sin `--config` → «the
+following arguments are required: --config». Spec: párrafo «The flags are gone» en la sección de argumentos
+compartidos; docstring del grabador.
+Restos de los flags en textos visibles (tooltips de BOARD, PROBE, SUBJECT, NOTE, MONITOR, GEST AGE, SKIN; docstring
+de uso de la GUI; docstrings y la línea de log «(from --subject)» del grabador; `example.toml`): reescritos a
+«en el .toml». Quedan tres comentarios históricos que explican decisiones de 09-22 con el nombre del flag de
+entonces; se dejan. GUI 88/88, grabador 136/136.
+
+**Alex (16-10):** ¿muy arriesgado convertir las carpetas actuales de `captures\sessions` a la estructura y
+nombres nuevos? **Evaluación (sin tocar nada):** 18 sesiones reales (SUBJ08 ×4, SUBJ09 ×4 del 23-09; SUBJ10 ×7,
+SUBJ11 ×3 del 13-10) + 5 carpetas hechas a mano (`*_ANALYSIS` ×2, versionadas en git por excepción del
+.gitignore; `*_Snapshots`; `Phone_J6plusACM`, `Phone_Pixel8aACM`). El id de sesión vive DENTRO: cabecera de
+cada `.pnraw`, de cada CSV y de `reference_spo2.csv`, primera columna de `session_events.csv`,
+`session.json`; el conversor lee el id del `.pnraw`, no del nombre de carpeta; ningún documento nombra
+carpetas de sesión. → MOVER a `captures/sessions/<SUBJ>/` sin renombrar: riesgo bajo (nada lee la ruta; el
+id interno sigue coherente consigo mismo; solo `.gitignore` + `git mv` para las `_ANALYSIS`). RENOMBRAR las
+carpetas a la forma nueva: riesgo medio y poca ganancia (nombre ≠ id interno en cientos de cabeceras;
+segundos tomables de `session.json started` pero el id interno seguiría a minuto). REESCRIBIR contenidos:
+no (cabeceras binarias, 1 GB/placa/hora, el corpus se verifica byte a byte). Recomendación: mover sin
+renombrar, con script de dos pasos (listado en seco, luego mover); las carpetas a mano, bajo su sujeto
+(las `Phone_*` necesitan que Alex diga qué sujeto filmó cada móvil el 23-09). Decisión de Alex pendiente.
+
+## 2026-10-16 (7) - Migración de `captures\sessions` a carpetas por sujeto (nivel 1: mover, no renombrar)
+
+**Alex:** «Ejecuta, pero las carpetas de los móviles no las toques (un mismo móvil puede usarse en dos
+sujetos: SUBJ10 y SUBJ11 usaron el mismo móvil)». **Hecho** con `migrate_sessions_by_subject.py` (scratchpad;
+listado en seco revisado por Alex, luego `--apply`): 21 carpetas movidas sin renombrar — 18 sesiones
+(SUBJ08 ×4, SUBJ09 ×4, SUBJ10 ×7, SUBJ11 ×3), las dos `_ANALYSIS` con `git mv` (11 `.py` versionados, git los
+ve como renombrados) y `20260923_HOSPNAV_SUBJ09_Snapshots`. Las dos `20260923_HOSPNAV_Phone_*` se quedan en
+el primer nivel: un móvil sirve a varios sujetos. Ningún contenido tocado; el id interno de cada sesión sigue
+siendo el antiguo (coherente consigo mismo; el conversor lo lee del `.pnraw`). Los 8 `derived/` viajan con su
+sesión.
+**Rutas en los scripts de análisis** (SUBJ08_ANALYSIS leía a SUBJ09_ANALYSIS como hermana): `pooled_fit.py`
+y `r_regression_test.py` → `dirname(SESSIONS)/SUBJ09/…`; `r_averager_test.py` tenía la ruta absoluta de su
+propia carpeta → `dirname(__file__)`. Compilan; `pairs.csv` de SUBJ09 resuelve; el glob de sesiones del
+propio sujeto (`dirname(HERE)` + `20260923_*_HOSPNAV_SUBJ08`) sigue viendo las 4.
+**`.gitignore`:** la cadena baja un nivel (`!captures/sessions/SUBJ*/`, `captures/sessions/SUBJ*/*`,
+`!…/SUBJ*/*_ANALYSIS/`, `…/*_ANALYSIS/*`, `!…/*_ANALYSIS/*.py`); comprobado: datos de sesión ignorados,
+`.py` de análisis versionados, CSV de análisis ignorados, nada nuevo sin seguimiento. Spec §3: párrafo
+«moved, not renamed, into its subject's folder on 2026-10-16».
+
+**Alex (16-10):** evaluar a fondo la opción 3 (reescribir contenidos al id nuevo) antes de decidir.
+**Evaluación (medida, sin tocar nada):** el id aparece solo en texto y en sitios conocidos: primera línea de
+cada parte `.pnraw` (cabecera `@PNRAW1 session=…`, parseada por `readline` + `k=v`: cambiar su longitud es
+inocuo), línea `# session_id=` de cada parte CSV (las 18 sesiones son v04), primera columna de cada fila de
+`session_events.csv` (6-7), `# session=` de `reference_spo2.csv`, `session_id` de `session.json`, 2 líneas
+de `pulsenest_recorder.log`, los `derived/replay_lib*.log`; además `pairs.csv`/`pairs_replay.csv` (3 CSV de
+análisis) y dos `r_vs_ref_analysis.py` (glob `20260923_*_HOSPNAV_SUBJ0x` y la lista `EXCLUDE_FROM_PAIRING`).
+Segundos honestos: `session.json started.iso`, cuyo minuto coincide con la carpeta en las 18. Hay que
+reescribir 4,7 GB porque alargar la primera línea de un `.pnraw` desplaza el resto; 70 GB libres para copia.
+NO tocar: `captures/v04_corpus` (ids viejos = su test de aceptación), los nombres de los CSV (los del 23-09
+llevan la condición; regla de Alex), los `derived/replay_lib*/`. Riesgo real = corromper un `.pnraw` (única
+copia cruda): se mitiga con copia previa, escritura a temporal, igualdad byte a byte del resto del fichero
+y `pulsenest_convert verify` live vs reconstruido en las 18 antes de sustituir. Riesgo residual bajo; coste
+≈ 150 líneas + ~1 h de máquina. Punto que decide: las copias del runbook §4 en el segundo disco quedarían
+con ids viejos salvo que se reescriban igual. Decisión de Alex pendiente.
+
+## 2026-10-16 (8) - Opción 3 ejecutada: las 18 sesiones antiguas reescritas al id nuevo
+
+**Alex:** «adelante con la opción 3 (hay copias de SUBJ08 y SUBJ09 en el disco externo; no veo problema en
+dejarlas aunque sean redundantes)». **Hecho** con `rewrite_session_ids.py` (scratchpad): listado en seco
+(mapa antiguo→nuevo y recuento del id por fichero, sin sorpresas; una sesión del 23-09 no tiene
+`reference_spo2.csv`), luego `--apply` (1 min 53 s): copia completa a `captures/sessions_backup_20261016/`
+(4,7 GB; también los ficheros de análisis), y por sesión: `.pnraw` → primera línea nueva, resto en streaming,
+SHA-256 de la cola igual antes y después, tamaño = antiguo + Δ; CSV/eventos/ref → sustitución del token con
+recuento exacto esperado; `session.json` → `session_id` nuevo + `former_session_id`; log del grabador → token
++ línea añadida «session id rewritten X -> Y»; renombrado de carpeta. Segundos de `started.iso`. Después,
+`pairs.csv`/`pairs_replay.csv` y los dos `r_vs_ref_analysis.py` (`CAMPAIGN_GLOB = "SUBJ0x_HOSPNAV_20260923_*"`,
+lista de exclusiones). Comprobado: ningún id antiguo queda dentro salvo los dos sitios de procedencia
+intencionados; cabecera `@PNRAW1 session=SUBJ10_…` y 9 928 registros leídos en una parte; scripts compilan y
+sus globs ven 4+4 sesiones. Verificación final con `pulsenest_convert` (reconstruir desde crudo y comparar
+byte a byte las 18) lanzada en segundo plano: resultado más abajo. Copias del disco externo: se quedan con el
+nombre antiguo (mismos datos, `former_session_id` lo cruza). Spec §3 reescrita.
+**Verificación de la opción 3 (conversor, las 18 sesiones, reconstruidas desde el crudo a un directorio
+temporal y comparadas byte a byte con los CSV vivos):** 33 ficheros `identical`, 7 `DIFFERS`, 1 `missing`.
+Los 7 DIFFERS (5 sesiones de SUBJ10 del 13-10) son PREEXISTENTES y ajenos a la reescritura: la copia de
+seguridad intacta de `20261013_1028_HOSPNAV_SUBJ10` da el mismo DIFFERS, y la única diferencia es que el
+conversor de hoy añade `afe_settle_freeze_enable=1` a la línea `alg:` (clave que el grabador del 13-10 no
+escribía); quitando ese token, los 7 son idénticos al vivo (comprobado tras la misma normalización
+`KEY_SYNONYMS` que aplica `verify`). El `missing` es `WRONG_BECAUSE_READ_THE_WRONG_VIDEONEST_reference_spo2.csv`
+de SUBJ09 1309, renombrado a mano el 23-09 y que `board_csvs()` toma por un CSV de placa: también previo.
+**Conclusión: la reescritura no cambió ningún dato.** Copia en `captures/sessions_backup_20261016/` (4,7 GB,
+ignorada por git) hasta que Alex diga. **Pendiente derivado (no pedido):** `verify` del conversor debería
+tolerar una clave que el conversor actual añade y la grabación vieja no tenía (hoy solo tolera renombrados),
+o el corpus/las sesiones de hospital seguirán dando DIFFERS falsos con cada clave nueva de `$LCFG`.

@@ -55,11 +55,15 @@ captures/*
 # data -- it reads the CSVs beside it, which stay ignored, and names subjects only by their SUBJnn
 # code. Git cannot re-include a file under an excluded directory, so the chain below un-excludes
 # the directories level by level and re-excludes their contents, letting only *.py through.
+# Since 2026-10-16 sessions sit under one folder per subject (captures/sessions/SUBJnn/), so the
+# chain has one more step: the subject folders are let through, their contents re-excluded.
 !captures/sessions/
 captures/sessions/*
-!captures/sessions/*_ANALYSIS/
-captures/sessions/*_ANALYSIS/*
-!captures/sessions/*_ANALYSIS/*.py
+!captures/sessions/SUBJ*/
+captures/sessions/SUBJ*/*
+!captures/sessions/SUBJ*/*_ANALYSIS/
+captures/sessions/SUBJ*/*_ANALYSIS/*
+!captures/sessions/SUBJ*/*_ANALYSIS/*.py
 
 # Offline runner — build y ficheros generados
 tools/offline_runner/build/
