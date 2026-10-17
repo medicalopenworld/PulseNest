@@ -345,6 +345,27 @@ heights = [round(b[0].geometry().height()) for b in win.bands.values()]
 check(max(heights) - min(heights) <= 1,
       "still equal after a resize, with the panels unchanged", str(heights))
 
+# ── the SECONDS ON SCREEN selector (2026-10-17) ───────────────────────────────────────────
+check(win.window_combo.currentData() == 15 and [win.window_combo.itemData(i)
+      for i in range(win.window_combo.count())] == list(V.WINDOW_CHOICES_S),
+      "the selector starts at the window the viewer was opened with, among the presets",
+      str(win.window_combo.currentData()))
+win.window_combo.setCurrentIndex(list(V.WINDOW_CHOICES_S).index(60))
+app.processEvents()
+xr = [b[0].viewRange()[0] for b in win.bands.values()]
+check(win.window_s == 60.0 and all(tr.window_s == 60.0 for tr in win.traces.values())
+      and all(abs(r[0] + 60.0) < 1e-6 and abs(r[1]) < 1e-6 for r in xr),
+      "choosing 60 s retrims every trace and rescales every band", str(xr))
+win.window_combo.setCurrentIndex(list(V.WINDOW_CHOICES_S).index(15))
+app.processEvents()
+odd = V.Viewer(("127.0.0.1", 15999), 7.0)
+check(odd.window_combo.currentData() == 7 and odd.window_combo.findData(7) >= 0,
+      "a --window outside the presets is added to the list, not silently replaced",
+      str(odd.window_combo.currentData()))
+odd.close()
+if os.path.exists(V.SETTINGS_FILE):
+    os.remove(V.SETTINGS_FILE)   # odd.close() saved 7 s; the size checks below expect a first run
+
 # ── the settings file: a first run sizes itself, and the choice survives ──────────────────
 check(win.height() > 400, "a first run takes its height from the screen, not a fixed 800 px",
       f"{win.width()}x{win.height()}")

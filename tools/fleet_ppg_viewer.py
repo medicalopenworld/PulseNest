@@ -8,7 +8,8 @@ that slips shows up as the shape going wrong at a glance — usually before any 
     python tools/fleet_ppg_viewer.py [--hub IP[:PORT]] [--window 15] [--opengl]
 
 The window size, the seconds on screen and the size of the statistics panel are remembered in
-`tools/fleet_ppg_viewer.ini`
+`tools/fleet_ppg_viewer.ini`. The seconds on screen can also be changed live from the SECONDS ON
+SCREEN selector at the top of the window (2026-10-17).
 (per machine, not versioned), so the first-run defaults — a size taken from the screen rather
 than a fixed number of pixels that cannot know how many bands there will be — only ever matter
 once.
@@ -106,6 +107,10 @@ from pulsenest.fleet_widgets import make_stats_widget, panel_width, stats_column
 
 REDRAW_MS    = 100
 DRAIN_MS     = 20
+# What the SECONDS ON SCREEN selector offers. 5 s shows the shape of each beat; 30-120 s a breath
+# hold from start to recovery; 300 s the whole of one. At 50 Hz on screen (fleet_trace.DECIM) 300 s
+# is 15 000 points per board, which pyqtgraph redraws at 10 Hz without effort.
+WINDOW_CHOICES_S = (5, 10, 15, 30, 60, 120, 300)
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "fleet_ppg_viewer.ini")
 
@@ -133,6 +138,7 @@ class Viewer(QtWidgets.QMainWindow):
 
         self.layout_widget = pg.GraphicsLayoutWidget()
         self.setCentralWidget(self.layout_widget)
+        self._build_toolbar()
         # The WINDOW refuses to be narrower than its two panels plus a usable waveform. This is
         # the lesson from the three empty tables: the panel columns are fixed width, so when the
         # window is narrower than they are, the grid overflows to the right and what does not
@@ -150,6 +156,34 @@ class Viewer(QtWidgets.QMainWindow):
         self.redraw_timer = QtCore.QTimer(self)
         self.redraw_timer.timeout.connect(self.redraw)
         self.redraw_timer.start(REDRAW_MS)
+
+    # ── the seconds-on-screen selector (2026-10-17) ───────────────────────────────────────
+    def _build_toolbar(self):
+        bar = self.addToolBar("view")
+        bar.setMovable(False)
+        bar.addWidget(QtWidgets.QLabel(" SECONDS ON SCREEN "))
+        self.window_combo = QtWidgets.QComboBox()
+        choices = sorted(set(WINDOW_CHOICES_S) | {int(round(self.window_s))})
+        for v in choices:
+            self.window_combo.addItem(f"{v} s", v)
+        self.window_combo.setCurrentIndex(choices.index(int(round(self.window_s))))
+        self.window_combo.setToolTip(
+            "How many seconds of signal each band shows, for every board at once.\n"
+            "Shorter shows the shape of each beat; longer, a whole breath hold.\n"
+            "Going longer does not bring back what already scrolled off: the band fills\n"
+            "in from the right. Remembered in fleet_ppg_viewer.ini.\n\n"
+            "Source: Viewer.window_s -> BoardTrace.window_s (trim) and each plot's X range.")
+        self.window_combo.currentIndexChanged.connect(
+            lambda i: self.set_window_s(self.window_combo.itemData(i)))
+        bar.addWidget(self.window_combo)
+
+    def set_window_s(self, seconds):
+        """Change the seconds on screen live: every trace trims to it, every band rescales."""
+        self.window_s = float(seconds)
+        for tr in self.traces.values():
+            tr.window_s = self.window_s
+        for plot, *_ in self.bands.values():
+            plot.setXRange(-self.window_s, 0, padding=0)
 
     # ── the statistics panel ──────────────────────────────────────────────────────────────
     # ── settings ──────────────────────────────────────────────────────────────────────────
