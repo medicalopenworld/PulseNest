@@ -22,6 +22,9 @@ has not been triaged yet.
 ## Inbox
 
 <!-- Add new ideas below. One line each; optional indented context line. -->
+- [ ] Grabar una sesión con el simulador MS100 variando lentamente el SpO2 y registrando el valor de la pantalla del simulador (móvil/VideoNest o a mano), para tener pares R↔SpO2 de simulador con R-METHOD-2 (estabilidad de la cadena, no exactitud: ISO EE.4)
+	(16-10, Alex; hilo curva R→SpO2 paso 1)
+- [ ] 5 de las 10 sesiones del 13-10 (desde las 10:51) no llevan instantánea `alg:` (la respuesta `$LCFG?` del hub no llegó al grabador; el hub solo la pide al descubrir la placa). Que el hub la vuelva a pedir hasta tenerla, o que el grabador la pida al abrir sesión; `spo2_bias_analysis.py` la hereda de otra sesión con el mismo `build=` mientras tanto
 - Investigar la evolución de la pigmentación en prematuros (sobre todo pieles oscuras): cuánto y a qué ritmo oscurece el tono Monk en las primeras semanas, y si difiere del nacido a término
 	(16-10: `skin` se anota por sesión y en el lado dorsal del sitio de la sonda; falta saber si un valor por sesión basta o hay que modelar la deriva para el análisis de sesgo)
 - [x] Añadir a la nomenlatura del proyecto "adc_code" para salidas del ADC (y quizás LSB
@@ -80,7 +83,9 @@ has not been triaged yet.
 - PROMPT: dado que las medidas SUBJ08/09 han generado una calibración SpO2(R) tan distinta a la actual, dos preguntas: 1. ¿Deberíamos tener un calibración separada para este grupo de edades? 2. ¿Qué hacen el resto de fabricantes respecto a esto? 3. ¿Qué hacen el resto de fabricantes acerca de tener parametros (tiempos,frecuencias,etc.) específicos por grupos de ddad?
 - Hacer un TOP10 de las principales decisiones analizadas en el _rationale.md (rango HR, ot_thr, tiempos de promediado, frecuencias de corte, etc.)
 - En el rationale no encuentro cómo se ha decidido el método/criterio de estimaciónde ProbeState
-- BUG!!! En el algún caso HGAC pasa a off y la RF1 hace que sature algún canal y ya no detecta APPLIED (todavía no sé reproducir el fallo)
+- [x] BUG!!! En el algún caso HGAC pasa a off y la RF1 hace que sature algún canal y ya no detecta APPLIED (todavía no sé reproducir el fallo)
+	(RESUELTO 17-10: lib v0.105 puerta HGAC semiabierta en ONLY_LED_SATURATING, solo bajar RF por la EMA lenta; grabador y ventana avisan HGAC OFF en rojo; fw 0.24 compilado, OTA pendiente)
+	(17-10, reproducido en el banco y explicado en el código: dedo con RF a 500K → ambos LED saturan → PROBE_ONLY_LED_SATURATING, que isProbeAbsent() clasifica como ausente → la puerta del HGAC se cierra y nadie baja RF: el «open check» v0.90 de la spec §5.6.2/§5.8. Y el HGAC lo apaga LAB CAPTURE con «Disable HGAC during capture» (persistido `disable_hgac=true` en pulsenest_lab.ini); solo lo restaura si sabía que estaba ON y si la captura termina bien; el grabador no lo toca. En hospital: SUBJ08 (23-09) y SUBJ10/11 (13-10, placa 87:A4) grabados con hgac_enable=0 todo el día. Decisión pendiente: discriminante OT en la rama ONLY_LED_SATURATING, o dejar que el HGAC baje RF en ese estado)
 - Posible mejora para compensar las tolerancias de las resistencias RF1/RF2: que en algún momento realice un comprobación de dichas tolerancias saltando entre los distintos valores de RF. Por ejemplo, lo más rápido que permitan los tiempos de asentamiento ya que los condensadores a la entrada del ADC probablemente no esperen saltos bruscos entre una muestra y la siguiente. Antes de implementar el algoritmos, estudiar en unas cuantas tarjetas qué tolerancias hay y analizar cómo afectan dichos niveles de tolerancia.
 - Creo que hay calculos como las derivadas de R-METHOD-2 que dependen de la frecuencia de muestreo.
   Habría que repensar si estos cálculos los hacemos sobre la señal de 500Hz o de 50Hz, y si tener en cuenta dicho delta(t).

@@ -27674,3 +27674,277 @@ exige 0, el resumen por sesión cuenta tramos y pares descartados. Re-ejecutados
 la columna nueva (toda a 0), resúmenes iguales salvo los nombres de sesión (id nuevo de hoy). Prueba con una
 ventana sintética marcada: `anomaly_frac` 0,125 → `usable` 0. Spec §6: tabla de `kind` con los dos
 ANOMALY (faltaban) y párrafo del lector; README: módulo en la tabla de `pulsenest/`.
+
+## 2026-10-16 (13) - Hilo primario retomado: plan para la curva R→SpO2
+
+**Alex:** «volvamos al hilo primario, la curva R→SpO2. Haz un plan.» **Estado:** curva vigente
+`R-CURVE-STS0163-HOSPNAV-20260923` (123,98 − 39,13·R, R-METHOD-2, SUBJ08+09, 85-100 %). **Hallazgo:** la campaña
+del 13-10 (SUBJ10 ×7, término de 1 día; SUBJ11 ×3, prematuro de 30 semanas y 1,5 kg; Mindray N17 en pie derecho;
+sonda ST-S0163-26 lote 260521002; fw 0.22 / lib 0.104 con la curva vigente en vivo y R_CORR; ~2.600 lecturas
+VideoNest) no se ha analizado nunca contra la curva: es la validación independiente que faltaba. El promediado del
+monitor tampoco se anotó ese día. **Plan propuesto:** (1) validar la curva con SUBJ10/11 offline (sesgo y dispersión
+por sujeto, LOSO con n=4, residuo frente a PI, r y HR), generalizando `r_vs_ref_analysis.py` a un programa único en
+`tools/`; (2) registro `docs/spo2_r_curves.md` con método y dirección del ajuste; (3) decidir la curva por defecto
+(mantener, reajustar con n=4, o estudiar término vs prematuro); (4) medir r sin pulso para reconfirmar el 0,8 y el
+residuo dependiente del PI; (5) protocolo de la próxima campaña (promediado del monitor, exactitud del N17 según
+manual, cobertura < 85 %); (6) fondo: espectral/autocorrelación y estabilidad MS100. Pendiente de que Alex apruebe
+empezar por (1).
+
+## 2026-10-16 (14) - Paso 1 del plan: la curva vigente, validada en SUBJ11; SUBJ10 inválido por movimiento
+
+**Alex:** «adelante con el paso 1», avisando de que SUBJ10 se movió todo el rato; y apuntar como pendiente una sesión
+con el MS100 variando lentamente el SpO2 y registrando la pantalla del simulador (al BACKLOG, hecho).
+**Herramienta:** `tools/spo2_bias_analysis.py <SUBJ...>` generaliza los dos `r_vs_ref_analysis.py` (misma ventana de
+8 s, misma regla de usabilidad, estacionariedad y binfit que `fit_method2.py`): curva leída del `alg:` de cada
+captura (nunca fija), `--replay <derived>` + `--curve a,b` (recalcula SpO2 = a − b·R), LOSO, residuo frente a PI, r
+(R_CORR), HR3 y confianza OCR, un gráfico de serie por sujeto. Pares de SUBJ08 idénticos al script original (0
+diferencias de valor). Fila en el README. Hallazgo colateral: 5 de las 10 capturas del 13-10 (desde las 10:51) no
+llevan instantánea `alg:` (la respuesta `$LCFG?` no llegó al grabador); la herramienta hereda la curva de otra sesión
+con el mismo `build=` y lo dice; al BACKLOG.
+**Resultado (`captures/sessions/BIAS_ANALYSIS_SUBJ10_SUBJ11/findings.md`):** SUBJ11 (prematuro de 30 semanas, 1,5 kg):
+sesgo mediana −0,2 puntos, sd 1,2, ρ −0,85, el 90 % de las ventanas con r ≥ 0,99 dentro de ±2; su propio ajuste
+(120,9 − 34,5·R) está sobre la curva. El conjunto de ajuste (SUBJ08/09 replay lib 0.100, misma curva) da |sesgo| 0,9 y
+sd 2,5: el sujeto nuevo va igual o mejor. **La curva se confirma y no se reajusta.** SUBJ10 (término, 2,75 kg, moviéndose):
+−16 puntos, R ≈ 1,1-1,2 con el monitor en 97 %, PI 3-12 %; 760 de 907 lecturas pasaron como usables. La puerta r ≥ 0,8
+no lo ve (mediana 0,96; incluso r ≥ 0,99 da −17): un artefacto periódico correlaciona rojo e IR igual que el pulso. HR3
+sí lo separa: válido en 18/760 ventanas de SUBJ10 (sesgo +1,5 en esas) frente a 1500/1664 en SUBJ11. El PI correlaciona
+pero solapa. **Decisión de diseño pendiente:** puerta de artefacto para SpO2 (HR3 válido, techo de PI o ambas), tras
+leer qué hacen Masimo/Nellcor/Philips. Rango validado sigue siendo 85-100 %. Sin commit (no pedido).
+
+## 2026-10-16 (15) - Espectrogramas y HPS por sujeto; antecedentes Masimo/Nellcor/Philips para la puerta de artefacto
+
+**Alex:** espectrogramas y HPS de SUBJ11 (0-15 Hz, hora local en el eje), luego de SUBJ10 en `captures/sessions/SUBJ10/`
+(carpeta `Spectra`, nombre suyo), copiar el script allí, calcular las carpetas Spectra de SUBJ08 y SUBJ09, y después qué
+hacen Masimo, Nellcor y Philips. Comentario de Alex: la primera sesión de SUBJ10 sí tiene algo de peine de armónicos.
+**Espectros:** `captures/sessions/<SUBJ>/Spectra/<sesión>_spectra.png` para SUBJ08, 09, 10 y 11, con el script
+`SUBJ10/Spectra/subj_spectra.py` (raíz del repo relativa al fichero; salida por defecto en la Spectra del sujeto). Cadena
+fiel a HR3 (paso bajo 15 Hz de 4.º orden, diezmado a 50 Hz, Hann de 512, salto 0,5 s, media restada, HPS con armónicos 2 y 3);
+HPS en dB respecto al máximo dentro de 0,5-4,33 Hz, que es la banda donde busca la librería (sin esa restricción el producto
+cerca de DC lo domina todo); HR3 del firmware superpuesto desplazado 0,35 Hz. SUBJ11: fundamental 2,8 Hz con armónicos hasta
+14 Hz, HR3 válido 70-94 %; los artefactos son columnas verticales de banda ancha que coinciden con caídas nuestras que el
+monitor no ve. SUBJ10: sin peine, HR3 válido 1-18 %, y el Mindray también osciló 80-100 con el bebé moviéndose. Respuesta al
+comentario: la sesión de las 10:28 sí tiene peine a ratos (HR3 18 %), pero no tiene ninguna lectura de referencia (VideoNest
+aún no emitía): vale para probar una puerta de artefacto, no para el sesgo. SUBJ08: HR3 válido 20-67 %; SUBJ09: 69-81 %.
+**Fabricantes (patentes y documentos oficiales, no literatura secundaria):** los tres ligan la validez de SpO2 a la
+identificación del pulso y a su estructura armónica. Nellcor (US 6,083,172): métrica de validez = energía armónica
+decreciente con el orden, S/N bajo cuando la fundamental no casa con los armónicos, bandera de movimiento por forma del
+pulso y pérdida de correlación rojo-IR, estados Pulse present / Not sure / Pulse lost / Non-pulse con acciones UPDATE /
+HOLD / CLEAR y valor mostrado de menos de 40 s. Philips (US 6,631,281 y nota de aplicación FAST): FFT cada segundo, picos
+como "agujas" en el plano complejo rojo-IR cuya pendiente es la SpO2, familias armónicas puntuadas (fundamental sola 31
+puntos, familia completa 100, mínimo 30), seis criterios de artefacto que descartan el ciclo entero, comprobación contra el
+valor anterior e INOP tras unos 10 s sin dato. Masimo (US 5,632,272 y whitepaper Signal IQ): motores en paralelo con
+confianza relativa cada uno, compuesta en la altura del pico de Signal IQ en cada pulso; Low SIQ avisa sin borrar; Pulse
+Search deja la pantalla en blanco. Goldstein 2003 (21 neonatos, 7.548 min): Low SIQ discierne las desaturaciones falsas,
+Pulse Search y Motion de Nellcor "ni específicos ni sensibles". **Implicación:** r es uno de sus criterios y solo no basta;
+el criterio de estructura armónica es el que separa SUBJ10 de SUBJ11 y HR3 ya lo calcula. Opciones (sin decidir): puerta
+SpO2 = HR3 válido con HOLD/CLEAR temporizado; consistencia de R entre fundamental y segundo armónico medible offline.
+Sin commit (no pedido).
+
+## 2026-10-16 (16) - Lecturas del monitor de la primera sesión de SUBJ10 transcritas de las fotos de VideoNest
+
+**Alex:** cinco comentarios: la raya azul sobre la fundamental, por qué el script solo está en SUBJ10, pasar OCR a las
+fotos de `SUBJ10/VideoNest/Snapshots` de la primera sesión (sin filas en `reference_spo2.csv` ni en el CSV de VideoNest),
+una frase de Philips que no se entendía, y las dos opciones de puerta se analizan más adelante. **Fotos:** no hay OCR
+instalado (ni tesseract ni cv2); los 23 fotogramas de 10:28:06 a 10:31:51 (uno cada 10 s, 480×640) se transcribieron a ojo:
+SpO2 legible en todos, FC = FP en todos. Añadidas al final de `SUBJ10_HOSPNAV_20261013_102820/reference_spo2.csv` como
+filas `source=photo, id=J6plusACM, kind=reading` con `phone_ts` = hora del nombre del fichero y `t_epoch_us = phone_ts +
+418 ms` (mediana de `offset_ms` de la sesión de las 10:32, mismo móvil), precedidas de una línea de comentario con la
+procedencia; nada reescrito. `spo2_bias_analysis.py SUBJ10`: 23 lecturas, 18 pares usables (las 2 primeras y las 3 últimas
+caen fuera de la señal de placa). En el tramo con peine (10:29:38-10:30:50) nuestra SpO2 da 91-98 frente a 96-100 del
+monitor (sesgo −4 a −7, PI 0,6-1,0); fuera de él, 76-86 frente a 92-97 (sesgo −10 a −20, PI 2-4,5). HR3 válido en menos de
+media ventana en todas salvo una. El propio Mindray cayó a 81 a las 10:31:41. Pendiente: dónde debe vivir el script de
+espectros (hoy en `SUBJ10/Spectra/`, por la regla de carpetas iría a `tools/`): decisión de Alex.
+
+## 2026-10-16 (17) - Script de espectros a tools/; OCR de VideoNest frente a los 538 fotogramas leídos a ojo
+
+**Alex:** (1) mover el script a `tools/spo2_spectra.py`; (2) estudio comparativo SpO2 de los snapshots frente a
+`reference_spo2.csv` y al CSV del móvil; (3) por qué el Mindray da 81 % con una PPG inservible (10:31:51); (4) explicar
+con mucho más detalle la frase de Philips. **(1) Hecho:** `tools/spo2_spectra.py` (raíz = dos niveles sobre el fichero),
+fila en el README; en las carpetas Spectra solo quedan las figuras. **(2) Hecho:** mosaicos del recorte de dígitos (24
+fotogramas por imagen, dos encuadres: el móvil cambió de cuna) leídos a ojo: 520 de 538 legibles; transcripción en
+`captures/sessions/BIAS_ANALYSIS_SUBJ10_SUBJ11/ocr_vs_eye/<SUBJ>_snapshots_eye.csv`, script `ocr_vs_eye.py`, resumen y
+`findings.md`. SUBJ10 no tenía ECG (el número grande es la FP del oxímetro); SUBJ11 sí (verde = FC ECG, cian pequeño = FP).
+Resultado: 228 fotogramas con fila OCR a ±1 s; 168 exactos, 58 a 1-2 puntos, 2 a 3-4 y uno a 10 (SUBJ11 11:21:18, caja de
+alarma, 69 leído como 59, conf 0,50). Con conf ≥ 0,9 acierta el 84-90 %; con conf 0,50 (valor retenido, raw vacío, 25-35 %
+de las filas) el 61-65 %. Los ±1 son sobre todo retardo: el `value` de VideoNest va un paso por detrás del texto crudo en el
+14 % de las filas con número legible (rampa 11:15:42: raw 97/96/95, value 98/97/96). Cobertura: en SUBJ10 solo 82 de 168
+fotogramas dentro de sesión tienen fila OCR (la primera sesión, ninguna; huecos de minutos en las demás) y el CSV del móvil
+del día empieza a las 11:13:34, así que falta todo el registro del lado del móvil de la mañana de SUBJ10; en SUBJ11, 40 de
+186 sin fila. Además, SUBJ11 11:19:56-11:22:28: el monitor bajó a 64 con FP 89 mientras la FC del ECG seguía en 170-177:
+artefacto de sonda que el propio monitor no rechazó. **(3) y (4):** respondidas en el chat (ver mensaje); sin cambios.
+
+## 2026-10-17 - OCR frente a fotos, ampliado a SUBJ08 y SUBJ09; por qué R se calcula con la AC
+
+**Alex:** (A) incluir SUBJ08 y SUBJ09 en el estudio OCR-frente-a-fotos; (B) si (IR/DC_IR)/(RED/DC_RED) ya es R en
+cada instante, ¿por qué tomamos el valor AC? **(A) Hecho:** 537 fotogramas de SUBJ08 (Pixel 8a, 11:34-13:12) y 378 de
+SUBJ09 (J6+, 12:08-13:16) leídos a ojo con mosaicos (recorte distinto por cuna: SUBJ09 fotografiado desde dos metros, 28
+fotogramas con caja de alarma ilegibles también a ojo); CSV `SUBJ08/09_snapshots_eye.csv` junto a los del 13-10; el
+script `ocr_vs_eye.py` compara ya los cuatro sujetos y salta las líneas de comentario del CSV del móvil del 23-09
+(`#PREVIOUS VALUE HAS BEEN CORRECTED BY ACM`). Tabla de cuatro sujetos en `findings.md`. Resumen: 812 fotogramas
+comparables con el OCR del portátil, 68 % exactos, 30 % a 1-2 puntos, 2,3 % a 3 o más (máximo 8). SUBJ08 es el peor:
+el móvil retuvo valor el 52 % del tiempo y el monitor cambiaba un punto por segundo (ciclos de desaturación), así que la
+ventana de ±1 s pilla dos valores. Un caso de 17 puntos en SUBJ09 (12:21:39, caja de alarma, OCR leyó la FC 166 como
+SpO2). Los errores grandes son cajas de alarma o rampas con valor retenido, nunca un número estable mal leído.
+Cobertura dentro de sesión sin fila OCR: SUBJ08 28 %, SUBJ09 33 %, SUBJ10 51 %, SUBJ11 22 %. **(B)** respondida en el
+chat: el cociente de las señales normalizadas es ≈ 1 siempre; la saturación está en el cociente de las ONDULACIONES
+(AC/DC por canal = ε(λ)·Δd, Δd común → se cancela); Philips normaliza igual y la FFT es la que extrae la AC.
+
+## 2026-10-17 (2) - ¿Similitud alta entre Mindray y la librería? Arms por sujeto; (B) explicado con un ejemplo numérico
+
+**Alex:** según (A), ¿podemos decir que la similitud Mindray-librería es muy alta? (recordando que la ISO pide 3 % para el
+66 %); y volver a explicar (B) con mucho más detalle. **Respuesta:** (A) mide la fidelidad del OCR, no la librería; la
+similitud sale de `spo2_bias_analysis` y se expresa como Arms (raíz del error cuadrático medio, que es lo que define la
+ISO 80601-2-61: Arms ≤ 4 % declarado; el "66 %" es la lectura gaussiana de ±1 Arms). Contra el Mindray: SUBJ11 Arms 1,56
+(96 % dentro de ±3), SUBJ08+09 (replay con la curva vigente) Arms 3,12 (79 % dentro de ±3; estacionario 2,62), SUBJ10
+Arms 16 (movimiento). Matices: la referencia es otro oxímetro (±2-3 % él mismo), no un CO-oxímetro; rango 85-100 %;
+n = 3 sujetos válidos; sin puerta de artefacto. Sin cambios en el repo.
+
+## 2026-10-17 (3) - Cierre de sesión (Alex se va a dormir)
+
+Estado al cierre, **sin commit** (no pedido): nuevos `tools/spo2_bias_analysis.py`, `tools/spo2_spectra.py` (+ filas en
+README), carpetas `captures/sessions/<SUBJ>/Spectra/` (4 sujetos), `captures/sessions/BIAS_ANALYSIS_SUBJ10_SUBJ11/`
+(pairs, summary, png, findings.md, `ocr_vs_eye/` con los 4 CSV de transcripción), 23 filas `source=photo` añadidas al
+`reference_spo2.csv` de SUBJ10 10:28, dos entradas nuevas en el BACKLOG (sesión MS100 con SpO2 variable; `alg:` ausente
+en 5 capturas del 13-10). Pendiente de Alex: leer la explicación (B) del cociente AC/DC; decidir la puerta de artefacto
+(HR3 válido vs consistencia armónica de R) y el registro `docs/spo2_r_curves.md` (paso 2 del plan).
+
+## 2026-10-17 (4) - Tres preguntas: Arms mejor en SUBJ11 que en el conjunto de ajuste; papel del cociente DC; por qué normalizar por DC
+
+**Alex:** (1) reflexión: SUBJ08/09 ajustaron la curva y aun así SUBJ11 tiene mejor Arms; (2) «el cociente DC_rojo/DC_IR
+no sirve para nada» choca con que está en la fórmula de R; (3) ¿la normalización por DC es por la potencia distinta de
+los LED? **Respuestas (chat):** (1) el ajuste minimiza el residuo de las medianas por bin, no el error par a par; el Arms
+par a par lo manda la dispersión del día (señal, movimiento, contacto, referencia que cambiaba 1 pt/s en SUBJ08) y no la
+curva; SUBJ11 estuvo quieto (HR3 válido 70-94 %, r 0,997, ref estable 95-99) y su pendiente individual (−34,5) cae
+cerca de la conjunta, mientras que SUBJ08/09 (−47 / −32) tiran cada uno hacia su lado; lección: el Arms del conjunto de
+ajuste mide la puerta de artefacto, el del sujeto independiente mide la curva. (2) frase mal dicha: el cociente de DC no
+lleva información de saturación por sí solo, pero dentro de R es imprescindible como normalizador: AC_λ = DC_λ·ε_λ·c·Δd →
+ε_r/ε_ir = (AC_r/AC_ir)/(DC_r/DC_ir). (3) sí, y más: por Beer-Lambert todo lo estático es multiplicativo (potencia del
+LED, responsividad, ganancia, piel, hueso, sangre venosa) y sale exacto al dividir por la DC del mismo canal; el dominio
+OT ya quita la electrónica, la DC quita el tejido. Sin cambios en el repo.
+
+## 2026-10-17 (5) - ¿Curva por edad? Documentación; ¿snapshot = extracción?; R-METHOD-1 vs 2
+
+**Alex:** (1) ¿una R-curve para neonatos y otra para adultos? (2) buscar documentación; (3) ¿un snapshot del
+pulsioxímetro comercial equivale a una extracción de sangre?; (4) recordar diferencias R-METHOD-1/2. **Documentación
+(verificada):** ISO 80601-2-61:2026 201.12.1.101 d): la exactitud pediátrica SE DEBE respaldar con desaturación
+controlada en adultos (no existe curva neonatal normativa); Annex JJ define el transfer standard (Arms ≤ 2,0, ≥ 48 adultos
+de tres pigmentaciones, ecuación Y = mX + b, 1 Hz destilado a 17-30 puntos por meseta, no sustituye al CO-oxímetro para
+conformidad). Fabricantes: una curva por familia de sensor (OxiMax guarda coeficientes en el conector), validada en
+adultos; neonatal = +1 % HbF (Masimo) o «clinical functionality» (Nellcor, 42 neonatos, 2,5 %); curvas distintas solo
+en sensores de baja saturación (Nellcor 735 nm; Masimo RD SET Blue 60-100 % en cianóticos). Literatura: HbF efecto
+óptico pequeño (Pritišanac 2021); error crece a baja saturación (Wackernagel 2020); 1990 N-200 en 22 prematuros SpO2 =
+0,75·SaO2 + 24,4. Nuestros datos: SUBJ11 sobre la curva de SUBJ08/09. **Respuestas (chat):** (1) no por edad; sí por
+sonda/sitio y por rango, con población validada en el registro; experimento barato: dedo adulto con la misma Medle. (3)
+no: es un SpO2 de otro oxímetro con errores correlacionados con los nuestros, 1 Hz promediado 8 s (n efectivo = mesetas,
+no lecturas); vale como transfer standard informal para desarrollo, no para exactitud. (4) tabla de la spec §5.1.
+Memoria `reference_r_curve_age_dependence` ampliada. Sin cambios en el repo.
+
+## 2026-10-17 (6) - Qué averiguar del oxímetro de referencia; qué es la ecuación de transferencia
+
+**Alex:** (1) además de exactitud declarada y tiempo de promediado, ¿qué más averiguar del equipo de referencia (Mindray
+hoy, otros mañana)? (2) explicar «la ecuación de transferencia del módulo del N17». **Respuesta (chat):** lista en diez
+puntos: módulo SpO2 real y versión (la serie BeneVision N admite módulo propio, Masimo o Nellcor), sensor y lote con el que
+se declara la exactitud, modo de sensibilidad/promediado/FastSat, categoría de paciente, conducta de pantalla (retención,
+guiones, cajas de alarma), indicadores de calidad visibles (PI, SIQ, mensajes), reloj y latencia, salida digital (exportar
+tendencias 1 Hz mejor que OCR), sitio y circulación regional respecto a nuestra sonda (ISO JJ.1), FC del ECG para detectar
+artefacto, sesgos publicados del módulo (pigmentación, baja saturación), estado de mantenimiento. Ecuación de
+transferencia: regresión Y = mX + b (Y = SpO2 del transfer standard, X = SaO2 del CO-oxímetro) hecha por quien certifica el
+equipo en ≥ 48 adultos; invertida da SaO2 estimada = (Y − b)/m; nadie la publica para el módulo del N17, así que solo
+cabe asumir sesgo 0 con el Arms declarado como presupuesto de error. Propuesta sin ejecutar: campos `module` y `sensor`
+en `[ref]` del .toml. Sin cambios en el repo.
+
+## 2026-10-17 (7) - HbF y cómo nos afecta; para qué hace falta SaO2
+
+**Alex:** (1) hablar de la hemoglobina fetal y cómo nos afecta; (2) con la ecuación de transferencia sale SaO2, ¿para qué
+la necesitamos? **Respuesta (chat):** HbF (α2γ2): 60-80 % al nacer a término, más en prematuros, <5 % a los 6 meses, cae
+de golpe con transfusiones; espectros casi iguales a HbA en 660/905 nm → la curva R→SpO2 apenas cambia (Masimo +1 pt de
+margen; Harris 1988 / Rajadurai 1992 no encuentran efecto); donde sí pesa: afinidad por O2 (P50 ~19 vs 27 mmHg → misma
+SaO2 = menos PaO2, riesgo de hiperoxia) y los CO-oxímetros antiguos la medían mal (COHb falsa, SaO2 baja) → parte de la
+dispersión publicada en neonatos es de la referencia; para nosotros: los cuatro sujetos son neonatos con HbF alta y
+comparten sangre con el Mindray, así que no afecta a la comparación; sí afectaría a una curva adulto-neonato (≈1 pt) y
+hay que anotar transfusiones. SaO2: la exactitud se define contra la sangre (Arms ISO); ajustar a, b contra otro SpO2
+copia la curva y los sesgos de ese módulo (sesgo invisible porque comparte física); no hace falta para comparar métodos,
+puertas de artefacto o ruido; sí para fijar la posición absoluta de la curva y para cualquier afirmación de exactitud.
+Sin cambios en el repo.
+
+## 2026-10-17 (8) - Dedo no detectado con RF 500K y HGAC OFF: bloqueo verificado y quién apaga el HGAC
+
+**Alex:** lab abierto desde el lanzador, dedo puesto, no detectado; RF1/2 a 500K saturando LED1 y LED2; HGAC estaba OFF,
+lo puso ON y no se resolvió; ¿HGAC no actúa si ProbeState ≠ APPLIED?; ¿quién puede poner HGAC a OFF?; reset de la placa
+y resuelto. **Diagnóstico (solo lectura de código, sin cambios):** (1) confirmado: `_hgac_update()` retorna si
+`isProbeAbsent()`, y ambos LED saturados = PROBE_ONLY_LED_SATURATING, que está en la lista de ausentes → el HGAC no baja
+RF → sigue saturado → sigue ausente. Es el «open check» documentado en la spec desde v0.90 (§5.6.2, §5.8, tabla de
+versiones), hoy reproducido en el banco. Poner HGAC a ON no sirve porque la puerta sigue cerrada; el reset sirve porque
+la placa arranca con RF por defecto. (2) Quién apaga el HGAC: solo tres mandos del lab envían `$SET,hgac_enable,0`: la
+casilla «Disable HGAC during capture» de LAB CAPTURE (persistida en `pulsenest_lab.ini` como `disable_hgac=true`, y hoy
+está a true), el combo de LIB CONFIG y el combo rápido de la ventana principal. LAB CAPTURE lo restaura al parar solo si
+sabía que estaba ON (`_hgac_enabled`) y si la captura cierra; si el lab muere o se cierra con la captura abierta, la
+placa se queda con HGAC OFF hasta reiniciar. El fw lo enciende al arrancar (decisión 10-09); grabador, hub y lanzador no
+lo tocan. (3) **Hallazgo colateral grave:** en las capturas de hospital `alg:` dice `hgac_enable=0` en las cuatro
+sesiones de SUBJ08 (23-09, placa 88:50) y en las de SUBJ10 y, por herencia de placa, SUBJ11 (13-10, placa 87:A4); SUBJ09
+tenía 1. Dos de las cuatro campañas-sujeto se grabaron sin control de ganancia; puede explicar los tramos OT_HIGH de
+SUBJ08. BACKLOG anotado con la causa; memoria `project_probe_led_saturation_lock_task` actualizada. Decisión pendiente.
+
+## 2026-10-17 (9) - HECHO: lib v0.105 (HGAC baja RF despacio bajo saturación solo-LED), grabador avisa HGAC OFF, fw 0.24
+
+**Alex:** «adelante» con (b) + (c). **Matiz descubierto al implementar:** el test de la lib `test_hgac_led_only_sat_is_probe_in_air`
+(v0.61) exigía lo contrario de (b) tal como lo propuse: al quitar el dedo el HGAC no debe perseguir RF hasta el suelo, o
+estropea el punto de trabajo para la recolocación. Y el discriminante por OT que proponía la spec no sirve a RF alta: la
+OT de un TIA saturado está acotada por FS/(RF·I_LED) ≈ 48 ppm a 500K y 50 mA, por debajo del umbral haya aire o tejido.
+**Decisión (rationale §13):** puerta semiabierta en PROBE_ONLY_LED_SATURATING: se alimentan las EMAs y `_hgac_track()`
+corre en modo «solo bajar»: sin guardia rápida, sin rama de subida, solo la rama lenta (τ 2 s, válida a los 6 s, reset
+tras cada paso) baja RF un escalón por ~6 s. Una retirada breve no mueve nada; una saturación persistente baja hasta que
+el recorte desaparece; una retirada larga acaba en el suelo y el nivelado normal sube a la misma cadencia (≤ 5 pasos,
+~30 s). `isProbeAbsent()` intacta para RSQM y diagnóstico. **Lib v0.105**: `_hgac_track(..., step_down_only)`, comentarios
+en el enum y en `isProbeAbsent()`, spec §5.6.2 (open check cerrado) y §5.8, tabla de versiones, rationale §13. Tests:
+reemplazado el de v0.61 por cuatro (sin guardia rápida a 4 s; un escalón a 8 s y dos a 15 s; suelo si persiste;
+DISCONNECTED sigue cerrado); host 10/10 suites (hgac 24). **Grabador:** `Source.hgac_enable` leído de `$LCFG`, aviso
+en log, nota `@M` en el crudo al verlo por primera vez, `HGAC=off` en `status`; ventana: «HGAC OFF» en rojo en la
+cabecera de la placa; spec del grabador §8 (bullet nuevo). Tests: GUI 90/90; grabador 139/139 tras mover los checks a
+un grabador propio (el primer intento rompió el check de ida y vuelta de datagramas). **fw 0.24** compilado V18
+(`3ccad36-dirty` / lib `82444cd-dirty`), **sin OTA ni commits** (no pedidos). Lección repetida: parche Python por
+heredoc volvió a romper un `\n` (regla existente); corregido con script en fichero.
+
+## 2026-10-17 (10) - Nota de cierre de la implementación: tests del grabador reubicados
+
+Después de la entrada anterior, dos retoques solo en `test_pulsenest/pulsenest_recorder_test.py`: los checks de HGAC OFF
+pasaron a un grabador propio (`rec6b`, placa `10.2.2.3`) para no alterar la lista exacta de datagramas que comprueba el
+test de ida y vuelta, y se añadió el check de la nota `@M «HGAC OFF»` en el crudo. Resultado final: grabador 139/139,
+ventana 90/90, host de la lib 10/10 suites (hgac 24). Ningún otro fichero fuente cambió. Memoria
+`project_probe_led_saturation_lock_task` ya al día; pendientes OTA fw 0.24, commits y prueba de banco.
+
+## 2026-10-17 (11) - Renombrado `step_down_only` → `slow_step_down_only`
+
+**Alex:** ¿no debería llamarse `slow_step_down_only`? Sí: el modo apaga también la guardia rápida, no solo la rama de
+subida, y el nombre debe decirlo. Renombrado en `incunest_afe4490.cpp/.h`, spec (§5.8, tabla v0.105) y rationale §13 con
+un `sed` global; hgac 24/24; V18 recompilado. Sin cambio de versión (v0.105 aún sin commit).
+
+## 2026-10-17 (12) - 87:A4 en el simulador con SpO2_SQI = 0: la curva Medle da 104 % con el R del MS100
+
+**Alex:** sonda de 87:A4 conectada al simulador, SpO2_SQI vale 0, ¿por qué? **Diagnóstico (escucha de 8 s por el hub,
+solo lectura):** 87:A4 (192.168.137.240, fw 0.23 / lib 0.104, HGAC ON, RF 25K/50K) emite ProbeState 2 (APPLIED), DiagCode
+0, R = 0,513, r = 0,986, PI 4,7 %, HR1/2/3 ≈ 75 lpm, SpO2 = −1 (NaN) y SQI 0. Ninguna puerta falla salvo el rango: con la
+curva vigente `R-CURVE-STS0163-HOSPNAV-20260923`, SpO2 = 123,98 − 39,13·0,513 = 103,9 %, por encima de `spo2_max` 100 y
+del margen de recorte de 3 puntos (hasta 103 se muestra 100), así que la librería la retiene: SpO2 NaN, SQI 0 (spec
+§5.1). Con la curva antigua del MS100 (114,92 − 30,55·R) ese mismo R daba 99,2. No es un fallo: el simulador reproduce la
+curva Nellcor de su sonda U401-D y la vigente es la de la Medle en pie de neonato; a ajustes altos del MS100 su R cae
+fuera del rango de la curva (ISO EE.4: un simulador no valida la curva). Para trabajar con el simulador: bajar su SpO2
+(≈ 90 % o menos lleva R por encima de 0,61, donde la curva entra en rango) o cargar la curva del MS100 por `$SET` en esa
+placa. Sin cambios.
+
+## 2026-10-17 (13) - Selector de duración en fleet_ppg_viewer; OTA fw 0.24 a las tres V18; preparada la sesión de apnea
+
+**Alex:** propone una sesión de apnea voluntaria (adulto entrenado) con VideoNest enfocando uno de cuatro
+pulsioxímetros domésticos; valorado: buena idea (primeros pares < 85 %, Medle en dedo adulto = prueba de dependencia del
+sitio, retardo de cada aparato en una desaturación de inicio conocido, dispersión entre los cuatro), con dos condiciones
+de seguridad (observador presente, sentado; sin hiperventilar) y avisos (reflejo de inmersión: PI de dedo bajo y
+contracciones = movimiento; oxímetros baratos promedian y subestiman el nadir; misma mano para nuestras sondas). Pide:
+control en `fleet_ppg_viewer.py` para cambiar la duración de las gráficas, luego OTA del fw 0.24, luego el resto.
+**Visor:** barra superior con selector SECONDS ON SCREEN (5, 10, 15, 30, 60, 120, 300 s; un `--window` fuera de la lista
+se añade), `Viewer.set_window_s()` recorta todas las trazas y reescala todas las bandas, se guarda en el .ini como antes;
+tooltip con la fuente. Test 76/76 (+3). **OTA:** MAC verificadas antes; `build.ps1 V18 -Ota` a 87:A4, 88:50 y 82:5C, las
+tres verificadas por MAC con `elfsha=27be758f8fda77ab` (fw 0.24 / lib 0.105, `build=3ccad36-dirty`, `libsha=82444cd-dirty`,
+sin commits aún); anotado en `docs/boards.md`. **Sesión:** tres `.toml` en `docs/session_configs/` (uno por placa,
+sin commit, validados con `load_session_config`): código de sujeto nuevo, a añadir en SUBJECT_CODES.txt; mano izquierda: índice Medle -26 en 8850, medio UpnMed U401-D en 87A4, anular Medle -25 en 825C; `[ref]`
+con modelo, dedo y móvil por rellenar. Lista de comprobación de una página `docs/apnea_breath_hold_checklist.md`
+(seguridad, preparación, colocación, arranque, marcas por apnea solo en la ventana A, cierre).
