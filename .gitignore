@@ -64,6 +64,14 @@ captures/sessions/SUBJ*/*
 !captures/sessions/SUBJ*/*_ANALYSIS/
 captures/sessions/SUBJ*/*_ANALYSIS/*
 !captures/sessions/SUBJ*/*_ANALYSIS/*.py
+# 2026-10-17: the per-subject analysis folder was renamed <campaign>_ANALYSIS -> Analysis.
+!captures/sessions/SUBJ*/Analysis/
+captures/sessions/SUBJ*/Analysis/*
+!captures/sessions/SUBJ*/Analysis/*.py
+# 2026-10-17: the per-subject analysis folder was renamed <campaign>_ANALYSIS -> Analysis.
+!captures/sessions/SUBJ*/Analysis/
+captures/sessions/SUBJ*/Analysis/*
+!captures/sessions/SUBJ*/Analysis/*.py
 
 # Offline runner — build y ficheros generados
 tools/offline_runner/build/
