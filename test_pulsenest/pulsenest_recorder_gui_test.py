@@ -107,6 +107,16 @@ check("nothing is usable before a subject is bound, and SUBJECT reads (not set)"
 check("the header says UNBOUND and warns, without anyone asking",
       "UNBOUND" in row.counters.text() and "no subject" in row.warn.text(),
       row.counters.text() + " | " + row.warn.text())
+# -- HGAC OFF (2026-10-17): the board's own $LCFG says the gain control is off -> red warning --
+rec.feed("192.168.1.50", b"$LCFG,rsqm_ot_thr=1.5000e-04,hgac_enable=0,hgac_v_tia_high2=0.900\n")
+win.redraw()
+check("hgac_enable=0 in the board's $LCFG puts HGAC OFF in the header, in red",
+      row.src.hgac_enable is False and "HGAC OFF" in row.warn.text() and G.RED in row.warn.styleSheet(),
+      row.warn.text() + " | " + row.warn.styleSheet())
+rec.feed("192.168.1.50", b"$LCFG,rsqm_ot_thr=1.5000e-04,hgac_enable=1,hgac_v_tia_high2=0.900\n")
+win.redraw()
+check("hgac_enable=1 clears it", row.src.hgac_enable is True and "HGAC" not in row.warn.text(),
+      row.warn.text())
 
 # ── binding a subject goes through the console, and opens the rest ───────────────────────────
 bind(rec, row, "SUBJ01")

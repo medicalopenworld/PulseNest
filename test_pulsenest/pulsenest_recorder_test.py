@@ -613,6 +613,26 @@ try:
           [d[5] for d in R.read_pnraw(os.path.join(rec6.dir, s6.stream.files[0])) if d[0] == "D"]
           == [CFG_A, batch(100), batch(145), batch(0)])
 
+    # HGAC OFF (2026-10-17): its own recorder, so the round-trip check above keeps its exact
+    # list of datagrams
+    clk6b = FakeClock()
+    log6b = QuietLog()
+    rec6b = R.Recorder(tmp, "HGAC", raw_mode="full", log=log6b, clock=clk6b)
+    rec6b.feed("10.2.2.3", CFG_A, *clk6b())
+    s6b = rec6b.sources["10.2.2.3"]
+    clk6b.advance(0.01)
+    rec6b.feed("10.2.2.3", b"$LCFG,rsqm_ot_thr=1.5000e-04,hgac_enable=0,hgac_v_tia_high2=0.900\n", *clk6b())
+    check("[8] hgac_enable=0 in $LCFG -> Source.hgac_enable False, warned, HGAC=off in status",
+          s6b.hgac_enable is False and "HGAC=off" in rec6b.status_text()
+          and any("HGAC is OFF" in l for l in log6b.lines), rec6b.status_text())
+    clk6b.advance(0.01)
+    rec6b.feed("10.2.2.3", b"$LCFG,rsqm_ot_thr=1.5000e-04,hgac_enable=1,hgac_v_tia_high2=0.900\n", *clk6b())
+    check("[8] hgac_enable=1 clears it", s6b.hgac_enable is True and "HGAC=off" not in rec6b.status_text())
+    notes6b = [r[3] for r in R.read_pnraw(os.path.join(rec6b.dir, s6b.stream.files[0])) if r[0] == "M"]
+    check("[5] HGAC OFF is an @M note in the stream, so the session says WHEN",
+          any("HGAC OFF" in n for n in notes6b), notes6b)
+    rec6b.close()
+
     # wall-clock split boundaries (the helper alone, then a split driven by the fake clock)
     import datetime as _dt
     base = _dt.datetime(2026, 9, 26, 10, 23, 45).timestamp() * 1e6

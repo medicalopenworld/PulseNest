@@ -654,6 +654,13 @@ class Source:
         self.ident = {}                       # k=v pairs from the $CFG (board, fw, lib, build, ...)
         self.cfg_raw = None
         self.cfg_frames = {}                  # b"$CFG" | b"$TCFG" | b"$LCFG" -> last line seen (str)
+        # The library's gain control, as the board's own $LCFG reports it: None until heard, then
+        # True/False. OFF is an operator problem, not a datum: the boards boot with it ON, only a
+        # host's $SET turns it off, and a board left OFF by an earlier lab capture records a whole
+        # session at whatever RF it happened to have (SUBJ08 on 2026-09-23, SUBJ10/11 on
+        # 2026-10-13 -- found in the `alg:` snapshots on 2026-10-17). Shown red in the window and
+        # in `status`; the recorder never changes it (it writes nothing to a board).
+        self.hgac_enable = None
         self.stream = None
         self.csv = None                       # CaptureCsvWriter, for boards only (section 2)
         self.csv_path = None                  # the part being written
@@ -922,6 +929,8 @@ class Recorder:
                     head = ln.split(b",", 1)[0]
                     if head in (b"$CFG", b"$TCFG", b"$LCFG"):
                         src.cfg_frames[head] = ln.rstrip(b"\r").decode("ascii", "replace")
+                        if head == b"$LCFG":
+                            self._read_hgac_enable(src, src.cfg_frames[head], t_mono_us, t_epoch_us)
             if src.kind == "board" and src.mac is None:
                 self._try_identify(src, data, t_mono_us, t_epoch_us)
             elif src.kind == "board" and data.startswith(b"$CFG,"):
@@ -1691,6 +1700,23 @@ class Recorder:
         elif self.min_free_bytes and self.free_bytes < 2 * self.min_free_bytes:
             self.log.warning("free space %.1f GB", self.free_bytes / 1e9)
 
+    def _read_hgac_enable(self, src, lcfg, t_mono_us, t_epoch_us):
+        """`hgac_enable=0|1` from a $LCFG line -> src.hgac_enable; a change is logged and noted in
+        the raw stream, so the session says WHEN the gain control was off, not only that it was."""
+        m = re.search(r"(?:^|,)hgac_enable=([01])(?:,|$)", lcfg)
+        if not m:
+            return
+        value = m.group(1) == "1"
+        if value == src.hgac_enable:
+            return
+        src.hgac_enable = value
+        if not value:
+            self.log.warning("%s HGAC is OFF (hgac_enable=0 in $LCFG): RF will not follow the "
+                             "tissue; reset the board or re-enable it from the lab", src.label())
+            self._note(src, t_mono_us, t_epoch_us, "HGAC OFF (hgac_enable=0 in $LCFG)")
+        else:
+            self.log.info("%s HGAC is ON", src.label())
+
     def status_text(self):
         lines = []
         for s in self._owners():
@@ -1703,7 +1729,8 @@ class Recorder:
                          f"bytes={(st.bytes if st else 0):10d} "
                          f"subject={s.subject or '-'} csv={(s.csv.count if s.csv else 0):7d} "
                          f"last={time.monotonic() - s.last_seen_mono:5.1f}s "
-                         f"{'SILENT ' if s.silent else ''}{files}")
+                         f"{'SILENT ' if s.silent else ''}"
+                         f"{'HGAC=off ' if s.hgac_enable is False else ''}{files}")
         return "\n".join(lines) if lines else "(no sources yet)"
 
     # ── session.json (section 7) ─────────────────────────────────────────────────────────

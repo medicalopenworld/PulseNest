@@ -446,6 +446,17 @@ unparsed**, and also stays in the raw stream. It is a convenience, not a source 
 * **The recorder never writes to the boards.** Read-only subscriber (`HubClient(control=False)`),
   so no `$SET` and no `$MODE` can leave it by construction. Configuration is done beforehand from
   the lab.
+* **HGAC OFF is shown, never fixed (2026-10-17).** The boards boot with the library's gain
+  control on; only a host's `$SET,hgac_enable,0` turns it off (LAB CAPTURE's "Disable HGAC during
+  capture", restored only if that capture closes normally), and a board left that way keeps its
+  RF wherever it was — on the bench this locked a V18 at 500K with both LEDs clipping and the
+  finger never seen as APPLIED, and the `alg:` snapshots show SUBJ08 (2026-09-23) and SUBJ10/11
+  (2026-10-13) recorded all day with `hgac_enable=0`, unnoticed. The recorder reads
+  `hgac_enable` from each board's `$LCFG` (`Source.hgac_enable`: None until heard), writes
+  **HGAC OFF** in red in that board's header and `HGAC=off` in `status`, logs a warning and puts an
+  `@M` note in the raw stream at the moment it is first seen, so a session says when the gain
+  control was off. Fixing it is a person's job (reset the board, or re-enable HGAC from the lab):
+  the read-only rule above stands.
 * **Stopping** is explicit (a key, or SIGINT), writes `SESSION_END`, closes every file, updates
   `session.json` and prints where everything is.
 

@@ -721,9 +721,16 @@ class BoardRow(QtWidgets.QFrame):
                 warns.append("SILENT")
             if src.restarts:
                 warns.append(f"{src.restarts} restart(s)")
+            if src.hgac_enable is False:
+                # The board's own $LCFG says the gain control is off: RF is frozen wherever a
+                # previous host left it, and a finger that saturates the LEDs is never seen as
+                # APPLIED. Red, because only a person can fix it (reset the board or re-enable
+                # HGAC from the lab) -- two hospital subjects were recorded this way unnoticed.
+                warns.append("HGAC OFF")
             self.warn.setText("   ".join(warns))
-            self.warn.setStyleSheet(f"color:{RED if (src.silent or not src.subject) else AMBER}; "
-                                    "font-weight:bold;")
+            self.warn.setStyleSheet(
+                f"color:{RED if (src.silent or not src.subject or src.hgac_enable is False) else AMBER}; "
+                "font-weight:bold;")
             ref = src.reference
             bits = []
             if ref.get("make_model"):

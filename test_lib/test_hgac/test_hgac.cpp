@@ -284,17 +284,50 @@ void test_hgac_ambient_alarm_at_floor() {
     TEST_ASSERT_TRUE((afe.test_diag_code() & RSQM_DIAG_AMBIENT_HIGH) != 0);
 }
 
-// ── LED-only saturation (ambient phase clean) = probe in air → NOT_APPLIED, HGAC frozen ──
-// Option 3 (v0.61): removing the finger saturates the LED phase (its own light reaches the PD
-// directly) but NOT the ambient phase, so RSQM classifies it NOT_APPLIED and HGAC must NOT chase
-// RF down to the floor — otherwise the reading is ruined for when the finger returns.
-void test_hgac_led_only_sat_is_probe_in_air() {
+// ── LED-only saturation (ambient phase clean): half-open gate, slow step-down only (v0.105) ──
+// Two causes share this signature (spec §5.6.2): the probe in air (finger removed) and tissue
+// so thin that it saturates at the current RF. v0.61–v0.104 gated HGAC fully off here, which
+// kept RF for the reattach but deadlocked the second case (saturated → absent → RF never
+// lowered → still saturated; bench, 2026-10-17). Now only the slow leveling may step RF down,
+// one LUT step per slow-EMA warm-up (3·τ = 6 s = 3000 samples at 500 Hz): a brief removal moves
+// nothing, a persistent saturation walks down until the clip clears.
+void test_hgac_led_only_sat_no_fast_guard() {
     INCUNEST_AFE4490 afe;
     afe.setHgacEnable(true);
-    // LED phases saturate, ambient (ALED) phases clean → probe in air (not an ambient problem).
-    for (int i = 0; i < 4000; i++) afe.test_feed_sample(SAT_CODE, SAT_CODE, 0, 0);
-    assert_rf1(afe, AFE4490RF::RF_100K);   // NOT_APPLIED → HGAC frozen → RF unchanged from default
+    // 2000 samples = 4 s: far past the fast guard's warm-up (0.3 s), short of the slow one (6 s).
+    for (int i = 0; i < 2000; i++) afe.test_feed_sample(SAT_CODE, SAT_CODE, 0, 0);
+    assert_rf1(afe, AFE4490RF::RF_100K);   // a brief removal: RF untouched
     TEST_ASSERT_TRUE((afe.test_diag_code() & RSQM_DIAG_AMBIENT_HIGH) == 0);  // no ambient alarm
+}
+
+void test_hgac_led_only_sat_steps_down_one_level_per_slow_warmup() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+    for (int i = 0; i < 4000; i++) afe.test_feed_sample(SAT_CODE, SAT_CODE, 0, 0);
+    assert_rf1(afe, AFE4490RF::RF_50K);    // 8 s: exactly one step (the second needs 6 s more)
+    for (int i = 0; i < 3500; i++) afe.test_feed_sample(SAT_CODE, SAT_CODE, 0, 0);
+    assert_rf1(afe, AFE4490RF::RF_25K);    // 15 s: two steps — never faster than the slow EMA
+    TEST_ASSERT_TRUE((afe.test_diag_code() & RSQM_DIAG_AMBIENT_HIGH) == 0);
+}
+
+void test_hgac_led_only_sat_walks_to_floor_if_persistent() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+    // 100K → 10K is three steps; 3 × 3000 samples plus margin. A persistent LED-only saturation
+    // (thin tissue at a too-high RF) is no longer a dead end: RF comes down until the clip clears.
+    for (int i = 0; i < 12000; i++) afe.test_feed_sample(SAT_CODE, SAT_CODE, 0, 0);
+    assert_rf1(afe, AFE4490RF::RF_10K);
+    TEST_ASSERT_TRUE((afe.test_diag_code() & RSQM_DIAG_AMBIENT_HIGH) == 0);
+}
+
+// The hard-absent states keep the gate fully closed: no actuation at all.
+void test_hgac_disconnected_keeps_gate_closed() {
+    INCUNEST_AFE4490 afe;
+    afe.setHgacEnable(true);
+    // All phases at the ADC rail with ambient clipping too would be AMB_SATURATING (acts); the
+    // disconnected signature is the opposite extreme: nothing on any phase.
+    feed(afe, 0, 12000);
+    assert_rf1(afe, AFE4490RF::RF_100K);
 }
 
 int main() {
@@ -317,7 +350,10 @@ int main() {
     RUN_TEST(test_hgac_change_rf_leaves_spo2_ema_untouched);
     RUN_TEST(test_hgac_change_rf_recalculates_cf);
     RUN_TEST(test_hgac_ambient_alarm_at_floor);
-    RUN_TEST(test_hgac_led_only_sat_is_probe_in_air);
+    RUN_TEST(test_hgac_led_only_sat_no_fast_guard);
+    RUN_TEST(test_hgac_led_only_sat_steps_down_one_level_per_slow_warmup);
+    RUN_TEST(test_hgac_led_only_sat_walks_to_floor_if_persistent);
+    RUN_TEST(test_hgac_disconnected_keeps_gate_closed);
     RUN_TEST(test_hgac_rf_change_is_counted_and_stamped);
     RUN_TEST(test_settle_freeze_switch_disables_freeze_only);
     return UNITY_END();
