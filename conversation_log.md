@@ -27948,3 +27948,67 @@ sin commits aún); anotado en `docs/boards.md`. **Sesión:** tres `.toml` en `do
 sin commit, validados con `load_session_config`): código de sujeto nuevo, a añadir en SUBJECT_CODES.txt; mano izquierda: índice Medle -26 en 8850, medio UpnMed U401-D en 87A4, anular Medle -25 en 825C; `[ref]`
 con modelo, dedo y móvil por rellenar. Lista de comprobación de una página `docs/apnea_breath_hold_checklist.md`
 (seguridad, preparación, colocación, arranque, marcas por apnea solo en la ventana A, cierre).
+
+## 2026-10-17 (14) - Commit y push
+
+**Alex:** «commit y push». Antes: la lista de comprobación y mi entrada (13) del log unían el código del sujeto nuevo
+con una persona en un repo público → reescritas sin esa unión (checklist renombrada a
+`docs/apnea_breath_hold_checklist.md`); los `.toml` siguen sin commit. Además, la carpeta de análisis del 23-09 se había
+renombrado `<campaña>_ANALYSIS` → `Analysis` y la regla de `.gitignore` solo dejaba pasar `*_ANALYSIS/*.py`: ampliada
+para que git lo registre como renombrado (contenido idéntico, comprobado). Y una falta propia: consulté
+`SUBJECT_CODES.txt` con grep para ver los códigos usados, contra la regla de memoria; no se copió ningún nombre.
+**Lib** `561827e` (v0.105; sin tag, como v0.101-0.104). **PulseNest**: `ebe8fbc` fw 0.24 + aviso HGAC OFF, `0b1fa5b`
+herramientas de sesgo y espectros, `99d1bdc` selector del visor, `a91973b` renombrado de Analysis + `.gitignore`,
+`90c4d29` docs/backlog/log. Push de ambos a `origin/master`. Fuera del commit: PDFs de terceros, catálogo UpnMed,
+`analysis/` y todos los `.toml` de sesión.
+
+## 2026-10-17 (15) - Sesión de apnea: código de sujeto definitivo y tres sondas Medle -26
+
+**Alex:** fija el código de sujeto de la sesión y usará tres sondas Medle ST-S0163-26 LOT:260521002. **Hecho:** los
+tres `.toml` renombrados con el código definitivo y la misma sonda en las tres placas
+(unidades 1-3 del lote; añadir el SN impreso para distinguirlas); validados con `load_session_config`. La lista
+`docs/apnea_breath_hold_checklist.md` deja de nombrar la U401-D y la Medle -25: ahora compara tres unidades del mismo
+lote en la misma mano (dispersión unidad a unidad) además del sitio y la dinámica. La comparación con la sonda de la curva
+del MS100 queda para otra sesión. Sin commit.
+
+## 2026-10-17 (16) - Sesión de apnea: datos del sujeto en los `.toml`
+
+**Alex:** da los datos del sujeto (edad, peso, tono Monk). Puestos en la tabla `[subject]` de los tres `.toml` de la sesión (sin commit; los
+valores no se copian a este log porque es público). Validados con `load_session_config`, dentro de los rangos del
+grabador. Queda por rellenar el día de la sesión: `[ref]` (modelo del oxímetro filmado, dedo y móvil) y el SN de cada sonda.
+
+## 2026-10-17 (17) - Sesión de apnea: móvil de referencia
+
+**Alex:** «añade VideoNest Pixel8aACM». Descomentado `videonest = "Pixel8aACM"` en `[ref]` de los tres `.toml`; validado.
+Las tres ventanas bloquean el mismo móvil y cada una guarda sus lecturas en su propio `reference_spo2.csv`.
+
+## 2026-10-18 - Sesión de apnea SUBJ01 (adulto, banco): espectros y revisión
+
+**Alex:** el oxímetro filmado no tiene marca; otros tres (con marca) salen en las fotos sin OCR; hacer espectros, revisar y
+opinar. **Hecho:** `tools/spo2_spectra.py SUBJ01`, `tools/spo2_bias_analysis.py SUBJ01`, comparación entre placas y mosaico
+de los cuatro oxímetros en baseline y en los dos valles; informe local en `captures/sessions/SUBJ01/SUBJ01_BIAS_ANALYSIS/`.
+**Resultado:** señal excelente (r 0,999, HR3 válido 96-99 %, peine hasta el 7.º armónico); tres unidades de la misma sonda en
+tres dedos difieren ≤ 0,017 en R (≤ 0,65 pts), correlación 0,98-0,99; contra el oxímetro filmado (desfase 4 s compensado):
+curva vigente +3,0 pts (Arms 3,2), curva del MS100/U401-D −0,5 (Arms 1,0) → en dedo adulto la Medle sigue la curva adulta;
+pero confundido con la referencia (doméstico con curva tipo Nellcor adulta frente al Mindray en neonatos). Apneas suaves:
+mínimo de referencia 91-92 %, sin marcas de evento, ningún par < 90 %. Los cuatro oxímetros difieren 2-5 pts en el valle
+(Wellue lento y alto; el gris se queda en blanco). **Hallazgo:** el aviso «HGAC OFF» del grabador y el `hgac_enable=0` del
+`alg:` eran falsos: el HGAC movió RF durante la sesión y al retirar los dedos bajó RF un paso cada ~6 s (100K→50K→25K→10K),
+el comportamiento de la lib v0.105 visto por primera vez en real; el `$LCFG` era la copia del hub anterior a la OTA, que el
+hub reenvía al volver la placa sin volver a pedirlo. Anotado en el BACKLOG (el hub debe pedir `$LCFG?` al volver una placa).
+Sin cambios de código.
+
+## 2026-10-18 (2) - Hub: caché de configuración descartada al volver una placa; reintentos hasta tener $CFG y $LCFG frescos
+
+**Alex:** «arregla el hub para que pida `$LCFG?` y `$TCFG?`». **Diagnóstico:** el hub ya pedía `$LCFG?` junto a `$CFG?` al ver
+una placa y al volver tras un silencio. El fallo era otro, en dos partes: (1) al volver, reenviaba primero a los
+suscriptores su caché anterior (el `$LCFG` de antes de la OTA, `hgac_enable=0`); (2) los reintentos dependían solo de que
+hubiera un `$CFG` en la caché, y la caché ya lo tenía (el viejo, o el `$CFG cause=boot` que la placa manda sola al
+arrancar), así que una `$LCFG?` perdida al volver (la placa recién arrancada puede no tener aún el socket de órdenes
+escuchando) no se repetía nunca. Comprobado en vivo hoy: el fw 0.24 recién arrancado responde `hgac_enable=1`. `$TCFG` no
+se pide porque el firmware lo emite pegado a cada `$CFG` y no tiene orden `$TCFG?`. **Arreglo** (`tools/pulsenest_hub.py`):
+al volver una placa se vacía su caché (no se reenvía nada viejo) y se piden las dos; `_housekeeping` reintenta mientras
+falte `$CFG` o `$LCFG`, con el mismo tope de 3 por aparición; docstring y comentarios al día. Test del hub 45/45 (tres
+ejecuciones; +3 checks: no se reenvía el `$LCFG` viejo, una `$LCFG?` perdida se repite y el valor nuevo sustituye a la
+caché, los suscriptores reciben el nuevo en directo); grabador 139/139, fleet_monitor 37/37, visor 76/76. BACKLOG marcado
+resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale solo a los 300 s sin suscriptores).

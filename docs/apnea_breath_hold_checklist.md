@@ -2,10 +2,11 @@
 
 An adult volunteer trained in breath-holding, three PulseNest boards and four home fingertip
 oximeters, at a bench site. Goal: the first pairs below 85 % SpO2, the same Medle probe
-on an adult finger instead of a neonatal foot (does the R curve depend on the site?), and the delay
+on an adult finger instead of a neonatal foot (does the R curve depend on the site?), the spread
+between three units of the same probe lot on the same hand, and the delay
 of each device on a desaturation whose start is known. Not a clinical study and not an accuracy
 claim: the reference is consumer oximeters (ISO 80601-2-61 Annex JJ: a non-traceable reference).
-Session files: `docs/session_configs/subj12_{a_8850,b_87A4,c_825C}.toml`.
+Session files: `docs/session_configs/subj01_{a_8850,b_87A4,c_825C}.toml`.
 
 ## Safety — not negotiable
 
@@ -23,19 +24,19 @@ Session files: `docs/session_configs/subj12_{a_8850,b_87A4,c_825C}.toml`.
 - [ ] Phones charged, cloud photo sync **off**, VideoNest open on the phone that films one oximeter;
       the second phone films the other three oximeters as **continuous video** on a stand.
 - [ ] Fill `age`, `weight_g`, `skin` and the `[ref]` lines in the three `.toml` (same values).
-- [ ] Add `SUBJ12` to `captures/SUBJECT_CODES.txt`.
 
 ## Placement
 
-- [ ] **Our three probes on the same hand** (left: index = A/8850 Medle -26, middle = B/87A4 U401-D,
-      ring = C/825C Medle -25): same regional circulation (ISO JJ.1).
+- [ ] **Our three probes on the same hand**, three units of Medle ST-S0163-26 lot 260521002 (left:
+      index = A/8850, middle = B/87A4, ring = C/825C): same regional circulation (ISO JJ.1). Note which
+      unit (SN) went on which board.
 - [ ] Home oximeters: the one VideoNest reads on the left little finger if it fits; the other three
       on the right hand. Write which finger each is on in the `note` if it differs.
 - [ ] Hands still, resting on a table at heart level, warm. Room light dim and steady.
 
 ## Starting
 
-- [ ] `pythonw .\tools\pulsenest_session.py` → START on the three `subj12_*`.
+- [ ] `pythonw .\tools\pulsenest_session.py` → START on the three `subj01_*`.
 - [ ] Each recorder window: subject bound, **no red warning** (in particular **no `HGAC OFF`**),
       ProbeState APPLIED on all three. Phone line live in the window that declared it.
 - [ ] CLOCK ANCHOR: photograph the laptop clock with both phones.
