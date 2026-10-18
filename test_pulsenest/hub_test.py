@@ -43,6 +43,9 @@ class FakeBoard(threading.Thread):
         super().__init__(daemon=True)
         self.ip, self.mac, self.period = ip, mac, rate_s
         self.answer_cfg = answer_cfg       # False: the board never answers $CFG? (lost datagrams)
+        self.hgac = 0                      # the hgac_enable its $LCFG reports
+        self.lcfg_drop = 0                 # how many $LCFG? to ignore before answering (lost query)
+        self.paused = threading.Event()    # set: the board is silent (rebooting)
         self.data = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.data.bind((ip, 0))
         self.cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -67,6 +70,9 @@ class FakeBoard(threading.Thread):
     def run(self):
         dst = ("127.0.0.1", DATA_PORT)
         while not self.stop.is_set():
+            if self.paused.is_set():
+                time.sleep(self.period)
+                continue
             self.data.sendto(self.batch(), dst)
             try:
                 while True:
@@ -78,8 +84,11 @@ class FakeBoard(threading.Thread):
                             self.data.sendto(self.cfg(), dst)
                     elif req.strip() == b"$LCFG?":
                         self.lcfg_requests += 1
-                        if self.answer_cfg:
-                            self.data.sendto(b"$LCFG,rsqm_ot_thr=1.0000e-04,hgac_enable=0*00\r\n", dst)
+                        if self.lcfg_drop > 0:
+                            self.lcfg_drop -= 1
+                        elif self.answer_cfg:
+                            self.data.sendto(f"$LCFG,rsqm_ot_thr=1.0000e-04,hgac_enable={self.hgac}*00\r\n"
+                                             .encode(), dst)
             except (BlockingIOError, OSError):
                 pass
             time.sleep(self.period)
@@ -250,6 +259,35 @@ def main():
         ctrl.recv(0.05)
     check("new hub asked the boards $CFG? once each again (2 total per board)",
           (a.cfg_requests, b.cfg_requests) == (2, 2), f"{a.cfg_requests},{b.cfg_requests}")
+
+    # ── a board back after a silence: cache dropped, both queries again (2026-10-18) ───────
+    # The SUBJ01 session was stamped hgac_enable=0 by the hub's cache of a board that had rebooted
+    # (OTA) with HGAC on. A reboot that changes $LCFG must reach subscribers as the new value, and
+    # the old one must not be handed out on the way.
+    drain(ctrl, 0.5)                # what was already in flight before the pause is not the question
+    n_lcfg_a = a.lcfg_requests
+    a.paused.set()
+    time.sleep(H.BOARD_LOST_S + 0.4)
+    drain(ctrl, 0.1)
+    a.hgac = 1                     # "rebooted" with HGAC on
+    a.lcfg_drop = 1                # ... and the first $LCFG? after the return is lost
+    seen = []
+    a.paused.clear()
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < H.CFG_RETRY_S + 2.5:
+        item = ctrl.recv(0.05)
+        if item is not None and item[0] == "127.0.0.2" and item[1].startswith(b"$LCFG,"):
+            seen.append(item[1])
+        if hub2.boards["127.0.0.2"].cfg.get(b"$LCFG,", b"").find(b"hgac_enable=1") >= 0 and seen:
+            break
+    check("a board back after a silence: its cached $LCFG is not replayed (no stale hgac_enable=0)",
+          all(b"hgac_enable=0" not in s for s in seen), str(seen))
+    check("a lost $LCFG? after the return is asked again, and the fresh line replaces the cache",
+          b"hgac_enable=1" in hub2.boards["127.0.0.2"].cfg.get(b"$LCFG,", b"")
+          and a.lcfg_requests >= n_lcfg_a + 2, f"{a.lcfg_requests - n_lcfg_a} requests, cache "
+          f"{hub2.boards['127.0.0.2'].cfg.get(b'$LCFG,')}")
+    check("subscribers got the fresh $LCFG as live traffic",
+          any(b"hgac_enable=1" in s for s in seen), str(seen))
 
     # ── identity query: retried while unanswered, bounded ─────────────────────────────────
     # Without a $CFG a subscriber has no MAC, and one that keys its rows by MAC (fleet_monitor)

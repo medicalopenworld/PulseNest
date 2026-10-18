@@ -45,13 +45,19 @@ Rules.
   the commercial monitor) is an AUXILIARY source: forwarded exactly like a board, never asked
   "$CFG?" (it has no configuration and does not listen on the command port), and shown as `aux`
   in @STATUS so the fleet tools do not draw a phone as a board.
-- The hub itself only ever asks a board for its identity: "$CFG?" when it first sees a board
-  IP, and again when that board comes back after BOARD_LOST_S of silence (it may have rebooted
-  into a new build -- an OTA is routine here). The query is UDP and can be lost, so it is
-  retried every CFG_RETRY_S up to CFG_MAX_REQUESTS times *until the board answers*, and not
-  once more: without a $CFG the subscribers have no MAC, and a subscriber that keys its rows by
-  MAC (fleet_monitor) cannot tell a board back on a new DHCP lease from a second board. Nothing
-  else is ever sent to a board.
+- The hub itself only ever asks a board for its configuration: "$CFG?" (identity; the firmware
+  sends "$TCFG" glued to every "$CFG") and "$LCFG?" (library parameters, D14), when it first sees
+  a board IP and again when that board comes back after BOARD_LOST_S of silence (it may have
+  rebooted into a new build -- an OTA is routine here). The queries are UDP and can be lost, so
+  they are retried every CFG_RETRY_S up to CFG_MAX_REQUESTS times *until the board has answered
+  both*, and not once more: without a $CFG the subscribers have no MAC (fleet_monitor keys its
+  rows by MAC), and without a fresh $LCFG the recorder's `alg:` snapshot and its HGAC warning say
+  whatever the board said before it rebooted. Nothing else is ever sent to a board.
+- A board back after a silence has its cached configuration DROPPED, not replayed (2026-10-18):
+  after an OTA the old $LCFG said hgac_enable=0 while the rebooted board ran with HGAC on, and the
+  recorder stamped a whole session with the stale value and warned in red about a fault that was
+  not there. A board that only lost the WiFi for a moment answers the same lines again; a board
+  that rebooted answers new ones. Either way subscribers get fresh lines as live traffic.
 - Datagram boundaries are preserved: what the board sent as one datagram, the subscriber gets as
   one datagram (with the @FROM line in front). pulsenest_lab.py's batching invariant depends on it.
 - No SO_REUSEADDR. Two hubs must not "coexist" with one of them silently receiving nothing
@@ -93,8 +99,8 @@ HUB_SIGIL      = b"@"
 PING_S         = 2.0     # what a subscriber is expected to send (pulsenest_hub_client does)
 SUB_EXPIRE_S   = 10.0    # a subscriber silent for this long is forgotten (and loses control)
 BOARD_LOST_S   = 2.0     # a board silent for this long is LOST: @STATUS says so, and on its
-                         # return the hub replays its cache and asks $CFG? again
-CFG_RETRY_S    = 3.0     # gap between identity queries to a board that has not answered yet
+                         # return the hub drops its cache and asks $CFG? and $LCFG? again
+CFG_RETRY_S    = 3.0     # gap between configuration queries to a board that has not answered both
 CFG_MAX_REQUESTS = 3     # ... and how many times in total, per appearance
 
 CFG_PREFIXES   = (b"$CFG,", b"$TCFG,", b"$LCFG,")
@@ -280,15 +286,16 @@ class Hub:
                 log.info("%s source %s seen for the first time — not asking $CFG? (auxiliary)",
                          kind, ip)
         elif b.kind == "board" and now - b.last_seen > BOARD_LOST_S:
-            # Back after a silence. Two things: subscribers that joined meanwhile never got this
-            # board's configuration (the join replay covers live boards only), so hand out what
-            # we have; and a board that went away may have rebooted with a new build (an OTA is
-            # routine on this bench), so ask it once more — the fresh $CFG refreshes the cache
-            # and reaches everyone as live traffic.
-            log.info("board %s back after %.0f s — replaying its configuration, asking $CFG? again",
-                     ip, now - b.last_seen)
-            for sub in list(self.subs.values()):
-                self._replay_board(sub.addr, b)
+            # Back after a silence. It may have rebooted (an OTA is routine on this bench), and
+            # then its old configuration is not merely old but WRONG: on 2026-10-18 the cached
+            # $LCFG said hgac_enable=0 after an OTA that had rebooted the board with HGAC on, and
+            # a three-board session was recorded under that false line. So the cache is dropped,
+            # not replayed, and both queries go out again; the answers refresh the cache and reach
+            # every subscriber as live traffic. Until they arrive the board has no configuration,
+            # which is true, rather than the previous one, which may not be.
+            log.info("board %s back after %.0f s — dropping its cached configuration, asking "
+                     "$CFG? and $LCFG? again", ip, now - b.last_seen)
+            b.cfg.clear()
             b.cfg_requests = 0
             self._ask_cfg(b, now)
         b.seen(now, len(data))
@@ -298,16 +305,19 @@ class Hub:
             self._fanout(ip, data)
 
     def _ask_cfg(self, b, now):
-        """Ask this board who it is. Bounded: CFG_MAX_REQUESTS per appearance, and only while it
-        has not answered -- the reply is cached, so one good answer ends the queries."""
+        """Ask this board for $CFG (identity, with $TCFG glued on) and $LCFG. Bounded:
+        CFG_MAX_REQUESTS per appearance, and only while either answer is missing -- the replies
+        are cached, so the first time both are in, the queries end."""
         b.cfg_requests += 1
         b.cfg_last_req = now
         self._send((b.ip, self.cmd_port), b"$CFG?\n")
         # D14 (2026-09-22): the v0.4 CSV writes an alg: snapshot from $LCFG, and nothing else on
         # the network ever asks for it -- the lab only when its LIBConfigWindow is open. The hub
         # is the one component allowed to speak to a board, so it asks here, once per $CFG?.
-        # $TCFG needs no request: the firmware sends it glued to every $CFG. Retries stay keyed
-        # on the $CFG answer (identity); a lost $LCFG is asked again with the next retry only.
+        # $TCFG needs no request: the firmware sends it glued to every $CFG (and has no $TCFG?
+        # command). Retries are keyed on BOTH answers since 2026-10-18: a rebooted board sends a
+        # $CFG of its own (cause=boot), which used to end the retries before a lost $LCFG? had
+        # been asked again -- so the stale $LCFG stayed.
         self._send((b.ip, self.cmd_port), b"$LCFG?\n")
 
     def _fanout(self, ip, data):
@@ -467,14 +477,16 @@ class Hub:
 
     # ── housekeeping ──────────────────────────────────────────────────────────────────────────
     def _housekeeping(self, now):
-        """Retry unanswered identity queries; expire silent subscribers; idle exit.
+        """Retry unanswered configuration queries; expire silent subscribers; idle exit.
         Returns True when the hub should exit."""
         for b in self.boards.values():
-            if (b.kind == "board" and not b.cfg.get(b"$CFG,")
+            missing = [p.decode()[:-1] for p in (b"$CFG,", b"$LCFG,") if not b.cfg.get(p)]
+            if (b.kind == "board" and missing
                     and b.cfg_requests < CFG_MAX_REQUESTS
                     and now - b.last_seen <= BOARD_LOST_S
                     and now - b.cfg_last_req > CFG_RETRY_S):
-                log.info("board %s has not answered $CFG? (%d) — asking again", b.ip, b.cfg_requests)
+                log.info("board %s has not answered %s (%d) — asking again", b.ip,
+                         "/".join(m + "?" for m in missing), b.cfg_requests)
                 self._ask_cfg(b, now)
         for addr, s in list(self.subs.items()):
             if now - s.last_seen > SUB_EXPIRE_S:
