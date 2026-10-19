@@ -28099,3 +28099,13 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   reutilizó `…-20260923` de la propuesta de 21,54. Pendiente (lib v0.106): reetiquetar la vigente a `…-20261004` y que la
   spec §5.1 apunte al registro. Lectura del registro: toda pendiente R-METHOD-2 con rango útil da 39,1; las planas son
   método o rango.
+- **Curvas R publicadas (búsqueda 20-10, sección nueva en `docs/spo2_r_curves.md`):** ningún fabricante hospitalario publica la
+  suya (Nellcor: racional a trozos c1-c9 por bin RCAL; Masimo/Philips/Mindray/NK: tablas). Públicas: clásica 110 − 25·R
+  (TI TIDA-00301, convención sin estudio localizable), Blaney/Fantini 2024 (Beer-Lambert modificada, 108 − 23·R con
+  ℓIR/ℓR 0,65), Stubán 2008 (113,8 − 24,87·R, 9 adultos 86-100 % contra otro oxímetro), Life Meter US 12,290,358
+  (112,9 − 39,4·R, muñeca, 4 sujetos), Maxim UG6409 (104 − 17·R), AN6845 (cuadrática), MAXREFDES117 (cuadrática, tabla),
+  Reynolds 1991 (114,9 − 33,4·R, de segunda mano), Nitzan 2014 (forma racional sin números), Elron/Nitzan 2023 (17 neonatos
+  cianóticos, solo figuras). Comparación por anclas, no por coeficientes: **R = 1 ↔ 85 % se cumple en la nuestra (84,8)**,
+  en la clásica y en la teoría; nuestra pendiente 39 viene de que R a 100 % es 0,54-0,61 y no 0,40 (665 nm, estimador,
+  tejido fino). Fuente barata sin usar: el MS100 muestra su R en pantalla para cada curva de fabricante → leer R a
+  100/95/…/70 en las 10 curvas.
