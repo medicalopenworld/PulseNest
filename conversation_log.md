@@ -28074,3 +28074,20 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   `except` de `main()` → con `pythonw` la ventana moría sin mensaje (mismo tipo de fallo que la `note` duplicada del
   23-09). Ahora sale el diálogo "not starting". Test de regresión (`main()` con `id = "MS100"` → diálogo + rc 2): GUI
   91/91. Frase en `pulsenest_recorder_spec.md`. Sin commit aún.
+
+## Sesión 2026-10-19 (noche) — Barrido MS100 capturado y analizado (SUBJ90)
+
+- **Captura:** `SUBJ90_ERRENIEGA_20261019_221421` (placa 825C, fw 0.24 / lib 0.105, Medle -26, 49,8 mA, HGAC off), 12 min,
+  MS100 con curva Nellcor, Pulse Amp 3 %, TLC 3500: bajada 100→72 a 75 bpm, subida 72→100 a 140 bpm, 92/84/76 a 160 bpm;
+  pantalla leída por VideoNest. Alex pulsaba REF_SPO2 ~10 s después de cada cambio a propósito (emular el promediado de un
+  pulsioxímetro); como el simulador cambia al instante, las mesetas se delimitaron con el OCR (con el teclado la subida
+  parecía 5-7 pt desviada y la HR parecía influir: artefacto).
+- **Resultados** (`captures/sessions/SUBJ90/Analysis/findings.md`, `plateaus.csv`, `ms100_sweep.png`, `ms100_sweep.py`;
+  espectros en `Spectra/`): (1) **R independiente de la HR** (±0,003 a 75/140/160 bpm), sin histéresis ni deriva; HR3 válido
+  98 %. (2) **Ruido de cadena sd(R) 0,002-0,008 = < 0,3 pt.** (3) Tabla Nellcor del MS100 con R-METHOD-2: **121,06 − 39,11·R**
+  (rms 1,0; cóncava por debajo de 80 %); la curva neonatal (123,98 − 39,13·R) tiene **la misma pendiente y +2,9 pt**; la
+  curva de marzo (30,55) difería por R-METHOD-0, no por la sonda. Dos referencias "convención Nellcor" (MS100 y el dedo
+  adulto del 18-10) coinciden entre sí y quedan 3 pt por debajo del ajuste contra el Mindray → sigue el experimento de 5 min.
+  (4) **A 100 % la lib invalida SpO2** (R 0,48-0,53 → 103-105 > `spo2_clamp_margin` 3): decisión de diseño pendiente
+  (Nellcor/Masimo recortan a 100). (5) **PI = 1,47 × Pulse Amp**, constante: la definición de Pulse Amp sigue abierta
+  (prueba: 1/3/10 %); `docs/ms100_simulator.md` corregido.
