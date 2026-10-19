@@ -670,8 +670,10 @@ A numeric SpO2 selector and a `RECORD` button, per the third system. Details wor
   describe the tool: `--out --hub --csv --csv-profile --raw --min-free-gb --split-min --split-mb
   --duration`, and the console's `--event-port`. A malformed or missing file is a named exception
   (`ValueError`, `OSError`, `tomllib.TOMLDecodeError`), reported in a dialog by the window and by
-  `ap.error()` by the console, never a bare traceback. A window built without a file (only the
-  tests do) shows `FILE (no file)`.
+  `ap.error()` by the console, never a bare traceback. So is a `[subject] id` that is not a
+  `SUBJnn` code (`MS100`, 2026-10-19): `Recorder()` refuses it with `ValueError`, and the window
+  reports it in the same "not starting" dialog rather than closing with nothing on screen. A
+  window built without a file (only the tests do) shows `FILE (no file)`.
 * **`probe` and `--probe` (Alex, 2026-09-22).** ISO 80601-2-61 calibrates a **monitor+probe
   pair**, never a monitor alone. Our monitor is the incunest board running `incunest_afe4490`;
   which physical sensor is clipped onto the baby is a fact the library has no way to know —

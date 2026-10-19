@@ -568,6 +568,23 @@ try:
 except _tomllib.TOMLDecodeError:
     check("malformed TOML raises TOMLDecodeError, named clearly rather than crashing opaquely", True)
 
+# A `[subject] id` that is not a SUBJnn code is refused by Recorder(), not by the loader; under
+# pythonw that was a window that never opened (Alex, 2026-10-19, `id = "MS100"`). main() must
+# turn it into the same "not starting" dialog as the other launch failures and return 2.
+_sim_path = os.path.join(cfg_dir, "sim.toml")
+open(_sim_path, "w", encoding="utf-8").write('location = "BENCH"\noperator = "ACM"\n[subject]\nid = "MS100"\n')
+_shown = []
+_orig_critical, _orig_app = QtWidgets.QMessageBox.critical, QtWidgets.QApplication
+QtWidgets.QApplication = lambda *a, **k: app
+QtWidgets.QMessageBox.critical = staticmethod(lambda parent, title, text, *a, **k: _shown.append((title, text)))
+try:
+    _rc = G.main(["--config", _sim_path, "--out", tempfile.mkdtemp()])
+finally:
+    QtWidgets.QMessageBox.critical, QtWidgets.QApplication = _orig_critical, _orig_app
+check("a subject id that is not a SUBJnn code is a 'not starting' dialog and return code 2, not a silent exit",
+      _rc == 2 and len(_shown) == 1 and _shown[0][0] == "not starting" and "not a subject code" in _shown[0][1],
+      f"rc={_rc} shown={_shown}")
+
 # ── what was given at launch reads in the panel and cannot be changed from it (Alex, 2026-10-14) ──
 out3 = tempfile.mkdtemp()
 rec3 = G.Recorder(out3, "HOSP01", "ACM", log=QuietLog(), subject="SUBJ05", board="7560",

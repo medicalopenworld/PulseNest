@@ -94,6 +94,18 @@ has not been triaged yet.
   
 
 
+## Parked
+
+Triaged ideas, deliberately not scheduled: do not implement until Alex asks. (Moved here from
+`TODO.md` when it was retired on 2026-10-19.)
+
+- HRV (RMSSD, SDNN, pNN50; LF/HF): necesita instantes de latido más precisos que el cruce de umbral
+  y revisar la validez PPG frente a ECG (el PTT añade un retardo variable). Estudio previo: `docs/hrv_prv_normalization_study.md`
+- Detección de arritmias (taquicardia, bradicardia, FA, extrasístoles)
+- Frecuencia respiratoria a partir de la modulación del PPG (amplitud / línea de base)
+- Detector de apneas por la modulación respiratoria del PPG, no por la SpO2 (la SpO2 llega tarde:
+  memoria `reference_spo2_detection_delay_chain`)
+- Cambios vasculares agudos y elasticidad arterial: PTT, amplitud, área, tiempo de subida del pulso
 
 ## Done / promoted
 

@@ -1217,7 +1217,9 @@ def main(argv=None):
                        hub_text=f"{hub[0]}:{hub[1]}",
                        split_s=args.split_min * 60, split_bytes=int(args.split_mb * 1024 * 1024),
                        min_free_bytes=int(args.min_free_gb * 1e9), **recorder_kwargs(cfg))
-    except (NotEnoughSpace, SessionExists, OSError) as exc:
+    except (NotEnoughSpace, SessionExists, OSError, ValueError) as exc:
+        # ValueError added 2026-10-19: a `[subject] id` that is not a SUBJnn code (`MS100`)
+        # is refused by Recorder(), and under pythonw that was again a window that never opened.
         QtWidgets.QMessageBox.critical(None, "not starting", str(exc))
         return 2
     win = RecorderWindow(rec, hub, duration_s=args.duration, config=args.config)

@@ -28012,3 +28012,65 @@ falte `$CFG` o `$LCFG`, con el mismo tope de 3 por aparición; docstring y comen
 ejecuciones; +3 checks: no se reenvía el `$LCFG` viejo, una `$LCFG?` perdida se repite y el valor nuevo sustituye a la
 caché, los suscriptores reciben el nuevo en directo); grabador 139/139, fleet_monitor 37/37, visor 76/76. BACKLOG marcado
 resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale solo a los 300 s sin suscriptores).
+
+## Sesión 2026-10-18/19 — Sin timestamp por fila en el CSV (recordatorio), análisis del hilo HR1, retirada de `TODO.md`
+
+- **Pregunta (Alex): ¿por qué el CSV del grabador no lleva timestamp?** Recordado, sin cambios: decisión del
+  2026-09-20 (`capture_csv_format_spec.md` v0.2). Desde junio no falta ni una muestra en 1 165 942 filas; `FW_Ts_us`
+  se estampa al leer, no al convertir, así que por muestra no es fiel; contador + timestamp eran el 43 % de los bytes
+  del perfil mínimo. Los sustituyen las comprobaciones en vivo (`# gap`, `# stall`), las anclas `# clock` cada 10 s
+  (error < 1 ms en cualquier fila; deriva del cristal +3…+42 ppm) y el resumen `# end`.
+- **Estado de los cálculos (Alex):** solo SpO2 tiene un hilo en marcha; PI (abierto, quieto) y HR1 (pausado desde el
+  16-09) tienen hilo; HR2 y HR3 solo tienen tareas sueltas. Explicado qué es un "hilo" (convención de memoria del
+  proyecto, no un concepto de Claude Code ni una tarea de FreeRTOS).
+- **Análisis del hilo HR1.** Cerrado: τ del máximo 1,5 s (v0.93), k 0,6, no cambiar el filtro ni el detector,
+  `max_decay_beats` descartado. Abierto: amplificación ×5 del SQI (decisión de Alex pendiente), umbral referido al
+  suelo de la onda, refractario adaptativo, morfología neonatal. **Hallazgo nuevo, leyendo el código de la lib
+  v0.105 (sin medir):** `_hr1_update()` no tiene caducidad; en una pausa o asistolia con la sonda aplicada, HR1
+  seguiría publicando la HR anterior con el SQI intacto hasta el siguiente cruce. Propuesto: medirlo y decidir la
+  caducidad junto con la amplificación del SQI. Anotado en la ficha del hilo.
+- **Conceptos de planificación (Alex):** repasados los de Claude Code (CLAUDE.md, memoria, modo plan, sesiones,
+  hooks, skills) y los ficheros del proyecto (log, BACKLOG, specs, rationale, boards, runbooks).
+- **`TODO.md` retirado (decisión de Alex).** Criba de sus 38 ítems: 17 hechos (6 ya marcados y 11 resueltos
+  después sin marcar: SQI de HR y SpO2, PI pico a pico, detección de sonda, resta LED−ALED por software, AMB_SAT,
+  API de filtros, arquitectura de tareas en la spec, deriva del reloj medida…); 2 que ya no aplican (intercambio de
+  librería con `'m'`/`'p'`; HR a 30 BPM, resuelto en v0.99); 9 cubiertos por fichas de tarea; 4 añadidos a fichas
+  existentes (AMDF a `hr4_hr5_mpm_yin`; derivada y HR5 a `hr1_improvements`; baja perfusión y luz ambiente a
+  `hr_artefact`); 6 aparcados (en 5 líneas) en la sección nueva _Parked_ de `BACKLOG.md`: HRV, arritmias, frecuencia
+  respiratoria, apneas, cambios vasculares y elasticidad arterial. La regla de abril "las tareas van
+  en `TODO.md`" queda sustituida en `feedback_general.md`: lo pendiente va a `BACKLOG.md` o a una ficha.
+
+## Sesión 2026-10-19 — Calibración SpO2 sin hospital, ¿curva por edad?, MS100 (TLC / Pulse Amp), barrido propuesto, diálogo del grabador
+
+- **Sesión de desarrollo: `pulsenest-19`** (confirmado por Alex; la de análisis `pulsenest-51` traspasó por memoria +
+  SendMessage). Error propio al principio: me declaré "de análisis" sin preguntar y creé `docs/ms100_simulator.md`.
+- **Alternativas de calibración sin visitas al hospital (pregunta de Alex).** La curva R→SpO2 es propiedad de sonda ×
+  sitio × λ del LED × método de R; nada fuera de *Medle en pie neonatal con referencia* calibra la curva de IncuNest.
+  Lo que sí se mide en casa y mueve la curva: linealidad/regresión con el MS100, efecto de I_LED sobre R, lote -25 vs
+  -26, salto de R por RF del HGAC, dispersión entre las 3 Medle, puerta de artefacto y método de R (la mayor palanca:
+  SUBJ10 −16 pt fue artefacto). Oxímetros baratos: curva Nellcor-adulto, ±2-3 % y peor < 90 (Lipnick 2016); la mediana
+  de 4 quita ruido, no sesgo común; apneas llegan a 91-92 y nunca gas hipóxico. Datasets públicos sirven para
+  R-METHOD, no para R-CURVE. Gasometrías clínicas = la única que calibra lo que importa → preparar el protocolo.
+- **¿Una curva para neonatos y otra para adultos? NO: una sola, la de pie neonatal (vigente).** ISO 2026 201.12.1.101 d)
+  valida pediatría con adultos; la HbF no cambia la óptica; **Nellcor MAX-N usa la misma calibración en dedo adulto y
+  pie neonatal (Arms 2,0 vs 2,5)**. El grosor del tejido no entra en 1.er orden (AC/DC y la ratio cancelan DC y Δd, como
+  el TLC del MS100); el sitio entra en 2.º orden (~1 pt, Mannheimer 2007); SUBJ11 (1,5 kg) cae sobre la curva de 3 kg.
+  Los +3 pt del dedo de Alex (18-10) tienen la referencia confundida (doméstico vs Mindray) → **experimento de 5 min en
+  la próxima visita: dedo de Alex con el sensor adulto del Mindray N17 y un oxímetro barato a la vez.** Solo si con la
+  misma referencia quedan ≥ 2 pt habría dos curvas (etiquetadas por sitio; para nosotros ≡ edad).
+- **MS100 (observación de Alex):** TLC = ganancia global (DC y AC a la vez; PI y R invariantes); Pulse Amp % =
+  (máx − mín)/máx, referido al pico diastólico (el máximo no cambia, baja el mínimo) → PI de la lib ≈ A/(1−A/2); R
+  independiente de ambos. `pulsenest-51` leyó el manual (Gima `M54600EN.pdf`): TLC 0-4095 sin magnitud definida,
+  Pulse Amp 0-20 %, R-curves disponibles. Todo en **`docs/ms100_simulator.md` (nuevo)** y en memoria.
+- **Barrido MS100 propuesto** (Pulse Amp 3 %, TLC 3500 fijos; Step size SpO2 4): arranque 30 s a 96/75; bajada a 75 bpm
+  100→72 de 4 en 4; cambio a 140 bpm en 72; subida 72→100 a 140 bpm; 20 s por punto (ventana R 6 s + EMA 2 s +
+  VideoNest); ≈ 6-7 min. Bajada/subida en cada SpO2 delata histéresis o deriva. Opcional: 160 bpm en 4 puntos (2.º
+  armónico fuera del paso banda). REF_SPO2 en cada cambio.
+- **`.toml` del MS100:** el grabador exige `id = "SUBJnn"` (`'MS100' is not a subject code`) → **SUBJ90** para el
+  simulador (Alex escribe el fichero; recomendado `subj90_ms100.toml` + línea en `SUBJECT_CODES.txt`). `note` solo se
+  lee en el nivel general y en `[ref]`; **`[subject].note` no la lee nadie** → configuración del simulador en `[ref].note`.
+  `pulsenest-51` detectó restos de `subj09` (cabecera 87A4, `[ref]` comentado con `model`/`avg` sueltos, "Nellcore").
+- **Fallo corregido (grabador GUI):** el `ValueError` de `Recorder()` por código de sujeto inválido no estaba en el
+  `except` de `main()` → con `pythonw` la ventana moría sin mensaje (mismo tipo de fallo que la `note` duplicada del
+  23-09). Ahora sale el diálogo "not starting". Test de regresión (`main()` con `id = "MS100"` → diálogo + rc 2): GUI
+  91/91. Frase en `pulsenest_recorder_spec.md`. Sin commit aún.
