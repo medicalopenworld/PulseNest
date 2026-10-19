@@ -28091,3 +28091,11 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   (4) **A 100 % la lib invalida SpO2** (R 0,48-0,53 → 103-105 > `spo2_clamp_margin` 3): decisión de diseño pendiente
   (Nellcor/Masimo recortan a 100). (5) **PI = 1,47 × Pulse Amp**, constante: la definición de Pulse Amp sigue abierta
   (prueba: 1/3/10 %); `docs/ms100_simulator.md` corregido.
+- **`docs/spo2_r_curves.md` creado (registro de curvas R, paso 2 del plan del 02-10):** 7 filas — U401D-MS100-20260323
+  (R-METHOD-0, retirada), HOSPNAV R-METHOD-1 21,54 (descartada), HOSPNAV vigente 123,98 − 39,13 (R-METHOD-2, ajustada 04-10),
+  SUBJ08 y SUBJ09 por separado (diagnóstico), ADULTFINGER-20261020 111,94 − 25,15 (diagnóstico, rango 93-99 demasiado
+  estrecho para una pendiente; lo que vale es el sesgo +3,0 / −0,5) y STS0163-MS100-20261019 121,06 − 39,11 (banco).
+  Regla nueva: **la fecha de la etiqueta es la del ajuste**, para que una etiqueta sea una sola pareja (a, b) — la vigente
+  reutilizó `…-20260923` de la propuesta de 21,54. Pendiente (lib v0.106): reetiquetar la vigente a `…-20261004` y que la
+  spec §5.1 apunte al registro. Lectura del registro: toda pendiente R-METHOD-2 con rango útil da 39,1; las planas son
+  método o rango.
