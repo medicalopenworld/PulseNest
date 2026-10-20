@@ -601,7 +601,7 @@ class SpO2TestCalc:
     FW_SPO2_WINDOW_S   = 6.0      # spo2_window_s — SpO2 averaging window
     FW_PI_WINDOW_S     = 6.0      # pi_window_s   — PI averaging window, independent length
     FW_R_CORR_MIN      = 0.8      # spo2_r_corr_min — R-METHOD-2 validity gate on r
-    FW_SPO2_R_CURVE_A  = 123.98   # R-CURVE-STS0163-HOSPNAV-20260923, fitted with R-METHOD-2
+    FW_SPO2_R_CURVE_A  = 123.98   # R-CURVE-STS0163-HOSPNAV-20261004, fitted with R-METHOD-2
     FW_SPO2_R_CURVE_B  = 39.13
     WINDOW_S_MIN       = 2.0      # alg_window_s_min / alg_window_s_max — the library's setters clamp
     WINDOW_S_MAX       = 12.0
@@ -2513,13 +2513,13 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._spin_a.setToolTip(_make_tooltip(
             "SpO2 coefficient a",
             f"SpO2 = a − b·R. Library default: {C.FW_SPO2_R_CURVE_A} "
-            "(R-CURVE-STS0163-HOSPNAV-20260923, fitted with R-METHOD-2). "
+            "(R-CURVE-STS0163-HOSPNAV-20261004, fitted with R-METHOD-2). "
             "Shifts the SpO2 curve vertically.",
             src="spo2_r_curve_a"))
         self._spin_b.setToolTip(_make_tooltip(
             "SpO2 coefficient b",
             f"SpO2 = a − b·R. Library default: {C.FW_SPO2_R_CURVE_B} "
-            "(R-CURVE-STS0163-HOSPNAV-20260923). Changes the slope of the SpO2 vs R curve.",
+            "(R-CURVE-STS0163-HOSPNAV-20261004). Changes the slope of the SpO2 vs R curve.",
             src="spo2_r_curve_b"))
         self._spin_dc_tau.setToolTip(_make_tooltip(
             "DC time constant",
@@ -13917,7 +13917,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             f"  SpO2: R method {kv.get('spo2_r_method_id','?')}   R curve {kv.get('spo2_r_curve_id','?')} "
             f"(fitted with {kv.get('spo2_r_curve_r_method_id','?')}"
             f"{', MISMATCH' if kv.get('spo2_r_curve_method_match') == '0' else ''})"
-            f"   a={kv.get('spo2_r_curve_a', kv.get('spo2a','?'))}  b={kv.get('spo2_r_curve_b', kv.get('spo2b','?'))}"
+            f"   a={kv.get('spo2_r_curve_a', kv.get('spo2a','?'))}  b={kv.get('spo2_r_curve_b', kv.get('spo2b','?'))}\n"
+            f"  PI method {kv.get('pi_method_id', '? (fw < 0.25)')}"
         )
         if self._cfg_listener is not None and getattr(self, '_cfg_notify_lab_capture', False):
             self._cfg_listener(text)

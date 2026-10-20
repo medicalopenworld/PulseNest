@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.24"   // 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.25"   // 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_corr_min
@@ -817,6 +817,9 @@ static void send_cfg_frame(const char* cause) {
         // for another R method; SpO2 is still shown.
         ",spo2_r_method_id=%s,spo2_r_curve_id=%s,spo2_r_curve_r_method_id=%s"
         ",spo2_r_curve_method_match=%d,spo2_r_curve_a=%.4f,spo2_r_curve_b=%.4f"
+        // The PI definition (lib v0.106): which number the PI column holds — PI-METHOD-0 (EMA
+        // RMS, ≤ lib 0.100) read ~3× lower than PI-METHOD-1 (peak-to-peak, same subject).
+        ",pi_method_id=%s"
         ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X"
         // Provenance: which firmware produced this capture. Without it the FW_* columns of a
         // CSV become uninterpretable as soon as the algorithms change — see
@@ -840,6 +843,7 @@ static void send_cfg_frame(const char* cause) {
         cfg.hr2_f_low_hz, cfg.hr2_f_high_hz, cfg.hr3_f_high_hz,
         cfg.spo2_r_method_id, cfg.spo2_r_curve_id, cfg.spo2_r_curve_r_method_id,
         cfg.spo2_r_curve_method_match ? 1 : 0, cfg.spo2_r_curve_a, cfg.spo2_r_curve_b,
+        cfg.pi_method_id,
         BOARD_VERSION,
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
         // build = this project's commit, libsha = the library's, each covering only the paths

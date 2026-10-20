@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.88
+# pulsenest_lab — Specification v1.89
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -374,7 +374,7 @@ $LCFG,rsqm_ot_thr=<v>,rsqm_disconn_led_sub_thr=<v>,rsqm_disconn_i_pd_thr=<v>,
 ```
 
 (`spo2_r_method` and `spo2_r_corr_min` since fw 0.18 / lib v0.100; `$SET,spo2_r_method,<1|2>` also
-re-emits `$CFG`, whose `spo2_r_method_id` names the method in force. `spo2_window_s` and
+re-emits `$CFG`, whose `spo2_r_method_id` names the method in force (and, since fw 0.25 / lib v0.106, `pi_method_id` names the PI definition; the `$CFG` notes print it, `? (fw < 0.25)` for older firmware). `spo2_window_s` and
 `pi_window_s` since fw 0.20 / lib v0.102: the averaging windows in seconds, clamped 2–12 by the
 library, so the echo is the value in force.) Emitted after a library
 `$SET` command and in response to `$LCFG?`. Parsed by
@@ -1244,7 +1244,7 @@ length and window lengths derive from `fs` exactly as the library's `WindowBlock
 blocks with PI's AC² taken once per block; v1.87 follows lib v0.103.)
 
 **Parameters** (`SpO2TestCalc.PARAMS`, each with its library default as a class attribute):
-`spo2_r_curve_a`/`spo2_r_curve_b` (123.98 / 39.13, R-CURVE-STS0163-HOSPNAV-20260923),
+`spo2_r_curve_a`/`spo2_r_curve_b` (123.98 / 39.13, R-CURVE-STS0163-HOSPNAV-20261004),
 `dc_ema_tau_s` (2.0), `spo2_window_s` (6.0), `pi_window_s` (6.0), `r_corr_min` (0.8). They are
 the ones the library exposes at runtime through `$SET`; the window lengths are clamped to 2–12 s
 as the library's setters do. Everything else (band-pass corners, decimation target, SQI

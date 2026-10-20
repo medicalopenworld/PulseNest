@@ -189,6 +189,9 @@ KEYS = [
     Key("spo2_r_curve_method_match", "alg", (CFG, ("spo2_r_curve_method_match",), 1),   "1 = the curve's R method is the library's; 0 = warning", "flag", "int", CONFIG, "0.4"),
     Key("spo2_r_curve_a",            "alg", (CFG, ("spo2_r_curve_a",), 1), "SpO2 = a - b*R, a (dimensionless: a real is allowed, R24a; was spo2_cal_a)", "ratio", "float", CONFIG, "0.4"),
     Key("spo2_r_curve_b",            "alg", (CFG, ("spo2_r_curve_b",), 1), "SpO2 = a - b*R, b (was spo2_cal_b)",                       "ratio", "float", CONFIG, "0.4"),
+    # The PI definition (lib v0.106, fw 0.25): PI-METHOD-<n> names how the PI column was computed.
+    # Absent from older captures: lib <= 0.100 is PI-METHOD-0 (EMA RMS), 0.101-0.105 PI-METHOD-1.
+    Key("pi_method_id",              "alg", (CFG, ("pi_method_id",), None),              "how the library computes PI (PI-METHOD-<n>)", "text", "str", CONFIG, "0.4"),
     Key("rsqm_ot_thr_e10",      "alg", (LCFG, ("rsqm_ot_thr",),              1e10), "OT below which the probe is not on tissue (wire prints A/A as %.4e)", "1e-10 A/A", "int", CONFIG, "0.4"),
     Key("rsqm_disconn_led_sub_thr", "alg", (LCFG, ("rsqm_disconn_led_sub_thr",), 1), "|LED-ALED| below which the probe reads as disconnected", "LSB", "int", CONFIG, "0.4"),
     Key("rsqm_disconn_i_pd_thr_pa", "alg", (LCFG, ("rsqm_disconn_i_pd_thr",),   1e12), "|i_pd| below which the probe reads as disconnected (wire prints A)", "pA", "int", CONFIG, "0.4"),

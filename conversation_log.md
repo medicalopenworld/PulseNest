@@ -28114,3 +28114,11 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   queda ≤ 1,05 en una geometría "iso-pathlength". Añadida a la viñeta de la pendiente y a las fuentes del registro; no hay
   "Parte 2" de Elron/Nitzan 2023. Su R es p-p por latido (familia R-METHOD-1), pero el sesgo de camino es físico y afecta
   también a R-METHOD-2.
+- **Identificador de la definición del PI (propuesta de `pulsenest-51`, aprobada por Alex) → lib v0.106 (`4ff4bf1`, tag), fw 0.25:**
+  `PI_METHOD_ID = "PI-METHOD-1"` (2√2·RMS paso banda 0,5-15 Hz / media OT, una ventana), `AFE4490Config::pi_method_id`, `$CFG`
+  `pi_method_id=`, clave `alg` en `capture_dict.py`, nota del `$CFG` en el lab (v1.89), Apéndice B del CSV; `PI-METHOD-0` = la
+  definición ≤ v0.100 (EMA, ~3× menor); capturas sin la clave se deducen de `lib=`. Sin setter ni métodos alternativos (los
+  problemas abiertos del PI son de este método). Spec §5.1 "PI methods", rationale §14. En la misma versión: **curva vigente
+  reetiquetada `R-CURVE-STS0163-HOSPNAV-20261004`** (mismos coeficientes; fecha = ajuste) en lib, test_spo2, lab y specs, y la
+  spec §5.1 apunta al registro `docs/spo2_r_curves.md`. Tests: host pi 8/8 + spo2 16/16, dict 1340/1340; build V18 OK.
+  OTA pendiente (ninguna placa encendida al compilar).

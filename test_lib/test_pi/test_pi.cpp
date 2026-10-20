@@ -135,6 +135,15 @@ void test_pi_window_setter() {
     TEST_ASSERT_TRUE(isnan(afe.test_pi()));
 }
 
+// ── Test 8: the PI definition is named (v0.106) — getConfig() carries PI_METHOD_ID ──
+void test_pi_method_is_named() {
+    INCUNEST_AFE4490 afe;
+    TEST_ASSERT_EQUAL_STRING("PI-METHOD-1", PI_METHOD_ID);
+    TEST_ASSERT_EQUAL_STRING(PI_METHOD_ID, afe.getConfig().pi_method_id);
+    afe.setPIWindowS(3.0f);                                   // a parameter change is not a new method
+    TEST_ASSERT_EQUAL_STRING(PI_METHOD_ID, afe.getConfig().pi_method_id);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_pi_not_valid_until_window_full);
@@ -144,5 +153,6 @@ int main() {
     RUN_TEST(test_pi_block_rate_invariant_to_sample_rate);
     RUN_TEST(test_pi_not_applied_resets);
     RUN_TEST(test_pi_window_setter);
+    RUN_TEST(test_pi_method_is_named);
     return UNITY_END();
 }

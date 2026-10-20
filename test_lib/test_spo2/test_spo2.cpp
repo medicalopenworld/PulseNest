@@ -214,7 +214,7 @@ void test_spo2_default_r_curve_is_labelled_and_matches() {
     AFE4490Config cfg = afe.getConfig();
     TEST_ASSERT_EQUAL_STRING("R-METHOD-2", cfg.spo2_r_method_id);
     TEST_ASSERT_EQUAL_UINT8(2, cfg.spo2_r_method);
-    TEST_ASSERT_EQUAL_STRING("R-CURVE-STS0163-HOSPNAV-20260923", cfg.spo2_r_curve_id);
+    TEST_ASSERT_EQUAL_STRING("R-CURVE-STS0163-HOSPNAV-20261004", cfg.spo2_r_curve_id);
     TEST_ASSERT_EQUAL_STRING("R-METHOD-2", cfg.spo2_r_curve_r_method_id);
     TEST_ASSERT_TRUE(cfg.spo2_r_curve_method_match);
     TEST_ASSERT_EQUAL_FLOAT(123.98f, cfg.spo2_r_curve_a);
@@ -255,7 +255,7 @@ void test_spo2_set_r_curve_rejects_bad_input() {
     TEST_ASSERT_FALSE(afe.setSpO2RCurve("R-CURVE-X", "R-METHOD-1", NAN, 20.0f));
     TEST_ASSERT_FALSE(afe.setSpO2RCurve("R-CURVE-X", "R-METHOD-1", 110.0f, INFINITY));
     AFE4490Config cfg = afe.getConfig();
-    TEST_ASSERT_EQUAL_STRING("R-CURVE-STS0163-HOSPNAV-20260923", cfg.spo2_r_curve_id);
+    TEST_ASSERT_EQUAL_STRING("R-CURVE-STS0163-HOSPNAV-20261004", cfg.spo2_r_curve_id);
     TEST_ASSERT_EQUAL_STRING("R-METHOD-2", cfg.spo2_r_curve_r_method_id);
     TEST_ASSERT_EQUAL_FLOAT(123.98f, cfg.spo2_r_curve_a);
     TEST_ASSERT_EQUAL_FLOAT(39.13f, cfg.spo2_r_curve_b);

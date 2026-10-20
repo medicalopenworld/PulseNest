@@ -91,7 +91,8 @@ has not been triaged yet.
 - Posible mejora para compensar las tolerancias de las resistencias RF1/RF2: que en algún momento realice un comprobación de dichas tolerancias saltando entre los distintos valores de RF. Por ejemplo, lo más rápido que permitan los tiempos de asentamiento ya que los condensadores a la entrada del ADC probablemente no esperen saltos bruscos entre una muestra y la siguiente. Antes de implementar el algoritmos, estudiar en unas cuantas tarjetas qué tolerancias hay y analizar cómo afectan dichos niveles de tolerancia.
 - Creo que hay calculos como las derivadas de R-METHOD-2 que dependen de la frecuencia de muestreo.
   Habría que repensar si estos cálculos los hacemos sobre la señal de 500Hz o de 50Hz, y si tener en cuenta dicho delta(t).
-  
+- Medir con un Spectral Analyzer la longitud de onda del led rojo de las sondas Medle con 20 mA y otras intensidades (sólo medimos con 50 mA: unos 668 nm)
+
 
 
 ## Parked
