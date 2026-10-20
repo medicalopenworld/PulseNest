@@ -1064,7 +1064,11 @@ to the rest. The panel is as tall as its band.
 **Boxed cells (v1.95).** A left click on any cell of a panel draws a yellow box around it
 (`STATS_HILITE` #FFD700, SIGNAL STATS's gold) and a second click removes it; per board, header and
 label column included. The set lives on the board's `BoardTrace.highlighted` as (row label, column),
-so it survives the 1 s rewrite of the HTML and `merge_by_mac`; not persisted. The click is an event
+so it survives the 1 s rewrite of the HTML and `merge_by_mac`. **Saved per board MAC** in
+`tools/fleet_ppg_viewer.ini` (group `stats_highlighted`, key = MAC without colons, value
+`<label>=<col>;…`) at every click, like SIGNAL STATS in the lab; restored on the next run when the
+board's `$CFG` names its MAC (a box made before that is kept and merged); labels that no longer
+exist are dropped. The click is an event
 filter on the panel's viewport (it stays `NoTextInteraction`); `fleet_widgets.stats_cell_at()` asks
 the document which table cell is under the point. Every cell carries a 2 px border in its own
 background colour with `cellpadding` 0 instead of 2: measured, the same document size and the same
@@ -2846,8 +2850,8 @@ pyqtgraph context menus from being too narrow to read.
 
 ### v1.95 — 2026-10-20
 
-**Fleet viewer: click a statistics cell to box it in yellow, click again to remove** (§4.11;
-Alex). `BoardTrace.highlighted` / `toggle_highlight()`, `stats_html()` with a per-cell 2 px border
+**Fleet viewer: click a statistics cell to box it in yellow, click again to remove; saved per board
+MAC between runs, like the lab** (§4.11; Alex). `BoardTrace.highlighted` / `toggle_highlight()`, `stats_html()` with a per-cell 2 px border
 in the cell's own colour (gold when boxed), `fleet_widgets.stats_cell_at()`, `_StatsClick` event
 filter and `Viewer.toggle_stats_cell()`. Test 85/85 (a real `QTest` click on the R mean cell, the
 table rectangle unchanged, the other board untouched, a second click unboxes); recorder GUI 91/91.

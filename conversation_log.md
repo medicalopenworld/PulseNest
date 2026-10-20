@@ -28239,3 +28239,15 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   etiquetas incluidas.
 - **Tests:** fleet viewer 85/85 (clic real con `QTest` sobre la media de R, rectángulo de la tabla sin cambios, la otra
   placa intacta, segundo clic quita el recuadro); GUI del grabador 91/91.
+
+## Sesión 2026-10-20 (9) — Visor de flota: los recuadros se guardan entre ejecuciones
+
+- **Petición (Alex):** que los recuadros amarillos se guarden entre ejecuciones, como en el lab.
+- **Hecho:** por placa, por MAC, en `tools/fleet_ppg_viewer.ini` (grupo `stats_highlighted`, clave = MAC sin dos puntos,
+  valor `<etiqueta>=<col>;…`), escrito en cada clic como hace el lab. Como la banda aparece con el primer datagrama y la
+  MAC solo llega con el `$CFG`, los recuadros guardados se aplican en cuanto la MAC se conoce (una vez por MAC); un
+  recuadro hecho antes se conserva y se une. Etiquetas que ya no existen, columnas fuera de rango y basura se descartan
+  al leer. Un conjunto vacío borra la clave.
+- **Tests:** fleet viewer 90/90 (escritura al clic, clave borrada al quitar, lectura robusta, restauración en una segunda
+  ejecución al llegar la MAC); ida y vuelta por QSettings con `%`, `µ` y varios recuadros; GUI del grabador 91/91.
+  Spec v1.95 y docstring actualizados.

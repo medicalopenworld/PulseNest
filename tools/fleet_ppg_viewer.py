@@ -69,7 +69,9 @@ What it draws, and why those choices:
   **A click on any cell boxes it in yellow** (the gold of SIGNAL STATS's highlight in the lab);
   a second click removes the box (2026-10-20). Per board, header and label column included. The
   box is kept by row label on the board's trace, so it survives the 1 s rewrite of the table and a
-  board coming back on a new address; it is not saved between runs. Every cell always carries a
+  board coming back on a new address, and it is **saved per board MAC** in fleet_ppg_viewer.ini
+  (group `stats_highlighted`, `<label>=<col>;…`) at every click, like the lab's SIGNAL STATS: a
+  board's boxes come back on the next run as soon as its $CFG names its MAC. Every cell always carries a
   2 px border in its own background colour, in place of 2 px of padding, so a box changes colour
   only and the table does not move.
 
@@ -159,6 +161,11 @@ class Viewer(QtWidgets.QMainWindow):
         self._panel_w = panel_width()
         self._stats_w = stats_width()
         self._stats_cols = stats_columns()
+        # Boxed statistics cells, saved per board MAC like the lab saves SIGNAL STATS's (2026-10-20).
+        # A band appears on a board's first datagram but its MAC only with its $CFG, so the saved
+        # boxes are applied when the MAC becomes known (_apply_saved_boxes), once per MAC.
+        self._saved_boxes = self._load_boxes()
+        self._boxes_applied = set()
         self.client = HubClient(script_name(__file__), hub=hub, control=False, log=print)
         self.client.connect()
 
@@ -334,6 +341,7 @@ class Viewer(QtWidgets.QMainWindow):
             tr.trim(now)
             fresh = tr.maybe_snapshot(now)
             plot, curve, numbers, stats = self.band_for(ip)
+            fresh = self._apply_saved_boxes(tr) or fresh
             plot.setTitle(tr.title(now), color=tr.state_colour(now), size="11pt")
             curve.setData([t - now for t in tr.t], list(tr.y))
             numbers.item.setHtml(tr.numbers_html(now))
@@ -356,6 +364,67 @@ class Viewer(QtWidgets.QMainWindow):
             return
         tr.toggle_highlight("signal" if row == 0 else STATS_ROWS[row - 1][0], col)
         self._render_stats(band[3], tr)
+        self._save_boxes(tr)
+
+    # ── boxed cells, persisted per MAC ──
+    _BOXES_GROUP = "stats_highlighted"
+
+    @staticmethod
+    def _mac_key(mac):
+        return mac.replace(":", "").upper()          # an .ini key without separators
+
+    @staticmethod
+    def encode_boxes(cells):
+        """{(label, col)} -> '<label>=<col>;…', sorted so the file does not churn."""
+        return ";".join(f"{label}={col}" for label, col in sorted(cells))
+
+    @staticmethod
+    def decode_boxes(text):
+        """Inverse of encode_boxes(). Labels no longer in STATS_ROWS (a renamed or removed row)
+        and malformed tokens are dropped rather than boxing the wrong cell."""
+        labels = {"signal"} | {row[0] for row in STATS_ROWS}
+        cells = set()
+        for token in (text or "").split(";"):
+            label, sep, col = token.rpartition("=")
+            if sep and label in labels and col.isdigit() and int(col) <= 4:
+                cells.add((label, int(col)))
+        return cells
+
+    def _load_boxes(self):
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.beginGroup(self._BOXES_GROUP)
+        boxes = {key: self.decode_boxes(s.value(key, "", type=str)) for key in s.childKeys()}
+        s.endGroup()
+        return boxes
+
+    def _apply_saved_boxes(self, tr):
+        """Once per MAC, as soon as it is known: add that board's saved boxes to its trace (a box
+        made before the $CFG arrived is kept too) and write the union back. -> True if the panel
+        needs repainting."""
+        if not tr.mac or tr.mac in self._boxes_applied:
+            return False
+        self._boxes_applied.add(tr.mac)
+        saved = self._saved_boxes.get(self._mac_key(tr.mac), set())
+        changed = not saved <= tr.highlighted
+        tr.highlighted |= saved
+        if tr.highlighted != saved:
+            self._save_boxes(tr)
+        return changed
+
+    def _save_boxes(self, tr):
+        """Write this board's boxes now (an empty set removes its key). Before the MAC is known
+        there is nothing to file them under; _apply_saved_boxes() writes them when it is."""
+        if not tr.mac:
+            return
+        key = self._mac_key(tr.mac)
+        self._saved_boxes[key] = set(tr.highlighted)
+        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+        s.beginGroup(self._BOXES_GROUP)
+        if tr.highlighted:
+            s.setValue(key, self.encode_boxes(tr.highlighted))
+        else:
+            s.remove(key)
+        s.endGroup()
 
     def closeEvent(self, event):
         self.drain_timer.stop()

@@ -412,6 +412,21 @@ check(not win.traces[other].highlighted, "the other board's table is untouched")
 _QtTest.QTest.mouseClick(edit.viewport(), QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pt)
 app.processEvents()
 check(not win.traces[box_ip].highlighted, "clicking it again removes the box")
+# Saved per MAC at every click, like the lab (2026-10-20)
+import configparser as _cp  # noqa: E402
+def saved_boxes():
+    c = _cp.ConfigParser(interpolation=None); c.read(V.SETTINGS_FILE, encoding="utf-8")
+    # QSettings quotes a value that holds "=" or ";": strip the quotes, read it as QSettings would
+    return ({k: v.strip('"') for k, v in c["stats_highlighted"].items()}
+            if c.has_section("stats_highlighted") else {})
+box_key = V.Viewer._mac_key(win.traces[box_ip].mac).lower()     # configparser lower-cases keys
+check(box_key not in saved_boxes(), "an unboxed board leaves no key in the .ini", str(saved_boxes()))
+_QtTest.QTest.mouseClick(edit.viewport(), QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pt)
+app.processEvents()
+check(saved_boxes().get(box_key) == "R=1", "a box is written to the .ini at the click, by MAC",
+      str(saved_boxes()))
+check(V.Viewer.decode_boxes("R=1;PI %=3;signal=0;gone row=2;R=9;junk") == {("R", 1), ("PI %", 3), ("signal", 0)},
+      "reading back drops unknown rows, out-of-range columns and junk")
 
 # ── the settings file: a first run sizes itself, and the choice survives ──────────────────
 check(win.height() > 400, "a first run takes its height from the screen, not a fixed 800 px",
@@ -422,6 +437,16 @@ win.close()                      # closeEvent writes the geometry
 check(os.path.exists(V.SETTINGS_FILE), "closing writes the settings file")
 
 again = V.Viewer(("127.0.0.1", 15999), 15.0)
+# the box saved above comes back on the next run, once the board's $CFG names its MAC
+_t = time.monotonic()
+back = again.traces["192.168.137.9"] = T.BoardTrace("192.168.137.9", _t)
+again.redraw()
+check(not back.highlighted, "no MAC yet: nothing to restore")
+back.feed(CFG.replace(b"10:51:DB:50:87:A4", win.traces[box_ip].mac.encode()), _t)
+again.redraw()
+check(back.highlighted == {("R", 1)}
+      and T.STATS_HILITE.lower() in again.bands["192.168.137.9"][3].widget().toHtml().lower(),
+      "the next run restores the board's box as soon as its MAC is known", str(back.highlighted))
 check(again.height() == 1234 and again.width() == 1400,
       "and the next run comes up the size it was left",
       f"{again.width()}x{again.height()}")
