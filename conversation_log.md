@@ -28251,3 +28251,22 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - **Tests:** fleet viewer 90/90 (escritura al clic, clave borrada al quitar, lectura robusta, restauración en una segunda
   ejecución al llegar la MAC); ida y vuelta por QSettings con `%`, `µ` y varios recuadros; GUI del grabador 91/91.
   Spec v1.95 y docstring actualizados.
+
+## Sesión 2026-10-20 (10) — Puerta de artefacto para SpO2: candidatos medidos (decisión pendiente)
+
+- **Método:** las 21 sesiones con referencia reprocesadas con la librería v0.108 (runner recompilado) en modo
+  `--input ot`; SpO2 recalculado con la curva vigente y la regla de validez actual; cada candidato aplicado muestra a
+  muestra; ventanas de 8 s frente al OCR de VideoNest (conf ≥ 0,9). Script `experiments/spo2_artifact_gate_20261020.py`;
+  informe `captures/sessions/GATE_ANALYSIS_20261020/findings.md` (no versionado, como los demás análisis de sujetos).
+- **Resultado:** "HR3 válido" es la puerta. SUBJ10 pasa de 81 % de ventanas publicadas (Arms 16,3, 92 % a > 4 pt) a
+  2,6 % (Arms 2,1, ninguna a > 4 pt). Adulto y MS100 ≥ 98 % sin cambio. SUBJ11 98 → 93 %; SUBJ08/09 97-100 → 78-80 %, y
+  lo retenido era mayoritariamente malo (|sesgo| mediana 2,5-3,8; 20-45 % a > 4 pt). r ≥ 0,99 y PI ≤ 10 % no sirven;
+  umbrales de HR3_SQI no añaden; acuerdo HR2-HR3 mejora un poco; acuerdo HR1 cuesta demasiado; mantener el último valor
+  5-10 s reintroduce los valores erróneos de SUBJ10 (HR3 sigue válido los primeros segundos del movimiento).
+- **Costes:** con referencia < 90 la disponibilidad en SUBJ08/09 cae 27-28 puntos (el movimiento coincide con la
+  desaturación); primer valor tras colocar la sonda, mediana 6,1 → 10,5 s, p90 6,8 → 36,6 s.
+- **Propuesta a Alex:** puerta HR3 válido sin hold, configurable por `$SET`, activa por defecto, con bit de motivo para
+  que la UI muestre "pulse search". Alternativa (modelo Masimo): publicar con bandera de baja calidad. Decisión pendiente.
+- **Hallazgo colateral:** el runner en modo crudo nunca calcula HR2/HR3 (su camino lento vive en tareas FreeRTOS que el
+  host no tiene): todas las réplicas crudas anteriores tienen HR2 = HR3 = NaN. El modo OT sí los calcula.
+- Registros de las réplicas en `derived/` de cada sesión (no versionado).
