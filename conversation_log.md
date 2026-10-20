@@ -28153,3 +28153,20 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   cambio elimina todos los huecos (máximo a − b·R 106,4) y no toca ningún valor por debajo de 100.
 - Memoria: hilo de calibración (clamp resuelto; quedan puerta de artefacto, experimento 5 min dedo/Mindray, R-curves del
   MS100 en pantalla, Pulse Amp vs PI) y versión de la librería.
+
+## Sesión 2026-10-20 (4) — r (R_CORR) en pantalla: lab v1.91
+
+- **Preguntas de Alex.** (1) El SQI de SpO2 es solo la rampa del PI (0,5-2,0 %); r, PI > 20 % y el rango 70-110 son
+  puertas que lo fuerzan a 0 con SpO2 NaN, no entran en el número. (2) r ya estaba publicado (`AFE4490Data::spo2_r_corr`,
+  `$M4` campo 36 desde fw 0.19, columna `R_CORR` de las capturas) pero el lab no lo mostraba. (3) r es la correlación de
+  la regresión de R-METHOD-2; bajo R-METHOD-1 la lib lo deja NaN, aunque conceptualmente es una propiedad del par de señales.
+- **Hecho (lab v1.91, sin cambio de firmware):** `PPGMonitor.data_r_corr` (campo 36 del `$M4`; NaN en `$M1-$M3`, tramas
+  cortas de fw < 0.19 y cuando el firmware imprime `nan`); `r:` en el título de SpO2 de PPG Plots y ALGO RESULTS
+  (`_fmt_r_corr`, `---` sin valor); SPO2TEST: traza `r fw` junto a `r py` en el gráfico 4, fila r de la tabla de valores
+  con umbral 0,01, y lectura del campo en el cargador de CSV. `R_CORR` en la lista de SIGNALS2. Tooltips de SpO2 y
+  SpO2_SQI con los límites de v0.107 y las puertas. Spec §4, §7.1, §7.3, §7.7, changelog v1.91.
+- **Verificación:** test de humo offscreen (tramas `$M4` con y sin campo 36, `nan`, `$M1`): buffers en paso, títulos,
+  gráfico y tabla de SPO2TEST correctos. Hallazgo colateral (preexistente, no corregido): el lab descarta las primeras
+  ~8 tramas tras arrancar (también en la versión anterior). `disable_plots_test` 13/13; `udp_multiboard_test` 98/100 con
+  los mismos 2 fallos preexistentes (puerto 15005 "LOST", dependientes del entorno).
+- Siguiente: la puerta de artefacto para SpO2.

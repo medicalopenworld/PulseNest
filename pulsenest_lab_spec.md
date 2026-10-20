@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.90
+# pulsenest_lab — Specification v1.91
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -210,7 +210,7 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 | `CH_MASKS` | `%04X` hex | Validity masks packed in 4 nibbles: bits[3:0]=`adc_sat_pos`, [7:4]=`adc_sat_neg`, [11:8]=`tia_over_fs`, [15:12]=`tia_over_lin`. Within each nibble, bit = channel per `AFE4490Ch`: LED1=0, ALED1=1, LED2=2, ALED2=3. `0000` = all channels CLEAN |
 | `RF1`, `RF2` | string | Actual TIA feedback resistor in use for LED1/LED2 at this sample (e.g. `"500K"`, via `afeRFToStr()`) — the live config value, whoever set it (manual `$SET` or HGAC Phase 1 descent), so it is not a static config value. Renamed from `HGAC_RF1`/`HGAC_RF2` in lib v0.81/spec v1.29 — the old name wrongly implied HGAC always computed it |
 
-| `R_CORR` | `%.4f` | Field 36 (fw 0.19, lib v0.100): the correlation r of R-METHOD-2's regression, the fit's own quality (SpO2 is withheld below `spo2_r_corr_min`); `nan` under R-METHOD-1, during warm-up and when the probe is not applied. Recorded as `R_CORR` in P1 captures. Not displayed by the script yet. |
+| `R_CORR` | `%.4f` | Field 36 (fw 0.19, lib v0.100): the correlation r of R-METHOD-2's regression, the fit's own quality (SpO2 is withheld below `spo2_r_corr_min`); `nan` under R-METHOD-1, during warm-up and when the probe is not applied. Recorded as `R_CORR` in P1 captures. Parsed into `PPGMonitor.data_r_corr` (NaN = no value) and shown since v1.91: `r:` in the SpO2 title of PPG Plots and ALGO RESULTS, and `r fw` in SPO2TEST (plot 4 and the value table). |
 
 The script requires ≥ 34 fields to accept the `$M4` analog block (frames from
 firmware older than lib v0.35+`CH_MASKS` are parsed as `$M3` with zeroed analog data).
@@ -1908,7 +1908,7 @@ Detached window with 6 stacked plots, linked X axes:
 1. IR raw + IR_Amb + IR_Sub (3 curves, toggleable via checkboxes)
 2. RED raw + RED_Amb + RED_Sub (3 curves, toggleable)
 3. PPGdisp (display-ready filtered signal)
-4. SpO2 [%]
+4. SpO2 [%] — title: SpO2, SQI, R and r (`$M4` R_CORR, v1.91)
 5. HR1 [bpm] (peak detection) + HR2 [bpm] (autocorrelation) + HR3 [bpm] (FFT+HPS)
 6. (additional HR comparison row)
 
@@ -1922,7 +1922,8 @@ IR-first ordering. Stacked plots with linked X axes.
 
 ### 7.3 AlgoResultsWindow — "ALGO RESULTS"
 
-Focused view on algorithm outputs: SpO2, SpO2_SQI, SpO2_R, PI, HR1/HR2/HR3 with SQI.
+Focused view on algorithm outputs: SpO2, SpO2_SQI, SpO2_R, PI, HR1/HR2/HR3 with SQI. The SpO2
+title also shows r (`$M4` R_CORR, v1.91), so a withheld SpO2 can be read against its gate.
 No parameter controls — purely observational.
 
 ### 7.4 SerialComWindow — "Serial COM"
@@ -1998,8 +1999,8 @@ Layout: left 6 stacked plots (X linked) + right parameter/values panel.
 1. SpO2 fw (green) + SpO2 py (yellow)
 2. Delta SpO2 (fw − py)
 3. R fw + R py (R-METHOD-2)
-4. r py — the regression correlation, with the `r_corr_min` gate as a dashed line. Python only:
-   `$M4` does not carry `spo2_r_corr`.
+4. r fw + r py — the regression correlation (firmware: `$M4` R_CORR, field 36, shown since v1.91;
+   NaN under R-METHOD-1 and before the window is full), with the `r_corr_min` gate as a dashed line
 5. PI fw + PI py (%) — the firmware's PI travels in `$M4`, so the PI window is verified too
 6. SQI fw + SQI py
 
@@ -2010,7 +2011,7 @@ DC of each channel stays in the value table (ppm).
 library's runtime parameters, §5.2; the windows are limited to 2–12 s like the library) —,
 [RESET TO DEFAULTS], the current-values table (SpO2, R, r, PI, SQI, DC IR, DC RED; firmware /
 Python / delta, the delta green or red against a per-row threshold: SpO2 1 point, R 0.05,
-PI 0.1 %) and a rate line: `fs 500 Hz · block 50 smp → 10 Hz · SpO2 window 60 blk · PI window
+r 0.01, PI 0.1 %) and a rate line: `fs 500 Hz · block 50 smp → 10 Hz · SpO2 window 60 blk · PI window
 60 blk`, so a wrong rate is visible at a glance. Any parameter off its default turns the toolbar
 indicator to CUSTOM PARAMS; a change resets the mirror and clears the buffers.
 
@@ -2816,6 +2817,15 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.91 — 2026-10-20
+
+**r (R_CORR) displayed.** `$M4` field 36 is parsed into `PPGMonitor.data_r_corr` (§4; NaN = no
+value, as the firmware prints it). Shown as `r:` in the SpO2 title of PPG Plots (§7.1) and ALGO
+RESULTS (§7.3), and as `r fw` in SPO2TEST (§7.7: plot 4 beside `r py`, value-table row with a
+0.01 delta threshold, offline CSV rows too). Listed in SIGNALS2 as `R_CORR`. Why: with lib
+v0.107 the only remaining SpO2 gates are r, PI and the 70–110 bound, and r was the one not on
+screen. Tooltips of SpO2 / SpO2_SQI updated to the v0.107 bounds and to the gates.
 
 ### v1.90 — 2026-10-20
 
