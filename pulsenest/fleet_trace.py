@@ -117,6 +117,11 @@ STATS_BODY = "#B4B4B4"      # was #E0E0E0
 STATS_ROW_ALT = "#2E2E2E"   # every other row, lifted off the background
 STATS_HEAD = "#C8CEE0"
 STATS_HEAD_BG = "#33395A"   # was #1E1E2E
+# A cell the reader clicked: a 2 px box, the gold of SIGNAL STATS's highlight in the lab
+# (_StatsHighlightDelegate). Every cell always carries a 2 px border in its own background colour
+# (and 2 px less padding), so toggling a box changes only colour: the table does not move.
+STATS_HILITE = "#FFD700"
+STATS_BORDER_PX = 2
 # (label, field index in the $M* frame, display scale, decimals) in the order of struct
 # AFE4490Data and then AFE4490AnalogState -- the $M4 field order too, and the order of SIGNAL STATS
 # in the lab (Alex, 2026-10-20). Until then the rows went in the order they are read when something
@@ -212,6 +217,10 @@ class BoardTrace:
         self.moved_from = None    # previous IP of the same MAC
         self.stats = {idx: Stat() for idx in STATS_FIELDS}
         self.stats_shot = {}      # field -> the last CLOSED window's (mean, sd, min, max)
+        # Cells the reader boxed, as (row label, column 0-4): by label so a box stays on its
+        # signal whatever the row order; on the trace so it survives the 1 s rewrite of the table
+        # and, through merge_by_mac, a board coming back on a new address.
+        self.highlighted = set()
         self._stats_t0 = now
 
     @property
@@ -302,6 +311,15 @@ class BoardTrace:
             out.append([label, *(fit(c, len(VAL_CHARS)).strip() for c in cells)])
         return out
 
+    def toggle_highlight(self, label, col):
+        """Box the cell (label, col), or unbox it if it was boxed. -> True when it is now boxed."""
+        key = (label, col)
+        if key in self.highlighted:
+            self.highlighted.discard(key)
+            return False
+        self.highlighted.add(key)
+        return True
+
     def stats_html(self, label_w, value_w):
         """The rows as an HTML table, aligned by columns.
 
@@ -313,19 +331,25 @@ class BoardTrace:
         # The background goes on every cell, not on the <tr>: Qt's rich text paints a row
         # background only where a cell asks for one, so striping set on the row alone leaves
         # the gaps between cells black and the stripe comes out dotted.
-        def cells_of(row, style):
-            out = [f"<td width='{label_w}' style='{style}'>{escape(row[0])}</td>"]
-            out += [f"<td width='{value_w}' align='right' style='{style}'>{escape(c)}</td>"
-                    for c in row[1:]]
+        def cells_of(row, style, bg):
+            def box(col):
+                colour = STATS_HILITE if (row[0], col) in self.highlighted else bg
+                return f"{style} border:{STATS_BORDER_PX}px solid {colour};"
+            out = [f"<td width='{label_w}' style='{box(0)}'>{escape(row[0])}</td>"]
+            out += [f"<td width='{value_w}' align='right' style='{box(col)}'>{escape(c)}</td>"
+                    for col, c in enumerate(row[1:], start=1)]
             return "".join(out)
 
         head_style = (f"background-color:{STATS_HEAD_BG}; color:{STATS_HEAD}; "
                       f"font-weight:bold;")
-        html = [f"<table cellspacing='0' cellpadding='2' style='color:{STATS_BODY};'>",
-                f"<tr>{cells_of(rows[0], head_style)}</tr>"]
+        # cellpadding 2 - border 2 = 0: the box takes the padding's place (measured: the document
+        # is the same size and, with nothing boxed, the same pixels as with cellpadding 2).
+        html = [f"<table cellspacing='0' cellpadding='{2 - STATS_BORDER_PX}' style='color:{STATS_BODY};'>",
+                f"<tr>{cells_of(rows[0], head_style, STATS_HEAD_BG)}</tr>"]
         for n, row in enumerate(rows[1:], start=1):
-            stripe = f"background-color:{STATS_ROW_ALT};" if n % 2 == 0 else ""
-            html.append(f"<tr>{cells_of(row, stripe)}</tr>")
+            alt = n % 2 == 0
+            stripe = f"background-color:{STATS_ROW_ALT};" if alt else ""
+            html.append(f"<tr>{cells_of(row, stripe, STATS_ROW_ALT if alt else STATS_BG)}</tr>")
         html.append("</table>")
         return "".join(html)
 
@@ -420,6 +444,7 @@ def merge_by_mac(traces, trace):
                             else (other, trace))
             newer.samples += older.samples
             newer.moved_from = older.ip
+            newer.highlighted |= older.highlighted     # the reader's boxes follow the board
             del traces[older.ip]
             return older.ip
     return None

@@ -28224,3 +28224,18 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - Tests: fleet viewer 76/76, fleet monitor 37/37, disable_plots 13/13, udpcom 19/19; regresión antes/después y humo de
   SPO2TEST desde el scratchpad. Spec del lab v1.94 (§6.3, §4.11, changelog); docstring del visor.
 - Memoria: `feedback_variable_lists_struct_order`.
+
+## Sesión 2026-10-20 (8) — Visor de flota: recuadro amarillo al hacer clic en una celda (spec v1.95)
+
+- **Petición (Alex):** en `fleet_ppg_viewer.py`, activar/desactivar un recuadro amarillo con un clic en cualquier celda
+  de las tablas.
+- **Hecho:** el panel es un `QTextEdit` con HTML reescrito cada segundo (compartido con la GUI del grabador), así que el
+  recuadro va dentro del HTML. Cada celda lleva siempre un borde de 2 px del color de su propio fondo en lugar de 2 px
+  de relleno; el recuadro solo cambia ese color a #FFD700 (el dorado de SIGNAL STATS). Medido: mismo tamaño de documento
+  y mismos píxeles que antes sin recuadros; un recuadro cambia solo su anillo de 2 px. Estado en
+  `BoardTrace.highlighted` como (etiqueta de fila, columna): sobrevive al refresco de 1 s y a `merge_by_mac`; no se
+  guarda entre ejecuciones. Clic = filtro de eventos en el viewport (`_StatsClick`), celda por
+  `fleet_widgets.stats_cell_at()` (pregunta al documento), repintado inmediato. Por placa; cabecera y columna de
+  etiquetas incluidas.
+- **Tests:** fleet viewer 85/85 (clic real con `QTest` sobre la media de R, rectángulo de la tabla sin cambios, la otra
+  placa intacta, segundo clic quita el recuadro); GUI del grabador 91/91.

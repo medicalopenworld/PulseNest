@@ -207,6 +207,17 @@ check(html.count(f"width='{value_w}'") == 4 * (len(T.STATS_ROWS) + 1)
       "the four value columns are a measured width and right-aligned")
 check(T.STATS_HEAD_BG in html and T.STATS_BODY in html,
       "and it wears SIGNAL STATS's colours")
+# Boxed cells (2026-10-20): by row label, toggled, and every cell keeps a border so nothing moves.
+check(T.STATS_HILITE not in html and html.count("border:2px solid") == 5 * (len(T.STATS_ROWS) + 1),
+      "nothing boxed: every cell has a border in its own background colour, none gold")
+check(st.toggle_highlight("PI %", 1) is True and st.toggle_highlight("signal", 4) is True,
+      "a click boxes a cell, header included")
+html_b = st.stats_html(label_w, value_w)
+check(html_b.count(f"border:2px solid {T.STATS_HILITE}") == 2
+      and html_b.replace(T.STATS_HILITE, "").count("border:2px solid") == html.count("border:2px solid"),
+      "two boxed cells, gold, and the table otherwise unchanged")
+check(st.toggle_highlight("PI %", 1) is False and st.highlighted == {("signal", 4)},
+      "a second click removes the box", str(st.highlighted))
 
 # ── one band per MAC across a DHCP change ─────────────────────────────────────────────────
 traces = {}
@@ -366,6 +377,41 @@ check(odd.window_combo.currentData() == 7 and odd.window_combo.findData(7) >= 0,
 odd.close()
 if os.path.exists(V.SETTINGS_FILE):
     os.remove(V.SETTINGS_FILE)   # odd.close() saved 7 s; the size checks below expect a first run
+
+# ── a real click on a real panel (2026-10-20) ─────────────────────────────────────────────────
+from PyQt5 import QtGui as _QtGui, QtTest as _QtTest  # noqa: E402
+box_ip = sorted(win.bands)[0]
+edit = win.bands[box_ip][3].widget()
+edit.resize(edit.width(), 600)
+app.processEvents()
+def table_rect():
+    """The statistics table's own rectangle in the document (not the document, whose width
+    follows the viewport and the scrollbar)."""
+    frames = edit.document().rootFrame().childFrames()
+    return edit.document().documentLayout().frameBoundingRect(frames[0])
+win._render_stats(win.bands[box_ip][3], win.traces[box_ip])   # same state as after a click
+app.processEvents()
+rect_before = table_rect()
+# centre of the 'R' row's mean cell, found through the document layout like a mouse would
+r_row = 1 + [r[0] for r in T.STATS_ROWS].index("R")
+table = None
+for _f in edit.document().rootFrame().childFrames():
+    table = _f
+cell_cur = table.cellAt(r_row, 1).firstCursorPosition()
+pt = edit.cursorRect(cell_cur).center()
+_QtTest.QTest.mouseClick(edit.viewport(), QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pt)
+app.processEvents()
+check(win.traces[box_ip].highlighted == {("R", 1)}, "clicking the R mean cell boxes it",
+      str(win.traces[box_ip].highlighted))
+check(T.STATS_HILITE in edit.toHtml().lower() or T.STATS_HILITE.lower() in edit.toHtml().lower(),
+      "and the box is on screen at once, not at the next second")
+check(table_rect() == rect_before, "the table does not move when a box appears",
+      f"{rect_before} -> {table_rect()}")
+other = [ip for ip in win.traces if ip != box_ip][0]
+check(not win.traces[other].highlighted, "the other board's table is untouched")
+_QtTest.QTest.mouseClick(edit.viewport(), QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pt)
+app.processEvents()
+check(not win.traces[box_ip].highlighted, "clicking it again removes the box")
 
 # ── the settings file: a first run sizes itself, and the choice survives ──────────────────
 check(win.height() > 400, "a first run takes its height from the screen, not a fixed 800 px",

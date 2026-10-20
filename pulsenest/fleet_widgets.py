@@ -56,6 +56,18 @@ def stats_width():
     return label_w + value_w * len(STATS_COLS) + bar + 12
 
 
+def stats_cell_at(edit, pos):
+    """(row, column) of the statistics table cell under `pos` (viewport coordinates), or None.
+    Row 0 is the header; column 0 the signal label. Asks the document, not a pixel grid, so it
+    stays right whatever the font, the scroll position or the display scaling."""
+    cursor = edit.cursorForPosition(pos)
+    table = cursor.currentTable()
+    if table is None:
+        return None
+    cell = table.cellAt(cursor)
+    return (cell.row(), cell.column()) if cell.isValid() else None
+
+
 def make_stats_widget(width):
     """The panel: a read-only QTextEdit in the band, not a drawn label.
 

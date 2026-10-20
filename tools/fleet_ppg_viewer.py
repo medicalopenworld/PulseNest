@@ -66,6 +66,12 @@ What it draws, and why those choices:
   ambient-subtracted, PPG, SpO2, SpO2 SQI, R, r reg corr, PI, HR1-3 and their SQIs, RSQI, then
   V_TIA, I_PD, OT; 2026-10-20). The panel is as tall as its band and **scrolls** to the rows that
   do not fit — in a short band that means the raw codes show and SpO2/HR are a scroll away.
+  **A click on any cell boxes it in yellow** (the gold of SIGNAL STATS's highlight in the lab);
+  a second click removes the box (2026-10-20). Per board, header and label column included. The
+  box is kept by row label on the board's trace, so it survives the 1 s rewrite of the table and a
+  board coming back on a new address; it is not saved between runs. Every cell always carries a
+  2 px border in its own background colour, in place of 2 px of padding, so a box changes colour
+  only and the table does not move.
 
   It is a read-only `QTextEdit` in a proxy item rather than a drawn label, for three reasons
   that were all learned the hard way. A widget brings a real scrollbar. It clips itself, so
@@ -103,8 +109,9 @@ _fault_log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fleet_ppg_viewer_faulthandler.log"), "a")
 faulthandler.enable(file=_fault_log, all_threads=True)
 
-from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, WINDOW_S, merge_by_mac  # noqa: E402
-from pulsenest.fleet_widgets import make_stats_widget, panel_width, stats_columns, stats_width  # noqa: E402
+from pulsenest.fleet_trace import BoardTrace, MIN_PLOT_W, STATS_ROWS, WINDOW_S, merge_by_mac  # noqa: E402
+from pulsenest.fleet_widgets import (make_stats_widget, panel_width, stats_cell_at,  # noqa: E402
+                                     stats_columns, stats_width)
 
 REDRAW_MS    = 100
 DRAIN_MS     = 20
@@ -114,6 +121,24 @@ DRAIN_MS     = 20
 WINDOW_CHOICES_S = (5, 10, 15, 30, 60, 120, 300)
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "fleet_ppg_viewer.ini")
+
+
+class _StatsClick(QtCore.QObject):
+    """Left click on a statistics cell -> Viewer.toggle_stats_cell(ip, row, col). An event filter
+    on the panel's viewport: the panel stays read-only (NoTextInteraction), nothing is selected."""
+
+    def __init__(self, viewer, ip, edit):
+        super().__init__(edit)
+        self.viewer, self.ip, self.edit = viewer, ip, edit
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QtCore.QEvent.MouseButtonPress
+                and event.button() == QtCore.Qt.LeftButton):
+            cell = stats_cell_at(self.edit, event.pos())
+            if cell is not None:
+                self.viewer.toggle_stats_cell(self.ip, *cell)
+                return True
+        return False
 
 
 class Viewer(QtWidgets.QMainWindow):
@@ -275,7 +300,12 @@ class Viewer(QtWidgets.QMainWindow):
         numbers.setMinimumWidth(0)
         numbers.setMinimumHeight(0)
         stats = QtWidgets.QGraphicsProxyWidget()
-        stats.setWidget(make_stats_widget(self._stats_w))
+        edit = make_stats_widget(self._stats_w)
+        # Click a cell: a yellow box on it, click again: gone (2026-10-20, Alex). Per board.
+        edit.viewport().installEventFilter(_StatsClick(self, ip, edit))
+        edit.viewport().setCursor(QtCore.Qt.PointingHandCursor)
+        edit.setToolTip("Click a cell to box it in yellow; click again to remove the box.")
+        stats.setWidget(edit)
         stats.setMinimumSize(0, 0)
         # The band's height is the plot's business, not the panel's. Both of these are needed
         # and were measured: with the proxy's PREFERRED height left at the QTextEdit's own size
@@ -310,10 +340,22 @@ class Viewer(QtWidgets.QMainWindow):
             # Only when the second closed. Rewriting the document ten times a second would cost
             # ten times the work for the same table, and it would fight the user's scrollbar.
             if fresh or stats.widget().document().isEmpty():
-                bar = stats.widget().verticalScrollBar()
-                where = bar.value()
-                stats.widget().setHtml(tr.stats_html(*self._stats_cols))
-                bar.setValue(where)             # keep the reader where they scrolled to
+                self._render_stats(stats, tr)
+
+    def _render_stats(self, stats, tr):
+        bar = stats.widget().verticalScrollBar()
+        where = bar.value()
+        stats.widget().setHtml(tr.stats_html(*self._stats_cols))
+        bar.setValue(where)             # keep the reader where they scrolled to
+
+    def toggle_stats_cell(self, ip, row, col):
+        """Box or unbox one statistics cell of one board, and show it now rather than at the
+        next 1 s rewrite. Row 0 is the header ('signal', mean, sd, min, max)."""
+        tr, band = self.traces.get(ip), self.bands.get(ip)
+        if tr is None or band is None or not 0 <= row <= len(STATS_ROWS):
+            return
+        tr.toggle_highlight("signal" if row == 0 else STATS_ROWS[row - 1][0], col)
+        self._render_stats(band[3], tr)
 
     def closeEvent(self, event):
         self.drain_timer.stop()
