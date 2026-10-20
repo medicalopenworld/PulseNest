@@ -28181,3 +28181,25 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   dos columnas del host); botón **COPY HEADER** en la barra superior que copia la línea completa al portapapeles (muestra
   COPIED 1,5 s). `header_fields()` / `header_fields_html()` / `copy_header()` en `UdpComWindow`. Spec §7.5 y changelog
   v1.92. `udpcom_view_test` 19/19 + comprobación offscreen del tooltip y del portapapeles.
+
+## Sesión 2026-10-20 (6) — R vs r en el código: `spo2_r_corr` → `spo2_r_method2_reg_corr` (lib v0.108, fw 0.27, lab v1.93)
+
+- **Problema (Alex):** en el fuente no se distingue R (ratio) de r (correlación): snake_case pierde la mayúscula y
+  `spo2_r_corr` colgaba de la misma raíz `spo2_r_` que `spo2_r_method` y `spo2_r_curve_*`, leyéndose como "la
+  correlación de R". Propuesta de Claude: `spo2_reg_corr`; propuesta de Alex: `spo2_r_m2_reg_corr`; objeción de Claude:
+  `M2` es modo de trama (`$M1-$M4`). **Decisión (Alex): `spo2_r_method2_reg_corr`.** Regla: bajo `spo2_r_` solo R y lo
+  suyo; la correlación nunca es un `r_` suelto. Rationale §16 de la librería.
+- **Hecho (151 sustituciones mecánicas + claves internas del lab):** lib v0.108 (`85b37f6`, tag, push):
+  `AFE4490Data::spo2_r_method2_reg_corr`, `spo2_r_method2_reg_corr_min`, `setSpO2RMethod2RegCorrMin()`, accesor de test;
+  bloque de `getConfig()` alineado. fw 0.27: clave `$CFG`/`$SET` `spo2_r_method2_reg_corr_min`, campo 36 del `$M4`
+  `R_METHOD2_REG_CORR`. `capture_dict.py`: columna y clave renombradas con `R_CORR`/`FW_R_CORR` y `spo2_r_corr_min` como
+  sinónimos (las capturas de fw 0.19-0.26 siguen leyéndose; comprobado `COLUMN_CANON` y `KEY_SYNONYMS`).
+  `capture_csv.py`, `capture_csv_format_spec.md`, runner, `spo2_bias_analysis.py` (lee ambos nombres de columna), lab
+  v1.93 (`data_r_method2_reg_corr`, `r_method2_reg_corr_min`, series y claves del espejo; en pantalla sigue "r"), specs.
+  Las secciones de historial de versiones conservan los nombres antiguos; `ir_corr` no se tocó.
+- **Tests:** host spo2 17/17; v04 45/45, capture_csv 15/15, dict 1340/1340, convert 17/17, udpcom 19/19,
+  disable_plots 13/13, session 87/87; humo SPO2TEST OK. Build V18 OK.
+- **OTA:** el primer intento falló (timeout en .143/.168/.9): las placas habían tomado IP nuevas del hotspot
+  (.242 87:A4, .238 88:50, .141 82:5C). Segundo intento verificado por MAC en las tres, `elfsha=2677deb613f9b57a`;
+  `docs/boards.md` anotado. Memoria: regla de nombres en `project_nomenclature_dictionary`, versión de la lib.
+- Pendiente siguiente: la puerta de artefacto para SpO2.
