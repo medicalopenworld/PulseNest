@@ -28270,3 +28270,18 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - **Hallazgo colateral:** el runner en modo crudo nunca calcula HR2/HR3 (su camino lento vive en tareas FreeRTOS que el
   host no tiene): todas las réplicas crudas anteriores tienen HR2 = HR3 = NaN. El modo OT sí los calcula.
 - Registros de las réplicas en `derived/` de cada sesión (no versionado).
+
+## Sesión 2026-10-20 (11) — Runner offline: HR2/HR3 en modo crudo (lib v0.109, runner v0.28)
+
+- Causa: en el host no existen las tareas B/C; `_process_sample()` marcaba `_hr2/_hr3_computing` y daba un semáforo que
+  nadie tomaba, así que el camino lento nunca corría y la bandera quedaba fija: HR2 = HR3 = NaN en todas las réplicas
+  crudas desde el runner v0.20. El modo `--input ot` no lo sufría (sus wrappers de test calculan en síncrono).
+- **Hecho:** lib v0.109 (tag, push): `test_run_pending_hr_computations()` (solo `UNIT_TEST`) ejecuta lo que la tarea A
+  señaló, escribiendo exactamente lo que escriben las tareas; runner v0.28 lo llama tras cada muestra cruda. Sin cambio
+  en placa (las V18 siguen en fw 0.27 / lib 0.108; no hay OTA).
+- **Verificación (SUBJ11 115518, réplica cruda vs HR3 grabado por la placa):** válido 64,5 % vs 69,9 %; |ΔHR3| mediana
+  0,03 lpm (p99 1,28) donde ambos válidos; validez coincidente 92,7 % (la réplica cruda recalcula ProbeState y arranca
+  en frío). Host hr2/hr3 OK. Informe del estudio de la puerta anotado.
+- Preguntas de Alex respondidas en la sesión: para qué sirve HR3_SQI si "HR3 válido" basta como puerta (es la métrica de
+  calidad de HR, no de SpO2; cuando HR3 pasa la validación de pico verdadero su SQI ya es ≈ 1 en el 95-99 % de las
+  muestras) y detalle de la propuesta de puerta.

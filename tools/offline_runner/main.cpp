@@ -1,5 +1,12 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.27 — native/offline (no hardware), library API v0.103
+// Runner version: v0.28 — native/offline (no hardware), library API v0.109
+//
+// v0.28 (2026-10-20): raw-input replays now carry HR2/HR3. The host has no Task B/C, so a sample
+//   that fired their interval left _hr2/_hr3_computing set for good and HR2 = HR3 = NaN in every
+//   raw replay since v0.20 (found by the SpO2 artefact-gate study, which needed HR3). After each
+//   test_feed_sample() the runner calls test_run_pending_hr_computations() (lib v0.109), which
+//   runs what Task A signalled exactly as the task bodies would. --input ot was unaffected (its
+//   test_feed_hr2/hr3 wrappers compute synchronously).
 // Spec: incunest_afe4490_spec.md §9
 // Author: Medical Open World — http://medicalopenworld.org — <contact@medicalopenworld.org>
 //
@@ -709,6 +716,7 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
             afe.test_feed_hr3(oi, ps_e);
         } else {
             afe.test_feed_sample(r.led1, r.led2, r.aled1, r.aled2);
+            afe.test_run_pending_hr_computations();   // v0.28: the host has no Task B/C
             ps_e = afe.test_probe_state();
             // What _spo2_update() saw: the last valid analog state's OT (frozen while settling).
             oi  = afe.test_last_ot_led1();
