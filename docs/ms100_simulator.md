@@ -1,7 +1,7 @@
 # CONTEC MS100 SpO2 simulator — operating notes
 
 Role in the project: regression and stability reference for the electronic chain (AFE4490 → R-METHOD).
-It never validates accuracy (ISO 80601-2-61 EE.4: no simulator does). Session config: `docs/session_configs/MS100.toml`.
+It never validates accuracy (ISO 80601-2-61 EE.4: no simulator does). Session config: `docs/session_configs/subj90_MS100.toml` (not committed, like every session config).
 
 ## Controls (observed behaviour, 2026-10-19, Alex; not from the manual)
 

@@ -28123,3 +28123,13 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   spec §5.1 apunta al registro `docs/spo2_r_curves.md`. Tests: host pi 8/8 + spo2 16/16, dict 1340/1340; build V18 OK.
   OTA hecha después: las 3 V18 (87:A4, 88:50, 82:5C) a fw 0.25 / lib 0.106, `elfsha=afe4ecddc311c5a5`, verificadas por MAC;
   su `$CFG` real ya lleva `pi_method_id=PI-METHOD-1` (leído por el hub). `docs/boards.md` anotado. Push de ambos repos hecho.
+
+## Sesión 2026-10-20 (2) — Commit de `docs/ms100_simulator.md` y del análisis del barrido SUBJ90
+
+- Alex perdió el último resumen del CLI; se recuperaron los pendientes del log y la memoria (puerta de artefacto,
+  clamp a 100 %, experimento 5 min dedo/Mindray, R-curves del MS100 en pantalla, Pulse Amp 1/3/10 % vs PI, λ del
+  rojo a 20 mA en `BACKLOG.md`).
+- **Commit** de `docs/ms100_simulator.md` (referencia al `.toml` corregida: `subj90_MS100.toml`, sin commit como todo
+  session config) y de `captures/sessions/SUBJ90/Analysis/` completo (findings, `plateaus.csv`, figura, script) más el
+  espectrograma de `Spectra/`. `.gitignore`: excepción explícita para SUBJ90 (simulador, sin datos de personas); los
+  crudos (~185 MB) siguen fuera salvo que un test de regresión los necesite.

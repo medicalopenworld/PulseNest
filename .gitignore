@@ -72,6 +72,13 @@ captures/sessions/SUBJ*/Analysis/*
 !captures/sessions/SUBJ*/Analysis/
 captures/sessions/SUBJ*/Analysis/*
 !captures/sessions/SUBJ*/Analysis/*.py
+# 2026-10-20: SUBJ90 is the MS100 simulator, nobody's data. Its analysis RESULTS (findings, plateau
+# table, figures) are versioned too, not only the code: the MS100 Nellcor-table fit in the log comes
+# from them. The raw captures (~185 MB) stay out unless a regression test needs one (rule above).
+!captures/sessions/SUBJ90/Analysis/*
+!captures/sessions/SUBJ90/Spectra/
+captures/sessions/SUBJ90/Spectra/*
+!captures/sessions/SUBJ90/Spectra/*.png
 
 # Offline runner — build y ficheros generados
 tools/offline_runner/build/
