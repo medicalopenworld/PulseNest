@@ -1,7 +1,7 @@
 """SpO2 bias of the library against the ward monitor, for one or more subjects.
 
 Pairs every reference reading (VideoNest OCR rows of `reference_spo2.csv`) with the
-board's R, SpO2, PI, r (R_CORR) and HR over the monitor's averaging window that ends at
+board's R, SpO2, PI, r (R_METHOD2_REG_CORR) and HR over the monitor's averaging window that ends at
 the reading, then compares the R curve the board ran that day (read from the `alg:`
 snapshot of each capture, never hardcoded) with what the reference implies. Generalises
 the per-campaign `r_vs_ref_analysis.py` / `fit_method2.py` of the 2026-09-23 analysis
@@ -13,7 +13,7 @@ numbers stay comparable with those reports.
 
 Sessions are `captures/sessions/<SUBJ>/<SUBJ>_<SITE>_<date>_<time>/`. A session without a
 `reference_spo2.csv` (or with none of the declared kind) yields no pairs and is listed.
-`--replay <name>` takes R, R_CORR, PI, SpO2, SpO2_SQI, ProbeState from
+`--replay <name>` takes R, R_METHOD2_REG_CORR, PI, SpO2, SpO2_SQI, ProbeState from
 `<session>/derived/<name>/*_replay.csv` (offline runner output, rows 1:1 with the parts)
 instead of the columns the firmware produced that day. `--curve a,b` evaluates that curve
 instead of the day's: our SpO2 is then recomputed as a - b*R(window) (required with --replay,
@@ -72,14 +72,14 @@ def _snapshot_value(line, keys):
 def parse_board_session(session_dir, replay=None):
     """All CSV parts of the (single) board, in order.
 
-    Returns dict of numpy arrays (t_epoch_us, r, spo2, sqi, pi, ps, r_corr, hr) and the
+    Returns dict of numpy arrays (t_epoch_us, r, spo2, sqi, pi, ps, r_method2_reg_corr, hr) and the
     curve of the day {id, a, b, r_method}. Row time comes from the '# @row N clock:'
     anchors, linearly interpolated, extrapolated at the local period outside.
     """
     parts = sorted(glob.glob(os.path.join(session_dir, "*_p[0-9][0-9].csv")))
     if not parts:
         raise FileNotFoundError(f"no board CSV parts in {session_dir}")
-    out = {k: [] for k in ("r", "spo2", "sqi", "pi", "ps", "r_corr", "hr")}
+    out = {k: [] for k in ("r", "spo2", "sqi", "pi", "ps", "r_method2_reg_corr", "hr")}
     curve = {"id": None, "a": math.nan, "b": math.nan, "r_method": None, "build": None, "inherited": None}
     cols = {}
     base_row = 0
@@ -116,7 +116,9 @@ def parse_board_session(session_dir, replay=None):
                     out["pi"].append(float(v[cols["PI"]]))
                     out["ps"].append(int(v[cols["ProbeState"]]))
                     out["hr"].append(float(v[cols["HR3"]]) if "HR3" in cols else math.nan)
-                    out["r_corr"].append(float(v[cols["R_CORR"]]) if "R_CORR" in cols else math.nan)
+                    # R_METHOD2_REG_CORR since fw 0.27; R_CORR in captures of fw 0.19-0.26
+                    _rc = cols.get("R_METHOD2_REG_CORR", cols.get("R_CORR"))
+                    out["r_method2_reg_corr"].append(float(v[_rc]) if _rc is not None else math.nan)
                 except (KeyError, ValueError, IndexError):
                     continue  # malformed row: count nothing, keep going
                 part_row += 1
@@ -134,7 +136,8 @@ def parse_board_session(session_dir, replay=None):
                     rep["sqi"].append(float(row["SpO2_SQI"]))
                     rep["pi"].append(float(row["PI"]))
                     rep["ps"].append(int(row["ProbeState"]))
-                    rep["r_corr"].append(float(row["R_CORR"]) if "R_CORR" in row else math.nan)
+                    _rc = row.get("R_METHOD2_REG_CORR", row.get("R_CORR"))
+                    rep["r_method2_reg_corr"].append(float(_rc) if _rc is not None else math.nan)
                     rep["hr"].append(float(row["HR3"]) if "HR3" in row else math.nan)
         if len(rep["r"]) != n_rows:
             raise ValueError(f"{session_dir}: replay rows {len(rep['r'])} != original {n_rows}")
@@ -186,7 +189,7 @@ def pair_session(subject, name, board, ref_t, ref_spo2, ref_conf, anomalies, win
             "ref_spo2": ref_spo2[i], "ref_conf": ref_conf[i],
             "n_samples": n, "applied_frac": math.nan, "valid_frac": math.nan,
             "r_med": math.nan, "our_spo2_med": math.nan, "sqi_med": math.nan,
-            "pi_med": math.nan, "r_corr_med": math.nan, "hr_med": math.nan,
+            "pi_med": math.nan, "r_method2_reg_corr_med": math.nan, "hr_med": math.nan,
             "anomaly_frac": session_events.covered_fraction(anomalies, t1 - w_us, t1),
             "usable": 0, "stationary": 0,
         }
@@ -202,7 +205,7 @@ def pair_session(subject, name, board, ref_t, ref_spo2, ref_conf, anomalies, win
                 row["our_spo2_med"] = float(np.median(spo2[valid]))
                 row["sqi_med"] = float(np.median(board["sqi"][sl][valid]))
                 row["pi_med"] = float(np.median(board["pi"][sl][valid]))
-                row["r_corr_med"] = float(np.nanmedian(board["r_corr"][sl][valid]))
+                row["r_method2_reg_corr_med"] = float(np.nanmedian(board["r_method2_reg_corr"][sl][valid]))
                 row["hr_med"] = float(np.nanmedian(board["hr"][sl][valid]))
             row["usable"] = int(row["applied_frac"] >= APPLIED_MIN_FRAC
                                 and row["valid_frac"] >= VALID_MIN_FRAC
@@ -327,7 +330,7 @@ def main(argv=None):
                              f"p90 {q(bias, 90):+.1f}); ref range "
                              f"{min(p['ref_spo2'] for p in usable):.0f}-{max(p['ref_spo2'] for p in usable):.0f}; "
                              f"PI median {np.median([p['pi_med'] for p in usable]):.2f} %, "
-                             f"r median {np.nanmedian([p['r_corr_med'] for p in usable]):.3f}")
+                             f"r median {np.nanmedian([p['r_method2_reg_corr_med'] for p in usable]):.3f}")
 
     # A session whose capture carries no `alg:` snapshot (the hub's $LCFG answer never reached the
     # recorder) inherits the curve of another session of this run with the same firmware build:
@@ -420,7 +423,7 @@ def main(argv=None):
 
     # residual dependence
     lines.append("Residual (ours - ref) vs window statistics, usable pairs, Spearman rho (pooled / per subject):")
-    for k, label in (("pi_med", "PI"), ("r_corr_med", "r (R_CORR)"), ("hr_med", "HR3"),
+    for k, label in (("pi_med", "PI"), ("r_method2_reg_corr_med", "r (R_METHOD2_REG_CORR)"), ("hr_med", "HR3"),
                      ("ref_conf", "OCR confidence"), ("sqi_med", "SpO2_SQI")):
         res = arr(usable, "our_spo2_med") - arr(usable, "ref_spo2")
         x = arr(usable, k)
@@ -490,7 +493,7 @@ def main(argv=None):
         fig.savefig(os.path.join(args.out, "spo2_vs_ref.png"), dpi=130)
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
-        for ax, (k, label) in zip(axes, (("pi_med", "PI [%]"), ("r_corr_med", "r (R_CORR)"), ("hr_med", "HR3 [BPM]"))):
+        for ax, (k, label) in zip(axes, (("pi_med", "PI [%]"), ("r_method2_reg_corr_med", "r (R_METHOD2_REG_CORR)"), ("hr_med", "HR3 [BPM]"))):
             for s in args.subjects:
                 rows = [p for p in usable if p["subject"] == s]
                 ax.scatter(arr(rows, k), arr(rows, "our_spo2_med") - arr(rows, "ref_spo2"), s=8,

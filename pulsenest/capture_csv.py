@@ -65,14 +65,14 @@ CAPTURE_COLS = [
     ("CH_MASKS",    "FW_CH_MASKS",    33, False),
     ("RF1_OHM",     "FW_RF1_OHM",     34, False),
     ("RF2_OHM",     "FW_RF2_OHM",     35, False),
-    ("R_CORR",      "FW_R_CORR",      36, False),   # fw 0.19 / lib v0.100: R-METHOD-2's correlation r
+    ("R_METHOD2_REG_CORR",      "FW_R_METHOD2_REG_CORR",      36, False),   # fw 0.19 / lib v0.100: R-METHOD-2's correlation r
 ]
 
 
 # A column the firmware only emits from some version on (canonical name -> (major, minor)). The v0.4
 # writer includes it only when the capture's $CFG says fw >= that version; the pre-v0.4 writer
 # (`CaptureCsvWriter`, frozen format) never does.
-COLUMN_MIN_FW = {"R_CORR": (0, 19)}
+COLUMN_MIN_FW = {"R_METHOD2_REG_CORR": (0, 19)}
 
 
 def col_spec_all():

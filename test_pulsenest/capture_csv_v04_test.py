@@ -40,7 +40,7 @@ def m4(cnt, ts, rf1="50K"):
 KEYS = {"writer": "capture_csv_v04_test/1", "session_id": "20260922_1200_BENCH", "subject": "SUBJ01",
         "site": "BENCH", "condition": "RESTING", "part": 1, "led1": "IR", "led2": "RED",
         "probe": "Medle-neo", "t0_iso": "2026-09-22T12:00:00+02:00", "t0_epoch_us": 1790000000000000}
-# CFG says fw=0.15: the columns gated on a later firmware (R_CORR, fw 0.19) are absent from these files.
+# CFG says fw=0.15: the columns gated on a later firmware (R_METHOD2_REG_CORR, fw 0.19) are absent from these files.
 N_GATED = sum(1 for _l, csv, _i, _m in CAPTURE_COLS if D.COLUMN_CANON[csv] in COLUMN_MIN_FW)
 
 def run(frames_before_open, datagrams, keys=KEYS, keep_wire=True, events=()):
@@ -236,7 +236,7 @@ if parts:
 else:
     print("skip corpus: captures/v04_corpus not present")
 
-# ── R_CORR ($M4 field 36, fw 0.19): written only when the capture's $CFG says fw >= 0.19 ────
+# ── R_METHOD2_REG_CORR ($M4 field 36, fw 0.19): written only when the capture's $CFG says fw >= 0.19 ────
 with tempfile.TemporaryDirectory() as td:
     rows = {}
     for tag, cfg, extra in (("old", CFG, ""), ("new", CFG.replace("fw=0.15", "fw=0.19"), ",36")):
@@ -250,10 +250,10 @@ with tempfile.TemporaryDirectory() as td:
         w.close()
         L = io.open(path, encoding="utf-8").read().split("\n")
         rows[tag] = [l for l in L if l and not l.startswith("#")]
-check("R_CORR: absent (header and rows) when the firmware is older or unknown",
-      "R_CORR" not in rows["old"][0] and rows["old"][1].split(",")[-1] == "33", rows["old"][0][-30:])
-check("R_CORR: last column, reads field 36, when $CFG says fw=0.19",
-      rows["new"][0].endswith(",R_CORR") and rows["new"][1].split(",")[-1] == "36", rows["new"][0][-30:])
+check("R_METHOD2_REG_CORR: absent (header and rows) when the firmware is older or unknown",
+      "R_METHOD2_REG_CORR" not in rows["old"][0] and rows["old"][1].split(",")[-1] == "33", rows["old"][0][-30:])
+check("R_METHOD2_REG_CORR: last column, reads field 36, when $CFG says fw=0.19",
+      rows["new"][0].endswith(",R_METHOD2_REG_CORR") and rows["new"][1].split(",")[-1] == "36", rows["new"][0][-30:])
 
 # ── P5: the minimum columns ─────────────────────────────────────────────────────────────────
 with tempfile.TemporaryDirectory() as td:

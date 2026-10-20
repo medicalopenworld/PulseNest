@@ -635,7 +635,7 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         return st;
     }
     bool has_fw = rows[0].has_fw;
-    out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,R_CORR,PI,SpO2,SpO2_SQI,"
+    out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,R_METHOD2_REG_CORR,PI,SpO2,SpO2_SQI,"
            "HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
     if (has_fw) out << ",FW_SpO2,FW_R,FW_ProbeState,delta_SpO2,delta_R";
     out << ",R_CAND,R_CAND_CORR,R_CAND_CD,R_CAND_CD_CORR,R_CAND_CE,R_CAND_CE_CORR,R_CAND_BW,R_CAND_BW_CORR\n";
@@ -729,7 +729,7 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         snprintf(buf, sizeof(buf),
                  "%lld,%d,%.7g,%.7g,%.5f,%.4f,%.3g,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
                  *smp_idx, ps, oi, orr,
-                 rr, afe.test_spo2_r_corr(), afe.test_pi(), spo2, afe.test_spo2_sqi(),
+                 rr, afe.test_spo2_r_method2_reg_corr(), afe.test_pi(), spo2, afe.test_spo2_sqi(),
                  afe.test_hr1(), afe.test_hr1_sqi(),
                  afe.test_hr2(), afe.test_hr2_sqi(),
                  afe.test_hr3(), afe.test_hr3_sqi());

@@ -229,7 +229,7 @@ void test_spo2_default_r_curve_is_labelled_and_matches() {
     TEST_ASSERT_TRUE(cfg.spo2_r_curve_method_match);
     TEST_ASSERT_EQUAL_FLOAT(123.98f, cfg.spo2_r_curve_a);
     TEST_ASSERT_EQUAL_FLOAT(39.13f, cfg.spo2_r_curve_b);
-    TEST_ASSERT_EQUAL_FLOAT(0.8f, cfg.spo2_r_corr_min);
+    TEST_ASSERT_EQUAL_FLOAT(0.8f, cfg.spo2_r_method2_reg_corr_min);
     afe.setSpO2RMethod(1);
     TEST_ASSERT_FALSE(afe.getConfig().spo2_r_curve_method_match);
     feed_spo2_sine(afe, 5000.0f, a_red_for(98.0f), 1.0f, CONVERGED_SAMPLES);
@@ -281,8 +281,8 @@ void test_spo2_method2_equals_method1_on_clean_sines() {
     feed_spo2_sine(m1, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_FLOAT_WITHIN(0.005f, 0.5538f, m2.test_spo2_r());
     TEST_ASSERT_FLOAT_WITHIN(0.005f, m1.test_spo2_r(), m2.test_spo2_r());
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, m2.test_spo2_r_corr());
-    TEST_ASSERT_TRUE(isnan(m1.test_spo2_r_corr()));            // r belongs to method 2 only
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, m2.test_spo2_r_method2_reg_corr());
+    TEST_ASSERT_TRUE(isnan(m1.test_spo2_r_method2_reg_corr()));            // r belongs to method 2 only
     TEST_ASSERT_EQUAL_FLOAT(1.0f, m2.test_spo2_sqi());
 }
 
@@ -298,11 +298,11 @@ void test_spo2_method2_low_r_invalidates() {
         afe.test_feed_spo2(OT_DC + 5000.0f * scale * sinf(phase),
                            OT_DC + 5000.0f * scale * noise, ProbeState::PROBE_APPLIED);
     }
-    TEST_ASSERT_TRUE(afe.test_spo2_r_corr() < 0.3f);
+    TEST_ASSERT_TRUE(afe.test_spo2_r_method2_reg_corr() < 0.3f);
     TEST_ASSERT_FALSE(isnan(afe.test_spo2_r()));
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
-    afe.setSpO2RCorrMin(-1.0f);                                 // gate off: SpO2 comes back (if in range)
+    afe.setSpO2RMethod2RegCorrMin(-1.0f);                                 // gate off: SpO2 comes back (if in range)
     feed_spo2_sine(afe, 5000.0f, 2769.0f, 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_FALSE(isnan(afe.test_spo2()));
 }

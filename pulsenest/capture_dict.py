@@ -52,7 +52,7 @@ COLUMNS = [
     Column("SpO2",        ("FW_SpO2",),     "firmware SpO2; -1 when SpO2_SQI == 0",              "%",        "float", FW_COMPUTED, "legacy"),
     Column("SpO2_SQI",    ("FW_SpO2_SQI",), "SpO2 validity, 0 = invalid, 1 = valid (project_sqi_definition)", "flag", "float", FW_COMPUTED, "legacy"),
     Column("R",           ("FW_R",),        "ratio of ratios (AC/DC RED over AC/DC IR) behind SpO2", "ratio",  "float", FW_COMPUTED, "legacy"),
-    Column("R_CORR",      ("FW_R_CORR",),   "correlation r of R-METHOD-2's regression, the fit's own quality (fw 0.19, lib v0.100); nan under R-METHOD-1", "ratio", "float", FW_COMPUTED, "0.4"),
+    Column("R_METHOD2_REG_CORR",      ("FW_R_METHOD2_REG_CORR", "R_CORR", "FW_R_CORR"),   "correlation r of R-METHOD-2's regression, the fit's own quality (fw 0.19, lib v0.100); nan under R-METHOD-1", "ratio", "float", FW_COMPUTED, "0.4"),
     Column("PI",          ("FW_PI",),       "perfusion index, AC/DC of the IR channel",           "%",        "float", FW_COMPUTED, "legacy"),
     Column("HR1",         ("FW_HR1",),      "HR1 (peak detection); -1 when HR1_SQI == 0",         "bpm",      "float", FW_COMPUTED, "legacy"),
     Column("HR1_SQI",     ("FW_HR1_SQI",),  "HR1 validity, 0/1",                                  "flag",     "float", FW_COMPUTED, "legacy"),
@@ -204,7 +204,7 @@ KEYS = [
     Key("hgac_ema_slow_tau_ms", "alg", (LCFG, ("hgac_ema_slow_tau_s",),  1000), "leveling EMA time constant",                        "ms",   "int",   CONFIG, "0.4"),
     Key("hgac_ema_ambient_tau_ms", "alg", (LCFG, ("hgac_ema_ambient_tau_s",), 1000), "ambient EMA time constant",                    "ms",   "int",   CONFIG, "0.4"),
     Key("spo2_r_method",        "alg", (LCFG, ("spo2_r_method",), 1),        "R method in force: 1 = RMS ratio, 2 = regression on derivatives (fw 0.18, lib v0.100)", "enum", "int", CONFIG, "0.4"),
-    Key("spo2_r_corr_min",      "alg", (LCFG, ("spo2_r_corr_min",), 1),      "R-METHOD-2 validity gate: SpO2 withheld while the regression's r is below this (fw 0.18)", "ratio", "float", CONFIG, "0.4"),
+    Key("spo2_r_method2_reg_corr_min",      "alg", (LCFG, ("spo2_r_method2_reg_corr_min",), 1),      "R-METHOD-2 validity gate: SpO2 withheld while the regression's r is below this (fw 0.18)", "ratio", "float", CONFIG, "0.4"),
     Key("spo2_window_ms",       "alg", (LCFG, ("spo2_window_s",), 1000),     "SpO2 averaging window, a true sliding window over R's products; 2-12 s, the window is the warm-up (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),
     Key("pi_window_ms",         "alg", (LCFG, ("pi_window_s",), 1000),       "PI averaging window (AC and DC), independent of spo2_window_ms; 2-12 s (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),
     Key("afe_settle_freeze_enable", "alg", (LCFG, ("afe_settle_freeze_enable",), 1), "settling freeze after an RF/CF change; bench switch, never off in clinical use (fw 0.22, lib v0.104, spec 5.8.4)", "flag", "int", CONFIG, "0.4"),
@@ -224,6 +224,9 @@ WIRE_TO_KEY    = {(k.wire[0], w): k.name for k in KEYS if k.wire for w in k.wire
 # Wire keys older firmware printed for what a key now reads from another name. Unlike the labels in
 # a Key's own wire list, an old name and its replacement never share a frame, so a reader may take
 # both. fw <= 0.15 printed the R curve as spo2a/spo2b (renamed fw 0.16 / lib v0.98).
-WIRE_LEGACY    = {(CFG, "spo2a"): "spo2_r_curve_a", (CFG, "spo2b"): "spo2_r_curve_b"}
+WIRE_LEGACY    = {(CFG, "spo2a"): "spo2_r_curve_a", (CFG, "spo2b"): "spo2_r_curve_b",
+                  # fw 0.18-0.26 printed the R-METHOD-2 gate as spo2_r_corr_min (renamed fw 0.27 / lib v0.108)
+                  (LCFG, "spo2_r_corr_min"): "spo2_r_method2_reg_corr_min"}
 # Snapshot key names written by older writers -> canonical (renaming = adding a synonym).
-KEY_SYNONYMS   = {"spo2_cal_a": "spo2_r_curve_a", "spo2_cal_b": "spo2_r_curve_b"}
+KEY_SYNONYMS   = {"spo2_cal_a": "spo2_r_curve_a", "spo2_cal_b": "spo2_r_curve_b",
+                  "spo2_r_corr_min": "spo2_r_method2_reg_corr_min"}

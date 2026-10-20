@@ -549,12 +549,12 @@ class HRFFTCalc:
         return self.hr_bpm, self.hr_valid
 
 
-def _fmt_r_corr(data_r_corr, decimals=3):
-    """Last r of R-METHOD-2 ($M4 R_CORR) for a title: '---' when the buffer is absent, empty or
+def _fmt_r_method2_reg_corr(data_r_method2_reg_corr, decimals=3):
+    """Last r of R-METHOD-2 ($M4 R_METHOD2_REG_CORR) for a title: '---' when the buffer is absent, empty or
     the firmware has no value (NaN: R-METHOD-1, window filling, probe off)."""
-    if not data_r_corr:
+    if not data_r_method2_reg_corr:
         return '---'
-    v = data_r_corr[-1]
+    v = data_r_method2_reg_corr[-1]
     return f"{v:.{decimals}f}" if not math.isnan(v) else '---'
 
 
@@ -575,11 +575,11 @@ class SpO2TestCalc:
               are summed over each 100 ms block (alg_window_block_s) and the block sums over a
               sliding window of spo2_window_s seconds (circular buffer, O(1) totals rebuilt at
               every wrap). R = Σdx·dy / Σdx² (slope of dy on dx through the origin) and
-              r = Σdx·dy / √(Σdx²·Σdy²) (its correlation, the validity gate r ≥ r_corr_min).
+              r = Σdx·dy / √(Σdx²·Σdy²) (its correlation, the validity gate r ≥ r_method2_reg_corr_min).
       PI    : its own band-pass 0.5–15 Hz; AC² and the raw OT (DC) summed at the full rate over
               each 100 ms block, the block sums over a sliding window of pi_window_s seconds;
               PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100  (N = samples in the window; peak-to-peak units).
-      SpO2  : a − b·R; valid when r ≥ r_corr_min, PI known and ≤ 20 %, 70 ≤ SpO2 ≤ 110
+      SpO2  : a − b·R; valid when r ≥ r_method2_reg_corr_min, PI known and ≤ 20 %, 70 ≤ SpO2 ≤ 110
               (clamped to 100); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise NaN, SQI 0.
     The outputs refresh at the block cadence (10 Hz) and hold between blocks; they are NaN while
     their window is still filling — the window is the warm-up, there is no warm-up parameter.
@@ -609,7 +609,7 @@ class SpO2TestCalc:
     FW_DC_EMA_TAU_S    = 2.0      # spo2_ema_mean_tau_s (EmaChannel τ_mean, DC of both channels)
     FW_SPO2_WINDOW_S   = 6.0      # spo2_window_s — SpO2 averaging window
     FW_PI_WINDOW_S     = 6.0      # pi_window_s   — PI averaging window, independent length
-    FW_R_CORR_MIN      = 0.8      # spo2_r_corr_min — R-METHOD-2 validity gate on r
+    FW_R_METHOD2_REG_CORR_MIN      = 0.8      # spo2_r_method2_reg_corr_min — R-METHOD-2 validity gate on r
     FW_SPO2_R_CURVE_A  = 123.98   # R-CURVE-STS0163-HOSPNAV-20261004, fitted with R-METHOD-2
     FW_SPO2_R_CURVE_B  = 39.13
     WINDOW_S_MIN       = 2.0      # alg_window_s_min / alg_window_s_max — the library's setters clamp
@@ -638,7 +638,7 @@ class SpO2TestCalc:
         ('dc_ema_tau_s',   'FW_DC_EMA_TAU_S'),
         ('spo2_window_s',  'FW_SPO2_WINDOW_S'),
         ('pi_window_s',    'FW_PI_WINDOW_S'),
-        ('r_corr_min',     'FW_R_CORR_MIN'),
+        ('r_method2_reg_corr_min',     'FW_R_METHOD2_REG_CORR_MIN'),
     )
 
     def __init__(self):
@@ -732,7 +732,7 @@ class SpO2TestCalc:
         self._pi_idx    = 0
         self._pi_count  = 0
         # Outputs hold between blocks (as the firmware's AFE4490Data fields do)
-        self._out = {'dc_ir': nan, 'dc_red': nan, 'R': nan, 'r': nan, 'pi': nan,
+        self._out = {'dc_ir': nan, 'dc_red': nan, 'R': nan, 'r_method2_reg_corr': nan, 'pi': nan,
                      'spo2': nan, 'sqi': 0.0, 'valid': False, 'filling': True}
         self._clean = True
 
@@ -822,7 +822,7 @@ class SpO2TestCalc:
         self._spo2_phase += 1
         if self._spo2_phase < self._block_len:
             if self._spo2_count < self._spo2_n:
-                out['R'] = out['r'] = out['spo2'] = nan
+                out['R'] = out['r_method2_reg_corr'] = out['spo2'] = nan
                 out['sqi'] = 0.0
                 out['valid'] = False
             return out
@@ -839,7 +839,7 @@ class SpO2TestCalc:
             self._spo2_sum = [sum(b) for b in self._spo2_buf]
         if self._spo2_count < self._spo2_n:         # the window is the warm-up
             self._spo2_count += 1
-            out['R'] = out['r'] = out['spo2'] = nan
+            out['R'] = out['r_method2_reg_corr'] = out['spo2'] = nan
             out['sqi'] = 0.0
             out['valid'] = False
             return out
@@ -848,7 +848,7 @@ class SpO2TestCalc:
         reg_ok = sxx > self.SPO2_REG_EPS and syy > self.SPO2_REG_EPS
         R = sxy / sxx if reg_ok else nan
         r = sxy / math.sqrt(sxx * syy) if reg_ok else nan
-        out['R'], out['r'] = R, r
+        out['R'], out['r_method2_reg_corr'] = R, r
         out['filling'] = False
         if not reg_ok:
             out['spo2'], out['sqi'], out['valid'] = nan, 0.0, False
@@ -856,7 +856,7 @@ class SpO2TestCalc:
 
         spo2 = self.spo2_r_curve_a - self.spo2_r_curve_b * R
         pi   = out['pi']
-        r_ok  = r >= self.r_corr_min
+        r_ok  = r >= self.r_method2_reg_corr_min
         pi_ok = not math.isnan(pi) and pi <= self.FW_PI_MAX
         if r_ok and pi_ok and self.FW_SPO2_MIN <= spo2 <= self.FW_SPO2_MAX + self.SPO2_CLAMP_MARGIN:
             out['spo2'] = min(spo2, self.FW_SPO2_MAX)
@@ -2325,7 +2325,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     # Series kept per sample: (buffer name, is a firmware value). Shared by the live deques,
     # the offline arrays and the plot refresh, so the three cannot drift apart.
-    _SERIES = ('t', 'spo2_fw', 'spo2_py', 'delta', 'R_fw', 'R_py', 'r_fw', 'r_py',
+    _SERIES = ('t', 'spo2_fw', 'spo2_py', 'delta', 'R_fw', 'R_py', 'r_method2_reg_corr_fw', 'r_method2_reg_corr_py',
                'pi_fw', 'pi_py', 'sqi_fw', 'sqi_py', 'dc_ir', 'dc_red')
 
     def __init__(self, main_monitor):
@@ -2448,15 +2448,15 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self.p_R.addLegend()
         self.curve_R_fw  = self.p_R.plot(pen=FW_PEN,  name="R fw")
         self.curve_R_py  = self.p_R.plot(pen=PY_PEN,  name="R py")
-        # r fw = $M4 field 36 (R_CORR, fw 0.19; shown since v1.91), r py = the mirror's. The dashed
-        # line is the gate (r_corr_min) below which the firmware withholds SpO2.
+        # r fw = $M4 field 36 (R_METHOD2_REG_CORR, fw 0.19; shown since v1.91), r py = the mirror's. The dashed
+        # line is the gate (r_method2_reg_corr_min) below which the firmware withholds SpO2.
         self.p_r.addLegend()
-        self.curve_r_fw = self.p_r.plot(pen=FW_PEN, name="r fw")
-        self.curve_r_py = self.p_r.plot(pen=PY_PEN, name="r py")
-        self._gate_line_r = pg.InfiniteLine(
-            angle=0, pos=self._calc.r_corr_min, movable=False,
+        self.curve_r_method2_reg_corr_fw = self.p_r.plot(pen=FW_PEN, name="r fw")
+        self.curve_r_method2_reg_corr_py = self.p_r.plot(pen=PY_PEN, name="r py")
+        self._gate_line_r_method2_reg_corr = pg.InfiniteLine(
+            angle=0, pos=self._calc.r_method2_reg_corr_min, movable=False,
             pen=pg.mkPen('#FF6666', width=1, style=QtCore.Qt.DashLine))
-        self.p_r.addItem(self._gate_line_r)
+        self.p_r.addItem(self._gate_line_r_method2_reg_corr)
         self.p_r.setYRange(0, 1.05)
         self.p_pi.addLegend()
         self.curve_pi_fw = self.p_pi.plot(pen=FW_PEN, name="PI fw")
@@ -2468,7 +2468,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._curves = {
             'spo2_fw': self.curve_spo2_fw, 'spo2_py': self.curve_spo2_py, 'delta': self.curve_spo2_delta,
             'R_fw': self.curve_R_fw, 'R_py': self.curve_R_py,
-            'r_fw': self.curve_r_fw, 'r_py': self.curve_r_py,
+            'r_method2_reg_corr_fw': self.curve_r_method2_reg_corr_fw, 'r_method2_reg_corr_py': self.curve_r_method2_reg_corr_py,
             'pi_fw': self.curve_pi_fw, 'pi_py': self.curve_pi_py,
             'sqi_fw': self.curve_sqi_fw, 'sqi_py': self.curve_sqi_py,
         }
@@ -2514,12 +2514,12 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._spin_dc_tau   = _dspin(0.1,  20.0,  C.FW_DC_EMA_TAU_S,   1, 0.1, " s")
         self._spin_spo2_win = _dspin(C.WINDOW_S_MIN, C.WINDOW_S_MAX, C.FW_SPO2_WINDOW_S, 1, 0.5, " s")
         self._spin_pi_win   = _dspin(C.WINDOW_S_MIN, C.WINDOW_S_MAX, C.FW_PI_WINDOW_S,   1, 0.5, " s")
-        self._spin_r_min    = _dspin(0.0,  1.0,   C.FW_R_CORR_MIN,     2, 0.05)
+        self._spin_r_method2_reg_corr_min    = _dspin(0.0,  1.0,   C.FW_R_METHOD2_REG_CORR_MIN,     2, 0.05)
         # spinbox → SpO2TestCalc attribute (the calc's PARAMS tuple names the defaults)
         self._spins = {
             'spo2_r_curve_a': self._spin_a,       'spo2_r_curve_b': self._spin_b,
             'dc_ema_tau_s':   self._spin_dc_tau,  'spo2_window_s':  self._spin_spo2_win,
-            'pi_window_s':    self._spin_pi_win,  'r_corr_min':     self._spin_r_min,
+            'pi_window_s':    self._spin_pi_win,  'r_method2_reg_corr_min':     self._spin_r_method2_reg_corr_min,
         }
 
         self._spin_a.setToolTip(_make_tooltip(
@@ -2552,19 +2552,19 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             f"units). Library default: {C.FW_PI_WINDOW_S} s, clamped to "
             f"{C.WINDOW_S_MIN:.0f}–{C.WINDOW_S_MAX:.0f} s. SpO2's SQI is computed from this PI.",
             src="pi_window_s"))
-        self._spin_r_min.setToolTip(_make_tooltip(
+        self._spin_r_method2_reg_corr_min.setToolTip(_make_tooltip(
             "r gate",
             "Minimum correlation r = Σdx·dy / √(Σdx²·Σdy²) of the derivative regression for the "
             "SpO2 to be published; below it SpO2 is NaN and SQI 0 while R and r stay visible. "
-            f"Library default: {C.FW_R_CORR_MIN}. Drawn as the dashed line of the r plot.",
-            src="spo2_r_corr_min"))
+            f"Library default: {C.FW_R_METHOD2_REG_CORR_MIN}. Drawn as the dashed line of the r plot.",
+            src="spo2_r_method2_reg_corr_min"))
         _lbl = lambda t: (lambda: (w := QtWidgets.QLabel(t), w.setStyleSheet(_lbl_style), w)[-1])()
         form.addRow(_lbl("SpO2  a"),     self._spin_a)
         form.addRow(_lbl("SpO2  b"),     self._spin_b)
         form.addRow(_lbl("DC τ"),        self._spin_dc_tau)
         form.addRow(_lbl("SpO2 window"), self._spin_spo2_win)
         form.addRow(_lbl("PI window"),   self._spin_pi_win)
-        form.addRow(_lbl("r min"),       self._spin_r_min)
+        form.addRow(_lbl("r min"),       self._spin_r_method2_reg_corr_min)
 
         right_vbox.addWidget(grp_params)
 
@@ -2589,7 +2589,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._VAL_ROWS = (
             ("SpO2 (%)",              'spo2_fw', 'spo2_py', 1, 1.0),
             ("R",                     'R_fw',    'R_py',    5, 0.05),
-            ("r (regression corr.)",  'r_fw',    'r_py',    3, 0.01),
+            ("r (regression corr.)",  'r_method2_reg_corr_fw',    'r_method2_reg_corr_py',    3, 0.01),
             ("PI (%)",                'pi_fw',   'pi_py',   2, 0.1),
             ("SQI",                   'sqi_fw',  'sqi_py',  3, None),
             ("DC OT_LED1 (IR) [ppm]", None,      'dc_ir',   2, None),
@@ -2643,7 +2643,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         """Called when any parameter spinbox changes. Pushes values to calc and updates indicator."""
         for attr, sp in self._spins.items():
             setattr(self._calc, attr, sp.value())
-        self._gate_line_r.setPos(self._calc.r_corr_min)
+        self._gate_line_r_method2_reg_corr.setPos(self._calc.r_method2_reg_corr_min)
         self._calc.reset()   # reset filter/window state when params change
         self._last_sample_cnt = -1
         self._t0_us = None
@@ -2657,7 +2657,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             sp.setValue(getattr(SpO2TestCalc, fw_attr))
             sp.blockSignals(False)
         self._calc.reset_to_defaults()
-        self._gate_line_r.setPos(self._calc.r_corr_min)
+        self._gate_line_r_method2_reg_corr.setPos(self._calc.r_method2_reg_corr_min)
         self._last_sample_cnt = -1
         self._t0_us = None
         self._clear_buffers()
@@ -2715,7 +2715,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         rows_R_fw       = []
         rows_pi_fw      = []
         rows_sqi_fw     = []
-        rows_r_fw       = []
+        rows_r_method2_reg_corr_fw       = []
         rows_ts_us      = []
         saw_any_frame = False
 
@@ -2774,7 +2774,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                         R_fw        = float(row[2 + 12])
                         pi_fw       = float(row[2 + 13])
                         sqi_fw      = float(row[2 + 11])
-                        # R_CORR = field 36 (fw ≥ 0.19); older $M4 rows end at CH_MASKS (33)
+                        # R_METHOD2_REG_CORR = field 36 (fw ≥ 0.19); older $M4 rows end at CH_MASKS (33)
                         r_fw        = float(row[2 + 36]) if len(row) >= 39 else float('nan')
                     else:
                         continue
@@ -2786,7 +2786,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                     rows_R_fw.append(R_fw if R_fw >= 0 else float('nan'))
                     rows_pi_fw.append(pi_fw if pi_fw >= 0 else float('nan'))
                     rows_sqi_fw.append(sqi_fw if sqi_fw >= 0 else float('nan'))
-                    rows_r_fw.append(r_fw)
+                    rows_r_method2_reg_corr_fw.append(r_fw)
                 except (ValueError, IndexError):
                     continue
 
@@ -2814,14 +2814,14 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         arr['R_fw']    = np.array(rows_R_fw)
         arr['pi_fw']   = np.array(rows_pi_fw)
         arr['sqi_fw']  = np.array(rows_sqi_fw)
-        arr['r_fw']    = np.array(rows_r_fw)
+        arr['r_method2_reg_corr_fw']    = np.array(rows_r_method2_reg_corr_fw)
         for i, (ot_ir, ot_red, probe_state) in enumerate(zip(rows_ot_ir, rows_ot_red, rows_probe_state)):
             r = self._calc.update(ot_ir, ot_red, probe_state, fs)
             arr['dc_ir'][i]  = r['dc_ir']
             arr['dc_red'][i] = r['dc_red']
             arr['spo2_py'][i] = r['spo2']
             arr['R_py'][i]    = r['R']
-            arr['r_py'][i]    = r['r']
+            arr['r_method2_reg_corr_py'][i]    = r['r_method2_reg_corr']
             arr['pi_py'][i]   = r['pi']
             arr['sqi_py'][i]  = r['sqi'] if not math.isnan(r['R']) else nan
         arr['delta'] = arr['spo2_fw'] - arr['spo2_py']
@@ -2862,14 +2862,14 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         filename = os.path.join(CAPTURES_DIR, f"spo2test_{now_str}.csv")
         # (CSV column, series) — the delta keeps its historical column name
         cols = (('spo2_fw', 'spo2_fw'), ('spo2_py', 'spo2_py'), ('spo2_delta', 'delta'), ('R_fw', 'R_fw'),
-                ('R_py', 'R_py'), ('r_py', 'r_py'), ('pi_fw', 'pi_fw'), ('pi_py', 'pi_py'))
+                ('R_py', 'R_py'), ('r_method2_reg_corr_py', 'r_method2_reg_corr_py'), ('pi_fw', 'pi_fw'), ('pi_py', 'pi_py'))
         c = self._calc
         try:
             with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# SPO2TEST export — {datetime.datetime.now()}\n")
                 f.write(f"# a={c.spo2_r_curve_a:.4f}, b={c.spo2_r_curve_b:.4f}, dc_tau={c.dc_ema_tau_s:.1f}s, "
                         f"spo2_window={c.spo2_window_s:.1f}s, pi_window={c.pi_window_s:.1f}s, "
-                        f"r_corr_min={c.r_corr_min:.2f}\n")
+                        f"r_method2_reg_corr_min={c.r_method2_reg_corr_min:.2f}\n")
                 f.write(f"# defaults={'YES' if c.using_defaults else 'NO'}\n")
                 f.write("t_s," + ",".join(name for name, _k in cols) + "\n")
                 for i in range(len(t)):
@@ -2911,7 +2911,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
 
     def update_algorithms(self, data_ot_led1, data_ot_led2, data_probe_state,
                           data_spo2, data_spo2_r, data_spo2_sqi, data_pi,
-                          data_timestamp_us, data_sample_counter, data_r_corr=None):
+                          data_timestamp_us, data_sample_counter, data_r_method2_reg_corr=None):
         """Run per-sample algorithm (called from PPGMonitor._process_frames_tick).
 
         data_ot_led1/data_ot_led2 are only meaningful while frame mode $M4 is active —
@@ -2966,7 +2966,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             R_f    = float(data_spo2_r[i])
             sqi_f  = float(data_spo2_sqi[i])
             pi_f   = float(data_pi[i])
-            r_fw_v = float(data_r_corr[i]) if data_r_corr is not None else nan   # NaN = no value
+            r_method2_reg_corr_fw_v = float(data_r_method2_reg_corr[i]) if data_r_method2_reg_corr is not None else nan   # NaN = no value
 
             if self._t0_us is None:
                 self._t0_us = ts
@@ -2987,8 +2987,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             b['delta'].append(delta_v)
             b['R_fw'].append(R_fw_v)
             b['R_py'].append(r['R'])
-            b['r_fw'].append(r_fw_v)
-            b['r_py'].append(r['r'])
+            b['r_method2_reg_corr_fw'].append(r_method2_reg_corr_fw_v)
+            b['r_method2_reg_corr_py'].append(r['r_method2_reg_corr'])
             b['pi_fw'].append(pi_fw_v)
             b['pi_py'].append(r['pi'])
             b['sqi_fw'].append(sqi_fw_v)
@@ -3064,12 +3064,12 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self.p_R.setTitle(
             f"<b style='color:#00CC66'>R fw: {self._fmt(v_R_fw,5)}</b>"
             f"  <b style='color:#FFDD44'>R py: {self._fmt(v_R_py,5)}</b>")
-        v_r_fw = self._last_valid(arr['r_fw'])
-        v_r = self._last_valid(arr['r_py'])
+        v_r_method2_reg_corr_fw = self._last_valid(arr['r_method2_reg_corr_fw'])
+        v_r_method2_reg_corr_py = self._last_valid(arr['r_method2_reg_corr_py'])
         self.p_r.setTitle(
-            f"<b style='color:#00CC66'>r fw: {self._fmt(v_r_fw,3)}</b>"
-            f"  <b style='color:#FFDD44'>r py: {self._fmt(v_r,3)}</b>"
-            f"  <span style='color:#FF6666'>gate ≥ {self._calc.r_corr_min:.2f}</span>")
+            f"<b style='color:#00CC66'>r fw: {self._fmt(v_r_method2_reg_corr_fw,3)}</b>"
+            f"  <b style='color:#FFDD44'>r py: {self._fmt(v_r_method2_reg_corr_py,3)}</b>"
+            f"  <span style='color:#FF6666'>gate ≥ {self._calc.r_method2_reg_corr_min:.2f}</span>")
         v_pi_fw = self._last_valid(arr['pi_fw'])
         v_pi_py = self._last_valid(arr['pi_py'])
         self.p_pi.setTitle(
@@ -7706,7 +7706,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                     "on every sample: the switch is immediate, no warm-up. The\n"
                                                     "R curve in force must have been fitted with the same method\n"
                                                     "($CFG spo2_r_curve_method_match).",                        0,   1,    2,   "",    1.0),
-        ("spo2_r_corr_min",   "r gate (method 2)",  "R-METHOD-2 only: SpO2 is withheld (NaN, SQI 0) while the\n"
+        ("spo2_r_method2_reg_corr_min",   "r gate (method 2)",  "R-METHOD-2 only: SpO2 is withheld (NaN, SQI 0) while the\n"
                                                     "regression's correlation r is below this. Default 0.8,\n"
                                                     "provisional: with a pulse r never fell below 0.83 on\n"
                                                     "HOSPNAV; not yet measured on pulse-less input. -1 = off.",   2,  -1.0,  1.0, "",    1.0),
@@ -9692,12 +9692,12 @@ class PPGPlotsWindow(QtWidgets.QWidget):
                      data_hr1_sqi, data_hr2_sqi, data_hr3_sqi,
                      data_led2, data_led1,
                      data_aled2, data_aled1, data_led2_sub, data_led1_sub,
-                     data_r_corr=None):
+                     data_r_method2_reg_corr=None):
         self.p_spo2.setTitle(
             f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b>"
             f" &nbsp; <b style='color:#888888'>SQI: {data_spo2_sqi[-1]:.2f}</b>"
             f" &nbsp; <b style='color:#AAAAAA'>R: {data_spo2_r[-1]:.4f}</b>"
-            f" &nbsp; <b style='color:#AAAAAA'>r: {_fmt_r_corr(data_r_corr)}</b>")
+            f" &nbsp; <b style='color:#AAAAAA'>r: {_fmt_r_method2_reg_corr(data_r_method2_reg_corr)}</b>")
         self.p_hr.setTitle(
             f"<b style='color:#FFDD44'>HR1: {data_hr1[-1]:.1f}</b><b style='color:#888888'> [{data_hr1_sqi[-1]:.2f}]</b>"
             f" &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.1f}</b><b style='color:#888888'> [{data_hr2_sqi[-1]:.2f}]</b>"
@@ -10014,7 +10014,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
         ("ALED1", "data_aled1"), ("ALED2", "data_aled2"),
         ("LED1_SUB", "data_led1_sub"), ("LED2_SUB", "data_led2_sub"),
         ("PPG_DISP", "data_ppgdisp"),
-        ("SpO2", "data_spo2"), ("SpO2_SQI", "data_spo2_sqi"), ("R", "data_spo2_r"), ("R_CORR", "data_r_corr"), ("PI", "data_pi"),
+        ("SpO2", "data_spo2"), ("SpO2_SQI", "data_spo2_sqi"), ("R", "data_spo2_r"), ("R_METHOD2_REG_CORR", "data_r_method2_reg_corr"), ("PI", "data_pi"),
         ("HR1", "data_hr1"), ("HR1_SQI", "data_hr1_sqi"),
         ("HR2", "data_hr2"), ("HR2_SQI", "data_hr2_sqi"),
         ("HR3", "data_hr3"), ("HR3_SQI", "data_hr3_sqi"),
@@ -10322,12 +10322,12 @@ class AlgoResultsWindow(QtWidgets.QWidget):
     def update_plots(self, data_spo2, data_spo2_sqi, data_spo2_r,
                      data_hr1, data_hr2, data_hr3,
                      data_hr1_sqi, data_hr2_sqi, data_hr3_sqi,
-                     data_r_corr=None):
+                     data_r_method2_reg_corr=None):
         self.p_spo2.setTitle(
             f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b>"
             f" &nbsp; <b style='color:#888888'>SQI: {data_spo2_sqi[-1]:.2f}</b>"
             f" &nbsp; <b style='color:#AAAAAA'>R: {data_spo2_r[-1]:.4f}</b>"
-            f" &nbsp; <b style='color:#AAAAAA'>r: {_fmt_r_corr(data_r_corr)}</b>")
+            f" &nbsp; <b style='color:#AAAAAA'>r: {_fmt_r_method2_reg_corr(data_r_method2_reg_corr)}</b>")
         self.p_hr.setTitle(
             f"<b style='color:#FFDD44'>HR1: {data_hr1[-1]:.1f}</b><b style='color:#888888'> [{data_hr1_sqi[-1]:.2f}]</b>"
             f" &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.1f}</b><b style='color:#888888'> [{data_hr2_sqi[-1]:.2f}]</b>"
@@ -10352,7 +10352,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS,RF1,RF2,R_CORR"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS,RF1,RF2,R_METHOD2_REG_CORR"
     )
 
     def __init__(self, main_monitor):
@@ -11231,7 +11231,7 @@ class UdpComWindow(QtWidgets.QWidget):
 
     UDP_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS,RF1,RF2,R_CORR"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS,RF1,RF2,R_METHOD2_REG_CORR"
     )
 
     # View modes (v1.52, Alex's proposal). The active board's data frames arrive at ~500 lines/s,
@@ -11380,7 +11380,7 @@ class UdpComWindow(QtWidgets.QWidget):
         text with newlines, which it turns into line breaks)."""
         rows = "\n".join(f"{i}: {n}" for i, n in cls.header_fields())
         return ("The columns of the data line, in order. $M3 stops at ProbeState (22); the "
-                "analog fields 23-33 and RF1/RF2/R_CORR (34-36) travel in $M4 only.\n\n" + rows)
+                "analog fields 23-33 and RF1/RF2/R_METHOD2_REG_CORR (34-36) travel in $M4 only.\n\n" + rows)
 
     def copy_header(self):
         """COPY HEADER: the full header line to the clipboard; the button says COPIED for a moment."""
@@ -12784,8 +12784,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("LED1_SUB",   "data_led1_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Exposed for reference/diagnostics; HR1/HR2/HR3/SpO2 consume OT_LED1 instead (gain-invariant, lib v0.38+). Units: ADC counts.",    "AFE4490Data::led1_sub"),
             ("LED2_SUB",   "data_led2_sub",   "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Exposed for reference/diagnostics; SpO2 consumes OT_LED2 instead (gain-invariant, lib v0.38+). Units: ADC counts.",         "AFE4490Data::led2_sub"),
             ("PPG_DISP",   "data_ppgdisp",    "Display-ready PPG signal, OT domain (lib v0.69): bandpass filter on OT_LED1/OT_LED2 → negated. Gain-invariant like the algorithms — no discontinuity when HGAC changes RF. NOT normalized for display (a candidate ppg_disp_norm, PI-weighted [0..1], is backlog). Units: A/A, tiny magnitude (~1e-5..1e-6).", "AFE4490Data::ppg_disp"),
-            ("SpO2",       "data_spo2",       "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 10 % above (lib v0.107; 3 % until v0.106); invalid if >110 %, if r < spo2_r_corr_min (R-METHOD-2) or if PI > 20 %.",    "AFE4490Data::spo2"),
-            ("SpO2_SQI",   "data_spo2_sqi",   "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). The value depends on PI only; forced to 0 (SpO2 NaN) when r < spo2_r_corr_min (R-METHOD-2), PI > 20 % or a − b·R outside 70–110 %. Thresholds per Nellcor/Masimo clinical reference.", "AFE4490Data::spo2_sqi"),
+            ("SpO2",       "data_spo2",       "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 10 % above (lib v0.107; 3 % until v0.106); invalid if >110 %, if r < spo2_r_method2_reg_corr_min (R-METHOD-2) or if PI > 20 %.",    "AFE4490Data::spo2"),
+            ("SpO2_SQI",   "data_spo2_sqi",   "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). The value depends on PI only; forced to 0 (SpO2 NaN) when r < spo2_r_method2_reg_corr_min (R-METHOD-2), PI > 20 % or a − b·R outside 70–110 %. Thresholds per Nellcor/Masimo clinical reference.", "AFE4490Data::spo2_sqi"),
             ("R",          "data_spo2_r",     "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve).",                   "AFE4490Data::spo2_r"),
             ("PI",         "data_pi",         "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion.", "AFE4490Data::pi"),
             ("HR1",        "data_hr1",        "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 40–260 BPM.",                    "AFE4490Data::hr1"),
@@ -15231,7 +15231,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         ("data_led2", 0), ("data_led1", 0), ("data_aled1", 0), ("data_aled2", 0),
         ("data_led1_sub", 0), ("data_led2_sub", 0),
         ("data_hr2", -1.0), ("data_hr3", -1.0), ("data_spo2_r", -1.0), ("data_pi", -1.0),
-        ("data_r_corr", float("nan")),   # $M4 field 36 (fw 0.19): r of R-METHOD-2; NaN = no value (v1.91)
+        ("data_r_method2_reg_corr", float("nan")),   # $M4 field 36 (fw 0.19): r of R-METHOD-2; NaN = no value (v1.91)
         ("data_spo2_sqi", 0.0), ("data_hr1_sqi", 0.0), ("data_hr2_sqi", 0.0), ("data_hr3_sqi", 0.0),
         ("data_rsqi", 0), ("data_diag_code", 0), ("data_probe_state", 0),
         # AFE4490DebugData analog signals — populated only when frame_mode == "M4"
@@ -16047,9 +16047,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _masks = int(parts[33], 16)
                                 self.data_ch_masks.append(_masks)
                                 self._stats_ch_masks_or |= _masks
-                                # R_CORR, field 36 (fw 0.19, lib v0.100): r of R-METHOD-2's regression;
+                                # R_METHOD2_REG_CORR, field 36 (fw 0.19, lib v0.100): r of R-METHOD-2's regression;
                                 # the firmware prints 'nan' under R-METHOD-1, while filling and probe-off.
-                                self.data_r_corr.append(float(parts[36]) if len(parts) >= 37 else float('nan'))
+                                self.data_r_method2_reg_corr.append(float(parts[36]) if len(parts) >= 37 else float('nan'))
                             else:
                                 self.data_v_tia_led1.append(0.0);  self.data_v_tia_led2.append(0.0)
                                 self.data_v_tia_aled1.append(0.0); self.data_v_tia_aled2.append(0.0)
@@ -16057,7 +16057,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                                 self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                                 self.data_ch_masks.append(0)
-                                self.data_r_corr.append(float('nan'))
+                                self.data_r_method2_reg_corr.append(float('nan'))
                             self.hr3_calc.update(p[7], self.afe_fs(), int(p[0]))  # LED1_SUB for HR3Lab diagnostics
                             if self.hr3test_window is not None:
                                 # EXPERIMENT (OT-domain input): OT_LED1 only in $M4 (parts[31]);
@@ -16131,7 +16131,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                             self.data_ch_masks.append(0)
-                            self.data_r_corr.append(float('nan'))
+                            self.data_r_method2_reg_corr.append(float('nan'))
                             self.hr3_calc.update(0.0, self.afe_fs(), int(p[0]))
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(0.0, self.afe_fs(), int(p[9]), int(p[0]))
@@ -16163,7 +16163,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_i_pd_aled1.append(0.0);  self.data_i_pd_aled2.append(0.0)
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                             self.data_ch_masks.append(0)
-                            self.data_r_corr.append(float('nan'))
+                            self.data_r_method2_reg_corr.append(float('nan'))
                             self.hr3_calc.update(0.0, self.afe_fs(), int(p[0]))
                             if self.hr3test_window is not None:
                                 self.hr3test_calc.update(0.0, self.afe_fs(), 0, int(p[0]))
@@ -16190,7 +16190,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.data_ot2_led1, self.data_ot2_led2, self.data_probe_state,
                         self.data_spo2, self.data_spo2_r, self.data_spo2_sqi, self.data_pi,
                         self.data_timestamp_us, self.data_sample_counter,
-                        data_r_corr=self.data_r_corr)
+                        data_r_method2_reg_corr=self.data_r_method2_reg_corr)
                     self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
                 if self.lib_config_window is not None:
                     self.lib_config_window.update_ot(
@@ -16262,7 +16262,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
                     self.data_led2, self.data_led1,
                     self.data_aled2, self.data_aled1, self.data_led2_sub, self.data_led1_sub,
-                    data_r_corr=self.data_r_corr)
+                    data_r_method2_reg_corr=self.data_r_method2_reg_corr)
                 self._py_timing['plot_ppgplots'].append((time.perf_counter() - _t0p) * 1000)
 
             # PPGSignalsWindow: throttled to 20 Hz
@@ -16291,7 +16291,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.data_spo2, self.data_spo2_sqi, self.data_spo2_r,
                     self.data_hr1, self.data_hr2, self.data_hr3,
                     self.data_hr1_sqi, self.data_hr2_sqi, self.data_hr3_sqi,
-                    data_r_corr=self.data_r_corr)
+                    data_r_method2_reg_corr=self.data_r_method2_reg_corr)
                 self._py_timing['plot_results'].append((time.perf_counter() - _t0p) * 1000)
 
             self._hr2lab_refresh_counter += 1
