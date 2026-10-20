@@ -69,7 +69,10 @@ What the comparison says:
   curve (84.8)**; the MS100 table gives 82. Our R scale is right where theory and convention put it at 85 %.
 - **Our slope (39) is steeper than the classic 25 because our R at 100 % is higher (0.54-0.61 vs 0.40)**, i.e. our
   R range for 70-100 % is compressed (0.6-1.4 instead of 0.4-1.6). Candidates: the 665 nm red (less Hb extinction
-  than at 660), the derivative/regression estimator (no RMS inflation), path-length ratio nearer 1 in thin tissue.
+  than at 660), the derivative/regression estimator (no RMS inflation), path-length ratio nearer 1 in thin tissue
+  (Atuar/Nitzan 2026, Monte Carlo of a finger at 660/940 nm: ℓIR/ℓR 0.69-0.80 — quoted there as red/IR 1.25-1.45 —
+  moving with SaO2 at the standard position, ≤ 1.05 at an "iso-pathlength" geometry; the ratio is not a constant of
+  the tissue but of tissue × saturation × geometry).
   The Life Meter wrist curve has the same slope (39.4) at a different offset: slope ≈ 39 is not exotic.
 - Every curve fitted against another oximeter in a narrow range (Stubán 86-100, Life Meter, our adult finger)
   comes out with a slope that disagrees with the rest: range and reference noise, as in our own register.
@@ -80,7 +83,8 @@ What the comparison says:
   scale against the simulator's definition.
 
 Sources: [US 12290358](https://patents.google.com/patent/US12290358B2/en) · [US 6801797](https://patents.google.com/patent/US6801797B2/en) ·
-[Blaney 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC12238718/) · [Elron/Nitzan 2023](https://pmc.ncbi.nlm.nih.gov/articles/PMC9921559/) ·
+[Blaney 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC12238718/) · [Elron/Nitzan 2023](https://pmc.ncbi.nlm.nih.gov/articles/PMC9921559/) (no Part 2 exists) ·
+[Atuar/Nitzan 2026, Opt Lett 51:2424](https://doi.org/10.1364/ol.588131) ·
 [Stubán 2008](https://pp.bme.hu/ee/article/download/859/478) · [mizutanilab](https://github.com/mizutanilab/pulse-oximeter) ·
 [SparkFun spo2_algorithm.cpp](https://github.com/sparkfun/SparkFun_MAX3010x_Sensor_Library/blob/master/src/spo2_algorithm.cpp) ·
 [Reynolds 1991](https://researchnow.flinders.edu.au/en/publications/temperature-dependence-of-led-and-its-theoretical-effect-on-pulse/) ·

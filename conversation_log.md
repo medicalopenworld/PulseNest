@@ -28109,3 +28109,8 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   en la clásica y en la teoría; nuestra pendiente 39 viene de que R a 100 % es 0,54-0,61 y no 0,40 (665 nm, estimador,
   tejido fino). Fuente barata sin usar: el MS100 muestra su R en pantalla para cada curva de fabricante → leer R a
   100/95/…/70 en las 10 curvas.
+- Traspaso de `pulsenest-51` (aprobado por Alex): referencia Atuar/Duadi/Nitzan/Fixler, Optics Letters 51:2424 (2026),
+  Monte Carlo de un dedo a 660/940 nm: el cociente de caminos varía con la SaO2 (rojo/IR 1,25-1,45 = ℓIR/ℓR 0,69-0,80) y
+  queda ≤ 1,05 en una geometría "iso-pathlength". Añadida a la viñeta de la pendiente y a las fuentes del registro; no hay
+  "Parte 2" de Elron/Nitzan 2023. Su R es p-p por latido (familia R-METHOD-1), pero el sesgo de camino es físico y afecta
+  también a R-METHOD-2.
