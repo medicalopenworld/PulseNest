@@ -28121,4 +28121,5 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   problemas abiertos del PI son de este método). Spec §5.1 "PI methods", rationale §14. En la misma versión: **curva vigente
   reetiquetada `R-CURVE-STS0163-HOSPNAV-20261004`** (mismos coeficientes; fecha = ajuste) en lib, test_spo2, lab y specs, y la
   spec §5.1 apunta al registro `docs/spo2_r_curves.md`. Tests: host pi 8/8 + spo2 16/16, dict 1340/1340; build V18 OK.
-  OTA pendiente (ninguna placa encendida al compilar).
+  OTA hecha después: las 3 V18 (87:A4, 88:50, 82:5C) a fw 0.25 / lib 0.106, `elfsha=afe4ecddc311c5a5`, verificadas por MAC;
+  su `$CFG` real ya lleva `pi_method_id=PI-METHOD-1` (leído por el hub). `docs/boards.md` anotado. Push de ambos repos hecho.
