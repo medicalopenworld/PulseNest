@@ -28170,3 +28170,14 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   ~8 tramas tras arrancar (también en la versión anterior). `disable_plots_test` 13/13; `udp_multiboard_test` 98/100 con
   los mismos 2 fallos preexistentes (puerto 15005 "LOST", dependientes del entorno).
 - Siguiente: la puerta de artefacto para SpO2.
+
+## Sesión 2026-10-20 (5) — UDP COM: cabecera de campos legible y copiable (lab v1.92)
+
+- Alex no veía r en ningún sitio. Causa en la ventana UDP COM: la cabecera (`UDP_HEADER`, y también `SERIAL_HEADER`)
+  terminaba en `CH_MASKS`: los campos 34-36 (`RF1`, `RF2` desde lib v0.37; `R_CORR` desde fw 0.19) nunca se listaron.
+  Además el `QLabel` se recorta al ancho de la ventana y no era seleccionable.
+- **Hecho:** las dos cabeceras llevan `…,CH_MASKS,RF1,RF2,R_CORR`; la etiqueta es seleccionable con el ratón; su tooltip
+  lista todas las columnas numeradas con el índice del campo `$M4` (FrameMode = 0, como cuenta el parser; `PC` para las
+  dos columnas del host); botón **COPY HEADER** en la barra superior que copia la línea completa al portapapeles (muestra
+  COPIED 1,5 s). `header_fields()` / `header_fields_html()` / `copy_header()` en `UdpComWindow`. Spec §7.5 y changelog
+  v1.92. `udpcom_view_test` 19/19 + comprobación offscreen del tooltip y del portapapeles.

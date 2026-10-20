@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.91
+# pulsenest_lab — Specification v1.92
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1935,8 +1935,12 @@ Pause button stops auto-scroll while new lines are still received.
 ### 7.5 UdpComWindow — "UDP COM"
 
 Equivalent of SerialComWindow for the WiFi/UDP transport.
-Shows every raw frame received via UDP from the **active board** (§4.8). Has a header label showing the UDP source address
-and port once the first packet is received.
+Shows every raw frame received via UDP from the **active board** (§4.8). The top bar starts with the
+header label (`UDP_HEADER`): the two PC-side columns and every field of the `$M4` frame in order,
+`FrameMode … CH_MASKS,RF1,RF2,R_CORR` (fields 34-36 were missing from both COM headers until v1.92).
+The label is clipped at the window width, so (v1.92) its text is selectable by mouse, its tooltip
+lists every column numbered with the `$M4` field index (FrameMode = 0, as the parser counts), and
+**COPY HEADER** puts the complete line on the clipboard (the button reads COPIED for 1.5 s).
 
 **v1.44.** Every `UDP_NET_SUMMARY_S` (10 s) one host-generated `# NET …` line per board seen on the
 data port — active or not — with its identity, state and network counters (format in §4.8).
@@ -2817,6 +2821,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.92 — 2026-10-20
+
+**UDP COM header readable and copyable** (§7.5). `UDP_HEADER` and `SERIAL_HEADER` now list
+`RF1,RF2,R_CORR` (fields 34-36, in the frame since lib v0.37 / fw 0.19 but never in the header).
+The header label is selectable, its tooltip gives the numbered field list, and a COPY HEADER
+button copies the full line. Why: the label is clipped at the window width, so the fields past
+the edge, r among them, could neither be read nor copied.
 
 ### v1.91 — 2026-10-20
 

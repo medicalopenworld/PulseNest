@@ -10352,7 +10352,7 @@ class SerialComWindow(QtWidgets.QWidget):
 
     SERIAL_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS,RF1,RF2,R_CORR"
     )
 
     def __init__(self, main_monitor):
@@ -11231,7 +11231,7 @@ class UdpComWindow(QtWidgets.QWidget):
 
     UDP_HEADER = (
         f"{'Timestamp_PC':<15},{'Df_us':>5},"
-        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS"
+        "FrameMode,SmpCnt,Ts_us,LED2,LED1,ALED2,ALED1,LED2_SUB,LED1_SUB,PPG_DISP,SpO2,SpO2_SQI,R,PI,HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI,RSQI,DiagCode,ProbeState,V_TIA_LED1,V_TIA_LED2,V_TIA_ALED1,V_TIA_ALED2,I_PD_LED1,I_PD_LED2,I_PD_ALED1,I_PD_ALED2,OT_LED1,OT_LED2,CH_MASKS,RF1,RF2,R_CORR"
     )
 
     # View modes (v1.52, Alex's proposal). The active board's data frames arrive at ~500 lines/s,
@@ -11273,6 +11273,12 @@ class UdpComWindow(QtWidgets.QWidget):
         self.header_label.setFont(QtGui.QFont("Consolas", 9))
         self.header_label.setWordWrap(False)
         self.header_label.setMinimumWidth(0)
+        # v1.92: the label is clipped at the window width, so the fields past the edge were
+        # unreadable and nothing could be copied. Selectable by mouse, the whole list numbered
+        # in the tooltip, and COPY HEADER puts the full line on the clipboard.
+        self.header_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.header_label.setToolTip(_make_tooltip("Frame fields", self.header_fields_html(),
+                                                   src="UdpComWindow.UDP_HEADER"))
         self.header_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         self.header_label.setStyleSheet("""
             QLabel {
@@ -11295,6 +11301,18 @@ class UdpComWindow(QtWidgets.QWidget):
             "updating — in the LIVE modes the data line freezes too."))
         self.btn_pause.clicked.connect(self._toggle_pause)
 
+        self.btn_copy_header = QtWidgets.QPushButton("COPY HEADER")
+        self.btn_copy_header.setFixedWidth(120)
+        self.btn_copy_header.setStyleSheet(
+            "QPushButton { background-color: #505050; color: #FFFFFF; font-weight: bold; "
+            "border: 1px solid #888888; border-radius: 3px; padding: 4px; }")
+        self.btn_copy_header.setToolTip(_make_tooltip("COPY HEADER",
+            "Copy the complete header line (every field name of the $M4 frame, in order, plus "
+            "the two PC-side columns) to the clipboard, so it can be pasted next to a data line "
+            "or into a spreadsheet. Hover the header itself for the numbered list.",
+            src="UdpComWindow.copy_header"))
+        self.btn_copy_header.clicked.connect(self.copy_header)
+
         self.combo_view = QtWidgets.QComboBox()
         self.combo_view.addItems(self.VIEW_MODES)
         self.combo_view.setCurrentText(self._view_mode)
@@ -11314,6 +11332,7 @@ class UdpComWindow(QtWidgets.QWidget):
         view_label.setToolTip(self.combo_view.toolTip())
         top_bar.addWidget(view_label)
         top_bar.addWidget(self.combo_view)
+        top_bar.addWidget(self.btn_copy_header)
         top_bar.addWidget(self.btn_pause)
         layout.addLayout(top_bar)
 
@@ -11347,6 +11366,27 @@ class UdpComWindow(QtWidgets.QWidget):
     def _toggle_pause(self):
         self._paused = self.btn_pause.isChecked()
         self.btn_pause.setText("RESUME" if self._paused else "PAUSE")
+
+    @classmethod
+    def header_fields(cls):
+        """(index, name) for every column of UDP_HEADER: 'PC' for the two host-side columns,
+        then the $M4 field index (FrameMode = 0) as the firmware and the parser count them."""
+        names = [n.strip() for n in cls.UDP_HEADER.split(',')]
+        return [('PC', n) for n in names[:2]] + [(str(i), n) for i, n in enumerate(names[2:])]
+
+    @classmethod
+    def header_fields_html(cls):
+        """Tooltip body: one numbered line per column (_make_tooltip escapes HTML, so plain
+        text with newlines, which it turns into line breaks)."""
+        rows = "\n".join(f"{i}: {n}" for i, n in cls.header_fields())
+        return ("The columns of the data line, in order. $M3 stops at ProbeState (22); the "
+                "analog fields 23-33 and RF1/RF2/R_CORR (34-36) travel in $M4 only.\n\n" + rows)
+
+    def copy_header(self):
+        """COPY HEADER: the full header line to the clipboard; the button says COPIED for a moment."""
+        QtWidgets.QApplication.clipboard().setText(self.UDP_HEADER)
+        self.btn_copy_header.setText("COPIED")
+        QtCore.QTimer.singleShot(1500, lambda: self.btn_copy_header.setText("COPY HEADER"))
 
     def _set_view_mode(self, mode):
         """Switch view mode. The console text is kept; only the live line changes home."""
