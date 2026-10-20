@@ -12776,17 +12776,20 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # ── Stats table buffers (reset every N seconds) ───────────────────────
         self._STATS_SIGNALS = [
             # (display_name, data_attr, tooltip_description, src)
-            # Order mirrors the $M1/$P1 serial frame. Row indices: HR1=11, HR2=13, HR3=15.
-            ("LED1 (IR)",  "data_led1",  "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts.",  "AFE4490Data::led1_raw"),
+            # Order = struct AFE4490Data, then AFE4490AnalogState for the analog rows — which is also
+            # the $M3/$M4 field order (Alex, 2026-10-20; was IR-first until v1.93). Everything that
+            # depends on a row looks it up BY NAME (_stats_row, _STATS_*_NAMES), never by index.
             ("LED2 (RED)", "data_led2",  "Raw RED LED signal (LED2, 660 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts.",        "AFE4490Data::led2_raw"),
-            ("ALED1",      "data_aled1", "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts.",                  "AFE4490Data::aled1"),
+            ("LED1 (IR)",  "data_led1",  "Raw IR LED signal (LED1, ~880–940 nm) before ambient subtraction. Includes ambient light + LED contribution. Units: ADC counts.",  "AFE4490Data::led1_raw"),
             ("ALED2",      "data_aled2", "Ambient RED channel (ALED2): sampled with RED LED off. Represents environmental red-light interference. Units: ADC counts.",         "AFE4490Data::aled2"),
-            ("LED1_SUB",   "data_led1_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Exposed for reference/diagnostics; HR1/HR2/HR3/SpO2 consume OT_LED1 instead (gain-invariant, lib v0.38+). Units: ADC counts.",    "AFE4490Data::led1_sub"),
+            ("ALED1",      "data_aled1", "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts.",                  "AFE4490Data::aled1"),
             ("LED2_SUB",   "data_led2_sub",   "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Exposed for reference/diagnostics; SpO2 consumes OT_LED2 instead (gain-invariant, lib v0.38+). Units: ADC counts.",         "AFE4490Data::led2_sub"),
+            ("LED1_SUB",   "data_led1_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Exposed for reference/diagnostics; HR1/HR2/HR3/SpO2 consume OT_LED1 instead (gain-invariant, lib v0.38+). Units: ADC counts.",    "AFE4490Data::led1_sub"),
             ("PPG_DISP",   "data_ppgdisp",    "Display-ready PPG signal, OT domain (lib v0.69): bandpass filter on OT_LED1/OT_LED2 → negated. Gain-invariant like the algorithms — no discontinuity when HGAC changes RF. NOT normalized for display (a candidate ppg_disp_norm, PI-weighted [0..1], is backlog). Units: A/A, tiny magnitude (~1e-5..1e-6).", "AFE4490Data::ppg_disp"),
             ("SpO2",       "data_spo2",       "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 10 % above (lib v0.107; 3 % until v0.106); invalid if >110 %, if r < spo2_r_method2_reg_corr_min (R-METHOD-2) or if PI > 20 %.",    "AFE4490Data::spo2"),
             ("SpO2_SQI",   "data_spo2_sqi",   "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). The value depends on PI only; forced to 0 (SpO2 NaN) when r < spo2_r_method2_reg_corr_min (R-METHOD-2), PI > 20 % or a − b·R outside 70–110 %. Thresholds per Nellcor/Masimo clinical reference.", "AFE4490Data::spo2_sqi"),
             ("R",          "data_spo2_r",     "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve).",                   "AFE4490Data::spo2_r"),
+            ("R_METHOD2_REG_CORR", "data_r_method2_reg_corr", "R-METHOD-2 only: correlation r of the regression of the band-passed red on the band-passed IR over the SpO2 window [−1…1], the fit's own quality. SpO2 is withheld (NaN, SQI 0) while it is below spo2_r_method2_reg_corr_min (0.8). NaN under R-METHOD-1, while the window fills and with the probe off; NaN samples are left out of these statistics. $M4 field 36 (fw ≥ 0.19; named R_CORR until fw 0.26).", "AFE4490Data::spo2_r_method2_reg_corr"),
             ("PI",         "data_pi",         "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion.", "AFE4490Data::pi"),
             ("HR1",        "data_hr1",        "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 40–260 BPM.",                    "AFE4490Data::hr1"),
             ("HR1_SQI",    "data_hr1_sqi",    "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range.", "AFE4490Data::hr1_sqi"),
@@ -12835,8 +12838,12 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("OT_LED2 [ppm]",     "data_ot2_led2",     "Optical transmittance LED2 (RED): (I_PD_LED2 - I_PD_ALED2) / I_LED2 [A/A, dimensionless]. Displayed in ppm (×1e6) for readability. Received directly from the $M4 frame — computed per sample by firmware in _compute_analog_state() (lib v0.35), no local calculation. Gray text = not valid (LED2 or ALED2 channel CLIPPED per CH_MASKS: ADC rail or TIA hard clip; OFF_SPEC not grayed). Only available in $M4 frame mode.", "AFE4490AnalogState::ot_led2"),
         ]
         self._stats_buf = {name: [] for name, _, __, _src in self._STATS_SIGNALS}
+        # The four raw converter rows come first and the sub-header divider sits right after them.
+        assert {n for n, *_ in self._STATS_SIGNALS[:self._STATS_N_RAW]} == self._STATS_RAW_NAMES
+        self._stats_row = {name: (i if i < self._STATS_N_RAW else i + 1)      # table row by signal name
+                           for i, (name, *_) in enumerate(self._STATS_SIGNALS)}
         self._stats_ch_masks_or = 0       # OR of CH_MASKS over the current stats window
-        self._stats_highlighted = set()   # set of (row, col) manually highlighted by user
+        self._stats_highlighted = set()   # set of (row, col) manually highlighted by user; saved BY NAME
         self._last_cfg = {}               # last parsed $CFG key-value dict (for V_TIA/V_ADC)
         # Quick HW controls (SIGNAL STATS header). _hgac_enabled starts True because the
         # PulseNest firmware enables HGAC at boot (main.cpp start_incunest, since 2026-09-10);
@@ -13558,29 +13565,27 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.stats_table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
         self.stats_table.verticalHeader().setDefaultSectionSize(40)
 
-        _SQI_ROWS   = {7, 11, 13, 15}   # SpO2, HR1, HR2, HR3 (signal indices): Mean cell coloured by SQI
-        _RAW_ROWS   = {0, 1, 2, 3}   # LED1 (IR), LED2 (RED), ALED1, ALED2
         _MEAN_COL   = 4
         _MAROON     = QtGui.QColor("#5C001A")
-        _SUBHDR_ROW = 4              # table row index of the sub-header divider
+        _SUBHDR_ROW = self._STATS_N_RAW   # table row of the sub-header divider, after the raw rows
 
-        for sig_idx, (name, _, tooltip, src) in enumerate(self._STATS_SIGNALS):
-            tbl_row  = sig_idx if sig_idx < _SUBHDR_ROW else sig_idx + 1
+        for name, _, tooltip, src in self._STATS_SIGNALS:
+            tbl_row  = self._stats_row[name]
             rich_tip = _make_tooltip(name, tooltip, src=src)
             item = QtWidgets.QTableWidgetItem(name)
             item.setForeground(QtGui.QColor("#AAAAAA"))
             item.setToolTip(rich_tip)
             self.stats_table.setItem(tbl_row, 0, item)
             for col in range(1, 9):
-                text = "" if (sig_idx not in _RAW_ROWS and col in {1, 2}) else "---"
+                text = "" if (name not in self._STATS_RAW_NAMES and col in {1, 2}) else "---"
                 it = QtWidgets.QTableWidgetItem(text)
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 it.setToolTip(rich_tip)
-                if sig_idx in _SQI_ROWS and col == _MEAN_COL:
+                if name in self._STATS_SQI_NAMES and col == _MEAN_COL:
                     it.setBackground(_MAROON)
                 self.stats_table.setItem(tbl_row, col, it)
 
-        # Sub-header divider row between ALED2 (row 3) and LED1_SUB (row 5)
+        # Sub-header divider row between the raw rows and the ambient-subtracted ones
         _subhdr_labels  = ["Signal", "ADZ", "% ADZ/Mean", "% SD/Mean", "Mean", "SD", "Max-Min", "Min", "Max"]
         _subhdr_bg      = QtGui.QColor("#1E1E2E")
         _subhdr_fg      = QtGui.QColor("#AAAAAA")
@@ -13598,8 +13603,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # Paired gray highlight: LED1_SUB/% SD/Mean and PI/Mean share the same meaning
         # (LED1_SUB % SD/Mean ≈ AC/DC ≈ PI, so these two cells are conceptually equivalent)
         _ACCENT_PAIR = QtGui.QColor("#5A1A4A")
-        self.stats_table.item(5,  3).setBackground(_ACCENT_PAIR)  # LED1_SUB  / % SD/Mean
-        self.stats_table.item(11, 4).setBackground(_ACCENT_PAIR)  # PI      / Mean
+        self.stats_table.item(self._stats_row["LED1_SUB"], 3).setBackground(_ACCENT_PAIR)  # % SD/Mean
+        self.stats_table.item(self._stats_row["PI"], 4).setBackground(_ACCENT_PAIR)        # Mean
 
         # V_TIA (col 1) / V_ADC (col 2) tooltips on raw rows 0-3 are built by
         # _refresh_vtg_tooltips(), which is re-run on every $LCFG frame so the documented
@@ -13607,7 +13612,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._refresh_vtg_tooltips()
 
         # Override R col 1 tooltip: derived R estimate, not true % SD/Mean
-        self.stats_table.item(10, 3).setToolTip(_make_tooltip("R estimate",
+        self.stats_table.item(self._stats_row["R"], 3).setToolTip(_make_tooltip("R estimate",
             "Derived R ratio: CV(LED2_SUB) / CV(LED1_SUB)\n"
             "where CV = SD / Mean \u00d7 100  (\u2248 AC/DC per channel).\n\n"
             "Approximates the SpO2 R value:\n"
@@ -14746,14 +14751,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.spin_stats_interval.setValue(s.value("PPGMonitor/spin_stats_interval", 1,   type=int))
         encoded = s.value("PPGMonitor/stats_highlighted", "", type=str)
         self._stats_highlighted.clear()
-        if encoded:
-            for token in encoded.split(";"):
-                parts = token.split(",")
-                if len(parts) == 2:
-                    try:
-                        self._stats_highlighted.add((int(parts[0]), int(parts[1])))
-                    except ValueError:
-                        pass
+        self._stats_highlighted.update(self._decode_stats_highlighted(encoded))   # same set: the delegate holds it
         port = s.value("PPGMonitor/combo_port", PORT)
         idx = self.combo_port.findText(port)
         if idx >= 0:
@@ -15381,9 +15379,16 @@ class PPGMonitor(QtWidgets.QMainWindow):
             except Exception:
                 break
 
-    _STATS_SQI_ROWS      = {7, 11, 13, 15}   # SpO2, HR1, HR2, HR3: Mean cell green/maroon by <name>_SQI (v1.86)
-    _STATS_SUB_ROWS      = {4, 5}         # LED1_SUB, LED2_SUB
-    _STATS_RAW_ROWS      = {0, 1, 2, 3}  # LED1 (IR), LED2 (RED), ALED1, ALED2 — show V_TIA / V_ADC
+    # SIGNAL STATS rows are addressed BY NAME (v1.94): the order follows struct AFE4490Data and an
+    # index-based rule silently lands on another signal the day a row is added or moved.
+    _STATS_SQI_NAMES     = frozenset({"SpO2", "HR1", "HR2", "HR3"})   # Mean cell green/maroon by <name>_SQI
+    _STATS_SUB_NAMES     = frozenset({"LED1_SUB", "LED2_SUB"})         # % SD/Mean column
+    _STATS_RAW_NAMES     = frozenset({"LED2 (RED)", "LED1 (IR)", "ALED2", "ALED1"})  # V_TIA / V_ADC columns
+    _STATS_N_RAW         = 4                                            # they are the first four rows
+    _STATS_LED_PHASE_NAMES = frozenset({"LED2 (RED)", "LED1 (IR)"})    # full HGAC ladder (vs ALED: HIGH2 only)
+    _STATS_IR_NAMES      = frozenset({"LED1 (IR)", "ALED1"})           # stg21 / tia1 (else stg22 / tia2)
+    _STATS_INT_NAMES     = _STATS_RAW_NAMES | _STATS_SUB_NAMES          # integer ADC codes, thin-space thousands
+    _STATS_DEC           = {"R_METHOD2_REG_CORR": 4}                    # decimals where 2 hide the signal
     _STATS_MEAN_COL      = 4
     _STATS_MAROON        = QtGui.QColor("#5C001A")
     _STATS_GREEN         = QtGui.QColor("#1A5C1A")
@@ -15400,8 +15405,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
     _VTG_RED     = QtGui.QColor("#4A0800")  # saturation / insufficient
     _VTG_DEFAULT = QtGui.QColor("#121212")  # no data / channel CLIPPED (gauge suppressed)
     _STATS_INVALID_FG = QtGui.QColor("#5A5A5A")  # dark gray text — value not valid (CH_MASKS CLIPPED)
-    # SIGNAL STATS row index (sig_idx 0-3) → AFE4490Ch channel bit in CH_MASKS nibbles
-    _STATS_ROW_TO_CH = {0: 0, 1: 2, 2: 1, 3: 3}  # LED1→0, LED2→2, ALED1→1, ALED2→3
+    # Signal → AFE4490Ch channel bit in the CH_MASKS nibbles (LED1 0, ALED1 1, LED2 2, ALED2 3)
+    _STATS_NAME_TO_CH = {"LED1 (IR)": 0, "ALED1": 1, "LED2 (RED)": 2, "ALED2": 3,
+                         "V_TIA_LED1": 0, "V_TIA_ALED1": 1, "V_TIA_LED2": 2, "V_TIA_ALED2": 3,
+                         "I_PD_LED1 [µA]": 0, "I_PD_ALED1 [µA]": 1, "I_PD_LED2 [µA]": 2, "I_PD_ALED2 [µA]": 3}
+    _STATS_OT_MASK = {"OT_LED1 [ppm]": 0b0011, "OT_LED2 [ppm]": 0b1100}  # OT reads LEDx and ALEDx
+    # Row order of SIGNAL STATS up to v1.93 (IR-first, no R_METHOD2_REG_CORR): translates highlighted
+    # cells saved as "row,col" by those versions into names, so they stay on the same signal.
+    _STATS_LEGACY_ORDER = ("LED1 (IR)", "LED2 (RED)", "ALED1", "ALED2", "LED1_SUB", "LED2_SUB",
+                           "PPG_DISP", "SpO2", "SpO2_SQI", "R", "PI", "HR1", "HR1_SQI", "HR2",
+                           "HR2_SQI", "HR3", "HR3_SQI", "RSQI", "DiagCode", "ProbeState",
+                           "V_TIA_LED1", "V_TIA_LED2", "V_TIA_ALED1", "V_TIA_ALED2",
+                           "I_PD_LED1 [µA]", "I_PD_LED2 [µA]", "I_PD_ALED1 [µA]", "I_PD_ALED2 [µA]",
+                           "OT_LED1 [ppm]", "OT_LED2 [ppm]")
     _ADC_FSR             = 1.2            # V — AFE4490 ADC full-scale voltage (±1.2 V)
     _ADC_FS_COUNTS       = 2 ** 21 - 1    # 22-bit signed: positive full-scale code (datasheet Table 7)
     # ── V_TIA / V_ADC gauge thresholds ────────────────────────────────────────────
@@ -15426,11 +15442,35 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._stats_highlighted.add(key)
         self.stats_table.viewport().update()
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        encoded = ";".join(f"{r},{c}" for r, c in sorted(self._stats_highlighted))
-        s.setValue("PPGMonitor/stats_highlighted", encoded)
+        s.setValue("PPGMonitor/stats_highlighted", self._encode_stats_highlighted())
+
+    def _encode_stats_highlighted(self):
+        """'<signal>=<col>;…' — by name since v1.94, so a highlight follows its signal when rows
+        move. The sub-header row (no signal) is not saved."""
+        by_row = {row: name for name, row in self._stats_row.items()}
+        return ";".join(f"{by_row[r]}={c}" for r, c in sorted(self._stats_highlighted) if r in by_row)
+
+    def _decode_stats_highlighted(self, encoded):
+        """Inverse of _encode_stats_highlighted(); also reads the 'row,col' tokens of v1.93 and
+        earlier through _STATS_LEGACY_ORDER. Unknown names and malformed tokens are dropped."""
+        cells = set()
+        for token in (encoded or "").split(";"):
+            name, sep, col = token.rpartition("=")
+            try:
+                if sep:
+                    if name in self._stats_row:
+                        cells.add((self._stats_row[name], int(col)))
+                    continue
+                r, c = (int(x) for x in token.split(","))
+            except ValueError:
+                continue
+            sig = r if r < 4 else r - 1          # legacy table: sub-header at row 4
+            if r != 4 and 0 <= sig < len(self._STATS_LEGACY_ORDER):
+                cells.add((self._stats_row[self._STATS_LEGACY_ORDER[sig]], c))
+        return cells
 
     def _refresh_vtg_tooltips(self):
-        """(Re)build the 8 V_TIA / V_ADC value-cell tooltips on raw rows 0-3.
+        """(Re)build the 8 V_TIA / V_ADC value-cell tooltips on the four raw rows.
 
         Called when the table is built and again on every $LCFG frame, so the thresholds the
         tooltip documents are always the ones HGAC is actually using.
@@ -15492,11 +15532,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "and it lives in the V_TIA column (LOW1)."
             + _clip_note)
 
-        for _r in range(4):
-            self.stats_table.item(_r, 1).setToolTip(tip_vtia_led if _r in {0, 1} else tip_vtia_amb)
+        for _name in self._STATS_RAW_NAMES:
+            _r = self._stats_row[_name]
+            self.stats_table.item(_r, 1).setToolTip(
+                tip_vtia_led if _name in self._STATS_LED_PHASE_NAMES else tip_vtia_amb)
             self.stats_table.item(_r, 2).setToolTip(tip_vadc)
 
-    def _vtg_tia_color(self, row, v_tia):
+    def _vtg_tia_color(self, name, v_tia):
         """Background color for V_TIA cell — one colour per HGAC actuation state.
 
         Thresholds come from self._hgac_thr (live $LCFG values, library defaults until the
@@ -15508,7 +15550,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         high2 = self._hgac_thr["hgac_v_tia_high2"]
         high1 = self._hgac_thr["hgac_v_tia_high1"]
         low1  = self._hgac_thr["hgac_v_tia_low1"]
-        if row in {0, 1}:   # LED phase — full leveling + guard ladder
+        if name in self._STATS_LED_PHASE_NAMES:   # LED phase — full leveling + guard ladder
             if v >= high2:                      return self._VTG_RED     # guard: urgent RF--
             if v >= high1 or v < low1:          return self._VTG_YELLOW  # leveling acting
             return self._VTG_GREEN                                       # dead band: target
@@ -15518,7 +15560,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if v >= high2:                      return self._VTG_RED
             return self._VTG_GREEN
 
-    def _vtg_adc_color(self, row, v_adc):
+    def _vtg_adc_color(self, name, v_adc):
         """Background color for V_ADC cell — ADC/TIA PHYSICS only, no HGAC policy.
 
         HGAC actuates on v_tia, not v_adc (see the note on AFE4490AnalogState in
@@ -15557,40 +15599,42 @@ class PPGMonitor(QtWidgets.QMainWindow):
         _m = self._stats_ch_masks_or
         _clipped = (_m | (_m >> 4) | (_m >> 12)) & 0xF
         self._stats_ch_masks_or = 0
-        for sig_idx, (name, _, _tooltip, _src) in enumerate(self._STATS_SIGNALS):
-            tbl_row = sig_idx if sig_idx < 4 else sig_idx + 1
-            buf = self._stats_buf[name]
+        for name, _, _tooltip, _src in self._STATS_SIGNALS:
+            tbl_row = self._stats_row[name]
+            # NaN = "no value" (R_METHOD2_REG_CORR under R-METHOD-1 / filling / probe off): left out
+            buf = [v for v in self._stats_buf[name] if v == v]
             if buf:
                 n    = len(buf)
                 mean = sum(buf) / n
                 lo   = min(buf)
                 hi   = max(buf)
                 std  = math.sqrt(sum((v - mean) ** 2 for v in buf) / n)
-                if sig_idx < 6:  # raw ADC signals: integer, thousands-separated with narrow space
+                if name in self._STATS_INT_NAMES:  # raw ADC signals: integer, thousands-separated with narrow space
                     def _fmt(v): return f"{v:,.0f}".replace(",", "\u202f")
-                elif sig_idx in {20, 21, 22, 23}:  # V_TIA_*: volts, 6 decimal places
+                elif name.startswith("V_TIA_"):  # volts, 6 decimal places
                     def _fmt(v): return f"{v:.6f}"
-                elif sig_idx in {24, 25, 26, 27}:  # I_PD_*: display in µA (×1e6), 3 decimal places
+                elif name.startswith("I_PD_"):   # display in µA (×1e6), 3 decimal places
                     def _fmt(v): return f"{v * 1e6:.3f}"
-                elif sig_idx in {28, 29}:  # OT_LED1/OT_LED2: display in ppm (×1e6), 2 decimal places
+                elif name.startswith("OT_"):     # display in ppm (×1e6), 2 decimal places
                     def _fmt(v): return f"{v * 1e6:.2f}"
                 else:
-                    def _fmt(v): return f"{v:.2f}"
-                snr_str = f"{std / mean * 100:.2f}" if (sig_idx in self._STATS_SUB_ROWS and mean != 0) else (
-                    "" if sig_idx not in self._STATS_SUB_ROWS else "---")
-                if sig_idx == 4 and mean != 0:    # LED1_SUB: save CV for R ratio
+                    _d = self._STATS_DEC.get(name, 2)
+                    def _fmt(v, _d=_d): return f"{v:.{_d}f}"
+                snr_str = f"{std / mean * 100:.2f}" if (name in self._STATS_SUB_NAMES and mean != 0) else (
+                    "" if name not in self._STATS_SUB_NAMES else "---")
+                if name == "LED1_SUB" and mean != 0:    # save CV for R ratio
                     _led1_sub_cv  = std / mean * 100
-                elif sig_idx == 5 and mean != 0:  # LED2_SUB: save CV for R ratio
+                elif name == "LED2_SUB" and mean != 0:  # save CV for R ratio
                     _led2_sub_cv = std / mean * 100
-                if sig_idx == 18:  # DiagCode: integer everywhere except SD (bitmask, not continuous)
+                if name == "DiagCode":  # integer everywhere except SD (bitmask, not continuous)
                     vals = [f"{mean:.0f}", f"{std:.2f}", f"{hi - lo:.0f}", f"{lo:.0f}", f"{hi:.0f}"]
                 else:
                     vals = [_fmt(mean), _fmt(std), _fmt(hi - lo), _fmt(lo), _fmt(hi)]
             else:
-                snr_str = "" if sig_idx not in self._STATS_SUB_ROWS else "---"
+                snr_str = "" if name not in self._STATS_SUB_NAMES else "---"
                 vals = ["---", "---", "---", "---", "---"]
             # R row: show LED2_SUB_CV / LED1_SUB_CV ≈ R  (italic — derived ratio, not true % SD/Mean)
-            if sig_idx == 9:
+            if name == "R":
                 snr_str = f"{_led2_sub_cv / _led1_sub_cv:.4f}" if (_led1_sub_cv and _led2_sub_cv) else "---"
             # col 3: % SD/Mean (LED1_SUB / LED2_SUB rows) or R estimate (R row)
             snr_item = self.stats_table.item(tbl_row, 3)
@@ -15600,7 +15644,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.stats_table.setItem(tbl_row, 3, snr_item)
             else:
                 snr_item.setText(snr_str)
-            if sig_idx == 9:
+            if name == "R":
                 _f = snr_item.font()
                 _f.setItalic(True)
                 snr_item.setFont(_f)
@@ -15610,29 +15654,29 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if item is None:
                     item = QtWidgets.QTableWidgetItem(v)
                     item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                    if sig_idx in self._STATS_SQI_ROWS and col == self._STATS_MEAN_COL:
+                    if name in self._STATS_SQI_NAMES and col == self._STATS_MEAN_COL:
                         item.setBackground(self._STATS_MAROON)
                     self.stats_table.setItem(tbl_row, col, item)
                 else:
                     item.setText(v)
-                if sig_idx in self._STATS_SQI_ROWS and col == self._STATS_MEAN_COL:
+                if name in self._STATS_SQI_NAMES and col == self._STATS_MEAN_COL:
                     sqi_buf = self._stats_buf.get(name + "_SQI", [])
                     sqi_mean = sum(sqi_buf) / len(sqi_buf) if sqi_buf else 0.0
                     bg = self._STATS_GREEN if sqi_mean > self._STATS_SQI_THRESHOLD else self._STATS_MAROON
                     item.setBackground(bg)
                 # Analog-chain rows (V_TIA_*, I_PD_*, OT_*): gray text when the source
                 # channel was CLIPPED during the stats window (value = bound, not reality)
-                if 20 <= sig_idx <= 27:   # V_TIA_* (20-23) / I_PD_* (24-27): own channel
-                    _invalid = bool((_clipped >> self._STATS_ROW_TO_CH[(sig_idx - 20) % 4]) & 1)
-                elif sig_idx in {28, 29}:  # OT_LEDx: both source channels (LEDx + ALEDx)
-                    _invalid = bool(_clipped & (0b0011 if sig_idx == 28 else 0b1100))
+                if name.startswith(("V_TIA_", "I_PD_")):   # own channel
+                    _invalid = bool((_clipped >> self._STATS_NAME_TO_CH[name]) & 1)
+                elif name in self._STATS_OT_MASK:          # OT_LEDx: both source channels (LEDx + ALEDx)
+                    _invalid = bool(_clipped & self._STATS_OT_MASK[name])
                 else:
                     _invalid = None
                 if _invalid is not None:
                     item.setForeground(self._STATS_INVALID_FG if _invalid else QtGui.QBrush())
-            # cols 1-2: V_TIA, V_ADC — only for LED1 (IR), LED2 (RED), ALED1, ALED2 (signal rows 0-3)
-            if sig_idx in self._STATS_RAW_ROWS and buf:
-                is_led1   = sig_idx in {0, 2}   # LED1 (IR) / ALED1 → stg21, tia1; LED2 (RED) / ALED2 → stg22, tia2
+            # cols 1-2: V_TIA, V_ADC — only for the four raw rows LED2 (RED), LED1 (IR), ALED2, ALED1
+            if name in self._STATS_RAW_NAMES and buf:
+                is_led1   = name in self._STATS_IR_NAMES   # LED1 (IR) / ALED1 → stg21, tia1; else stg22, tia2
                 rg_ohm    = float(self._last_cfg.get("rg1_ohm" if is_led1 else "rg2_ohm", 100e3))
                 ri_ohm    = float(self._last_cfg.get("ri_ohm", 100e3))
                 i_cancel  = float(self._last_cfg.get("ambdac", "0")) * 1e-6  # µA → A
@@ -15643,15 +15687,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 vtia_str  = f"{v_tia:.3f} V"
                 vadc_str  = f"{v_adc:.3f} V"
             else:
-                vtia_str = "" if sig_idx not in self._STATS_RAW_ROWS else "---"
+                vtia_str = "" if name not in self._STATS_RAW_NAMES else "---"
                 vadc_str = vtia_str
             # Channel CLIPPED (lib v0.35 CH_MASKS): V_TIA/V_ADC estimate not valid →
             # gray text on neutral background (gauge color would be misleading)
-            _raw_clipped = (sig_idx in self._STATS_RAW_ROWS and buf
-                            and bool((_clipped >> self._STATS_ROW_TO_CH[sig_idx]) & 1))
-            if sig_idx in self._STATS_RAW_ROWS and buf and not _raw_clipped:
-                vtia_bg = self._vtg_tia_color(sig_idx, v_tia)
-                vadc_bg = self._vtg_adc_color(sig_idx, v_adc)
+            _raw_clipped = (name in self._STATS_RAW_NAMES and bool(buf)
+                            and bool((_clipped >> self._STATS_NAME_TO_CH[name]) & 1))
+            if name in self._STATS_RAW_NAMES and buf and not _raw_clipped:
+                vtia_bg = self._vtg_tia_color(name, v_tia)
+                vadc_bg = self._vtg_adc_color(name, v_adc)
             else:
                 vtia_bg = vadc_bg = self._VTG_DEFAULT
             for col, txt, bg in ((1, vtia_str, vtia_bg), (2, vadc_str, vadc_bg)):
@@ -16244,9 +16288,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 _ps_bg = self._PROBE_DISCONNECTED_BG
             else:
                 _ps_bg = self._VTG_DEFAULT
-            _ps_sig_idx = next(i for i, (n, _, __, ___) in enumerate(self._STATS_SIGNALS) if n == "ProbeState")
-            _ps_tbl_row = _ps_sig_idx if _ps_sig_idx < 4 else _ps_sig_idx + 1
-            _ps_item = self.stats_table.item(_ps_tbl_row, 0)
+            _ps_item = self.stats_table.item(self._stats_row["ProbeState"], 0)
             if _ps_item is not None:
                 _ps_item.setBackground(_ps_bg)
                 _ps_item.setForeground(QtGui.QColor("#FFFFFF") if _ps == 2 else QtGui.QColor("#AAAAAA"))

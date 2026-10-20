@@ -108,7 +108,7 @@ STATS_PT   = 8
 STATS_FAMILY = "monospace"
 VAL_CHARS  = "-8388608"   # the widest cell any row can print: a signed 24-bit ADC code
 # SIGNAL STATS's colours (pulsenest_lab.py, stats_table stylesheet) as the starting point, then
-# tuned on the bench: the body text a step down from #E0E0E0 so a wall of 24 rows does not
+# tuned on the bench: the body text a step down from #E0E0E0 so a wall of 25 rows does not
 # compete with the two large numbers beside it, alternate rows lifted off pure black so the eye
 # can follow one across four columns, and the header brighter and bold so it reads as a heading
 # rather than as the first row of data. Four values, all here.
@@ -117,16 +117,26 @@ STATS_BODY = "#B4B4B4"      # was #E0E0E0
 STATS_ROW_ALT = "#2E2E2E"   # every other row, lifted off the background
 STATS_HEAD = "#C8CEE0"
 STATS_HEAD_BG = "#33395A"   # was #1E1E2E
-# (label, field index in the $M* frame, display scale, decimals), in the order they are read
-# when something looks wrong -- which is also the order in which a short band keeps them.
+# (label, field index in the $M* frame, display scale, decimals) in the order of struct
+# AFE4490Data and then AFE4490AnalogState -- the $M4 field order too, and the order of SIGNAL STATS
+# in the lab (Alex, 2026-10-20). Until then the rows went in the order they are read when something
+# looks wrong, raw converter codes last so a short band lost them first; now a short band shows the
+# raw codes and scrolls to the rest.
 # Field positions are spec §4.2, the same table fleet_monitor.py reads. Scales follow the lab's
 # display conventions: OT and PPG_DISP in ppm, photodiode current in µA, everything else raw.
 STATS_ROWS = [
+    ("LED2",      3, 1.0, 0),
+    ("LED1",      4, 1.0, 0),
+    ("ALED2",     5, 1.0, 0),
+    ("ALED1",     6, 1.0, 0),
+    ("LED2_SUB",  7, 1.0, 0),
+    ("LED1_SUB",  8, 1.0, 0),
     ("PPG ppm",   9, 1e6, 2),
-    ("PI %",     13, 1.0, 2),
-    ("R",        12, 1.0, 4),
     ("SpO2 %",   10, 1.0, 2),
     ("SpO2 SQI", 11, 1.0, 3),
+    ("R",        12, 1.0, 4),
+    ("r reg corr", 36, 1.0, 4),   # R_METHOD2_REG_CORR (fw >= 0.19); NaN = no value, not counted
+    ("PI %",     13, 1.0, 2),
     ("HR1 bpm",  14, 1.0, 1),
     ("HR1 SQI",  15, 1.0, 3),
     ("HR2 bpm",  16, 1.0, 1),
@@ -134,22 +144,13 @@ STATS_ROWS = [
     ("HR3 bpm",  18, 1.0, 1),
     ("HR3 SQI",  19, 1.0, 3),
     ("RSQI",     20, 1.0, 2),
-    # Then the analog chain, in the order it is consulted when a reading looks wrong: is the
-    # TIA near its rail, is the tissue transmitting, how much current is the photodiode giving,
-    # and only last the raw converter codes — which are the rows a reader can reconstruct from
-    # the others (LED1 = LED1_SUB + ALED1), and therefore the right ones to lose first.
+    # Then the analog chain, in AFE4490AnalogState order: v_tia, i_pd, ot.
     ("V_TIA1 V", 23, 1.0, 3),
     ("V_TIA2 V", 24, 1.0, 3),
-    ("OT1 ppm",  31, 1e6, 2),
-    ("OT2 ppm",  32, 1e6, 2),
     ("I_PD1 µA", 27, 1e6, 3),
     ("I_PD2 µA", 28, 1e6, 3),
-    ("LED1_SUB",  8, 1.0, 0),
-    ("LED2_SUB",  7, 1.0, 0),
-    ("LED1",      4, 1.0, 0),
-    ("LED2",      3, 1.0, 0),
-    ("ALED1",     6, 1.0, 0),
-    ("ALED2",     5, 1.0, 0),
+    ("OT1 ppm",  31, 1e6, 2),
+    ("OT2 ppm",  32, 1e6, 2),
 ]
 STATS_FIELDS = tuple(sorted({row[1] for row in STATS_ROWS}))
 STATS_COLS   = ("mean", "sd", "min", "max")
@@ -257,9 +258,11 @@ class BoardTrace:
         for idx in STATS_FIELDS:
             if idx < n_fields:
                 try:
-                    self.stats[idx].add(float(p[idx]))
+                    v = float(p[idx])
                 except ValueError:
-                    pass
+                    continue
+                if v == v:            # 'nan' = no value (field 36 under R-METHOD-1): not a sample
+                    self.stats[idx].add(v)
         self._decim += 1
         if self._decim < DECIM:
             return

@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.93
+# pulsenest_lab — Specification v1.94
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1054,11 +1054,13 @@ of 24 rows does not compete with the two large numbers beside it, alternate rows
 black so the eye can follow one across four columns, and the header bold on a brighter ground so
 it reads as a heading and not as the first row of data. The background is set on every **cell**,
 not on the row: Qt's rich text paints a row background only where a cell asks for one, so a
-stripe set on the `<tr>` alone comes out dotted. All 24 signals of the `$M4` frame are
-always in the panel, ordered by how often they answer the question in front of you (PPG, PI, R,
-SpO2, HR1–HR3 and their SQIs, then the analog chain `V_TIA`/OT/`I_PD`, then the raw converter
-codes, which a reader can reconstruct from the rows above); the panel is as tall as its band and
-**scrolls** to the rest.
+stripe set on the `<tr>` alone comes out dotted. 25 signals of the `$M4` frame are always in the
+panel, **in struct `AFE4490Data` order and then `AFE4490AnalogState`** (v1.94, the same order as
+SIGNAL STATS: raw codes, ambient-subtracted, PPG, SpO2, SpO2 SQI, R, `r reg corr` = field 36,
+PI, HR1–HR3 with their SQIs, RSQI, then `V_TIA`, `I_PD`, OT); `nan` samples of field 36 are not
+counted. Until v1.93 the order was "how often a row answers the question in front of you", raw
+codes last so a short band lost them first; now a short band shows the raw codes and **scrolls**
+to the rest. The panel is as tall as its band.
 
 It is a read-only `QTextEdit` in a `QGraphicsProxyWidget`, not a drawn label, for three reasons
 that were each learned on the bench. A widget brings a real scrollbar, which is how the rows
@@ -1109,7 +1111,7 @@ viewer and the recorder GUI import from there, so neither imports the other prog
 a 1200 px window about 370 px of waveform with three boards — widen the window and the waveform
 takes everything that is added.
 
-Verified by `test_pulsenest/fleet_ppg_viewer_test.py` (70 offline checks, no hub and no board: the field it
+Verified by `test_pulsenest/fleet_ppg_viewer_test.py` (76 offline checks since v1.94, no hub and no board: the field it
 reads, decimation, trimming by time rather than by point count, state colouring, LOST, one band
 per MAC across a lease change, malformed lines never raising, the bedside numbers, the statistics
 arithmetic and its window, the four columns and that no cell can outgrow the width it was
@@ -1658,17 +1660,28 @@ the 4 raw ADC rows (`tbl_row = sig_idx if sig_idx < 4 else sig_idx + 1`). Column
 | 7 | Min | Minimum value |
 | 8 | Max | Maximum value |
 
-**Signal ordering (IR-first, mirrors firmware $M3 frame):**
-LED1 (IR), LED2 (RED), ALED1, ALED2 (sig_idx 0–3, raw ADC — integer + narrow-space thousands separator `\u202f`),
-LED1_SUB, LED2_SUB (4–5),
-PPG_DISP, SpO2, SpO2_SQI, R, PI, HR1, HR1_SQI, HR2, HR2_SQI, HR3, HR3_SQI, RSQI, DiagCode,
-ProbeState (6–19, 2 dp),
-V_TIA_LED1/LED2/ALED1/ALED2 (20–23, 6 dp V), I_PD_LED1/LED2/ALED1/ALED2 (24–27, µA 3 dp),
-OT_LED1 [ppm], OT_LED2 [ppm] (28–29, displayed ×1e6 for readability, 2 dp — **read from the
+**Signal ordering (v1.94: struct `AFE4490Data`, then `AFE4490AnalogState` — which is also the
+`$M3`/`$M4` field order; Alex, 2026-10-20. Until v1.93 the raw rows were IR-first.)**
+LED2 (RED), LED1 (IR), ALED2, ALED1 (raw ADC — integer + narrow-space thousands separator `\u202f`),
+then the sub-header divider, LED2_SUB, LED1_SUB (integer as well),
+PPG_DISP, SpO2, SpO2_SQI, R, **R_METHOD2_REG_CORR** (`$M4` field 36, 4 dp; NaN samples are left out
+of the statistics, so it reads `---` only when the whole window had no value), PI, HR1, HR1_SQI,
+HR2, HR2_SQI, HR3, HR3_SQI, RSQI, DiagCode, ProbeState (2 dp),
+V_TIA_LED1/LED2/ALED1/ALED2 (6 dp V), I_PD_LED1/LED2/ALED1/ALED2 (µA 3 dp),
+OT_LED1 [ppm], OT_LED2 [ppm] (displayed ×1e6 for readability, 2 dp — **read from the
 $M4 frame**, not computed locally; $M4 mode only. Wire protocol unchanged: firmware still
 sends raw A/A in `%.6e` (7 significant figures, v0.17+) — the ×1e6 + 2dp formatting is local to the Python display only).
 
-**V_TIA / V_ADC columns (cols 1–2):** populated only for rows 0–3 (LED1, LED2, ALED1, ALED2).
+**Rows are addressed by signal name (v1.94).** Every rule that depends on a row — formats, the
+V_TIA/V_ADC columns, the SQI-coloured Mean cells, the CLIPPED grey, the accent pair, the R-estimate
+cell, the ProbeState colour — looks the row up by name (`_stats_row`, `_STATS_*_NAMES`,
+`_STATS_NAME_TO_CH`), so adding or moving a row cannot move a rule onto another signal.
+Highlighted cells are saved as `<signal>=<col>` in `PPGMonitor/stats_highlighted`; the `row,col`
+tokens of v1.93 and earlier are translated through the old row order (`_STATS_LEGACY_ORDER`).
+Verified against v1.93 with the same frames: the 30 existing signals show the same 8 cells (text,
+background, foreground, tooltip), also with ADC/TIA clipping on LED2, ALED1 and LED1+ALED2.
+
+**V_TIA / V_ADC columns (cols 1–2):** populated only for the four raw rows (LED2, LED1, ALED2, ALED1).
 Calculated from the current ADC mean using the AFE4490 gain chain (V_TIA is the differential
 TIA output = 2 × I_PD × RF; the code has no separate branch value):
 - V_ADC = (mean_counts / 2²¹) × 1.2 V  (ADC full scale ±1.2 V, 22-bit signed)
@@ -2821,6 +2834,19 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.94 — 2026-10-20
+
+**SIGNAL STATS and the fleet viewer's statistics panel follow struct `AFE4490Data`** (then
+`AFE4490AnalogState`; Alex), with **R_METHOD2_REG_CORR** right below R (§6.3, §4.11). SIGNAL
+STATS: raw rows LED2, LED1, ALED2, ALED1 (were IR-first), 4 decimals for the new row, NaN samples
+left out; every row-dependent rule rewritten to look the row up by name instead of by index
+(they were literal indices: 4/5 LED_SUB, 9 R, 18 DiagCode, 20–29 analog, cells (5,3), (10,3),
+(11,4)); highlighted cells saved by name, old `row,col` entries migrated. Regression against v1.93
+on the same frames: identical cells for the 30 existing signals, clipped or not. Fleet viewer
+(`pulsenest/fleet_trace.py`): same order, `r reg corr` (field 36) added, `nan` not counted;
+its test checks the order by field index (76/76). Not changed: PPG Plots and PPG SIGNALS stay
+IR-first; the SIGNALS2 list keeps its order.
 
 ### v1.93 — 2026-10-20
 

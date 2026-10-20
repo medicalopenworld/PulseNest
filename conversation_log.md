@@ -28203,3 +28203,24 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   (.242 87:A4, .238 88:50, .141 82:5C). Segundo intento verificado por MAC en las tres, `elfsha=2677deb613f9b57a`;
   `docs/boards.md` anotado. Memoria: regla de nombres en `project_nomenclature_dictionary`, versión de la lib.
 - Pendiente siguiente: la puerta de artefacto para SpO2.
+
+## Sesión 2026-10-20 (7) — SIGNAL STATS y visor de flota en orden del struct, con R_METHOD2_REG_CORR (lab v1.94)
+
+- **Petición (Alex):** `reg_corr` no aparecía en SIGNAL STATS ni en `fleet_ppg_viewer.py`; ponerlo debajo de R y que las
+  listas sigan el orden del struct `AFE4490Data`.
+- **SIGNAL STATS:** filas en orden del struct y luego `AFE4490AnalogState` (= orden del `$M4`): LED2 (RED), LED1 (IR),
+  ALED2, ALED1 (antes IR-first), LED2_SUB, LED1_SUB, …, R, **R_METHOD2_REG_CORR** (4 decimales; las muestras NaN no
+  cuentan), PI, …. Toda la lógica que dependía del índice de fila (formatos, columnas V_TIA/V_ADC, celdas SQI, gris de
+  canal recortado, par resaltado LED1_SUB/PI, celda "R estimate", color de ProbeState) pasa a buscar la fila por
+  nombre. Las celdas resaltadas se guardan por nombre (`<señal>=<col>`); las guardadas como `fila,col` por v1.93 se
+  traducen con el orden antiguo, así siguen en la misma señal. Verificado contra v1.93 con las mismas tramas: las 30
+  señales existentes muestran las mismas 8 celdas (texto, fondo, color, tooltip), también con recorte en LED2, ALED1
+  y LED1+ALED2.
+- **Visor de flota** (`pulsenest/fleet_trace.py`): mismo orden, fila `r reg corr` (campo 36), NaN no cuenta. Aviso
+  dado a Alex: el orden anterior era deliberado (crudos al final, lo primero que se pierde en una banda baja); ahora en
+  una banda baja se ven los crudos y SpO2/HR quedan a un scroll. Test actualizado: comprueba el orden por índice de
+  campo (76/76).
+- No tocado (no pedido): PPG Plots, PPG SIGNALS y la lista de SIGNALS2 siguen IR-first.
+- Tests: fleet viewer 76/76, fleet monitor 37/37, disable_plots 13/13, udpcom 19/19; regresión antes/después y humo de
+  SPO2TEST desde el scratchpad. Spec del lab v1.94 (§6.3, §4.11, changelog); docstring del visor.
+- Memoria: `feedback_variable_lists_struct_order`.

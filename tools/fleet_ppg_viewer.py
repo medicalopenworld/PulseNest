@@ -61,10 +61,11 @@ What it draws, and why those choices:
   faithfulness to the commercial idiom.
 - **A statistics panel on the right of each band** — the same table SIGNAL STATS shows in the
   lab, down to its font and its colours: per signal, **mean, SD, min and max** over the last
-  second, always the four. All 24 signals of the frame are always there, ordered by how often
-  they answer the question in front of you (PPG, PI, R, SpO2, HR1-3 and their SQIs, then the
-  analog chain, then the raw converter codes); the panel is as tall as its band and **scrolls**
-  to the rows that do not fit.
+  second, always the four. 25 signals of the frame are always there, in the order of struct
+  AFE4490Data and then AFE4490AnalogState — the same order as SIGNAL STATS in the lab (raw codes,
+  ambient-subtracted, PPG, SpO2, SpO2 SQI, R, r reg corr, PI, HR1-3 and their SQIs, RSQI, then
+  V_TIA, I_PD, OT; 2026-10-20). The panel is as tall as its band and **scrolls** to the rows that
+  do not fit — in a short band that means the raw codes show and SpO2/HR are a scroll away.
 
   It is a read-only `QTextEdit` in a proxy item rather than a drawn label, for three reasons
   that were all learned the hard way. A widget brings a real scrollbar. It clips itself, so
