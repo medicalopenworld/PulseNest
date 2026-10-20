@@ -28133,3 +28133,23 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   session config) y de `captures/sessions/SUBJ90/Analysis/` completo (findings, `plateaus.csv`, figura, script) más el
   espectrograma de `Spectra/`. `.gitignore`: excepción explícita para SUBJ90 (simulador, sin datos de personas); los
   crudos (~185 MB) siguen fuera salvo que un test de regresión los necesite.
+
+## Sesión 2026-10-20 (3) — SpO2 que desaparece a 100 % en el dedo adulto: `spo2_clamp_margin` 3 → 10 (lib v0.107, fw 0.26)
+
+- **Síntoma (Alex, tres Medle en los dedos de la mano izquierda):** el SpO2 desaparece a menudo. Hipótesis de Alex: el
+  rechazo por encima de 100 + 3 %. **Confirmado sobre las tres sesiones SUBJ01 del 18-10** (misma curva y método que las
+  placas): SpO2 inválido el 3,9 / 1,3 / 2,3 % del tiempo con sonda aplicada, **99 % de esas muestras por a − b·R > 103**
+  (límite = R 0,536); las puertas r (0,999) y PI (7-9 %) no intervienen; episodios de 0,7 a 20 s. Además a − b·R quedaba
+  entre 100 y 103 (recortado) el 17-27 % del tiempo: la curva neonatal de pie lee +3 pt en el dedo adulto, así que un 99
+  real sale 102 y un 100 real sale 103, justo en el borde; en reposo con la mano caliente la R baja de 0,536 más a menudo.
+  El MS100 a consigna 100 dio lo mismo el 19-10 (inválido 51-99 %). El `spo2_clamp_margin` 3 no tenía procedencia.
+- **Decisión (Alex): margen 10.** Rechazar por arriba castigaba un desplazamiento de calibración, no un defecto de señal;
+  Nellcor y Masimo recortan a 100 sin rechazar. Opciones descartadas: curva por sitio (registro: una sola curva) y quitar
+  el rechazo del todo (a − b·R > 110, R < 0,36, no es fisiología: se marca). Rationale §15; spec §5.1, §10 y changelog.
+- **Hecho:** lib **v0.107** (`e5a6008`, tag, push): `spo2_clamp_margin` 10. `test_spo2`: 105,8 → recortado a 100 válido
+  (nuevo `test_spo2_offset_above_100_clamped`), 115 → inválido; host spo2 17/17, pi 8/8. fw **0.26**; lab **v1.90**
+  (`SPO2_CLAMP_MARGIN` 10, spec §5.2 y changelog). PulseNest `1b104db`. **OTA a las 3 V18** (87:A4, 88:50, 82:5C) con
+  build limpio, `elfsha=83e6966a26bbd476`, verificada por MAC; `docs/boards.md` anotado. En las sesiones del 18-10 el
+  cambio elimina todos los huecos (máximo a − b·R 106,4) y no toca ningún valor por debajo de 100.
+- Memoria: hilo de calibración (clamp resuelto; quedan puerta de artefacto, experimento 5 min dedo/Mindray, R-curves del
+  MS100 en pantalla, Pulse Amp vs PI) y versión de la librería.
