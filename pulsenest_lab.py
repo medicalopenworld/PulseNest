@@ -616,7 +616,7 @@ class SpO2TestCalc:
     PI_RMS_TO_PP       = 2.8284271     # pi_rms_to_pp = 2·√2 (sinusoid RMS → peak-to-peak)
     FW_SPO2_MIN        = 70.0
     FW_SPO2_MAX        = 100.0
-    SPO2_CLAMP_MARGIN  = 3.0           # spo2_clamp_margin — up to 103 % reads 100 %
+    SPO2_CLAMP_MARGIN  = 10.0          # spo2_clamp_margin — up to 110 % reads 100 % (lib v0.107; 3.0 until v0.106)
     FW_PI_SQI_LOW      = 0.5           # spo2_pi_sqi_lo: PI below this → SQI = 0
     FW_PI_SQI_HIGH     = 2.0           # spo2_pi_sqi_hi: PI at or above this → SQI = 1
     FW_PI_MAX          = 20.0          # spo2_pi_max: above this the "PI" is a DC transient → invalid

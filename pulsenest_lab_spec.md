@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.89
+# pulsenest_lab — Specification v1.90
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1233,7 +1233,7 @@ Chain, per applied sample, everything at the AFE rate:
   PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100 with N the samples in the window, peak-to-peak units. Run **before** SpO2 on every sample, as `_process_sample()` does, because
   SpO2's SQI reads the PI of the same sample.
 - **SpO2**: a − b·R, published when r ≥ `r_corr_min`, PI is known and ≤ 20 % and
-  70 ≤ SpO2 ≤ 103 (clamped to 100); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise `NaN`,
+  70 ≤ SpO2 ≤ 110 (clamped to 100; `SPO2_CLAMP_MARGIN` 10, lib v0.107 — 3 until v0.106); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise `NaN`,
   SQI 0 — R and r stay reported so the reason is visible.
 
 Outputs refresh at the block cadence (10 Hz) and hold between blocks; they are `NaN` while their
@@ -2816,6 +2816,12 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.90 — 2026-10-20
+
+**SpO2 mirror follows lib v0.107: `SPO2_CLAMP_MARGIN` 3 → 10** (§5.2). a − b·R up to 110 % reads
+100; only beyond that is the mirrored SpO2 NaN. One constant; no other change. (v1.89, 2026-10-20:
+the `$CFG` note shows `pi_method_id`.)
 
 ### v1.88 — 2026-10-08
 

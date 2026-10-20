@@ -162,7 +162,7 @@ void test_spo2_90_percent() {
 }
 
 // ── Test 5: SpO2 slightly above 100 → clamped to 100 and reported valid ──────
-// raw SpO2 ≈ 101.2 → within the 3-point clamp margin → 100.0
+// raw SpO2 ≈ 101.2 → within the clamp margin → 100.0
 void test_spo2_clamp_above_100() {
     INCUNEST_AFE4490 afe;
     feed_spo2_sine(afe, 5000.0f, a_red_for(101.2f), 1.0f, CONVERGED_SAMPLES);
@@ -170,11 +170,21 @@ void test_spo2_clamp_above_100() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, afe.test_spo2());
 }
 
-// ── Test 6: SpO2 far above 100 → invalid (outside clamp margin) ──────────────
-// raw SpO2 ≈ 105.8 → exceeds the clamp margin → invalid
-void test_spo2_too_high_invalid() {
+// ── Test 6: a curve offset above 100 → still clamped to 100 (v0.107, rationale §15) ──
+// raw SpO2 ≈ 105.8 — what the neonatal-foot curve gives on an adult finger or the MS100 at
+// setpoint 100 — was invalid with the 3-point margin; with 10 points it reads 100, valid.
+void test_spo2_offset_above_100_clamped() {
     INCUNEST_AFE4490 afe;
     feed_spo2_sine(afe, 5000.0f, a_red_for(105.8f), 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, afe.test_spo2());
+}
+
+// ── Test 6b: SpO2 far above 100 → invalid (outside the 10-point clamp margin) ──
+// raw SpO2 ≈ 115 → exceeds spo2_max + spo2_clamp_margin → invalid
+void test_spo2_too_high_invalid() {
+    INCUNEST_AFE4490 afe;
+    feed_spo2_sine(afe, 5000.0f, a_red_for(115.0f), 1.0f, CONVERGED_SAMPLES);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 }
@@ -342,6 +352,7 @@ int main() {
     RUN_TEST(test_spo2_98_percent);
     RUN_TEST(test_spo2_90_percent);
     RUN_TEST(test_spo2_clamp_above_100);
+    RUN_TEST(test_spo2_offset_above_100_clamped);
     RUN_TEST(test_spo2_too_high_invalid);
     RUN_TEST(test_spo2_r_invariant_to_uniform_scale);
     RUN_TEST(test_spo2_default_r_curve_is_labelled_and_matches);
