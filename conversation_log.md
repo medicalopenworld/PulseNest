@@ -28350,3 +28350,41 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   ONLY_LED_SATURATING (TIA en el riel, máscaras 0x0505) y bajada lenta de v0.105 hasta 10K/10K a 374,4 s (un paso
   cada 6 s). La luz subió las fases ambiente a 0,86 V sin recortarlas → estado 4 y no 3, correcto. PI máximo 118 %.
 - Docstring de `SpO2TestCalc` con la verificación contra placa.
+
+## Sesión 2026-10-21 (5) — HR3: preprocesado del espectro × combinación de armónicos, medido (experimento)
+
+- **Pregunta de Alex:** el HPS (producto `P[k]·P[2k]·P[3k]`) sufre cuando un armónico cae demasiado, p. ej. los
+  armónicos altos del pulso de prematuros; propone el HSS (suma ponderada, Noll 1969 / Hermes 1988) y, como mejora
+  independiente, convolucionar el espectro con un núcleo de pico central y lóbulos negativos (Ricker, DoG, CFAR)
+  antes de combinar. Orden acordado: A = preprocesado (fondo de respiración y movimiento), B = combinación (armónicos
+  débiles). Análisis previo: la resta con núcleo no comprime el rango dinámico (no resuelve B); el blanqueo por
+  división sí; las sumas pierden la defensa frente a subarmónicos; la anchura del núcleo debe respetar el lóbulo Hann
+  (4 bins) y la dispersión por variabilidad (n veces mayor en el armónico n).
+- **Referencia de pulso:** los `reference_spo2.csv` no llevan pulso del monitor (columna `pr` vacía salvo 23 lecturas
+  de SUBJ10). Alex grabó un barrido en el MS100 (`SUBJ90_ERRENIEGA_20261021_163825`: 30-240 lpm en escalones de 30,
+  90 s cada uno, más 20 lpm; la frecuencia tecleada en la caja PR del grabador con cada REF_SPO2, dos eventos por
+  meseta). Para los neonatos, consenso HR1-HR2 de la placa (ambos válidos ≥ 50 % de la ventana y dentro del 3 %).
+- **Experimento `experiments/hr3_spectral_variants_20261021.py`** (2 min, 21 sesiones): cadena de HR3 en numpy una
+  vez por ventana, rejilla 8 × 5 = 40 variantes, métricas por sujeto (disponibilidad, error, errores de octava, SQI)
+  y la puerta de artefacto del 20-10 "HR3 válido" rehecha con la validez de cada variante. Validación: contra la
+  réplica en orden del runner (v0.28, lib 0.109) el espejo A0×B0 da el mismo valor (≤ 0,05 lpm) o el mismo NaN en el
+  100 % de 1939 ventanas (3 sesiones), SQI idéntico; contra la columna de la placa 59-100 % dentro de 0,2 lpm por la
+  asincronía de la Task C. Hallazgo de paso: la librería publica `hr3` solo con `hr3_sqi > 0` (cpp 3018); el espejo
+  lo replica desde la segunda pasada. Informe `captures/sessions/HR3_VARIANTS_20261021/findings.md` (no versionado).
+- **Resultado:** la premisa no se sostiene en este corpus. Los armónicos neonatales están 10-12 dB (2.º) y 18-21 dB
+  (3.º) por debajo del fundamental, débiles pero no en el ruido (un B4 con suelo en la mediana del ruido salió
+  idéntico a B0 en todas las sesiones). El HR3 actual acierta el 89,5-92,5 % de las ventanas de consenso neonatales y
+  el 100 % de las mesetas del MS100 de 30 a 240 (error máximo 0,18 lpm); lo que le falta es disponibilidad (69-88 %
+  frente a 99,8 % en el adulto), retenida por la regla SQI > 0. **Todo preprocesado que quita el suelo (Ricker/DoG
+  de anchura constante, blanqueo) sube la disponibilidad limpia a 97,6-99,7 % y a la vez devuelve HR3 válido en el
+  movimiento de SUBJ10 (6,8 → 57-92 % de ventanas): la puerta "HR3 válido" pasa de 2,6 % publicado / Arms 2,0 a
+  57-81 % / Arms 15-16, los números sin puerta.** El producto sobre el espectro crudo con la regla de SQI es el
+  detector de artefacto del que depende la puerta pendiente. Las sumas (B2/B3) dejan pasar SUBJ10 con Arms 10-11
+  incluso sin preprocesado. Los núcleos escalados por n fallan a 30-60 lpm (los lóbulos negativos alcanzan el
+  armónico vecino, a 5 bins a 30 lpm); CFAR falla a 30 lpm. Con núcleo + producto el SQI satura a 1 (AUC 0,5).
+- **Única ganancia sin coste medido:** producto de dos armónicos `P[k]·P[2k]` (B1): disponibilidad neonatal +6/+7
+  puntos (69→76, 71→77, 88→95 %), errores de octava a la mitad, MS100 100 %, SUBJ10 2,1 % publicado, Arms de la
+  puerta a ±0,2 de hoy. **Decisión de Alex pendiente**; nada entra en la librería. Rationale §17 en el repo de la
+  librería (sin cambio de versión). Abierto: si el PPG del prematuro real tiene armónicos más débiles que estos
+  neonatos (sin edad gestacional en las sesiones; el MS100 no lo emula) y leer el pulso del monitor con VideoNest en
+  la próxima campaña.
