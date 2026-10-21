@@ -3765,7 +3765,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
       Right : parameter controls and current values table.
     """
 
-    _HR_BUF = SPO2_CAL_BUFSIZE
+    _HR_BUF = 30000   # rolling live buffer: 60 s at the 500 Hz AFE rate (v1.97; was SPO2_CAL_BUFSIZE = 60 s at 50 Hz)
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -3897,6 +3897,9 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         self.p_hr.addLegend()
         self.curve_hr_fw  = self.p_hr.plot(pen=FW_PEN,  name="HR2 fw")
         self.curve_hr_py  = self.p_hr.plot(pen=PY_PEN,  name="HR2 py")
+        for _c in (self.curve_hr_fw, self.curve_hr_py):      # 30000 points at 500 Hz (v1.97)
+            _c.setDownsampling(auto=True, method='peak')
+            _c.setClipToView(True)
         self._zero_delta  = pg.InfiniteLine(
             angle=0, pos=0, movable=False,
             pen=pg.mkPen('#555555', width=1, style=QtCore.Qt.DashLine))
@@ -4253,32 +4256,26 @@ class HR2TestWindow(QtWidgets.QMainWindow):
         self._on_param_changed()
         self._last_sample_cnt = 0      # the refilled monitor buffers carry counter 0
 
-    def update_algorithms(self, data_ot_led1, data_probe_state, data_hr2, data_hr2_sqi,
-                          data_timestamp_us, data_sample_counter):
-        """Run per-sample algorithm (called from PPGMonitor._process_frames_tick).
+    def update_algorithms(self, rows):
+        """Run the mirror on this tick's samples (called from PPGMonitor._process_frames_tick).
 
-        data_ot_led1 (OT_LED1) is only meaningful while frame mode $M4 is active —
-        otherwise it is firmware-side zero-filled (see PPGMonitor's $M3/$M4 parser).
-        data_probe_state (RSQM's classification) is consumed directly — HR2TestCalc never
-        classifies presence itself; probe_state != PROBE_APPLIED keeps hr2/sqi invalid.
+        `rows` = [(sample_counter, ts_us, ot_led1, probe_state, hr2, hr2_sqi), ...] — every $M4
+        frame of the tick, at the AFE rate, parsed BEFORE the lab's decimation (v1.97). From v1.88
+        to v1.96 this read the lab's data_* deques, filled after `spin_decim` (default 10): 50 Hz
+        samples with fs = afe_fs() = 500, so the chain's decimation kept 1 in 10 of an already
+        decimated stream (5 Hz into an 8 s buffer that then held 80 s) and the band-pass sat at
+        0.05-0.5 Hz in real time. Same defect as SPO2TEST (v1.96), found by pulsenest-51.
+        probe_state (RSQM's classification) is consumed directly — HR2TestCalc never classifies
+        presence itself; probe_state != PROBE_APPLIED keeps hr2/sqi invalid.
         """
-        if self._offline_mode:
+        if self._offline_mode or not rows:
             return
-        n = len(data_sample_counter)
-        if n == 0:
+        rows = [row for row in rows if row[0] > self._last_sample_cnt]
+        if not rows:
             return
 
-        new_indices = []
-        for i in range(n - 1, -1, -1):
-            if data_sample_counter[i] <= self._last_sample_cnt:
-                break
-            new_indices.append(i)
-        if not new_indices:
-            return
-        new_indices.reverse()
-
-        # Gap detection: check for missing samples in new batch
-        _counters = [int(data_sample_counter[i]) for i in new_indices]
+        # Gap detection: missing samples in the new batch
+        _counters = [int(row[0]) for row in rows]
         if self._nominal_step is None and len(_counters) >= 2:
             self._nominal_step = _counters[1] - _counters[0]
         if self._last_sample_cnt > 0 and self._nominal_step is not None:
@@ -4292,17 +4289,13 @@ class HR2TestWindow(QtWidgets.QMainWindow):
                     self.gap_count += _step - self._nominal_step
 
         nan = float('nan')
-        for i in new_indices:
-            ts          = float(data_timestamp_us[i])
-            ot_led1     = float(data_ot_led1[i])
-            probe_state = int(data_probe_state[i])
-            hr_f  = float(data_hr2[i])
-            sqi_f = float(data_hr2_sqi[i])
+        fs = self.main_monitor.afe_fs()
+        for _sc, ts, ot_led1, probe_state, hr_f, sqi_f in rows:
             if self._t0_us is None:
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
 
-            self._calc.update(ot_led1, self.main_monitor.afe_fs(), probe_state)
+            self._calc.update(ot_led1, fs, probe_state)
 
             hr_fw  = hr_f  if hr_f  > 0 else nan
             sqi_fw = sqi_f if sqi_f >= 0 else nan
@@ -4317,7 +4310,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             self._buf_sqi_fw.append(sqi_fw)
             self._buf_sqi_py.append(sqi_py)
 
-        self._last_sample_cnt = data_sample_counter[-1]
+        self._last_sample_cnt = rows[-1][0]
 
     def update_plots(self):
         """Render pre-computed buffers (called from PPGMonitor._refresh_plots_tick)."""
@@ -4665,6 +4658,306 @@ class HR3TestCalc:
         else:
             self.hr_sqi = 0.0
         self.hr_bpm = hr if self.hr_sqi > 0.0 else float('nan')
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  PICalc — configurable 3-step Perfusion Index pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PICalc:
+    """Configurable 3-step Perfusion Index pipeline.
+
+    Pipeline: STEP1 (AC waveform extraction) → STEP2 (AC amplitude estimator)
+              → STEP3 (DC for denominator)
+
+    Outputs, per channel (_ir/_red): ac_wave = AC waveform, sample by sample (STEP1);
+    dc_base = the baseline STEP1 subtracts to get it; ac_amp = AC amplitude (STEP2; RMS,
+    peak-to-peak or spectral, per method); dc_norm = DC that normalises it (STEP3).
+    PI = ac_amp / dc_norm × 100; R = PI_red / PI_ir.
+
+    Input: OT_LED1 (IR) / OT_LED2 (red) [A/A], the gain-invariant optical transmittance the
+    library's SpO2/PI/HR run on (lib v0.38+). Not led1_sub: an RF change scales led1_sub at once
+    and the DC estimators lag it, so PI and R spiked at every HGAC gain change (v1.76).
+
+    STEP1 — AC waveform extraction:
+      S1_EMA  (1.1): EMA-based subtraction (τ_sub seconds)
+      S1_BPF  (1.2): the library's one-biquad Butterworth band-pass (bpf_lo–bpf_hi Hz), with its
+                     steady-state precharge (v1.81; it was scipy's 4-pole design before)
+      S1_NONE (1.3): pass-through (only valid with spectral STEP2 2.4/2.5)
+
+    STEP2 — AC amplitude estimator:
+      S2_EMA_RMS   (2.1): running RMS via EMA of x² — firmware method method
+      S2_WIN_RMS   (2.2): windowed RMS (win_s seconds)
+      S2_PEAKPK    (2.3): peak-to-peak / 2 over win_s seconds
+      S2_SPECTRAL  (2.4): FFT energy in band [f_HR ± delta_hz]
+      S2_HARMONICS (2.5): FFT energy sum at n·f_HR harmonics
+      S2_DOLS      (2.6): regression on derivatives (v1.81) -- R = EMA(dx·dy)/EMA(dx²) with
+                          x = ac_ir/dc_norm_ir, y = ac_red/dc_norm_red, dx = x[n]-x[n-1] (τ_ac).
+                          A joint estimator: it gives R, not one amplitude per channel, so ac_amp
+                          (and PI) are the 2.1 EMA-RMS of the same STEP1 output. corr_dols is its r.
+
+    STEP3 — DC for PI denominator:
+      S3_EMA      (3.1): EMA of raw signal — firmware method method (τ_norm seconds); like the
+                         library's EmaChannel it starts at the first sample, not at 0 (v1.81)
+      S3_LPF      (3.2): 2nd-order Butterworth LPF (lpf_fc Hz)
+      S3_WIN_MEAN (3.3): windowed mean (win_norm_s seconds)
+    """
+
+    S1_EMA = "1.1"; S1_BPF = "1.2"; S1_NONE = "1.3"
+    S2_EMA_RMS = "2.1"; S2_WIN_RMS = "2.2"; S2_PEAKPK = "2.3"
+    S2_SPECTRAL = "2.4"; S2_HARMONICS = "2.5"; S2_DOLS = "2.6"
+    S3_EMA = "3.1"; S3_LPF = "3.2"; S3_WIN_MEAN = "3.3"
+
+    # SpO2 calibration defaults (mirror firmware incunest_afe4490 defaults)
+    DEFAULT_SPO2_R_CURVE_A = 114.9208
+    DEFAULT_SPO2_R_CURVE_B =  30.5547
+
+    def __init__(self):
+        # STEP1
+        self.step1      = self.S1_EMA
+        self.tau_sub    = 2.0   # S1_EMA τ (s)
+        self.bpf_lo     = 0.5   # S1_BPF lo cutoff (Hz)
+        self.bpf_hi     = 4.0   # S1_BPF hi cutoff (Hz)
+        # STEP2
+        self.step2       = self.S2_EMA_RMS
+        self.tau_ac      = 6.0   # S2_EMA_RMS τ (s)
+        self.win_s       = 4.0   # S2_WIN_RMS / S2_PEAKPK / spectral window (s)
+        self.fft_len     = 512   # S2_SPECTRAL / S2_HARMONICS FFT length (samples)
+        self.hr_bpm      = 70.0  # nominal HR for spectral methods (bpm)
+        self.n_harmonics = 3     # number of harmonics for S2_HARMONICS
+        self.delta_hz    = 0.3   # spectral bin half-width around each harmonic (Hz)
+        # STEP3
+        self.step3      = self.S3_EMA
+        self.tau_norm   = 2.0   # S3_EMA τ (s)
+        self.lpf_fc     = 0.4   # S3_LPF cutoff (Hz)
+        self.win_norm_s = 4.0   # S3_WIN_MEAN window (s)
+
+        # internal state
+        self._fs = 0.0
+        self._alpha_sub = 0.0; self._alpha_ac = 0.0; self._alpha_norm = 0.0
+        self._ema_dc_ir    = 0.0; self._ema_dc_red    = 0.0
+        self._ema_ac2_ir   = 0.0; self._ema_ac2_red   = 0.0
+        self._ema_dc_norm_ir  = 0.0; self._ema_dc_norm_red  = 0.0
+        self._win_buf_ir   = deque(); self._win_buf_red  = deque()
+        self._raw_ir_buf   = deque(); self._raw_red_buf  = deque()
+        self._norm_buf_ir  = deque(); self._norm_buf_red = deque()
+        self._bp = None; self._bp_v_ir = None; self._bp_v_red = None   # S1_BPF: coeffs, [v1, v2]
+        self._n = 0                                                      # samples since reset
+        self._dols_sxy = 0.0; self._dols_sxx = 0.0; self._dols_syy = 0.0; self._dols_prev = None
+        self.corr_dols = 0.0   # S2_DOLS: r of the derivative regression (~0.99 with a pulse, ~0 without)
+        self._lpf_sos = None; self._lpf_zi_ir = None; self._lpf_zi_red = None
+        self._win_max_n = 200; self._norm_max_n = 200
+
+        # SpO2 calibration (synced from firmware $CFG at runtime)
+        self.spo2_r_curve_a = self.DEFAULT_SPO2_R_CURVE_A
+        self.spo2_r_curve_b = self.DEFAULT_SPO2_R_CURVE_B
+
+        # outputs
+        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
+        self.ac_amp_ir  = 0.0; self.ac_amp_red = 0.0
+        self.dc_norm_ir  = 1.0; self.dc_norm_red = 1.0
+        self.dc_base_ir = 0.0; self.dc_base_red = 0.0
+        self.ac_wave_ir   = 0.0; self.ac_wave_red   = 0.0  # STEP1 pulsatile waveform output
+
+    def reset(self):
+        """Reset all accumulators (keeps configuration)."""
+        self._ema_dc_ir   = 0.0; self._ema_dc_red   = 0.0
+        self._ema_ac2_ir  = 0.0; self._ema_ac2_red  = 0.0
+        self._ema_dc_norm_ir = 0.0; self._ema_dc_norm_red = 0.0
+        self._win_buf_ir.clear(); self._win_buf_red.clear()
+        self._raw_ir_buf.clear(); self._raw_red_buf.clear()
+        self._norm_buf_ir.clear(); self._norm_buf_red.clear()
+        self._bp_v_ir = None; self._bp_v_red = None
+        self._n = 0
+        self._dols_sxy = 0.0; self._dols_sxx = 0.0; self._dols_syy = 0.0; self._dols_prev = None
+        self.corr_dols = 0.0
+        self._lpf_zi_ir = None; self._lpf_zi_red = None
+        self.pi_ir    = 0.0; self.pi_red   = 0.0; self.R = 0.0; self.spo2 = 0.0
+        self.ac_amp_ir  = 0.0; self.ac_amp_red = 0.0
+        self.dc_norm_ir  = 1.0; self.dc_norm_red = 1.0
+        self.dc_base_ir = 0.0; self.dc_base_red = 0.0
+        self.ac_wave_ir   = 0.0; self.ac_wave_red   = 0.0
+
+    def reconfigure(self, fs):
+        """Recalculate derived params from current settings and reset state."""
+        self._fs = fs
+        if fs <= 0:
+            return
+        a_sub  = 1.0 - math.exp(-1.0 / (max(self.tau_sub,  1.0 / fs) * fs))
+        a_ac   = 1.0 - math.exp(-1.0 / (max(self.tau_ac,   1.0 / fs) * fs))
+        a_norm = 1.0 - math.exp(-1.0 / (max(self.tau_norm, 1.0 / fs) * fs))
+        self._alpha_sub  = a_sub
+        self._alpha_ac   = a_ac
+        self._alpha_norm = a_norm
+        nyq = fs / 2.0
+        # BPF (S1_BPF)
+        if self.step1 == self.S1_BPF:
+            lo = max(0.01, min(self.bpf_lo, nyq * 0.9))
+            hi = max(lo + 0.01, min(self.bpf_hi, nyq * 0.99))
+            self._bp = _lib_biquad_bp(lo, hi, fs)
+        else:
+            self._bp = None
+        # LPF (S3_LPF)
+        if self.step3 == self.S3_LPF:
+            fc = max(0.01, min(self.lpf_fc, nyq * 0.99))
+            try:
+                self._lpf_sos = signal.butter(2, fc / nyq, btype='low', output='sos')
+            except Exception:
+                self._lpf_sos = None
+        else:
+            self._lpf_sos = None
+        self._win_max_n  = max(2, int(round(self.win_s      * fs)))
+        self._norm_max_n = max(2, int(round(self.win_norm_s * fs)))
+        self.reset()
+
+    def update(self, ir, red, fs):
+        """Process one sample (ir/red = OT_LED1/OT_LED2 [A/A]). Returns (pi_ir, pi_red, R)."""
+        if fs != self._fs:
+            self.reconfigure(fs)
+        ir = float(ir); red = float(red)
+        if self._n == 0:   # as EmaChannel: the DC estimates start at the first sample, not at 0
+            self._ema_dc_ir = ir; self._ema_dc_red = red
+            self._ema_dc_norm_ir = ir; self._ema_dc_norm_red = red
+        self._n += 1
+
+        # ── STEP 1: AC waveform extraction ─────────────────────────────────────────────
+        if self.step1 == self.S1_EMA:
+            self._ema_dc_ir  += self._alpha_sub * (ir  - self._ema_dc_ir)
+            self._ema_dc_red += self._alpha_sub * (red - self._ema_dc_red)
+            self.dc_base_ir  = self._ema_dc_ir
+            self.dc_base_red = self._ema_dc_red
+            ac_ir  = ir  - self._ema_dc_ir
+            ac_red = red - self._ema_dc_red
+        elif self.step1 == self.S1_BPF:
+            if self._bp is not None:
+                b0, b2, a1, a2 = self._bp
+                if self._bp_v_ir is None:   # BiquadFilter's steady-state precharge (y_ss = 0)
+                    self._bp_v_ir  = [-b0 * ir,  b2 * ir]
+                    self._bp_v_red = [-b0 * red, b2 * red]
+                v = self._bp_v_ir                     # DF-II transposed, b1 = 0
+                ac_ir = b0 * ir + v[0];   v[0] = -a1 * ac_ir + v[1];   v[1] = b2 * ir - a2 * ac_ir
+                v = self._bp_v_red
+                ac_red = b0 * red + v[0]; v[0] = -a1 * ac_red + v[1];  v[1] = b2 * red - a2 * ac_red
+            else:
+                ac_ir = ir; ac_red = red
+            # dc_sub = signal minus BPF output (what the BPF removes)
+            self.dc_base_ir  = ir  - ac_ir
+            self.dc_base_red = red - ac_red
+        else:  # S1_NONE — pass-through, nothing removed; show raw signal as DC reference
+            ac_ir = ir; ac_red = red
+            self.dc_base_ir  = ir
+            self.dc_base_red = red
+
+        # STEP1 pulsatile waveform output (fed to STEP2 amplitude estimator)
+        self.ac_wave_ir  = ac_ir
+        self.ac_wave_red = ac_red
+
+        # ── STEP 2: AC amplitude estimator ─────────────────────────────────────────────
+        if self.step2 in (self.S2_EMA_RMS, self.S2_DOLS):
+            self._ema_ac2_ir  += self._alpha_ac * (ac_ir  * ac_ir  - self._ema_ac2_ir)
+            self._ema_ac2_red += self._alpha_ac * (ac_red * ac_red - self._ema_ac2_red)
+            ac_amp_ir  = math.sqrt(max(0.0, self._ema_ac2_ir))
+            ac_amp_red = math.sqrt(max(0.0, self._ema_ac2_red))
+        elif self.step2 == self.S2_WIN_RMS:
+            self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
+            while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
+            while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
+            arr_ir  = np.fromiter(self._win_buf_ir,  dtype=float, count=len(self._win_buf_ir))
+            arr_red = np.fromiter(self._win_buf_red, dtype=float, count=len(self._win_buf_red))
+            ac_amp_ir  = float(np.sqrt(np.mean(arr_ir  * arr_ir)))
+            ac_amp_red = float(np.sqrt(np.mean(arr_red * arr_red)))
+        elif self.step2 == self.S2_PEAKPK:
+            self._win_buf_ir.append(ac_ir);   self._win_buf_red.append(ac_red)
+            while len(self._win_buf_ir)  > self._win_max_n: self._win_buf_ir.popleft()
+            while len(self._win_buf_red) > self._win_max_n: self._win_buf_red.popleft()
+            ac_amp_ir  = (max(self._win_buf_ir)  - min(self._win_buf_ir))  / 2.0
+            ac_amp_red = (max(self._win_buf_red) - min(self._win_buf_red)) / 2.0
+        elif self.step2 in (self.S2_SPECTRAL, self.S2_HARMONICS):
+            self._raw_ir_buf.append(ir);   self._raw_red_buf.append(red)
+            while len(self._raw_ir_buf)  > self._win_max_n: self._raw_ir_buf.popleft()
+            while len(self._raw_red_buf) > self._win_max_n: self._raw_red_buf.popleft()
+            n_fft = min(self.fft_len, len(self._raw_ir_buf))
+            if n_fft >= 8:
+                arr_ir  = np.array(list(self._raw_ir_buf)[-n_fft:],  dtype=float)
+                arr_red = np.array(list(self._raw_red_buf)[-n_fft:], dtype=float)
+                arr_ir  -= arr_ir.mean(); arr_red -= arr_red.mean()
+                win     = np.hanning(n_fft)
+                fft_ir  = np.abs(np.fft.rfft(arr_ir  * win))
+                fft_red = np.abs(np.fft.rfft(arr_red * win))
+                freqs   = np.fft.rfftfreq(n_fft, d=1.0 / self._fs)
+                f0 = self.hr_bpm / 60.0
+                if self.step2 == self.S2_SPECTRAL:
+                    mask = np.abs(freqs - f0) <= self.delta_hz
+                    e_ir  = float(np.sum(fft_ir[mask]  ** 2)) if mask.any() else 0.0
+                    e_red = float(np.sum(fft_red[mask] ** 2)) if mask.any() else 0.0
+                else:  # S2_HARMONICS
+                    e_ir = 0.0; e_red = 0.0
+                    for hn in range(1, self.n_harmonics + 1):
+                        mask = np.abs(freqs - hn * f0) <= self.delta_hz
+                        if mask.any():
+                            e_ir  += float(np.sum(fft_ir[mask]  ** 2))
+                            e_red += float(np.sum(fft_red[mask] ** 2))
+                ac_amp_ir  = math.sqrt(e_ir  / n_fft) if e_ir  > 0 else 0.0
+                ac_amp_red = math.sqrt(e_red / n_fft) if e_red > 0 else 0.0
+            else:
+                ac_amp_ir = 0.0; ac_amp_red = 0.0
+        else:
+            ac_amp_ir = 0.0; ac_amp_red = 0.0
+        self.ac_amp_ir = ac_amp_ir; self.ac_amp_red = ac_amp_red
+
+        # ── STEP 3: DC for denominator ────────────────────────────────────────
+        if self.step3 == self.S3_EMA:
+            self._ema_dc_norm_ir  += self._alpha_norm * (ir  - self._ema_dc_norm_ir)
+            self._ema_dc_norm_red += self._alpha_norm * (red - self._ema_dc_norm_red)
+            dc_norm_ir  = self._ema_dc_norm_ir; dc_norm_red = self._ema_dc_norm_red
+        elif self.step3 == self.S3_LPF:
+            if self._lpf_sos is not None:
+                if self._lpf_zi_ir is None:
+                    zi = signal.sosfilt_zi(self._lpf_sos)
+                    self._lpf_zi_ir  = zi * ir; self._lpf_zi_red = zi * red
+                _out_ir,  self._lpf_zi_ir  = signal.sosfilt(self._lpf_sos, [ir],  zi=self._lpf_zi_ir)
+                _out_red, self._lpf_zi_red = signal.sosfilt(self._lpf_sos, [red], zi=self._lpf_zi_red)
+                dc_norm_ir  = float(_out_ir[0]); dc_norm_red = float(_out_red[0])
+            else:
+                dc_norm_ir = ir; dc_norm_red = red
+        elif self.step3 == self.S3_WIN_MEAN:
+            self._norm_buf_ir.append(ir);   self._norm_buf_red.append(red)
+            while len(self._norm_buf_ir)  > self._norm_max_n: self._norm_buf_ir.popleft()
+            while len(self._norm_buf_red) > self._norm_max_n: self._norm_buf_red.popleft()
+            dc_norm_ir  = float(np.mean(list(self._norm_buf_ir)))
+            dc_norm_red = float(np.mean(list(self._norm_buf_red)))
+        else:
+            dc_norm_ir = ir; dc_norm_red = red
+
+        self.dc_norm_ir  = dc_norm_ir
+        self.dc_norm_red = dc_norm_red
+
+        # ── PI & R ────────────────────────────────────────────────────────────
+        # Division guard only: OT is ~1e-5..1e-2 A/A, so the max(1.0, dc) of the led1_sub era
+        # would pin the denominator to 1. No light, no PI.
+        self.pi_ir  = self.ac_amp_ir  / dc_norm_ir  * 100.0 if dc_norm_ir  > 0.0 else 0.0
+        self.pi_red = self.ac_amp_red / dc_norm_red * 100.0 if dc_norm_red > 0.0 else 0.0
+        if self.step2 == self.S2_DOLS:
+            # Regression on derivatives of the normalised pulse: the slope of red against IR
+            # where both move together (systolic upstroke); slow components barely move dx.
+            x = ac_ir / dc_norm_ir if dc_norm_ir > 0.0 else 0.0
+            y = ac_red / dc_norm_red if dc_norm_red > 0.0 else 0.0
+            if self._dols_prev is not None:
+                dx = x - self._dols_prev[0]; dy = y - self._dols_prev[1]
+                a = self._alpha_ac
+                self._dols_sxy += a * (dx * dy - self._dols_sxy)
+                self._dols_sxx += a * (dx * dx - self._dols_sxx)
+                self._dols_syy += a * (dy * dy - self._dols_syy)
+            self._dols_prev = (x, y)
+            sxx, syy = self._dols_sxx, self._dols_syy
+            self.R = self._dols_sxy / sxx if sxx > 0.0 else 0.0
+            self.corr_dols = self._dols_sxy / math.sqrt(sxx * syy) if sxx > 0.0 and syy > 0.0 else 0.0
+        else:
+            self.R = (self.pi_red / self.pi_ir) if self.pi_ir > 0.0 else 0.0
+        self.spo2 = max(0.0, min(100.0, self.spo2_r_curve_a - self.spo2_r_curve_b * self.R)) if self.R > 0.0 else 0.0
+        return self.pi_ir, self.pi_red, self.R
+
 
 class HR3TestWindow(QtWidgets.QMainWindow):
     """HR3TEST — post-implementation verification window for the HR3 algorithm.
@@ -5324,7 +5617,7 @@ class PILabWindow(QtWidgets.QMainWindow):
       Right : Tabbed config panels for instance A (orange) and B (blue) + value table.
     """
 
-    _BUF_LEN    = 3000    # live rolling buffer: 60 s at the default 50 Hz feed (500 Hz / decimation 10)
+    _BUF_LEN    = 30000   # live rolling buffer: 60 s at the 500 Hz AFE rate (v1.97: fed before the lab's decimation; was 3000 = 60 s at 50 Hz)
     _BUF_NAMES  = ('_t_buf', '_ac_wave_a', '_ac_wave_b', '_ac_amp_a', '_ac_amp_b', '_ot_led1_buf',
                    '_dc_norm_a', '_dc_norm_b', '_pi_ir_a', '_pi_ir_b', '_r_a', '_r_b',
                    '_spo2_a', '_spo2_b')
@@ -5439,6 +5732,9 @@ class PILabWindow(QtWidgets.QMainWindow):
         self.p_spo2.addLegend(offset=(5, 5))
         self.curve_spo2_a = self.p_spo2.plot(pen=_pen(self._CLR_A), name="SpO2 A")
         self.curve_spo2_b = self.p_spo2.plot(pen=_pen(self._CLR_B), name="SpO2 B")
+        for _c in [v for v in vars(self).values() if isinstance(v, pg.PlotDataItem)]:   # 30000 points (v1.97)
+            _c.setDownsampling(auto=True, method='peak')
+            _c.setClipToView(True)
 
         # Offline the curves hold the whole recording (225 000 points for 7.5 min at 500 Hz):
         # draw only what is in view, decimated keeping each pixel's min and max.
@@ -8650,6 +8946,106 @@ class HR1LabWindow(QtWidgets.QMainWindow):
             self.main_monitor.btn_hr1lab.setChecked(False)
             self.main_monitor.hr1lab_window = None
         super().closeEvent(event)
+
+
+
+
+# The R-method candidate (R-method plan, step 2): what PILAB's [R CANDIDATE] preset loads and
+# tools/offline_runner computes as R_CAND (runner v0.23) -- same label, same arithmetic.
+R_METHOD_CAND_DOLS = "R-METHOD-CAND-1.2(0.5-5Hz)/2.6(6s)/3.1(2s)"
+
+
+
+def _read_capture_ot(path):
+    """OT_LED1 / OT_LED2 of a capture CSV, with the sample rate and time axis the FILE declares.
+
+    Two formats:
+      * v0.4 (`# format=incunest_csv/1`): columns `OT_LED1`/`OT_LED2`, no time column; the rate is
+        `afe_prf_hz` in the `# @row N afe:` records, the time axis is row / rate, and
+        `# @row N event: board restarted` marks where the estimators must start again.
+      * the older lab format: columns `FW_OT_LED1`/`FW_OT_LED2` and `FW_Ts_us`; the rate is the
+        median timestamp step (snapped to 500/250/100/50 Hz), the time axis the timestamps. Rows
+        outside `$M4` carry OT = -1 and are skipped.
+    No rate in the file is an error, never an assumed 50 Hz: that assumption is what made PILAB's
+    offline time constants 10x off on 500 Hz captures (v1.80).
+    """
+    prf, restarts, gaps, cols = set(), [], 0, None
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if not line.startswith('#'):
+                if cols is None:
+                    cols = [c.strip() for c in line.split(',')]
+                continue
+            if ' afe: ' in line and 'afe_prf_hz=' in line:
+                prf.add(float(line.split('afe_prf_hz=', 1)[1].split()[0]))
+            elif ' event: board restarted' in line:
+                restarts.append(int(line.split()[2]))
+            elif ' gap: missing=' in line:
+                gaps += 1
+            elif line.startswith('# event @row') and 'stream discontinuity' in line:
+                restarts.append(int(line.split()[3].rstrip(':')))
+    if cols is None:
+        raise ValueError("no header row")
+    ir_col  = next((c for c in ('OT_LED1', 'FW_OT_LED1') if c in cols), None)
+    red_col = next((c for c in ('OT_LED2', 'FW_OT_LED2') if c in cols), None)
+    if ir_col is None or red_col is None:
+        raise ValueError("no OT_LED1/OT_LED2 columns (PILAB runs on OT, as the library)")
+    use = [cols.index(ir_col), cols.index(red_col)]
+    if 'FW_Ts_us' in cols:
+        use.append(cols.index('FW_Ts_us'))
+    with open(path, encoding='utf-8', errors='replace') as f:
+        body = (line for line in f if not line.startswith('#'))
+        next(body)  # the header row
+        data = np.loadtxt(body, delimiter=',', usecols=use, dtype=float, ndmin=2)
+    ir, red = data[:, 0], data[:, 1]
+
+    if prf:
+        if len(prf) > 1:
+            raise ValueError(f"the sample rate changes inside the file ({sorted(prf)} Hz)")
+        fs = prf.pop()
+        return OfflineCapture(ir, red, np.arange(len(ir)) / fs, fs, "v0.4",
+                              sorted(set(restarts)), gaps, 0)
+    if len(use) < 3:
+        raise ValueError("no sample rate in the file: neither afe_prf_hz (v0.4) nor FW_Ts_us")
+    keep = np.nonzero((ir > 0) & (red > 0))[0]
+    if len(keep) < 2:
+        raise ValueError("no $M4 rows (OT only travels in $M4)")
+    ts = data[keep, 2]
+    steps = np.diff(ts)
+    steps = steps[steps > 0]
+    fs = float(1e6 / np.median(steps)) if len(steps) else 0.0
+    for std_fs in (500.0, 250.0, 100.0, 50.0):
+        if abs(fs - std_fs) < std_fs * 0.2:
+            fs = std_fs
+            break
+    restarts = sorted(set(int(i) for i in np.searchsorted(keep, restarts)))
+    return OfflineCapture(ir[keep], red[keep], (ts - ts[0]) * 1e-6, fs, "lab",
+                          restarts, gaps, len(ir) - len(keep))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  PICalc — configurable 3-step Perfusion Index pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Restored in v1.97: `R_METHOD_CAND_DOLS`, `_read_capture_ot`, `_lib_biquad_bp` and `PICalc` were deleted by the v1.88 rewrite of the HR2/HR3
+# mirrors while PILabWindow (PICalc) and _XYAxisProc (_lib_biquad_bp) still call them — PILAB
+# crashed on opening and an XYLAB band-pass axis raised NameError from 2026-10-08 to 2026-10-21.
+
+
+def _lib_biquad_bp(f_lo, f_hi, fs):
+    """(b0, b2, a1, a2) of the library's BiquadFilter::init_bp: one 2-pole Butterworth band-pass
+    section, bilinear and prewarped (b1 = 0, b2 = -b0). The firmware has no other band-pass."""
+    k = 2.0 * fs
+    o_lo = k * math.tan(math.pi * f_lo / fs)
+    o_hi = k * math.tan(math.pi * f_hi / fs)
+    o0sq = o_lo * o_hi
+    bw = o_hi - o_lo
+    d = k * k + bw * k + o0sq
+    return bw * k / d, -bw * k / d, 2.0 * (o0sq - k * k) / d, (k * k - bw * k + o0sq) / d
+
+
+OfflineCapture = namedtuple('OfflineCapture',
+                            'ir red t fs fmt restarts gaps dropped')
 
 
 class _XYAxisProc:
@@ -15724,6 +16120,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self._drain_multi_capture()
             _new_data = False
             _spo2test_rows = []     # SPO2TEST (v1.96): this tick's $M4 frames at the AFE rate
+            _hr2test_rows  = []     # HR2TEST (v1.97): same
             for _q, _src_com_win in (
                     (self._serial_queue, self.serialcom_window),
                     (self._udp_queue,    self.udpcom_window)):
@@ -15871,13 +16268,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     if _is_active and self._lab_capture is not None:
                         self._write_lab_capture_row(line)
 
-                    # HR1TEST mirror: 500 Hz (before decimation) — must match firmware _update_hr1()
+                    # Every live mirror is fed HERE, at the AFE rate, before the lab's decimation
+                    # (spin_decim): HR1TEST/HR1LAB/XYLAB since v1.7x, SPO2TEST since v1.96, HR2TEST,
+                    # HR3TEST, PILAB and HR3LAB since v1.97 (they read the decimated deques or the
+                    # post-decimation parse block while being told fs = 500: every time constant
+                    # 10x too long in real time — found by pulsenest-51, 2026-10-21).
                     # EXPERIMENT (OT-domain input): needs OT_LED1 (parts[31]), only in $M4 — $M1
-                    # never carries it, so this now requires frame mode $M4.
-                    if _is_active and (self.hr1test_window is not None
-                                       or self.hr1lab_window is not None
-                                       or self.xylab_window is not None
-                                       or self.spo2test_window is not None):
+                    # never carries it, so the OT mirrors require frame mode $M4.
+                    if _is_active:
                         _p500 = line[1:].split(',')
                         if len(_p500) >= 32 and _p500[0] == 'M4':
                             try:
@@ -15902,6 +16300,36 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                         float(_p500[10]), float(_p500[12]), float(_p500[11]),
                                         float(_p500[13]),
                                         float(_p500[36].split('*')[0]) if len(_p500) >= 37 else float('nan')))
+                                # HR2TEST mirror (v1.97): hr2 / hr2_sqi are fields 16 / 17
+                                if self.hr2test_window is not None:
+                                    _hr2test_rows.append((_sc500, float(_p500[2]), _ot500, _ps500,
+                                                          float(_p500[16]), float(_p500[17])))
+                                # HR3TEST mirror (v1.97), per sample as before, now at the AFE rate
+                                if self.hr3test_window is not None:
+                                    self.hr3test_calc.update(_ot500, self.afe_fs(), _ps500, _sc500)
+                                # PILAB (v1.97): OT_LED1 / OT_LED2, as the library
+                                if self.pilab_window is not None:
+                                    self.pilab_window.feed_sample(
+                                        _ot500, float(_p500[32].split('*')[0]), self.afe_fs(), float(_p500[2]))
+                                # HR3LAB diagnostics (v1.97): LED1_SUB (field 8), always fed
+                                self.hr3_calc.update(float(_p500[8]), self.afe_fs(), _sc500)
+                            except (ValueError, IndexError):
+                                pass
+                        elif len(_p500) >= 4 and _p500[0] in ('M1', 'M2', 'M3'):
+                            # No OT in these frames: the OT mirrors are fed 0 with the probe state
+                            # the frame carries, so they reset instead of holding a stale value
+                            # (what the post-decimation M1/M2/M3 paths did until v1.96).
+                            try:
+                                _sc500 = int(_p500[1])
+                                if _p500[0] == 'M3' and len(_p500) >= 23:
+                                    _ps500 = int(float(_p500[22]))
+                                elif _p500[0] == 'M2' and len(_p500) >= 11:
+                                    _ps500 = int(float(_p500[10].split('*')[0]))
+                                else:
+                                    _ps500 = 0
+                                if self.hr3test_window is not None:
+                                    self.hr3test_calc.update(0.0, self.afe_fs(), _ps500, _sc500)
+                                self.hr3_calc.update(0.0, self.afe_fs(), _sc500)
                             except (ValueError, IndexError):
                                 pass
 
@@ -16100,18 +16528,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                                 self.data_ch_masks.append(0)
                                 self.data_r_method2_reg_corr.append(float('nan'))
-                            self.hr3_calc.update(p[7], self.afe_fs(), int(p[0]))  # LED1_SUB for HR3Lab diagnostics
-                            if self.hr3test_window is not None:
-                                # EXPERIMENT (OT-domain input): OT_LED1 only in $M4 (parts[31]);
-                                # feed 0.0 while in $M3 (mirror stays invalid, same as M1/M2 below).
-                                _ot_led1 = float(parts[31]) if lib_id == "M4" and len(parts) >= 34 else 0.0
-                                self.hr3test_calc.update(_ot_led1, self.afe_fs(),
-                                                          int(float(parts[22])), int(p[0]))
-                            if self.pilab_window is not None and lib_id == "M4" and len(parts) >= 34:
-                                # OT_LED1 / OT_LED2 (parts[31] / parts[32]), as the library: only
-                                # $M4 carries OT, so PILAB is fed nothing in $M1-$M3.
-                                self.pilab_window.feed_sample(
-                                    float(parts[31]), float(parts[32]), self.afe_fs(), p[1])
+                            # HR3LAB / HR3TEST / PILAB: fed before the decimation since v1.97
                             if self.afe_sweep_window is not None:
                                 _m4 = lib_id == "M4" and len(parts) >= 31
                                 self.afe_sweep_window.feed_sample(
@@ -16174,9 +16591,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                             self.data_ch_masks.append(0)
                             self.data_r_method2_reg_corr.append(float('nan'))
-                            self.hr3_calc.update(0.0, self.afe_fs(), int(p[0]))
-                            if self.hr3test_window is not None:
-                                self.hr3test_calc.update(0.0, self.afe_fs(), int(p[9]), int(p[0]))
                             for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
@@ -16206,9 +16620,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
                             self.data_ot2_led1.append(0.0);    self.data_ot2_led2.append(0.0)
                             self.data_ch_masks.append(0)
                             self.data_r_method2_reg_corr.append(float('nan'))
-                            self.hr3_calc.update(0.0, self.afe_fs(), int(p[0]))
-                            if self.hr3test_window is not None:
-                                self.hr3test_calc.update(0.0, self.afe_fs(), 0, int(p[0]))
                             for sname, attr, _, _src in self._STATS_SIGNALS:
                                 self._stats_buf[sname].append(getattr(self, attr)[-1])
                         except ValueError: pass
@@ -16222,6 +16633,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 _t0a = time.perf_counter()
                 self.spo2test_window.update_algorithms(_spo2test_rows)
                 self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
+            if self.hr2test_window is not None and _hr2test_rows:
+                _t0a = time.perf_counter()
+                self.hr2test_window.update_algorithms(_hr2test_rows)
+                self._py_timing['algo_hr2test'].append((time.perf_counter() - _t0a) * 1000)
             if _new_data:
                 if self.spo2lab_window is not None:
                     _t0a = time.perf_counter()
@@ -16234,12 +16649,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.lib_config_window.update_ot(
                         self.data_ot2_led1, self.data_ot2_led2, self.data_probe_state,
                         self.lib_config_window.current_ot_thr())
-                if self.hr2test_window is not None:
-                    _t0a = time.perf_counter()
-                    self.hr2test_window.update_algorithms(
-                        self.data_ot2_led1, self.data_probe_state, self.data_hr2, self.data_hr2_sqi,
-                        self.data_timestamp_us, self.data_sample_counter)
-                    self._py_timing['algo_hr2test'].append((time.perf_counter() - _t0a) * 1000)
             if _new_data and not self.is_paused:
                 self._render_pending = True
 

@@ -28303,3 +28303,19 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   13/13, udpcom 19/19, humo SPO2TEST OK.
 - **Mismo defecto, sin tocar (a decidir):** HR2TEST se alimenta de los mismos deques diezmados, y HR3TEST, PILAB y
   HR3LAB reciben sus muestras dentro del bloque de parseo, que también va después del diezmado, con `afe_fs()` = 500.
+
+## Sesión 2026-10-21 (2) — Factor 10 corregido en HR2TEST, HR3TEST, PILAB y HR3LAB; PILAB restaurado (lab v1.97)
+
+- **Petición (Alex):** aplicar a las ventanas afectadas la misma corrección que a SPO2TEST.
+- **Hecho:** todos los espejos en vivo salen ahora de un único bloque del bucle de tramas, antes del diezmado: HR2TEST
+  (lista por tick → `update_algorithms(rows)`), HR3TEST y HR3LAB (por muestra), PILAB (por muestra). Las tramas
+  `$M1/$M2/$M3` alimentan a los espejos OT con 0 y el ProbeState de la trama (el reinicio que hacían las rutas
+  posteriores al diezmado). Búferes por muestra de HR2TEST y PILAB 3000 → 30000 (60 s a 500 Hz) con curvas
+  diezmadas en el dibujo. Spec §5.4, §5.5, §7.9-§7.11, changelog v1.97.
+- **Hallazgo al verificar:** PILAB no se podía abrir desde v1.88 (2026-10-08): ese commit borró `PICalc`,
+  `_lib_biquad_bp`, `R_METHOD_CAND_DOLS` y `_read_capture_ot` mientras PILabWindow y `_XYAxisProc` (eje paso banda de
+  XYLAB) seguían usándolos. Restaurados tal cual desde v1.87; pyflakes no reporta ningún nombre indefinido.
+- **Verificación (offscreen, pulso sintético de 90 lpm con armónicos a 500 Hz, 30 s, diezmado 10):** cada espejo
+  recibe las 15 000 tramas; HR2 py 89,9, HR3 py 90,1 (SQI 1,00), HR3LAB 90,1 lpm; SPO2TEST R 0,600 y PI 4,44 %;
+  PILAB 30 s de búfer y PI_ir 1,59 % con su método A (PI-METHOD-0, EMA-RMS, ≈ 1/2,8 del pico a pico: coherente);
+  XYLAB abre y renderiza. Coste por tick: SPO2TEST 0,06 ms, HR2TEST 0,34 ms. disable_plots 13/13, udpcom 19/19.

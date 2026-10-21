@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.96
+# pulsenest_lab — Specification v1.97
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1485,7 +1485,8 @@ availability by counting the dicrotic notch would score as success on availabili
 
 Mirror of `INCUNEST_AFE4490::_hr2_update_sample()` + `_hr2_compute()` (library spec §5.3), lib
 v0.103, rewritten in v1.88. Fed every `$M4` sample at the AFE rate (`update(ot_led1, fs,
-probe_state)`); the chain is the library's:
+probe_state)`) — live, from the frame loop before the lab's decimation since v1.97 (v1.88–v1.96
+read the decimated deques with fs = 500, see the changelog); the chain is the library's:
 
 - `_Biquad.init_bp` 0.5–5 Hz (`hr2_f_low_hz` / `hr2_f_high_hz`) at the AFE rate, output negated.
 - Decimation: factor = round(fs / 50), one sample in `factor` kept (rate 50 Hz at 500 Hz).
@@ -1516,7 +1517,8 @@ in v1.86).
 
 **`HR3TestCalc`** — mirror of `_hr3_update_sample()` + `_hr3_prepare_fft_input()` +
 `_hr3_compute()` (library spec §5.4), lib v0.103, rewritten in v1.88. Fed every `$M4` sample at
-the AFE rate (`update(ot_led1, fs, probe_state, sample_counter=None)`):
+the AFE rate (`update(ot_led1, fs, probe_state, sample_counter=None)`) — live, from the frame
+loop before the lab's decimation since v1.97:
 
 - `_LowPass4` (port of the library's `LowPass4`: two cascaded `_Biquad.init_lp` sections, Q 0.5412
   then 1.3066, 4th-order Butterworth) at `hr3_f_high_hz` = 15 Hz, at the AFE rate, output negated.
@@ -2097,7 +2099,10 @@ Layout: left 4 plots + right panel.
 
 **Right panel:** BPF low/high, Buf len, Max lag (the lag cap), Update N, Min lag, Min corr,
 current-values table, [EXPORT CSV], [LOAD CSV]. The window feeds `HR2TestCalc` itself from
-`PPGMonitor._process_frames_tick()` at `PPGMonitor.afe_fs()` (v1.88; a nominal 50 Hz before).
+`PPGMonitor._process_frames_tick()` at `PPGMonitor.afe_fs()` (v1.88; a nominal 50 Hz before) —
+since v1.97 as a per-tick list of `$M4` frames taken before the lab's decimation
+(`update_algorithms(rows)`), like SPO2TEST (§7.7): until v1.96 the deques it read were already
+decimated by `spin_decim`, so the mirror ran 10× slow in real time.
 
 **EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`, not in
 `$M1`/`$M3`. Status-bar warning shown when not in `$M4`. [LOAD CSV] only accepts `$M4` rows.
@@ -2117,7 +2122,9 @@ Layout: left 4 plots + right panel.
 **Right panel:** LP cutoff (`hr3_f_high_hz`), Buffer length, Update every N — the library's
 parameters (v1.88: BP low and HPS harmonics removed, see §5.5) —, current-values table,
 [EXPORT CSV], [LOAD CSV]. `PPGMonitor._process_frames_tick()` feeds `hr3test_calc` per sample at
-`PPGMonitor.afe_fs()`; the window reads its outputs in `update_plots()`.
+`PPGMonitor.afe_fs()` — from the frame loop before the lab's decimation since v1.97 (until v1.96
+from the post-decimation parse block: 10× slow in real time); the window reads its outputs in
+`update_plots()`.
 
 **EXPERIMENT (OT-domain input):** requires frame mode `$M4` — feeds on `OT_LED1`, not in
 `$M1`/`$M3`. Status-bar warning shown when not in `$M4`. [LOAD CSV] only accepts `$M4` rows.
@@ -2141,7 +2148,9 @@ independently configured PI estimators side by side on live or recorded data.
 `PICalc` implements a configurable pipeline for computing PI from `OT_LED1` / `OT_LED2` samples
 (optical transmittance [A/A], gain-invariant), the input the library's SpO2/PI/HR use (v1.76; it
 was `led1_sub` / `led2_sub` before, see the changelog). Live, PILAB is fed only in `$M4`, the only
-frame that carries OT; offline, [LOAD CSV] needs the `OT_LED1` / `OT_LED2` columns (`FW_OT_LED1` /
+frame that carries OT, from the frame loop before the lab's decimation (v1.97; until v1.96 from
+the post-decimation parse block, 10× slow in real time); offline, [LOAD CSV] needs the `OT_LED1` /
+`OT_LED2` columns (`FW_OT_LED1` /
 `FW_OT_LED2` in the older lab format).
 The PI denominator is guarded only against division by zero (`dc_norm > 0`, else PI = 0).
 
@@ -2854,6 +2863,25 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.97 — 2026-10-21
+
+**HR2TEST, HR3TEST, PILAB and HR3LAB fed before the lab's decimation** (§5.4, §5.5, §7.9–§7.12;
+Alex), the same defect v1.96 fixed for SPO2TEST: HR2TEST read the decimated `data_*` deques, the
+other three were fed from the parse block that runs after `spin_decim`, all with `afe_fs()` = 500.
+Their own chain decimation (round(fs/50) = 10) then kept 1 in 10 of a stream already decimated 10:1
+— 5 Hz into buffers designed for 50 Hz, so HR2's 8 s buffer held 80 s and HR3's 10.24 s held
+102 s, and the filters sat 10× too low. All live mirrors now come out of one block in the frame
+loop; `$M1/$M2/$M3` frames feed the OT mirrors 0 with the frame's probe state (the reset the
+post-decimation paths used to do). `HR2TestWindow.update_algorithms(rows)`; the per-sample rolling buffers of HR2TEST (`_HR_BUF`) and
+PILAB (`_BUF_LEN`) go 3000 → 30000 (60 s at 500 Hz) with downsampled curves. Verified offscreen with a
+500 Hz synthetic 90 BPM pulse at decim 10: every mirror sees all 15 000 frames; HR2 89.9, HR3 90.1,
+HR3LAB 90.1 BPM; PILAB spans 30 s (see the log of 2026-10-21).
+
+**PILAB and XYLAB band-pass restored.** The v1.88 commit deleted `PICalc`, `_lib_biquad_bp`,
+`R_METHOD_CAND_DOLS` and `_read_capture_ot` while PILabWindow and `_XYAxisProc` still used them:
+PILAB crashed on opening and an XYLAB band-pass axis raised NameError from 2026-10-08 to 2026-10-21.
+Restored verbatim from v1.87; pyflakes reports no undefined name in the module.
 
 ### v1.96 — 2026-10-21
 
