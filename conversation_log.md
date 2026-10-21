@@ -28329,3 +28329,24 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   con el PI disparado a 100 %, donde el float32 de la librería frente al float64 del espejo da 0,05-0,3 % relativo.
   Cubre lo cambiado desde v0.103: margen de clamp 10 (77 800 muestras de SUBJ01 en la zona 100-110 leen 100 en ambos)
   y el renombrado. Anotado en el docstring de `SpO2TestCalc` y en la spec §5.2.
+
+## Sesión 2026-10-21 (4) — Captura de comprobación de cadena con fw 0.27 (825C, SUBJ01): placa = librería
+
+- Captura `SUBJ01_ERRENIEGA_20261021_123000` (7 min: 3 reposo, 3 con dos apneas, 1 sonda quitada con mucha luz de
+  ventana; sin referencia; TOML `subj01_c_825C.toml` editado para hoy). Informe en
+  `captures/sessions/SUBJ01/CHAIN_CHECK_20261021/findings.md` (no versionado).
+- **Placa frente a host:** validez de R, r, PI, SpO2 y SQI idéntica en el 100 % de las muestras (ProbeState de la
+  réplica cruda 99,97 %, el resto es el arranque en frío). Los valores diferían a 1e-2 en R hasta alinear la fase del
+  reloj de bloques de 100 ms (la placa arrancó sus bloques antes de la captura; el host en la fila 0): barriendo el
+  desfase 0-49 muestras, con 47 la placa y el espejo coinciden a 2e-5 en R y 5e-3 en PI y SpO2 en el 99,9 % de las
+  muestras, sin ninguna diferencia de SpO2 > 0,01. Candidato a backlog: opción `--block-phase` (o autoalineado) en el
+  runner, porque toda comparación contra columnas de placa arrastra hasta un bloque de desfase. HR3 placa vs réplica:
+  0,59 lpm p99,9 por la misma razón (cadencia 0,5 s).
+- **Margen 10:** reposo 180 s con SpO2 presente el 100 % del tiempo y a 100 todo el tiempo (R mediana 0,578, curva
+  101,4; nunca > 110); apneas con mínimo 89,9 y SpO2 presente el 100 %. El 18-10 el mismo dedo perdía el SpO2 el
+  1,3-3,9 % del tiempo con margen 3.
+- **Sonda fuera con luz:** al salir los dedos el PI saltó a 43 % y el guard del HGAC bajó RF 100K→50K→25K (IR) y
+  50K→25K→10K (rojo) en 0,3 s; SpO2 retenido por PI > 20 % antes de que cambiara el ProbeState; desde 362,5 s
+  ONLY_LED_SATURATING (TIA en el riel, máscaras 0x0505) y bajada lenta de v0.105 hasta 10K/10K a 374,4 s (un paso
+  cada 6 s). La luz subió las fases ambiente a 0,86 V sin recortarlas → estado 4 y no 3, correcto. PI máximo 118 %.
+- Docstring de `SpO2TestCalc` con la verificación contra placa.

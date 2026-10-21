@@ -569,7 +569,9 @@ class SpO2TestCalc:
     validity sample by sample (lab v1.86, re-verified v1.87; **re-verified 2026-10-21 against runner
     v0.28 / lib v0.109 on SUBJ11 115518 and SUBJ01 000040: R to 1e-5, r to 5e-5, SpO2 to 5e-3,
     SQI exact, validity identical in 100 % of samples; PI to 5e-3 except 0.35 s around an HGAC RF
-    step with PI at 50-100 %, where float32 vs float64 shows 0.05-0.3 % relative**) — in OFFLINE mode, where there is no
+    step with PI at 50-100 %, where float32 vs float64 shows 0.05-0.3 % relative; and against BOARD
+    825C fw 0.27 / lib 0.108 on SUBJ01 2026-10-21 123000: with the host's 100 ms block clock aligned
+    to the board's (offset 47 samples) R to 2e-5, PI and SpO2 to 5e-3, validity identical**) — in OFFLINE mode, where there is no
     decimation. The LIVE path was fed the lab's decimated deques (50 Hz) with fs = 500 from v1.86
     to v1.95; since v1.96 it is fed every $M4 frame before the decimation (SpO2TestWindow.
     update_algorithms), so the live mirror runs at the AFE rate too.
