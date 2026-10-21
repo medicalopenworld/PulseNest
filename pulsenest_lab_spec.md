@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.95
+# pulsenest_lab — Specification v1.96
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2047,7 +2047,14 @@ indicator to CUSTOM PARAMS; a change resets the mirror and clears the buffers.
 
 **Rate.** The mirror runs at the AFE rate the samples arrive at: live, the `sr` of the last
 `$CFG` (exact), else the timestamp step of the batch snapped to an integer Hz; offline, the median
-timestamp step of the file. Until v1.85 it was fed a nominal 50 Hz (§5.2, History). The live
+timestamp step of the file. **Live data path (v1.96):** the window is fed every `$M4` frame of
+the tick from the frame loop, **before the lab's decimation** (`spin_decim`), like HR1TEST — a
+per-tick list of (counter, ts, OT_LED1, OT_LED2, ProbeState, SpO2, R, SQI, PI, r) handed to
+`update_algorithms(rows)`. From v1.86 to v1.95 it read the `data_*` deques, which are filled
+after the decimation: 50 Hz samples with fs = 500, so every time constant was 10× too long in
+real time (windows 60 s, 50 s to the first value, band-pass 0.05–0.5 Hz; the yellow curves
+appeared ~50 s after opening). The offline verification of v1.86/v1.88 was done on 500 Hz CSVs,
+where there is no decimation, which is why it did not show. Until v1.85 it was fed a nominal 50 Hz (§5.2, History). The live
 rolling buffer holds 60 s at 500 Hz.
 
 **Requires frame mode `$M4`** — feeds on `OT_LED1`/`OT_LED2`, `PI` and `ProbeState`, none of
@@ -2847,6 +2854,17 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.96 — 2026-10-21
+
+**SPO2TEST live mirror fed at the AFE rate, before the lab's decimation** (§7.7; found by the
+analysis session pulsenest-51, option A chosen by Alex). From v1.86 to v1.95 it was fed the 50 Hz
+decimated deques with fs = 500: windows 60 s real, 50 s to the first value, band-passes 10× too
+low (a neonatal pulse outside both) — the live yellow R, r, PI and SpO2 were not comparable with
+the firmware. Now a per-tick list of $M4 frames from the frame loop, like HR1TEST;
+`update_algorithms(rows)`, `_live_fs(ts_us)`. Cost: ~500 `update()`/s in Python, as HR1TEST.
+Not changed (same data path, to be decided): HR2TEST, HR3TEST, PILAB and HR3LAB are still fed
+after the decimation with `afe_fs()` = 500.
 
 ### v1.95 — 2026-10-20
 

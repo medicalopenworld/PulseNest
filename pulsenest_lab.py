@@ -566,7 +566,10 @@ class SpO2TestCalc:
     same rate, for post-implementation verification against the values the board sends.
     Verified against the offline runner (v0.27, lib v0.103) on a HOSPNAV replay at 500 Hz: R to
     1e-5, r to 1e-4, PI/SpO2 to 0.01 (the runner's print quantisation), SQI exact, identical
-    validity sample by sample (lab v1.86, re-verified v1.87).
+    validity sample by sample (lab v1.86, re-verified v1.87) — in OFFLINE mode, where there is no
+    decimation. The LIVE path was fed the lab's decimated deques (50 Hz) with fs = 500 from v1.86
+    to v1.95; since v1.96 it is fed every $M4 frame before the decimation (SpO2TestWindow.
+    update_algorithms), so the live mirror runs at the AFE rate too.
 
     Chain, per applied sample (probe_state == PROBE_APPLIED), everything at the AFE rate:
       DC    : EmaChannel mean per channel, τ = dc_ema_tau_s (2 s), seeded on the first sample.
@@ -2894,49 +2897,42 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         self._clear_buffers()
         self._calc.reset()
 
-    def _live_fs(self, data_timestamp_us, new_indices):
+    def _live_fs(self, ts_us):
         """The AFE rate of the live stream: `sr` of the last $CFG (exact), else the timestamp
-        step of this batch snapped to an integer Hz. Every $M4 sample is streamed (no serial
-        downsampling since the UDP transport), so the mirror must run at the AFE rate — feeding
-        it a nominal 50 Hz, as before v1.86, made every time constant 10× too long."""
+        step of this batch snapped to an integer Hz. The samples this window receives are the
+        $M4 frames as the board streams them, parsed before the lab's own decimation (v1.96),
+        so the mirror runs at the AFE rate. v1.86 set fs to 500 while the samples still came
+        from the decimated deques — the opposite error of the nominal 50 Hz before it."""
         try:
             fs = float(str(self.main_monitor._last_cfg.get("sr", "")).strip())
         except (AttributeError, ValueError):
             fs = 0.0
-        if fs <= 0.0 and len(new_indices) >= 2:
-            dt = (float(data_timestamp_us[new_indices[-1]]) - float(data_timestamp_us[new_indices[0]])) \
-                / (len(new_indices) - 1)
+        if fs <= 0.0 and len(ts_us) >= 2:
+            dt = (float(ts_us[-1]) - float(ts_us[0])) / (len(ts_us) - 1)
             fs = float(round(1e6 / dt)) if dt > 0 else 0.0
         return fs if fs > 0.0 else self._fs_live
 
-    def update_algorithms(self, data_ot_led1, data_ot_led2, data_probe_state,
-                          data_spo2, data_spo2_r, data_spo2_sqi, data_pi,
-                          data_timestamp_us, data_sample_counter, data_r_method2_reg_corr=None):
-        """Run per-sample algorithm (called from PPGMonitor._process_frames_tick).
+    def update_algorithms(self, rows):
+        """Run the mirror on this tick's samples (called from PPGMonitor._process_frames_tick).
 
-        data_ot_led1/data_ot_led2 are only meaningful while frame mode $M4 is active —
-        otherwise they are firmware-side zero-filled (see PPGMonitor's $M3/$M4 parser).
-        data_probe_state (RSQM's classification) is consumed directly — SpO2TestCalc never
-        classifies presence itself; probe_state != PROBE_APPLIED keeps every output NaN.
+        `rows` = [(sample_counter, ts_us, ot_led1, ot_led2, probe_state, spo2, R, spo2_sqi, pi,
+        r_method2_reg_corr), ...] — every $M4 frame of the tick, at the AFE rate, parsed BEFORE the
+        lab's decimation (v1.96). From v1.86 to v1.95 this read the lab's data_* deques, which are
+        filled after `spin_decim` (default 10): the mirror got 50 Hz samples while _live_fs() told it
+        500 Hz, so every time constant was 10x too long in real time (windows 60 s, band-pass
+        0.05-0.5 Hz, 50 s to the first value). Found by pulsenest-51 on 2026-10-21.
+        OT only travels in $M4; probe_state (RSQM's classification) is consumed directly —
+        SpO2TestCalc never classifies presence itself; probe_state != PROBE_APPLIED keeps every
+        output NaN.
         """
-        if self._offline_mode:
+        if self._offline_mode or not rows:
             return
-        n = len(data_sample_counter)
-        if n == 0:
+        rows = [row for row in rows if row[0] > self._last_sample_cnt]
+        if not rows:
             return
 
-        # Find new samples
-        new_indices = []
-        for i in range(n - 1, -1, -1):
-            if data_sample_counter[i] <= self._last_sample_cnt:
-                break
-            new_indices.append(i)
-        if not new_indices:
-            return
-        new_indices.reverse()
-
-        # Gap detection: check for missing samples in new batch
-        _counters = [int(data_sample_counter[i]) for i in new_indices]
+        # Gap detection: missing samples in the new batch
+        _counters = [int(row[0]) for row in rows]
         if self._nominal_step is None and len(_counters) >= 2:
             self._nominal_step = _counters[1] - _counters[0]
         if self._last_sample_cnt > 0 and self._nominal_step is not None:
@@ -2949,7 +2945,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
                 if _step > self._nominal_step:
                     self.gap_count += _step - self._nominal_step
 
-        fs = self._live_fs(data_timestamp_us, new_indices)
+        fs = self._live_fs([row[1] for row in rows])
         if fs <= 0.0:
             return                      # no rate known yet: wait for $CFG or a 2-sample batch
         self._fs_live = fs
@@ -2957,17 +2953,8 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
         nan = float('nan')
         b = self._buf
         r = None
-        for i in new_indices:
-            ts          = float(data_timestamp_us[i])
-            ot_ir       = float(data_ot_led1[i])
-            ot_red      = float(data_ot_led2[i])
-            probe_state = int(data_probe_state[i])
-            spo2_f = float(data_spo2[i])
-            R_f    = float(data_spo2_r[i])
-            sqi_f  = float(data_spo2_sqi[i])
-            pi_f   = float(data_pi[i])
-            r_method2_reg_corr_fw_v = float(data_r_method2_reg_corr[i]) if data_r_method2_reg_corr is not None else nan   # NaN = no value
-
+        for (_sc, ts, ot_ir, ot_red, probe_state, spo2_f, R_f, sqi_f, pi_f,
+             r_method2_reg_corr_fw_v) in rows:
             if self._t0_us is None:
                 self._t0_us = ts
             t_s = (ts - self._t0_us) / 1e6
@@ -2987,7 +2974,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             b['delta'].append(delta_v)
             b['R_fw'].append(R_fw_v)
             b['R_py'].append(r['R'])
-            b['r_method2_reg_corr_fw'].append(r_method2_reg_corr_fw_v)
+            b['r_method2_reg_corr_fw'].append(r_method2_reg_corr_fw_v)   # NaN = no value
             b['r_method2_reg_corr_py'].append(r['r_method2_reg_corr'])
             b['pi_fw'].append(pi_fw_v)
             b['pi_py'].append(r['pi'])
@@ -2997,7 +2984,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             b['dc_red'].append(r['dc_red'])
 
         self._last_r = r
-        self._last_sample_cnt = data_sample_counter[-1]
+        self._last_sample_cnt = rows[-1][0]
 
     def update_plots(self):
         """Render pre-computed buffers (called from PPGMonitor._refresh_plots_tick)."""
@@ -15736,6 +15723,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if self._multi_writers:
                 self._drain_multi_capture()
             _new_data = False
+            _spo2test_rows = []     # SPO2TEST (v1.96): this tick's $M4 frames at the AFE rate
             for _q, _src_com_win in (
                     (self._serial_queue, self.serialcom_window),
                     (self._udp_queue,    self.udpcom_window)):
@@ -15888,7 +15876,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     # never carries it, so this now requires frame mode $M4.
                     if _is_active and (self.hr1test_window is not None
                                        or self.hr1lab_window is not None
-                                       or self.xylab_window is not None):
+                                       or self.xylab_window is not None
+                                       or self.spo2test_window is not None):
                         _p500 = line[1:].split(',')
                         if len(_p500) >= 32 and _p500[0] == 'M4':
                             try:
@@ -15904,6 +15893,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 # XYLAB: the whole field list, any field may be on an axis.
                                 if self.xylab_window is not None:
                                     self.xylab_window.feed_frame(_p500, self.afe_fs())
+                                # SPO2TEST mirror (v1.96): at the AFE rate, before the decimation,
+                                # like HR1TEST. The last field carries the *XX checksum.
+                                if self.spo2test_window is not None:
+                                    _spo2test_rows.append((
+                                        _sc500, float(_p500[2]), _ot500,
+                                        float(_p500[32].split('*')[0]), _ps500,
+                                        float(_p500[10]), float(_p500[12]), float(_p500[11]),
+                                        float(_p500[13]),
+                                        float(_p500[36].split('*')[0]) if len(_p500) >= 37 else float('nan')))
                             except (ValueError, IndexError):
                                 pass
 
@@ -16220,6 +16218,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if _console_lines and _src_com_win is not None:
                     _src_com_win.append_lines(_console_lines)
 
+            if self.spo2test_window is not None and _spo2test_rows:
+                _t0a = time.perf_counter()
+                self.spo2test_window.update_algorithms(_spo2test_rows)
+                self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
             if _new_data:
                 if self.spo2lab_window is not None:
                     _t0a = time.perf_counter()
@@ -16228,14 +16230,6 @@ class PPGMonitor(QtWidgets.QMainWindow):
                         self.data_spo2, self.data_spo2_r,
                         self.data_timestamp_us, self.data_sample_counter)
                     self._py_timing['algo_spo2lab'].append((time.perf_counter() - _t0a) * 1000)
-                if self.spo2test_window is not None:
-                    _t0a = time.perf_counter()
-                    self.spo2test_window.update_algorithms(
-                        self.data_ot2_led1, self.data_ot2_led2, self.data_probe_state,
-                        self.data_spo2, self.data_spo2_r, self.data_spo2_sqi, self.data_pi,
-                        self.data_timestamp_us, self.data_sample_counter,
-                        data_r_method2_reg_corr=self.data_r_method2_reg_corr)
-                    self._py_timing['algo_spo2test'].append((time.perf_counter() - _t0a) * 1000)
                 if self.lib_config_window is not None:
                     self.lib_config_window.update_ot(
                         self.data_ot2_led1, self.data_ot2_led2, self.data_probe_state,

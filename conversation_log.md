@@ -28285,3 +28285,21 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - Preguntas de Alex respondidas en la sesión: para qué sirve HR3_SQI si "HR3 válido" basta como puerta (es la métrica de
   calidad de HR, no de SpO2; cuando HR3 pasa la validación de pico verdadero su SQI ya es ≈ 1 en el 95-99 % de las
   muestras) y detalle de la propuesta de puerta.
+
+## Sesión 2026-10-21 — SPO2TEST: el espejo en vivo recibía muestras diezmadas con fs = 500 (lab v1.96)
+
+- **Hallazgo de la sesión de análisis `pulsenest-51`; opción A elegida por Alex.** Desde v1.86 hasta v1.95 el espejo
+  Python de SPO2TEST leía los deques `data_*` del lab, que se llenan después del diezmado (`spin_decim`, 10 por defecto),
+  mientras `_live_fs()` le decía 500 Hz: cada constante de tiempo era 10× más larga en tiempo real (ventanas de 60 s,
+  50 s hasta el primer valor, paso banda 0,05-0,5 Hz, fuera de un pulso neonatal). Las curvas amarillas en vivo no eran
+  comparables con el firmware; la verificación de v1.86/v1.88 fue en modo offline, sin diezmado. Confirmado en el código.
+- **Hecho:** SPO2TEST se alimenta desde el bucle de tramas, antes del diezmado, como HR1TEST: lista por tick de tramas
+  `$M4` (contador, ts, OT1, OT2, ProbeState, SpO2, R, SQI, PI, r) → `update_algorithms(rows)`; `_live_fs(ts_us)`;
+  llamada antes de `if _new_data` (un tick puede traer tramas y no conservar ninguna tras el diezmado). Docstrings y
+  spec §7.7, changelog v1.96.
+- **Verificación (offscreen, 20 s de señal sintética a 500 Hz, diezmado 10, ticks de 10 tramas):** 10 000/10 000 filas
+  recibidas, fs 500, sin huecos; primer SpO2 amarillo a 6,1 s (antes ~50 s); R py 0,600 (esperado 0,6) y PI 3,9 %
+  (esperado ~4); coste 1,6 µs por muestra → 0,8 ms por segundo de señal, 0,016 ms por tick de 20 ms. disable_plots
+  13/13, udpcom 19/19, humo SPO2TEST OK.
+- **Mismo defecto, sin tocar (a decidir):** HR2TEST se alimenta de los mismos deques diezmados, y HR3TEST, PILAB y
+  HR3LAB reciben sus muestras dentro del bloque de parseo, que también va después del diezmado, con `afe_fs()` = 500.
