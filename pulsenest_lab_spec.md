@@ -1227,6 +1227,15 @@ whenever the library changes its SpO2 defaults.
 
 ### 5.2 SpO2TestCalc
 
+**Re-verified 2026-10-21 (lab v1.97) against the library the boards run** (runner v0.28 / lib v0.109,
+`--input ot`, same OT and ProbeState into both): SUBJ11 115518 (82 k samples) and SUBJ01 000040
+(272 k): R to 1e-5, r to 5e-5, SpO2 to 5e-3, SQI exact, validity identical in 100 % of samples; PI
+to 5e-3 except 176 samples (0.35 s) around an HGAC RF step with PI shooting to 100 %, where the
+library's float32 against the mirror's float64 shows 0.05–0.3 % relative. Parameters compared:
+windows 6 s, DC τ 2 s, r ≥ 0.8, PI ≤ 20 %, clamp +10 (v0.107), curve 123.98 − 39.13·R. Everything
+the library changed since the v1.88 verification (lib v0.103) is covered: v0.107's margin
+(77 800 SUBJ01 samples in the 100–110 zone read 100 on both sides) and v0.108's rename.
+
 **v1.86 — the mirror of lib v0.102: R-METHOD-2 and PI over sliding windows.** An independent
 Python reimplementation of the firmware's `_spo2_update()` and `_pi_update_sample()`
 (incunest_afe4490 §5.1), used by SpO2TestWindow (§7.7). `update(ot_ir, ot_red, probe_state, fs)`

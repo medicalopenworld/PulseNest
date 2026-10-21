@@ -28319,3 +28319,13 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   recibe las 15 000 tramas; HR2 py 89,9, HR3 py 90,1 (SQI 1,00), HR3LAB 90,1 lpm; SPO2TEST R 0,600 y PI 4,44 %;
   PILAB 30 s de búfer y PI_ir 1,59 % con su método A (PI-METHOD-0, EMA-RMS, ≈ 1/2,8 del pico a pico: coherente);
   XYLAB abre y renderiza. Coste por tick: SPO2TEST 0,06 ms, HR2TEST 0,34 ms. disable_plots 13/13, udpcom 19/19.
+
+## Sesión 2026-10-21 (3) — ¿SPO2TEST replica exactamente el firmware actual? Sí, verificado
+
+- Pregunta de Alex. La última verificación formal del espejo era contra lib v0.103 (lab v1.88). Rehecha contra la
+  librería que corren las placas (runner v0.28 / lib v0.109, `--input ot`: mismos OT y ProbeState a ambos lados) en
+  SUBJ11 115518 (82 k muestras) y SUBJ01 000040 (272 k): **R a 1e-5, r a 5e-5, SpO2 a 5e-3, SQI exacto, validez
+  idéntica en el 100 % de las muestras**; PI a 5e-3 salvo 176 muestras (0,35 s) alrededor de un salto de RF del HGAC
+  con el PI disparado a 100 %, donde el float32 de la librería frente al float64 del espejo da 0,05-0,3 % relativo.
+  Cubre lo cambiado desde v0.103: margen de clamp 10 (77 800 muestras de SUBJ01 en la zona 100-110 leen 100 en ambos)
+  y el renombrado. Anotado en el docstring de `SpO2TestCalc` y en la spec §5.2.
