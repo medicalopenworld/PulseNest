@@ -28420,3 +28420,33 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   diezmada (`hist_filtered`, 3000 puntos a 50 Hz, vaciado al reiniciar) y el gráfico va enlazado en X al de HR. El
   título sigue nombrando el búfer de la FFT y el estado "buffer N/512 — filling". Verificado offscreen: 3000 puntos
   que abarcan 60,0 s, igual que la traza de HR; el vaciado al quitar el dedo se mantiene. Spec §7.10, changelog v1.101.
+
+## Sesión 2026-10-22 (5) — Puerta de artefacto implementada: opción A (lib v0.110, fw 0.28, lab v1.102)
+
+- **Decisión (Alex):** opción A, retener. Antes, preguntas respondidas: nombres locales de `_spo2_update()`
+  (`valid` → `eps_valid`, `r` → `reg_corr`, `r_ok` → `reg_corr_ok`, aceptados); fuentes de los rangos de PI
+  (Nellcor PM-1000N service manual tabla 2-1 nota 6, 0,03-20; Mindray BeneVision N operator's manual, 0,05-20; Masimo
+  LAB-9204A y whitepaper lab3410f, 0,02-20): son rangos de pantalla, ninguno publica su estimador, la ISO 201.3.245
+  define %mod solo como ≈ AC/DC × 100. Citas añadidas al comentario de `spo2_pi_max` y a la spec §10. **Tarea en
+  BACKLOG:** investigar de dónde sale el techo de 20 % de PI.
+- **Librería v0.110 (`9cc7ace`, tag, push):** `spo2_pulse_gate_enable` (true; `setSpO2PulseGateEnable()`): SpO2 retenido
+  mientras `hr3_sqi == 0` (HR3 sin pulso identificado); la ventana de SpO2 sigue corriendo (vuelve en el mismo bloque
+  de 100 ms que HR3); sin hold. `AFE4490Data::spo2_hold_reason` (`SpO2HoldReason` 0 none, 1 probe, 2 window, 3 eps,
+  4 reg_corr, 5 pi, 6 range, 7 pulse: la primera puerta que falla; no es bit de DiagCode porque anularía RSQI).
+  Hallazgo al verificar: `!isnan(hr3)` abría la puerta antes del primer resultado de la tarea C (hr3 = 0.0 al
+  arrancar) → criterio `hr3_sqi > 0`. Renombrados locales. Spec §5.1/§10/§14; rationale §17 (estudio del 20-oct,
+  opciones, costes, ISO 201.12.4.102 notas 5 y 6, decisión). Tests: puerta on/off, vuelta en el bloque siguiente,
+  orden de motivos; 10/10 suites.
+- **Firmware 0.28:** `$LCFG`/`$SET spo2_pulse_gate_enable`, `$M4` campo 37 `SPO2_HOLD_REASON`. **Capturas:** columna
+  `SPO2_HOLD_REASON` (fw ≥ 0.28) y clave `spo2_pulse_gate_enable` en el diccionario y la spec del CSV (Apéndice B).
+  **Runner v0.29:** columna `SPO2_HOLD_REASON`. **Lab v1.102:** campo 37 → `data_spo2_hold_reason`; `hold: <motivo>`
+  en el título de SpO2 (PPG Plots, ALGO RESULTS); fila en SIGNAL STATS, SIGNALS2, cabeceras COM, fila en el visor de
+  flota; SPO2TEST: el espejo implementa la puerta con el HR3 de la placa **de la trama anterior** (orden de
+  `_process_sample()`: SpO2 antes de la actualización de HR3; sin eso discrepaba el 3,4 %) y los códigos de motivo,
+  casilla "pulse gate (HR3)", fila "hold reason" en la tabla; LIB CONFIG ofrece la clave para `$SET`.
+- **Verificación:** espejo = runner (lib v0.110) en motivo y validez en el 100 % de las 81 965 muestras de SUBJ11
+  115518; lab offscreen: título "hold: pulse" con HR3 inválido, vuelta a 100 al volver HR3, casilla apagada publica;
+  suites Python completas (dict 1360/1360, v04 45/45, fleet 90/90…). Build V18 OK.
+- **OTA** a las 3 V18 (88:50 .143, 87:A4 .77, 82:5C .93), build limpio `df9d9f2`, `elfsha=65a47e67e5ff6ad9`,
+  verificada por MAC; `docs/boards.md` anotado. Memoria: hilo de calibración (puerta hecha; pendientes experimento
+  5 min, R-curves MS100, Pulse Amp vs PI, origen del 20 %), versión de la lib.
