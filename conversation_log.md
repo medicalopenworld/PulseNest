@@ -28400,3 +28400,10 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   applied — mirror reset"; luego "buffer N/512 — filling", dibujando lo acumulado, hasta la primera FFT o
   autocorrelación tras el rellenado). Verificado offscreen: dedo 15 s → fuera 3 s (0 puntos, título de reinicio) →
   vuelta 4 s (200/512 rellenando) → 16 s (FFT 90,1 lpm de nuevo). Spec changelog v1.98.
+
+## Sesión 2026-10-22 (2) — HR3LAB/HR3TEST: cursor del pico amarillo y banda de búsqueda sin bordes (lab v1.99)
+
+- Petición de Alex: en HR3LAB el cursor vertical "peak" pasa de cian (el color del propio espectro) a amarillo, como en
+  HR3TEST; en ambas ventanas desaparecen las líneas de borde amarillas de la banda de búsqueda (las dibuja por defecto
+  el `LinearRegionItem` de pyqtgraph): el relleno translúcido basta. Verificado offscreen (pluma del pico #ffdd44,
+  líneas de borde sin pluma). Spec changelog v1.99.

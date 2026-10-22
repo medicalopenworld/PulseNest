@@ -5146,7 +5146,8 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         hr_max_hz = HR3TestCalc.FW_HR_SEARCH_MAX / 60.0
         self._hr_region = pg.LinearRegionItem(
             values=[hr_min_hz, hr_max_hz],
-            brush=pg.mkBrush(0, 180, 255, 20), movable=False)
+            brush=pg.mkBrush(0, 180, 255, 20), movable=False,
+            pen=pg.mkPen(None))     # v1.99: the fill alone marks the band; no edge lines (Alex)
         self.p_fft.addItem(self._hr_region)
         self.curve_fft = self.p_fft.plot(pen=FFT_PEN, name="FFT")
         self.curve_hps = self.p_fft.plot(pen=HPS_PEN, name="HPS")
@@ -9554,14 +9555,15 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         self.p_fft.showGrid(x=True, y=True, alpha=0.3)
         self._hr_region = pg.LinearRegionItem(
             values=[HRFFTCalc.HR_MIN_HZ, HRFFTCalc.HR_MAX_HZ],
-            brush=pg.mkBrush(0, 180, 255, 25), movable=False)
+            brush=pg.mkBrush(0, 180, 255, 25), movable=False,
+            pen=pg.mkPen(None))     # v1.99: the fill alone marks the band; no edge lines (Alex)
         self.p_fft.addItem(self._hr_region)
         self.curve_fft = self.p_fft.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="Spectrum")
         self.curve_hps = self.p_fft.plot(pen=pg.mkPen('#FF8800', width=1.5), name="HPS")
         self._line_peak = pg.InfiniteLine(
             pos=0, angle=90,
-            pen=pg.mkPen('#00CCFF', width=2),
-            label='peak', labelOpts={'color': '#00CCFF', 'position': 0.92})
+            pen=pg.mkPen('#FFDD44', width=2),      # v1.99: yellow, as HR3TEST's peak (was cyan, the spectrum's colour)
+            label='peak', labelOpts={'color': '#FFDD44', 'position': 0.92})
         self._line_h2 = pg.InfiniteLine(
             pos=0, angle=90,
             pen=pg.mkPen('#006688', width=1, style=QtCore.Qt.DashLine),

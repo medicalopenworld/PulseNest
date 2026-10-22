@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.98
+# pulsenest_lab — Specification v1.99
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2872,6 +2872,12 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.99 — 2026-10-22
+
+**HR3LAB / HR3TEST spectrum plot (Alex):** the HR search band is shown by its translucent fill
+alone — the `LinearRegionItem` edge lines (pyqtgraph's default yellow) are gone in both windows; and
+HR3LAB's `peak` cursor is yellow like HR3TEST's, instead of the cyan of the spectrum it sat on.
 
 ### v1.98 — 2026-10-22
 
