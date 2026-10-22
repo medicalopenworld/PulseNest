@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.97
+# pulsenest_lab — Specification v1.98
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2872,6 +2872,18 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.98 — 2026-10-22
+
+**HR3TEST and HR2TEST no longer freeze when the probe comes off** (§7.9, §7.10; Alex). When
+ProbeState leaves APPLIED the mirror resets (as the library does) and has no spectrum /
+autocorrelation and no filtered buffer; the plots kept drawing the last snapshot — a frozen
+spectrum with its peak in the title and a flat (zeroed) filtered trace, both reading as live. Now
+the spectrum / autocorrelation and the filtered-signal curves are cleared, the peak line hidden,
+and the titles say the state: "probe not applied — mirror reset", then "buffer N/512 — filling"
+(the filtered plot draws what has accumulated) until the first FFT / autocorrelation after the
+refill (10.24 s / 8 s). HR and SQI plots were already right (NaN). Verified offscreen: finger on
+15 s → off 3 s → back 16 s.
 
 ### v1.97 — 2026-10-21
 

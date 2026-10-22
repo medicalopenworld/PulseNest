@@ -4375,7 +4375,17 @@ class HR2TestWindow(QtWidgets.QMainWindow):
     def _refresh_acorr_plot(self):
         acorr = self._calc.last_acorr
         lags  = self._calc.last_lags_s
-        if len(acorr) > 0 and len(lags) > 0:
+        if len(acorr) == 0 or len(lags) == 0:
+            # Same as HR3TEST (v1.98): no autocorrelation = reset or refilling; clear, do not freeze.
+            self.curve_acorr.setData([], [])
+            self._peak_line.setVisible(False)
+            n = max(4, int(self._calc.buf_len))
+            why = ("probe not applied — mirror reset" if self._calc._clean
+                   else f"buffer {self._calc._buf_count}/{n} — filling, first autocorrelation when full")
+            self.p_acorr.setTitle(f"<b style='color:#44AAFF'>Autocorrelation</b>  <span style='color:#888888'>{why}</span>")
+            return
+        self._peak_line.setVisible(True)
+        if True:
             self.curve_acorr.setData(lags, acorr)
             peak = self._calc.last_peak_lag_s
             if peak > 0:
@@ -4388,12 +4398,27 @@ class HR2TestWindow(QtWidgets.QMainWindow):
                     f"  SQI={sqi_at_peak:.3f}</span>")
 
     def _refresh_filt_plot(self, t_hr):
-        filt = self._calc.last_filtered
+        c = self._calc
+        n = max(4, int(c.buf_len))
+        if c._clean:
+            self.curve_filt.setData([], [])
+            self.p_filt.setTitle("<b style='color:#FFDD44'>Bandpass filtered signal</b>"
+                                 "  <span style='color:#888888'>probe not applied — mirror reset</span>")
+            return
+        if c._buf_count < n:
+            filt = c._buf[:c._buf_count]
+            title = f"  <span style='color:#888888'>buffer {c._buf_count}/{n} — filling</span>"
+        else:
+            filt = c.last_filtered
+            title = f"  ({n}-sample buffer)"
+        self.p_filt.setTitle(f"<b style='color:#FFDD44'>Bandpass filtered signal</b>{title}")
         if len(filt) > 0 and len(t_hr) > 0:
             t_end = t_hr[-1]
-            fs = self._calc.rate_hz if self._calc.rate_hz > 0 else HR2TestCalc.FW_FS
+            fs = c.rate_hz if c.rate_hz > 0 else HR2TestCalc.FW_FS
             filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
             self.curve_filt.setData(filt_t, filt)
+        else:
+            self.curve_filt.setData([], [])
 
     def closeEvent(self, event):
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("HR2TestWindow/geometry", self.saveGeometry())
@@ -5571,7 +5596,20 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         freqs = c.last_freqs
         spec  = c.last_spectrum
         hps   = c.last_hps
-        if len(freqs) > 0 and len(spec) > 0:
+        if len(freqs) == 0 or len(spec) == 0:
+            # No spectrum: the mirror reset (probe not applied) or its buffer is refilling. Until
+            # v1.97 the curves kept the last spectrum and the title its peak — a frozen plot that
+            # read as live (Alex, 2026-10-22). Clear them and say why.
+            self.curve_fft.setData([], []); self.curve_hps.setData([], [])
+            self._peak_line.setVisible(False)
+            n = max(8, int(c.buf_len))
+            why = ("probe not applied — mirror reset" if c._clean
+                   else f"buffer {c._buf_count}/{n} — filling, first FFT when full")
+            self.p_fft.setTitle(f"<b style='color:#00CCFF'>FFT + <span style='color:#FF8800'>HPS</span></b>"
+                                f"  <span style='color:#888888'>{why}</span>")
+            return
+        self._peak_line.setVisible(True)
+        if True:
             self.curve_fft.setData(freqs, spec)
             self.curve_hps.setData(freqs, hps)
             peak = c.last_peak_freq
@@ -5585,13 +5623,29 @@ class HR3TestWindow(QtWidgets.QMainWindow):
                     f"  SQI={sqi_at_peak:.3f}</span>")
 
     def _refresh_filt_plot(self, t_hr):
-        c    = self._active_calc()
-        filt = c.last_filtered_buf
+        c = self._active_calc()
+        n = max(8, int(c.buf_len))
+        if c._clean:
+            # Probe not applied: the library's buffer is reset every sample; nothing to show.
+            self.curve_filt.setData([], [])
+            self.p_filt.setTitle("<b style='color:#FFDD44'>LP filtered signal</b>"
+                                 "  <span style='color:#888888'>probe not applied — mirror reset</span>")
+            return
+        if c._buf_count < n:
+            # Refilling after a reset: draw what has accumulated, not the pre-reset snapshot (zeros).
+            filt = c._buf[:c._buf_count]
+            title = f"  <span style='color:#888888'>buffer {c._buf_count}/{n} — filling</span>"
+        else:
+            filt = c.last_filtered_buf      # the snapshot of the last FFT, as the library analyses it
+            title = f"  ({n}-sample buffer)"
+        self.p_filt.setTitle(f"<b style='color:#FFDD44'>LP filtered signal</b>{title}")
         if len(filt) > 0 and len(t_hr) > 0:
             t_end = t_hr[-1]
             fs = c.rate_hz if c.rate_hz > 0 else HR3TestCalc.FW_FS
             filt_t = t_end - (len(filt) - 1 - np.arange(len(filt))) / fs
             self.curve_filt.setData(filt_t, filt)
+        else:
+            self.curve_filt.setData([], [])
 
     def closeEvent(self, event):
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue("HR3TestWindow/geometry", self.saveGeometry())

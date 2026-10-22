@@ -28388,3 +28388,15 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   librería (sin cambio de versión). Abierto: si el PPG del prematuro real tiene armónicos más débiles que estos
   neonatos (sin edad gestacional en las sesiones; el MS100 no lo emula) y leer el pulso del monitor con VideoNest en
   la próxima campaña.
+
+## Sesión 2026-10-22 — HR3TEST se congelaba al quitar el dedo (lab v1.98)
+
+- **Aviso de Alex:** en HR3TEST, al quitar el dedo, los primeros gráficos parecían congelarse.
+- **Causa:** al dejar de estar aplicada la sonda el espejo se reinicia (como la librería) y se queda sin espectro ni
+  búfer filtrado; `_refresh_fft_plot` solo redibujaba cuando había espectro (la curva y el pico del título se quedaban
+  con el último) y `_refresh_filt_plot` dibujaba el búfer reiniciado (plano a cero) hasta la siguiente FFT. Preexistente;
+  HR2TEST tenía el mismo patrón con la autocorrelación.
+- **Hecho:** ambas ventanas vacían esas curvas al reinicio, ocultan la línea del pico y lo dicen en el título ("probe not
+  applied — mirror reset"; luego "buffer N/512 — filling", dibujando lo acumulado, hasta la primera FFT o
+  autocorrelación tras el rellenado). Verificado offscreen: dedo 15 s → fuera 3 s (0 puntos, título de reinicio) →
+  vuelta 4 s (200/512 rellenando) → 16 s (FFT 90,1 lpm de nuevo). Spec changelog v1.98.
