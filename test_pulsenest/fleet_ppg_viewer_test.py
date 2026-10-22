@@ -351,8 +351,8 @@ check(all(b[0].geometry().width() > 100 for b in win.bands.values()),
 # Rows in struct AFE4490Data order, then AFE4490AnalogState (= $M4 field order; Alex 2026-10-20),
 # with R_METHOD2_REG_CORR (field 36) right below R.
 fields = [r[1] for r in T.STATS_ROWS]
-check(fields == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 36, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 27, 28, 31, 32],
-      "rows follow struct AFE4490Data, then AFE4490AnalogState, field 36 below R", str(fields))
+check(fields == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 36, 37, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 27, 28, 31, 32],
+      "rows follow struct AFE4490Data, then AFE4490AnalogState, fields 36 and 37 below R", str(fields))
 heights = [round(b[0].geometry().height()) for b in win.bands.values()]
 check(max(heights) - min(heights) <= 1,
       "still equal after a resize, with the panels unchanged", str(heights))

@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.27"   // 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.28"   // 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_METHOD2_REG_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_method2_reg_corr_min
@@ -652,7 +652,8 @@ void Incunest_Task(void *pvParameters) {
                     int n = snprintf(buf, sizeof(buf) - 6,
                         "$M4,%lu,%llu,%ld,%ld,%ld,%ld,%ld,%ld,%.4e,%.2f,%.2f,%.5f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%lu,%d"
                         ",%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.4e,%.6e,%.6e,%04X"
-                        ",%s,%s,%.4f",   // field 36 (fw 0.19): R-METHOD-2's r, nan under R-METHOD-1 / invalid
+                        ",%s,%s,%.4f"    // field 36 (fw 0.19): R-METHOD-2's r, nan under R-METHOD-1 / invalid
+                        ",%u",           // field 37 (fw 0.28): SPO2_HOLD_REASON, SpO2HoldReason 0-7 (0 = published)
                         (unsigned long)incunest_sample_count,
                         (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
                         (long)data.led2,       (long)data.led1,
@@ -679,7 +680,8 @@ void Incunest_Task(void *pvParameters) {
                         dbg.analog.ot_led1,     dbg.analog.ot_led2,
                         ch_masks,
                         afeRFToStr(dbg.rf_led1), afeRFToStr(dbg.rf_led2),
-                        data.spo2_r_method2_reg_corr);
+                        data.spo2_r_method2_reg_corr,
+                        (unsigned)data.spo2_hold_reason);
                     if (frame_finish(buf, sizeof(buf), n, "M4")) {
                         if (!g_wifi_ready) Serial_print_locked(buf);
                         udp_send(buf);
@@ -877,6 +879,7 @@ static void send_lcfg_frame() {
         ",hgac_enable=%d,hgac_v_tia_high2=%.3f,hgac_v_tia_high1=%.3f,hgac_v_tia_low1=%.3f"
         ",hgac_ema_fast_tau_s=%.3f,hgac_ema_slow_tau_s=%.3f,hgac_ema_ambient_tau_s=%.3f"
         ",spo2_r_method=%u,spo2_r_method2_reg_corr_min=%.2f"
+        ",spo2_pulse_gate_enable=%d"                        // fw 0.28 / lib v0.110: SpO2 only while HR3 has a pulse
         ",spo2_window_s=%.1f,pi_window_s=%.1f"           // fw 0.20 / lib v0.102: averaging windows
         ",afe_settle_freeze_enable=%d",                   // fw 0.22 / lib v0.104: bench switch (spec §5.8.4)
         cfg.rsqm_ot_thr,
@@ -885,6 +888,7 @@ static void send_lcfg_frame() {
         cfg.hgac_enable ? 1 : 0, cfg.hgac_v_tia_high2, cfg.hgac_v_tia_high1, cfg.hgac_v_tia_low1,
         cfg.hgac_ema_fast_tau_s, cfg.hgac_ema_slow_tau_s, cfg.hgac_ema_ambient_tau_s,
         (unsigned)cfg.spo2_r_method, cfg.spo2_r_method2_reg_corr_min,
+        cfg.spo2_pulse_gate_enable ? 1 : 0,
         cfg.spo2_window_s, cfg.pi_window_s,
         cfg.afe_settle_freeze_enable ? 1 : 0);
     if (frame_finish(buf, sizeof(buf), n, "LCFG")) Serial_print_locked(buf);
@@ -1081,6 +1085,11 @@ static void apply_set_cmd(const char* key, const char* val) {
     } else if (strcmp(key, "spo2_r_method2_reg_corr_min") == 0) {
         afe.setSpO2RMethod2RegCorrMin(atof(val));
         Serial_printf("# SET spo2_r_method2_reg_corr_min=%.2f\n", atof(val));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "spo2_pulse_gate_enable") == 0) {           // fw 0.28 / lib v0.110
+        afe.setSpO2PulseGateEnable(atoi(val) != 0);
+        Serial_printf("# SET spo2_pulse_gate_enable=%d\n", atoi(val) != 0);
         send_lcfg_frame();
         return;
     // Averaging windows (fw 0.20 / lib v0.102): the library clamps to 2-12 s, so the echo reads

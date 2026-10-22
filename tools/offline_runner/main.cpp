@@ -1,5 +1,8 @@
 // incunest_offline_runner — Offline batch processor for incunest_afe4490 algorithms
-// Runner version: v0.28 — native/offline (no hardware), library API v0.109
+// Runner version: v0.29 — native/offline (no hardware), library API v0.110
+//
+// v0.29 (2026-10-22): lib v0.110 pulse gate — the replay row carries SPO2_HOLD_REASON (why SpO2 is
+//   NaN: 0 none, 1 probe, 2 window, 3 eps, 4 reg_corr, 5 pi, 6 range, 7 pulse), after SpO2_SQI.
 //
 // v0.28 (2026-10-20): raw-input replays now carry HR2/HR3. The host has no Task B/C, so a sample
 //   that fired their interval left _hr2/_hr3_computing set for good and HR2 = HR3 = NaN in every
@@ -642,7 +645,7 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         return st;
     }
     bool has_fw = rows[0].has_fw;
-    out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,R_METHOD2_REG_CORR,PI,SpO2,SpO2_SQI,"
+    out << "SmpIdx,ProbeState,OT_LED1,OT_LED2,R,R_METHOD2_REG_CORR,PI,SpO2,SpO2_SQI,SPO2_HOLD_REASON,"
            "HR1,HR1_SQI,HR2,HR2_SQI,HR3,HR3_SQI";
     if (has_fw) out << ",FW_SpO2,FW_R,FW_ProbeState,delta_SpO2,delta_R";
     out << ",R_CAND,R_CAND_CORR,R_CAND_CD,R_CAND_CD_CORR,R_CAND_CE,R_CAND_CE_CORR,R_CAND_BW,R_CAND_BW_CORR\n";
@@ -735,9 +738,10 @@ static PartStats replay_part(INCUNEST_AFE4490& afe, CandSet& cand, const std::ve
         float spo2 = afe.test_spo2();
         float rr   = afe.test_spo2_r();
         snprintf(buf, sizeof(buf),
-                 "%lld,%d,%.7g,%.7g,%.5f,%.4f,%.3g,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                 "%lld,%d,%.7g,%.7g,%.5f,%.4f,%.3g,%.2f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
                  *smp_idx, ps, oi, orr,
                  rr, afe.test_spo2_r_method2_reg_corr(), afe.test_pi(), spo2, afe.test_spo2_sqi(),
+                 (unsigned)afe.test_spo2_hold_reason(),
                  afe.test_hr1(), afe.test_hr1_sqi(),
                  afe.test_hr2(), afe.test_hr2_sqi(),
                  afe.test_hr3(), afe.test_hr3_sqi());

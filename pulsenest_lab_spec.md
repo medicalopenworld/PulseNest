@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.101
+# pulsenest_lab — Specification v1.102
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -211,6 +211,7 @@ $M3,<SmpCnt>,<Ts_us>,<LED2>,<LED1>,<ALED2>,<ALED1>,<LED2_SUB>,<LED1_SUB>,
 | `RF1`, `RF2` | string | Actual TIA feedback resistor in use for LED1/LED2 at this sample (e.g. `"500K"`, via `afeRFToStr()`) — the live config value, whoever set it (manual `$SET` or HGAC Phase 1 descent), so it is not a static config value. Renamed from `HGAC_RF1`/`HGAC_RF2` in lib v0.81/spec v1.29 — the old name wrongly implied HGAC always computed it |
 
 | `R_METHOD2_REG_CORR` | `%.4f` | Field 36 (fw 0.19, lib v0.100; `R_CORR` until fw 0.26 / lab v1.92): the correlation r of R-METHOD-2's regression, the fit's own quality (SpO2 is withheld below `spo2_r_method2_reg_corr_min`); `nan` under R-METHOD-1, during warm-up and when the probe is not applied. Recorded as `R_METHOD2_REG_CORR` in P1 captures. Parsed into `PPGMonitor.data_r_method2_reg_corr` (NaN = no value) and shown since v1.91: `r:` in the SpO2 title of PPG Plots and ALGO RESULTS, and `r fw` in SPO2TEST (plot 4 and the value table). |
+| `SPO2_HOLD_REASON` | `%u` | Field 37 (fw 0.28, lib v0.110): why SpO2 is withheld — `SpO2HoldReason` 0 none (published), 1 probe, 2 window, 3 eps, 4 reg_corr, 5 PI, 6 range, 7 pulse gate (HR3 has not identified a pulse); the first failing gate. Parsed into `PPGMonitor.data_spo2_hold_reason` (NaN with older firmware); shown as `hold: <name>` in the SpO2 title of PPG Plots / ALGO RESULTS while SpO2 is withheld, as a SIGNAL STATS row, and in SPO2TEST (value table row, fw vs mirror). Recorded as `SPO2_HOLD_REASON` in P1 captures. |
 
 The script requires ≥ 34 fields to accept the `$M4` analog block (frames from
 firmware older than lib v0.35+`CH_MASKS` are parsed as `$M3` with zeroed analog data).
@@ -1054,10 +1055,10 @@ of 24 rows does not compete with the two large numbers beside it, alternate rows
 black so the eye can follow one across four columns, and the header bold on a brighter ground so
 it reads as a heading and not as the first row of data. The background is set on every **cell**,
 not on the row: Qt's rich text paints a row background only where a cell asks for one, so a
-stripe set on the `<tr>` alone comes out dotted. 25 signals of the `$M4` frame are always in the
+stripe set on the `<tr>` alone comes out dotted. 26 signals of the `$M4` frame are always in the
 panel, **in struct `AFE4490Data` order and then `AFE4490AnalogState`** (v1.94, the same order as
 SIGNAL STATS: raw codes, ambient-subtracted, PPG, SpO2, SpO2 SQI, R, `r reg corr` = field 36,
-PI, HR1–HR3 with their SQIs, RSQI, then `V_TIA`, `I_PD`, OT); `nan` samples of field 36 are not
+`SpO2 hold` = field 37 (v1.102), PI, HR1–HR3 with their SQIs, RSQI, then `V_TIA`, `I_PD`, OT); `nan` samples of field 36 are not
 counted. Until v1.93 the order was "how often a row answers the question in front of you", raw
 codes last so a short band lost them first; now a short band shows the raw codes and **scrolls**
 to the rest. The panel is as tall as its band.
@@ -1689,7 +1690,8 @@ the 4 raw ADC rows (`tbl_row = sig_idx if sig_idx < 4 else sig_idx + 1`). Column
 LED2 (RED), LED1 (IR), ALED2, ALED1 (raw ADC — integer + narrow-space thousands separator `\u202f`),
 then the sub-header divider, LED2_SUB, LED1_SUB (integer as well),
 PPG_DISP, SpO2, SpO2_SQI, R, **R_METHOD2_REG_CORR** (`$M4` field 36, 4 dp; NaN samples are left out
-of the statistics, so it reads `---` only when the whole window had no value), PI, HR1, HR1_SQI,
+of the statistics, so it reads `---` only when the whole window had no value), **SpO2_HOLD_REASON**
+(`$M4` field 37, fw 0.28, codes 0–7, 0 dp; v1.102), PI, HR1, HR1_SQI,
 HR2, HR2_SQI, HR3, HR3_SQI, RSQI, DiagCode, ProbeState (2 dp),
 V_TIA_LED1/LED2/ALED1/ALED2 (6 dp V), I_PD_LED1/LED2/ALED1/ALED2 (µA 3 dp),
 OT_LED1 [ppm], OT_LED2 [ppm] (displayed ×1e6 for readability, 2 dp — **read from the
@@ -1974,7 +1976,7 @@ Pause button stops auto-scroll while new lines are still received.
 Equivalent of SerialComWindow for the WiFi/UDP transport.
 Shows every raw frame received via UDP from the **active board** (§4.8). The top bar starts with the
 header label (`UDP_HEADER`): the two PC-side columns and every field of the `$M4` frame in order,
-`FrameMode … CH_MASKS,RF1,RF2,R_METHOD2_REG_CORR` (fields 34-36 were missing from both COM headers until v1.92).
+`FrameMode … CH_MASKS,RF1,RF2,R_METHOD2_REG_CORR,SPO2_HOLD_REASON` (fields 34-36 were missing from both COM headers until v1.92; field 37 since v1.102).
 The label is clipped at the window width, so (v1.92) its text is selectable by mouse, its tooltip
 lists every column numbered with the `$M4` field index (FrameMode = 0, as the parser counts), and
 **COPY HEADER** puts the complete line on the clipboard (the button reads COPIED for 1.5 s).
@@ -2050,9 +2052,12 @@ DC of each channel stays in the value table (ppm).
 
 **Right panel:** six spinboxes — SpO2 a, SpO2 b, DC τ, SpO2 window, PI window, r min (the
 library's runtime parameters, §5.2; the windows are limited to 2–12 s like the library) —,
-[RESET TO DEFAULTS], the current-values table (SpO2, R, r, PI, SQI, DC IR, DC RED; firmware /
-Python / delta, the delta green or red against a per-row threshold: SpO2 1 point, R 0.05,
-r 0.01, PI 0.1 %) and a rate line: `fs 500 Hz · block 50 smp → 10 Hz · SpO2 window 60 blk · PI window
+[RESET TO DEFAULTS], a **pulse gate (HR3)** tick box (v1.102; lib v0.110 `spo2_pulse_gate_enable`,
+on by default: the mirror gates on the board's HR3 validity read from the frame — the value of the
+previous frame, as the board's SpO2 sees it — so it gates on the same input as the board), the
+current-values table (SpO2, R, r, PI, SQI, **hold reason 0–7**, DC IR, DC RED; firmware / Python /
+delta, the delta green or red against a per-row threshold: SpO2 1 point, R 0.05, r 0.01, PI 0.1 %,
+hold reason exact) and a rate line: `fs 500 Hz · block 50 smp → 10 Hz · SpO2 window 60 blk · PI window
 60 blk`, so a wrong rate is visible at a glance. Any parameter off its default turns the toolbar
 indicator to CUSTOM PARAMS; a change resets the mirror and clears the buffers.
 
@@ -2875,6 +2880,18 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.102 — 2026-10-22
+
+**Pulse gate and hold reason (lib v0.110 / fw 0.28).** `$M4` field 37 `SPO2_HOLD_REASON` parsed into
+`PPGMonitor.data_spo2_hold_reason` (§4); `hold: <name>` in the SpO2 title of PPG Plots and ALGO RESULTS
+while SpO2 is withheld; SIGNAL STATS row and SIGNALS2 entry; both COM headers list field 37. SPO2TEST
+(§7.7): `SpO2TestCalc.update(…, hr3_valid)` implements the gate and the hold-reason codes exactly as the
+library (gating on the previous frame's HR3, as `_process_sample()` orders it), with a **pulse gate
+(HR3)** tick box and a hold-reason row in the value table; the live feed and the CSV loader pass the
+board's HR3 and field 37. LIB CONFIG offers `spo2_pulse_gate_enable` for `$SET`. Fleet viewer: `SpO2
+hold` row (field 37). Verified: mirror hold reason and SpO2 validity equal to the runner's (lib v0.110)
+in 100 % of the 81 965 samples of SUBJ11 115518.
 
 ### v1.101 — 2026-10-22
 

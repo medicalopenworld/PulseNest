@@ -108,7 +108,7 @@ STATS_PT   = 8
 STATS_FAMILY = "monospace"
 VAL_CHARS  = "-8388608"   # the widest cell any row can print: a signed 24-bit ADC code
 # SIGNAL STATS's colours (pulsenest_lab.py, stats_table stylesheet) as the starting point, then
-# tuned on the bench: the body text a step down from #E0E0E0 so a wall of 25 rows does not
+# tuned on the bench: the body text a step down from #E0E0E0 so a wall of 26 rows does not
 # compete with the two large numbers beside it, alternate rows lifted off pure black so the eye
 # can follow one across four columns, and the header brighter and bold so it reads as a heading
 # rather than as the first row of data. Four values, all here.
@@ -141,6 +141,7 @@ STATS_ROWS = [
     ("SpO2 SQI", 11, 1.0, 3),
     ("R",        12, 1.0, 4),
     ("r reg corr", 36, 1.0, 4),   # R_METHOD2_REG_CORR (fw >= 0.19); NaN = no value, not counted
+    ("SpO2 hold",  37, 1.0, 0),   # SPO2_HOLD_REASON (fw >= 0.28): 0 none .. 7 pulse gate; absent before
     ("PI %",     13, 1.0, 2),
     ("HR1 bpm",  14, 1.0, 1),
     ("HR1 SQI",  15, 1.0, 3),

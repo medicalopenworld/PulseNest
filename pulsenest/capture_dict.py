@@ -75,6 +75,7 @@ COLUMNS = [
     Column("OT_LED2",     ("FW_OT_LED2",),     "optical transmission LED2",                     "A/A",      "float", DERIVABLE, "legacy"),
     Column("CH_MASKS",    ("FW_CH_MASKS",),    "per-channel RSQM masks packed as a bit field",  "bitmask",  "int",   FW_COMPUTED, "legacy"),
     Column("RF1_OHM",     ("FW_RF1_OHM",),     "TIA feedback resistor LED1 at this sample; leaves the columns for the afe: snapshot once R21a is live", "ohm", "int", CONFIG, "legacy"),
+    Column("SPO2_HOLD_REASON", ("FW_SPO2_HOLD_REASON",), "why SpO2 is withheld, lib v0.110 SpO2HoldReason: 0 none (published), 1 probe, 2 window, 3 eps, 4 reg_corr, 5 pi, 6 range, 7 pulse gate (fw 0.28)", "enum", "int", FW_COMPUTED, "0.4"),
     Column("RF2_OHM",     ("FW_RF2_OHM",),     "TIA feedback resistor LED2 at this sample",     "ohm",      "int",   CONFIG, "legacy"),
     # host column of the recorder/lab CSVs of 2026; v0.4 replaces it with clock anchors (R12/R15)
     Column("HOST_T_US",   (),                  "host epoch at datagram arrival (legacy column; v0.4: `clock:` anchors)", "us", "int", HOST, "legacy"),
@@ -204,6 +205,7 @@ KEYS = [
     Key("hgac_ema_slow_tau_ms", "alg", (LCFG, ("hgac_ema_slow_tau_s",),  1000), "leveling EMA time constant",                        "ms",   "int",   CONFIG, "0.4"),
     Key("hgac_ema_ambient_tau_ms", "alg", (LCFG, ("hgac_ema_ambient_tau_s",), 1000), "ambient EMA time constant",                    "ms",   "int",   CONFIG, "0.4"),
     Key("spo2_r_method",        "alg", (LCFG, ("spo2_r_method",), 1),        "R method in force: 1 = RMS ratio, 2 = regression on derivatives (fw 0.18, lib v0.100)", "enum", "int", CONFIG, "0.4"),
+    Key("spo2_pulse_gate_enable",  "alg", (LCFG, ("spo2_pulse_gate_enable",), 1),  "SpO2 withheld while HR3 has not identified a pulse (lib v0.110, fw 0.28); 1 = on (default)", "flag", "int", CONFIG, "0.4"),
     Key("spo2_r_method2_reg_corr_min",      "alg", (LCFG, ("spo2_r_method2_reg_corr_min",), 1),      "R-METHOD-2 validity gate: SpO2 withheld while the regression's r is below this (fw 0.18)", "ratio", "float", CONFIG, "0.4"),
     Key("spo2_window_ms",       "alg", (LCFG, ("spo2_window_s",), 1000),     "SpO2 averaging window, a true sliding window over R's products; 2-12 s, the window is the warm-up (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),
     Key("pi_window_ms",         "alg", (LCFG, ("pi_window_s",), 1000),       "PI averaging window (AC and DC), independent of spo2_window_ms; 2-12 s (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),

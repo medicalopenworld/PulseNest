@@ -38,7 +38,9 @@ Result (2026-10-20, lib v0.108, OT-input replays; report: GATE_ANALYSIS_20261020
 - r >= 0.99 and PI <= 10 % fail as artefact gates; HR3_SQI thresholds add nothing; HR2~HR3 agreement
   a little; HR1 agreement costs too much; a 5-10 s value hold re-admits SUBJ10's wrong values.
 - Costs: desaturations (ref < 90) withheld more (-27/-28 points in SUBJ08/09); first value after
-  applying the probe median 6.1 -> 10.5 s, p90 6.8 -> 36.6 s. Decision pending (Alex).
+  applying the probe median 6.1 -> 10.5 s, p90 6.8 -> 36.6 s.
+- Decision (Alex, 2026-10-22): option A, withhold — lib v0.110 `spo2_pulse_gate_enable` (default on),
+  `AFE4490Data::spo2_hold_reason`; fw 0.28 ($M4 field 37 SPO2_HOLD_REASON); rationale section 17.
 - Side finding: the runner's raw-input mode never computes HR2/HR3 (slow path lives in FreeRTOS tasks).
 """
 import argparse

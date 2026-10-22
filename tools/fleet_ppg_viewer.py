@@ -61,9 +61,9 @@ What it draws, and why those choices:
   faithfulness to the commercial idiom.
 - **A statistics panel on the right of each band** — the same table SIGNAL STATS shows in the
   lab, down to its font and its colours: per signal, **mean, SD, min and max** over the last
-  second, always the four. 25 signals of the frame are always there, in the order of struct
+  second, always the four. 26 signals of the frame are always there, in the order of struct
   AFE4490Data and then AFE4490AnalogState — the same order as SIGNAL STATS in the lab (raw codes,
-  ambient-subtracted, PPG, SpO2, SpO2 SQI, R, r reg corr, PI, HR1-3 and their SQIs, RSQI, then
+  ambient-subtracted, PPG, SpO2, SpO2 SQI, R, r reg corr, SpO2 hold reason, PI, HR1-3 and their SQIs, RSQI, then
   V_TIA, I_PD, OT; 2026-10-20). The panel is as tall as its band and **scrolls** to the rows that
   do not fit — in a short band that means the raw codes show and SpO2/HR are a scroll away.
   **A click on any cell boxes it in yellow** (the gold of SIGNAL STATS's highlight in the lab);

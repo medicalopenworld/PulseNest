@@ -95,6 +95,13 @@ has not been triaged yet.
 
 
 
+- (2026-10-22, Alex) Investigar de dónde sale el umbral de 20 % de PI (`spo2_pi_max`). Hoy es el techo del rango
+  MOSTRADO por Masimo (0,02-20, LAB-9204A), Mindray (0,05-20, manual BeneVision N) y Nellcor (0,03-20, manual de
+  servicio PM-1000N, tabla 2-1 nota 6); ninguno publica su estimador de PI y la ISO 201.3.245 define %mod solo como
+  ≈ AC/DC × 100. Preguntas: ¿es un límite fisiológico (vasodilatación en adulto caliente llega a 15-20 en Masimo) o
+  de pantalla? ¿Cuánto vale el PI real en nuestros transitorios (sonda al aire: 118 % el 21-oct)? ¿Qué umbral
+  separa transitorio de perfusión con nuestro estimador 2√2·RMS?
+
 ## Parked
 
 Triaged ideas, deliberately not scheduled: do not implement until Alex asks. (Moved here from

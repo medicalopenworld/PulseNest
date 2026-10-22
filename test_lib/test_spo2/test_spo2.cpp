@@ -43,6 +43,9 @@ static void feed_spo2_sine(INCUNEST_AFE4490& afe,
                             ProbeState probe_state = ProbeState::PROBE_APPLIED) {
     const float fs = 500.0f;
     const float scale = 1.4e-10f;  // brings a_ir~10000-scale amplitudes into OT-DC-scale AC
+    // v0.110: SpO2 is gated on HR3 having a pulse. These tests exercise SpO2's own chain, so the
+    // helper stands in for Task C with a valid HR3; the pulse-gate tests below set it themselves.
+    afe.test_set_hr3(60.0f, 1.0f);
     for (int i = 0; i < n_samples; i++) {
         float phase = 2.0f * (float)M_PI * freq_hz * i / fs;
         float ot_ir  = OT_DC + a_ir  * scale * sinf(phase);
@@ -189,6 +192,87 @@ void test_spo2_too_high_invalid() {
     TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
 }
 
+// ── Pulse gate (v0.110, rationale §17) ───────────────────────────────────────
+// Converged, clean sines, then HR3 reports no pulse: SpO2 withheld with reason PULSE, R and r
+// still visible; same signal with the gate off: published.
+void test_spo2_pulse_gate_withholds_without_hr3() {
+    INCUNEST_AFE4490 afe;
+    feed_spo2_sine(afe, 5000.0f, a_red_for(96.0f), 1.0f, CONVERGED_SAMPLES);
+    TEST_ASSERT_TRUE(afe.getConfig().spo2_pulse_gate_enable);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 96.0f, afe.test_spo2());
+    TEST_ASSERT_EQUAL(SpO2HoldReason::NONE, afe.test_spo2_hold_reason());
+    afe.test_set_hr3(0.0f, 0.0f);                        // Task C: no pulse (fed by hand: the helper re-arms HR3)
+    for (int i = 0; i < 2 * DECIM_RAW; i++) {            // two blocks: the gate is evaluated per block
+        afe.test_feed_pi(OT_DC, ProbeState::PROBE_APPLIED);
+        afe.test_feed_spo2(OT_DC + 5000.0f * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           OT_DC + a_red_for(96.0f) * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           ProbeState::PROBE_APPLIED);
+    }
+    TEST_ASSERT_TRUE(isnan(afe.test_spo2()));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, afe.test_spo2_sqi());
+    TEST_ASSERT_EQUAL(SpO2HoldReason::PULSE, afe.test_spo2_hold_reason());
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2_r()));          // R and r stay on record
+    TEST_ASSERT_FALSE(isnan(afe.test_spo2_r_method2_reg_corr()));
+}
+
+void test_spo2_pulse_gate_off_publishes_without_hr3() {
+    INCUNEST_AFE4490 afe;
+    afe.setSpO2PulseGateEnable(false);
+    TEST_ASSERT_FALSE(afe.getConfig().spo2_pulse_gate_enable);
+    afe.test_set_hr3(0.0f, 0.0f);
+    for (int i = 0; i < CONVERGED_SAMPLES; i++) {
+        afe.test_feed_pi(OT_DC + 5000.0f * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f), ProbeState::PROBE_APPLIED);
+        afe.test_feed_spo2(OT_DC + 5000.0f * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           OT_DC + a_red_for(96.0f) * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           ProbeState::PROBE_APPLIED);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 96.0f, afe.test_spo2());
+    TEST_ASSERT_EQUAL(SpO2HoldReason::NONE, afe.test_spo2_hold_reason());
+}
+
+// The SpO2 window keeps running while the gate is closed: when HR3 returns, SpO2 is back in the
+// next 100 ms block — not after another 6 s window.
+void test_spo2_pulse_gate_returns_in_the_next_block() {
+    INCUNEST_AFE4490 afe;
+    feed_spo2_sine(afe, 5000.0f, a_red_for(96.0f), 1.0f, CONVERGED_SAMPLES);
+    afe.test_set_hr3(0.0f, 0.0f);
+    for (int i = 0; i < 20 * DECIM_RAW; i++) {                       // 2 s without a pulse
+        afe.test_feed_pi(OT_DC, ProbeState::PROBE_APPLIED);
+        afe.test_feed_spo2(OT_DC + 5000.0f * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           OT_DC + a_red_for(96.0f) * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           ProbeState::PROBE_APPLIED);
+    }
+    TEST_ASSERT_EQUAL(SpO2HoldReason::PULSE, afe.test_spo2_hold_reason());
+    afe.test_set_hr3(60.0f, 1.0f);                                   // Task C: pulse again
+    for (int i = 0; i < DECIM_RAW; i++) {                            // one block
+        afe.test_feed_pi(OT_DC, ProbeState::PROBE_APPLIED);
+        afe.test_feed_spo2(OT_DC + 5000.0f * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           OT_DC + a_red_for(96.0f) * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           ProbeState::PROBE_APPLIED);
+    }
+    TEST_ASSERT_EQUAL(SpO2HoldReason::NONE, afe.test_spo2_hold_reason());
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 96.0f, afe.test_spo2());
+}
+
+// The reason is the FIRST failing gate in the library's order: probe, window, eps, r, PI, range, pulse.
+void test_spo2_hold_reason_order() {
+    INCUNEST_AFE4490 afe;
+    feed_spo2_sine(afe, 5000.0f, 2000.0f, 1.0f, 10, ProbeState::PROBE_DISCONNECTED);
+    TEST_ASSERT_EQUAL(SpO2HoldReason::PROBE, afe.test_spo2_hold_reason());
+    feed_spo2_sine(afe, 5000.0f, 2000.0f, 1.0f, WINDOW_RAW / 2);
+    TEST_ASSERT_EQUAL(SpO2HoldReason::WINDOW, afe.test_spo2_hold_reason());
+    feed_spo2_sine(afe, 5000.0f, a_red_for(115.0f), 1.0f, CONVERGED_SAMPLES);   // > 110: range
+    TEST_ASSERT_EQUAL(SpO2HoldReason::RANGE, afe.test_spo2_hold_reason());
+    afe.test_set_hr3(0.0f, 0.0f);                                    // range fails before pulse
+    for (int i = 0; i < 2 * DECIM_RAW; i++) {
+        afe.test_feed_pi(OT_DC, ProbeState::PROBE_APPLIED);
+        afe.test_feed_spo2(OT_DC + 5000.0f * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           OT_DC + a_red_for(115.0f) * 1.4e-10f * sinf(2.0f * (float)M_PI * i / 500.0f),
+                           ProbeState::PROBE_APPLIED);
+    }
+    TEST_ASSERT_EQUAL(SpO2HoldReason::RANGE, afe.test_spo2_hold_reason());
+}
+
 // ── Test 7 (new, OT-domain-specific): R is invariant to a fixed gain scale ───
 // If both ot_ir and ot_red were scaled by the same constant k (as an RF change would do to
 // the raw-ADC-domain led1_sub/led2_sub, but NOT to OT — this test proves OT already cancels
@@ -204,6 +288,7 @@ void test_spo2_r_invariant_to_uniform_scale() {
     const float k = 0.37f;  // arbitrary scale factor, would be kAFE_RF_OHM ratio in reality
     const float fs = 500.0f;
     const float scale = 1.4e-10f;
+    afe_b.test_set_hr3(60.0f, 1.0f);      // fed by hand: stand in for Task C as the helper does (v0.110 gate)
     for (int i = 0; i < CONVERGED_SAMPLES; i++) {
         float phase = 2.0f * (float)M_PI * 1.0f * i / fs;
         float ot_ir  = k * (OT_DC + 5000.0f * scale * sinf(phase));
@@ -354,6 +439,10 @@ int main() {
     RUN_TEST(test_spo2_clamp_above_100);
     RUN_TEST(test_spo2_offset_above_100_clamped);
     RUN_TEST(test_spo2_too_high_invalid);
+    RUN_TEST(test_spo2_pulse_gate_withholds_without_hr3);
+    RUN_TEST(test_spo2_pulse_gate_off_publishes_without_hr3);
+    RUN_TEST(test_spo2_pulse_gate_returns_in_the_next_block);
+    RUN_TEST(test_spo2_hold_reason_order);
     RUN_TEST(test_spo2_r_invariant_to_uniform_scale);
     RUN_TEST(test_spo2_default_r_curve_is_labelled_and_matches);
     RUN_TEST(test_spo2_set_r_curve_applies_and_matches);
