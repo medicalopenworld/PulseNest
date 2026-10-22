@@ -28412,3 +28412,11 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 
 - Petición de Alex: el relleno translúcido de la banda de búsqueda de HR, un poco más claro. Alfa 25 (HR3LAB) y 20
   (HR3TEST) → 38 de 255 en ambas, mismo tono azul; sin líneas de borde desde v1.99.
+
+## Sesión 2026-10-22 (4) — HR3TEST: la señal filtrada comparte el eje de tiempo de HR y SQI (lab v1.101)
+
+- Petición de Alex: que el segundo gráfico de HR3TEST tenga la misma escala de tiempos que los gráficos 3 y 4. Dibujaba
+  el búfer de 10,24 s de la última FFT con eje propio. Ahora el espejo guarda un historial de 60 s de la señal filtrada
+  diezmada (`hist_filtered`, 3000 puntos a 50 Hz, vaciado al reiniciar) y el gráfico va enlazado en X al de HR. El
+  título sigue nombrando el búfer de la FFT y el estado "buffer N/512 — filling". Verificado offscreen: 3000 puntos
+  que abarcan 60,0 s, igual que la traza de HR; el vaciado al quitar el dedo se mantiene. Spec §7.10, changelog v1.101.

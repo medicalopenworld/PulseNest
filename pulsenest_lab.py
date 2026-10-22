@@ -4481,6 +4481,8 @@ class HR3TestCalc:
 
     FW_DECIM_TARGET_HZ = 50.0   # hr3_decim_target_rate_hz (§5.3.1)
     FW_FS              = 50.0   # the decimated rate at the default PRF (legacy name, HR3TestWindow)
+    HIST_LEN           = 3000   # rolling history of the decimated filtered signal: 60 s at 50 Hz, the
+                                # span of HR3TEST's HR/SQI plots, whose time axis the signal plot shares (v1.101)
     FW_LP_HIGH_HZ      = 15.0   # hr3_f_high_hz — 3rd harmonic of 260 BPM (13 Hz) with margin
     FW_BUF_LEN         = 512    # hr3_buf_len — 10.24 s at 50 Hz
     FW_UPDATE_N        = 25     # hr3_update_interval_s (0.5 s) × 50 Hz
@@ -4540,6 +4542,7 @@ class HR3TestCalc:
         self.last_hps          = np.zeros(0)
         self.last_peak_freq    = 0.0
         self.last_filtered_buf = np.zeros(n)
+        self.hist_filtered     = deque(maxlen=self.HIST_LEN)   # every decimated sample, 60 s (v1.101)
         self._clean = True
 
     def reset(self):
@@ -4604,6 +4607,7 @@ class HR3TestCalc:
         self._buf_idx = (self._buf_idx + 1) % n
         if self._buf_count < n:
             self._buf_count += 1
+        self.hist_filtered.append(filtered)
 
         self._update_ctr += 1
         if self._update_ctr < self.update_n:
@@ -5127,6 +5131,7 @@ class HR3TestWindow(QtWidgets.QMainWindow):
         self.p_filt.setTitle("<b style='color:#FFDD44'>LP filtered signal  (512-sample buffer)</b>")
         self.p_hr   = _mp(2, "HR3 (bpm)",                "BPM")
         self.p_sqi  = _mp(3, "SQI [0\u20131]",           "SQI", link_to=self.p_hr)
+        self.p_filt.setXLink(self.p_hr)      # v1.101: one time axis for signal, HR and SQI (Alex)
 
         self.p_fft.setLabel('bottom', 'frequency (Hz)')
         self.p_filt.setLabel('bottom', 't (s)')
@@ -5632,13 +5637,11 @@ class HR3TestWindow(QtWidgets.QMainWindow):
             self.p_filt.setTitle("<b style='color:#FFDD44'>LP filtered signal</b>"
                                  "  <span style='color:#888888'>probe not applied — mirror reset</span>")
             return
-        if c._buf_count < n:
-            # Refilling after a reset: draw what has accumulated, not the pre-reset snapshot (zeros).
-            filt = c._buf[:c._buf_count]
-            title = f"  <span style='color:#888888'>buffer {c._buf_count}/{n} — filling</span>"
-        else:
-            filt = c.last_filtered_buf      # the snapshot of the last FFT, as the library analyses it
-            title = f"  ({n}-sample buffer)"
+        # v1.101: the rolling history of the decimated filtered signal (60 s), on the HR/SQI time
+        # axis (X linked), instead of the 10.24 s FFT snapshot with an axis of its own.
+        filt = np.fromiter(c.hist_filtered, dtype=float, count=len(c.hist_filtered))
+        title = (f"  <span style='color:#888888'>buffer {c._buf_count}/{n} — filling</span>" if c._buf_count < n
+                 else f"  (decimated, {n}-sample FFT buffer)")
         self.p_filt.setTitle(f"<b style='color:#FFDD44'>LP filtered signal</b>{title}")
         if len(filt) > 0 and len(t_hr) > 0:
             t_end = t_hr[-1]

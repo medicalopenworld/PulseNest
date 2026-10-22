@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.100
+# pulsenest_lab — Specification v1.101
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -2124,7 +2124,10 @@ Layout: left 4 plots + right panel.
 
 **Plots:**
 1. FFT magnitude + HPS spectrum with detected peak marker
-2. LP-filtered decimated signal (input to FFT)
+2. LP-filtered decimated signal — since v1.101 a rolling 60 s history of every decimated sample
+   (`HR3TestCalc.hist_filtered`, 3000 points at 50 Hz) drawn on the HR/SQI time axis (X linked),
+   not the 10.24 s FFT snapshot with an axis of its own; the title still names the FFT buffer and
+   says "buffer N/512 — filling" after a reset
 3. HR3 fw (green) + HR3 py (yellow)
 4. HR3 SQI fw + py
 
@@ -2872,6 +2875,13 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.101 — 2026-10-22
+
+**HR3TEST: the filtered-signal plot shares the time axis of the HR and SQI plots** (§7.10; Alex).
+It drew the 10.24 s FFT snapshot on its own axis; now `HR3TestCalc` keeps a 60 s rolling history
+of the decimated low-pass output (`hist_filtered`, cleared on reset) and the plot is X-linked to
+the HR plot. Verified offscreen: 3000 points spanning 60.0 s, equal to the HR trace's span.
 
 ### v1.100 — 2026-10-22
 
