@@ -28407,3 +28407,8 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   HR3TEST; en ambas ventanas desaparecen las líneas de borde amarillas de la banda de búsqueda (las dibuja por defecto
   el `LinearRegionItem` de pyqtgraph): el relleno translúcido basta. Verificado offscreen (pluma del pico #ffdd44,
   líneas de borde sin pluma). Spec changelog v1.99.
+
+## Sesión 2026-10-22 (3) — HR3LAB/HR3TEST: relleno de la banda de búsqueda un poco más claro (lab v1.100)
+
+- Petición de Alex: el relleno translúcido de la banda de búsqueda de HR, un poco más claro. Alfa 25 (HR3LAB) y 20
+  (HR3TEST) → 38 de 255 en ambas, mismo tono azul; sin líneas de borde desde v1.99.
