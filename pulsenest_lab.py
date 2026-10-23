@@ -645,7 +645,7 @@ class SpO2TestCalc:
     SPO2_DIV_EPS       = 1e-9          # spo2_div_eps — numerical guard only, not physiological
     SPO2_REG_EPS       = 1e-30         # spo2_reg_eps — Σdx² / Σdy² at or below this: no slope yet
     PI_DIV_EPS         = 1e-9          # pi_div_eps
-    PI_RMS_TO_PP       = 2.8284271     # pi_rms_to_pp = 2·√2 (sinusoid RMS → peak-to-peak)
+    PI_RMS_TO_PP_RATIO       = 2.8284271     # pi_rms_to_pp_ratio = 2·√2 (sinusoid RMS → peak-to-peak)
     FW_SPO2_MIN        = 70.0
     FW_SPO2_MAX        = 100.0
     SPO2_CLAMP_MARGIN  = 10.0          # spo2_clamp_margin — up to 110 % reads 100 % (lib v0.107; 3.0 until v0.106)
@@ -829,7 +829,7 @@ class SpO2TestCalc:
             else:
                 n_raw = self._pi_n * self._block_len
                 dc    = self._pi_dc_sum / n_raw
-                ac_pp = self.PI_RMS_TO_PP * math.sqrt(max(0.0, self._pi_ac_sum / n_raw))
+                ac_pp = self.PI_RMS_TO_PP_RATIO * math.sqrt(max(0.0, self._pi_ac_sum / n_raw))
                 out['pi'] = (ac_pp / dc) * 100.0 if dc > self.PI_DIV_EPS else nan
         elif self._pi_count < self._pi_n:
             out['pi'] = nan                         # holding "no value", never a stale 0

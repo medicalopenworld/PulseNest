@@ -28473,3 +28473,10 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   librería, su spec y rationale, el lab y su spec: "fixed-cost running total (the block that enters is added, the one
   that leaves subtracted)" la primera vez por fichero, "fixed-cost" / "the CPU cost does not grow with N" en el resto
   (26 sitios); y "O(N·lags)" de HR2 por "N × lags multiplications" (6 sitios). Solo comentarios y documentación.
+
+## Sesión 2026-10-23 (4) — `pi_rms_to_pp` → `pi_rms_to_pp_ratio`
+
+- Propuesta de Alex (`rms_to_pp_ratio`); acordado conservar el prefijo de dominio `pi_` (regla del bloque de
+  constantes; el 2√2 es la conversión de PI-METHOD-1, exacta solo para una sinusoide) y añadir `_ratio`, que dice que
+  es un cociente. Librería (constante, comentarios, spec §10, rationale §11) y lab (`PI_RMS_TO_PP_RATIO`). Solo
+  nombres: sin versión ni OTA. Host pi/spo2 OK.
