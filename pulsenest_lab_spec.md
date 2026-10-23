@@ -1252,7 +1252,7 @@ Chain, per applied sample, everything at the AFE rate:
   band-pass 0.5–5 Hz (`_Biquad`, the port of `BiquadFilter::init_bp`, precharged). On the first
   differences dx, dy the products dx·dy, dx², dy² are summed over each 100 ms block
   (`alg_window_block_s`, lib v0.103) and the block sums over a sliding window of `spo2_window_s` seconds — circular buffers
-  with O(1) running totals, rebuilt at every wrap. R = Σdx·dy / Σdx², r = Σdx·dy / √(Σdx²·Σdy²).
+  with fixed-cost running totals (add the block that enters, subtract the one that leaves), rebuilt at every wrap. R = Σdx·dy / Σdx², r = Σdx·dy / √(Σdx²·Σdy²).
 - **PI**: its own band-pass 0.5–15 Hz; AC² and the raw OT (DC) summed at the full rate over each
   100 ms block, the block sums over a sliding window of `pi_window_s` seconds;
   PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100 with N the samples in the window, peak-to-peak units. Run **before** SpO2 on every sample, as `_process_sample()` does, because

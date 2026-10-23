@@ -28465,3 +28465,11 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   datos; su comentario tenía que aclarar "NOT a decimator". 32 sustituciones (librería, spec, rationale, lab y su
   spec); `alg_window_block_s` y `test_spo2_block_rate_hz()` sin cambio. Solo nombres internos y comentarios: sin
   versión nueva ni OTA. Host 10/10.
+
+## Sesión 2026-10-23 (3) — Sin notación "O grande" en comentarios y specs
+
+- Alex no conocía "O(1)". Explicado: coste constante (la operación cuesta lo mismo sea cual sea el tamaño de la
+  ventana: se suma el bloque que entra y se resta el que sale, en vez de volver a sumar los 60). Sustituido en la
+  librería, su spec y rationale, el lab y su spec: "fixed-cost running total (the block that enters is added, the one
+  that leaves subtracted)" la primera vez por fichero, "fixed-cost" / "the CPU cost does not grow with N" en el resto
+  (26 sitios); y "O(N·lags)" de HR2 por "N × lags multiplications" (6 sitios). Solo comentarios y documentación.

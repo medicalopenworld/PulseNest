@@ -595,7 +595,7 @@ class SpO2TestCalc:
       R     : x = BP(ot_ir)/DC_ir, y = BP(ot_red)/DC_red — the library's one-biquad band-pass
               0.5–5 Hz, precharged. On the first differences dx, dy the products dx·dy, dx², dy²
               are summed over each 100 ms block (alg_window_block_s) and the block sums over a
-              sliding window of spo2_window_s seconds (circular buffer, O(1) totals rebuilt at
+              sliding window of spo2_window_s seconds (circular buffer, fixed-cost running totals rebuilt at
               every wrap). R = Σdx·dy / Σdx² (slope of dy on dx through the origin) and
               r = Σdx·dy / √(Σdx²·Σdy²) (its correlation, the validity gate r ≥ r_method2_reg_corr_min).
       PI    : its own band-pass 0.5–15 Hz; AC² and the raw OT (DC) summed at the full rate over
@@ -741,13 +741,13 @@ class SpO2TestCalc:
         self._x_prev = self._y_prev = 0.0
         self._reg_count = 0
         self._blk_sxy = self._blk_sxx = self._blk_syy = 0.0
-        # SpO2 window: three circular buffers of block sums + O(1) totals
+        # SpO2 window: three circular buffers of block sums + fixed-cost running totals
         self._spo2_phase = 0
         self._spo2_buf   = [[0.0] * self._spo2_n for _ in range(3)]
         self._spo2_sum   = [0.0, 0.0, 0.0]
         self._spo2_idx   = 0
         self._spo2_count = 0
-        # PI window: block sums of AC² and of the raw OT (DC) + O(1) totals
+        # PI window: block sums of AC² and of the raw OT (DC) + fixed-cost running totals
         self._pi_phase  = 0
         self._pi_ac_blk = self._pi_dc_blk = 0.0
         self._pi_ac_buf = [0.0] * self._pi_n
