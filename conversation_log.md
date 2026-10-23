@@ -28450,3 +28450,11 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - **OTA** a las 3 V18 (88:50 .143, 87:A4 .77, 82:5C .93), build limpio `df9d9f2`, `elfsha=65a47e67e5ff6ad9`,
   verificada por MAC; `docs/boards.md` anotado. Memoria: hilo de calibración (puerta hecha; pendientes experimento
   5 min, R-curves MS100, Pulse Amp vs PI, origen del 20 %), versión de la lib.
+
+## Sesión 2026-10-23 — "product" → "summand" en los comentarios de las ventanas de SpO2/PI
+
+- Alex: en `incunest_afe4490.h` (bloque `WindowBlock`) "product" no se lee como multiplicación y confunde. Lo son
+  (dx·dy, dx², dy², (x − media)², AC² del PI), pero la palabra también se lee como "resultado". Sustituido por
+  "summand" (el término que se suma) en los seis comentarios de la librería y en la frase de la spec §5.1, nombrando
+  siempre los términos. Solo comentarios: sin subir versión (precedente `e4f6677`). Queda "Harmonic Product
+  Spectrum", que es el nombre del método.
