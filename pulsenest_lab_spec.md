@@ -1263,7 +1263,7 @@ Chain, per applied sample, everything at the AFE rate:
 
 Outputs refresh at the block cadence (10 Hz) and hold between blocks; they are `NaN` while their
 window is still filling: **the window is the warm-up**, there is no warm-up parameter. Block
-length and window lengths derive from `fs` exactly as the library's `WindowBlock` and
+length and window lengths derive from `fs` exactly as the library's `WindowBlockClock` and
 `_window_len()` do — block = round(fs·0.1 s) samples, N = round(window_s·fs/block), capped at
 120 — so the mirror is right at any PRF of the grid. (Lab v1.86 mirrored lib v0.102's 20 ms
 blocks with PI's AC² taken once per block; v1.87 follows lib v0.103.)

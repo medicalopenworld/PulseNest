@@ -28458,3 +28458,10 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   "summand" (el término que se suma) en los seis comentarios de la librería y en la frase de la spec §5.1, nombrando
   siempre los términos. Solo comentarios: sin subir versión (precedente `e4f6677`). Queda "Harmonic Product
   Spectrum", que es el nombre del método.
+
+## Sesión 2026-10-23 (2) — `WindowBlock` → `WindowBlockClock`, `_spo2_block` → `_spo2_block_clock`, `_pi_block` → `_pi_block_clock`
+
+- Propuesta de Alex, aceptada: el struct es el reloj que cierra cada bloque de 100 ms de las ventanas, no un bloque de
+  datos; su comentario tenía que aclarar "NOT a decimator". 32 sustituciones (librería, spec, rationale, lab y su
+  spec); `alg_window_block_s` y `test_spo2_block_rate_hz()` sin cambio. Solo nombres internos y comentarios: sin
+  versión nueva ni OTA. Host 10/10.

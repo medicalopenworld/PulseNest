@@ -611,7 +611,7 @@ class SpO2TestCalc:
     While probe_state != PROBE_APPLIED the whole state is reset (idempotent) and the outputs are
     NaN — presence detection is RSQM's job alone, never this class's (firmware §5.1; two local
     attempts were tried and removed in earlier versions). The block length and the window
-    lengths derive from the sample rate the caller passes, as the library's WindowBlock does:
+    lengths derive from the sample rate the caller passes, as the library's WindowBlockClock does:
     block = round(fs · 0.1 s) samples, N = round(window_s · fs / block), capped at 120 blocks.
 
     Only R-METHOD-2, the firmware default since lib v0.100, is mirrored. The adjustable
@@ -689,7 +689,7 @@ class SpO2TestCalc:
         """Derive the rate-dependent state from fs (the library does this in _recalc_rate_params)."""
         self._fs     = fs
         self._alpha  = 1.0 - math.exp(-1.0 / (self.dc_ema_tau_s * fs))
-        self._block_len = max(1, int(round(fs * self.WINDOW_BLOCK_S)))   # WindowBlock::configure
+        self._block_len = max(1, int(round(fs * self.WINDOW_BLOCK_S)))   # WindowBlockClock::configure
         rate = fs / self._block_len
         self._spo2_n = self._window_len(min(max(self.spo2_window_s, self.WINDOW_S_MIN), self.WINDOW_S_MAX), rate)
         self._pi_n   = self._window_len(min(max(self.pi_window_s,   self.WINDOW_S_MIN), self.WINDOW_S_MAX), rate)
@@ -2678,7 +2678,7 @@ class SpO2TestWindow(QtWidgets.QMainWindow):
             "Sample rate the mirror runs at (live: `sr` of the last $CFG, else from the frame "
             "timestamps; offline: from the file), the samples per 100 ms window block and the "
             "resulting window lengths in blocks — the same derivation as the library's "
-            "WindowBlock and _window_len()."))
+            "WindowBlockClock and _window_len()."))
         right_vbox.addWidget(self._lbl_rate)
 
         right_vbox.addStretch()
