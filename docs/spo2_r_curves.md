@@ -30,6 +30,22 @@ simulator never validates accuracy (EE.4).
 - Not recorded in the 2026-09-23 campaign and needed in the next: probe suffix/lot per baby, the monitor's
   averaging window, the monitor's probe site (pre/post-ductal), arterial blood gases when taken clinically.
 
+## Median R at the same displayed SpO2, across data sets (2026-10-25)
+
+Same probe model and R-METHOD-2 everywhere; stationary 8 s windows; `n` = windows. Full analysis and the
+alternatives in the library's `incunest_afe4490_design_rationale.md` §18.
+
+| reference SpO2 | neonatal feet SUBJ08+09, Mindray N17 (n 3455) | preterm 30 wk SUBJ11, Mindray N17 (n 1121) | adult finger SUBJ01 18-oct, home oximeter (n 1179) | adult finger SUBJ01 23-oct, home oximeter (n 2022) | MS100 Nellcor table |
+|---|---|---|---|---|---|
+| 94 % | 0.757 | 0.766 | 0.712 | 0.705 | 0.692 |
+| 96 % | 0.715 | 0.739 | 0.636 | 0.615 | 0.641 |
+| 98 % | 0.650 | 0.665 | 0.580 | 0.585 | 0.590 |
+| 99 % | 0.629 | 0.635 | 0.545 | 0.531 | 0.564 |
+
+Neonates vs adult/simulator: R higher by 0.05-0.10 at every level (mean 0.07 ≈ 2.7 points), no trend: an
+intercept offset, same slope. Within each group the sets agree within 0.02. Which side a CO-oximeter would
+take is not known (both references are ±2-3 Arms transfer devices).
+
 ## Columns
 
 Label · a, b (SpO2 = a − b·R) · R method · probe model, suffix and lot · application site · reference (make,

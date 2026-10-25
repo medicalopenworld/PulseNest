@@ -28480,3 +28480,62 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   constantes; el 2√2 es la conversión de PI-METHOD-1, exacta solo para una sinusoide) y añadir `_ratio`, que dice que
   es un cociente. Librería (constante, comentarios, spec §10, rationale §11) y lab (`PI_RMS_TO_PP_RATIO`). Solo
   nombres: sin versión ni OTA. Host pi/spo2 OK.
+
+## Sesión 2026-10-23 (5) — Dos sesiones de apnea SUBJ01 (13:52 y 14:13): espectros y análisis
+
+- **Alex:** tres sondas Medle del mismo lote en la mano izquierda (A 8850 índice, B 825C pulgar, C 87A4 corazón), cuatro
+  pulsioxímetros baratos en la derecha (el portátil sin marca leído por VideoNest; Wellue, gris sin marca e HYLOGY en los
+  snapshots). Pide espectros y análisis. Sin eventos de apnea tecleados.
+- **Hecho:** `tools/spo2_spectra.py SUBJ01` (10 PNG en `Spectra/`), `tools/spo2_bias_analysis.py SUBJ01` sobre las seis
+  sesiones de hoy (salida en `SUBJ01_BIAS_ANALYSIS/20261023/`; un nombre con tres guiones bajos tras `SUBJ01_` cae en el
+  glob de sesiones de ambas herramientas, por eso la subcarpeta), `boards_alignment.py` (las tres placas en un reloj,
+  dispersión entre unidades, valles, retardo) y lectura de los cuatro aparatos en los snapshots. Informe `findings.md`.
+- **Resultado:** señal como el 18-oct (APPLIED 100 %, HR3 válido 99,6-100 %, r 0,990-0,997, peine hasta el 8.º-10.º
+  armónico; la arritmia sinusal respiratoria desaparece del espectrograma durante cada apnea). Dispersión entre unidades:
+  13:52 ≤ 0,009 en R (≤ 0,4 pt); 14:13 la placa A (índice) 0,02-0,03 arriba con PI 2,0 % y r 0,990 → colocación del dedo,
+  no tolerancia de unidad; cota del lote ~0,03 (1,3 pt). Sesgo frente al portátil +2,0 (n 2982, sd 1,25; retardo 0-2 s),
+  casi todo en la cima: nuestra SpO2 pinzada a 100 el 52-84 % del tiempo mientras el portátil marca 96-99; ajuste por
+  bins 115,0 − 29,8·R, otra vez la curva adulta del MS100 (114,92 − 30,55·R). En los valles (mín. de referencia 92) los
+  cuatro baratos se dispersan 2-4 pt (Wellue lento y alto) y los nuestros caen dentro o en el borde alto; HR3 = PR de los
+  cuatro. Objetivo < 85 % no alcanzado. `hgac_enable=0` en los seis `$LCFG` y aviso del grabador; RF no se movió (V_TIA
+  0,30 V, dentro de la banda), así que no se puede confirmar desde los datos: comprobar en vivo con `$LCFG?`.
+- Sin cambios de código; ficheros de SUBJ01 no versionados.
+
+## Sesión 2026-10-25 — Gris en el visor de flota; orden de los defaults de la curva R en la librería
+
+- **Alex (1):** ¿por qué en `fleet_ppg_viewer.py` el SpO2 pasaba a gris de vez en cuando? **Respuesta:** no es gris, es el
+  cian al 30 % (`DIM_FACTOR`, `pulsenest/fleet_trace.py`): el panel atenúa la lectura cuando `SpO2_SQI ≤ 0,9`, y el SQI de
+  SpO2 es la rampa lineal del PI entre 0,5 y 2,0 % (`spo2_pi_sqi_lo/hi`), así que atenúa en cuanto el PI baja de 1,85 %.
+  En las capturas del 23-oct pasó el 1,7-7,7 % del tiempo (pulgar: PI mediana 2,8 %, 1,76 % en los tramos atenuados),
+  en rachas de 0,2-14 s coincidiendo con los descensos de PI de las apneas. Los guiones «--» grises (`DASH_COLOUR`) son
+  otra cosa: SpO2 retenido por la puerta de pulso (motivo 7), el 0,1-0,4 % del tiempo en rachas de 0,5-1,5 s.
+- **Alex (2):** en `incunest_afe4490.cpp`, `a_default` y `b_default` deberían ir junto a `id_default`, no junto a
+  `r_method_id_default`. **Hecho:** orden id, a, b, r_method_id, con comentarios; solo declaraciones, sin versión; host
+  10/10; commit y push en la lib. El struct público `AFE4490Data` (y su copia en la spec) conserva su orden.
+
+## Sesión 2026-10-25 (2) — ¿Una curva R o dos? Análisis en profundidad (rationale §18, registro de curvas)
+
+- **Alex:** le preocupa que varias veces preguntó si debía haber una curva para neonatos y otra para adultos y la respuesta
+  fue siempre no, y sin embargo `R-CURVE-STS0163-HOSPNAV-20261004` no parece válida con él (R 0,54-0,56 en reposo → 102-103,
+  solo el clamp lo esconde). Pide un análisis con todos los aspectos y los pros y contras de cada alternativa.
+- **Dato nuevo:** mediana de R al mismo nivel de SpO2 de referencia, ventanas estacionarias, en todos los conjuntos con rango:
+  neonatos SUBJ08+09 (Mindray, base del ajuste), SUBJ11 (30 sem, Mindray), SUBJ01 18-oct y 23-oct (baratos), tabla Nellcor
+  del MS100. A 94/96/98/99 %: neonatos 0,757/0,715/0,650/0,629 y SUBJ11 0,766/0,739/0,665/0,635 frente a adulto
+  0,705-0,712/0,615-0,636/0,580-0,585/0,531-0,545 y MS100 0,692/0,641/0,590/0,564. **Offset constante de 0,07 en R
+  (≈ 2,7 pt), misma pendiente**; cada grupo coherente internamente a 0,02. Tabla añadida a `docs/spo2_r_curves.md`.
+- **Atribución por signo** (rationale §18): producen el signo observado (R neonatal mayor) la convención de las referencias
+  (Mindray neonatal vs Nellcor adulta; ambas ±2-3 Arms → indistinguible con ellas), pulsación venosa del pie, posible
+  corrección de modo neonatal del monitor (Philips lo declara; módulo del N17 desconocido). Producen el signo contrario, y
+  quedan descartados como causa: cociente de caminos ópticos en tejido fino, dilución por regresión a PI bajo, recorte del
+  Mindray a 100. Las validaciones neonatales publicadas (MAX-N 2,5, Masimo 2,9, Mindray 2,4-2,9 Arms) acotan el efecto
+  pie/dedo del sensor a ~1 pt. «Curva por edad» sigue siendo el eje equivocado: la variable es sonda × sitio × método ×
+  convención de la referencia; lo abierto es si el SITIO necesita segunda entrada.
+- **Seis alternativas con pros/contras** (status quo; dos curvas por sitio en configuración; una curva + offset por sitio;
+  cambiar el default a la convención Nellcor, rechazada; curva seleccionable en tiempo de ejecución como herramienta;
+  atribuir primero). **Recomendación registrada, decisión pendiente de Alex:** default neonatal se queda; implementar
+  `$SET spo2_r_curve_*` + fila LIB CONFIG (necesidad de banco, sin coste clínico con default y etiqueta); registrar la
+  curva adulta/Nellcor como curva de banco; antes de la próxima visita: leer el tipo de módulo SpO2 del N17, dedo de
+  Alex con el sensor adulto del N17 + barato a la vez, Medle en el pie de Alex + barato en el dedo. Corrección honesta:
+  el 19/20-oct los 3 pt se dieron como «probablemente la referencia»; el estado real era «2,7 ± 0,4 pt reproducibles, sin
+  atribuir».
+- Commits: lib `incunest_afe4490_design_rationale.md` §18 (solo docs); PulseNest `docs/spo2_r_curves.md` + log.
