@@ -28570,3 +28570,31 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   confundidos (pie ⇔ neonato, dedo ⇔ adulto).
 - Sin cambios de librería ni firmware; la decisión de Alex sobre las alternativas de §18 sigue pendiente. Commit PulseNest:
   script + PNG + registro + log.
+
+## Sesión 2026-10-26 — Rastreo exhaustivo de calibraciones de la curva R (fabricantes, literatura, factores)
+
+- **Pregunta de Alex:** lista lo más completa posible de calibraciones de la R-curve (fabricantes primero, luego
+  literatura científica y médica) indicando cómo se obtuvo cada curva, y lista de los factores que la afectan con su
+  magnitud; la curva no tiene por qué ser una recta a − b·R.
+- **Método:** tres rastreos en paralelo (fabricantes: patentes, manuales, 510(k), simuladores; literatura: PubMed,
+  PMC, JBO, Sensors, arXiv; factores: fuentes primarias con cifras) más lectura directa de los manuales del Pronk
+  OxSim Flex y del Fluke ProSim 8 (pdftotext) y del artículo de OpenOximetry. Cifras clave verificadas a mano:
+  Al-Halawani 2024 (rectas por pigmentación) y el resumen de Blaney 2026.
+- **Informe:** `docs/r_curve_calibration_survey.md` (inglés; §1 hallazgos transversales, §2 fabricantes y chips,
+  §2.2 simuladores, §2.3 marco regulatorio, §3 curvas publicadas con números, §4 lista cronológica de ~55 estudios,
+  §5 factores con magnitud en tres tablas, §6 consecuencias para PulseNest, §7 fuentes). Puntero añadido en
+  `docs/spo2_r_curves.md`. Memoria `reference_r_curve_calibration_survey`.
+- **Hallazgos principales:** ningún fabricante publica los números de su curva; las formas públicas son racional +
+  lineal < 70 % con tramos/spline por sensor (Nellcor US 6,801,797) y tablas ROM (Masimo, GE, Philips, NK); la
+  recta 110 − 25R es convención de libro/chip. Método universal: desaturación controlada en adultos sanos 70-100 %
+  contra CO-oxímetro (ISO Anexo DD ≥ 24 × ≈ 20; FDA 2013 ≥ 10/≥ 200; borrador FDA 2025 ≥ 150, tres grupos Monk);
+  sensores neonatales calibrados en adultos; GE calibró TruSignal por "transfer standard" sin sangre (K093881).
+  Corrección por longitud de onda del LED en todos (RCAL, resistencia-ganancia NK, coeficientes en memoria).
+  ProSim 8 distingue curvas cedidas por 4 fabricantes (±1 cuenta) de aproximaciones propias (±3/5/7 cuentas).
+  Única curva abierta con gasometría: Blaney 2026 sobre OpenOximetry (98 pacientes, 2991 extracciones, 660/910 nm
+  dedo): 116.73 − 32.53·R o racional mBLL con β 0.987 y offset +10.2 %, Arms 2.42. Factores ≥ 2 pt: par de
+  longitudes de onda y razón de caminos a SaO2 baja, shunt óptico, perfusión baja × pigmentación, pulsación
+  venosa (−1.4 a −18 pt), anemia < 75 %, COHb/MetHb, dispersión neonatal (+2.9 ± 5.8). Despreciables: deriva
+  térmica del LED, HbF, bilirrubina. Corriente del LED (AGC): +8 nm por década → 2.5 pt a 50 % SaO2.
+- Sin cambios en código ni en la librería. Nota: `experiments/r_curve_scatter_20261026.py` (sin versionar) es de
+  otra sesión de hoy, no de esta.

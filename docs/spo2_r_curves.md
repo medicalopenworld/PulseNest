@@ -79,6 +79,11 @@ method and residuals · state (shipped / discarded / diagnostic / bench) with th
 
 ## Published curves, for comparison (search 2026-10-20)
 
+The 2026-10-26 survey `docs/r_curve_calibration_survey.md` has the manufacturers' methods and curve forms, the
+chronological list of calibration studies, the open blood-referenced fit (Blaney 2026 on OpenOximetry,
+116.73 − 32.53·R, 660/910 nm finger) and the factors that move the curve with their magnitudes. The rows below
+are kept as the comparison table.
+
 No hospital manufacturer publishes its curve: Nellcor stores a piece-wise rational function (constants c1-c4 per
 RCAL wavelength bin, linear c5 − c6·R below 70 %; US 6,801,797 and family, no numbers), Masimo, Philips, Mindray
 and Nihon Kohden keep lookup tables in ROM or in the sensor memory. What is public comes from chip vendors'
