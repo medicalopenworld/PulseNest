@@ -56,15 +56,19 @@ shared slope; the offset is that intercept minus 123.98. The free slopes of the 
 points (SUBJ11, SUBJ01) are not meaningful (narrow range + regression dilution, as above); compare on the
 fixed-slope column.
 
-| Data set | n | Ref. range | PI % | a | b | a at b = 39.13 | Offset vs shipped [pt] |
+| Data set | n | Ref. range | PI % (pp) | a | b | a at b = 39.13 | Offset vs shipped [pt] |
 |---|---|---|---|---|---|---|---|
-| SUBJ08 + SUBJ09 pooled (fit base, `R-CURVE-STS0163-HOSPNAV-20261004`) | 3455 | 79-100 | 0.9 | 123.98 | 39.13 | 124.01 | +0.0 |
-| SUBJ08 only | 2085 | 84-100 | 0.8 | 129.22 | 46.70 | 123.59 | −0.4 |
-| SUBJ09 only | 1370 | 79-100 | 1.1 | 118.84 | 32.11 | 124.50 | +0.5 |
+| SUBJ08 + SUBJ09 pooled (fit base, `R-CURVE-STS0163-HOSPNAV-20261004`) | 3455 | 79-100 | ≈ 2.5 * | 123.98 | 39.13 | 124.01 | +0.0 |
+| SUBJ08 only | 2085 | 84-100 | ≈ 2.3 * | 129.22 | 46.70 | 123.59 | −0.4 |
+| SUBJ09 only | 1370 | 79-100 | ≈ 3.1 * | 118.84 | 32.11 | 124.50 | +0.5 |
 | SUBJ11, preterm 30 wk, Mindray N17 (live firmware columns) | 1121 | 92-100 | 2.8 | 120.85 | 34.49 | 124.19 | +0.2 |
 | SUBJ01 adult finger 18-oct, home oximeter | 1179 | 93-99 | 7.6 | 115.28 | 30.43 | 120.83 | −3.2 |
 | SUBJ01 adult finger 23-oct, 3 probes, home oximeter | 2022 | 93-99 | 3.2 | 113.03 | 26.34 | 120.52 | −3.5 |
 | MS100 "Nellcor" table (`R-CURVE-STS0163-MS100-20261019`) | 18 | 72-100 | 4.5 | 121.06 | 39.11 | 121.11 | −2.9 |
+
+\* The 2026-09-23 pairs files hold the pre-v0.101 RMS PI (medians 0.9 / 0.8 / 1.1); the table shows ×2.8, today's
+peak-to-peak units (rationale §11), so the column is comparable with SUBJ11 and SUBJ01. The 2026-10-25 line
+"neonatal PI 0.8-1.1 %" was that units slip; corrected 2026-10-27.
 
 Nuance to the 2026-10-25 line "no trend": per level the neonatal-minus-adult difference in R is 0.05 at 94 %
 and 0.09-0.10 at 99 % (2 to 4 points), so the offset is 2.7 points as a mean over levels and 3.2-3.5 as a mean

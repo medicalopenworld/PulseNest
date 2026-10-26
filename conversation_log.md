@@ -28598,3 +28598,31 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   térmica del LED, HbF, bilirrubina. Corriente del LED (AGC): +8 nm por década → 2.5 pt a 50 % SaO2.
 - Sin cambios en código ni en la librería. Nota: `experiments/r_curve_scatter_20261026.py` (sin versionar) es de
   otra sesión de hoy, no de esta.
+
+
+## Sesión 2026-10-27 — SQI de SpO2: por qué solo PI; los tres experimentos baratos; ¿HR3_SQI dentro del SQI de SpO2?
+
+- **Alex pregunta:** (1) por qué el SQI de SpO2 depende solo del PI (0,5-2 %) aparte de las puertas; (2) repetir los tres
+  experimentos baratos de §18; (3) si el HR3_SQI, además de puerta, podría entrar como variable en el SQI de SpO2.
+- **(1) Respuesta dada:** decisión del 4-oct (rationale §10, lib v0.100): SQI = fuerza de señal (rampa de PI), validez =
+  puertas binarias con motivo (`spo2_hold_reason`); se rechazó mapear r a [0,1] porque r = 0,9 es un ajuste sano y leería
+  «media calidad». Procedencia de 0,5/2,0: la spec dice «Nellcor/Masimo», pero los documentos que tenemos dicen Nellcor
+  baja perfusión = 0,03-1,5 % de modulación IR, Masimo baja perfusión = PI ≤ 0,25, Philips «idealmente PI > 1,0»: 0,5/2,0 es
+  un redondeo sin documento, en la lista de parámetros sin procedencia. Desde v0.101 está en unidades pico-a-pico
+  (antes disparaba ×3 antes). En unidades actuales: neonatos 2,3-3,2 % (61 % de ventanas de SUBJ08 a SQI 1, 0 % a 0),
+  adulto 3-8 %. El PI no ve el artefacto (20-oct: PI ≤ 10 conserva el 76 % de SUBJ10).
+- **(2)** i) leer el tipo de módulo SpO2 del N17 (menú, conector o etiqueta); ii) dedo de Alex en el sensor adulto del N17 y
+  un barato a la vez; iii) Medle en el pie de Alex (dedo gordo o borde lateral) y barato en el dedo. iv) no barato: gasometrías
+  arteriales clínicas emparejadas con nuestro R (~50 pares).
+- **(3) Análisis, sin decisión:** arte previo = Masimo Signal IQ es confianza en la identificación del pulso (no PI), con
+  «Low SIQ»; Nellcor = barra de amplitud de pulso + «pulse search»/«interference»; Philips = indicador de perfusión + INOP.
+  Lo medido el 20-oct: umbrales de HR3_SQI no añaden nada sobre «HR3 válido» como puerta; como variable continua no se ha
+  medido. Opciones: A) dejar PI + puertas (hoy); B) compuesto min(rampa PI, HR3_SQI) o producto (una cifra que baja antes de
+  cerrarse la puerta, como la espiga de Masimo; contras: HR3_SQI no está calibrado contra el error, retardo del buffer
+  10,24 s, mezclar magnitudes hace ilegible el número, el visor atenúa a ≤ 0,9); C) dos campos separados, que es lo que ya
+  viaja en la trama; D) medir primero: ρ de Spearman de |SpO2 − ref| frente a PI, r y HR3_SQI en las ventanas publicadas de
+  las 21 sesiones con referencia (reutilizar `experiments/spo2_artifact_gate_20261020.py`). **Recomendación: D antes de B.**
+- **Corrección de unidades (mía):** la columna «PI %» de la tabla del 26-oct y la frase «PI neonatal 0,8-1,1 %» de §18
+  mezclaban el PI antiguo (RMS, capturas del 23-sep) con el actual (pico-a-pico): en unidades actuales los neonatos están
+  en ≈ 2,3-3,2 %. Corregido en `docs/spo2_r_curves.md` (nota al pie), en el docstring del script y en el rationale §18.
+- Sin cambios de código. Commits: PulseNest (registro, script, log) y lib (rationale §18); sin push.

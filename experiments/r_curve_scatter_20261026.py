@@ -24,6 +24,9 @@ neonatal feet 123.6-124.5 (within 0.5 pt of the shipped curve, SUBJ11 included);
 to 0.09-0.10 at 99 % (2 to 4 pt), so "2.7 pt" is the mean over levels and 3.2-3.5 the mean over pairs.
 
 Outputs: docs/spo2_r_curves_scatter_20261026.png and the table on stdout.
+
+Caveat (2026-10-27): the PI column is printed as stored in each pairs file. SUBJ08/SUBJ09 (captured 2026-09-23)
+hold the pre-v0.101 RMS PI, 1/2.8 of today's peak-to-peak PI; SUBJ11, SUBJ01 and the MS100 are in today's units.
 """
 import csv
 import os
