@@ -28539,3 +28539,34 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   el 19/20-oct los 3 pt se dieron como «probablemente la referencia»; el estado real era «2,7 ± 0,4 pt reproducibles, sin
   atribuir».
 - Commits: lib `incunest_afe4490_design_rationale.md` §18 (solo docs); PulseNest `docs/spo2_r_curves.md` + log.
+
+
+## Sesión 2026-10-26 — Constantes (a, b) por conjunto, gráfica R–SpO2 por campaña y dudas sobre el análisis §18
+
+- **Alex pide**, sobre la respuesta del 25-oct: (1) completar la tabla de medianas con a y b de cada columna; (2) gráfica (R, SpO2)
+  con todos los pares relevantes, un color por campaña; (3-4) aclarar «lee 2,7 puntos alto en tu dedo medido contra
+  referencias de convención Nellcor»; (5) explicar la pulsación venosa del pie neonatal con fuentes; (6) qué significa «sitio»;
+  (7) reescribir las alternativas 3, 4 y 5 (no se veían al hacer scroll en el terminal).
+- **Hecho:** `experiments/r_curve_scatter_20261026.py` (reutiliza los cargadores de `SUBJ08/Analysis/fit_method2.py` para
+  SUBJ08+09 y los `pairs.csv` de `tools/spo2_bias_analysis.py` para SUBJ11 y SUBJ01; plateaus del MS100) →
+  `docs/spo2_r_curves_scatter_20261026.png` (izq. todos los pares estacionarios con jitter ±0,25; dcha. mediana de R por nivel
+  con IQR; curvas vigente y Nellcor del MS100) y tabla «(a, b) per data set» en `docs/spo2_r_curves.md`. El script
+  reproduce el registro (combinado 123,98/39,13; SUBJ08 129,22/46,70; SUBJ09 118,84/32,11; MS100 121,06/39,11). Nuevos:
+  SUBJ11 120,85 − 34,49·R (n 1121, 92-100); SUBJ01 18-oct 115,28 − 30,43·R (n 1179, 93-99, ajuste por bins); SUBJ01 23-oct
+  113,03 − 26,34·R (n 2022). Ordenada a pendiente común 39,13 (mediana de ref + 39,13·R): pies neonatales 123,6-124,5
+  (±0,5 pt de la vigente, SUBJ11 incluido); dedo adulto 120,5-120,8 (−3,2 / −3,5 pt); simulador 121,1 (−2,9).
+- **Matiz al «sin tendencia» del 25-oct:** la diferencia neonato − adulto en R es 0,05 a 94 % y 0,09-0,10 a 99 % (2 → 4 pt):
+  2,7 pt como media por niveles, 3,2-3,5 como media por pares (los pares adultos están casi todos en 97-99). Con rango 93-99
+  no se distingue una pendiente adulta algo más plana de ruido. Anotado en el registro.
+- **Pulsación venosa (fuentes dadas a Alex):** mecanismo = sangre venosa (SvO2 70-80 %) que pulsa a la frecuencia cardíaca
+  entra en el AC y la SpO2 calculada tiende a la saturación de la mezcla; para 2,7 pt haría falta ~11 % de volumen pulsátil
+  venoso. Fuentes: Nitzan 2014 (`docs/mder-7-231.pdf`, p. 236, refs 55-57 = Hynson 1992, Schramm 1997, Talke 2006);
+  Masimo lab4709a (`docs/masimo_whitepapers/`: dedos calientes 96-97 % vs fríos 99-100 % por shunts A-V abiertos →
+  «venous pulsations», cita Schramm 1997); Stewart & Rowbottom 1991 (insuficiencia tricuspídea); Sami 1991; Secker &
+  Spiers 1997 (resistencia vascular baja); Shelley 2005 y Agashe 2006 (frente; cinta a 20 mmHg corrige); Mannheimer 2007.
+  Ninguna mide el pie neonatal: la extrapolación es nuestra, y como candidato del offset exige que el Mindray sea menos
+  sensible a ella que nuestro cociente (afecta a los dos pies; ya estaba en §18).
+- «Sitio» = sitio de aplicación de la sonda (pie / dedo de la mano), no edad; en nuestros datos sitio y población van
+  confundidos (pie ⇔ neonato, dedo ⇔ adulto).
+- Sin cambios de librería ni firmware; la decisión de Alex sobre las alternativas de §18 sigue pendiente. Commit PulseNest:
+  script + PNG + registro + log.

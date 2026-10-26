@@ -46,6 +46,31 @@ Neonates vs adult/simulator: R higher by 0.05-0.10 at every level (mean 0.07 ≈
 intercept offset, same slope. Within each group the sets agree within 0.02. Which side a CO-oximeter would
 take is not known (both references are ±2-3 Arms transfer devices).
 
+### (a, b) per data set and the scatter (2026-10-26)
+
+`experiments/r_curve_scatter_20261026.py`; figure `spo2_r_curves_scatter_20261026.png` (left: every stationary
+pair, one colour per campaign; right: median R per reference level with the IQR). Fit = the register's bin fit
+(weighted LS on the per-bin median R, bins = integer reference SpO2 with ≥ 10 pairs); the simulator row is OLS
+on its 18 plateaus. "a at b = 39.13" = median over pairs of (reference + 39.13·R), i.e. the intercept with the
+shared slope; the offset is that intercept minus 123.98. The free slopes of the sets whose range is under 10
+points (SUBJ11, SUBJ01) are not meaningful (narrow range + regression dilution, as above); compare on the
+fixed-slope column.
+
+| Data set | n | Ref. range | PI % | a | b | a at b = 39.13 | Offset vs shipped [pt] |
+|---|---|---|---|---|---|---|---|
+| SUBJ08 + SUBJ09 pooled (fit base, `R-CURVE-STS0163-HOSPNAV-20261004`) | 3455 | 79-100 | 0.9 | 123.98 | 39.13 | 124.01 | +0.0 |
+| SUBJ08 only | 2085 | 84-100 | 0.8 | 129.22 | 46.70 | 123.59 | −0.4 |
+| SUBJ09 only | 1370 | 79-100 | 1.1 | 118.84 | 32.11 | 124.50 | +0.5 |
+| SUBJ11, preterm 30 wk, Mindray N17 (live firmware columns) | 1121 | 92-100 | 2.8 | 120.85 | 34.49 | 124.19 | +0.2 |
+| SUBJ01 adult finger 18-oct, home oximeter | 1179 | 93-99 | 7.6 | 115.28 | 30.43 | 120.83 | −3.2 |
+| SUBJ01 adult finger 23-oct, 3 probes, home oximeter | 2022 | 93-99 | 3.2 | 113.03 | 26.34 | 120.52 | −3.5 |
+| MS100 "Nellcor" table (`R-CURVE-STS0163-MS100-20261019`) | 18 | 72-100 | 4.5 | 121.06 | 39.11 | 121.11 | −2.9 |
+
+Nuance to the 2026-10-25 line "no trend": per level the neonatal-minus-adult difference in R is 0.05 at 94 %
+and 0.09-0.10 at 99 % (2 to 4 points), so the offset is 2.7 points as a mean over levels and 3.2-3.5 as a mean
+over pairs (the adult pairs sit mostly at 97-99 %). Whether that is a slightly flatter adult slope or noise
+cannot be told on a 93-99 range.
+
 ## Columns
 
 Label · a, b (SpO2 = a − b·R) · R method · probe model, suffix and lot · application site · reference (make,
