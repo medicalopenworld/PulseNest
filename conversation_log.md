@@ -28384,7 +28384,7 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   armónico vecino, a 5 bins a 30 lpm); CFAR falla a 30 lpm. Con núcleo + producto el SQI satura a 1 (AUC 0,5).
 - **Única ganancia sin coste medido:** producto de dos armónicos `P[k]·P[2k]` (B1): disponibilidad neonatal +6/+7
   puntos (69→76, 71→77, 88→95 %), errores de octava a la mitad, MS100 100 %, SUBJ10 2,1 % publicado, Arms de la
-  puerta a ±0,2 de hoy. **Decisión de Alex pendiente**; nada entra en la librería. Rationale §17 en el repo de la
+  puerta a ±0,2 de hoy. **Decisión de Alex pendiente**; nada entra en la librería. Rationale §17.1 (renumerado el 27-oct) en el repo de la
   librería (sin cambio de versión). Abierto: si el PPG del prematuro real tiene armónicos más débiles que estos
   neonatos (sin edad gestacional en las sesiones; el MS100 no lo emula) y leer el pulso del monitor con VideoNest en
   la próxima campaña.
@@ -28885,3 +28885,23 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - Documentos: `docs/r_curve_calibration_survey.md` §6 (rojo 668 nm medido, tabla de efecto y dirección) y
   `docs/spo2_r_curves.md` (candidata corregida). Sin cambios de código. Queda en BACKLOG medir el rojo a 20 mA y
   otras corrientes para fijar el corrimiento por corriente de nuestras sondas.
+
+## Sesión 2026-10-27 (3), continuación — Traspaso de la sesión de análisis pulsenest-51 (HR3 y curva R)
+
+- pulsenest-51 traspasó cuatro conclusiones (memoria `project_handoff_hr3_rcurve_20261027.md`; Alex dijo
+  «adelante» al traspaso): 1) la regla «publicar `hr3` solo con `hr3_sqi > 0`» sobre el espectro crudo es el
+  detector de artefacto del que depende la puerta de SpO2, y cualquier limpieza del suelo espectral la anula
+  (medido el 21-oct); 2) candidato B1 `P[k]·P[2k]` para HR3 (+6/+7 pt de disponibilidad neonatal, octavas a la
+  mitad, puerta intacta); 3) rojo de la sonda Medle medido con espectrómetro: 668 nm (667-670 entre unidades a
+  50 mA; datasheet 665), y el HGAC lo mueve con la corriente (≈ +8 nm por década); 4) forma de la curva R =
+  racional de Beer-Lambert modificada linealizada cerca del 85 %, argumento para §18 sin cambio.
+- Aplicado (solo documentación, sin versión nueva): punto 1 como párrafo «Load-bearing rule» en la spec §5.4
+  junto a la definición del SQI de HR3; punto 3 como nota de longitudes de onda de la Medle ST-S0163 en la spec
+  §5.1 (*R methods and R curves*), con la referencia al survey §6, y corregido «planned» del registro de curvas,
+  que ya existe. Puntos 2 (cambio de código) y 4 (decisión §18) esperan a Alex.
+- Arreglo encontrado al aplicar: el rationale tenía dos secciones «17» (la del estudio de preprocesado del
+  21-oct, commit 7d66f19 de pulsenest-51, y la de la puerta de artefacto del 22-oct, v0.110). La del 21-oct pasa
+  a **§17.1** detrás de la puerta, de la que es el porqué; referencias actualizadas (log del 21-oct, memorias).
+  Toda cita «rationale §17» de spec, logs y memorias sigue apuntando a la puerta.
+- Nota de proceso: pulsenest-51 hizo commits en ambos repos (lib 7d66f19; PulseNest 61e3ed6 y dd11a87) siendo
+  sesión de análisis; el árbol estaba limpio y sin conflicto, se aceptan tal cual.
