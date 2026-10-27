@@ -28726,3 +28726,15 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
      ρ no puede ser alta; se busca el orden de los errores, no su magnitud.
 - Sin cambios de código ni de spec. Commit PulseNest (este log); sin push. Decisiones de Alex pendientes: alternativas de
   §18, 0,5/2,0 y 0,9 del visor, ejecutar C y G.
+- **H. Tarea pendiente (Alex):** aunque la curva vigente se parezca a la tabla Nellcor del MS100, preocupa que sea la media
+  de dos curvas aparentemente muy distintas: SUBJ08 129,22 − 46,70·R (n 2085) y SUBJ09 118,84 − 32,11·R (n 1370) → conjunta
+  123,98 − 39,13·R (n 3455). Lo que ya se sabe: a pendiente común 39,13 las ordenadas coinciden en 0,9 pt (123,59 vs 124,50,
+  26-oct); validación cruzada entre sujetos (rationale §10, EMA 2 s): mediana |err| 1,38 (ajuste 08 → 09) y 0,95 (09 → 08);
+  los dos bebés difieren en PI (1,6 vs 3,2 en unidades actuales), SUBJ08 se grabó con HGAC apagado todo el día y el PI de
+  SUBJ09 varía por sesión (4,6 / 3,2 / 2,5). Preguntas del análisis: (1) ¿las pendientes son distintas de verdad o es el
+  rango de cada bebé el que no las determina (intervalos de confianza de (a, b) por bootstrap de ventanas, por sujeto y por
+  sesión)?; (2) medianas de R por nivel de referencia separadas por sujeto, como la tabla del 25-oct; (3) error de la curva
+  del otro bebé por nivel, no solo la mediana; (4) si la diferencia va con el PI (dilución de la regresión), con la sesión,
+  con el HGAC o con la referencia; (5) qué implica para «una curva o dos» de §18: dos pies neonatales que no comparten
+  pendiente debilitan el argumento de «misma pendiente, distinto offset» entre pie y dedo. Punto de partida:
+  `experiments/r_curve_scatter_20261026.py` (ya separa SUBJ08 y SUBJ09 por color) y `captures/sessions/SUBJ08/Analysis/`.
