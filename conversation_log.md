@@ -28905,3 +28905,31 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   Toda cita «rationale §17» de spec, logs y memorias sigue apuntando a la puerta.
 - Nota de proceso: pulsenest-51 hizo commits en ambos repos (lib 7d66f19; PulseNest 61e3ed6 y dd11a87) siendo
   sesión de análisis; el árbol estaba limpio y sin conflicto, se aceptan tal cual.
+
+## Sesión 2026-10-27 (4) — El módulo de SpO2 de los N17 de la unidad es Nellcor OxiMax
+
+- Alex trae un dato del hospital: todas las pantallas de la unidad de neonatos donde se hicieron las capturas
+  (SUBJ08-11, Mindray BeneVision N17) llevan un módulo con la pegatina Nellcor OxiMax. Pregunta: ¿influye en
+  la calibración hecha? Los fotogramas de VideoNest no permiten verlo (no hay logotipo en pantalla); se registra
+  como dicho por el personal de la unidad.
+- Análisis. No cambia ningún número ajustado (el ajuste es contra el valor mostrado) pero cambia lo que la
+  curva significa: 1) trazabilidad: la curva vigente es «convención Nellcor OxiMax leída a través de la Medle en
+  pies neonatales»; la validación neonatal aplicable es la de Nellcor (MAX-N, 42 neonatos, 63 observaciones,
+  Arms 2,5 en 85-99 %) y no la de Mindray 518B/520N; 2) rationale §18: las dos ramas del offset de 2,7-3,2 pt
+  (pies neonatales vs dedo adulto) son ahora la misma convención Nellcor (módulo OxiMax y tabla «R-Curve
+  Nellcor» del MS100; el oxímetro doméstico sigue sin identificar), así que el candidato (a) «dos convenciones»
+  se reduce a «dos implementaciones de la calibración adulta de Nellcor» y el (c) «corrección de modo neonatal»
+  queda en la posibilidad no documentada de que la memoria del sensor neonatal OxiMax lleve otros coeficientes
+  (el modo neonatal documentado de Nellcor es solo alarmas). Quedan el sitio bajo nuestra sonda, un sesgo de la
+  calibración adulta de Nellcor en pies neonatales (acotado por su Arms) o que el oxímetro doméstico no sea
+  Nellcor; 3) el paso 6 i de atribución queda respondido y el 6 ii (dedo de Alex en el sensor adulto del propio
+  N17 con la Medle a la vez) pasa a ser la prueba barata decisiva, porque compara contra el mismo módulo; 4) el
+  modo de respuesta de Nellcor (Normal 5-7 s / Fast 2-4 s) no se registró; la ventana de 8 s del emparejado
+  cubre ambos, y la lección 1 de Blaney (retardo por correlación cruzada) diría cuál fue.
+- Apuntado en: TOML de sesión subj08-11 (`[ref] note`, no versionados); registro `docs/spo2_r_curves.md`
+  (celdas de referencia y punto «Intercept»); spec fila de la curva vigente; rationale §18 párrafo «Learned
+  2026-10-27»; informe de fabricantes (nota tras «For IncuNest»); informe Masimo/Nellcor (paso «identify the
+  N17's SpO2 module» hecho). Para la próxima campaña: modelo y lote del sensor Nellcor, modo de respuesta,
+  SatSeconds.
+- Hallazgo lateral al mirar los TOML: `[ref]` escribe `probe-site` pero `tools/pulsenest_convert.py` lee
+  `ref.get("site")`, así que el sitio de la referencia no llega al convertidor. Sin tocar; decisión de Alex.

@@ -328,7 +328,8 @@ abstract or full text unless tagged.
 7. **For the rationale §18 decision ("one curve or two").** Industry precedent is an adult calibration, a neonatal
    check and a bounded individual offset. Our neonatal default transfers the N17's neonatal behaviour, unmeasured.
    Attribution steps, cheapest first:
-   - identify the N17's SpO2 module (Mindray, Masimo or Nellcor), since the brand offsets above then apply directly;
+   - identify the N17's SpO2 module (Mindray, Masimo or Nellcor), since the brand offsets above then apply directly —
+     **done 2026-10-27: Nellcor OxiMax in every N17 of the unit (unit staff; sticker on the module)**;
    - log for every session our probe site and the reference's (limb, pre- or post-ductal, sole, dorsum or toe), the
      reference's averaging, and the foot or incubator temperature;
    - recompute R with the harmonic bins and the sub-window decorrelation on the existing captures: if the 0.07 offset

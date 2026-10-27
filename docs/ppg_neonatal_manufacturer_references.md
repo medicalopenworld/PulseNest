@@ -45,6 +45,11 @@ today.
 publish their own curves and neonatal accuracy data. Mindray and Edan are of interest as cost
 comparables.
 
+> **2026-10-27.** The unit where SUBJ08-11 were captured reports that every one of its BeneVision N17s
+> carries a **Nellcor OxiMax** SpO2 module (sticker on the module). The reference behind our neonatal R
+> curve is therefore §2 (Nellcor; MAX-N validation, 42 neonates, Arms 2.5), not §4 (Mindray 518B/520N),
+> and Nellcor's documented neonatal mode is alarm management only.
+
 ## 1. Masimo
 
 ### RD SET Sensors — Directions for Use (LAB-9028A)
