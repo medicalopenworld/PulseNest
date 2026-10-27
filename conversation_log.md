@@ -28626,3 +28626,103 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   mezclaban el PI antiguo (RMS, capturas del 23-sep) con el actual (pico-a-pico): en unidades actuales los neonatos están
   en ≈ 2,3-3,2 %. Corregido en `docs/spo2_r_curves.md` (nota al pie), en el docstring del script y en el rationale §18.
 - Sin cambios de código. Commits: PulseNest (registro, script, log) y lib (rationale §18); sin push.
+
+
+## Sesión 2026-10-27 (2) — Siete comentarios de Alex (A-G): módulo del N17, modo neonatal, plan de corrección del punto 1, tareas pendientes, «HR3 válido» y plan de medida de los SQI
+
+- **A. ¿Para qué sirve saber el módulo SpO2 del N17?** Tres usos, ninguno decide por sí solo: (1) decir de quién es la
+  convención de la referencia neonatal (Mindray propio, Nellcor OxiMax o Masimo SET): si es Nellcor, la referencia neonatal y
+  los baratos del dedo adulto comparten convención y el 0,07 en R no puede ser «convención», queda sitio/sensor/población; si
+  es Mindray, la convención es otra y el candidato (a) de §18 sigue vivo; (2) saber qué validación neonatal publicada es la de
+  nuestra referencia (Mindray 518B/520N: 97/122 neonatos, 200 pares, Arms 2,38/2,88 con 1 % añadido por HbF; MAX-N: 63 pares;
+  Masimo: 16 lactantes, 79 muestras), que acota cuánto de nuestra dispersión es de la referencia; (3) trazabilidad del
+  registro: la etiqueta `R-CURVE-STS0163-HOSPNAV-20261004` debe nombrar el instrumento y el módulo. No cambia código ni curva;
+  decide la lectura del experimento ii (dedo en el sensor adulto del N17). Pista barata: los 537 fotogramas de VideoNest de
+  SUBJ08 (`VideoNest/Snapshots/`) muestran la pantalla; Masimo pinta la barra Signal IQ, Nellcor «SatSeconds», Mindray su PI.
+- **B. ¿Sabemos algo del «tratamiento del modo neonatal»?** Lo que hay en `docs/ppg_neonatal_manufacturer_references.md` y
+  en `docs/r_curve_calibration_survey.md`: la frase de la sesión anterior exageraba. Lo documentado es (1) límites de alarma y
+  funciones (Nellcor: el modo neonato es literalmente un «Alarm Mode», SatSeconds off, SPD no disponible; Masimo: perfil =
+  contenedor de ajustes, no modo de algoritmo; GE: sin selector neonatal); (2) la cifra de exactitud ±3 % en vez de ±2 %
+  (Masimo y Mindray añaden 1 % por HbF); (3) coeficientes por sensor (Nellcor RCAL / chip digital: el MAX-N lleva su propio
+  juego de coeficientes, calibrado en adultos, FDA 2013 §4.1.2); (4) solo Philips afirma que la categoría «optimiza el cálculo
+  de SpO2», sin decir qué. Ningún fabricante publica una curva neonatal; Mindray no publica nada del algoritmo. Conclusión: el
+  «modo neonatal» documentado no toca la curva; si el N17 desplaza 2,7 pt, es su convención adulta o su sensor, no un modo.
+- **C. Inconsistencias del punto 1 de la respuesta anterior (plan de corrección, no ejecutado):**
+  1. Cita: la decisión «r es puerta, no valor del SQI» está en el rationale **§9** (línea «r is a validity gate…», paso 3 del
+     4-oct), no en §10 (§10 es el estimador de DC). El bloque anterior de este log la cita mal.
+  2. Atribución: la rampa de PI 0,5-2,0 existe desde la **lib v0.13** (changelog «SpO2_SQI: PI-based, clamp PI 0.5-2.0 %»);
+     el 4-oct solo se decidió no meter r. «Es una decisión del 4-oct» era falso.
+  3. «Están en la lista de parámetros sin procedencia»: **no están** (memoria `project_parameter_sensitivity_task`, 7
+     parámetros; `spo2_pi_sqi_lo/hi` no figura).
+  4. Procedencia: la spec (§5.1 y tabla de parámetros, «Nellcor/Masimo clinical threshold»; changelog v0.101 «copied from
+     those manufacturers») afirma una fuente; yo dije «redondeo sin documento». Los documentos que tenemos dicen Nellcor
+     baja perfusión 0,03-1,5 %, Masimo ≤ 0,25, Philips «idealmente > 1,0»: ni 0,5 ni 2,0 aparecen. Mi paréntesis «pleno por
+     encima del techo de baja perfusión de Nellcor» tampoco cuadra (ese techo es 1,5, no 2,0). Hay que resolver spec o yo.
+  5. Concepto: PI = AC/DC es fuerza de señal relativa al DC, **no** relación señal-ruido; el ruido relevante para R es el
+     electrónico relativo al AC, que depende también del nivel DC (RF del HGAC). «La varianza de R crece con 1/PI²» no está
+     medida ni citada en ningún documento del proyecto; o se mide (plan G) o se retira.
+  6. Números del PI neonatal: la sesión anterior corrigió «0,8-1,1» por «≈ 2,3-3,2» (×2,8 del RMS) en tres ficheros.
+     Medido hoy con la réplica lib 0.108 (`derived/replay_lib0.108_inputot`, PI-METHOD-1, muestras APPLIED con SpO2 válida),
+     los ×2,8 también estaban mal para SUBJ08:
+
+     | Sujeto | n muestras | PI mediana (IQR) | PI < 0,5 | PI < 1,85 (SQI ≤ 0,9) | PI ≥ 2 | HR3 válido | HR3_SQI si válido: mediana / p10 / < 0,3 |
+     |---|---|---|---|---|---|---|---|
+     | SUBJ08 (4 sesiones: medianas 1,54-1,69) | 1,63 M | 1,60 (1,40-2,22) | 0 % | 67 % | 28 % | 66 % | 1,00 / 0,98 / 1,8 % |
+     | SUBJ09 (3 sesiones: 4,57 / 3,16 / 2,51) | 1,87 M | 3,22 (2,43-4,71) | 0 % | 8 % | 87 % | 70 % | 1,00 / 1,00 / 1,8 % |
+     | SUBJ10 (movimiento) | 0,58 M | 4,05 (2,15-6,99) | 0,5 % | 22 % | 76 % | 5 % | 0,99 / 0,36 / 7,7 % |
+     | SUBJ11 (prematuro 30 sem) | 0,95 M | 2,79 (2,50-3,29) | 0 % | 0,6 % | 98 % | 88 % | 1,00 / 1,00 / 0,9 % |
+     | SUBJ01 (dedo adulto, 3 sesiones) | 0,77 M | 7,14 (5,34-8,33) | 0 % | 0 % | 100 % | 99 % | 1,00 / 1,00 / 0 % |
+     | SUBJ90 (MS100) | 0,36 M | 4,45 (4,40-4,47) | 0 % | 0 % | 100 % | 97 % | 1,00 / 1,00 / 0,2 % |
+
+     SUBJ08 está en 1,6, no en 2,5 ni en «≈ 3» (spec §PI methods) ni en el 61 % ≥ 2,0 del rationale §11 (subconjunto de un
+     estudio del 5-oct); dos tercios de un neonato normal quedan por debajo del 0,9 que atenúa el visor de flota (25-oct).
+     «La rampa solo muerde por debajo de 2 %» era cierto y engañoso: un neonato a término normal vive debajo de 2 %.
+  7. Semántica: SQI = 0 significa dos cosas (puerta cerrada → SpO2 NaN; PI < 0,5 → SpO2 publicada con SQI 0); el consumidor
+     solo las distingue por `spo2_hold_reason`. No es error, es un hueco para la tarea D2.
+  **Pasos del plan:** (i) un script `experiments/` que mida el PI en unidades actuales por sujeto y sesión sobre (a) todas
+  las muestras APPLIED y (b) las ventanas estacionarias del registro, desde las réplicas, regenerando antes las que faltan
+  (7 sesiones SUBJ01 del 23-oct y 1 de SUBJ90 no tienen `replay_lib0.108_inputot`; hacerlas con lib 0.110); (ii) buscar
+  0,5/2,0 en los PDF de Masimo/Nellcor que tenemos (texto por pypdf) para cerrar la procedencia; (iii) corregir textos:
+  spec §5.1 (línea «Thresholds from Nellcor/Masimo clinical reference»), tabla de parámetros, §PI methods («≈ 3»),
+  rationale §11 (nota con los valores de la réplica), rationale §18 («2,3-3,2» → medidos), `docs/spo2_r_curves.md`
+  (columna PI: valores medidos en las ventanas de los pares, sin ×2,8), docstring de `experiments/r_curve_scatter_20261026.py`,
+  y este log (puntos 1-3); (iv) si (ii) no encuentra fuente, añadir `spo2_pi_sqi_lo/hi` a la lista de parámetros sin
+  procedencia; (v) decisión de Alex sobre 0,5/2,0 y sobre el 0,9 del visor a la vista de la tabla (entra en D2).
+- **D1. Tarea pendiente:** análisis de ventajas e inconvenientes de las seis alternativas de la curva R (rationale §18).
+  Lo escrito en §18 es un párrafo por alternativa; falta la tabla comparativa con criterios (seguridad clínica en la banda
+  UCIN, trazabilidad, superficie de configuración, coste de banco, reversibilidad, qué experimento la confirma).
+- **D2. Tarea pendiente:** análisis integral y conjunto de los SQI de HR3, PI y SpO2, porque en la solución final serán
+  interdependientes (hoy: HR3 válido ⇔ HR3_SQI > 0; SpO2 retenida si HR3 no válido; SpO2_SQI = rampa de PI; PI > 20 % retiene
+  SpO2) y el propio cálculo de PI y SpO2 puede depender de los otros. Incluye la tabla de arriba (HR3_SQI es casi binario:
+  mediana 1,00 y p10 ≥ 0,98 cuando es válido, salvo en el sujeto en movimiento), la semántica doble del SQI 0 y el umbral
+  0,9 del visor. Memoria nueva `project_sqi_joint_analysis_task`.
+- **E. Tarea pendiente:** diseñar una captura con sondas Medle en los pies de Alex (dedo gordo y borde lateral alineado con
+  el cuarto dedo, posición neonatal de Masimo) y los oxímetros baratos en los dedos de la mano, con las tres V18 a la vez
+  (pie lateral / dedo gordo / dedo de la mano como control), VideoNest sobre los baratos, `site` en el TOML, reposo y
+  apneas cortas para tener puntos bajo 95. Es el experimento iii de §18 con protocolo.
+- **F. «Los umbrales de HR3_SQI no añaden nada sobre HR3 válido»:** HR3 publica un valor solo si `hr3_sqi > 0` (Task C:
+  `hr3 = sqi > 0 ? result : NaN`), y `hr3_sqi` = fracción del HPS en los dos bins del pico dentro de una ventana local,
+  menos la línea base 2/n de ruido plano, recortada a [0, 1]; además vale 0 si el pico no es máximo estricto (validación de
+  pico verdadero). Así que «HR3 válido» ya es «HR3_SQI > 0 y pico verdadero». El 20-oct, subir ese suelo a 0,3/0,5/0,7 dejó
+  SUBJ10 igual (2,6 → 2,6/2,6/2,4 % publicado) y en SUBJ08/09 quitó 1-3 % de ventanas por 0,1-0,3 de Arms (2,42 → 2,16;
+  2,39 → 2,09): nada frente a los 14 pt del problema. La tabla de hoy lo explica: cuando HR3 es válido, su SQI está en 1,00
+  con p10 ≥ 0,98; casi no hay ventanas entre 0 y 0,7 que un umbral pueda quitar.
+- **G. Plan de la recomendación D (medir antes de decidir):**
+  1. Datos: las 21 sesiones con referencia; regenerar las 8 réplicas que faltan (lib 0.110, modo `inputot`).
+  2. Unidad: ventana de referencia de 8 s (como `experiments/spo2_artifact_gate_20261020.py`, reutilizando `load()` y
+     `windows()`), publicada con la regla de hoy (validez + HR3 válido). Por ventana: mediana y valor final de PI, r,
+     HR3_SQI, HR2_SQI, acuerdo HR2≈HR3, y la fracción del HPS antes del recorte; error |SpO2 − ref| y error sin sesgo
+     (|bias − mediana del sujeto|, para que el offset de calibración de SUBJ01/SUBJ90, que ningún SQI ve, no contamine).
+  3. Estadística: ρ de Spearman por predictor, por sujeto y agrupando neonatos; AUC para |error| > 2 y > 4 pt; ρ parcial de
+     HR3_SQI dado PI; tabla por deciles (mediana de |error| y % > 4 pt).
+  4. Criterio pre-registrado: un predictor entra en el SQI compuesto si ρ ≥ 0,3 y AUC(> 4 pt) ≥ 0,7 en neonatos, monótono
+     entre sujetos; si ninguno lo cumple, opción C (dos campos, el visor usa `hr3_sqi` y `spo2_hold_reason`).
+  5. Expectativa honesta: con HR3_SQI en 1,00 (p10 ≥ 0,98) cuando es válido, el compuesto B probablemente no añade nada
+     sobre la puerta; por eso el mismo script mide también HR2_SQI, el acuerdo HR2≈HR3 (el 20-oct mejoró SUBJ09 2,39 → 1,87) y
+     la fracción HPS sin recortar.
+  6. Entregables: `experiments/spo2_sqi_predictors_<fecha>.py`, `captures/sessions/SQI_ANALYSIS_<fecha>/findings.md` (no
+     versionado, como GATE_ANALYSIS), resumen aquí; sección del rationale solo si Alex decide. Una tarde más las réplicas.
+  7. Límite: la referencia tiene su propio error (Mindray Arms 2,4-2,9 vs CO-oxímetro en neonatos; baratos ±2), así que
+     ρ no puede ser alta; se busca el orden de los errores, no su magnitud.
+- Sin cambios de código ni de spec. Commit PulseNest (este log); sin push. Decisiones de Alex pendientes: alternativas de
+  §18, 0,5/2,0 y 0,9 del visor, ejecutar C y G.
