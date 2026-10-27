@@ -28738,3 +28738,14 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   con el HGAC o con la referencia; (5) qué implica para «una curva o dos» de §18: dos pies neonatales que no comparten
   pendiente debilitan el argumento de «misma pendiente, distinto offset» entre pie y dedo. Punto de partida:
   `experiments/r_curve_scatter_20261026.py` (ya separa SUBJ08 y SUBJ09 por color) y `captures/sessions/SUBJ08/Analysis/`.
+- **Paréntesis de código (lib v0.111): `WindowBlockClock::step()` → `tick()`.** Alex propuso `completed()`; mi opinión:
+  no, porque el método avanza el reloj (`++phase`, a cero al cerrar el bloque) y devuelve true una vez por bloque; un
+  participio se lee como consulta sin efectos y `const`, y llamado dos veces, o desde un log o un assert, desplazaría los
+  bloques en silencio. Un verbo mantiene visible la mutación; `tick` es el verbo de un reloj y separa de nombre las dos
+  estructuras que se separaron de concepto el 23-oct (`Decimator::step()` descarta; el reloj de bloques no). Partirlo en
+  `tick()` + `completed() const` con un flag se descartó (un estado más que limpiar, dos llamadas por muestra). Alex:
+  «adelante con tick()». Hecho: cabecera (método + comentario), dos sitios de llamada en `_spo2_update()` y
+  `_pi_update_sample()`, `INCUNEST_AFE4490_VERSION` 0.111, spec (changelog v0.111; el título de la spec estaba en v0.106 y
+  pasa a v0.111), rationale §12 (párrafo «step() → tick()»). Sin cambio de números, trama ni configuración; ni los tests,
+  ni el firmware ni el espejo del lab nombraban el método. Tests de host 10/10 suites (116 tests) OK.
+  Build V18 OK (-Werror). Commits: lib (cabecera, cpp, spec, rationale) y PulseNest (log); sin push.
