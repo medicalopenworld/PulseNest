@@ -28798,3 +28798,65 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   candidato a segundo estimador si otra campaña confirma la ganancia; DEC tal como está formulada no sirve en este
   corpus. Rationale §17 (párrafo «Why r cannot be the artefact gate…») y §18 (párrafo «Measured 2026-10-27»).
 - Commits: PulseNest (informe en docs/, experimento, log) y lib (rationale); sin push.
+
+
+## Sesión 2026-10-27 (3) — Comparación de nuestro proceso de calibración de la curva R con Blaney et al. 2026 (arXiv 2609.30122)
+
+- Alex pidió comparar nuestro proceso de calibración con el del artículo «Melanin- and linewidth-corrected
+  pulse-oximetry» (Blaney, Frias, Durbha, Fantini, Koomson; Tufts; 24 de septiembre de 2026; 15 páginas, leídas
+  enteras) y extraer lo útil. El rastreo del 26-oct ya tenía sus coeficientes (survey §3); lo nuevo es el
+  procedimiento (Algoritmos 1-3, criterios de aceptación, validación cruzada, interpretación del offset).
+- Su proceso: OpenOximetry (PhysioNet), 98 pacientes adultos, 2991 extracciones arteriales (ABL90, mesetas
+  controladas 70-100 %, SaO2 65-99 %, mediana 85), PPG crudo 660/910 nm a 86 Hz. Artefactos: detector de picos y
+  escalones sobre la mediana móvil (sigma robusta = MAD/0,6745; k 5 y 6; segmentos válidos ≥ 3 s). R: pico a valle
+  por latido con línea base de mediana móvil de 3 períodos, AC = máx − mín, DC = (máx + mín)/2; R de la ventana =
+  mediana de los latidos tras descartar > 3 sigma; ventana de 30 s centrada en la extracción, aceptada solo con
+  ≥ 20 latidos, dispersión robusta/mediana ≤ 0,08 y < 30 % de artefacto. Sincronización: correlación cruzada de
+  la traza de R (ventanas de 20 s cada 10 s) con el SpO2 del oxímetro comercial (negado); Pearson < 0,9 → se
+  excluye el encuentro. Ajuste: tres formas de 2 grados de libertad (lineal OLS; racional de Beer-Lambert
+  modificada con razón de caminos Γ y offset o; la misma ponderada por el espectro del LED y la melanina M).
+  Arms 2,420 / 2,416 / 2,418, indistinguibles; curvatura de la racional ≤ 1,4 pt dentro del rango. Validación:
+  200 repeticiones con conjuntos de entrenamiento al estilo FDA 2013 (10 pacientes, 2 oscuros, ≥ 200 extracciones)
+  y 88 retenidos, Arms retenido 2,49; dependencia de la piel = pendiente del residuo medio por paciente frente a
+  M, ponderado por 1/SE². Ninguna dependencia resuelta estadísticamente (haría falta ×10 pacientes). Γ ≈ 0,99 y
+  o ≈ 10 % en ambas formas físicas; el offset no sale de la derivación y lo atribuyen, sin resolver, a
+  contaminación venosa, tisular o de agua de la señal pulsátil. Código público (MATLAB).
+- Nuestro proceso (`SUBJ08/Analysis/fit_method2.py`, curva vigente): referencia = pantalla del Mindray N17 por
+  OCR (promediado desconocido), 2 neonatos, 3455 ventanas de 8 s; emparejado = mediana de la R de la librería en
+  los 8 s anteriores a la lectura, sin compensar retardo; estacionariedad = ≥ 3 lecturas en ±10 s con rango ≤ 2 pt;
+  ajuste lineal por mínimos cuadrados ponderados sobre la mediana de R por nivel entero de SpO2 (bins con ≥ 10
+  pares), que protege de la dilución por regresión con la masa de datos en 95-100; validación = dejar un sujeto
+  fuera entre los dos y SUBJ11 después; calidad = puerta de pulso HR3 (v0.110) y r ≥ 0,8.
+- Qué coincide: estructura (ventanas alrededor de una lectura de referencia, regla de estacionariedad, criterio
+  de calidad por ventana, comprobación por sujeto); el ancla R = 1 ↔ 85 % (su mediana RoR 0,986 a SaO2 85,0;
+  nuestra 84,8), pese a estimador y longitudes de onda distintos; la conclusión de que una recta basta en 85-100
+  y falla por debajo (nuestras 31 ventanas < 85 leen −3,4; su racional se curva hasta 1,4 pt).
+- Qué no coincide y qué aprendemos (por orden de utilidad):
+  1. **Referencia.** Ellos usan sangre; el oxímetro comercial solo para alinear el tiempo. Nosotros usamos el
+     oxímetro comercial como referencia. Nada que cambiar sin gasometrías, pero la atribución del offset
+     neonato/adulto de §18 tiene que seguir diciendo «referencia N17 o tejido», no «calibración».
+  2. **Sincronización medida.** Su Algoritmo 3 (correlación cruzada de la traza de R con el SpO2 del monitor)
+     mide el retardo del promediado del monitor por sesión. Nosotros emparejamos con «los 8 s anteriores» y
+     compensamos 4 s a mano solo con el oxímetro doméstico. Aplicable ya a SUBJ08/09/11: retardo por sesión y
+     Pearson por sesión como criterio de admisión (explicaría parte de la diferencia SUBJ08/SUBJ09 de la tarea H
+     si el promediado del N17 fue distinto o si las desaturaciones de SUBJ08 son más rápidas).
+  3. **Dispersión de R dentro de la ventana como criterio de calidad** (pseudo-SD/mediana ≤ 0,08 sobre latidos).
+     Nuestra R-METHOD-2 no da R por latido, pero el A/B de hoy ya calcula R por subventana de 1 s: la dispersión
+     entre subventanas es un predictor barato para el plan G (|error| frente a PI, r, HR3_SQI) y para D2.
+  4. **Forma racional con Γ y o.** Ajustar la racional de Beer-Lambert modificada (ε de Prahl a 665/905 nm, Γ y
+     o libres) a nuestros pares neonatales y al dedo adulto da dos parámetros con significado físico: si el
+     offset de §18 aparece como o distinto con Γ igual, o como Γ distinto, es información que la recta no da.
+     Coste: un script en `experiments/`. Su o ≈ 10 % en dedo adulto ya dice que el offset «venoso/tisular»
+     existe también en el dedo; el nuestro sería la diferencia entre sitios.
+  5. **Potencia estadística.** Con 98 pacientes no resuelven una pendiente de residuo frente a la melanina;
+     con 2-4 neonatos nosotros no podemos resolver que SUBJ08 y SUBJ09 tengan curvas distintas (tarea H): el
+     IC por bootstrap propuesto es el instrumento correcto y el resultado esperable es «no resuelto». Su prueba
+     (residuo medio por paciente frente a la covariable, ponderado por 1/SE²) es la que usar con PI, Monk y edad
+     gestacional cuando haya más bebés.
+  6. **Estimador pico a valle por latido con mediana.** Es el clásico Nellcor; no está en nuestro A/B (RMS,
+     regresión, decorrelación, armónicos). Añadirlo costaría poco y cerraría la tabla de estimadores.
+  7. **OpenOximetry con nuestro estimador.** Ya recomendado en el survey §6; el artículo aporta el preprocesado
+     reproducible y la cifra a batir (Arms 2,42 lineal). Daría la única curva de R-METHOD-2 referida a sangre
+     (dedo adulto, 660/910) para contrastar con la convención Nellcor del MS100 y con nuestro dedo adulto.
+- Nada cambia en la librería ni en los documentos de diseño; esta entrada es la comparación. Decisión de Alex:
+  cuáles de 2, 3, 4, 6 y 7 ejecutar y en qué orden (2 y 4 son los que tocan a §18 y a la tarea H).
