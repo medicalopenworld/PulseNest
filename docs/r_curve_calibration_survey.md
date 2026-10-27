@@ -273,10 +273,32 @@ Tamura 2019, AN 6845 (timeouts), Apple white paper (403).
 
 ---
 
-## 6. What this means for PulseNest (665/905 nm, Medle ST-S0163, neonatal foot transmission)
+## 6. What this means for PulseNest (668/905 nm, Medle ST-S0163, neonatal foot transmission)
 
+- **Our red is 668 nm, not 660.** Measured with a visible spectrometer at 50 mA on our probes: 667-670 nm
+  across units, mean ≈ 668 (datasheet 665, 663-667, at the datasheet's lower current; the +3 nm is consistent
+  with de Kock's +8 nm per decade of drive current). Beer-Lambert with Prahl's coefficients (Hb 3227 → 2795 and
+  HbO2 320 → 294 cm⁻¹/M from 660 to 670 nm; IR 905 nm ≈ 750/1200, flat) gives, for the same blood, an R 6-10 %
+  lower than a 660 nm device, the deficit growing as SaO2 falls because the Hb term dominates the numerator:
+
+  | True SaO2 | R(668)/R(660) − 1 | Read through a 660 nm curve (668 nm, Beer-Lambert bound) | Spread 667 → 670 nm |
+  |---|---|---|---|
+  | 97 % | −7 % | +1.0 pt | 0.3 pt |
+  | 90 % | −9 % | +1.7 pt | 0.6 pt |
+  | 85 % | −9 % | +2.2 pt | 0.8 pt |
+  | 80 % | −10 % | +2.6 pt | 1.0 pt |
+  | 70 % | −10 % | +3.5 pt | 1.3 pt |
+
+  The reading error is invariant to any monotonic rescaling of R (a √µa diffusion model halves ΔR/R but not the
+  SpO2 error); de Kock's bench (2.5 pt at 50 % for 8 nm) says the real effect is about half the Beer-Lambert
+  bound, the LED linewidth and scattering accounting for the rest. Either way: a curve fitted at 660 nm must be
+  rescaled in R before it is compared with ours, and the unit-to-unit spread of our probes (3 nm) is within the
+  "≤ 2 nm nothing to do / 2-5 nm consider per-probe correction" protocol of 2026-10-01 only at ≥ 90 %.
+  **Direction check:** a red-shift *lowers* R at 100 %; it cannot be what puts our R(100 %) at 0.54-0.61
+  instead of 0.40 (`spo2_r_curves.md`). It steepens the SpO2-R slope by only ≈ 4-5 % (range 70-100 % compressed
+  from ×4.2 to ×4.05).
 - No table can be transplanted. Even the four "manufacturer-supplied" simulator curves are reproductions of
-  someone else's firmware for someone else's LEDs; with our 665 nm red (vs 660) and 905 nm IR the bins differ.
+  someone else's firmware for someone else's LEDs; with our 668 nm red (vs 660) and 905 nm IR the bins differ.
   The form that the physics and the one open blood-referenced data set both support is the mBLL rational with
   a fitted path-length ratio and an offset, linearised near 85 %; a line is adequate for 85-100 % and wrong below.
 - The things we can control that move the curve by ≥ 2 pt: LED current (AGC changes the red wavelength: 2.5 pt

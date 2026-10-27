@@ -28860,3 +28860,28 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
      (dedo adulto, 660/910) para contrastar con la convención Nellcor del MS100 y con nuestro dedo adulto.
 - Nada cambia en la librería ni en los documentos de diseño; esta entrada es la comparación. Decisión de Alex:
   cuáles de 2, 3, 4, 6 y 7 ejecutar y en qué orden (2 y 4 son los que tocan a §18 y a la tarea H).
+
+## Sesión 2026-10-27 — Longitud de onda del LED rojo y la curva R; rojo medido 668 nm (667-670)
+
+- **Pregunta de Alex:** cómo afecta la longitud de onda del rojo a la curva R (el IR afecta menos). Respuesta:
+  a 660 nm la extinción de la Hb cae un 1,4 %/nm y la de la HbO2 un 0,8 %/nm (Prahl: 3227 → 2795 y 320 → 294
+  cm⁻¹/M de 660 a 670); a 905-940 nm ambas son planas (≈ 0,1 %/nm). Un corrimiento del rojo escala R por un
+  factor casi uniforme, algo mayor a saturación baja (domina el término de Hb): no desplaza la curva, cambia la
+  pendiente SpO2-R dejando casi igual el extremo del 100 %. Por eso la corrección de Nihon Kohden (ganancia
+  analógica en el canal rojo por resistencia de la sonda) funciona, y por eso Nellcor elige coeficientes por
+  contenedor de longitud de onda. El error de lectura con la curva equivocada crece al bajar la SaO2. Segundo
+  orden: anchura espectral (el tejido filtra la banda, el centroide efectivo se corre al desaturar; de ahí que la
+  melanina solo empine la pendiente con LEDs anchos) y corriente (+8 nm por década, de Kock 1991; la deriva
+  térmica 0,11 nm/°C es despreciable).
+- **Dato de Alex:** las sondas medidas con el espectrómetro dan el rojo entre 667 y 670 nm, media ≈ 668 (a 50 mA;
+  BACKLOG ya lo decía). Datasheet 665 (663-667): los +3 nm son coherentes con el corrimiento por corriente.
+  Cálculo Beer-Lambert (Prahl, IR 905 ≈ 750/1200): a igual sangre nuestra R es un 6-10 % menor que la de un
+  equipo de 660 nm; leída con una curva de 660 daría +1,0 pt a 97 %, +1,7 a 90, +2,2 a 85, +2,6 a 80, +3,5 a
+  70 % (cota superior; el banco de de Kock sugiere la mitad). Dispersión 667 → 670 entre sondas: 0,3 pt a 97 %,
+  0,8 a 85 %, 1,3 a 70 %. Comprobado que el error de lectura es invariante a cualquier reescalado monótono de R
+  (un modelo √µa divide ΔR/R por dos pero no el error en SpO2): corrección a lo dicho en la respuesta anterior.
+  **Dirección:** el corrimiento al rojo *baja* R al 100 % (≈ 6 %) y comprime el rango 70-100 % solo de ×4,2 a
+  ×4,05: no explica nuestra R(100 %) de 0,54-0,61 frente a 0,40; se retira esa candidata de `spo2_r_curves.md`.
+- Documentos: `docs/r_curve_calibration_survey.md` §6 (rojo 668 nm medido, tabla de efecto y dirección) y
+  `docs/spo2_r_curves.md` (candidata corregida). Sin cambios de código. Queda en BACKLOG medir el rojo a 20 mA y
+  otras corrientes para fijar el corrimiento por corriente de nuestras sondas.
