@@ -28750,3 +28750,51 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   ni el firmware ni el espejo del lab nombraban el método. Tests de host 10/10 suites (116 tests) OK.
   Build V18 OK (-Werror). Commits: lib (cabecera, cpp, spec, rationale) y PulseNest (log); sin push.
 - **Comentario de PI (Alex):** en `_pi_update_sample()` el comentario de cabecera del cálculo pasa a describir PI-METHOD-1 entero y en orden (entrada OT_IR, biquad 0,5-15 Hz y suma de cuadrados, DC = suma del OT crudo, bloques de 100 ms en ventana de 6 s, fórmula 2√2·RMS/media·100, NaN, sin puerta propia), la regla de identidad del `PI_METHOD_ID` (el siguiente que cambie el número es PI-METHOD-2 y se documenta como delta de los pasos 1-4), la historia v0.100 → v0.103 y los límites medidos. Motivo: el cálculo cambiará a corto plazo y la evolución tiene que quedar bien documentada. Solo comentario; sin versión nueva; tests de host 10/10. Commit lib; sin push.
+
+
+## Sesión 2026-10-27 (análisis, pulsenest-34) — Búsqueda a fondo Masimo SET y Nellcor OxiMax: algoritmos de SpO2 y curva R
+
+- Alex pidió una búsqueda extensa (documentación, patentes, publicaciones) sobre Masimo SET y Nellcor OxiMax que ayude a
+  nuestros algoritmos de SpO2 y a la curva R. Sesión de análisis: cinco agentes y simulación propia en numpy; sin cambios
+  en los repos. Informe en inglés y cinco informes fuente enviados a Alex; traspaso a esta sesión por mensaje y memoria.
+- Hallazgos: R-METHOD-2 es el paso de medida de Nellcor (US 5,351,685; 6,411,833) y coincide con la DST de Masimo con un
+  cancelador de un coeficiente; la puerta r ≥ 0,8 no puede detectar el movimiento venoso (r_min = 2√(ra·rv)/(ra+rv) =
+  0,954 con arterial 95 % y venoso 70 %; explica SUBJ10); la decorrelación de Masimo por subventanas y la R en bins
+  armónicos son las separaciones baratas, solo simuladas; Nellcor da la receta numérica de Kalman, promediado por
+  conjuntos y métricas de calidad (patentes caducadas); ningún fabricante tiene curva neonatal y nuestro default hereda
+  el sesgo del N17; patentes activas: Nellcor 7,392,075 hasta el 16 de noviembre de 2026, 8,123,695 hasta 2030, wavelets
+  2028-2033, Masimo 8,265,723 hasta 2031.
+- **Aplicado por la sesión de desarrollo con el «adelante» de Alex:** informe copiado a
+  `docs/masimo_nellcor_spo2_prior_art.md` con tres retoques (nota de copia; §0.5 con el PI neonatal medido hoy, 1,6 % en
+  SUBJ08, en vez del 2,3-3,2 % de la mañana; rutas temporales sustituidas por el zip que guarda Alex; las descargas de
+  terceros no entran en el repo).
+
+## Sesión 2026-10-27 (2), continuación — A/B offline de estimadores de R (recomendación 1 del informe)
+
+- `experiments/r_estimators_ab_20261027.py`: cadena de R-METHOD-2 reproducida en Python desde el OT de las réplicas
+  (EMA de DC con semilla, biquad con precarga, diferencias, sumas por bloque de 100 ms, ventana de 60 bloques; |R − R de
+  la réplica| mediana 2,5e-6, p99 7e-6), y desde las mismas sumas: DEC = restricción de decorrelación de Masimo en seis
+  subventanas de 1 s por mínimos cuadrados (inválida → regresión); HARM = R sobre ±1 bin en los tres primeros armónicos
+  de HR3, banda 0,5-15 Hz, Hann, 6 s y 10,24 s (NaN sin HR3 válido). Misma curva, misma validez y mismas ventanas de
+  referencia que el script del 20-oct; 21 sesiones con réplica (SUBJ01 3 de 10, SUBJ90 1 de 2).
+
+  | Sujeto, con puerta HR3 | REG Arms / > 4 pt | DEC | HARM 6 s | HARM 10,24 s |
+  |---|---|---|---|---|
+  | SUBJ08 | 2,42 / 7,0 % | 3,46 / 16,0 % | 2,42 / 6,5 % | 2,48 / 10,5 % |
+  | SUBJ09 | 2,39 / 7,4 % | 2,28 / 6,8 % | 2,07 / 4,4 % | 2,08 / 4,0 % |
+  | SUBJ11 | 1,23 / 0,7 % | 1,43 / 2,1 % | 1,08 / 0,3 % | 1,06 / 0,4 % |
+  | SUBJ10 (15 ventanas) | 2,05 / 0 % | 2,00 / 0 % (1 ventana) | 4,62 / 20 % | 7,68 / 27 % |
+  | SUBJ10 sin puerta (467 ventanas) | 16,25 / 92 % | 12,77 / 70 % | solo 15 ventanas | solo 15 ventanas |
+
+- **Resultados.** DEC está mal condicionada el 91-98 % del tiempo (válida en el 2-9 % de las muestras) y donde actúa
+  añade ruido; en SUBJ10 sin puerta baja el error sin arreglarlo. HARM lleva la puerta de pulso por construcción, iguala
+  o mejora un poco a la regresión en los neonatos quietos (0,1-0,3 de Arms) y empeora en las 15 ventanas de SUBJ10 que
+  pasan la puerta; 10,24 s no aporta sobre 6 s. Dedo adulto y MS100 sin cambio (su error es el offset de calibración).
+- **Atribución para §18:** ordenada a pendiente común 39,13, pies neonatales frente a dedo adulto: 3,25 pt con REG, 3,08
+  con DEC, 3,10 con HARM 6 s, 3,19 con HARM 10,24 s; las medianas de R por nivel (0,04-0,05 a 94 %, 0,09-0,10 a 99 %) no se
+  mueven. Descartar el contenido fuera de los armónicos no quita el offset: no es mezcla venosa separable en el
+  procesado; quedan referencia, sitio o fisiología ligada al latido (que ningún método lineal de segundo orden separa).
+- **Decisión:** nada cambia en la librería; la puerta de pulso sigue siendo el criterio de artefacto; HARM queda como
+  candidato a segundo estimador si otra campaña confirma la ganancia; DEC tal como está formulada no sirve en este
+  corpus. Rationale §17 (párrafo «Why r cannot be the artefact gate…») y §18 (párrafo «Measured 2026-10-27»).
+- Commits: PulseNest (informe en docs/, experimento, log) y lib (rationale); sin push.
