@@ -92,6 +92,13 @@ has not been triaged yet.
 - Creo que hay calculos como las derivadas de R-METHOD-2 que dependen de la frecuencia de muestreo.
   Habría que repensar si estos cálculos los hacemos sobre la señal de 500Hz o de 50Hz, y si tener en cuenta dicho delta(t).
 - Medir con un Spectral Analyzer la longitud de onda del led rojo de las sondas Medle con 20 mA y otras intensidades (sólo medimos con 50 mA: unos 668 nm)
+- Caracterizar mis pulsioxímetros baratos contra el simulador
+- Medir en mi pie (a la vez que en manos)
+- Medir en mano fría y mano caliente (Masimo, whitepaper "Assessing the accuracy of pulse oximetry" (docs/masimo_whitepapers/lab4709a...pdf):
+    dedos calientes leen 96-97 % y fríos 99-100 % a la misma PaO2, por shunts arteriovenosos abiertos que
+    producen "venous pulsations"; por eso la calibración se hace en voluntarios normotérmicos. Cita a
+    Schramm 1997.)
+- Hacer más sesiones con MS100 utilizando otras R-curve: Masimo, Nihon-Khoden, ...
 
 
 
