@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Build and run the PulseNest host unit tests (Unity, one executable per test_lib/test_*/ suite).
+"""Build and run the incunest_afe4490 host unit tests from PulseNest.
 
     python test_lib/runner/run_host_tests.py            # configure + build + run every suite
     python test_lib/runner/run_host_tests.py hr1 spo2   # only suites whose name contains a filter
     python test_lib/runner/run_host_tests.py --clean    # wipe test_lib/runner/build first
 
+Since 2026-10-30 the suites, Unity and the CMake project live in the library's repo
+(lib/incunest_afe4490/test/, spec §9.10), where GitHub Actions runs them on every push and tag.
+This wrapper keeps the PulseNest command: it makes sure lib/incunest_afe4490 is there
+(scripts/get_lib.py: the developer's junction, or the pinned tag cloned from GitHub) and runs the
+library's test/run_host_tests.py with the build directory here, out of the library's tree.
+
 Needs cmake, ninja and a host g++ on PATH (MinGW-w64 on Windows). Exit code = number of failing
-suites. Replaces `pio test -e native`.
+suites.
 """
 import os
 import shutil
@@ -14,60 +20,33 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
 BUILD = os.path.join(HERE, "build")
+LIB_TESTS = os.path.join(ROOT, "lib", "incunest_afe4490", "test")
 
 
-def run(cmd, **kw):
+def run(cmd):
     print("$ " + " ".join(cmd), flush=True)
-    return subprocess.run(cmd, **kw)
+    return subprocess.run(cmd).returncode
 
 
 def main(argv):
-    filters = [a for a in argv if not a.startswith("--")]
-    if "--clean" in argv and os.path.isdir(BUILD):
-        shutil.rmtree(BUILD)
-    for tool in ("cmake", "ninja"):
-        if shutil.which(tool) is None:
-            print(f"error: '{tool}' not found on PATH", file=sys.stderr)
-            return 1
-    # lib/incunest_afe4490: the developer's junction, or the pinned tag cloned from GitHub.
-    r = run([sys.executable, os.path.join(HERE, "..", "..", "scripts", "get_lib.py")])
-    if r.returncode:
+    if run([sys.executable, os.path.join(ROOT, "scripts", "get_lib.py")]):
         return 1
-    if not os.path.exists(os.path.join(BUILD, "build.ninja")):
-        r = run(["cmake", "-S", HERE, "-B", BUILD, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"])
-        if r.returncode:
-            return 1
-    r = run(["cmake", "--build", BUILD])
-    if r.returncode:
+    runner = os.path.join(LIB_TESTS, "run_host_tests.py")
+    if not os.path.isfile(runner):
+        print(f"error: {runner} not found: the pinned library predates the tests in its repo "
+              f"(they moved there after v0.111); move the pin in lib/incunest_afe4490.version", file=sys.stderr)
         return 1
-
-    suites = sorted(d for d in os.listdir(os.path.join(HERE, "..")) if d.startswith("test_"))
-    if filters:
-        suites = [s for s in suites if any(f in s for f in filters)]
-    failed = []
-    print()
-    for suite in suites:
-        exe = os.path.join(BUILD, suite + (".exe" if os.name == "nt" else ""))
-        if not os.path.exists(exe):
-            print(f"{suite:20s} MISSING (did not build)")
-            failed.append(suite)
-            continue
-        p = subprocess.run([exe], capture_output=True, text=True)
-        lines = [l for l in p.stdout.splitlines() if l.strip()]
-        summary = next((l for l in reversed(lines) if "Tests" in l and "Failures" in l), "(no Unity summary)")
-        verdict = "OK" if p.returncode == 0 else f"FAIL (exit {p.returncode})"
-        print(f"{suite:20s} {verdict:16s} {summary}")
-        if p.returncode != 0:
-            failed.append(suite)
-            for l in lines:
-                if ":FAIL" in l or l.startswith("FAIL"):
-                    print("    " + l)
-            if p.stderr.strip():
-                print("    stderr: " + p.stderr.strip()[:500])
-    print()
-    print(f"{len(suites) - len(failed)}/{len(suites)} suites OK" + (f" — failing: {', '.join(failed)}" if failed else ""))
-    return len(failed)
+    # A build directory configured from another CMake project (the pre-2026-10-30 one in this
+    # folder) cannot be rebuilt: start it again.
+    cache = os.path.join(BUILD, "CMakeCache.txt")
+    if os.path.isfile(cache):
+        with open(cache, encoding="utf-8", errors="replace") as f:
+            home = next((l.split("=", 1)[1].strip() for l in f if l.startswith("CMAKE_HOME_DIRECTORY:")), "")
+        if os.path.normcase(os.path.realpath(home)) != os.path.normcase(os.path.realpath(LIB_TESTS)):
+            shutil.rmtree(BUILD)
+    return run([sys.executable, runner, "--build", BUILD, *argv])
 
 
 if __name__ == "__main__":

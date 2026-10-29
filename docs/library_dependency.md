@@ -19,7 +19,8 @@ sessions**, never from a session opened in the library's folder. Sessions read a
 - `lib/incunest_afe4490` stays a junction to `C:\PRJ\MOW\incunest_afe4490` on the development
   machine, gitignored, exactly as before.
 - `lib/incunest_afe4490.version` (versioned) holds the tag, e.g. `v0.111`.
-- `scripts/get_lib.py`, run by `scripts/build.ps1` and `test_lib/runner/run_host_tests.py`: a link is
+- `scripts/get_lib.py`, run by `scripts/build.ps1` and `test_lib/runner/run_host_tests.py` (which then
+  runs the library's own tests, `lib/incunest_afe4490/test/`, since 2026-10-30): a link is
   left alone (it only prints where the working copy stands against the pin); a missing folder gets a
   shallow clone of the tag; a clone it made earlier follows the pin when the pin moves.
 - Moving the pin: edit the tag in `lib/incunest_afe4490.version` and commit it, in the same PulseNest

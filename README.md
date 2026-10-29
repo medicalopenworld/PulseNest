@@ -52,7 +52,8 @@ repo, which the script leaves alone. To build against a newer library, change th
 # Serial monitor (UART0, 921600 baud)
 idf.py -B build_V18 -p COM15 -b 921600 monitor
 
-# Host unit tests (CMake + Unity, needs cmake/ninja/g++ on PATH)
+# Host unit tests of the library (CMake + Unity, needs cmake/ninja/g++ on PATH); the suites live in
+# lib/incunest_afe4490/test/, this runs them with the build directory in PulseNest
 python test_lib/runner/run_host_tests.py
 ```
 
@@ -130,7 +131,7 @@ The folder says what a Python file *is*, not when it was written:
 | `pulsenest/` | `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set`, `session_events`, `fleet_trace`, `fleet_widgets` | Importable package: anything more than one program imports (`from pulsenest.net import ...`) |
 | `tools/` | session launcher, hub, recorder, recorder GUI, converter, fleet monitor, PPG viewer, UDP utilities, capture index | Programs an operator or maintainer runs on purpose; importable as `tools.<name>` |
 | `test_pulsenest/` | `*_test.py` | Python tests of this repo's own software, one per module (`python test_pulsenest/<name>.py`) |
-| `test_lib/` | `test_<name>/` suites, `runner/` | C++ unit tests of the `incunest_afe4490` library, run on the PC (`python test_lib/runner/run_host_tests.py`) |
+| `test_lib/` | `runner/run_host_tests.py` | Runs the C++ unit tests of the `incunest_afe4490` library on the PC (`python test_lib/runner/run_host_tests.py`); the suites live in the library's repo, `lib/incunest_afe4490/test/`, since 2026-10-30 |
 | `experiments/` | one-off studies and bench campaigns | Dated, with the result recorded in the docstring; not maintained as tools |
 | `scripts/` | `build.ps1`, `gen_build_version.py`, `*.ps1` | Build system, and the two PowerShell helpers of the hospital laptop (desktop icon, hotspot) |
 
@@ -151,7 +152,7 @@ pulsenest/                     — Shared host-side modules (see table)
 tools/                         — Operator programs and the hub (tools/pulsenest_hub.py); tools/pulsenest_recorder.py has pulsenest_recorder_spec.md
 tools/pulsenest_session.py     — Campaign launcher (desktop icon: scripts/make_session_shortcut.ps1); docs/hospital_runbook.md
 test_pulsenest/                — Python tests of the repo's own software
-test_lib/                      — C++ unit tests of the library (Unity), built and run by test_lib/runner/
+test_lib/                      — Runner for the library's C++ unit tests (suites in lib/incunest_afe4490/test/)
 experiments/                   — One-off studies;  analysis/ — their figures and CSV outputs
 scripts/build.ps1              — Build / OTA / USB flash per board
 scripts/hotspot.ps1            — in3wifi without internet: Mobile Hotspot sharing the KM-TEST loopback adapter (on | off | status)

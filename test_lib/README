@@ -1,17 +1,15 @@
-PulseNest host unit tests (Unity)
-=================================
+PulseNest runner for the incunest_afe4490 host unit tests
+=========================================================
 
-One directory per suite: test_lib/test_<name>/test_<name>.cpp. Each suite is a plain Unity program
-(setUp/tearDown/main with UNITY_BEGIN/RUN_TEST/UNITY_END) that includes only incunest_afe4490.h,
-unity.h and the C standard library, so it builds and runs on the host PC.
-
-The library is compiled for the host with -DUNIT_TEST (opens the test_* accessors) together with
-incunest_afe4490_hal_host.cpp (no-op GPIO/SPI, fake FreeRTOS/esp_log/esp_timer).
-
-Build and run everything (needs cmake, ninja and a host g++ on PATH — MinGW-w64 on Windows):
+Since 2026-10-30 the suites (Unity), the CMake project and Unity itself live in the library's
+repository, lib/incunest_afe4490/test/ (spec §9.10), where GitHub Actions runs them on every push
+and every tag. Their history before that date is in this repository (test_lib/test_*/).
 
     python test_lib/runner/run_host_tests.py
     python test_lib/runner/run_host_tests.py hr1 spo2    # only suites matching a filter
     python test_lib/runner/run_host_tests.py --clean     # rebuild from scratch
 
-Build system: test_lib/runner/CMakeLists.txt (Unity 2.6.0 vendored in test_lib/runner/unity).
+The runner makes sure lib/incunest_afe4490 is there (scripts/get_lib.py: the junction on the
+development machine, or the pinned tag cloned from GitHub), then runs the library's
+test/run_host_tests.py with the build directory in test_lib/runner/build. Needs cmake, ninja and
+a host g++ on PATH (MinGW-w64 on Windows).
