@@ -29007,3 +29007,42 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - Regla nueva (en `CLAUDE.md`): cuando un commit de PulseNest necesite una versión nueva de la librería,
   etiquetarla, subirla y cambiar `lib/incunest_afe4490.version` en ese mismo commit.
 - Se quita la variable de entorno de usuario `INCUNEST_AFE4490_DIR` que se había creado para la opción A.
+
+## Sesión 2026-10-30 — Tests y CI en el repo de la librería, comprobación de versiones, release v0.111
+
+- Problema: la librería se publica para IncuNest, pero sus tests vivían en PulseNest (`test_lib/`), así que el
+  repo publicado no podía verificar una etiqueta por sí solo. Además, las cadenas de versión no coincidían
+  (comentarios de cabecera del `.h` v0.102, del `.cpp` v0.104 y del ejemplo v0.99, con la librería en v0.111) y
+  ninguna etiqueta tenía notas de versión.
+- Decisiones de Alex:
+  - Los tests pasan al repo de la librería, `test/` (suites Unity, Unity 2.6.0 y CMake). El nombre importa:
+    PlatformIO no compila `test/` en un `lib_deps`, así que IncuNest nunca compila los `main()` de los tests.
+  - En PulseNest queda solo un **envoltorio fino**: `python test_lib/runner/run_host_tests.py`, el mismo
+    comando de siempre. Llama a `get_lib.py` y luego a `lib/incunest_afe4490/test/run_host_tests.py
+    --build test_lib/runner/build`. Se descartó borrar `test_lib/` entero.
+  - **No hay etiqueta nueva** por estos cambios (no son funcionales). La v0.112 será la primera etiqueta
+    verificada por el CI. Consecuencia: un clon de PulseNest sin junction no puede ejecutar los tests hasta
+    que el pin pase de v0.111 (el lanzador lo dice).
+  - El resumen acumulado v0.94 → v0.111 va **dentro de la release v0.111** (sección "Upgrading from v0.94"),
+    no en un fichero aparte.
+- Librería, commit `cc57816` (subido): `test/`, `scripts/check_version.py` y `.github/workflows/tests.yml`.
+  - `check_version.py` comprueba que coincidan el `#define`, los comentarios de cabecera del `.h`, `.cpp` y
+    ejemplo, el título y la primera fila de §14 de la spec y `library.json` (`0.111` → `0.111.0`,
+    `0.90b` → `0.90.1`), y en una etiqueta que todos sean la etiqueta.
+  - El workflow ejecuta en Ubuntu (cmake + ninja + g++) primero la comprobación de versiones y luego los
+    tests: en cada push, en cada etiqueta `v*`, en cada PR y a mano.
+  - También en ese commit: comentarios de cabecera a v0.111, spec §9.6 y §9.10 (con el formato de release),
+    rationale §19 y README (sección Tests, `lib_deps` en `#v0.111`).
+  - Primer CI verde en Linux, run 40971738278: versiones OK, 10/10 suites.
+- PulseNest, commit `da4ef9e` (subido): se borran las suites, Unity y el CMakeLists de `test_lib/`, y se
+  añade el envoltorio. `CLAUDE.md` recibe la regla de etiquetado: `check_version.py`, tests, CI verde y
+  **una release de GitHub por etiqueta** con el formato *What changes* / *Breaking* (API y contrato de
+  datos) / *When upgrading*, siempre con el "sí" de Alex. Memoria `project_library_versioning.md`
+  actualizada.
+- Release `v0.111` creada en GitHub (etiqueta existente `46f8a71`, sin moverla), con la sección "Upgrading
+  from v0.94". Es lo que verá la rama de IncuNest `feat/v18-spo2`, hoy en `#v0.94`. Lo que rompe:
+  - `setSpO2Coefficients()` → `setSpO2RCurve()`; desaparecen `setSpO2WarmupS()` y `setSpO2EmaVarTauS()`.
+  - `spo2_a`/`spo2_b` → `spo2_r_curve_*`.
+  - `pi` pasa a ser pico a pico (≈ ×3).
+  - Campos nuevos: `spo2_hold_reason` y `spo2_r_method2_reg_corr`.
+- Pendiente (en otra sesión, desde IncuNest): llevar `feat/v18-spo2` a v0.111 siguiendo esa release.
