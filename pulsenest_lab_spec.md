@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.102
+# pulsenest_lab — Specification v1.103
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -276,7 +276,7 @@ All emitted by the firmware asynchronously.
 ```
 $CFG,led1=<v>,led2=<v>,range=<v>,tia1=<v>,cf1=<v>,stg21=<v>,stage2en1=<v>,
      tia2=<v>,cf2=<v>,stg22=<v>,stage2en2=<v>,ambdac=<v>,sr=<v>,numav=<v>,
-     ensepgain=<v>,...,board=<v>,mac=<v>,fw=<v>,lib=<v>,build=<v>,libsha=<v>,
+     ensepgain=<v>,...,board=<v>,mac=<v>,serial=<v>,fw=<v>,lib=<v>,build=<v>,libsha=<v>,
      elfsha=<v>,idfver=<v>,cause=<v>,ts_us=<v>,hgac_rf_changes=<v>*XX
 ```
 
@@ -288,7 +288,11 @@ instant the configuration became what the frame says (for `hgac`, the move itsel
 `esp_timer` clock as the rows' `Ts_us`; otherwise the emission); `hgac_rf_changes` is the running
 count since boot — a jump of two between frames means two moves landed in one tick. Every
 consumer parses `$CFG` as `key=value` pairs and ignores unknown keys, so the three new keys
-break nothing. Parsed by
+break nothing. **`serial` (fw 0.29, 2026-10-28)** is the board serial number the firmware reads
+at boot from NVS (namespace `mb_cfg`, key `serial`, int32), where the IncuNest motherBoard
+firmware stores it when a board is provisioned; `none` when the namespace or key is missing, so
+an absent serial is never read as serial 0. Older firmware does not send it (the lab shows `?`).
+Parsed by
 `_on_cfg_frame_received()` → populates `_last_cfg` dict and updates `HWConfigWindow`.
 
 **Provenance fields (firmware change, 2026-09-05/06).** `fw` = PulseNest firmware version
@@ -660,7 +664,7 @@ bytes, and the source switch verified in both directions (§4.8 F2). Loopback,
 query, B fully dropped, no cross-board gaps, A LOST without switching, A back from a new IP with
 the same MAC followed, stale entry removed.
 
-**Bench utility.** `tools/udp_fw_versions.py` reports, without the GUI, every board streaming to :5005 with its rate and the identity fields of its `$CFG` (board, MAC, fw, lib, build, libsha, elfsha, idfver). Since v1.60 it is a hub subscriber and runs next to the lab.
+**Bench utility.** `tools/udp_fw_versions.py` reports, without the GUI, every board streaming to :5005 with its rate and the identity fields of its `$CFG` (board, MAC, serial, fw, lib, build, libsha, elfsha, idfver). Since v1.60 it is a hub subscriber and runs next to the lab.
 
 #### F2 — Source selector (v1.45)
 
@@ -2643,7 +2647,7 @@ reply, no interaction with the algorithm replicas. Its job is raw simultaneous a
 
 | Control | Behaviour |
 |---|---|
-| Board table | one row per board the receiver has seen: tick box, board, MAC, IP, state (colour-coded as in the SOURCE combo), rows written, and frames dropped by a full capture queue in red. Rebuilt only when the *set* of boards changes, so a tick the user has just made survives the 1 Hz refresh |
+| Board table | one row per board the receiver has seen: tick box, board, MAC, serial (`$CFG` `serial=`, fw 0.29; `?` on older firmware), IP, state (colour-coded as in the SOURCE combo), rows written, and frames dropped by a full capture queue in red. Rebuilt only when the *set* of boards changes, so a tick the user has just made survives the 1 Hz refresh |
 | Samples per board | rows per CSV, then stop by itself; 0 = continuous. Shows the equivalent duration at a nominal 500 Hz, labelled as nominal because each board's real rate is in its own `$CFG` |
 | Filename prefix | files are `<prefix>_<board>_<MAC tail>_<timestamp>.csv` in `captures/`. The board and MAC are in the name because the CSVs of one run are only useful together and a capture whose board cannot be identified is unusable |
 | Pre / post notes | written as `#` lines in **every** CSV of the run, the board's own identity line appended to the pre-notes |
@@ -2880,6 +2884,12 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.103 — 2026-10-28
+
+**Board serial number (fw 0.29).** `$CFG` carries `serial=` next to `mac=` (§4.4). `UdpBoard`
+adds it to its identity keys and its snapshot; the MULTI CAPTURE board table (§7.20) gets a
+**Serial** column between MAC and IP; the AFE4490 config text shows `Serial:` on the Board line.
 
 ### v1.102 — 2026-10-22
 

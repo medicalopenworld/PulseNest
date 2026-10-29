@@ -28933,3 +28933,43 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   SatSeconds.
 - Hallazgo lateral al mirar los TOML: `[ref]` escribe `probe-site` pero `tools/pulsenest_convert.py` lee
   `ref.get("site")`, así que el sitio de la referencia no llega al convertidor. Sin tocar; decisión de Alex.
+
+## Sesión 2026-10-28 — Primer uso de la app de escritorio; número de serie de la placa en `$CFG` (fw 0.29, lab v1.103)
+
+- Alex empieza a trabajar con Claude Desktop App (pestaña Code) en lugar de la CLI. Pregunta cómo ver la
+  sesión de IncuNest en otro monitor: clic derecho en la sesión de la barra lateral → Open in → Window, y
+  arrastrar esa ventana al segundo monitor.
+- Tarea: leer el número de serie de la placa y enviarlo en la trama que identifica la placa, para que lo vea
+  `pulsenest_lab.py`. La IP la toma el lab de la dirección de origen del datagrama; la MAC viaja en `$CFG`,
+  así que el serial va en `$CFG` como `serial=`, detrás de `mac=`.
+- Firmware 0.29: `board_serial_read()` justo después de `nvs_init()` lee NVS `mb_cfg`/`serial` (int32, lo
+  escribe el firmware motherBoard de IncuNest al aprovisionar la placa), comprobando el resultado de
+  `nvs_open` y `nvs_get_i32`. Si falta se envía `serial=none` (nunca 0, para no confundirlo con un serial
+  real) y se avisa por consola con el código de error. Nueva línea `# SYS: Serial <n>` en el arranque.
+- Lab v1.103: `serial` entra en las claves de identidad de `UdpBoard` y su snapshot; columna **Serial** en la
+  tabla de MULTI CAPTURE (entre MAC e IP, `?` con firmware antiguo); `Serial:` en la línea Board del texto de
+  configuración AFE4490. Spec §4.4, §7.20 y changelog.
+- Riesgo anotado, sin tocar: `nvs_init()` borra la NVS entera si `nvs_flash_init()` devuelve NO_FREE_PAGES o
+  NEW_VERSION_FOUND, y eso se llevaría el serial escrito por el firmware de IncuNest. Sin verificar en placa
+  qué tarjetas tienen el serial aprovisionado.
+- OTA fw 0.29 / lib 0.111 (`elfsha=6a4a5d1cb25947e0`, `build=df9d9f2-dirty`) a `82:5C` y `87:A4`, ambas
+  verificadas por MAC por `scripts/build.ps1`; `87:A4` volvió por 192.168.50.15 y no por el hotspot. `88:50`
+  no estaba en la red. Las dos dan `serial=none`. El namespace y la clave coinciden con el firmware
+  motherBoard (`origin/dev`, `preferences_keys.h`: `mb_cfg`/`serial`, `Preferences::putInt`) y las dos tablas de
+  particiones ponen la NVS en 0x9000, 0x5000 bytes: esas placas no tienen serial grabado (nunca aprovisionadas
+  por el flasher de IncuNest, o NVS borrada). Para saber cuál de las dos hace falta la consola UART0.
+- `tools/udp_fw_versions.py` lista también `serial`; `docs/boards.md` registra el OTA y corrige el párrafo
+  que decía que PulseNest no tenía campo de serial.
+- `docs/boards.md` no tiene ningún serial por placa (la tabla identifica por MAC); si Alex conoce alguno, se
+  añade como columna.
+- ¿El serial de la placa va alineado con el de la pantalla? Sí, ya en IncuNest (`origin/dev`): hay un serial
+  por incubadora, el flasher lo pide (0-9999) solo al flashear la motherBoard; la pantalla lo copia de la
+  motherBoard en cada `CTRL,STATE` y lo guarda en su NVS. Hostnames: motherBoard `IncuNest-<sn>`, pantalla
+  `IncuNest-Display-<sn>`. PulseNest lee la misma clave, así que envía el mismo número. No dar a PulseNest el
+  hostname `IncuNest-<sn>`: el flasher WiFi de IncuNest trata como motherBoard todo hostname que empiece por
+  `incunest`; si hiciera falta, `PulseNest-<sn>`. Hoy PulseNest no define hostname.
+- Pablo: el serial se pone por WiFi en `http://<ip>/config`. Confirmado: es el formulario del firmware
+  motherBoard (POST `/config`, campo `serial`, con usuario y contraseña del servidor web), no existe en
+  PulseNest. Procedimiento enseñado a Alex: flashear motherBoard por la página `/` de PulseNest, poner el serial
+  en `/config`, volver a PulseNest por el `/update` de Arduino (multipart). Alternativa ofrecida, sin decidir:
+  orden en PulseNest para escribir el serial (PulseNest pasaría a escribir en `mb_cfg`).

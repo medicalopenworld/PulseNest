@@ -12751,7 +12751,7 @@ class MultiCaptureWindow(QtWidgets.QWidget):
     the plots. Every capture carries the `HOST_T_US` column, the only clock the boards share.
     """
 
-    _COL_HEADERS = ("", "Board", "MAC", "IP", "State", "Rows", "Dropped")
+    _COL_HEADERS = ("", "Board", "MAC", "Serial", "IP", "State", "Rows", "Dropped")
     _NOMINAL_SR_HZ = 500   # for the "≈ N s" hint only; the real rate is per board in its $CFG
 
     def __init__(self, main_monitor):
@@ -12805,7 +12805,9 @@ class MultiCaptureWindow(QtWidgets.QWidget):
         self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         self._table.setToolTip(_make_tooltip(
             "Boards",
-            "Every board the UDP receiver has seen. Tick the ones to record. Rows is how many "
+            "Every board the UDP receiver has seen. Tick the ones to record. Serial is the board "
+            "serial number read from NVS by the firmware (fw 0.29+): 'none' on a board never "
+            "provisioned, '?' on older firmware. Rows is how many "
             "samples that board's CSV holds so far; Dropped is frames lost because its capture "
             "queue filled up, which means the main thread could not keep up.",
             src="PPGMonitor.udp_boards_snapshot()"))
@@ -12918,15 +12920,16 @@ class MultiCaptureWindow(QtWidgets.QWidget):
         for b in boards:
             r = self._row_of[b["ip"]]
             w = mm._multi_writers.get(b["ip"])
-            vals = ((b["board"] or "?").replace("incunest_", ""), b["mac"] or "?", b["ip"],
+            vals = ((b["board"] or "?").replace("incunest_", ""), b["mac"] or "?",
+                    b["serial"] or "?", b["ip"],
                     b["state"], str(w.count) if w else "—",
                     str(b["capture_overflow"]) if b["capture_overflow"] else "")
             for c, txt in enumerate(vals, start=1):
                 item = self._table.item(r, c)
                 item.setText(txt)
-                if c == 4:
+                if c == 5:
                     item.setForeground(QtGui.QBrush(QtGui.QColor(colours[b["state"]])))
-                elif c == 6 and txt:
+                elif c == 7 and txt:
                     item.setForeground(QtGui.QBrush(QtGui.QColor("#FF4444")))
             self._checks[b["ip"]].setEnabled(not running)
         self.btn_start.setText("STOP" if running else "START")
@@ -13009,7 +13012,7 @@ class UdpBoard:
     under the same lock; the main thread reads copies via PPGMonitor.udp_boards_snapshot().
     """
     _DATA_PREFIXES = (b'M1', b'M2', b'M3', b'M4')
-    _ID_KEYS = (b'mac', b'board', b'fw', b'lib', b'build', b'libsha', b'elfsha', b'idfver')
+    _ID_KEYS = (b'mac', b'board', b'fw', b'lib', b'build', b'libsha', b'elfsha', b'idfver', b'serial')
 
     def __init__(self, ip, now):
         self.ip = ip
@@ -13021,6 +13024,9 @@ class UdpBoard:
         # hash can answer — include/wifi_config.h is gitignored and build_Vxx/sdkconfig is
         # not versioned, and both compile in. None on a board with older firmware.
         self.elfsha = self.idfver = None
+        # Board serial number from NVS (fw 0.29): "none" on a board never provisioned, None on
+        # older firmware that does not send it.
+        self.serial = None
         self.datagrams = 0          # datagrams received
         self.bytes = 0              # payload bytes received
         self.frames = 0             # $M1..$M4 data frames
@@ -13078,10 +13084,10 @@ class UdpBoard:
                 kv[k] = v.split(b'*')[0].decode('ascii', 'replace')   # strip the *XX checksum
         new = tuple(kv.get(k) for k in self._ID_KEYS)
         if new[0] is None or new == (self.mac, self.board, self.fw, self.lib, self.build,
-                                     self.libsha, self.elfsha, self.idfver):
+                                     self.libsha, self.elfsha, self.idfver, self.serial):
             return False
         (self.mac, self.board, self.fw, self.lib, self.build,
-         self.libsha, self.elfsha, self.idfver) = new
+         self.libsha, self.elfsha, self.idfver, self.serial) = new
         return True
 
     def label(self):
@@ -13109,7 +13115,8 @@ class UdpBoard:
 
     def snapshot(self, active_ip):
         return {
-            'ip': self.ip, 'mac': self.mac, 'board': self.board, 'fw': self.fw, 'lib': self.lib,
+            'ip': self.ip, 'mac': self.mac, 'serial': self.serial, 'board': self.board,
+            'fw': self.fw, 'lib': self.lib,
             'build': self.build, 'libsha': self.libsha,
             'elfsha': self.elfsha, 'idfver': self.idfver, 'state': self.state(active_ip),
             'first_seen': self.first_seen, 'last_seen': self.last_seen,
@@ -14479,7 +14486,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             # they ARE the "monitor" ISO 80601-2-61 calibrates against a probe -- our monitor is
             # this board running incunest_afe4490, not the board alone. Everything from Sample
             # rate onward is CONFIGURATION of that monitor, not its identity, and belongs after.
-            f"  Board: {kv.get('board','?')}   MAC: {kv.get('mac','?')}\n"
+            f"  Board: {kv.get('board','?')}   MAC: {kv.get('mac','?')}   Serial: {kv.get('serial','?')}\n"
             # Provenance. Emitted by the firmware since 2026-09-05; '?' means the board is
             # running an older build. Without it the FW_* columns of a capture cannot be
             # attributed to a firmware version once the algorithms change.

@@ -25,7 +25,8 @@ from pulsenest.hub_client import HubClient       # noqa: E402
 
 # elfsha/idfver (firmware 2026-09-18): the image fingerprint and the toolchain. build and
 # libsha are commits and answer "from what source"; elfsha answers "is it the same binary".
-ID_KEYS = ("board", "mac", "fw", "lib", "build", "libsha", "elfsha", "idfver")
+# serial (fw 0.29, 2026-10-28): the board serial number from NVS mb_cfg/serial, "none" if unprovisioned.
+ID_KEYS = ("board", "mac", "serial", "fw", "lib", "build", "libsha", "elfsha", "idfver")
 
 
 def parse_hub(text):

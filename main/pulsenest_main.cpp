@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.28"   // 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.29"   // 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_METHOD2_REG_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_method2_reg_corr_min
@@ -118,6 +118,30 @@ static void nvs_init(void) {
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+}
+
+// Board serial number. The IncuNest motherBoard firmware stores it in NVS (namespace "mb_cfg",
+// key "serial", int32) when a board is provisioned; PulseNest only reads it, so a board flashed
+// with PulseNest keeps the serial it was given under IncuNest. "none" when the namespace or the
+// key is missing (a board never provisioned, or an NVS erased by nvs_init() above), so the host
+// never mistakes an absent serial for serial 0. Read once at boot, then read-only: no mutex.
+static char g_board_serial[12] = "none";   // int32 in decimal: at most 11 chars + NUL
+
+static void board_serial_read(void) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("mb_cfg", NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        printf("# SYS: Serial not found (nvs_open mb_cfg: %s)\n", esp_err_to_name(err));
+        return;
+    }
+    int32_t sn = 0;
+    err = nvs_get_i32(h, "serial", &sn);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        printf("# SYS: Serial not found (nvs_get_i32 serial: %s)\n", esp_err_to_name(err));
+        return;
+    }
+    snprintf(g_board_serial, sizeof(g_board_serial), "%" PRId32, sn);
 }
 
 // Forward declaration: defined in the WiFi/UDP section below.
@@ -823,6 +847,8 @@ static void send_cfg_frame(const char* cause) {
         // RMS, ≤ lib 0.100) read ~3× lower than PI-METHOD-1 (peak-to-peak, same subject).
         ",pi_method_id=%s"
         ",board=%s,mac=%02X:%02X:%02X:%02X:%02X:%02X"
+        // Board serial number from NVS (fw 0.29), "none" if the board was never provisioned.
+        ",serial=%s"
         // Provenance: which firmware produced this capture. Without it the FW_* columns of a
         // CSV become uninterpretable as soon as the algorithms change — see
         // captures/CAPTURE_SET_SPEC.md §2.3.
@@ -848,6 +874,7 @@ static void send_cfg_frame(const char* cause) {
         cfg.pi_method_id,
         BOARD_VERSION,
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        g_board_serial,
         // build = this project's commit, libsha = the library's, each covering only the paths
         // that reach this image (scripts/gen_build_version.py). They say WHICH COMMIT the image
         // was built from — what they cannot say is whether two images are the same, because
@@ -1534,6 +1561,7 @@ extern "C" void app_main(void) {
     // UART0 console with a 1024 B TX ring (see console_init) and NVS for the WiFi driver.
     console_init();
     nvs_init();
+    board_serial_read();
     // UART0 has nothing to enumerate; this delay only gives an already-attached monitor time to
     // catch the banner.
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -1566,6 +1594,7 @@ extern "C" void app_main(void) {
             esp_get_idf_version());
         printf("# SYS: MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        printf("# SYS: Serial %s\n", g_board_serial);
         printf("# SYS: Reset reason: %s\n",
             reset_reason_str(esp_reset_reason()));
     }
