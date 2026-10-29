@@ -8,7 +8,8 @@ include/wifi_config.h
 # Claude Code — configuración local (rutas de máquina, permisos locales)
 .claude/
 
-# Junction local a incunest_afe4490 (no trackear — es un enlace de máquina)
+# incunest_afe4490: the developer's junction to the library's own repo, or the clone of the pinned tag
+# made by scripts/get_lib.py. Not tracked; the pin is lib/incunest_afe4490.version (versioned).
 lib/incunest_afe4490/
 
 # Autogenerado por herramientas de build

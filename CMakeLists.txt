@@ -9,9 +9,10 @@
 #   idf.py -B build_V18 -DSDKCONFIG=build_V18/sdkconfig \
 #          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.board.V18" set-target esp32s3 build
 #
-# The library is consumed as a component from lib/incunest_afe4490 — on the development machine
-# a symlink to the library's own repo (same arrangement PlatformIO used), elsewhere a git
-# submodule of https://github.com/medicalopenworld/incunest_afe4490 at a tag.
+# The library is consumed as a component from lib/incunest_afe4490 — on the development machine a
+# junction to the library's own repo (same arrangement PlatformIO used); elsewhere scripts/get_lib.py
+# (run by scripts/build.ps1) clones https://github.com/medicalopenworld/incunest_afe4490 there at the
+# tag in lib/incunest_afe4490.version. Why not a submodule: docs/library_dependency.md.
 cmake_minimum_required(VERSION 3.16)
 
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/incunest_afe4490")

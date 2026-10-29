@@ -30,6 +30,10 @@ def main(argv):
         if shutil.which(tool) is None:
             print(f"error: '{tool}' not found on PATH", file=sys.stderr)
             return 1
+    # lib/incunest_afe4490: the developer's junction, or the pinned tag cloned from GitHub.
+    r = run([sys.executable, os.path.join(HERE, "..", "..", "scripts", "get_lib.py")])
+    if r.returncode:
+        return 1
     if not os.path.exists(os.path.join(BUILD, "build.ninja")):
         r = run(["cmake", "-S", HERE, "-B", BUILD, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"])
         if r.returncode:

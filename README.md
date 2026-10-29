@@ -9,6 +9,9 @@
 This repository is developed as part of the **IncuNest** project, open-source neonatal incubator by [Medical Open World](https://medicalopenworld.org).
 
 The goal is to verify PPG signal quality and SpO2/HR calculation in isolation, before integrating the AFE4490 into the main IncuNest firmware.
+
+> **Not validated for clinical use.** PulseNest and the library are research and development tools, not a
+> certified medical device: do not use their readings to diagnose, monitor or treat patients.
 This repository holds the test firmware and the two desktop programs that go with it: the
 **session launcher** for a recording campaign, and the **lab** for the bench. See *Running it*.
 
@@ -27,6 +30,13 @@ which build preset to use), how to identify one, and the flashing procedures.
 
 Requires [ESP-IDF v6.0.1](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/esp32s3/get-started/)
 (esp32s3 target). `scripts/build.ps1` exports the IDF environment itself.
+
+**The library.** `lib/incunest_afe4490` is not in this repository. `scripts/build.ps1` and the host test
+runner call `scripts/get_lib.py`, which clones [incunest_afe4490](https://github.com/medicalopenworld/incunest_afe4490)
+there at the tag written in `lib/incunest_afe4490.version` (run it by hand before building
+`tools/offline_runner`). On the development machine `lib/incunest_afe4490` is a junction to the library's own
+repo, which the script leaves alone. To build against a newer library, change the tag in
+`lib/incunest_afe4490.version` and commit it. Why this and not a submodule: [docs/library_dependency.md](docs/library_dependency.md).
 
 ```powershell
 # Build — select the preset matching your board (V15 / V16 / V17 / V18)
@@ -132,7 +142,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 ```
 
 ```
-lib/incunest_afe4490/          — AFE4490 library (driver + algorithms), symlink to its own repo
+lib/incunest_afe4490/          — AFE4490 library (driver + algorithms): junction to its own repo, or the pinned tag cloned by scripts/get_lib.py
+lib/incunest_afe4490.version   — The library tag this commit builds with (docs/library_dependency.md)
 main/pulsenest_main.cpp        — Test firmware (ESP-IDF); CMakeLists.txt, sdkconfig.defaults, sdkconfig.board.V1x
 examples/basic/main.cpp        — Minimal integration example
 pulsenest_lab.py               — Real-time PPG/SpO2/HR visualizer (pulsenest_lab_spec.md)
@@ -146,3 +157,8 @@ scripts/build.ps1              — Build / OTA / USB flash per board
 scripts/hotspot.ps1            — in3wifi without internet: Mobile Hotspot sharing the KM-TEST loopback adapter (on | off | status)
 conversation_log.md            — Session-by-session design decisions log
 ```
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 medicalopenworld. Provided "as is", without warranty of any
+kind; see the clinical-use notice above. The library is MIT too, in its own repository.

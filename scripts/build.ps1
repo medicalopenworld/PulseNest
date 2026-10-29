@@ -53,6 +53,10 @@ $root  = Split-Path -Parent $PSScriptRoot
 $build = "build_$Board"
 Set-Location $root
 
+# lib/incunest_afe4490: the developer's junction, or the pinned tag cloned from GitHub (scripts/get_lib.py).
+python (Join-Path $root 'scripts/get_lib.py')
+if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
 $idfArgs = @('-B', $build, "-DSDKCONFIG=$build/sdkconfig",
           "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board.$Board")
 if (-not (Test-Path "$build/sdkconfig")) { $idfArgs += @('set-target', 'esp32s3') }

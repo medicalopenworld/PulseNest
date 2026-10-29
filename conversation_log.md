@@ -28973,3 +28973,37 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   PulseNest. Procedimiento enseñado a Alex: flashear motherBoard por la página `/` de PulseNest, poner el serial
   en `/config`, volver a PulseNest por el `/update` de Arduino (multipart). Alternativa ofrecida, sin decidir:
   orden en PulseNest para escribir el serial (PulseNest pasaría a escribir en `mb_cfg`).
+
+## Sesión 2026-10-29 — Licencia MIT en la librería y en PulseNest; versión fijada de la librería (opción C)
+
+- Decisiones de Alex (2026-10-29): IncuNest es el repo padre. La librería y PulseNest heredan lo básico (MIT,
+  repos públicos, dependencias fijadas a etiqueta, versiones por etiqueta), pero conservan su idioma (inglés), su
+  flujo (solo `master`, commits directos) y sus reglas de documentación. No se reescribe el historial de la
+  librería: el correo personal ya es público en IncuNest, e IncuNest `master` fija la librería por SHA `#4e0dd91`.
+- Librería `incunest_afe4490`: `LICENSE` MIT (`Copyright (c) 2026 medicalopenworld`, mismo titular que IncuNest).
+  `library.json` pasa a licencia MIT y versión 0.111.0, la del `.h` y la spec. README con aviso de que no está
+  validada para uso clínico. `MOW.lnk` sale del índice y `*.lnk` va a `.gitignore`. Commits `0e2b070` y
+  `46f8a71`, subidos. Se crea y sube la etiqueta `v0.111` (`46f8a71`). **El repo pasa a público** (confirmado por
+  Alex en la sesión).
+- Escaneo del historial de la librería (185 commits) antes de publicarla: sin contraseñas, tokens, claves ni
+  SSID/contraseñas WiFi (no hay gitleaks; búsqueda con grep sobre las líneas añadidas). No hay CSV ni imágenes;
+  los sujetos solo aparecen por código (SUBJnn) y la campaña como HOSPNAV, sin nombres.
+- PulseNest: `LICENSE` MIT (mismo titular); README con aviso clínico y sección *License*.
+- Problema: `lib/incunest_afe4490` era un junction a `C:\PRJ\MOW\incunest_afe4490` ignorado por git, así que un
+  clon de PulseNest no compilaba y ningún commit decía con qué versión de la librería se compiló.
+- Se analizaron tres opciones (detalle en `docs/library_dependency.md`):
+  - A: submódulo fijado a etiqueta + variable de entorno `INCUNEST_AFE4490_DIR` para compilar la copia de
+    trabajo. Se llegó a implementar y probar, pero no sirve: Alex desarrolla la librería **siempre desde
+    sesiones de PulseNest**, que la leen y editan como `lib/incunest_afe4490`, y con A esa ruta sería el clon
+    fijado (en HEAD separado), no lo que se compila. Queda en la rama local `option-a-submodule-override`
+    (`554df4e`, `e43a4a7`), sin subir.
+  - B: trabajar dentro del submódulo (una sola copia, el puntero se mueve casi solo). No se elige por ahora:
+    riesgo de HEAD separado y hay que mover todas las referencias a `C:\PRJ\MOW\incunest_afe4490`.
+  - C (elegida por Alex, "en este momento; puede que en el futuro pasemos a otra"): se mantiene el junction
+    como siempre; `lib/incunest_afe4490.version` (versionado) guarda la etiqueta (`v0.111`);
+    `scripts/get_lib.py`, llamado por `build.ps1` y `run_host_tests.py`, no toca el junction y en un clon
+    descarga esa etiqueta de GitHub (y la actualiza si el pin cambia). Es el mismo mecanismo que IncuNest con
+    `lib_deps …#tag` en `platformio.ini`.
+- Regla nueva (en `CLAUDE.md`): cuando un commit de PulseNest necesite una versión nueva de la librería,
+  etiquetarla, subirla y cambiar `lib/incunest_afe4490.version` en ese mismo commit.
+- Se quita la variable de entorno de usuario `INCUNEST_AFE4490_DIR` que se había creado para la opción A.

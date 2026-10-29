@@ -19,7 +19,7 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 - **Framework:** **ESP-IDF v6.0.1 nativo** (sin Arduino, sin PlatformIO) desde 2026-09-15. Instalado en `C:\esp\v6.0.1\esp-idf`.
 - **Build:** `.\scripts\build.ps1 V18` (un `build_Vxx/` y un `sdkconfig` por placa a partir de `sdkconfig.defaults` + `sdkconfig.board.Vxx`); `-Ota <ip>` flashea por OTA (cuerpo raw), `-Usb COMxx` por USB. Firmware en `main/pulsenest_main.cpp`; pines por Kconfig (`main/Kconfig.projbuild`).
 - **OS:** FreeRTOS (multitarea)
-- **Librería AFE4490:** `incunest_afe4490` — repo propio: https://github.com/medicalopenworld/incunest_afe4490 (consumida como componente IDF: `EXTRA_COMPONENT_DIRS` → `lib/incunest_afe4490`, symlink al repo local)
+- **Librería AFE4490:** `incunest_afe4490` — repo propio: https://github.com/medicalopenworld/incunest_afe4490 (consumida como componente IDF: `EXTRA_COMPONENT_DIRS` → `lib/incunest_afe4490`, junction al repo local `C:\PRJ\MOW\incunest_afe4490`, sin trackear). **Versión fijada (opción C, desde 2026-10-29):** la etiqueta de la librería con la que compila cada commit está en `lib/incunest_afe4490.version`; `scripts/get_lib.py` (lo llaman `build.ps1` y los tests) la clona en un clon de PulseNest y no toca el junction. **Regla:** cuando un commit de PulseNest necesite una versión nueva de la librería, etiquetarla, subirla y cambiar `lib/incunest_afe4490.version` en ese mismo commit. Las opciones A (submódulo + variable de entorno) y B (trabajar dentro del submódulo) y por qué no se eligieron: `docs/library_dependency.md`
 
 ## Especificación de incunest_afe4490
 - Ver `incunest_afe4490_spec.md` en https://github.com/medicalopenworld/incunest_afe4490 — leer antes de tocar cualquier cosa relacionada con incunest_afe4490
