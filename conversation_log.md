@@ -29070,3 +29070,16 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   (probado el caso negativo; la primera versión del chequeo saltaba a la siguiente fila con fecha, corregido).
   Párrafo de cabecera de la spec reescrito (seguía diciendo Arduino + protocentral, estado de abril). Rationale
   §19 ampliado. Librería commit `4524492`, subido, sin cambio de versión; chequeo y 10/10 suites OK en local.
+
+## Sesión 2026-10-30 (cont.) — Bug de compilación en la V18: `SpO2HoldReason::EPS` → `DIV_EPS`, librería v0.112
+
+- Pregunta de Alex: la librería no compila en la V18 porque usa `EPS`. Causa: `xtensa/specreg.h`, que ESP-IDF
+  incluye en el ESP32-S3, define `EPS` (192) junto a `EPC` y `EXCSAVE`, y el preprocesador rompía el enumerador
+  `SpO2HoldReason::EPS` (v0.110). En PulseNest no había aparecido porque el firmware no nombra ese valor.
+- Decisión: renombrar solo el identificador C++ a `DIV_EPS`; el código 3 y la cadena `"eps"` de
+  `afeSpO2HoldReasonToStr()` no cambian, porque viajan en `$M4` campo 37 y en la columna `SPO2_HOLD_REASON`.
+  Comentario en el enumerador con el motivo; spec §5.1 y fila v0.112 en §14 (fecha 2026-10-30).
+- Versión 0.112 en los cinco sitios (`#define`, cabeceras `.h`/`.cpp`/ejemplo, título de la spec,
+  `library.json` 0.112.0): `check_version.py v0.112` OK, 10/10 suites host OK, build V18 limpio.
+- Librería commit `946c9e3`, etiqueta `v0.112` y release en GitHub (formato §9.10), con el sí de Alex.
+  PulseNest: `lib/incunest_afe4490.version` → v0.112 en este mismo commit (regla del 2026-10-29).
