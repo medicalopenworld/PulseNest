@@ -29061,3 +29061,12 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - Visto y no tocado: en PulseNest hay ficheros sin trackear que no están en `.gitignore` ni en
   `docs/third_party_references.md` (dos PDF de artículos, el catálogo UpnMed de 14 MB, un PDF generado por
   Gemini y los TOML de sesiones con notas clínicas). Solo `git add` explícito; un `git add -A` los publicaría.
+- Fecha de la spec (pregunta de Alex: "¿debería decir de qué fecha es?"). Decisión: sí, pero no en el
+  título (una cadena más que deriva; el título acababa de quedarse en v0.106), sino como columna *Date* en la
+  tabla del §14, una por versión. Rellenada de una vez desde git: fecha de la etiqueta cuando la hay; antes de
+  las etiquetas, el primer commit que lleva la versión (`#define`, título o fila del §14), buscando en la
+  historia de PulseNest para v0.1–v0.17 (la librería vivió allí hasta 2026-04-14; v0.1–v0.7 ya estaban en el
+  primer commit, 18-mar: "<= 2026-03-18"). `check_version.py` falla si la primera fila del §14 no lleva fecha
+  (probado el caso negativo; la primera versión del chequeo saltaba a la siguiente fila con fecha, corregido).
+  Párrafo de cabecera de la spec reescrito (seguía diciendo Arduino + protocentral, estado de abril). Rationale
+  §19 ampliado. Librería commit `4524492`, subido, sin cambio de versión; chequeo y 10/10 suites OK en local.
