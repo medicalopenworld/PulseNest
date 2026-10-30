@@ -29100,3 +29100,29 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - `test_spo2` nombraba los enumeradores antiguos (9 aserciones): renombrados. Spec §5.1 y fila v0.113 en
   §14. `check_version.py` OK, 10/10 suites, build V18 limpio. Librería commit `e30e5ba`, etiqueta
   `v0.113` y release en GitHub con el sí de Alex; pin de PulseNest → v0.113 en este commit.
+
+## Sesión 2026-10-30 (cont.) — Publicación de la librería: estudio de la sesión de análisis, decisión y aplicación
+
+- La sesión de análisis «Publicar librerías sin descargar repo completo» envió su estudio (topología,
+  canales de distribución, bucle interno, datos pesados de PulseNest) y una revisión del orden de canales
+  para el caso real de IncuNest (Arduino-ESP32 vía PlatformIO hoy, posible migración a ESP-IDF). Opinión de
+  la sesión de desarrollo punto por punto (tabla con veredicto y coste); Alex aprobó los "Sí".
+- Decisiones (Alex): la librería sigue en su repo (frontera de confidencialidad, releases propios);
+  canal base intacto (URL git + etiqueta) más la regla **una etiqueta nunca se mueve** (spec §9.10;
+  activar los releases inmutables de GitHub si la organización dispone del ajuste: no se ve por la API,
+  es un ajuste de la web); **zip de fuentes + SHA-256 como activos de cada release**, subidos por un
+  trabajo nuevo `release-assets` de la CI de la librería (espera hasta 15 min a que exista la release);
+  PulseNest no se trocea; **crudos pesados fuera de git** desde hoy y `docs/rf_taps/raw/` en `.gitignore`
+  (los cuatro CSV ya trackeados se quedan: quitarlos no adelgaza el clon y el informe perdería su
+  reproducibilidad; reescribir la historia, descartado). Aplazados con condición: registro de Espressif
+  (migración de IncuNest o sustituir `get_lib.py` por `override_path`), registro de PlatformIO (solo si
+  Pablo lo pide), `.bin` por placa como activos. Rechazado: Arduino Library Manager.
+- Matiz de cifras: el estudio da 33 MB de clon de PulseNest; el pack local mide 8,4 MiB (los CSV comprimen
+  bien). Anotado en el documento para remedir antes de apoyar otra decisión en ello.
+- Estudio traducido al inglés a `docs/product_publishing_alternatives.md` con la decisión en §0; regla y
+  política en CLAUDE.md. Librería v0.114 (sin cambio de código: CI + spec §9.10 + fila §14); pin → v0.114.
+- Preguntas de Alex sobre la carpeta de la librería: el aviso de permiso fue de la app (carpetas de la
+  sesión), no mío; `C:\PRJ\MOW` ya estaba en `additionalDirectories` y se añadió también la ruta explícita
+  de la librería. Regla de rutas: la ruta real `C:\PRJ\MOW\incunest_afe4490` para todo lo del repo de la
+  librería (git, ediciones, check_version); el junction `lib/incunest_afe4490` solo lo usan el build, el
+  lanzador de tests y `get_lib.py`.

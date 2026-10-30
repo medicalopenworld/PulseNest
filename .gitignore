@@ -116,3 +116,9 @@ tools/pulsenest_recorder_gui.ini
 tools/pulsenest_recorder_gui_faulthandler.log
 tools/pulsenest_session.ini
 tools/pulsenest_session_faulthandler.log
+
+# Heavy raw bench data goes OUTSIDE git from now on (release asset of the report, a data
+# repository, or Zenodo when it must be cited): docs/product_publishing_alternatives.md, 2026-10-30.
+# experiments/rf_tap_bench.py writes its raw CSVs here by default; the four of 2026-10-08 that are
+# already tracked stay tracked (an ignore rule never untracks a file).
+docs/rf_taps/raw/
