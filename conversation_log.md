@@ -29046,3 +29046,18 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   - `pi` pasa a ser pico a pico (≈ ×3).
   - Campos nuevos: `spo2_hold_reason` y `spo2_r_method2_reg_corr`.
 - Pendiente (en otra sesión, desde IncuNest): llevar `feat/v18-spo2` a v0.111 siguiendo esa release.
+
+## Sesión 2026-10-30 (cont.) — Revisión de la publicación de la librería; fuera `OLD_incunest_afe4490_spec.md`
+
+- Revisión de lo hecho en las sesiones del 29 y 30-oct (repo público, MIT, release v0.111, tests y CI en la
+  librería, pin `lib/incunest_afe4490.version`): coherente, todo subido, los dos repos limpios y en sincronía;
+  `get_lib.py` y `check_version.py` pasan en local. Consecuencias para el trabajo: el CI corre en cada push de
+  la librería (no solo en etiquetas), así que antes de subir van `check_version.py` y los tests; un test nuevo
+  se commitea en el repo de la librería; una versión nueva lleva etiqueta + release + pin en el mismo commit.
+- `OLD_incunest_afe4490_spec.md` eliminado de la librería (commit `7ca0dc4`, subido, sin cambio de versión):
+  era una instantánea de la spec de mayo de 2026 anterior a v0.25 (sin AMBDAC, STAGE2EN ni tabla de tiempos),
+  entró en `032115c` junto al `MOW.lnk` accidental, nada lo referenciaba, el §14 de la spec cubre desde v0.1 y
+  su cabecera decía "proprietary library", contradiciendo la MIT.
+- Visto y no tocado: en PulseNest hay ficheros sin trackear que no están en `.gitignore` ni en
+  `docs/third_party_references.md` (dos PDF de artículos, el catálogo UpnMed de 14 MB, un PDF generado por
+  Gemini y los TOML de sesiones con notas clínicas). Solo `git add` explícito; un `git add -A` los publicaría.
