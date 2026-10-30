@@ -29083,3 +29083,20 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   `library.json` 0.112.0): `check_version.py v0.112` OK, 10/10 suites host OK, build V18 limpio.
 - Librería commit `946c9e3`, etiqueta `v0.112` y release en GitHub (formato §9.10), con el sí de Alex.
   PulseNest: `lib/incunest_afe4490.version` → v0.112 en este mismo commit (regla del 2026-10-29).
+
+## Sesión 2026-10-30 (cont.) — Librería v0.113: `SpO2HoldReason` con prefijo `HOLD_`; constantes sin `inline`
+
+- Segundo aviso de compilación del fw IncuNest (Arduino-ESP32 2.0.14): `SpO2HoldReason::PI` choca con la
+  macro `PI` de `Arduino.h`, igual que `EPS` en v0.112; y las cuatro constantes `inline constexpr`
+  (`SPO2_R_METHOD_1_ID`, `SPO2_R_METHOD_2_ID`, `SPO2_R_ID_LEN`, `PI_METHOD_ID`) exigen C++17 y ese core
+  compila en gnu++11 con avisos como errores. Arreglo: `constexpr` a secas (copia interna por unidad de
+  traducción, suficiente). El `.cpp` pasa `g++ -std=gnu++11 -Wall -Wextra -Werror` con el HAL de host.
+- Pregunta de Alex: ¿puede pasar con el resto de enumeradores? Hoy no (buscado `#define` de cada uno en
+  ESP-IDF v6.0.1 y en el core 3.1.0 de PlatformIO: `NONE` solo en tres `.c`, nunca en cabecera), pero
+  `NONE`/`RANGE`/`PULSE`/`WINDOW` son palabras que cualquier cabecera puede definir y `enum class` no
+  protege del preprocesador. Propuesta de Alex: sufijo `_REASON` en todos. Decisión (Alex): prefijo
+  `HOLD_` en los ocho, que es la convención que ya siguen `ProbeState::PROBE_*`, `AFE4490ChState::CH_*`
+  y `AFE4490SampleRate::HZ_*`; `DIV_EPS` y `PI_GATE` desaparecen. Códigos 0–7 y cadenas intactos.
+- `test_spo2` nombraba los enumeradores antiguos (9 aserciones): renombrados. Spec §5.1 y fila v0.113 en
+  §14. `check_version.py` OK, 10/10 suites, build V18 limpio. Librería commit `e30e5ba`, etiqueta
+  `v0.113` y release en GitHub con el sí de Alex; pin de PulseNest → v0.113 en este commit.
