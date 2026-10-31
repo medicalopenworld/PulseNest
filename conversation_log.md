@@ -29126,3 +29126,47 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   de la librería. Regla de rutas: la ruta real `C:\PRJ\MOW\incunest_afe4490` para todo lo del repo de la
   librería (git, ediciones, check_version); el junction `lib/incunest_afe4490` solo lo usan el build, el
   lanzador de tests y `get_lib.py`.
+
+## Sesión 2026-10-31 — ¿Es adecuado `rsqm_ot_thr` = 150 ppm? Comprobación con los cuatro bebés de HOSPNAV
+
+- Pregunta de Alex: con las medidas de hospital (SUBJ08-11), ¿el umbral OT vigente (1,5e-4 A/A = 150 ppm,
+  lib v0.95) es adecuado? Análisis sobre las 18 sesiones (220 min, 6,6 M muestras), columnas OT_LED1/OT_LED2
+  y ProbeState de las capturas; script temporal en el scratchpad de la sesión (no versionado).
+- OT con sonda puesta (ppm, p50 / máx, sin los tramos de saturación por sonda retirada):
+  SUBJ08 (27+3 s, 1,16 kg) IR 131/156, RED 95/119 · SUBJ11 (30 s, 1,5 kg) IR 91/111, RED 72/89 ·
+  SUBJ09 (26+1 s, 1,53 kg, piel negra) IR 75/109, RED 27/35 · SUBJ10 (39+4 s, 2,75 kg) IR 43/85, RED 16/50.
+  En los cuatro RED < IR, así que el AND (`min(OT1,OT2) > thr`) lo decide siempre el RED con este ejemplar.
+- Veredicto: con 150 ppm **cero** tramos ≥ 0,2 s con ambos canales por encima en los cuatro bebés (con el
+  100 ppm anterior SUBJ08 pasó el 35 % del tiempo en PROBE_OT_HIGH, como registró la placa). Margen del lado
+  «aplicado» solo ×1,26 (RED máx 119 de SUBJ08); el IR de SUBJ08 superó 150 (máx 156, 1,1 % del tiempo),
+  de modo que con un ejemplar de sonda de orden invertido (RED/IR 1,35, medido el 7-sep) SUBJ08 se marcaría
+  ausente. OT crece al bajar el peso (SUBJ10 → SUBJ08: RED ×6): los < 1 kg no están en la muestra y quedarán
+  por encima de SUBJ08. Lado «aire»: mínimo medido 592 ppm (7-sep) → margen ×3,9; además con RF ≥ 50K y
+  50 mA el aire satura el TIA (OT recortada 480 ppm a 50K) y lo detecta la rama LED-only; el umbral solo
+  decide a RF 10K/25K.
+- La señal con OT alta sigue siendo válida (SUBJ08 replay v0.108, IR > 150: PI 1,6, SpO2_SQI 0,78; a
+  OT < 110: PI 4-5,5): subir el umbral no admite basura. SUBJ08 tiene RED/IR 0,73 ≈ razón en aire de la
+  sonda «B» (0,716): atenuación casi sin componente diferencial (OT_norm ≈ 0,16 en ambos canales), pie
+  muy fino o luz en derivación.
+- Recomendación (decisión de Alex pendiente): 250 ppm (media geométrica de 119-156 y 592: ×2,1 sobre el
+  RED máx, ×1,6 sobre el IR máx, ×2,4 bajo el aire); la normalización por el valor en aire (7-sep) sigue
+  siendo la solución de fondo. La frase de la spec §5.6.2 «max ≈ 145 ppm, margen ×1,03, n=1» queda
+  desfasada (el canal que decide es RED, máx 119; n=4). Sin cambios de código ni de spec en esta sesión.
+
+## Sesión 2026-11-01 — `rsqm_ot_thr` 150 → 250 ppm (librería v0.115)
+
+- Alex pregunta qué es «luz en derivación»: *optical shunting*, luz del LED que llega al fotodiodo sin
+  atravesar el pie (por el aire entre pinza y piel o por el plástico). Indicios en SUBJ08: OT a 1/5 del
+  aire, RED/IR 0,73 ≈ razón en aire, y PI que cae de 4-5,5 a 1,5 cuando la OT sube. No demostrable con
+  estos datos; lo distinguiría una captura pinza ajustada vs ladeada o una sonda adhesiva.
+- Decisión (Alex): subir `rsqm_ot_thr` a 2,5e-4 A/A (250 ppm). Hecho en la librería como **v0.115**:
+  `incunest_afe4490.h` (default e historial en el comentario), spec §5.6.2 (bloque «Update v0.115» con
+  la tabla de los cuatro bebés, el canal que decide y los márgenes; default en el texto; párrafo de
+  valores estimados), spec §14 (fila con fecha), **rationale §20** (datos, seis observaciones, cuatro
+  alternativas con la descartada y por qué, límites de la decisión, cómo reproducir). `check_version.py
+  v0.115` OK; 10/10 suites de tests OK. Commit local en la librería; **etiqueta y release pendientes del
+  «sí» de Alex**.
+- PulseNest: `lib/incunest_afe4490.version` → v0.115; `pulsenest_lab.py` (tooltip del umbral en la ventana
+  LCFG, tooltip del OT MONITOR, `LIB_DEFAULT` de `current_ot_thr()`, tooltip de ProbeState) y
+  `pulsenest_lab_spec.md` actualizados a 2,5e-4 / v0.115. Commit de PulseNest tras la etiqueta (el build
+  clona la librería por etiqueta).

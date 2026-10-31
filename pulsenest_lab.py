@@ -8065,10 +8065,10 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                                     "(OT > thr) from PROBE_APPLIED (OT ≤ thr) — only checked when\n"
                                                                     "the channel is CH_VALID_RANGE; an invalid/saturated channel is\n"
                                                                     "PROBE_AMB_SATURATING / PROBE_ONLY_LED_SATURATING instead (by phase), regardless of this threshold.\n"
-                                                                    "Default 1.5e-4 (lib v0.95, first real-patient data: HOSPNAV\n"
-                                                                    "SUBJ08 read up to 145 ppm with the probe applied; history\n"
-                                                                    "8.5e-5 -> 1.0e-4 CONTEC MS100 -> 1.5e-4). n=1 patient:\n"
-                                                                    "recalibrate as campaigns accumulate.",                          6,   0.0,    0.01,      " A/A",    1.0),
+                                                                    "Default 2.5e-4 (lib v0.115, four HOSPNAV patients: applied-probe\n"
+                                                                    "max 119 ppm on the channel that decides the AND, 156 on the\n"
+                                                                    "other; probe in air min 592 ppm; 250 = geometric mean. History\n"
+                                                                    "8.5e-5 -> 1.0e-4 CONTEC MS100 -> 1.5e-4 SUBJ08 -> 2.5e-4).",                          6,   0.0,    0.01,      " A/A",    1.0),
         ("rsqm_disconn_led_sub_thr",  "Disconn. LED_sub thr",      "|led_sub| threshold for PROBE_DISCONNECTED detection.\n"
                                                                     "If |led1_sub| AND |led2_sub| < this → no probe connected.\n"
                                                                     "Measured worst case: LED2_Sub=4013 (×1.25 margin → 5000).",   0,   0.0,    100000.0,  " counts", 1.0),
@@ -8333,7 +8333,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
 
         grp.setToolTip(_make_tooltip(
             "OT MONITOR",
-            "OT = (I_PD_LED - I_PD_ALED) / I_LED, shown in ppm (A/A x1e6); rsqm_ot_thr = 150 ppm "
+            "OT = (I_PD_LED - I_PD_ALED) / I_LED, shown in ppm (A/A x1e6); rsqm_ot_thr = 250 ppm "
             "by default. It is the whole electro-optical ratio (LED efficiency x tissue x PD "
             "responsivity x geometry), NOT tissue transmittance — which is why the two channels "
             "differ even in air, and why the ratio column matters.\n\n"
@@ -8352,7 +8352,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         in, and what the user edits before pressing Set, so the verdict line tracks the value
         being considered — including one typed but not yet sent.
         """
-        LIB_DEFAULT = 1.5e-4          # incunest_afe4490.h rsqm_ot_thr (v0.95)
+        LIB_DEFAULT = 2.5e-4          # incunest_afe4490.h rsqm_ot_thr (v0.115)
         spin  = self._spins.get("rsqm_ot_thr")
         scale = self._scales.get("rsqm_ot_thr", 1.0)
         if spin is None:
@@ -13338,11 +13338,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
              "but thin tissue at high RF gives the same signature (open check). Absent everywhere\n"
              "(isProbeAbsent): HGAC gated off, algorithms reset.\n\n"
              "1 — OT_HIGH (lib v0.90 name; was NOT_APPLIED's OT route)\n"
-             "Not DISCONNECTED, not saturated, AND <b>both</b> channels OT > 1.5×10⁻⁴\n"
-             "(rsqm_ot_thr default, lib v0.95; AND logic since lib v0.89)  →  rows OT_LED1, OT_LED2\n"
+             "Not DISCONNECTED, not saturated, AND <b>both</b> channels OT > 2.5×10⁻⁴\n"
+             "(rsqm_ot_thr default, lib v0.115; AND logic since lib v0.89)  →  rows OT_LED1, OT_LED2\n"
              "  OT = (I_PD_LEDx − I_PD_ALEDx) / I_LEDx  [A/A, dimensionless]\n\n"
              "2 — APPLIED (finger on sensor)\n"
-             "Not DISCONNECTED, not saturated, AND OT ≤ 1.5×10⁻⁴ on at least one channel\n"
+             "Not DISCONNECTED, not saturated, AND OT ≤ 2.5×10⁻⁴ on at least one channel\n"
              "(rsqm_ot_thr, runtime-configurable via $LCFG).",
              "AFE4490Data::probe_state"),
             # AFE4490DebugData analog signals — only populated in $M4 frame mode
