@@ -29170,3 +29170,7 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   LCFG, tooltip del OT MONITOR, `LIB_DEFAULT` de `current_ot_thr()`, tooltip de ProbeState) y
   `pulsenest_lab_spec.md` actualizados a 2,5e-4 / v0.115. Commit de PulseNest tras la etiqueta (el build
   clona la librería por etiqueta).
+- Etiqueta `v0.115` subida y release publicada (CI en verde en master y en la etiqueta); commit de PulseNest
+  `27828ea` subido. **OTA 2026-11-01** a `82:5C` (.30) y `87:A4` (.92): fw 0.29 / lib 0.115, `build=da4ef9e`,
+  `libsha=12999a2`, `elfsha=9b4d163a40d4d6c5`, verificadas por MAC por `build.ps1`; `$LCFG` por el hub da
+  `rsqm_ot_thr=2.5000e-04` en las dos. `88:50` estaba apagada y sigue en lib 0.111. Anotado en `docs/boards.md`.
