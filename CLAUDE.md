@@ -22,6 +22,10 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 - **Librería AFE4490:** `incunest_afe4490` — repo propio: https://github.com/medicalopenworld/incunest_afe4490 (consumida como componente IDF: `EXTRA_COMPONENT_DIRS` → `lib/incunest_afe4490`, junction al repo local `C:\PRJ\MOW\incunest_afe4490`, sin trackear). **Versión fijada (opción C, desde 2026-10-29):** la etiqueta de la librería con la que compila cada commit está en `lib/incunest_afe4490.version`; `scripts/get_lib.py` (lo llaman `build.ps1` y los tests) la clona en un clon de PulseNest y no toca el junction. **Regla:** cuando un commit de PulseNest necesite una versión nueva de la librería, etiquetarla, subirla y cambiar `lib/incunest_afe4490.version` en ese mismo commit. Las opciones A (submódulo + variable de entorno) y B (trabajar dentro del submódulo) y por qué no se eligieron: `docs/library_dependency.md`
 - **Publicación de la librería (decisión 2026-10-30, `docs/product_publishing_alternatives.md`):** canal base = URL git + etiqueta; **una etiqueta nunca se mueve** (un error se arregla con una etiqueta nueva, `vX.Yb`); cada release lleva el zip de fuentes y su SHA-256, los sube la CI. Registros (Espressif, PlatformIO) aplazados; condiciones en el documento. **Datos crudos pesados fuera de git** desde esa fecha (activo del release del informe, repo de datos o Zenodo); `docs/rf_taps/raw/` está en `.gitignore`.
 
+## Nomenclatura
+- `docs/nomenclature.md` es el diccionario de nombres del proyecto (reglas, correspondencia ISO 80601-2-61, términos sin identificador). Los nombres de los campos y parámetros de la librería los manda su spec; el diccionario los cita, no los repite.
+- **Regla obligatoria (desde 2026-11-07):** al introducir o renombrar un término, actualizar `docs/nomenclature.md` en el mismo commit, sin que el usuario lo pida.
+
 ## Especificación de incunest_afe4490
 - Ver `incunest_afe4490_spec.md` en https://github.com/medicalopenworld/incunest_afe4490 — leer antes de tocar cualquier cosa relacionada con incunest_afe4490
 - La spec y la librería están **versionadas juntas** (misma versión semántica) en el repo de la librería

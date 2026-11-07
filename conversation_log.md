@@ -29174,3 +29174,140 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   `27828ea` subido. **OTA 2026-11-01** a `82:5C` (.30) y `87:A4` (.92): fw 0.29 / lib 0.115, `build=da4ef9e`,
   `libsha=12999a2`, `elfsha=9b4d163a40d4d6c5`, verificadas por MAC por `build.ps1`; `$LCFG` por el hub da
   `rsqm_ot_thr=2.5000e-04` en las dos. `88:50` estaba apagada y sigue en lib 0.111. Anotado en `docs/boards.md`.
+
+## Sesión 2026-11-01 (bis) — pinout del DE9 Nellcor (manual EDAN H100N)
+
+- Alex trae el manual de usuario Solic H100B/H100N (en realidad EDAN Instruments, P/N 21.54.109000 rev. 2.7,
+  agosto 2020); el H100N lleva el módulo Nellcor OxiMax y su §2.3 «SIO definition» da los 9 pines del conector:
+  1 GND · 2 LED+ (ánodo IR) · 3 LED− (ánodo rojo) · 4 retorno memoria sensor (DigiCAL) · 5 ánodo fotodiodo ·
+  6 pantalla interior · 7 pantalla exterior · 8 datos memoria sensor (DigiCAL) · 9 cátodo fotodiodo. Confirma
+  LEDs antiparalelos en 2-3 (puente H del AFE4490), fotodiodo en 5-9 y memoria OxiMax en 4-8.
+- Discrepancia abierta: EDAN pone GND en el 1 y pantalla a GND en el 6, donde los manuales N-200/N-180/SRC-2
+  sitúan la RCAL (Alex midió ≈ 7,5 kΩ ahí el 27-oct). Inferencia: tabla simplificada, el pin 1 es el nudo del
+  divisor que lee la RCAL. No resuelto.
+- Dónde registrarlo: Alex pregunta si hay un documento existente antes de crear uno. No hay doc de hardware de
+  sondas; decisión de Alex: subsección en `docs/ppg_neonatal_manufacturer_references.md` §2 Medtronic/Nellcor
+  («EDAN H100B / H100N user manual»), con la tabla literal, la nota DigiCAL, la discrepancia RCAL y las cifras
+  del módulo (660/900 nm, < 15 mW, ±2/±3/±2, PR 20-250 ±3, PI 0,03-20 %, validación 18-50 años). El PDF es de
+  terceros y no entra en el repo. Sin cambios de código. Commit pendiente.
+
+## Sesión 2026-11-05 — `ppg_disp`: modos normalizados (diseño; librería v0.116 pendiente)
+
+- Alex pregunta qué es `ppg_disp`: OT del canal elegido (IR por defecto), paso banda 0,5-20 Hz, negada;
+  A/A, media cero, ~1e-6..1e-5; solo para plots con autoescala; ningún algoritmo la consume.
+- Alex propone añadir una versión normalizada a rango fijo y otra cuyo rango dependa de PI, y pregunta si
+  campos nuevos en `AFE4490Data` o una función selectora. Arte previo: Nellcor/Masimo/Philips autoescalan
+  la pletismográfica y enseñan la perfusión aparte (número o barra); la onda que encoge con PI bajo no la
+  hace ninguno (decisión propia).
+- **Decisiones (Alex):** un solo campo `ppg_disp` y selector `AFE4490PPGDispMode` {`OT_AC` (actual,
+  default), `NORM` [−1, +1], `NORM_PI` [−A, +A]}; rango bipolar, no [0..1]; A = 0,5 + 0,5·ln(PI/lo)/ln(hi/lo)
+  recortado a [0,5, 1]. Claude fija además (reversibles): normalizar por √2·RMS propio (convención 2√2 de
+  PI-METHOD-1) con `EmaChannel` propio (τ `ppgdisp_norm_tau_s` = 2 s provisional, warm-up 2τ) y recorte a
+  ±1; `lo`/`hi` = `spo2_pi_sqi_lo/hi` (0,5/2 %) en vez de dos parámetros nuevos; PI NaN → A = 0,5; sin
+  sonda → 0 y tracker reiniciado (un autoescalado sobre ruido haría pasar una sonda al aire por paciente).
+- Escrito: **rationale §21** (fields vs selector, las tres alternativas de normalización, por qué no la EMA
+  de SpO2, log vs lineal, puntos abiertos) y **spec**: §1.3, §2.1, §2.3b, §2.4, §3, §3b, **§5.9 nueva**
+  (contrato normativo, marcado «implementación pendiente»), §10.2, §14 fila v0.116 *(planned)*. Sin código.
+- **Plan de trabajo:**
+  1. Librería v0.116: enum + codec, `AFE4490Config::ppgdisp_mode`/`ppgdisp_norm_tau_s`, `setPPGDispMode()`,
+     `setPPGDispNormTau()`, rama en `_process_sample()`, suite `test/test_ppgdisp/` (6 casos de §5.9),
+     fecha en §14 y título, `check_version.py`, etiqueta y release (esperan el «sí»).
+  2. PulseNest fw 0.30: `$CFG` imprime el modo, `$SET`/`$LCFG` `ppgdisp_mode` y `ppgdisp_norm_tau_s`;
+     `lib/incunest_afe4490.version` → v0.116; lab: combo y spin en la ventana LCFG, eje Y ±1 y modo en el
+     título del plot PPG, tooltip `PPG_DISP`, `pulsenest_lab_spec.md`; runner offline: clave `ppgdisp_mode`;
+     build V17/V18 y OTA a 82:5C y 87:A4 (`docs/boards.md`).
+  3. Validación: réplica de SUBJ08-11 en los tres modos con el runner; distribución del rebasamiento de ±1,
+     escalón RF del HGAC, modulación respiratoria; fijar τ y decidir si `lo`/`hi` se desacoplan. Resultado
+     como addendum al rationale §21.
+  4. Avisar a Pablo: el HMI de IncuNest consume `NORM_PI` con contrato [−1, 1].
+
+## Sesión 2026-11-05 (bis) — `ppg_disp` NORM: RMS vs pico-a-pico, criterios, ISO y suelo de A
+
+- Alex pide comparar la normalización RMS (2√2) con una pico-a-pico real. Medido sobre la columna `PPG` de
+  las capturas de SUBJ08/09/10 (sonda puesta): factor de cresta en la banda 0,5-20 Hz = 3,3-3,6 (no 2,8-3,2,
+  que era la banda de PI); con 2√2 el latido mediano llena ±1 pero se recorta el 14-16 % de las muestras y
+  más de la mitad de las crestas. Un seguidor de envolvente (ataque instantáneo, caída exponencial) recorta
+  0,2-0,9 % y centra la onda asimétrica. Scripts en el scratchpad de la sesión (sin pasar a `experiments/`
+  hasta que haya decisión).
+- Alex encuentra el análisis caótico y fija los **criterios** de evaluación: 1) escalado por PI; 2) riesgo
+  de recorte al crecer el pulso; 3) inmunidad a picos, **con su preferencia: un pico puede saturar el plot
+  pero no reescalarlo**; 4) actualización del rango **continua y asimétrica** (encoger rápido 1-2 s,
+  crecer lento o con pendiente limitada); 5) centrado, sin señal → plano, arranque, sin depender de HR1,
+  coste, reproducibilidad offline, diástole intacta en bradicardia. Rationale §21.5. Pendiente: tabla de
+  candidatos (envolvente con subida limitada; mediana de amplitud por latidos) contra criterios.
+- Alex trae un análisis de NotebookLM sobre la ISO 80601-2-61. Comprobado contra el PDF: 201.3.241 y la
+  nota 3 de 201.12.4.102 son literales (la onda normalizada por sí sola puede enmascarar señal no fiable);
+  AA.2.14 avala escalar para dar resolución en señal baja; **omite la nota 6** (retener SpO2 ya cumple el
+  indicador, que la librería hace) y la nota 4 (la onda no indica DC insuficiente; eso lo cubre el RSQM);
+  201.3.212 es una cita errónea y la «recomendación logarítmica» no está en la norma. Conclusión: el
+  escalado es usabilidad, no cumplimiento. `NORM` queda como modo de laboratorio; **`NORM_PI` es el modo de
+  producto**. Rationale §21.6.
+- Suelo de A: Claude propone 0,25 y reconoce que salía del ejemplo de NotebookLM, sin evidencia; argumentos
+  reales: legibilidad de la muesca dícrota (`suelo ≥ 20/H` px), contraste 2:1 vs 4:1, y que bajo PI 0,5 %
+  la SpO2 ya está retenida. **Decisión (Alex): se mantiene 0,5**, compromiso entre reflejar PI baja y seguir
+  viendo la forma de onda en un monitor mucho más pequeño que uno hospitalario. Spec §5.9 corregida (cifra
+  del 12 % retirada, estimador de `NORM` marcado como pendiente de la tabla, nota ISO, suelo y su razón).
+
+## Sesión 2026-11-05 (ter, fork) — tabla de PI por edades
+
+- Alex pide una tabla de PI (pico a pico, las unidades de la librería desde v0.101) por población (adulto,
+  niño, neonato a término, prematuro tardío, 28-33 sem, < 28 sem) con niveles: señal insuficiente, PI baja,
+  normal, PI alta, imposible (> 20 %). Escrita en `docs/pi_reference_ranges_by_age.md` con fuentes (Granelli
+  2007, Hakan 2013, De Felice 2002, Lima 2002, manuales). Solo adulto y neonato a término tienen series
+  grandes; las filas de prematuros son estimaciones marcadas como tales.
+- Consecuencia anotada en spec §10.3 y rationale §11: 0,5 % = p1 de Granelli (razonable para no publicar);
+  2,0 % está por encima de la mediana neonatal (PI 1,2 → SQI 0,47). Procedencia de 0,5/2,0 sigue abierta.
+
+## Sesión 2026-11-06 — ppg_disp: cadena de visualización (filtro, tasa, puntos, barrido) antes de la ventana de test
+
+**Preguntas de Alex:** cada cuánto se actualiza el escalado; por qué el paso banda 0,5-20 Hz y de 2.º orden; compatibilizar el corte con los 25 Hz del HMI; quién más usa `ppg_disp`; ventana de test en el lab; tasa de ploteo vs píxeles y segundos; velocidad de barrido 25 mm/s; por qué 128 puntos ≠ píxeles; qué fijar antes de la ventana.
+
+**Hechos comprobados (IncuNest):** `CommTask` manda `CTRL,PPG` a 25 Hz por muestreo directo sin antialias (escala fija 1,6e-8, Pablo e3a71567); `PpgSnapshot` 50 Hz; chart `ui_LockPPGChart` 460×105 px, 128 puntos elegidos por tiempo (5,1 s a 25 Hz, Pablo f098e634 del 13-ago: 256 puntos = 10,2 s apelmazados; monitores clínicos 4-6 s), no por anchura (entonces 665 px, hoy 460 → 3,6 px/punto). CrowPanel 800×480, ≈5,2 px/mm. Consumidores de `ppg_disp`: ningún algoritmo de la librería; en el lab solo HR2LAB lo usa como entrada de cálculo. Masimo: FIR 7,5 Hz y 62,5 Hz (prior art).
+
+**Conclusiones:** 0,5-20 Hz de 2.º orden es un default heredado sin rationale; a 25 Hz (Nyquist 12,5) hay plegado. Tasa de transporte = constante del contrato; puntos del HMI = tasa × anchura_mm / barrido. 25 mm/s anotado (rationale §21.7, nuevo; §21.4 corregido: el widget existe). Decisión de filtro y tasa: candidatos a elegir con la ventana `PPGDISPLAB` y luego congelar; píxeles/segundos/barrido/px por mm = parámetros de la ventana.
+
+**(fork, mismo día) Números del chart actual, a petición de Alex:** pantalla CrowPanel Advance 7.0, 800×480 px, área activa ≈154×86 mm (no está en el repo; Alex midió con regla ≈154 mm de pantalla y ≈88 mm de chart, ±1 mm), ≈5,2 px/mm. Chart 460×105 px ≈ 88×20 mm; Y 0-255 → 2,4 valores por px; 128 puntos a 25 Hz = 5,12 s, 3,6 px por punto; avance = 25 × 3,6 / 5,2 ≈ 90 px/s ≈ **17,3 mm/s**; hueco de borrado 6 puntos ≈ 22 px ≈ 0,24 s. A 25 mm/s el mismo chart mostraría 3,5 s = 88 puntos a 25 Hz. Anotado en rationale §21.7 (bullet nuevo).
+
+**Filtro, ¿cambiarlo ya en la librería?** No: la ventana reproduce `ppg_disp` desde OT_LED1 con la aritmética de la librería (0,001-0,035 % de desajuste p99 en SUBJ08-11), así que cualquier filtro se prueba sin tocar la librería; v0.116 llevará modos y filtro juntos, con una sola nota *Breaking*, y el test «OT_AC bit-idéntico a v0.115» se reescribe entonces. Candidatos: BP2 (actual) y BP2+LP4 (LowPass4 en f_hi, bloques que ya existen).
+
+**Hecho: ventana PPGDISPLAB (lab v1.104, spec §7.22).** Cadena en Python por muestra (filtro → tracker SLEW/INSTANT/MAXMIN/RMS → OT_AC/NORM/NORM_PI), emulación del HMI (tasa 25-250 Hz, HOLD/AVG, byte, chart de la geometría del HMI con barrido en mm/s y px/mm), perturbaciones SPIKE/STEP, métricas §21.5 en vivo; en vivo con $M4 o con captura P1. Probada sin pantalla sobre SUBJ08-11 y con el test de PLOTS (13/13). **Corrección de la medida del 5-nov:** el script de scratch detectaba latidos sobre la traza cruda y fusionaba latidos (97 en SUBJ10 frente a HR3 168 lpm), inflando el «llenado»; con detección sobre la traza normalizada SLEW da 0,53/0,85/0,45/0,79 (SUBJ08-11) y INSTANT 0,62/1,00/0,60/1,00 sin recorte. SUBJ10 sigue infracontado (captura ruidosa). Decisión del estimador: pendiente, con la ventana en mano. Nada en commit.
+
+**Ajustes (mismo día):** el panel lateral de la ventana principal va ahora en un QScrollArea (altura mínima de la ventana 1796 → 248 px sin pantalla; ya no cabía antes del botón nuevo, que la empeoró); la vista previa del HMI de PPGDISPLAB arranca con el chart real de hoy (460×105, 17,3 mm/s → 128 puntos = 5,12 s a 25 Hz) y el barrido clínico de 25 mm/s (88 puntos = 3,5 s) se pone a mano. Spec §6/§7.22/changelog v1.104. Test de PLOTS 13/13. Sin commit.
+
+**Rueda del ratón sobre el panel lateral:** filtro de eventos `_WheelToScroll` en combos, spin boxes y sliders del panel: la rueda desplaza el panel y nunca cambia el control (FRAME MODE cambiaba de trama al pasar el puntero). Verificado sin pantalla.
+
+**Margen (headroom) medido en PPGDISPLAB (SLEW, SUBJ08/09/11):** 1,15 reduce el recorte a la mitad (1,6→0,9 %, 8,7→5,3 %, 5,3→1,7 %) a cambio de ~12 % menos llenado; 1,25 apenas mejora. INSTANT no recorta nunca. Recomendación: el margen va en la librería, antes del recorte a ±1 (`ppgdisp_norm_headroom`); motherBoard y HMI ya reciben el valor recortado y no pueden recuperarlo. Valor por decidir con la ventana.
+
+## Sesión 2026-11-07
+
+**Tema:** traspaso de la sesión bifurcada de nomenclatura; explicación de PPGDISPLAB.
+
+**Nomenclatura al repo (hecho en la bifurcación, sin commit):** `docs/nomenclature.md` (inglés: reglas 1-9, señales, correspondencia ISO 80601-2-61, modos de `ppg_disp`, vocabulario de algoritmos y de campo) y sección «Nomenclatura» en `CLAUDE.md` con la regla «al introducir o renombrar un término, actualizar `docs/nomenclature.md` en el mismo commit». La memoria del diccionario queda como puntero. Los nombres de los campos y parámetros de la librería los manda la spec; el diccionario los cita, no los repite.
+
+**Decisiones de Alex:** (1) en prosa, NORM es «escalado vertical» / *vertically scaled*; *normalized* se reserva para la trazabilidad a ISO 201.3.241 (*displayed at constant pulse amplitude independent of the actual pulse magnitude*); NORM_PI es un híbrido justificado por 201.12.4.102 nota 3 (una onda normalizada sola puede enmascarar señal poco fiable). (2) *Sweep speed* es término de fabricante: la norma no define el eje horizontal (comprobado en el PDF: ni *sweep*, ni mm/s, ni *time base*). (3) Pendiente de Alex: renombrar o no NORM/NORM_PI a SCALED/SCALED_PI antes de etiquetar v0.116.
+
+**Pendiente para la sesión de desarrollo:** (a) en `incunest_afe4490_spec.md`, columna o cita ISO donde falte en las tablas de campos: `spo2_r` 201.3.239, `pi` ≈ %mod 201.3.245, NORM 201.3.241, `rsqi` tabla GG.1, DiagCode 201.12.4.102, ProbeState 201.13.101 / tabla GG.3; se hará al cerrar §5.9 de v0.116, para tocar las tablas una sola vez y con el nombre definitivo de los modos. (b) Commit de `docs/nomenclature.md` + `CLAUDE.md` cuando Alex lo pida.
+
+**Decisión de Alex (7-nov): los modos se quedan NORM / NORM_PI**, no se renombran a SCALED. En prosa se sigue diciendo «escalado vertical»; «normalizado» queda para la trazabilidad a ISO 201.3.241.
+
+**Recorte en ±1, no en ±A (decisión de Alex, 7-nov).** Alex vio en PPGDISPLAB que el trazo de NORM_PI se recortaba en la línea ±A y no en ±1: «escalar adaptativamente tiene sentido (ver bajar el PI); recortar adaptativamente, no». Medido con la ventana (SLEW, SUBJ08-11): recortar en ±A cuadruplica las muestras recortadas donde A < 1 (SUBJ08 6,1 → 1,6 %; SUBJ10 18,5 → 13,6 %) y no cambia nada donde A = 1, que es donde sigue haciendo falta el margen. Nueva fórmula de §5.9: `ppg_disp = clamp(A·u/H, −1, +1)`. Hallazgo colateral: la métrica «clip» de la ventana ya contaba |A·u| > 1, así que la tabla de margen del 6-nov sigue valiendo. Cambiado en la ventana (una línea), spec §5.9 y comentarios del enum, rationale §21.8 (tabla y porqué), spec del lab §7.22. Sin commit.
+
+**Color de hi/lo en PPGDISPLAB (7-nov):** las líneas hi/lo del primer plot (marco del tracker) pasan de naranja a magenta, el color de ±A del segundo plot, porque son el mismo marco (Alex). Tooltip y spec §7.22.
+
+**PPGDISPLAB en OT_AC (7-nov):** el segundo plot se vaciaba (no hay tracker); ahora muestra la señal sobre la escala fija de CommTask (127 × 1,6e-8 A/A = ±1), es decir, lo que el HMI dibuja hoy, con su recorte. Tooltip y spec §7.22.
+
+**Observaciones visuales de Alex en PPGDISPLAB (7-nov, vía bifurcación; NORM_PI, recorte en ±1):** SLEW tiene buena pinta. INSTANT distorsiona (mesetas cuando la señal crece: el marco salta en la misma muestra que produce el extremo). MAXMIN distorsiona (saltos bruscos cuando un extremo sale de la ventana). RMS se ve bien pero el marco sube y baja continuamente: la escala es √(EMA de x²) con τ 1 s, comparable al periodo cardiaco neonatal (0,4-0,5 s), así que oscila dentro de cada ciclo y modula la amplitud a la frecuencia cardiaca (pico comprimido, valle estirado, muesca dicrota deformada); subir τ a 3-4 s lo reduce a costa de seguimiento (misma razón por la que PI-METHOD-1 usa ventana de 6 s). SLEW no lo tiene por construcción (marco movido por extremos de bloques de 100 ms, subida limitada, bajada con τ). Conclusión provisional: descartar RMS, INSTANT y MAXMIN; SLEW como estimador de `scale`. **Pendiente:** confirmación de Alex (iba a enviar más observaciones numeradas; solo llegó la 1); entonces cerrar spec §5.9 con SLEW (rise/win/τ de la ventana), addendum en rationale §21.5 y margen H.
+
+**Decisión de Alex (7-nov): estimador SLEW.** Spec §5.9 cerrada: tracker de envolvente con subida limitada (`ppgdisp_norm_rise_per_s` 0,5 del marco por segundo), ventana de extremos de bloques de 100 ms (`ppgdisp_norm_win_s` 1,0 s, también el calentamiento), bajada exponencial (`ppgdisp_norm_tau_s` 1,0 s) y margen (`ppgdisp_norm_headroom` 1,15); un setter `setPPGDispNormTracker()` sustituye a `setPPGDispNormTau()`. Tests (1)-(7) reescritos para SLEW. Rationale §21.5 addendum con la tabla medida y las observaciones visuales (INSTANT mesetas, MAXMIN saltos, RMS respira porque τ ≈ periodo cardiaco), §21.4 actualizado. Ventana: margen por defecto 1,15 (spec del lab §7.22). Quedan abiertos filtro de display y tasa de transporte (§21.7). Siguiente: implementar v0.116 en la librería. Sin commit.
+
+**Asimetría de SLEW y antecedentes (7-nov, vía bifurcación).** Alex pidió el significado de tau, rise, window y headroom y por qué subida y bajada se calculan distinto; respuesta aceptada: subida con límite lineal para que la respuesta a un pico no dependa de su tamaño (criterio 3), bajada exponencial porque una señal que mengua es siempre real y la exponencial suaviza los escalones del objetivo de ventana. **Retirada** una afirmación de la bifurcación («Masimo y Nellcor usan ataque limitado y liberación exponencial»): sin referencias. Lo documentado: Masimo reconoce que autoescala y que eso enmascara cambios (US 8414499, US 2008/0188760); Shelley 2007: todos los oxímetros autoganan la onda, ninguno describe la dinámica; el slew-rate de Masimo (US 6157850) es de la FC mostrada y PVI, no de la onda; único antecedente Puritan-Bennett US 4883353 (1989), envolventes con la asimetría contraria, para la saturación, no para la pantalla. SLEW se sostiene por el razonamiento y por las medidas de PPGDISPLAB. Ambas cosas en rationale §21.5 addendum.
+
+**Implementada la librería v0.116 (7-nov).** `AFE4490PPGDispMode {OT_AC, NORM, NORM_PI}` con codec `ot_ac`/`norm`/`norm_pi`; `PPGDispTracker` (SLEW: extremos de bloques de 100 ms sobre el reloj del PI, subida limitada, bajada exponencial, margen); `_ppgdisp_update()` en `_process_sample()`; `setPPGDispMode()`, `setPPGDispNormTracker(rise, win, tau, H)` con rangos (fuera de rango = llamada ignorada y logE); cinco campos nuevos en `AFE4490Config`; A(PI) se recalcula solo cuando cambia el PI. Suite `test/test_ppgdisp/` (8 tests); 11/11 suites del host en verde. **Dos precisiones medidas al implementar:** (1) un pico de 5× durante 100 ms sí reescala el marco (×2,3 con subida 0,5/s; ×1,5 con 0,2; ×1,2 con 0,1) porque su extremo queda un segundo en la ventana de objetivos; vuelve al 5 % en ~4,5 s; el criterio 3 se cumple en grado, no en absoluto (spec §5.9 y rationale §21.5 corregidos; los valores por defecto se quedan, 0,2/s o ventana 0,5 s son los mandos). (2) Una ventana plana (sonda puesta sin pulso) dejaría el marco atrapado en ~0 (15 s para volver a crecer): el tracker reinicia el calentamiento si el marco es menor que `pi_div_eps`. La bajada tras un escalón ×0,5 es 1 s + 3τ ≈ 4 s al 95 %, no «1-2 s». Modos documentados para un manual de usuario en el README (tabla de los tres modos y cómo funciona SLEW), en la spec §5.9 (estado) y en el enum. Nombres: se mantienen OT_AC / NORM / NORM_PI (Alex propuso NO_NORM / NORM / NORM_PI_DEPENDENT y dejó la elección). `docs/nomenclature.md`: fila frame/SLEW/headroom. **Pendiente:** etiqueta v0.116 y release (con el «sí» de Alex), PulseNest fw 0.30 (`$SET`/`$LCFG` ppgdisp_mode y tracker, pin de la versión), lab (parsear `$LCFG`, eje ±1 en los modos NORM), OTA y réplica de validación. Sin commit.
+
+**Renombrado OT_AC → NO_NORM (Alex, 7-nov).** El usuario de la incubadora no tiene por qué saber qué son OT ni AC; NO_NORM nombra la característica (normalización) que el selector modifica. Codec `ot_ac` → `no_norm`. Cambiado en librería (h, cpp, test, spec, rationale, README, ejemplo), lab, spec del lab y `docs/nomenclature.md`, con nota del nombre anterior en el enum, la spec y el diccionario. 11/11 suites y test de PLOTS en verde. Los modos quedan **NO_NORM / NORM / NORM_PI**.
+
+**Commit, etiqueta y release v0.116 (7-nov, con el «sí» de Alex).** Librería: commit cb124c6 en master, etiqueta anotada v0.116, push de rama y etiqueta, release en GitHub con la nota *What changes / Breaking / When upgrading* (https://github.com/medicalopenworld/incunest_afe4490/releases/tag/v0.116); la CI repite check_version y los tests y sube el zip de fuentes con su SHA-256. PulseNest sigue sin commit (lab v1.104, spec, diccionario, CLAUDE.md, log): irá con el fw 0.30 y el pin de `lib/incunest_afe4490.version` a v0.116.
+
+**Tarea pendiente añadida (Alex, 7-nov):** analizar si los umbrales PI de la normalización adaptativa (PI_lo 0,5 %, PI_hi 2 %) son los adecuados: qué dicen la norma y los estándares de facto, qué hacen los fabricantes, dependencia de la edad, y si deben ser configurables desde el HMI o fijos para no añadir complejidad ni confusión al manejo de la incubadora. Anotada en rationale §21.4 (incluido en el commit v0.116) y en memoria (`project_normpi_pi_thresholds_task`).
+
+**Precisión a la tarea de umbrales PI (Alex, 7-nov, vía bifurcación):** SQI de SpO2 (fiabilidad de la medida) y normalizador NORM_PI (perfusión baja de este bebé, clínico y de edad) persiguen objetivos distintos; el análisis tratará `spo2_pi_sqi_lo/hi` y `ppgdisp_norm_pi_lo/hi` como parámetros separados, cada uno con su evidencia, y solo los unificará si la evidencia da el mismo número (documentando que coinciden por evidencia y no por economía de parámetros). Desacoplarlos en la librería es un cambio pequeño, pero después del análisis; rationale §21.2 punto 4 llevará la reversión cuando se decida. Tarjeta de sesión de análisis actualizada con esta regla.

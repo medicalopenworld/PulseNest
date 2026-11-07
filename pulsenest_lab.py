@@ -6599,6 +6599,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("plot_hr3test",  "[_py_timing['plot_hr3test']]   HR3TEST   |  HR3TestWindow.update_plots()",     _PLOTS_TICK_BUDGET_MS),
         ("plot_pilab",    "[_py_timing['plot_pilab']]     PILAB     |  PILabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
         ("plot_xylab",    "[_py_timing['plot_xylab']]     XYLAB     |  XYLabWindow.update_plots()",       _PLOTS_TICK_BUDGET_MS),
+        ("plot_ppgdisplab", "[_py_timing['plot_ppgdisplab']] PPGDISPLAB |  PPGDispLabWindow.update_plots()", _PLOTS_TICK_BUDGET_MS),
     ]
     # (key, display name) — 'Max' column repurposed as count; queue=instantaneous, others=since connect
     _GAP_ROWS = [
@@ -10020,6 +10021,859 @@ class HR2LabWindow(QtWidgets.QMainWindow):
         event.accept()
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  PPGDISPLAB — display-chain bench for ppg_disp (library v0.116 design, rationale §21)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _lib_biquad_lp(f_hi, fs, q=0.70710678):
+    """(b0, b1, b2, a1, a2) of the library's BiquadFilter::init_lp: one 2-pole low-pass section,
+    bilinear and prewarped. q = 1/√2 is Butterworth; LowPass4 cascades q = 0.5412 and 1.3066."""
+    ohm = math.tan(math.pi * f_hi / fs)
+    ohm2 = ohm * ohm
+    d = 1.0 + ohm / q + ohm2
+    b0 = ohm2 / d
+    return b0, 2.0 * b0, b0, 2.0 * (ohm2 - 1.0) / d, (1.0 - ohm / q + ohm2) / d
+
+
+class _LibBiquad:
+    """BiquadFilter mirror: DF-II transposed, steady-state precharge on the first sample after
+    reset(), exactly as incunest_afe4490.h. Coefficients as (b0, b1, b2, a1, a2)."""
+    __slots__ = ("b0", "b1", "b2", "a1", "a2", "_v1", "_v2", "_pre")
+
+    def __init__(self, coeffs):
+        self.b0, self.b1, self.b2, self.a1, self.a2 = coeffs
+        self.reset()
+
+    def reset(self):
+        self._v1 = 0.0; self._v2 = 0.0; self._pre = True
+
+    def process(self, x):
+        if self._pre:
+            den = 1.0 + self.a1 + self.a2
+            y_ss = x * (self.b0 + self.b1 + self.b2) / den if den != 0.0 else 0.0
+            self._v1 = y_ss - self.b0 * x
+            self._v2 = self.b2 * x - self.a2 * y_ss
+            self._pre = False
+        y = self.b0 * x + self._v1
+        self._v1 = self.b1 * x - self.a1 * y + self._v2
+        self._v2 = self.b2 * x - self.a2 * y
+        return y
+
+
+PPGDispOffline = namedtuple('PPGDispOffline', 'ot ppg pi ps fs restarts')
+
+
+def _read_capture_ppgdisp(path):
+    """OT_LED1, PPG (the board's ppg_disp), PI and ProbeState of a v0.4 capture, with the rate the
+    file declares (`afe_prf_hz` in the `# @row N afe:` records) and the board-restart rows."""
+    prf, restarts, cols = set(), [], None
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if not line.startswith('#'):
+                if cols is None:
+                    cols = [c.strip() for c in line.split(',')]
+                continue
+            if ' afe: ' in line and 'afe_prf_hz=' in line:
+                prf.add(float(line.split('afe_prf_hz=', 1)[1].split()[0]))
+            elif ' event: board restarted' in line:
+                restarts.append(int(line.split()[2]))
+    if cols is None:
+        raise ValueError("no header row")
+    need = ('OT_LED1', 'PPG', 'PI', 'ProbeState')
+    missing = [c for c in need if c not in cols]
+    if missing:
+        raise ValueError("columns missing: %s (PPGDISPLAB needs a P1 capture)" % ", ".join(missing))
+    if len(prf) != 1:
+        raise ValueError("no single afe_prf_hz in the file (%s)" % sorted(prf))
+    use = [cols.index(c) for c in need]
+    with open(path, encoding='utf-8', errors='replace') as f:
+        body = (line for line in f if not line.startswith('#'))
+        next(body)
+        data = np.loadtxt(body, delimiter=',', usecols=use, dtype=float, ndmin=2)
+    return PPGDispOffline(data[:, 0], data[:, 1], data[:, 2], data[:, 3].astype(int),
+                          prf.pop(), sorted(set(restarts)))
+
+
+class PPGDispCalc:
+    """The ppg_disp chain as the library would run it, one sample at a time:
+    display band-pass on OT_LED1 (negated, peaks up) → amplitude tracker → normalized output.
+
+    FILTER is the library's own arithmetic (`BP2` = BiquadFilter::init_bp, the v0.115 filter;
+    `BP2+LP4` = the same followed by LowPass4 at f_hi, the steeper candidate for the 25/50 Hz
+    consumers, rationale §21.7). NORMALIZER is one of the candidates of rationale §21.5, every one
+    updated at every sample; the `SLEW`/`MAXMIN` targets come from 100 ms block extrema, which is
+    what the library could reuse from the PI blocks. The probe gate is the spec §5.9 one: not
+    APPLIED → output 0 and the tracker starts again.
+    """
+    FILTERS = ("BP2", "BP2+LP4")
+    METHODS = ("SLEW", "INSTANT", "MAXMIN", "RMS")
+    MODES   = ("NO_NORM", "NORM", "NORM_PI")
+    BLOCK_S = 0.1
+    EPS     = 1e-12
+
+    def __init__(self):
+        self.f_lo = 0.5; self.f_hi = 20.0; self.filt = "BP2"
+        self.method = "SLEW"; self.tau_s = 1.0; self.rise_per_s = 0.5; self.win_s = 1.0
+        self.headroom = 1.15     # spec §5.9 default (measured 2026-11-06, rationale §21.8)
+        self.mode = "NORM_PI"; self.pi_lo = 0.5; self.pi_hi = 2.0; self.floor = 0.5
+        self._fs = None
+        self.reset()
+
+    # ── state ────────────────────────────────────────────────────────────────
+    def reset(self):
+        self._fs = None
+        self._bp = None; self._lp1 = None; self._lp2 = None
+        self.reset_tracker()
+
+    def reset_tracker(self):
+        self.hi = float('nan'); self.lo = float('nan')
+        self._m = 0.0; self._v = 0.0; self._have_rms = False
+        self._blk_max = -float('inf'); self._blk_min = float('inf'); self._blk_n = 0
+        self._blocks = deque()           # (max, min) of the last win_s, 100 ms each
+
+    def _configure(self, fs):
+        nyq = fs / 2.0
+        lo = max(0.01, min(self.f_lo, nyq * 0.9))
+        hi = max(lo + 0.01, min(self.f_hi, nyq * 0.99))
+        b0, b2, a1, a2 = _lib_biquad_bp(lo, hi, fs)
+        self._bp = _LibBiquad((b0, 0.0, b2, a1, a2))
+        self._lp1 = _LibBiquad(_lib_biquad_lp(hi, fs, 0.54119610))
+        self._lp2 = _LibBiquad(_lib_biquad_lp(hi, fs, 1.30656296))
+        self._a_tau = 1.0 - math.exp(-1.0 / (max(self.tau_s, 1.0 / fs) * fs))
+        self._blk_len = max(1, int(round(self.BLOCK_S * fs)))
+        self._n_blocks = max(1, int(round(self.win_s / self.BLOCK_S)))
+        self._fs = fs
+
+    # ── one sample ───────────────────────────────────────────────────────────
+    def filter(self, ot, fs):
+        """ppg_disp as the library computes it (negated band-pass of OT), under FILTER."""
+        if fs != self._fs:
+            self._configure(fs)
+        y = self._bp.process(ot)
+        if self.filt == "BP2+LP4":
+            y = self._lp2.process(self._lp1.process(y))
+        return -y
+
+    def _track(self, x):
+        """Advance the amplitude tracker on one ppg_disp sample; returns (centre, semi-amplitude)."""
+        # 100 ms block extrema feed the window-based targets (SLEW, MAXMIN)
+        if x > self._blk_max: self._blk_max = x
+        if x < self._blk_min: self._blk_min = x
+        self._blk_n += 1
+        if self._blk_n >= self._blk_len:
+            self._blocks.append((self._blk_max, self._blk_min))
+            while len(self._blocks) > self._n_blocks:
+                self._blocks.popleft()
+            self._blk_max = -float('inf'); self._blk_min = float('inf'); self._blk_n = 0
+        a = self._a_tau
+        if self.method == "RMS":
+            if not self._have_rms:
+                self._m = x; self._v = 0.0; self._have_rms = True
+            self._m += a * (x - self._m)
+            d = x - self._m
+            self._v += a * (d * d - self._v)
+            self.hi = self._m + math.sqrt(2.0 * self._v)      # √2·RMS = semi-amplitude of a sine
+            self.lo = self._m - math.sqrt(2.0 * self._v)
+        elif self.method == "INSTANT":
+            if self.hi != self.hi:
+                self.hi = x; self.lo = x
+            self.hi = x if x > self.hi else self.hi + a * (x - self.hi)
+            self.lo = x if x < self.lo else self.lo + a * (x - self.lo)
+        else:
+            t_hi = max(self._blk_max, max((b[0] for b in self._blocks), default=-float('inf')))
+            t_lo = min(self._blk_min, min((b[1] for b in self._blocks), default=float('inf')))
+            if self.method == "MAXMIN" or self.hi != self.hi or len(self._blocks) < self._n_blocks:
+                self.hi = t_hi; self.lo = t_lo       # the first window: plain running extrema
+            else:
+                step = self.rise_per_s * max(self.hi - self.lo, self.EPS) / self._fs
+                self.hi = self.hi + min(t_hi - self.hi, step) if t_hi > self.hi else self.hi + a * (t_hi - self.hi)
+                self.lo = self.lo - min(self.lo - t_lo, step) if t_lo < self.lo else self.lo + a * (t_lo - self.lo)
+        return 0.5 * (self.hi + self.lo), max(0.5 * (self.hi - self.lo) * self.headroom, self.EPS)
+
+    @staticmethod
+    def amp_of_pi(pi, pi_lo, pi_hi, floor):
+        """A(PI) of spec §5.9: floor at PI_lo and below, 1 at PI_hi and above, log in between."""
+        if pi != pi or pi <= 0.0 or pi_hi <= pi_lo:
+            return floor
+        a = floor + (1.0 - floor) * math.log(pi / pi_lo) / math.log(pi_hi / pi_lo)
+        return min(1.0, max(floor, a))
+
+    def update(self, ot, pi, probe_state, fs):
+        """Returns (ppg, y_unclamped, y, A). y is what the library would publish as ppg_disp."""
+        ppg = self.filter(ot, fs)
+        if self.mode == "NO_NORM":
+            return ppg, ppg, ppg, 1.0
+        if probe_state != 2:
+            self.reset_tracker()
+            return ppg, 0.0, 0.0, self.amp_of_pi(pi, self.pi_lo, self.pi_hi, self.floor)
+        c, s = self._track(ppg)
+        u = (ppg - c) / s
+        A = 1.0
+        if self.mode == "NORM_PI":
+            # scale by A, then clamp at ±1 — never at ±A (Alex, 2026-11-07): the chart has
+            # room up to ±1 and a beat larger than the frame is information, not overflow
+            A = self.amp_of_pi(pi, self.pi_lo, self.pi_hi, self.floor)
+            u *= A
+        y = min(1.0, max(-1.0, u))
+        return ppg, u, y, A
+
+
+class _HmiEmu:
+    """What the HMI would draw: decimation to the transport rate (sample-and-hold, as CommTask,
+    or block average), the 8-bit byte, and a circular LVGL-like sweep of `points` values with
+    an erase gap, sized from the chart geometry and the sweep speed."""
+    FIXED_LSB = 1.6e-8          # CommTask PPG_DISP_UNITS_PER_LSB (NO_NORM transport scale)
+    GAP = 6
+
+    def __init__(self):
+        self.rate = 25.0; self.decim = "HOLD"
+        # defaults = today's ui_LockPPGChart: 460×105 px, 128 points at 25 Hz, which over the
+        # measured 5.2 px/mm is a 17.3 mm/s sweep (the clinical convention is 25 mm/s)
+        self.width_px = 460; self.height_px = 105; self.sweep_mm_s = 17.3; self.px_per_mm = 5.2
+        self.reset()
+
+    def points(self):
+        return max(8, int(round(self.rate * self.width_px / (self.px_per_mm * self.sweep_mm_s))))
+
+    def reset(self):
+        n = self.points()
+        self.buf = np.full(n, np.nan)
+        self.cursor = 0; self._acc = 0.0; self._n = 0; self._phase = 0.0
+        self.bytes = deque(maxlen=n)
+
+    def feed(self, y, fs, normalized):
+        """One full-rate sample in; emits a byte when a transport period has elapsed."""
+        self._acc += y; self._n += 1
+        self._phase += self.rate / fs
+        if self._phase < 1.0:
+            return None
+        self._phase -= 1.0
+        v = self._acc / self._n if self.decim == "AVG" else y
+        self._acc = 0.0; self._n = 0
+        b = 128 + (round(v * 127.0) if normalized else round(v / self.FIXED_LSB))
+        b = min(255, max(0, int(b)))
+        n = len(self.buf)
+        self.buf[self.cursor] = b
+        for k in range(1, self.GAP + 1):
+            self.buf[(self.cursor + k) % n] = np.nan
+        self.cursor = (self.cursor + 1) % n
+        self.bytes.append(b)
+        return b
+
+
+class PPGDispLabWindow(QtWidgets.QMainWindow):
+    """PPGDISPLAB — bench for the ppg_disp display chain (library v0.116 design, rationale §21).
+
+    Runs, on live OT_LED1 ($M4) or on a loaded P1 capture, the chain the library will implement:
+    display band-pass → amplitude tracker → NORM / NORM_PI output in [−1, 1], and then what the
+    HMI does with it: decimation to the transport rate, the 8-bit byte, a chart of the HMI's own
+    geometry. Every number in that chain is a control here, so filter, tracker, PI mapping and
+    transport rate can be chosen with evidence before they are frozen in the spec; the chart
+    geometry (pixels, sweep speed, px/mm) is a parameter and never a constant, because it belongs
+    to the HMI and will change.
+
+    The top plot overlays the board's own ppg_disp (field 9): with FILTER = BP2 at 0.5–20 Hz the
+    Python chain must reproduce it (the title shows the mismatch; ~1 % is the %.4e precision of
+    OT in the frame, not the filter). SPIKE and STEP perturb the input so the tracker criteria of
+    rationale §21.5 can be exercised by hand: a spike may saturate the trace but must not
+    re-scale it; a sustained change must be absorbed quickly on the way down, slowly on the way up.
+
+    Requires $M4 live (OT_LED1 travels only there); offline it takes a P1 capture.
+    """
+    BUF_S  = 30.0      # rolling buffer (metrics)
+    PLOT_S = 10.0      # live plot window
+
+    _LBL_S  = "color: #CCCCCC; font-size: 18px;"
+    _SPIN_S = "background-color: #2A2A2A; color: #FFDD44; padding: 3px; font-size: 18px;"
+    _GROUP_S = ("QGroupBox { color: #AAAAAA; font-weight: bold; font-size: 16px; "
+                "border: 1px solid #444; border-radius: 4px; margin-top: 8px; } "
+                "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }")
+
+    def __init__(self, main_monitor):
+        super().__init__()
+        self.main_monitor = main_monitor
+        self.setWindowTitle(_win("PPGDISPLAB"))
+        self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
+        self.statusBar().showMessage(_MOUSE_HINT)
+
+        self.calc = PPGDispCalc()
+        self.hmi  = _HmiEmu()
+        self._fs = 500.0
+        self._paused = False
+        self._offline = None          # PPGDispOffline when a capture is loaded
+        self._off = None              # offline results dict
+        self._n_fed = 0
+        self._last_ps = -1; self._last_pi = float('nan')
+        # live rolling buffers: (ppg, board ppg, y_unclamped, y, hi, lo, A, probe_state)
+        n = int(self.BUF_S * 500)
+        self._buf = {k: deque(maxlen=n) for k in ("ppg", "fw", "u", "y", "hi", "lo", "A", "ps")}
+        # perturbation of the input (OT domain): gain on the AC part, 100 ms spike
+        self._dc = None; self._a_dc = 1.0 - math.exp(-1.0 / (2.0 * 500.0))
+        self._gain = 1.0; self._spike_left = 0; self._spike_amp = 0.0
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root = QtWidgets.QHBoxLayout(central)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(6)
+
+        # ── left: context bar, two plots, HMI preview ────────────────────────
+        left = QtWidgets.QVBoxLayout(); left.setSpacing(4)
+        bar = QtWidgets.QHBoxLayout()
+        self._lbl_src   = QtWidgets.QLabel("LIVE $M4")
+        self._lbl_state = QtWidgets.QLabel("PROBE --")
+        self._lbl_pi    = QtWidgets.QLabel("PI --")
+        self._lbl_amp   = QtWidgets.QLabel("A --")
+        for w, col in ((self._lbl_src, '#44FF88'), (self._lbl_state, '#FFDD44'),
+                       (self._lbl_pi, '#8888FF'), (self._lbl_amp, '#FF88FF')):
+            w.setStyleSheet("color: %s; font-weight: bold; font-size: 20px;" % col)
+            bar.addWidget(w)
+        self._lbl_src.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self._lbl_src.setMinimumWidth(160)
+        self._lbl_src.setToolTip(_make_tooltip(
+            "Source", "LIVE $M4: the board's OT_LED1 at the AFE rate. A file name: the loaded P1 "
+            "capture, replayed whole through the chain at the rate the file declares.",
+            src="PPGDispLabWindow.feed_sample / _on_load_csv"))
+        self._lbl_state.setToolTip(_make_tooltip(
+            "PROBE — probe state", "The tracker runs only while APPLIED; otherwise the output is 0 "
+            "and the tracker restarts (spec §5.9).", src="ProbeState"))
+        self._lbl_pi.setToolTip(_make_tooltip(
+            "PI — perfusion index", "The board's PI [%], input of the NORM_PI mapping.",
+            src="$M4 field 13"))
+        self._lbl_amp.setToolTip(_make_tooltip(
+            "A — NORM_PI amplitude", "A = floor + (1 − floor)·ln(PI/PI_lo)/ln(PI_hi/PI_lo), clamped "
+            "to [floor, 1]. The trace is scaled by A in NORM_PI.", src="PPGDispCalc.amp_of_pi"))
+        bar.addStretch(1)
+        self._lbl_metrics = QtWidgets.QLabel("")
+        self._lbl_metrics.setStyleSheet("color: #CCCCCC; font-size: 18px;")
+        # long one-line labels must not set the window's minimum width
+        self._lbl_metrics.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self._lbl_metrics.setToolTip(_make_tooltip(
+            "Tracker metrics (rationale §21.5 criteria)",
+            "Over the buffer (last %d s live; the whole capture offline), beats found on the "
+            "normalized trace:\n"
+            "  fill    — median per-beat semi-amplitude in the ±1 frame (1 = the beat fills it)\n"
+            "  clip    — %% of samples beyond ±1 before clamping (criterion 2)\n"
+            "  <0.6    — %% of beats filling less than 0.6 (a spike or step shrank the trace, "
+            "criterion 3)\n"
+            "  >1      — %% of beats overshooting the frame" % int(self.BUF_S),
+            src="PPGDispLabWindow._metrics"))
+        bar.addWidget(self._lbl_metrics)
+        left.addLayout(bar)
+
+        pg.setConfigOptions(antialias=False)
+        self.p_ppg = pg.PlotWidget(title="ppg_disp (Python chain) vs board")
+        self.p_ppg.setBackground('#121212'); self.p_ppg.showGrid(x=True, y=True, alpha=0.3)
+        self.p_ppg.setLabel('left', 'ppm'); self.p_ppg.setLabel('bottom', 't (s)')
+        self.c_fw  = self.p_ppg.plot(pen=pg.mkPen('#777777', width=1))
+        self.c_ppg = self.p_ppg.plot(pen=pg.mkPen('#3CC8E0', width=2))
+        self.c_hi  = self.p_ppg.plot(pen=pg.mkPen('#FF88FF', width=1, style=QtCore.Qt.DashLine))
+        self.c_lo  = self.p_ppg.plot(pen=pg.mkPen('#FF88FF', width=1, style=QtCore.Qt.DashLine))
+        self.p_ppg.setToolTip(_make_tooltip(
+            "ppg_disp and the tracker's envelope",
+            "Cyan: ppg_disp from OT_LED1 through FILTER (ppm of OT, peaks up). Grey: the board's "
+            "own ppg_disp (field 9), which the cyan trace must reproduce with BP2 0.5–20 Hz. "
+            "Magenta dashes: hi / lo of the amplitude tracker — the same frame the middle plot draws as ±A (±1 in NORM).",
+            src="PPGDispCalc.filter / _track"))
+        left.addWidget(self.p_ppg, 3)
+
+        self.p_norm = pg.PlotWidget(title="normalized output")
+        self.p_norm.setBackground('#121212'); self.p_norm.showGrid(x=True, y=True, alpha=0.3)
+        self.p_norm.setLabel('left', '[-1, 1]'); self.p_norm.setLabel('bottom', 't (s)')
+        self.p_norm.setYRange(-1.15, 1.15, padding=0)
+        self.c_u    = self.p_norm.plot(pen=pg.mkPen('#555555', width=1))
+        self.c_y    = self.p_norm.plot(pen=pg.mkPen('#3CC8E0', width=2))
+        self.c_Ahi  = self.p_norm.plot(pen=pg.mkPen('#FF88FF', width=1, style=QtCore.Qt.DashLine))
+        self.c_Alo  = self.p_norm.plot(pen=pg.mkPen('#FF88FF', width=1, style=QtCore.Qt.DashLine))
+        for yv in (-1.0, 1.0):
+            self.p_norm.addLine(y=yv, pen=pg.mkPen('#AA3333', width=1))
+        self.p_norm.setToolTip(_make_tooltip(
+            "The library's output in NORM / NORM_PI",
+            "Cyan: what ppg_disp would be, clamped to ±1 (red lines). Dark grey: the same before "
+            "clamping, so clipping is visible as the grey leaving the frame. Magenta dashes: ±A, "
+            "the NORM_PI envelope of a typical beat — the clamp stays at ±1, so a beat larger "
+            "than the frame shows above A. Fixed axis: this is the frame the HMI gets. In NO_NORM "
+            "there is no tracker and the frame is CommTask's fixed scale (127 × 1.6e-8 A/A = ±1): "
+            "what the HMI draws today.",
+            src="PPGDispCalc.update"))
+        left.addWidget(self.p_norm, 3)
+
+        hmi_row = QtWidgets.QHBoxLayout()
+        self.p_hmi = pg.PlotWidget()
+        self.p_hmi.setBackground('#242323')
+        self.p_hmi.hideAxis('left'); self.p_hmi.hideAxis('bottom')
+        self.p_hmi.setMouseEnabled(x=False, y=False); self.p_hmi.hideButtons()
+        self.p_hmi.setMenuEnabled(False)
+        self.p_hmi.getPlotItem().setContentsMargins(0, 0, 0, 0)
+        self.p_hmi.getPlotItem().getViewBox().setDefaultPadding(0)
+        self.c_hmi = self.p_hmi.plot(pen=pg.mkPen('#3CC8E0', width=2), connect='finite')
+        self.p_hmi.setToolTip(_make_tooltip(
+            "HMI chart emulation (1:1 pixels)",
+            "The trace the HMI would draw: bytes 0–255 at the transport RATE, `points` of them "
+            "across WIDTH px, circular sweep with a 6-point erase gap, as ui_LockPPGChart. The "
+            "widget is exactly WIDTH × HEIGHT px on this monitor, whose px/mm is not the "
+            "CrowPanel's, so judge shape and legibility, not physical size.",
+            src="_HmiEmu"))
+        hmi_row.addWidget(self.p_hmi, 0, QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        hmi_side = QtWidgets.QVBoxLayout()
+        self._lbl_hmi = QtWidgets.QLabel("")
+        self._lbl_hmi.setStyleSheet(self._LBL_S)
+        self._lbl_hmi.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        hmi_side.addWidget(self._lbl_hmi)
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider.setEnabled(False)
+        self.slider.valueChanged.connect(self._on_slider)
+        self.slider.setToolTip(_make_tooltip(
+            "Offline position", "Offline only: the instant the HMI emulation shows (its window ends "
+            "here). The two plots show the whole capture.", src="PPGDispLabWindow._on_slider"))
+        hmi_side.addWidget(self.slider)
+        hmi_side.addStretch(1)
+        hmi_row.addLayout(hmi_side, 1)
+        left.addLayout(hmi_row, 0)
+        root.addLayout(left, 1)
+
+        # ── right: parameters and actions ────────────────────────────────────
+        right = QtWidgets.QVBoxLayout(); right.setSpacing(6)
+        self._spins = {}
+
+        def group(title):
+            g = QtWidgets.QGroupBox(title); g.setStyleSheet(self._GROUP_S)
+            f = QtWidgets.QFormLayout(g); f.setContentsMargins(8, 10, 8, 6); f.setSpacing(4)
+            right.addWidget(g)
+            return f
+
+        def spin(form, key, label, val, lo, hi, step, dec, tip, on=None):
+            s = QtWidgets.QDoubleSpinBox(); s.setDecimals(dec); s.setRange(lo, hi)
+            s.setSingleStep(step); s.setValue(val); s.setStyleSheet(self._SPIN_S)
+            s.setToolTip(tip)
+            lbl = QtWidgets.QLabel(label); lbl.setStyleSheet(self._LBL_S); lbl.setToolTip(tip)
+            s.valueChanged.connect(on or self._on_param)
+            form.addRow(lbl, s); self._spins[key] = s
+            return s
+
+        def combo(form, key, label, items, cur, tip, on=None):
+            c = QtWidgets.QComboBox(); c.addItems(items); c.setCurrentText(cur)
+            c.setStyleSheet(self._SPIN_S); c.setToolTip(tip)
+            lbl = QtWidgets.QLabel(label); lbl.setStyleSheet(self._LBL_S); lbl.setToolTip(tip)
+            c.currentTextChanged.connect(on or self._on_param)
+            form.addRow(lbl, c); self._spins[key] = c
+            return c
+
+        f = group("FILTER (library display band-pass)")
+        combo(f, "filt", "type", PPGDispCalc.FILTERS, self.calc.filt, _make_tooltip(
+            "FILTER type", "BP2: the library's one-biquad Butterworth band-pass (v0.115, 6 dB/oct "
+            "each side). BP2+LP4: the same followed by the library's LowPass4 at f_hi (two "
+            "sections, Q 0.54 / 1.31), the steeper high side the 25/50 Hz consumers need "
+            "(rationale §21.7). Both are built from blocks the library already has.",
+            src="PPGDispCalc.filter"))
+        spin(f, "f_lo", "f_lo (Hz)", self.calc.f_lo, 0.05, 5.0, 0.1, 2, _make_tooltip(
+            "f_lo", "Lower corner. 0.5 Hz = 30 BPM, the HR floor; removes the respiratory drift.",
+            src="setPPGDispFilter"))
+        spin(f, "f_hi", "f_hi (Hz)", self.calc.f_hi, 2.0, 100.0, 1.0, 1, _make_tooltip(
+            "f_hi", "Upper corner. 20 Hz is the inherited default with no written rationale; the "
+            "candidates are 8–10 Hz (PI uses 15, Masimo's display FIR 7.5). Below the consumer's "
+            "Nyquist (12.5 Hz at 25 Hz, 25 Hz at 50 Hz) with margin, or the trace aliases.",
+            src="setPPGDispFilter"))
+
+        f = group("NORMALIZER (amplitude tracker)")
+        combo(f, "method", "method", PPGDispCalc.METHODS, self.calc.method, _make_tooltip(
+            "Tracker method (rationale §21.5 candidates)",
+            "SLEW: hi/lo chase the max/min of the last WINDOW; up at most RISE × range per second, "
+            "down with time constant TAU — a spike saturates but cannot re-scale (recommended).\n"
+            "INSTANT: hi/lo jump to any new extreme, decay with TAU — a spike re-scales at once.\n"
+            "MAXMIN: hi/lo = max/min of the last WINDOW, no smoothing.\n"
+            "RMS: centre = EMA mean, semi-amplitude = √2·RMS (EMA variance, TAU) — the v0.115 "
+            "spec draft; clips 14–16 % with a crest factor of 3.3–3.6.",
+            src="PPGDispCalc._track"))
+        spin(f, "tau_s", "tau (s)", self.calc.tau_s, 0.1, 10.0, 0.1, 1, _make_tooltip(
+            "TAU", "Time constant of the downward move (SLEW, INSTANT) or of the EMAs (RMS). "
+            "Alex's criterion 4: shrink fast, 1–2 s.", src="PPGDispCalc.tau_s"))
+        spin(f, "rise", "rise (range/s)", self.calc.rise_per_s, 0.01, 10.0, 0.1, 2, _make_tooltip(
+            "RISE", "SLEW only: the frame may grow at most this fraction of its own range per "
+            "second. 0.5 absorbs a ×2 step in ~2 beats and ignores a 100 ms spike.",
+            src="PPGDispCalc.rise_per_s"))
+        spin(f, "win_s", "window (s)", self.calc.win_s, 0.2, 5.0, 0.1, 1, _make_tooltip(
+            "WINDOW", "SLEW / MAXMIN: length of the max/min target window, in 100 ms blocks (the "
+            "library's PI blocks). 1 s covers one beat down to 60 BPM.", src="PPGDispCalc.win_s"))
+        spin(f, "headroom", "headroom", self.calc.headroom, 0.5, 2.0, 0.05, 2, _make_tooltip(
+            "HEADROOM", "Multiplies the tracked semi-amplitude: 1.15 leaves 15 % of the frame "
+            "unused so overshoots do not clip (fill 0.76, clip 2 % measured).",
+            src="PPGDispCalc.headroom"))
+
+        f = group("MODE (AFE4490PPGDispMode)")
+        combo(f, "mode", "mode", PPGDispCalc.MODES, self.calc.mode, _make_tooltip(
+            "Display mode (spec §5.9)", "NO_NORM: ppg_disp as today (OT units, no tracker). NORM: "
+            "[−1, 1], constant amplitude — the ISO 'normalized' lab mode. NORM_PI: scaled by A "
+            "from PI and clamped at ±1 (not at ±A) — the product mode.", src="setPPGDispMode"))
+        spin(f, "pi_lo", "PI_lo (%)", self.calc.pi_lo, 0.05, 10.0, 0.1, 2, _make_tooltip(
+            "PI_lo", "PI at or below which A = floor (spo2_pi_sqi_lo, 0.5 %).", src="spo2_pi_sqi_lo"))
+        spin(f, "pi_hi", "PI_hi (%)", self.calc.pi_hi, 0.1, 20.0, 0.1, 2, _make_tooltip(
+            "PI_hi", "PI at or above which A = 1 (spo2_pi_sqi_hi, 2 %).", src="spo2_pi_sqi_hi"))
+        spin(f, "floor", "floor", self.calc.floor, 0.1, 1.0, 0.05, 2, _make_tooltip(
+            "floor", "Minimum A. 0.5 kept by Alex (2026-11-05): a small monitor must still show "
+            "the waveform's shape at low PI (rationale §21.6).", src="PPGDispCalc.floor"))
+
+        f = group("HMI (transport and chart)")
+        combo(f, "rate", "rate (Hz)", ("25", "50", "62.5", "100", "125", "250"), "25",
+              _make_tooltip("Transport RATE", "Samples per second sent to the HMI. 25 Hz today "
+                            "(CTRL,PPG every 40 ms); a constant of the contract, to be chosen for "
+                            "the largest display (rationale §21.7).", src="CommTask"),
+              on=self._on_hmi)
+        combo(f, "decim", "decimation", ("HOLD", "AVG"), "HOLD",
+              _make_tooltip("Decimation", "HOLD: the latest full-rate sample, as CommTask does "
+                            "(no anti-alias). AVG: mean of the samples of the transport period.",
+                            src="_HmiEmu.feed"), on=self._on_hmi)
+        spin(f, "width_px", "width (px)", self.hmi.width_px, 32, 2000, 10, 0, _make_tooltip(
+            "Chart WIDTH", "ui_LockPPGChart is 460 px (≈88 mm on the CrowPanel).",
+            src="ElementsCreation.cpp"), on=self._on_hmi)
+        spin(f, "height_px", "height (px)", self.hmi.height_px, 16, 600, 5, 0, _make_tooltip(
+            "Chart HEIGHT", "ui_LockPPGChart is 105 px; the byte range 0–255 maps onto it.",
+            src="ElementsCreation.cpp"), on=self._on_hmi)
+        spin(f, "sweep", "sweep (mm/s)", self.hmi.sweep_mm_s, 5.0, 100.0, 0.1, 1, _make_tooltip(
+            "Sweep speed", "17.3 mm/s is what the HMI draws today (128 points over 460 px at 25 Hz); "
+            "the clinical convention is 25 mm/s (12.5 and 50 optional). With px/mm it sets how "
+            "many seconds the chart holds: points = rate × width / (px_per_mm × sweep).",
+            src="rationale §21.7"), on=self._on_hmi)
+        spin(f, "px_mm", "px/mm", self.hmi.px_per_mm, 1.0, 20.0, 0.1, 2, _make_tooltip(
+            "Pixel density of the HMI", "CrowPanel 7\": 800 px over 154 mm measured = 5.2 px/mm.",
+            src="rationale §21.7"), on=self._on_hmi)
+
+        btns = QtWidgets.QGridLayout(); btns.setSpacing(4)
+        self.btn_load = QtWidgets.QPushButton("LOAD CSV")
+        self.btn_load.setStyleSheet(ACTION_BUTTON_STYLE); self.btn_load.clicked.connect(self._on_load_csv)
+        self.btn_load.setToolTip(_make_tooltip("LOAD CSV", "Replay a P1 capture (OT_LED1, PPG, PI, "
+                                               "ProbeState) through the chain; the live feed is ignored "
+                                               "until LIVE.", src="PPGDispLabWindow._on_load_csv"))
+        self.btn_live = QtWidgets.QPushButton("LIVE"); self.btn_live.setEnabled(False)
+        self.btn_live.setStyleSheet(ACTION_BUTTON_STYLE); self.btn_live.clicked.connect(self._on_live)
+        self.btn_live.setToolTip(_make_tooltip("LIVE", "Back to the board's $M4 stream.",
+                                               src="PPGDispLabWindow._on_live"))
+        self.btn_pause = QtWidgets.QPushButton("PAUSE"); self.btn_pause.setCheckable(True)
+        self.btn_pause.setStyleSheet(ACTION_BUTTON_STYLE); self.btn_pause.setShortcut("P")
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_pause.setToolTip(_make_tooltip("PAUSE / CONTINUE (P)", "Freeze the live feed and the "
+                                                "plots; CONTINUE restarts the chain (no splicing).",
+                                                src="PPGDispLabWindow._toggle_pause"))
+        self.btn_spike = QtWidgets.QPushButton("SPIKE")
+        self.btn_spike.setStyleSheet(ACTION_BUTTON_STYLE); self.btn_spike.setShortcut("S")
+        self.btn_spike.clicked.connect(self._on_spike)
+        self.btn_spike.setToolTip(_make_tooltip("SPIKE (S)", "Add to the input, for 100 ms, 5× the "
+                                                "tracked range — the artefact of criterion 3. It may "
+                                                "saturate the trace; it must not re-scale it.",
+                                                src="PPGDispLabWindow._perturb"))
+        self.btn_x2 = QtWidgets.QPushButton("STEP ×2"); self.btn_x2.setCheckable(True)
+        self.btn_x2.setStyleSheet(ACTION_BUTTON_STYLE); self.btn_x2.clicked.connect(self._on_step)
+        self.btn_x2.setToolTip(_make_tooltip("STEP ×2", "While on, the AC part of the input is doubled "
+                                             "— a sustained amplitude rise; watch how many beats "
+                                             "the frame takes to grow.", src="PPGDispLabWindow._perturb"))
+        self.btn_half = QtWidgets.QPushButton("STEP ×0.5"); self.btn_half.setCheckable(True)
+        self.btn_half.setStyleSheet(ACTION_BUTTON_STYLE); self.btn_half.clicked.connect(self._on_step)
+        self.btn_half.setToolTip(_make_tooltip("STEP ×0.5", "While on, the AC part of the input is "
+                                               "halved — a sustained fall; the frame should shrink "
+                                               "within 1–2 s.", src="PPGDispLabWindow._perturb"))
+        self.btn_reset = QtWidgets.QPushButton("RESET")
+        self.btn_reset.setStyleSheet(ACTION_BUTTON_STYLE); self.btn_reset.clicked.connect(self.reset_all)
+        self.btn_reset.setToolTip(_make_tooltip("RESET", "Restart the chain and clear the buffers; "
+                                                "parameters are kept.", src="PPGDispLabWindow.reset_all"))
+        for i, b in enumerate((self.btn_load, self.btn_live, self.btn_pause, self.btn_reset,
+                               self.btn_spike, self.btn_x2, self.btn_half)):
+            btns.addWidget(b, i // 2, i % 2)
+        right.addLayout(btns)
+        right.addStretch(1)
+        side = QtWidgets.QWidget(); side.setLayout(right); side.setFixedWidth(360)
+        root.addWidget(side, 0)
+
+        self._apply_hmi_geometry()
+        self.resize(1600, 950)
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
+            "PPGDispLabWindow/geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+
+    # ── parameters ───────────────────────────────────────────────────────────
+    def _read_params(self):
+        s = self._spins; c = self.calc
+        c.filt = s["filt"].currentText(); c.f_lo = s["f_lo"].value(); c.f_hi = s["f_hi"].value()
+        c.method = s["method"].currentText(); c.tau_s = s["tau_s"].value()
+        c.rise_per_s = s["rise"].value(); c.win_s = s["win_s"].value(); c.headroom = s["headroom"].value()
+        c.mode = s["mode"].currentText(); c.pi_lo = s["pi_lo"].value(); c.pi_hi = s["pi_hi"].value()
+        c.floor = s["floor"].value()
+        h = self.hmi
+        h.rate = float(s["rate"].currentText()); h.decim = s["decim"].currentText()
+        h.width_px = int(s["width_px"].value()); h.height_px = int(s["height_px"].value())
+        h.sweep_mm_s = s["sweep"].value(); h.px_per_mm = s["px_mm"].value()
+
+    def _on_param(self, *_):
+        """A chain parameter changed: the old state was produced by other numbers, so start again
+        (live) or replay (offline)."""
+        self._read_params()
+        self.p_norm.setTitle("normalized output — %s" % self.calc.mode)
+        if self._offline is not None:
+            self._run_offline()
+        else:
+            self.reset_all()
+
+    def _on_hmi(self, *_):
+        self._read_params()
+        self._apply_hmi_geometry()
+        if self._offline is not None:
+            self._on_slider(self.slider.value())
+        else:
+            self.hmi.reset()
+
+    def _apply_hmi_geometry(self):
+        h = self.hmi
+        self.p_hmi.setFixedSize(h.width_px, h.height_px)
+        h.reset()
+        self.p_hmi.setXRange(0, max(1, h.points() - 1), padding=0)
+        self.p_hmi.setYRange(0, 255, padding=0)
+        self._lbl_hmi.setText(
+            "%d points = %.2f s   |   %.1f px/sample   |   %.1f values/px   |   %.1f mm/s"
+            % (h.points(), h.points() / h.rate, h.width_px / h.points(), 256.0 / h.height_px,
+               h.rate * h.width_px / (h.px_per_mm * h.points())))
+
+    # ── perturbation ─────────────────────────────────────────────────────────
+    def _perturb(self, ot):
+        """Input perturbation in the OT domain: gain on the AC part around a 2 s EMA DC, plus a
+        100 ms spike of 5× the tracked range. Both leave the DC alone, as a real artefact does."""
+        if self._dc is None:
+            self._dc = ot
+        self._dc += self._a_dc * (ot - self._dc)
+        x = self._dc + (ot - self._dc) * self._gain
+        if self._spike_left > 0:
+            self._spike_left -= 1
+            x += self._spike_amp
+        return x
+
+    def _on_spike(self):
+        c = self.calc
+        rng = (c.hi - c.lo) if c.hi == c.hi else 0.0
+        # the tracker sees the negated band-pass; a positive OT excursion is a negative ppg one
+        self._spike_amp = -5.0 * (rng if rng > 0.0 else 5e-6)
+        self._spike_left = int(round(0.1 * self._fs))
+        self.statusBar().showMessage("SPIKE injected: %.3g OT for 100 ms" % self._spike_amp, 3000)
+
+    def _on_step(self):
+        if self.sender() is self.btn_x2 and self.btn_x2.isChecked():
+            self.btn_half.setChecked(False)
+        elif self.sender() is self.btn_half and self.btn_half.isChecked():
+            self.btn_x2.setChecked(False)
+        self._gain = 2.0 if self.btn_x2.isChecked() else (0.5 if self.btn_half.isChecked() else 1.0)
+        self.statusBar().showMessage("AC gain ×%g" % self._gain, 3000)
+
+    # ── data path (live) ─────────────────────────────────────────────────────
+    def feed_sample(self, ot_led1, ppg_fw, pi, probe_state, fs):
+        """One $M4 sample through the chain and the HMI emulation; nothing enters while paused or
+        while a capture is loaded."""
+        if self._paused or self._offline is not None:
+            return
+        self._fs = fs
+        self._last_ps = probe_state; self._last_pi = pi
+        x = self._perturb(ot_led1)
+        ppg, u, y, A = self.calc.update(x, pi, probe_state, fs)
+        b = self._buf
+        b["ppg"].append(ppg); b["fw"].append(ppg_fw); b["u"].append(u); b["y"].append(y)
+        b["hi"].append(self.calc.hi); b["lo"].append(self.calc.lo); b["A"].append(A); b["ps"].append(probe_state)
+        self.hmi.feed(y, fs, self.calc.mode != "NO_NORM")
+        self._n_fed += 1
+
+    def _toggle_pause(self):
+        self._paused = self.btn_pause.isChecked()
+        if self._paused:
+            self.btn_pause.setText("CONTINUE")
+            self.statusBar().showMessage("PAUSED")
+        else:
+            self.btn_pause.setText("PAUSE")
+            self.reset_all()
+            self.statusBar().showMessage(_MOUSE_HINT)
+
+    def reset_all(self):
+        self.calc.reset()
+        self.hmi.reset()
+        for d in self._buf.values():
+            d.clear()
+        self._n_fed = 0; self._dc = None; self._spike_left = 0
+        if self._offline is None:
+            self.statusBar().showMessage("Chain restarted", 2000)
+
+    def on_stream_discontinuity(self):
+        if not self._paused and self._offline is None:
+            self.reset_all()
+
+    # ── offline ──────────────────────────────────────────────────────────────
+    def _on_load_csv(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load P1 capture", CAPTURES_DIR, "CSV Files (*.csv);;All Files (*)")
+        if not path:
+            return
+        self.load_capture(path)
+
+    def load_capture(self, path):
+        try:
+            cap = _read_capture_ppgdisp(path)
+        except (OSError, ValueError, StopIteration) as exc:
+            self.statusBar().showMessage("CSV load error: %s" % exc)
+            return
+        self._offline = cap
+        self._fs = cap.fs
+        self._lbl_src.setText(Path(path).name)
+        self.btn_live.setEnabled(True); self.btn_pause.setEnabled(False)
+        self.slider.setEnabled(True)
+        self._run_offline()
+        self.statusBar().showMessage(
+            "Offline: %s (%d samples @ %g Hz, %.0f s, %d restart(s))"
+            % (Path(path).name, len(cap.ot), cap.fs, len(cap.ot) / cap.fs, len(cap.restarts)))
+
+    def _on_live(self):
+        self._offline = None; self._off = None
+        self._lbl_src.setText("LIVE $M4")
+        self.btn_live.setEnabled(False); self.btn_pause.setEnabled(True)
+        self.slider.setEnabled(False)
+        self.reset_all()
+
+    def _run_offline(self):
+        """Replay the whole capture through the chain at the file's rate; the HMI emulation is
+        re-run from the slider position at redraw time."""
+        cap = self._offline
+        n = len(cap.ot)
+        out = {k: np.empty(n) for k in ("ppg", "u", "y", "hi", "lo", "A")}
+        self.calc.reset(); self._dc = None; self._spike_left = 0
+        restarts = set(cap.restarts)
+        calc = self.calc; fs = cap.fs
+        for i in range(n):
+            if i in restarts:
+                calc.reset()
+            ppg, u, y, A = calc.update(float(cap.ot[i]), float(cap.pi[i]), int(cap.ps[i]), fs)
+            out["ppg"][i] = ppg; out["u"][i] = u; out["y"][i] = y
+            out["hi"][i] = calc.hi; out["lo"][i] = calc.lo; out["A"][i] = A
+        out["fw"] = cap.ppg; out["ps"] = cap.ps
+        self._off = out
+        self.slider.blockSignals(True)
+        self.slider.setRange(0, max(0, n - 1))
+        self.slider.setValue(n - 1)
+        self.slider.blockSignals(False)
+        self._draw(out, np.arange(n) / fs, full=True)
+        self._on_slider(n - 1)
+
+    def _on_slider(self, pos):
+        if self._off is None:
+            return
+        self.hmi.reset()
+        fs = self._offline.fs
+        norm = self.calc.mode != "NO_NORM"
+        # feed exactly the samples that fill one chart window, ending at pos
+        n_in = int(self.hmi.points() * fs / self.hmi.rate) + 1
+        y = self._off["y"]
+        for i in range(max(0, pos - n_in), pos + 1):
+            self.hmi.feed(float(y[i]), fs, norm)
+        self.c_hmi.setData(self.hmi.buf)
+        self._lbl_state.setText("PROBE %s" % self._ps_name(int(self._off["ps"][pos])))
+        self._lbl_pi.setText("PI %.2f %%" % self._offline.pi[pos])
+        self._lbl_amp.setText("A %.2f" % self._off["A"][pos])
+
+    # ── redraw ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _ps_name(ps):
+        return {0: "DISCONNECTED", 1: "OT HIGH", 2: "APPLIED", 3: "AMB SATURATING",
+                4: "ONLY LED SATURATING"}.get(ps, "--")
+
+    def _metrics(self, u, y, ps, fs):
+        """Rationale §21.5 criteria over the buffer, on the samples with the probe applied."""
+        if self.calc.mode == "NO_NORM" or len(y) < int(2 * fs):
+            return ""
+        m = ps == 2
+        if m.sum() < int(2 * fs):
+            return "metrics: probe not applied"
+        yy = y[m]; uu = u[m]
+        pk, _ = signal.find_peaks(yy, distance=int(0.25 * fs), prominence=max(np.std(yy) * 0.5, 1e-3))
+        if len(pk) < 3:
+            return "metrics: no beats"
+        fill = np.array([(yy[pk[i - 1]:pk[i]].max() - yy[pk[i - 1]:pk[i]].min()) / 2
+                         for i in range(1, len(pk))])
+        clip = np.mean(np.abs(uu) > 1.0) * 100
+        return ("beats %d   fill p50 %.2f   clip %.1f %%   <0.6: %.0f %%   >1: %.0f %%"
+                % (len(pk) - 1, np.median(fill), clip, np.mean(fill < 0.6) * 100, np.mean(fill > 1.0) * 100))
+
+    def _draw(self, d, t, full):
+        if not full:
+            n = min(len(t), int(self.PLOT_S * self._fs))
+            sl = slice(len(t) - n, len(t))
+            t = t[sl] - t[-1]
+        else:
+            sl = slice(0, len(t))
+        k = 1e6
+        self.c_fw.setData(t, np.asarray(d["fw"])[sl] * k)
+        self.c_ppg.setData(t, np.asarray(d["ppg"])[sl] * k)
+        if self.calc.mode != "NO_NORM":
+            self.c_hi.setData(t, np.asarray(d["hi"])[sl] * k)
+            self.c_lo.setData(t, np.asarray(d["lo"])[sl] * k)
+            self.c_u.setData(t, np.asarray(d["u"])[sl])
+            self.c_y.setData(t, np.asarray(d["y"])[sl])
+            A = np.asarray(d["A"])[sl]
+            self.c_Ahi.setData(t, A); self.c_Alo.setData(t, -A)
+        else:
+            # NO_NORM has no tracker: the frame is CommTask's fixed scale, 127 counts of
+            # 1.6e-8 A/A = full scale, so the middle plot shows what the HMI gets today
+            u = np.asarray(d["ppg"])[sl] / (127.0 * _HmiEmu.FIXED_LSB)
+            self.c_u.setData(t, u)
+            self.c_y.setData(t, np.clip(u, -1.0, 1.0))
+            for c in (self.c_hi, self.c_lo, self.c_Ahi, self.c_Alo):
+                c.setData([], [])
+        # Python chain vs board, past the first 5 s (the Python filter precharges at the first
+        # sample, the board's has run for hours): p99 of |delta| over the peak. 0.004 % measured.
+        i5 = int(5 * self._fs)
+        ppg = np.asarray(d["ppg"])[i5:]; fw = np.asarray(d["fw"])[i5:]
+        ref = np.max(np.abs(fw)) if len(fw) else 0.0
+        mism = (np.percentile(np.abs(ppg - fw), 99) / ref * 100) if ref > 0 else float('nan')
+        self.p_ppg.setTitle("ppg_disp (Python chain, %s %.1f–%.1f Hz) vs board: mismatch p99 %.3f %% of peak"
+                            % (self.calc.filt, self.calc.f_lo, self.calc.f_hi, mism))
+        self._lbl_metrics.setText(self._metrics(np.asarray(d["u"]), np.asarray(d["y"]),
+                                                np.asarray(d["ps"]), self._fs))
+
+    def update_plots(self):
+        if self._paused or self._offline is not None:
+            return
+        b = self._buf
+        n = len(b["y"])
+        if n < 2:
+            return
+        self._draw(b, np.arange(n) / self._fs, full=False)
+        self.c_hmi.setData(self.hmi.buf)
+        self._lbl_state.setText("PROBE %s" % self._ps_name(self._last_ps))
+        self._lbl_pi.setText("PI --" if self._last_pi != self._last_pi else "PI %.2f %%" % self._last_pi)
+        self._lbl_amp.setText("A %.2f" % b["A"][-1])
+
+    def closeEvent(self, event):
+        QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
+            "PPGDispLabWindow/geometry", self.saveGeometry())
+        if self.main_monitor is not None:
+            self.main_monitor.btn_ppgdisplab.setChecked(False)
+            self.main_monitor.ppgdisplab_window = None
+        super().closeEvent(event)
+
+
+
+class _WheelToScroll(QtCore.QObject):
+    """Event filter for the sidebar's combos, spin boxes and sliders: a wheel turn over one of
+    them scrolls the sidebar and never changes the control. Alex, 2026-11-06: scrolling the
+    sidebar with the wheel switched FRAME MODE when the pointer crossed it, which is disastrous
+    (the board changes frame and every $M4 consumer goes blind). Clicking still works."""
+
+    def __init__(self, scroll):
+        super().__init__(scroll)
+        self._scroll = scroll
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QtCore.QEvent.Wheel:
+            bar = self._scroll.verticalScrollBar()
+            notches = ev.angleDelta().y() / 120.0
+            bar.setValue(int(round(bar.value()
+                                   - notches * bar.singleStep() * QtWidgets.QApplication.wheelScrollLines())))
+            return True
+        return False
+
+
 class PPGPlotsWindow(QtWidgets.QWidget):
     """Floating window with all PPG/SpO2/HR plots and LED2 (RED)/LED1 (IR) channel checkboxes."""
 
@@ -13229,6 +14083,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.hr1test_window   = None
         self.hr1test_calc     = HR1TestCalc()
         self.hr1lab_window    = None
+        self.ppgdisplab_window = None
         self.hr2test_window   = None
         self.hr3test_window   = None
         self.hr3test_calc     = HR3TestCalc()
@@ -13247,6 +14102,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._SPOST_REFRESH_EVERY     = 2   # 10 Hz
         self._HR1TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._HR1LAB_REFRESH_EVERY    = 2   # 10 Hz
+        self._PPGDISPLAB_REFRESH_EVERY = 2   # 10 Hz
         self._HR2TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._HR3TEST_REFRESH_EVERY   = 2   # 10 Hz
         self._PILAB_REFRESH_EVERY     = 2   # 10 Hz
@@ -13262,6 +14118,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._spo2test_refresh_counter = 0
         self._hr1test_refresh_counter  = 0
         self._hr1lab_refresh_counter   = 0
+        self._ppgdisplab_refresh_counter = 0
         self._hr2test_refresh_counter  = 0
         self._hr3test_refresh_counter  = 0
         self._pilab_refresh_counter    = 0
@@ -13283,7 +14140,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hr2lab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
             'plot_hr1test', 'plot_hr1lab', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
-            'plot_xylab',
+            'plot_xylab', 'plot_ppgdisplab',
         ]
         self._py_timing = {k: deque(maxlen=50) for k in _pt_keys}
         self._last_drain_t  = None   # for drain_interval measurement
@@ -13473,7 +14330,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._PLOT_WINDOW_BUTTONS = (
             "btn_hr1test", "btn_hr1lab", "btn_hr2test", "btn_hr2lab", "btn_hr3test", "btn_hr3lab",
             "btn_spo2test", "btn_spo2lab", "btn_ppgplots", "btn_signals", "btn_signals2",
-            "btn_results", "btn_pilab", "btn_xylab", "btn_lib_config",
+            "btn_results", "btn_pilab", "btn_xylab", "btn_ppgdisplab", "btn_lib_config",
         )
         self.btn_disable_plots = QtWidgets.QPushButton("PLOTS  ●  ON")
         self.btn_disable_plots.setCheckable(True)
@@ -13735,6 +14592,19 @@ class PPGMonitor(QtWidgets.QMainWindow):
             "while you provoke a failure by hand. Requires frame mode $M4.",
             src="HR1LabWindow"))
         self.sidebar_layout.addWidget(self.btn_hr1lab)
+
+        self.btn_ppgdisplab = QtWidgets.QPushButton("PPGDISPLAB")
+        self.btn_ppgdisplab.setCheckable(True)
+        self.btn_ppgdisplab.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.btn_ppgdisplab.clicked.connect(self.toggle_ppgdisplab)
+        self.btn_ppgdisplab.setToolTip(_make_tooltip(
+            "PPGDISPLAB",
+            "Show or hide the ppg_disp display-chain bench: the library's display filter, "
+            "the amplitude tracker candidates and the NORM / NORM_PI modes of v0.116, then the "
+            "HMI's decimation, byte and chart, every number a control. Live on $M4 or on a "
+            "loaded P1 capture.",
+            src="PPGDispLabWindow"))
+        self.sidebar_layout.addWidget(self.btn_ppgdisplab)
 
         self.btn_hr2lab = QtWidgets.QPushButton("HR2LAB")
         self.btn_hr2lab.setCheckable(True)
@@ -14156,7 +15026,25 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.right_splitter.setStretchFactor(0, 1)
         self.right_splitter.setStretchFactor(1, 1)
 
-        content_layout.addLayout(self.sidebar_layout)
+        # The sidebar scrolls (v1.104): with thirty-odd controls its natural height exceeded
+        # some screens and, as a bare layout, it set the main window's minimum height. In a
+        # QScrollArea it sets only its width; the table and the log to its right already scroll.
+        sidebar_widget = QtWidgets.QWidget()
+        sidebar_widget.setLayout(self.sidebar_layout)
+        self.sidebar_scroll = QtWidgets.QScrollArea()
+        self.sidebar_scroll.setWidgetResizable(True)
+        self.sidebar_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.sidebar_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.sidebar_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.sidebar_scroll.setWidget(sidebar_widget)
+        self.sidebar_scroll.setFixedWidth(
+            sidebar_widget.sizeHint().width()
+            + self.sidebar_scroll.verticalScrollBar().sizeHint().width() + 4)
+        self._sidebar_wheel = _WheelToScroll(self.sidebar_scroll)
+        for ctl in sidebar_widget.findChildren((QtWidgets.QComboBox, QtWidgets.QAbstractSpinBox,
+                                                QtWidgets.QAbstractSlider)):
+            ctl.installEventFilter(self._sidebar_wheel)
+        content_layout.addWidget(self.sidebar_scroll)
         content_layout.addWidget(self.right_splitter, stretch=1)
         main_layout.addLayout(content_layout)
 
@@ -14629,6 +15517,21 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hr1lab_window.main_monitor = None  # prevent recursive callback
                 self.hr1lab_window.close()
                 self.hr1lab_window = None
+
+    def toggle_ppgdisplab(self):
+        if self.btn_ppgdisplab.isChecked():
+            self.ppgdisplab_window = PPGDispLabWindow(None)
+            self.ppgdisplab_window.main_monitor = self
+            self.ppgdisplab_window.show()
+        else:
+            if self.ppgdisplab_window is not None:
+                self.ppgdisplab_window.main_monitor = None
+                self.ppgdisplab_window.close()
+                self.ppgdisplab_window = None
+
+    def _open_ppgdisplab_default(self):
+        self.btn_ppgdisplab.setChecked(True)
+        self.toggle_ppgdisplab()
 
     def toggle_hr2lab(self):
         if self.btn_hr2lab.isChecked():
@@ -15223,6 +16126,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         s.setValue("PPGMonitor/spo2test_open",  self.spo2test_window  is not None)
         s.setValue("PPGMonitor/hr1test_open",  self.hr1test_window  is not None)
         s.setValue("PPGMonitor/hr1lab_open",    self.hr1lab_window    is not None)
+        s.setValue("PPGMonitor/ppgdisplab_open", self.ppgdisplab_window is not None)
         s.setValue("PPGMonitor/hr2test_open",  self.hr2test_window  is not None)
         s.setValue("PPGMonitor/hr3test_open",  self.hr3test_window  is not None)
         s.setValue("PPGMonitor/pilab_open",    self.pilab_window    is not None)
@@ -15248,6 +16152,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.spo2test_window  is not None: s.setValue("SpO2TestWindow/geometry",   self.spo2test_window.saveGeometry())
         if self.hr1test_window   is not None: s.setValue("HR1TestWindow/geometry",    self.hr1test_window.saveGeometry())
         if self.hr1lab_window    is not None: s.setValue("HR1LabWindow/geometry",     self.hr1lab_window.saveGeometry())
+        if self.ppgdisplab_window is not None: s.setValue("PPGDispLabWindow/geometry", self.ppgdisplab_window.saveGeometry())
         if self.hr2test_window   is not None: s.setValue("HR2TestWindow/geometry",    self.hr2test_window.saveGeometry())
         if self.hr3test_window   is not None: s.setValue("HR3TestWindow/geometry",    self.hr3test_window.saveGeometry())
         if self.xylab_window     is not None: s.setValue("XYLabWindow/geometry",      self.xylab_window.saveGeometry())
@@ -15808,7 +16713,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self._lab_capture is not None and self._lab_capture.active:
             self._lab_capture.add_event(f"stream discontinuity: {reason}")
         for name in ("spo2lab_window", "spo2test_window", "hr1test_window", "hr2test_window",
-                     "hr3test_window", "pilab_window", "xylab_window", "hr1lab_window", "hr2lab_window",
+                     "hr3test_window", "pilab_window", "xylab_window", "hr1lab_window", "hr2lab_window", "ppgdisplab_window",
                      "signals_window", "signals2_window"):
             win = getattr(self, name, None)
             hook = getattr(win, "on_stream_discontinuity", None) if win is not None else None
@@ -16426,6 +17331,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 # which is what makes a live comparison between them fair.
                                 if self.hr1lab_window is not None:
                                     self.hr1lab_window.feed_sample(_ot500, self.afe_fs(), _ps500, _sc500)
+                                # PPGDISPLAB: OT_LED1, the board's ppg_disp (field 9) and PI (13)
+                                if self.ppgdisplab_window is not None:
+                                    self.ppgdisplab_window.feed_sample(
+                                        _ot500, float(_p500[9]), float(_p500[13]), _ps500, self.afe_fs())
                                 # XYLAB: the whole field list, any field may be on an axis.
                                 if self.xylab_window is not None:
                                     self.xylab_window.feed_frame(_p500, self.afe_fs())
@@ -16931,6 +17840,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 self.hr1lab_window.update_plots(self.data_pi)
                 self._py_timing['plot_hr1lab'].append((time.perf_counter() - _t0p) * 1000)
 
+            self._ppgdisplab_refresh_counter += 1
+            if self.ppgdisplab_window is not None and self._ppgdisplab_refresh_counter >= self._PPGDISPLAB_REFRESH_EVERY:
+                self._ppgdisplab_refresh_counter = 0
+                _t0p = time.perf_counter()
+                self.ppgdisplab_window.update_plots()
+                self._py_timing['plot_ppgdisplab'].append((time.perf_counter() - _t0p) * 1000)
+
             self._hr2test_refresh_counter += 1
             if self.hr2test_window is not None and self._hr2test_refresh_counter >= self._HR2TEST_REFRESH_EVERY:
                 self._hr2test_refresh_counter = 0
@@ -16979,6 +17895,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self._py_timing['algo_spo2test'].clear()
                 if self.hr1test_window   is None: self._py_timing['plot_hr1test'].clear()
                 if self.hr1lab_window    is None: self._py_timing['plot_hr1lab'].clear()
+                if self.ppgdisplab_window is None: self._py_timing['plot_ppgdisplab'].clear()
                 if self.hr2test_window   is None:
                     self._py_timing['plot_hr2test'].clear()
                     self._py_timing['algo_hr2test'].clear()
@@ -17038,6 +17955,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(0, self._open_hr1test_default)
         if s.value("PPGMonitor/hr1lab_open",    False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr1lab_default)
+        if s.value("PPGMonitor/ppgdisplab_open", False, type=bool):
+            QtCore.QTimer.singleShot(0, self._open_ppgdisplab_default)
         if s.value("PPGMonitor/hr2test_open",   False, type=bool):
             QtCore.QTimer.singleShot(0, self._open_hr2test_default)
         if s.value("PPGMonitor/hr3test_open",   False, type=bool):
@@ -17092,6 +18011,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         ("serialcom_open",     "SerialComWindow"),
         (None,                 "UdpComWindow"),
         ("hr1lab_open",        "HR1LabWindow"),
+        ("ppgdisplab_open",    "PPGDispLabWindow"),
         ("hr2lab_open",        "HR2LabWindow"),
         ("hr3lab_open",        "HR3LabWindow"),
         ("spo2lab_open",       "SpO2LabWindow"),

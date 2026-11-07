@@ -1835,32 +1835,32 @@ Every one is a native segfault: it kills the process with no Python traceback, a
 The suspected trigger, `useOpenGL=True` (set once at startup, `if __name__ == "__main__"`), is
 still untested with `False` — an orthogonal, deferred lever (it would still leave software
 rendering exercising the same code path). This button removes the whole class of risk instead of
-tuning it: while it is on, none of the fifteen pyqtgraph-bearing subwindows can be open, so their
+tuning it: while it is on, none of the sixteen pyqtgraph-bearing subwindows can be open, so their
 paint code never runs, in this process, regardless of what the renderer backend is.
 
-**The fifteen.** Exactly the fed-from-`_refresh_plots_tick()` set — `HR1TEST`/`HR1LAB`,
+**The sixteen.** Exactly the fed-from-`_refresh_plots_tick()` set — `HR1TEST`/`HR1LAB`,
 `HR2TEST`/`HR2LAB`, `HR3TEST`/`HR3LAB`, `SPO2TEST`/`SPO2LAB`, `PPG Plots`, `PPG SIGNALS`,
-`PPG SIGNALS 2`, `ALGO RESULTS`, `PILAB`, `XYLAB` (v1.82) — plus `LIB CONFIG`, which owns one `PlotWidget` (a
+`PPG SIGNALS 2`, `ALGO RESULTS`, `PILAB`, `XYLAB` (v1.82), `PPGDISPLAB` (v1.104) — plus `LIB CONFIG`, which owns one `PlotWidget` (a
 settling-time curve, read on demand) but sits outside that 200 ms tick. Not touched: `SIGNAL
 STATS` (the main window itself has no plot), `HW CONFIG`, `LAB CAPTURE`, `MULTI CAPTURE`,
 `SERIAL COM`, `UDP COM`, `DIAGNOSTICS`, `PYTHON TIMING`, `ESP32 TIMING`, `AFE SWEEP TEST`, and the
 serial/UDP/hub connections — nothing a capture needs to record is disabled.
 
 **What it does**, in `_apply_disable_plots(disabled, log_it)`, entirely by driving each of the
-fifteen buttons through the checkable-button/`toggle_xxx()` pair it already had (§6.5): turning
+sixteen buttons through the checkable-button/`toggle_xxx()` pair it already had (§6.5): turning
 it on calls `.click()` on every one that is currently checked — exactly the click the user would
 make — so the window closes through its own, unmodified `closeEvent` (geometry saved,
-`main_monitor` cleared, `self.xxx_window` set back to `None`); it then disables all fifteen
+`main_monitor` cleared, `self.xxx_window` set back to `None`); it then disables all sixteen
 buttons so none can reopen. Turning it off re-enables them and reopens nothing — the user opens
 what they need, same as always. The state is a QSettings boolean
 (`PPGMonitor/plots_disabled`), applied once more from `_restore_settings()` at startup: no
-window is open yet at that point, so this only paints the button and locks the fifteen — the
+window is open yet at that point, so this only paints the button and locks the sixteen — the
 point being that the setting outlives a crash-triggered relaunch without anyone having to
 remember to reapply it.
 
 **Verification:** `test_pulsenest/disable_plots_test.py`, offscreen, no board and no hub — opens
 `HR1LAB`, `SPO2TEST` and `LIB CONFIG`, toggles the button on and checks all three close through
-their own `toggle_xxx()` and all fifteen buttons lock; checks a locked button truly cannot be
+their own `toggle_xxx()` and all sixteen buttons lock; checks a locked button truly cannot be
 clicked open; toggles off and checks the buttons unlock and nothing reopens on its own; then a
 save/restore round-trip through a fresh `PPGMonitor` instance, confirming the disabled state (and
 the locked buttons) survive a relaunch with no window ever created to close. 13/13.
@@ -2693,6 +2693,80 @@ Fed at 500 Hz from the `$M4` path next to HR1LAB with the whole field list (`fee
 redrawn at 10 Hz (`_XYLAB_REFRESH_EVERY`), timed as `plot_xylab` in PYTHON TIMING. Selections, filter
 parameters and window length persist under `XYLabWindow/*` (§9).
 
+### 7.22 PPGDispLabWindow — "PPGDISPLAB" (v1.104)
+
+Bench for the `ppg_disp` display chain designed for library v0.116 (library spec §5.9, rationale
+§21). Sidebar button in ANALYSIS, under HR1LAB. Live it needs `$M4` (OT_LED1 field 31, the board's
+own `ppg_disp` field 9, PI field 13, ProbeState field 22); offline it replays a **P1 capture**
+(`_read_capture_ppgdisp`: columns `OT_LED1`, `PPG`, `PI`, `ProbeState`; rate from `afe_prf_hz`;
+`board restarted` rows restart the chain). It exists so that the filter, the amplitude tracker, the
+PI mapping and the transport rate are chosen with evidence **before** they are frozen in the library
+spec; the chart geometry is a parameter here and never a constant, because it belongs to the HMI.
+
+**Chain (`PPGDispCalc`, one sample at a time, the library's own arithmetic):**
+
+| Stage | What it does |
+|---|---|
+| FILTER | `BP2`: the library's one-biquad Butterworth band-pass (`_lib_biquad_bp` through `_LibBiquad`, a mirror of `BiquadFilter` with its steady-state precharge) — the v0.115 filter. `BP2+LP4`: the same followed by the library's `LowPass4` at `f_hi` (two `init_lp` sections, Q 0.5412 and 1.3066, `_lib_biquad_lp`), the steeper high side the 25/50 Hz consumers need. Output negated (peaks up), as `_process_sample()` |
+| NORMALIZER | Amplitude tracker, **updated at every sample**: `SLEW` (hi/lo chase the max/min of the last WINDOW; up at most RISE × range per second, down with TAU), `INSTANT` (jump to any new extreme, decay with TAU), `MAXMIN` (max/min of the last WINDOW), `RMS` (EMA mean, semi-amplitude √2·RMS — the first spec draft). The window targets come from 100 ms block extrema, what the library could reuse from the PI blocks. HEADROOM multiplies the semi-amplitude (default 1.15, the spec's, since 2026-11-07). **`SLEW` with rise 0.5/s, window 1 s, τ 1 s is the estimator of spec §5.9 since 2026-11-07 (Alex, after watching the four in this window: INSTANT plateaus, MAXMIN jumps, RMS breathes — rationale §21.5 addendum)** |
+| MODE | `NO_NORM` (the filter output, no tracker), `NORM` (`(x − centre)/semi` clamped to ±1), `NORM_PI` (× A **then clamped to ±1, never to ±A** — 2026-11-07, spec §5.9; `A = floor + (1 − floor)·ln(PI/PI_lo)/ln(PI_hi/PI_lo)` clamped to [floor, 1], NaN PI → floor). Probe not APPLIED → output 0 and the tracker starts again (spec §5.9) |
+| HMI (`_HmiEmu`) | Decimation to RATE (25/50/62.5/100/125/250 Hz) by `HOLD` (the latest sample, as `CommTask`) or `AVG`; byte `128 + round(y·127)` in the NORM modes, `128 + round(ppg/1.6e-8)` in `NO_NORM` (CommTask's fixed scale), clipped 0–255; a circular sweep with a 6-point erase gap as `ui_LockPPGChart`; `points = rate × width_px / (px_per_mm × sweep_mm_s)`. The preview widget is exactly WIDTH × HEIGHT px (defaults = today's `ui_LockPPGChart`: 460 × 105, 5.2 px/mm, 17.3 mm/s → 128 points = 5.1 s at 25 Hz; at the clinical 25 mm/s it holds 88 points = 3.5 s) |
+
+**Plots:** top, the Python chain's `ppg_disp` (ppm, cyan) over the board's own (grey) with the
+tracker's hi/lo (magenta dashes, the same colour as ±A below: they are the same frame); its title shows the **mismatch** between the two, p99 of |Δ| over
+the peak past the first 5 s (the Python filter precharges at the first sample; the board's has run
+for hours) — 0.001–0.035 % on SUBJ08–11 with `BP2` 0.5–20 Hz, which is the self-check that the
+Python chain is the library's. Middle, the normalized output in a fixed ±1.15 frame: clamped (cyan),
+unclamped (dark grey, so clipping shows as the grey leaving the frame), ±A (magenta), ±1 (red);
+in `NO_NORM` the frame is CommTask's fixed scale (127 × 1.6e-8 A/A = ±1), i.e. what the HMI draws
+today, with no tracker lines.
+Bottom-left, the HMI preview; offline, a slider sets the instant it shows while the plots show the
+whole capture. The clamp is at ±1 in every mode: until 2026-11-07 the trace was clamped at ±A in
+`NORM_PI` while the `clip` metric already counted |A·u| > 1, so the metric was right and the trace
+was not; measured with the window, clamping at ±A quadrupled the clipped samples where A < 1
+(SUBJ08 6.1 → 1.6 %, SUBJ10 18.5 → 13.6 %) for nothing (rationale §21.8).
+
+**Controls:** FILTER (type, f_lo, f_hi), NORMALIZER (method, tau, rise, window, headroom), MODE
+(mode, PI_lo, PI_hi, floor), HMI (rate, decimation, width, height, sweep, px/mm); LOAD CSV / LIVE,
+PAUSE (`P`, live only; CONTINUE restarts the chain), RESET, and three perturbations of the input in
+the OT domain around a 2 s EMA DC: SPIKE (`S`, 5× the tracked range for 100 ms — the artefact of
+criterion 3: it may saturate the trace, it must not re-scale it), STEP ×2 and STEP ×0.5 (sustained
+AC gain while on — criterion 4: shrink fast, grow slowly). A chain parameter change restarts the
+chain (live) or replays the capture (offline); an HMI parameter only resets the emulation.
+
+**Metrics** (context bar; the §21.5 criteria over the buffer — the last 30 s live, the whole capture
+offline — on the samples with the probe applied; beats found on the normalized trace with
+`find_peaks`, 0.25 s distance, prominence 0.5·σ): `beats`, `fill p50` (median per-beat
+semi-amplitude in the ±1 frame), `clip` (% of samples beyond ±1 before clamping), `<0.6` (% of beats
+filling less than 0.6: a spike or step shrank the trace), `>1` (% of beats overshooting).
+
+**Measured 2026-11-06 on the HOSPNAV captures (defaults: BP2 0.5–20 Hz, NORM_PI, tau 1 s, rise 0.5,
+window 1 s, no headroom; HR3 164–168 BPM in all four):**
+
+| Method | SUBJ08 fill / clip / <0.6 | SUBJ09 | SUBJ10 | SUBJ11 |
+|---|---|---|---|---|
+| SLEW | 0.53 / 1.6 % / 82 % | 0.85 / 8.7 % / 22 % | 0.45 / 13.4 % / 73 % | 0.79 / 5.3 % / 6 % |
+| INSTANT | 0.62 / 0.0 % / 39 % | 1.00 / 0.1 % / 9 % | 0.60 / 0.4 % / 50 % | 1.00 / 0.0 % / 1 % |
+| MAXMIN | 0.57 / 0.0 % / 66 % | 0.90 / 0.1 % / 16 % | 0.52 / 0.0 % / 57 % | 0.85 / 0.0 % / 3 % |
+| RMS | 0.59 / 2.1 % / 54 % | 0.95 / 13.2 % / 15 % | 0.49 / 8.0 % / 72 % | 0.93 / 16.2 % / 4 % |
+
+These are lower than the 2026-11-05 scratch comparison (SLEW fill 0.88 median): that script found
+its beats on the raw trace with a prominence tied to its σ and merged beats where the amplitude
+varied (97 beats on SUBJ10's longest run against HR3's 168 BPM), which inflates a per-beat fill.
+The window finds them on the normalized trace. SUBJ10 is still under-counted (172 of ≈277):
+treat its row as the noisiest capture, not as a measurement. On the clean captures the trade-off
+HEADROOM measured the same day (SLEW, SUBJ08/09/11): 1.15 halves the clipping (1.6→0.9 %, 8.7→5.3 %,
+5.3→1.7 %) for ~12 % less fill; 1.25 gains little more (0.7 / 4.2 / 0.9 %) for ~18 % less fill.
+`INSTANT` never clips at any headroom (its frame jumps to every new extreme). The margin belongs
+before the clamp, i.e. in the library: once the value is clamped to ±1, no consumer can recover it.
+is as expected: `INSTANT` fills the frame and never clips but re-scales on a spike; `SLEW` keeps
+the frame through a spike at the price of beats that fill half of it after an artefact.
+
+Fed at 500 Hz from the `$M4` path next to HR1LAB (`feed_sample(ot_led1, ppg_fw, pi, probe_state,
+fs)`); redrawn at 10 Hz (`_PPGDISPLAB_REFRESH_EVERY`), timed as `plot_ppgdisplab` in PYTHON TIMING;
+in the PLOTS button's set (sixteen windows now). Geometry under `PPGDispLabWindow/geometry`, open
+state under `PPGMonitor/ppgdisplab_open` (§9). Implements `on_stream_discontinuity()`.
+
 ## 8. File outputs
 
 `captures/<prefix>_<board>_<MAC tail>_<timestamp>.csv` — one per board of a MULTI CAPTURE run
@@ -2884,6 +2958,25 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.104 — 2026-11-06
+- PPGDISPLAB: `NORM_PI` scales by A and clamps at ±1, not at ±A (2026-11-07, spec §5.9).
+
+**PPGDISPLAB (§7.22).** New ANALYSIS window: the `ppg_disp` display chain of library v0.116 (spec §5.9,
+rationale §21) run in Python with the library's own filter arithmetic — `_LibBiquad` mirrors
+`BiquadFilter` with its precharge, `_lib_biquad_lp` adds `init_lp` so `LowPass4` can be cascaded —
+then the amplitude-tracker candidates (SLEW / INSTANT / MAXMIN / RMS), the NORM / NORM_PI modes
+with the A(PI) mapping, and an emulation of what the HMI draws (transport rate and decimation,
+8-bit byte, a chart of the HMI's own pixel geometry sized from the sweep speed). Live on `$M4` or on a
+loaded P1 capture; SPIKE / STEP ×2 / STEP ×0.5 perturb the input; the §21.5 metrics are shown live.
+The Python chain reproduces the board's `ppg_disp` to 0.001–0.035 % (p99) on SUBJ08–11. Measured
+table and the caveat on the 2026-11-05 scratch numbers in §7.22. PLOTS set: sixteen windows.
+**Sidebar scrolls (§6).** The main window's control sidebar now lives in a `QScrollArea` (vertical
+bar as needed, fixed width from its own size hint): with the new button its natural height no longer
+fitted every screen, and as a bare layout it set the main window's minimum height. The table and the
+log to its right already scrolled. The wheel over any combo, spin box or slider of the sidebar
+scrolls the sidebar and never changes the control (`_WheelToScroll` event filter): scrolling with
+the pointer crossing FRAME MODE used to switch the frame mode.
 
 ### v1.103 — 2026-10-28
 

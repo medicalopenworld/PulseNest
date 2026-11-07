@@ -2,7 +2,8 @@
 
 Sections of manuals, IFUs and validation protocols that refer to measurement in neonates.
 Compiled for the PulseNest project (AFE4490 / IncuNest). First version 24 August 2026 (HTML + PDF);
-converted to Markdown and extended with section 0 on 13 October 2026.
+converted to Markdown and extended with section 0 on 13 October 2026; Nellcor DE9 pinout (EDAN H100N
+manual) added to section 2 on 1 November 2026.
 
 > **Conclusion.** Every manufacturer declares **±3 % (A<sub>rms</sub>) in neonates versus ±2 % in
 > adults**, and three of them (Masimo, Mindray, Philips/Nellcor) state explicitly that the extra point is
@@ -132,6 +133,55 @@ Source: [pharmamed.be/…/24917_Guide-UK.pdf](https://www.pharmamed.be/media/pro
 | MAXI (infant) | 3–20 kg | ±2 | ±3 |
 | SC-NEO | 1.5–5 kg | ±2 | — |
 | SC-PR (preterm) | < 1.5 kg | ±2 | — |
+
+### EDAN H100B / H100N user manual (H100N = Nellcor OxiMax module): sensor connector pinout
+
+Source: [solicmedical.com/pdf/82-21.54.109000-2.7 H100B H100N Pulse Oximeter User Manual-ES.pdf](https://solicmedical.com/pdf/82-21.54.109000-2.7%20H100B%20H100N%20Pulse%20Oximeter%20User%20Manual-ES.pdf)
+— EDAN Instruments P/N 21.54.109000, rev. 2.7, release August 2020, resold under the Solic brand
+(the manual keeps the EDAN copyright). Read 2026-11-01; the PDF is not kept in the repo (third-party document, the link is enough).
+
+The H100N "is installed with Nellcor SpO2 module" and takes "Nellcor-approved OxiMax Sensors and
+extension cables"; its accessory list includes the **DS-100A OxiMax** (EDAN code 01.15.30043). Section 2.3
+"Connecting Sensor or Cable" gives the **"SIO definition"** of the oximeter's 9-pin sensor port, i.e. the
+pin assignment of the de-facto standard Nellcor DE9 connector as seen by an OxiMax module (manual pp. 35-36).
+Pin numbers of the sensor's male plug match the socket's. Transcribed literally:
+
+| Pin | Name | Description (EDAN wording) |
+|---|---|---|
+| 1 | GND | GND |
+| 2 | LED+ | LED drive signal, IR Anode |
+| 3 | LED- | LED drive signal, Red Anode |
+| 4 | TXD / Sensor Memory Return | UART Tx / DigiCAL communication signal return |
+| 5 | Detector Anode | Detector anode connection |
+| 6 | Inner Shield | Detector shield to GND |
+| 7 | Outer Shield | Outer cable shield to GND |
+| 8 | RXD / Sensor Memory Data | UART Rx / DigiCAL communication signal |
+| 9 | Detector Cathode | Detector cathode connection |
+
+What it establishes (VERIFIED in the manual):
+
+- **LEDs** anti-parallel on pins 2 and 3 (IR anode on 2, red anode on 3), the two-wire arrangement the
+  AFE4490 H-bridge drives; **photodiode** anode on 5, cathode on 9; inner shield on 6, outer on 7.
+- **"DigiCAL"** is Nellcor's name for the OxiMax sensor memory: data on **pin 8**, return on **pin 4**.
+  On the H100N these two pins are shared with the RS-232 link to the PC software (an EDAN design choice;
+  a genuine Nellcor monitor has no UART there).
+
+What it leaves open (not stated in the manual):
+
+- **RCAL.** The N-200, N-180 and SRC-2 manuals place the wavelength-coding resistor between **pins 1 and 6**,
+  and PulseNest measured about 7.5 kΩ there on the Medle ST-S0163 and UpnMed U401-D probes (2026-10-27). EDAN
+  labels pin 1 "GND" and pin 6 "detector shield to GND"; if the module tied both to ground the resistor
+  would be shorted and unreadable. Most likely the table is simplified for cable makers and pin 1 is the
+  node of the divider that reads RCAL, but this is an inference. Open discrepancy; see
+  `r_curve_calibration_survey.md` for how the RCAL bin selects the curve coefficients.
+
+Other H100N figures in the same manual, consistent with the PM-1000N service manual above: sensor
+≈660 nm and ≈900 nm, emitted power < 15 mW; SpO2 accuracy ±2 adult, ±3 neonate, ±2 low perfusion
+(all 70-100 %); pulse rate 20-250 bpm ±3; perfusion range 0.03-20 %; validation by induced hypoxia
+against a CO-oximeter in healthy adults aged 18 to 50 "with various skin pigmentations", with the usual
+caveat that the study population "was healthy adults and not in the actual intended use population".
+For contrast, the H100B (EDAN's own module) table has no calibration pin at all: 1 RS-232 GND, 4 RXD,
+8 TXD, 6 "detector connection", 7 AGND, same LED and detector pins.
 
 ## 3. Philips
 
