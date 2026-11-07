@@ -375,8 +375,17 @@ $LCFG,rsqm_ot_thr=<v>,rsqm_disconn_led_sub_thr=<v>,rsqm_disconn_i_pd_thr=<v>,
       rsqm_probe_state_min_s=<v>,
       hgac_enable=<0|1>,hgac_v_tia_high2=<v>,hgac_v_tia_high1=<v>,hgac_v_tia_low1=<v>,
       hgac_ema_fast_tau_s=<v>,hgac_ema_slow_tau_s=<v>,hgac_ema_ambient_tau_s=<v>,
-      spo2_r_method=<1|2>,spo2_r_method2_reg_corr_min=<v>,spo2_window_s=<v>,pi_window_s=<v>*XX
+      spo2_r_method=<1|2>,spo2_r_method2_reg_corr_min=<v>,spo2_pulse_gate_enable=<0|1>,
+      spo2_window_s=<v>,pi_window_s=<v>,afe_settle_freeze_enable=<0|1>,
+      ppgdisp_mode=<no_norm|norm|norm_pi>,ppgdisp_norm_rise_per_s=<v>,ppgdisp_norm_win_s=<v>,
+      ppgdisp_norm_tau_s=<v>,ppgdisp_norm_headroom=<v>,ppgdisp_norm_pi_lo=<v>,ppgdisp_norm_pi_hi=<v>*XX
 ```
+
+(`ppgdisp_*` since fw 0.30 / lib v0.117: the display mode of `ppg_disp` (library spec §5.9) and the
+parameters of its SLEW tracker and PI mapping. `$SET,ppgdisp_mode,<no_norm|norm|norm_pi>` takes the
+name, not a number; a tracker or PI key sends its siblings unchanged, and the echo is the value in
+force, so a value the library rejects shows up as unchanged in LIB CONFIG. `_on_lcfg_frame_received()`
+keeps `ppgdisp_mode` and pushes it to the PPG plots (§7.1, §7.2) and to PPGDISPLAB (§7.22).)
 
 (`spo2_r_method` and `spo2_r_method2_reg_corr_min` since fw 0.18 / lib v0.100; `$SET,spo2_r_method,<1|2>` also
 re-emits `$CFG`, whose `spo2_r_method_id` names the method in force (and, since fw 0.25 / lib v0.106, `pi_method_id` names the PI definition; the `$CFG` notes print it, `? (fw < 0.25)` for older firmware). `spo2_window_s` and
@@ -1950,7 +1959,7 @@ purple background (`#5500AA`), bold gold name on first line, light grey descript
 Detached window with 6 stacked plots, linked X axes:
 1. IR raw + IR_Amb + IR_Sub (3 curves, toggleable via checkboxes)
 2. RED raw + RED_Amb + RED_Sub (3 curves, toggleable)
-3. PPGdisp (display-ready filtered signal)
+3. PPGdisp (display-ready filtered signal). **Y axis from the board's `ppgdisp_mode` (v1.105):** fixed at [−1.05, 1.05] with the mode in the title in NORM / NORM_PI, where the axis is the frame the HMI gets and autoscale would hide the clamp and NORM_PI's shrinking; autoscale in NO_NORM (`_apply_ppgdisp_axis`, `set_ppgdisp_mode()`, pushed by `_apply_ppgdisp_mode()` on every `$LCFG` change and when the window opens)
 4. SpO2 [%] — title: SpO2, SQI, R and r (`$M4` R_METHOD2_REG_CORR, v1.91)
 5. HR1 [bpm] (peak detection) + HR2 [bpm] (autocorrelation) + HR3 [bpm] (FFT+HPS)
 6. (additional HR comparison row)
@@ -1961,7 +1970,8 @@ IR-first row ordering mirrors SIGNAL STATS.
 ### 7.2 PPGSignalsWindow — "PPG SIGNALS"
 
 Focused view on the 6 raw/subtracted ADC channels (IR, RED, IR_Amb, RED_Amb, IR_Sub, RED_Sub).
-IR-first ordering. Stacked plots with linked X axes.
+IR-first ordering. Stacked plots with linked X axes. The PPG_DISP plot follows the board's
+`ppgdisp_mode` like §7.1 item 3 (v1.105).
 
 ### 7.3 AlgoResultsWindow — "ALGO RESULTS"
 
@@ -2477,8 +2487,17 @@ Purpose: view and change RSQM / HGAC / SpO2 library parameters in real time via 
 - SpO2 window (`spo2_window_s`) [s] — the SpO2 averaging time, a true sliding window (lib v0.102); 2–12 s, default 6; the window is the warm-up and a change empties it
 - PI window (`pi_window_s`) [s] — PI's averaging time, independent of SpO2's; 2–12 s, default 6
 
+**Contents (PPG DISPLAY group, v1.105 / fw 0.30 / lib v0.117):** — see incunest_afe4490 §5.9
+- mode (`ppgdisp_mode`) — combo NO_NORM / NORM / NORM_PI (index = library enum; the `$SET` carries the lower-case name). NO_NORM: the band-passed OT as before fw 0.30; NORM: [−1, 1] at constant amplitude (the ISO "normalized" lab mode); NORM_PI: NORM × A(PI), clamp at ±1 (the product mode). Changing it re-fixes the Y axis of the PPG plots
+- rise (`ppgdisp_norm_rise_per_s`) [/s] — SLEW tracker, maximum growth of the frame per second as a fraction of its height; 0.05–5, default 0.5
+- window (`ppgdisp_norm_win_s`) [s] — window of 100 ms block extrema the frame follows, also the warm-up; 0.2–5, default 1
+- fall τ (`ppgdisp_norm_tau_s`) [s] — exponential fall of the frame; 0.2–10, default 1
+- headroom (`ppgdisp_norm_headroom`) — the frame's extrema map to ±1/H, the clamp stays at ±1; 1–2, default 1.15
+- PI_lo / PI_hi (`ppgdisp_norm_pi_lo` / `_hi`) [%] — NORM_PI's amplitude is 0.5 at or below PI_lo and 1 at or above PI_hi, logarithmic between; the display's own thresholds, not the SQI ramp's (lib v0.117); defaults 0.5 / 2
+- The library validates the four tracker values as a set and the two PI thresholds as a pair; the firmware sends the siblings as they are and echoes what is in force, so a rejected value simply does not move
+
 - [Read from chip ($LCFG?)] — requests `$LCFG?` from firmware
-- [Set all] — sends `$SET` for `hgac_enable` and every RSQM, HGAC and SpO2 parameter in the window
+- [Set all] — sends `$SET` for `hgac_enable`, `ppgdisp_mode` and every RSQM, HGAC, SpO2 and PPG DISPLAY parameter in the window
 - Status bar: shows last command sent and confirmation status
 
 Controls are marked **dirty** (red text) when edited but not yet confirmed by firmware, and **clean** after a matching `$LCFG` arrives.
@@ -2694,6 +2713,13 @@ redrawn at 10 Hz (`_XYLAB_REFRESH_EVERY`), timed as `plot_xylab` in PYTHON TIMIN
 parameters and window length persist under `XYLabWindow/*` (§9).
 
 ### 7.22 PPGDispLabWindow — "PPGDISPLAB" (v1.104)
+
+**Board in a scaled mode (v1.105 / fw 0.30).** `board_mode` is the board's `ppgdisp_mode` (pushed by
+the main window from `$LCFG`). In NO_NORM the board's `ppg_disp` (field 9) is the grey trace of the
+top plot and the title's mismatch is against the Python filter, as below. In NORM / NORM_PI the board
+publishes [−1, 1], so its trace moves to the middle plot (light grey, `c_fw_norm`) next to the Python
+chain's output, and the title reads `board in NORM: p99 |Δ| x of the frame`, a comparison that only
+means something under the same MODE and parameters in this window as in LIB CONFIG.
 
 Bench for the `ppg_disp` display chain designed for library v0.116 (library spec §5.9, rationale
 §21). Sidebar button in ANALYSIS, under HR1LAB. Live it needs `$M4` (OT_LED1 field 31, the board's
@@ -2958,6 +2984,20 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.105 — 2026-11-08
+**fw 0.30 / lib v0.117: the `ppg_disp` display modes reach the board.** `$LCFG` carries
+`ppgdisp_mode` and the six tracker / PI parameters (§3), `$SET` accepts them, and LIB CONFIG gains a
+PPG DISPLAY group (§7.17): a mode combo and the six spins, in Set all. The PPG plots of §7.1 and §7.2
+fix their Y axis at [−1, 1] and name the mode in the title when the board is in NORM or NORM_PI
+(`_apply_ppgdisp_axis`), and PPGDISPLAB draws the board's scaled output on its normalized plot and
+reports the p99 difference against its own chain (§7.22). Capture dictionary: seven `alg:` keys
+(`ppgdisp_mode` text; `ppgdisp_norm_rise_pct_per_s`, `_win_ms`, `_tau_ms`, `_pi_lo_e2`, `_pi_hi_e2`
+integers; `ppgdisp_norm_headroom` a ratio), plus `serial` (fw 0.29, missing until now). A firmware
+older than 0.30 sends no `ppgdisp_mode`: the plots keep NO_NORM and the combo keeps its index.
+Fix: `_on_lcfg_frame_received()` now strips the `*XX` checksum before splitting the keys; until now it
+stayed glued to the last key's value, which `float()` refused, so the frame's last key (then
+`afe_settle_freeze_enable`, which nothing displayed) never reached LIB CONFIG.
 
 ### v1.104 — 2026-11-06
 - PPGDISPLAB: `NORM_PI` scales by A and clamps at ±1, not at ±A (2026-11-07, spec §5.9).

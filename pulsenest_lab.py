@@ -224,6 +224,19 @@ import pulsenest.hub_client as _hubc  # noqa: E402  (the lab is a hub subscriber
 from pulsenest.net import script_name as _script_name  # noqa: E402
 
 
+def _apply_ppgdisp_axis(plot_item, mode, title, colour):
+    """Y axis and title of a ppg_disp plot from the board's ppgdisp_mode (fw 0.30 / lib v0.117,
+    spec §5.9). The scaled modes publish [-1, 1]: a fixed axis is the frame the HMI gets, and it
+    is what makes the clamp and NORM_PI's shrinking visible; NO_NORM is in OT units."""
+    if mode == "no_norm":
+        plot_item.enableAutoRange(axis='y', enable=True)
+        plot_item.setTitle("<b style='color:%s'>%s</b>" % (colour, title))
+    else:
+        plot_item.setYRange(-1.05, 1.05, padding=0)
+        plot_item.setTitle("<b style='color:%s'>%s</b> <span style='color:#888888'>%s [-1, 1]</span>"
+                           % (colour, title, mode.upper()))
+
+
 def _win(title):
     """Window title, prefixed with the file that is running. Alex, 2026-09-17: with a dozen
     scripts in the project, a window on screen did not say which one had drawn it."""
@@ -8132,6 +8145,31 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
                                                     "window (PI NaN for one window length). Default 6 s.",       1,   2.0, 12.0, " s",  1.0),
     ]
 
+    # ppg_disp display modes (fw 0.30 / lib v0.117, spec §5.9): the SLEW tracker of NORM / NORM_PI
+    # and the display's own PI thresholds. The mode itself is a combo (_ppgdisp_combo).
+    _PPGDISP_MODES = ("no_norm", "norm", "norm_pi")        # index = wire value, library enum order
+    _PPGDISP_PARAMS = [
+        # key                        label             tooltip                                                 dec  min   max   suffix scale
+        ("ppgdisp_norm_rise_per_s", "rise",           "SLEW tracker: how fast the frame may grow, as a\n"
+                                                      "fraction of its own height per second (0.5 = doubles\n"
+                                                      "in 1.4 s). A spike saturates the trace but cannot\n"
+                                                      "re-scale it. Library range 0.05-5 /s; else ignored.",      2,  0.05,  5.0,  " /s", 1.0),
+        ("ppgdisp_norm_win_s",      "window",         "SLEW tracker: window of 100 ms blocks whose extrema\n"
+                                                      "are the frame's target; also the warm-up (output 0 for\n"
+                                                      "one window). 0.2-5 s, default 1 s.",                      1,  0.2,   5.0,  " s",  1.0),
+        ("ppgdisp_norm_tau_s",      "fall tau",       "SLEW tracker: time constant of the exponential fall\n"
+                                                      "towards a smaller frame (95 % after 1 s + 3 tau).\n"
+                                                      "0.2-10 s, default 1 s.",                                  1,  0.2,  10.0,  " s",  1.0),
+        ("ppgdisp_norm_headroom",   "headroom",       "H multiplies the frame's semi-amplitude: the tracked\n"
+                                                      "extrema map to +/-1/H (0.87 at 1.15), the clamp stays at\n"
+                                                      "+/-1, so clipping halves (rationale 21.8). 1-2.",           2,  1.0,   2.0,  "",    1.0),
+        ("ppgdisp_norm_pi_lo",      "PI_lo",          "NORM_PI: PI at or below which the amplitude A is its\n"
+                                                      "floor 0.5. The display's own threshold since lib v0.117,\n"
+                                                      "not the SQI ramp's spo2_sqi_pi_lo. 0 < lo < hi <= 20 %.",  2,  0.05, 20.0,  " %",  1.0),
+        ("ppgdisp_norm_pi_hi",      "PI_hi",          "NORM_PI: PI at or above which A = 1 (full frame);\n"
+                                                      "logarithmic between PI_lo and PI_hi. Default 2 %.",        2,  0.1,  20.0,  " %",  1.0),
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_monitor = parent
@@ -8173,7 +8211,7 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         btn_set_all.clicked.connect(self._on_set_all)
         btn_set_all.setToolTip(_make_tooltip(
             "Set all parameters",
-            "Sends $SET for hgac_enable and every RSQM, HGAC and SpO2 parameter in this window in sequence.",
+            "Sends $SET for hgac_enable, ppgdisp_mode and every RSQM, HGAC, SpO2 and PPG DISPLAY parameter in this window in sequence.",
             src="LIBConfigWindow"))
         btn_row.addWidget(btn_set_all)
         vbox.addLayout(btn_row)
@@ -8231,6 +8269,45 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         for p in self._SPO2_PARAMS:
             self._add_param_row(spo2_form, p)
         vbox.addWidget(spo2_grp)
+
+        # ppg_disp display group (fw 0.30 / lib v0.117): mode combo, then the tracker and PI rows
+        disp_grp = QtWidgets.QGroupBox("PPG DISPLAY (ppg_disp)")
+        disp_grp.setStyleSheet(self._GRP_SS)
+        disp_form = QtWidgets.QFormLayout(disp_grp)
+        disp_form.setSpacing(6)
+        self._ppgdisp_combo = QtWidgets.QComboBox()
+        self._ppgdisp_combo.addItems([m.upper() for m in self._PPGDISP_MODES])
+        self._ppgdisp_combo.setStyleSheet(self._SPIN_SS_CLEAN)
+        self._ppgdisp_combo.setFixedHeight(44)
+        self._ppgdisp_combo.setToolTip(_make_tooltip(
+            "ppgdisp_mode",
+            "How the board publishes ppg_disp (spec 5.9). NO_NORM: the band-passed OT, tiny A/A "
+            "units, as before fw 0.30. NORM: scaled into [-1, 1] by the SLEW tracker, constant "
+            "amplitude (the ISO 'normalized' lab mode). NORM_PI: NORM times A(PI), so a falling "
+            "perfusion shrinks the trace; clamp at +/-1, never at +/-A (the product mode). The "
+            "PPG plots fix their Y axis to [-1, 1] in the scaled modes, and PPGDISPLAB draws the "
+            "board's output on its normalized plot. Sends $SET,ppgdisp_mode,<no_norm|norm|norm_pi>.",
+            src="LIBConfigWindow / AFE4490PPGDispMode"))
+        self._ppgdisp_combo.currentIndexChanged.connect(
+            lambda _: self._mark_dirty(self._ppgdisp_combo) if not self._updating_from_lcfg else None)
+        btn_mode = QtWidgets.QPushButton("Set")
+        btn_mode.setStyleSheet("font-size:22px; padding:2px 10px; background-color:#1E3A1E; color:#88FF88;")
+        btn_mode.setFixedHeight(44)
+        btn_mode.clicked.connect(self._on_set_ppgdisp_mode)
+        btn_mode.setToolTip(_make_tooltip("Set ppgdisp_mode", "Sends $SET,ppgdisp_mode,<no_norm|norm|norm_pi>*XX to the ESP32.",
+                                          src="LIBConfigWindow"))
+        mode_row = QtWidgets.QWidget()
+        mode_l = QtWidgets.QHBoxLayout(mode_row)
+        mode_l.setContentsMargins(0, 0, 0, 0)
+        mode_l.setSpacing(6)
+        mode_l.addWidget(self._ppgdisp_combo, stretch=1)
+        mode_l.addWidget(btn_mode)
+        mode_lbl = QtWidgets.QLabel("mode")
+        mode_lbl.setStyleSheet("font-size:22px;")
+        disp_form.addRow(mode_lbl, mode_row)
+        for p in self._PPGDISP_PARAMS:
+            self._add_param_row(disp_form, p)
+        vbox.addWidget(disp_grp)
 
         vbox.addWidget(self._build_ot_monitor())
         vbox.addStretch()
@@ -8464,6 +8541,10 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         self._send_set("hgac_enable", str(self._enable_combo.currentIndex()))  # 0=Disabled, 1=Enabled
         self._mark_clean(self._enable_combo)
 
+    def _on_set_ppgdisp_mode(self):
+        self._send_set("ppgdisp_mode", self._PPGDISP_MODES[self._ppgdisp_combo.currentIndex()])
+        self._mark_clean(self._ppgdisp_combo)
+
     def _mark_dirty(self, spin):
         spin.setStyleSheet(self._SPIN_SS_DIRTY)
 
@@ -8482,7 +8563,9 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
 
     def _on_set_all(self):
         self._on_set_enable()
-        for key, _label, _tt, _dec, _vmin, _vmax, _sfx, scale in (self._PARAMS + self._HGAC_PARAMS + self._SPO2_PARAMS):
+        self._on_set_ppgdisp_mode()
+        for key, _label, _tt, _dec, _vmin, _vmax, _sfx, scale in (self._PARAMS + self._HGAC_PARAMS + self._SPO2_PARAMS
+                                                                  + self._PPGDISP_PARAMS):
             spin = self._spins[key]
             stored_val = spin.value() / scale if scale != 1.0 else spin.value()
             if abs(stored_val) < 1e-3 and stored_val != 0.0:
@@ -8544,6 +8627,10 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
             enabled = kv["hgac_enable"].strip() in ("1", "1.0", "true", "True")
             self._enable_combo.setCurrentIndex(1 if enabled else 0)
             self._mark_clean(self._enable_combo)
+        mode = kv.get("ppgdisp_mode", "").strip()
+        if mode in self._PPGDISP_MODES:                 # absent before fw 0.30: the combo keeps its index
+            self._ppgdisp_combo.setCurrentIndex(self._PPGDISP_MODES.index(mode))
+            self._mark_clean(self._ppgdisp_combo)
         self._updating_from_lcfg = False
         self._statusbar.showMessage("Lib config loaded from chip")
         self._lcfg_timer.stop()
@@ -10297,6 +10384,7 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
+        self.board_mode = "no_norm"     # the board's ppgdisp_mode ($LCFG); set by the main window
         self.calc = PPGDispCalc()
         self.hmi  = _HmiEmu()
         self._fs = 500.0
@@ -10383,6 +10471,7 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
         self.p_norm.setLabel('left', '[-1, 1]'); self.p_norm.setLabel('bottom', 't (s)')
         self.p_norm.setYRange(-1.15, 1.15, padding=0)
         self.c_u    = self.p_norm.plot(pen=pg.mkPen('#555555', width=1))
+        self.c_fw_norm = self.p_norm.plot(pen=pg.mkPen('#AAAAAA', width=1))   # the board's own, NORM / NORM_PI
         self.c_y    = self.p_norm.plot(pen=pg.mkPen('#3CC8E0', width=2))
         self.c_Ahi  = self.p_norm.plot(pen=pg.mkPen('#FF88FF', width=1, style=QtCore.Qt.DashLine))
         self.c_Alo  = self.p_norm.plot(pen=pg.mkPen('#FF88FF', width=1, style=QtCore.Qt.DashLine))
@@ -10391,7 +10480,9 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
         self.p_norm.setToolTip(_make_tooltip(
             "The library's output in NORM / NORM_PI",
             "Cyan: what ppg_disp would be, clamped to ±1 (red lines). Dark grey: the same before "
-            "clamping, so clipping is visible as the grey leaving the frame. Magenta dashes: ±A, "
+            "clamping, so clipping is visible as the grey leaving the frame. Light grey: the board's "
+            "own ppg_disp when its mode is NORM or NORM_PI (fw 0.30), to be compared with the cyan "
+            "under the same MODE and parameters. Magenta dashes: ±A, "
             "the NORM_PI envelope of a typical beat — the clamp stays at ±1, so a beat larger "
             "than the frame shows above A. Fixed axis: this is the frame the HMI gets. In NO_NORM "
             "there is no tracker and the frame is CommTask's fixed scale (127 × 1.6e-8 A/A = ±1): "
@@ -10804,7 +10895,12 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
         else:
             sl = slice(0, len(t))
         k = 1e6
-        self.c_fw.setData(t, np.asarray(d["fw"])[sl] * k)
+        fw_sl = np.asarray(d["fw"])[sl]
+        board_scaled = self.board_mode != "no_norm"
+        if board_scaled:                     # the board publishes [-1, 1]: it belongs on the middle plot
+            self.c_fw.setData([], []); self.c_fw_norm.setData(t, fw_sl)
+        else:
+            self.c_fw.setData(t, fw_sl * k); self.c_fw_norm.setData([], [])
         self.c_ppg.setData(t, np.asarray(d["ppg"])[sl] * k)
         if self.calc.mode != "NO_NORM":
             self.c_hi.setData(t, np.asarray(d["hi"])[sl] * k)
@@ -10824,11 +10920,21 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
         # Python chain vs board, past the first 5 s (the Python filter precharges at the first
         # sample, the board's has run for hours): p99 of |delta| over the peak. 0.004 % measured.
         i5 = int(5 * self._fs)
-        ppg = np.asarray(d["ppg"])[i5:]; fw = np.asarray(d["fw"])[i5:]
-        ref = np.max(np.abs(fw)) if len(fw) else 0.0
-        mism = (np.percentile(np.abs(ppg - fw), 99) / ref * 100) if ref > 0 else float('nan')
-        self.p_ppg.setTitle("ppg_disp (Python chain, %s %.1f–%.1f Hz) vs board: mismatch p99 %.3f %% of peak"
-                            % (self.calc.filt, self.calc.f_lo, self.calc.f_hi, mism))
+        fw = np.asarray(d["fw"])[i5:]
+        if board_scaled:
+            # Board in NORM / NORM_PI: its output is compared with the Python chain's y, in frame
+            # units, which only means something under the same MODE and parameters here.
+            y = np.asarray(d["y"])[i5:]
+            mism = np.percentile(np.abs(y - fw), 99) if len(fw) else float('nan')
+            self.p_ppg.setTitle("ppg_disp (Python chain, %s %.1f–%.1f Hz); board in %s: p99 |Δ| %.3f of the frame "
+                                "(middle plot, light grey)"
+                                % (self.calc.filt, self.calc.f_lo, self.calc.f_hi, self.board_mode.upper(), mism))
+        else:
+            ppg = np.asarray(d["ppg"])[i5:]
+            ref = np.max(np.abs(fw)) if len(fw) else 0.0
+            mism = (np.percentile(np.abs(ppg - fw), 99) / ref * 100) if ref > 0 else float('nan')
+            self.p_ppg.setTitle("ppg_disp (Python chain, %s %.1f–%.1f Hz) vs board: mismatch p99 %.3f %% of peak"
+                                % (self.calc.filt, self.calc.f_lo, self.calc.f_hi, mism))
         self._lbl_metrics.setText(self._metrics(np.asarray(d["u"]), np.asarray(d["y"]),
                                                 np.asarray(d["ps"]), self._fs))
 
@@ -11018,6 +11124,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.curve_ppg = self.p_ppg.plot(pen=pg.mkPen('#FFFFFF', width=2))
         self.p_ppg.showGrid(x=True, y=True, alpha=0.3)
         bottom_row.addWidget(w_ppg)
+        self.set_ppgdisp_mode("no_norm")
 
         w_spo2 = pg.PlotWidget(title="<b style='color:#44FF88'>SpO2 (%)</b>")
         w_spo2.setBackground('#121212')
@@ -11051,6 +11158,12 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.curve_led1_sub.setVisible(True)
 
         outer.addWidget(hint)
+
+    def set_ppgdisp_mode(self, mode):
+        """Y axis of the PPG plot from the board's ppgdisp_mode ($LCFG, fw 0.30 / lib v0.117): NORM
+        and NORM_PI publish ppg_disp in [-1, 1], so the axis IS the frame and autoscale would hide
+        both the clamp and the shrinking of NORM_PI; NO_NORM is in OT units and autoscales."""
+        _apply_ppgdisp_axis(self.p_ppg, mode, "PPG", '#FFFFFF')
 
     def update_plots(self, data_ppgdisp, data_hr1, data_hr2, data_hr3,
                      data_spo2, data_spo2_sqi, data_spo2_r,
@@ -11280,6 +11393,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.curve_ppgdisp = self.p3.plot(pen=pg.mkPen('#AAFFAA', width=2), name="PPG_DISP")
         self.p3.showGrid(x=True, y=True, alpha=0.3)
         self.p3.getAxis('left').setWidth(80)
+        self.set_ppgdisp_mode("no_norm")
 
         # ── Checkbox → curve visibility ───────────────────────────────────────
         self.check_led2_raw.stateChanged.connect(lambda: self.curve_led2.setVisible(self.check_led2_raw.isChecked()))
@@ -11349,6 +11463,10 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.curve_led2_sub.setData(tail(self._sig_led2_sub))
         self.curve_led1_sub.setData(tail(self._sig_led1_sub))
         self.curve_ppgdisp.setData(tail(self._sig_ppgdisp))
+
+    def set_ppgdisp_mode(self, mode):
+        """Same rule as PPGPlotsWindow.set_ppgdisp_mode: [-1, 1] fixed in the scaled modes."""
+        _apply_ppgdisp_axis(self.p3, mode, "PPG_DISP", '#AAFFAA')
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -14162,7 +14280,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("ALED1",      "data_aled1", "Ambient IR channel (ALED1): sampled with IR LED off. Represents environmental IR interference. Units: ADC counts.",                  "AFE4490Data::aled1"),
             ("LED2_SUB",   "data_led2_sub",   "Ambient-subtracted RED signal: LED2 − ALED2. Removes DC ambient component. Exposed for reference/diagnostics; SpO2 consumes OT_LED2 instead (gain-invariant, lib v0.38+). Units: ADC counts.",         "AFE4490Data::led2_sub"),
             ("LED1_SUB",   "data_led1_sub",   "Ambient-subtracted IR signal: LED1 − ALED1. Removes DC ambient component. Exposed for reference/diagnostics; HR1/HR2/HR3/SpO2 consume OT_LED1 instead (gain-invariant, lib v0.38+). Units: ADC counts.",    "AFE4490Data::led1_sub"),
-            ("PPG_DISP",   "data_ppgdisp",    "Display-ready PPG signal, OT domain (lib v0.69): bandpass filter on OT_LED1/OT_LED2 → negated. Gain-invariant like the algorithms — no discontinuity when HGAC changes RF. NOT normalized for display (a candidate ppg_disp_norm, PI-weighted [0..1], is backlog). Units: A/A, tiny magnitude (~1e-5..1e-6).", "AFE4490Data::ppg_disp"),
+            ("PPG_DISP",   "data_ppgdisp",    "Display-ready PPG signal, OT domain (lib v0.69): bandpass filter on OT_LED1/OT_LED2 → negated. Gain-invariant like the algorithms — no discontinuity when HGAC changes RF. Since lib v0.117 / fw 0.30 the board's ppgdisp_mode ($LCFG, LIB CONFIG) chooses NO_NORM (A/A, tiny magnitude ~1e-5..1e-6, as before), NORM ([-1, 1], constant amplitude) or NORM_PI ([-1, 1] times A(PI), the product mode); spec 5.9.", "AFE4490Data::ppg_disp"),
             ("SpO2",       "data_spo2",       "Blood oxygen saturation computed by firmware (incunest_afe4490). Formula: SpO2 = a − b·R. Range: 70–100 %. Clamped to 100 % if within 10 % above (lib v0.107; 3 % until v0.106); invalid if >110 %, if r < spo2_r_method2_reg_corr_min (R-METHOD-2) or if PI > 20 %.",    "AFE4490Data::spo2"),
             ("SpO2_SQI",   "data_spo2_sqi",   "SpO2 Signal Quality Index [0–1]. Based on Perfusion Index (PI): SQI = clamp((PI − 0.5) / (2.0 − 0.5), 0, 1). PI < 0.5 % → 0 (no contact or very weak signal). PI ≥ 2.0 % → 1 (full quality). The value depends on PI only; forced to 0 (SpO2 NaN) when r < spo2_r_method2_reg_corr_min (R-METHOD-2), PI > 20 % or a − b·R outside 70–110 %. Thresholds per Nellcor/Masimo clinical reference.", "AFE4490Data::spo2_sqi"),
             ("R",          "data_spo2_r",     "R ratio used for SpO2 calculation: R = (AC_red/DC_red) / (AC_ir/DC_ir). Dimensionless. Useful for sensor calibration (R-curve).",                   "AFE4490Data::spo2_r"),
@@ -14234,6 +14352,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # ($SET hgac_*, LIB CONFIG window), so hardcoding them here would silently go stale.
         self._hgac_thr = dict(self._HGAC_THR_DEFAULTS)
         self._hgac_thr_live = False       # True once a $LCFG frame has been parsed
+        self._ppgdisp_mode = "no_norm"    # the board's ppgdisp_mode from $LCFG (fw 0.30); older fw: no key
         
         self.auto_save_timer = QtCore.QTimer()
         self.auto_save_timer.setSingleShot(True)
@@ -15424,12 +15543,22 @@ class PPGMonitor(QtWidgets.QMainWindow):
     def _on_lcfg_frame_received(self, line):
         """Parse a $LCFG frame and deliver values to LIBConfigWindow (if open)."""
         kv = {}
-        for part in line[len('$LCFG,'):].split(','):
+        # Strip the *XX checksum first: until v1.105 it stayed glued to the last key's value, which
+        # float() then refused, so the last key of the frame never reached LIB CONFIG.
+        for part in line[len('$LCFG,'):].split('*')[0].split(','):
             if '=' in part:
                 k, v = part.split('=', 1)
                 kv[k] = v
         self.log(f"[LCFG] rsqm_ot_thr={kv.get('rsqm_ot_thr','?')}"
-                 f"  probe_min_s={kv.get('rsqm_probe_state_min_s','?')}")
+                 f"  probe_min_s={kv.get('rsqm_probe_state_min_s','?')}"
+                 f"  ppgdisp_mode={kv.get('ppgdisp_mode','? (fw < 0.30)')}")
+        # ppgdisp_mode (fw 0.30 / lib v0.117): whether ppg_disp arrives in OT units or in [-1, 1].
+        # The PPG plots fix their Y axis on it and PPGDISPLAB compares the board's output with its
+        # own chain. A firmware older than 0.30 sends no key and the plots keep NO_NORM.
+        mode = kv.get('ppgdisp_mode', '').strip()
+        if mode in ("no_norm", "norm", "norm_pi") and mode != self._ppgdisp_mode:
+            self._ppgdisp_mode = mode
+            self._apply_ppgdisp_mode()
         # hgac_enable drives the header HGAC combo and the editability of the RF combos
         if 'hgac_enable' in kv:
             self._hgac_enabled = kv['hgac_enable'].strip() in ("1", "1.0", "true", "True")
@@ -15454,6 +15583,15 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self.stats_table.viewport().update()   # repaint gauges with the new thresholds
         if self.lib_config_window is not None:
             self.lib_config_window.update_from_lcfg(kv)
+
+    def _apply_ppgdisp_mode(self):
+        """Push the board's ppgdisp_mode to every window that draws ppg_disp; called on a change
+        and when one of those windows opens."""
+        for w in (self.ppgplots_window, self.signals_window):
+            if w is not None:
+                w.set_ppgdisp_mode(self._ppgdisp_mode)
+        if self.ppgdisplab_window is not None:
+            self.ppgdisplab_window.board_mode = self._ppgdisp_mode
 
     def _on_tcfg_frame_received(self, line):
         """Parse a $TCFG frame and deliver timing values to HWConfigWindow (if open)."""
@@ -15523,6 +15661,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.btn_ppgdisplab.isChecked():
             self.ppgdisplab_window = PPGDispLabWindow(None)
             self.ppgdisplab_window.main_monitor = self
+            self._apply_ppgdisp_mode()
             self.ppgdisplab_window.show()
         else:
             if self.ppgdisplab_window is not None:
@@ -15557,6 +15696,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.btn_signals.isChecked():
             self.signals_window = PPGSignalsWindow(None)
             self.signals_window.main_monitor = self
+            self._apply_ppgdisp_mode()
             self.signals_window.show()
         else:
             if self.signals_window is not None:
@@ -15598,6 +15738,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.btn_ppgplots.isChecked():
             self.ppgplots_window = PPGPlotsWindow(None)
             self.ppgplots_window.main_monitor = self
+            self._apply_ppgdisp_mode()
             self.ppgplots_window.show()
         else:
             if self.ppgplots_window is not None:

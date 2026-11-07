@@ -93,6 +93,7 @@ KEYS = [
     # identity and provenance -- straight off $CFG, strings copied verbatim
     Key("source_mac", "id", (CFG, ("mac",),    None), "board WiFi STA MAC, the file's source identity (R2)", "text", "str", FW_MEASURED, "0.4"),
     Key("board",      "id", (CFG, ("board",),  None), "board revision (incunest_V17/V18)",                    "text", "str", FW_MEASURED, "0.4"),
+    Key("serial",     "id", (CFG, ("serial",), None), "board serial number from NVS mb_cfg/serial, as the IncuNest flasher provisions it; none when absent (fw 0.29)", "text", "str", FW_MEASURED, "0.4"),
     Key("fw",         "id", (CFG, ("fw",),     None), "PulseNest firmware version",                           "text", "str", FW_MEASURED, "0.4"),
     Key("lib",        "id", (CFG, ("lib",),    None), "incunest_afe4490 version",                             "text", "str", FW_MEASURED, "0.4"),
     Key("build",      "id", (CFG, ("build",),  None), "PulseNest git commit the image was built from",        "text", "str", FW_MEASURED, "0.4"),
@@ -210,6 +211,14 @@ KEYS = [
     Key("spo2_window_ms",       "alg", (LCFG, ("spo2_window_s",), 1000),     "SpO2 averaging window, a true sliding window over R's products; 2-12 s, the window is the warm-up (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),
     Key("pi_window_ms",         "alg", (LCFG, ("pi_window_s",), 1000),       "PI averaging window (AC and DC), independent of spo2_window_ms; 2-12 s (wire prints s; fw 0.20, lib v0.102)", "ms", "int", CONFIG, "0.4"),
     Key("afe_settle_freeze_enable", "alg", (LCFG, ("afe_settle_freeze_enable",), 1), "settling freeze after an RF/CF change; bench switch, never off in clinical use (fw 0.22, lib v0.104, spec 5.8.4)", "flag", "int", CONFIG, "0.4"),
+    # ppg_disp display modes (fw 0.30, lib v0.117, spec 5.9): they say what the PPG_DISP column IS
+    Key("ppgdisp_mode",         "alg", (LCFG, ("ppgdisp_mode",), None),      "how PPG_DISP is published: no_norm (band-passed OT, A/A), norm ([-1, 1], SLEW tracker), norm_pi ([-1, 1] times A(PI)) (fw 0.30, lib v0.117)", "enum", "str", CONFIG, "0.4"),
+    Key("ppgdisp_norm_rise_pct_per_s", "alg", (LCFG, ("ppgdisp_norm_rise_per_s",), 100), "SLEW tracker: maximum growth of the frame per second, in % of its height (wire prints a fraction; fw 0.30)", "%/s", "int", CONFIG, "0.4"),
+    Key("ppgdisp_norm_win_ms",  "alg", (LCFG, ("ppgdisp_norm_win_s",), 1000), "SLEW tracker: window of block extrema that the frame follows; also its warm-up (wire prints s; fw 0.30)", "ms", "int", CONFIG, "0.4"),
+    Key("ppgdisp_norm_tau_ms",  "alg", (LCFG, ("ppgdisp_norm_tau_s",), 1000), "SLEW tracker: time constant of the exponential fall of the frame (wire prints s; fw 0.30)", "ms", "int", CONFIG, "0.4"),
+    Key("ppgdisp_norm_headroom", "alg", (LCFG, ("ppgdisp_norm_headroom",), 1), "H: the frame's extrema map to +/-1/H, the clamp stays at +/-1 (fw 0.30)", "ratio", "float", CONFIG, "0.4"),
+    Key("ppgdisp_norm_pi_lo_e2", "alg", (LCFG, ("ppgdisp_norm_pi_lo",), 100), "NORM_PI: PI at or below which the amplitude is its floor 0.5; the display's own threshold, not the SQI ramp's (wire prints %; fw 0.30, lib v0.117)", "1e-2 %", "int", CONFIG, "0.4"),
+    Key("ppgdisp_norm_pi_hi_e2", "alg", (LCFG, ("ppgdisp_norm_pi_hi",), 100), "NORM_PI: PI at or above which the amplitude is 1 (wire prints %; fw 0.30, lib v0.117)", "1e-2 %", "int", CONFIG, "0.4"),
     # telemetry about events, not a parameter: it rides on the $CFG that announces a move and is
     # never written into a snapshot (an alg: line must not change when only RF moved, R24)
     Key("hgac_rf_changes",      "clock", (CFG, ("hgac_rf_changes",), 1), "RF moves HGAC has applied since boot (fw 0.15); a jump > 1 between two $CFG means moves landed inside one 50 ms tick", "count", "int", FW_COMPUTED, "0.4"),

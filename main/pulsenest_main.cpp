@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.29"   // 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.30"   // 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_METHOD2_REG_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_method2_reg_corr_min
@@ -893,12 +893,12 @@ static void send_cfg_frame(const char* cause) {
     send_tcfg_frame();  // always emit timing config alongside $CFG
 }
 
-// Emit a $LCFG frame with the current RSQM / HGAC / SpO2 / PI algorithm library parameters.
+// Emit a $LCFG frame with the current RSQM / HGAC / SpO2 / PI / ppg_disp library parameters.
 // A control line, not a data frame: it leaves through udp_send_line() as one datagram, so the
 // 320 B data-queue slot does not bound it (the $CFG line is 450-490 B). ~330 B since fw 0.20.
 static void send_lcfg_frame() {
     AFE4490Config cfg = afe.getConfig();
-    char buf[448];   // ~360 B since fw 0.22
+    char buf[640];   // ~520 B since fw 0.30 (~360 B in fw 0.22)
     int n = snprintf(buf, sizeof(buf) - 6,
         "$LCFG,rsqm_ot_thr=%.4e"
         ",rsqm_disconn_led_sub_thr=%.1f,rsqm_disconn_i_pd_thr=%.4e"
@@ -908,7 +908,10 @@ static void send_lcfg_frame() {
         ",spo2_r_method=%u,spo2_r_method2_reg_corr_min=%.2f"
         ",spo2_pulse_gate_enable=%d"                        // fw 0.28 / lib v0.110: SpO2 only while HR3 has a pulse
         ",spo2_window_s=%.1f,pi_window_s=%.1f"           // fw 0.20 / lib v0.102: averaging windows
-        ",afe_settle_freeze_enable=%d",                   // fw 0.22 / lib v0.104: bench switch (spec §5.8.4)
+        ",afe_settle_freeze_enable=%d"                    // fw 0.22 / lib v0.104: bench switch (spec §5.8.4)
+        ",ppgdisp_mode=%s"                                // fw 0.30 / lib v0.117: ppg_disp display mode (spec §5.9)
+        ",ppgdisp_norm_rise_per_s=%.2f,ppgdisp_norm_win_s=%.1f,ppgdisp_norm_tau_s=%.1f,ppgdisp_norm_headroom=%.2f"
+        ",ppgdisp_norm_pi_lo=%.2f,ppgdisp_norm_pi_hi=%.2f",   // the display's own PI thresholds (lib v0.117)
         cfg.rsqm_ot_thr,
         cfg.rsqm_disconn_led_sub_thr, cfg.rsqm_disconn_i_pd_thr,
         cfg.rsqm_probe_state_min_s,
@@ -917,7 +920,10 @@ static void send_lcfg_frame() {
         (unsigned)cfg.spo2_r_method, cfg.spo2_r_method2_reg_corr_min,
         cfg.spo2_pulse_gate_enable ? 1 : 0,
         cfg.spo2_window_s, cfg.pi_window_s,
-        cfg.afe_settle_freeze_enable ? 1 : 0);
+        cfg.afe_settle_freeze_enable ? 1 : 0,
+        afePPGDispModeToStr(cfg.ppgdisp_mode),
+        cfg.ppgdisp_norm_rise_per_s, cfg.ppgdisp_norm_win_s, cfg.ppgdisp_norm_tau_s, cfg.ppgdisp_norm_headroom,
+        cfg.ppgdisp_norm_pi_lo, cfg.ppgdisp_norm_pi_hi);
     if (frame_finish(buf, sizeof(buf), n, "LCFG")) Serial_print_locked(buf);
 }
 
@@ -1129,6 +1135,44 @@ static void apply_set_cmd(const char* key, const char* val) {
     } else if (strcmp(key, "pi_window_s") == 0) {
         afe.setPIWindowS(atof(val));
         Serial_printf("# SET pi_window_s=%.1f\n", afe.getConfig().pi_window_s);
+        send_lcfg_frame();
+        return;
+    // ── ppg_disp display modes (fw 0.30 / lib v0.117, spec §5.9) ──────────────────────────
+    // The library validates the tracker's four parameters as a set and the two PI thresholds as
+    // a pair, so a key sends its siblings as they are; the echo and the $LCFG read the values
+    // in force, which is how a rejected value (logged by the library) stays visible in the lab.
+    } else if (strcmp(key, "ppgdisp_mode") == 0) {
+        AFE4490PPGDispMode mode;
+        if (!afeStrToPPGDispMode(val, mode)) {
+            Serial_printf("$ERR,ppgdisp_mode,invalid (no_norm | norm | norm_pi)\r\n");
+            return;
+        }
+        afe.setPPGDispMode(mode);
+        Serial_printf("# SET ppgdisp_mode=%s\n", afePPGDispModeToStr(afe.getConfig().ppgdisp_mode));
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "ppgdisp_norm_rise_per_s") == 0 || strcmp(key, "ppgdisp_norm_win_s") == 0 ||
+               strcmp(key, "ppgdisp_norm_tau_s") == 0     || strcmp(key, "ppgdisp_norm_headroom") == 0) {
+        AFE4490Config c = afe.getConfig();
+        float rise = c.ppgdisp_norm_rise_per_s, win = c.ppgdisp_norm_win_s;
+        float tau  = c.ppgdisp_norm_tau_s,      hr  = c.ppgdisp_norm_headroom;
+        if      (strcmp(key, "ppgdisp_norm_rise_per_s") == 0) rise = atof(val);
+        else if (strcmp(key, "ppgdisp_norm_win_s") == 0)      win  = atof(val);
+        else if (strcmp(key, "ppgdisp_norm_tau_s") == 0)      tau  = atof(val);
+        else                                                  hr   = atof(val);
+        afe.setPPGDispNormTracker(rise, win, tau, hr);
+        c = afe.getConfig();
+        Serial_printf("# SET %s: tracker rise=%.2f/s win=%.1fs tau=%.1fs headroom=%.2f\n", key,
+                      c.ppgdisp_norm_rise_per_s, c.ppgdisp_norm_win_s, c.ppgdisp_norm_tau_s, c.ppgdisp_norm_headroom);
+        send_lcfg_frame();
+        return;
+    } else if (strcmp(key, "ppgdisp_norm_pi_lo") == 0 || strcmp(key, "ppgdisp_norm_pi_hi") == 0) {
+        AFE4490Config c = afe.getConfig();
+        float lo = c.ppgdisp_norm_pi_lo, hi = c.ppgdisp_norm_pi_hi;
+        if (strcmp(key, "ppgdisp_norm_pi_lo") == 0) lo = atof(val); else hi = atof(val);
+        afe.setPPGDispNormPI(lo, hi);
+        c = afe.getConfig();
+        Serial_printf("# SET %s: PI thresholds lo=%.2f hi=%.2f %%\n", key, c.ppgdisp_norm_pi_lo, c.ppgdisp_norm_pi_hi);
         send_lcfg_frame();
         return;
     } else if (strcmp(key, "rsqm_ot_thr") == 0) {

@@ -18,7 +18,7 @@ def check(cond, what):
         n_bad += 1; print("FAIL:", what)
 
 NAME_RE  = re.compile(r"^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*$")      # R19: words joined by _
-UNITS    = {"count", "us", "ms", "s", "adc_code", "LSB", "A/A", "1e-10 A/A", "%", "flag", "ratio",
+UNITS    = {"count", "us", "ms", "s", "adc_code", "LSB", "A/A", "1e-10 A/A", "%", "1e-2 %", "%/s", "flag", "ratio",
             "bpm", "index", "bitmask", "enum", "V", "mV", "A", "uA", "mA", "pA", "ohm", "pF", "Hz",
             "mHz", "text"}
 PROV     = {D.FW_MEASURED, D.FW_COMPUTED, D.HOST, D.DERIVABLE, D.CONFIG, D.OPERATOR}
