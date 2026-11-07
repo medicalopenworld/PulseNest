@@ -13,9 +13,9 @@ The same five levels apply at every age; only the thresholds change.
 
 | Level | Meaning | Library parameter |
 |---|---|---|
-| Signal inadequate | PI below which SpO2 should not be published (ISO 80601-2-61:2026 201.12.4.102 NOTE 6) | `spo2_pi_sqi_lo` (SQI = 0 below it) |
+| Signal inadequate | PI below which SpO2 should not be published (ISO 80601-2-61:2026 201.12.4.102 NOTE 6) | `spo2_sqi_pi_lo` (SQI = 0 below it) |
 | Low PI | below the 5th percentile of the healthy population of that age: clinical warning (vasoconstriction, hypovolaemia, cold, cold sepsis) | — (display / future alarm) |
-| Normal | p5 – p95 | `spo2_pi_sqi_hi` marks "full quality" (SQI = 1 above it) |
+| Normal | p5 – p95 | `spo2_sqi_pi_hi` marks "full quality" (SQI = 1 above it) |
 | High PI | above p95 (vasodilation, warm sepsis, ductus, fever) | — |
 | Impossible | above 20 %: artefact or DC transient, the top of every manufacturer's display range | `spo2_pi_max` (SpO2 withheld) |
 
@@ -44,7 +44,7 @@ newborns), so a clinically low PI in neonates starts above the population p5.
 2. PI is not comparable across brands (7.07 / 5.80 / 6.80 % on one subject with three devices,
    rationale §11); the thresholds above are Masimo-convention numbers applied to our PI-METHOD-1,
    whose agreement with Masimo has not been measured.
-3. **Consequence for the library's SQI ramp** (`spo2_pi_sqi_lo` = 0.5, `spo2_pi_sqi_hi` = 2.0):
+3. **Consequence for the library's SQI ramp** (`spo2_sqi_pi_lo` = 0.5, `spo2_sqi_pi_hi` = 2.0):
    0.5 coincides with Granelli's p1, reasonable as "do not publish"; 2.0 is above the neonatal
    median, so a normal newborn at PI 1.2 gets SQI ≈ 0.47. The provenance of the 0.5/2.0 pair is still
    open (memory: SQI joint analysis). This table is the input for that decision.

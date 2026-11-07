@@ -649,8 +649,8 @@ class SpO2TestCalc:
     FW_SPO2_MIN        = 70.0
     FW_SPO2_MAX        = 100.0
     SPO2_CLAMP_MARGIN  = 10.0          # spo2_clamp_margin — up to 110 % reads 100 % (lib v0.107; 3.0 until v0.106)
-    FW_PI_SQI_LOW      = 0.5           # spo2_pi_sqi_lo: PI below this → SQI = 0
-    FW_PI_SQI_HIGH     = 2.0           # spo2_pi_sqi_hi: PI at or above this → SQI = 1
+    FW_PI_SQI_LOW      = 0.5           # spo2_sqi_pi_lo: PI below this → SQI = 0
+    FW_PI_SQI_HIGH     = 2.0           # spo2_sqi_pi_hi: PI at or above this → SQI = 1
     FW_PI_MAX          = 20.0          # spo2_pi_max: above this the "PI" is a DC transient → invalid
 
     # (instance attribute, class attribute holding its firmware default) — drives
@@ -10507,9 +10507,10 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
             "[−1, 1], constant amplitude — the ISO 'normalized' lab mode. NORM_PI: scaled by A "
             "from PI and clamped at ±1 (not at ±A) — the product mode.", src="setPPGDispMode"))
         spin(f, "pi_lo", "PI_lo (%)", self.calc.pi_lo, 0.05, 10.0, 0.1, 2, _make_tooltip(
-            "PI_lo", "PI at or below which A = floor (spo2_pi_sqi_lo, 0.5 %).", src="spo2_pi_sqi_lo"))
+            "PI_lo", "PI at or below which A = floor (ppgdisp_norm_pi_lo, 0.5 %; own parameter since lib "
+            "v0.117, not the SQI ramp's spo2_sqi_pi_lo).", src="ppgdisp_norm_pi_lo"))
         spin(f, "pi_hi", "PI_hi (%)", self.calc.pi_hi, 0.1, 20.0, 0.1, 2, _make_tooltip(
-            "PI_hi", "PI at or above which A = 1 (spo2_pi_sqi_hi, 2 %).", src="spo2_pi_sqi_hi"))
+            "PI_hi", "PI at or above which A = 1 (ppgdisp_norm_pi_hi, 2 %).", src="ppgdisp_norm_pi_hi"))
         spin(f, "floor", "floor", self.calc.floor, 0.1, 1.0, 0.05, 2, _make_tooltip(
             "floor", "Minimum A. 0.5 kept by Alex (2026-11-05): a small monitor must still show "
             "the waveform's shape at low PI (rationale §21.6).", src="PPGDispCalc.floor"))
