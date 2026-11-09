@@ -2714,6 +2714,13 @@ parameters and window length persist under `XYLabWindow/*` (§9).
 
 ### 7.22 PPGDispLabWindow — "PPGDISPLAB" (v1.104)
 
+**Probe gate of the chain (v1.106 / lib v0.118).** `PPGDispCalc.update()` resets the display
+filters (BP2, and the LP4 sections of the `BP2+LP4` candidate) while the board's probe state is not
+APPLIED, as the library does since v0.118: they precharge on the first applied sample, so the OT
+step of an application never enters the frame. The replica showed the v0.117 chain needing ~8 s to
+fill the frame after a synthetic air-to-tissue application; with the reset it is full size from the
+first sample after the warm-up window (library rationale §21.9).
+
 **Board in a scaled mode (v1.105 / fw 0.30).** `board_mode` is the board's `ppgdisp_mode` (pushed by
 the main window from `$LCFG`). In NO_NORM the board's `ppg_disp` (field 9) is the grey trace of the
 top plot and the title's mismatch is against the Python filter, as below. In NORM / NORM_PI the board
@@ -2984,6 +2991,12 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.106 — 2026-11-09
+**Lib v0.118 in PPGDISPLAB's chain.** `PPGDispCalc` resets its filters while the probe is not
+applied (§7.22), mirroring the library's fix for the 7–8 s start-up of the normalized trace after
+an application (IncuNest HMI, 2026-11-08). `lib/incunest_afe4490.version` → v0.118; no firmware
+change (no new key: the fw 0.30 binary with lib v0.118 is a rebuild).
 
 ### v1.105 — 2026-11-08
 **fw 0.30 / lib v0.117: the `ppg_disp` display modes reach the board.** `$LCFG` carries

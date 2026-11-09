@@ -10190,7 +10190,8 @@ class PPGDispCalc:
     consumers, rationale §21.7). NORMALIZER is one of the candidates of rationale §21.5, every one
     updated at every sample; the `SLEW`/`MAXMIN` targets come from 100 ms block extrema, which is
     what the library could reuse from the PI blocks. The probe gate is the spec §5.9 one: not
-    APPLIED → output 0 and the tracker starts again.
+    APPLIED → output 0, the tracker starts again and (lib v0.118) the filters are reset, so they
+    precharge on the first applied sample and the air-to-tissue OT step never enters the frame.
     """
     FILTERS = ("BP2", "BP2+LP4")
     METHODS = ("SLEW", "INSTANT", "MAXMIN", "RMS")
@@ -10287,6 +10288,9 @@ class PPGDispCalc:
 
     def update(self, ot, pi, probe_state, fs):
         """Returns (ppg, y_unclamped, y, A). y is what the library would publish as ppg_disp."""
+        if probe_state != 2 and self._bp is not None:
+            # lib v0.118: the band-pass is reset while the probe is not applied, in every mode
+            self._bp.reset(); self._lp1.reset(); self._lp2.reset()
         ppg = self.filter(ot, fs)
         if self.mode == "NO_NORM":
             return ppg, ppg, ppg, 1.0
