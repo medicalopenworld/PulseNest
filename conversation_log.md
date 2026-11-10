@@ -29383,3 +29383,12 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
 - **OTA NO hecha:** `tools/udp_fw_versions.py` no encontró ninguna placa transmitiendo. 87:A4 y 82:5C
   siguen con fw 0.30 / lib 0.118; `docs/boards.md` sin tocar.
 - **Sesión IncuNest avisada** con el changelog y la regla corregida (10 dB a 25 Hz con 20 Hz).
+
+### 2026-11-10 (OTA) — 87:A4 y 82:5C con lib v0.119
+
+- **Alex: "Sí, sube. Y ya he conectado las dos placas".** Push de PulseNest hecho.
+- **OTA verificada por MAC** con `scripts/build.ps1 V18 -Ota`: `82:5C` (.254) y `87:A4` (.52) informan
+  fw 0.30, lib 0.119, `libsha=11ae84d`, `elfsha=00580dc4b12b1502`. `docs/boards.md` actualizado.
+  `88:50` (IncuNest) no se tocó.
+- **Pendiente:** medir el coste en el pico sistólico con el filtro nuevo; transitorio de 1 a 6 s tras
+  aplicar el sensor; apagar el punto de acceso al terminar.
