@@ -10185,9 +10185,10 @@ class PPGDispCalc:
     """The ppg_disp chain as the library would run it, one sample at a time:
     display band-pass on OT_LED1 (negated, peaks up) → amplitude tracker → normalized output.
 
-    FILTER is the library's own arithmetic (`BP2` = BiquadFilter::init_bp, the v0.115 filter;
-    `BP2+LP4` = the same followed by LowPass4 at f_hi, the steeper candidate for the 25/50 Hz
-    consumers, rationale §21.7). NORMALIZER is one of the candidates of rationale §21.5, every one
+    FILTER is the library's own arithmetic (`BP2` = BiquadFilter::init_bp, the filter of lib
+    v0.69-v0.118; `BP2+LP4` = the same followed by LowPass4 at f_hi with the Q pair of a 5th-order
+    Butterworth (init_butter5_pairs), the library's chain since v0.119: f_hi is the -3 dB corner of
+    the whole chain, rationale §21.10; `BP2` stays selectable to compare). NORMALIZER is one of the candidates of rationale §21.5, every one
     updated at every sample; the `SLEW`/`MAXMIN` targets come from 100 ms block extrema, which is
     what the library could reuse from the PI blocks. The probe gate is the spec §5.9 one: not
     APPLIED → output 0, the tracker starts again and (lib v0.118) the filters are reset, so they
@@ -10200,7 +10201,7 @@ class PPGDispCalc:
     EPS     = 1e-12
 
     def __init__(self):
-        self.f_lo = 0.5; self.f_hi = 20.0; self.filt = "BP2"
+        self.f_lo = 0.5; self.f_hi = 20.0; self.filt = "BP2+LP4"   # lib v0.119 chain
         self.method = "SLEW"; self.tau_s = 1.0; self.rise_per_s = 0.5; self.win_s = 1.0
         self.headroom = 1.15     # spec §5.9 default (measured 2026-11-06, rationale §21.8)
         self.mode = "NORM_PI"; self.pi_lo = 0.5; self.pi_hi = 2.0; self.floor = 0.5
@@ -10225,8 +10226,8 @@ class PPGDispCalc:
         hi = max(lo + 0.01, min(self.f_hi, nyq * 0.99))
         b0, b2, a1, a2 = _lib_biquad_bp(lo, hi, fs)
         self._bp = _LibBiquad((b0, 0.0, b2, a1, a2))
-        self._lp1 = _LibBiquad(_lib_biquad_lp(hi, fs, 0.54119610))
-        self._lp2 = _LibBiquad(_lib_biquad_lp(hi, fs, 1.30656296))
+        self._lp1 = _LibBiquad(_lib_biquad_lp(hi, fs, 0.61803399))   # LowPass4::init_butter5_pairs
+        self._lp2 = _LibBiquad(_lib_biquad_lp(hi, fs, 1.61803399))
         self._a_tau = 1.0 - math.exp(-1.0 / (max(self.tau_s, 1.0 / fs) * fs))
         self._blk_len = max(1, int(round(self.BLOCK_S * fs)))
         self._n_blocks = max(1, int(round(self.win_s / self.BLOCK_S)))
@@ -10559,8 +10560,8 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
         combo(f, "filt", "type", PPGDispCalc.FILTERS, self.calc.filt, _make_tooltip(
             "FILTER type", "BP2: the library's one-biquad Butterworth band-pass (v0.115, 6 dB/oct "
             "each side). BP2+LP4: the same followed by the library's LowPass4 at f_hi (two "
-            "sections, Q 0.54 / 1.31), the steeper high side the 25/50 Hz consumers need "
-            "(rationale §21.7). Both are built from blocks the library already has.",
+            "sections, Q 0.62 / 1.62, the pole pairs of a 5th-order Butterworth), the library's "
+            "chain since v0.119: f_hi is the -3 dB corner of the whole chain (rationale §21.10).",
             src="PPGDispCalc.filter"))
         spin(f, "f_lo", "f_lo (Hz)", self.calc.f_lo, 0.05, 5.0, 0.1, 2, _make_tooltip(
             "f_lo", "Lower corner. 0.5 Hz = 30 BPM, the HR floor; removes the respiratory drift.",

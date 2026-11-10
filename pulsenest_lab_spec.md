@@ -2714,6 +2714,11 @@ parameters and window length persist under `XYLabWindow/*` (§9).
 
 ### 7.22 PPGDispLabWindow — "PPGDISPLAB" (v1.104)
 
+**The library's chain since v0.119 (v1.107).** `BP2+LP4` is `PPGDispCalc`'s default FILTER: the
+library adds two low-pass biquads at `f_hi` since v0.119, with the Q pair of a 5th-order Butterworth,
+so `f_hi` is the −3 dB corner of the whole chain (library spec §5.9, rationale §21.10). `BP2`
+stays selectable to compare with the v0.118 chain.
+
 **Probe gate of the chain (v1.106 / lib v0.118).** `PPGDispCalc.update()` resets the display
 filters (BP2, and the LP4 sections of the `BP2+LP4` candidate) while the board's probe state is not
 APPLIED, as the library does since v0.118: they precharge on the first applied sample, so the OT
@@ -2740,7 +2745,7 @@ spec; the chart geometry is a parameter here and never a constant, because it be
 
 | Stage | What it does |
 |---|---|
-| FILTER | `BP2`: the library's one-biquad Butterworth band-pass (`_lib_biquad_bp` through `_LibBiquad`, a mirror of `BiquadFilter` with its steady-state precharge) — the v0.115 filter. `BP2+LP4`: the same followed by the library's `LowPass4` at `f_hi` (two `init_lp` sections, Q 0.5412 and 1.3066, `_lib_biquad_lp`), the steeper high side the 25/50 Hz consumers need. Output negated (peaks up), as `_process_sample()` |
+| FILTER | `BP2`: the library's one-biquad Butterworth band-pass (`_lib_biquad_bp` through `_LibBiquad`, a mirror of `BiquadFilter` with its steady-state precharge) — the v0.115 filter. `BP2+LP4`: the same followed by the library's `LowPass4` at `f_hi` (two `init_lp` sections, Q 0.6180 and 1.6180 as `LowPass4::init_butter5_pairs()`, `_lib_biquad_lp`), the library's chain since v0.119 (default here since v1.107). Output negated (peaks up), as `_process_sample()` |
 | NORMALIZER | Amplitude tracker, **updated at every sample**: `SLEW` (hi/lo chase the max/min of the last WINDOW; up at most RISE × range per second, down with TAU), `INSTANT` (jump to any new extreme, decay with TAU), `MAXMIN` (max/min of the last WINDOW), `RMS` (EMA mean, semi-amplitude √2·RMS — the first spec draft). The window targets come from 100 ms block extrema, what the library could reuse from the PI blocks. HEADROOM multiplies the semi-amplitude (default 1.15, the spec's, since 2026-11-07). **`SLEW` with rise 0.5/s, window 1 s, τ 1 s is the estimator of spec §5.9 since 2026-11-07 (Alex, after watching the four in this window: INSTANT plateaus, MAXMIN jumps, RMS breathes — rationale §21.5 addendum)** |
 | MODE | `NO_NORM` (the filter output, no tracker), `NORM` (`(x − centre)/semi` clamped to ±1), `NORM_PI` (× A **then clamped to ±1, never to ±A** — 2026-11-07, spec §5.9; `A = floor + (1 − floor)·ln(PI/PI_lo)/ln(PI_hi/PI_lo)` clamped to [floor, 1], NaN PI → floor). Probe not APPLIED → output 0 and the tracker starts again (spec §5.9) |
 | HMI (`_HmiEmu`) | Decimation to RATE (25/50/62.5/100/125/250 Hz) by `HOLD` (the latest sample, as `CommTask`) or `AVG`; byte `128 + round(y·127)` in the NORM modes, `128 + round(ppg/1.6e-8)` in `NO_NORM` (CommTask's fixed scale), clipped 0–255; a circular sweep with a 6-point erase gap as `ui_LockPPGChart`; `points = rate × width_px / (px_per_mm × sweep_mm_s)`. The preview widget is exactly WIDTH × HEIGHT px (defaults = today's `ui_LockPPGChart`: 460 × 105, 5.2 px/mm, 17.3 mm/s → 128 points = 5.1 s at 25 Hz; at the clinical 25 mm/s it holds 88 points = 3.5 s) |
@@ -2991,6 +2996,15 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.107 — 2026-11-10
+**Lib v0.119 in PPGDISPLAB's chain.** `PPGDispCalc`'s default FILTER is `BP2+LP4` (§7.22): the
+library's `ppg_disp` chain has two more low-pass biquads at `f_high` since v0.119, with the Q pair
+of a 5th-order Butterworth: `f_high` is the −3 dB corner of the whole chain (−10 dB at 25 Hz, −41 dB
+at 50 Hz with 20 Hz; the band-pass alone gave −4 and −9 dB), for the consumers that sample `ppg_disp`
+without an anti-alias filter of their own. `lib/incunest_afe4490.version` → v0.119; no firmware
+change (same keys, `setPPGDispFilter(0.5, 20)` kept: the fw 0.30 binary with lib v0.119 is a
+rebuild).
 
 ### v1.106 — 2026-11-09
 **Lib v0.118 in PPGDISPLAB's chain.** `PPGDispCalc` resets its filters while the probe is not
