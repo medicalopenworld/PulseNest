@@ -29373,3 +29373,13 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   midieron con el primer borrador; con el par adoptado no se han vuelto a medir.
 - **Pendiente:** "sí" de Alex para etiqueta y release; después commit de PulseNest, build y OTA a
   87:A4 y 82:5C, y respuesta a la sesión IncuNest (10 dB a 25 Hz en vez de 13).
+
+### 2026-11-10 (cierre) — v0.119 etiquetada y publicada
+
+- **Alex: "Sí, etiqueta".** Librería: etiqueta `v0.119` en 11ae84d, push de master y etiqueta, release
+  en GitHub con *What changes / Breaking / When upgrading*; CI en verde, zip y SHA-256 subidos.
+- **PulseNest:** commit 9c370df (lab v1.107, spec, pin v0.119, log), sin push. Build V18 correcto con
+  lib 11ae84d (`build_V18/pulsenest.bin`).
+- **OTA NO hecha:** `tools/udp_fw_versions.py` no encontró ninguna placa transmitiendo. 87:A4 y 82:5C
+  siguen con fw 0.30 / lib 0.118; `docs/boards.md` sin tocar.
+- **Sesión IncuNest avisada** con el changelog y la regla corregida (10 dB a 25 Hz con 20 Hz).
