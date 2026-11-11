@@ -29413,3 +29413,68 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   AFE (1600 Hz). Reducción de puntos solo al dibujar (método de picos), datos guardados intactos.
 - El eje X sigue en muestras. El cargador de ficheros sigue suponiendo 50 Hz (sin tocar).
 - Sin commit. Sin probar con la ventana abierta y una placa transmitiendo.
+
+## Sesión 2026-11-11 — PPG Plots con duración y pausa (lab v1.110)
+
+- **Pregunta de Alex:** ¿es mucho trabajo dar a PPG Plots el botón de pausa y el selector de
+  duración de PPG SIGNALS? Valoración: unas 70-80 líneas copiando el patrón; además la ventana
+  dibujaba 1 s (búferes de 500 muestras a 500 Hz), el mismo defecto de la décima parte.
+- **Decisión (Alex: "adelante, hazlo sin la refactorización"):** búfer propio por curva (11),
+  selector `Window (s)` de 1 a 60 s (10 por defecto, guardado en ajustes), botón PAUSE/CONTINUE,
+  reducción de puntos al dibujar, limpieza al reiniciar la placa. En pausa los títulos de SpO2 y
+  frecuencia cardiaca siguen mostrando el valor en vivo. La acumulación es copia de la de PPG
+  SIGNALS; la pieza común queda para otro momento.
+- Sin commit. Sin probar por Claude con una placa transmitiendo.
+
+### 2026-11-11 — PI ante artefactos de movimiento: estudio en curso
+
+- **Observación de Alex:** cada artefacto de movimiento sube el PI durante 5-6 s. Confirmado en el
+  código: `PI-METHOD-1` es la energía de una ventana deslizante de 6 s, así que un golpe breve
+  permanece 6 s exactos en la suma. Simulación: golpe de 0,4 s, PI ×2,3 durante 6,4 s; con la
+  mediana de la energía de subventanas de 1 s, ×1,05.
+- **Preocupación de Alex:** un PI inmune podría perder utilidad para la calidad de la SpO2. En el
+  código, hoy el PI inflado SUBE la calidad (rampa 0,5-2 %) y solo protege por encima del 20 %.
+- **Propuesta (Alex: "adelante, mídelo sobre las capturas con las dos salidas"):** dos salidas, PI
+  robusto (mediana de subventanas) y cociente Q = PI actual / PI robusto como indicador de artefacto.
+- **En curso:** `experiments/pi_artifact_robustness_20261111.py` sobre las 17 sesiones HOSPNAV con
+  réplica `replay_lib0.108_inputot` (SUBJ08-11). Resultados pendientes; nada cambiado en la librería.
+
+### 2026-11-11 — PI ante artefactos: resultados del estudio
+
+- **Script:** `experiments/pi_artifact_robustness_20261111.py`; informe `docs/pi_artifact_robustness_20261111.md`.
+  17 sesiones HOSPNAV (SUBJ08-11), 173 min con sensor aplicado, 69 ráfagas aisladas.
+- **Réplica:** coincide con el PI de la librería en un 0,1 % (mediana).
+- **Mediana de seis subventanas de 1 s:** en artefactos reales el pico es igual al del PI actual
+  (×1,5-2,0) y solo acorta la subida 2-3 s. Los artefactos de neonato duran 3 s o más; la
+  simulación del golpe de 0,4 s no los representa. La mediana de doce (12 s) sí ayuda: pico
+  ×1,2-1,5, 0,3-2,1 s, oscilación a la mitad, 1-2 % menos en reposo, 6 s de latencia.
+- **Cociente Q = PI actual / PI robusto:** predice el error de SpO2. Ventanas a más de 4 puntos del
+  monitor, con la puerta de pulso: 2,4 % con Q < 1,2 frente a 18,6 % con Q > 1,5.
+- **Rampa de calidad:** hoy puntúa las ventanas malas igual o mejor que las buenas.
+- **Límite del 20 %:** Q no lo sustituye (eventos sostenidos, Q 1,1-1,35); debe seguir leyendo la
+  energía total.
+- **Sin decidir.** Nada cambiado en la librería, su spec ni su rationale. Sin commit.
+
+### 2026-11-11 — PI ante artefactos: medianas con número impar de subventanas
+
+- **Petición de Alex:** añadir medianas de 5, 7, 9 y 11 subventanas de 1 s (N impar tolera (N−1)/2 s
+  de artefacto; el par no añade inmunidad) y comparar por sujeto con las de 6 y 12.
+- **Hecho:** sección G del script generalizada (`MEDIAN_N`), relanzado; tabla por sujeto en el
+  apéndice de `docs/pi_artifact_robustness_20261111.md`. En todas las variantes solo cambia el
+  numerador; el nivel medio sigue siendo el de 6 s.
+- **Resultado:** el sesgo en reposo no depende de N (1-1,5 % menos; SUBJ10 6-9 %). La oscilación a
+  6 s baja de forma continua con N (a la mitad con 11-12). El pico en las ráfagas baja con N de
+  forma irregular (6-24 ráfagas por sujeto); la mediana de 5 es peor que el PI actual en el pico.
+  11 y 12 son equivalentes. Ninguna N elimina la subida: quedan ×1,2-1,6.
+- Sin decidir. Sin commit.
+
+### 2026-11-11 — PI ante artefactos: cierre de la sesión y traspaso
+
+- **Alex:** quería subir la ventana de 6 s a 7 s para ganar 1 s de inmunidad; pidió el significado
+  de las columnas de la tabla. Explicadas. La mediana de siete (tolera 3 s) frente al PI actual:
+  pico ×1,5-1,75, tiempo sobre +20 % 1,6-4,8 s, 1-1,6 % menos en reposo. No medido con el nivel
+  medio también a 7 s. Sin decidir.
+- **Decisión:** el tema sigue en una sesión nueva de desarrollo; esta se cierra. Traspaso por la
+  nota de memoria de la tarea, el informe y el script.
+- **Commit (Alex: "sí"):** lab v1.110 (pausa y duración en PPG Plots, sin probar con una placa
+  transmitiendo), su spec, el script y el informe del estudio, y este log.

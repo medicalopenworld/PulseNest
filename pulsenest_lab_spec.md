@@ -1967,6 +1967,13 @@ Detached window with 6 stacked plots, linked X axes:
 Checkboxes for each curve's visibility persisted in .ini.
 IR-first row ordering mirrors SIGNAL STATS.
 
+**Window duration and PAUSE (v1.110).** The sidebar carries the same `Window (s)` spin (1–`SIG_MAX_S`,
+default `SIG_DEFAULT_S`, persisted as `PPGPlotsWindow/window_s`) and `PAUSE`/`CONTINUE` button as
+PPG SIGNALS. Each of the 11 curves has its own rolling buffer of `SIG_BUF_LEN` samples, filled by
+the sample-counter diff; the duration is converted with the board's rate (`_sig_window_samples()`);
+the curves are downsampled at draw time only. Paused: the curves freeze, the buffers keep filling
+and the SpO2 / HR titles keep showing the live values. Cleared on a stream discontinuity.
+
 ### 7.2 PPGSignalsWindow — "PPG SIGNALS"
 
 Focused view on the 6 raw/subtracted ADC channels (IR, RED, IR_Amb, RED_Amb, IR_Sub, RED_Sub).
@@ -2996,6 +3003,14 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.110 — 2026-11-11
+**PPG Plots: window duration and PAUSE, as PPG SIGNALS (§7.1).** The window drew its 11 curves
+straight from the monitor's `WINDOW_SIZE` = 500-sample buffers, which is 1 s at 500 Hz (the comment
+said 10 s, true at the serial-era 50 Hz). It now keeps one rolling buffer per curve
+(`SIG_BUF_LEN`), a `Window (s)` spin (1–60 s, default 10, persisted) and a `PAUSE`/`CONTINUE`
+button; `update_plots()` takes `data_sample_counter`; the window is in the stream-discontinuity
+list. The accumulation is a copy of PPG SIGNALS' (no shared helper yet, Alex 2026-11-11).
 
 ### v1.109 — 2026-11-10
 **PPG SIGNALS and PPG SIGNALS 2 showed a tenth of the window asked for.** Both converted the

@@ -11002,6 +11002,12 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.main_monitor = main_monitor
         self.setWindowTitle(_win("PPG Plots"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
+        self._paused = False
+        # One rolling buffer per curve, in the order of _curves_in_order(): long history +
+        # pause + adjustable duration, the pattern of PPGSignalsWindow (v1.110). Until then the
+        # curves were drawn straight from the monitor's WINDOW_SIZE buffers: 1 s at 500 Hz.
+        self._bufs        = [deque(maxlen=SIG_BUF_LEN) for _ in range(11)]
+        self._sig_last_sc = None   # last sample_counter value seen
         self._setup_ui()
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         geom = s.value("PPGPlotsWindow/geometry")
@@ -11009,6 +11015,7 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             self.restoreGeometry(geom)
         else:
             self.resize(1800, 900)
+        self.spin_window_s.setValue(s.value("PPGPlotsWindow/window_s", SIG_DEFAULT_S, type=int))
         self.check_led2_raw.setChecked(s.value("PPGPlotsWindow/check_led2_raw", False, type=bool))
         self.check_aled2.setChecked(s.value("PPGPlotsWindow/check_aled2", False, type=bool))
         self.check_led2_sub.setChecked(s.value("PPGPlotsWindow/check_led2_sub", True,  type=bool))
@@ -11094,6 +11101,49 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         for w in (self.check_led2_raw, self.check_aled2, self.check_led2_sub):
             sidebar.addWidget(w)
 
+        # ── Window duration (as PPGSignalsWindow) ─────────────────────────────
+        lbl_win = QtWidgets.QLabel("Window (s)")
+        lbl_win.setStyleSheet("color: #AAAAAA; font-size: 14px; margin-top: 16px;")
+        sidebar.addWidget(lbl_win)
+        self.spin_window_s = QtWidgets.QSpinBox()
+        self.spin_window_s.setRange(1, SIG_MAX_S)
+        self.spin_window_s.setValue(SIG_DEFAULT_S)
+        self.spin_window_s.setSuffix(" s")
+        self.spin_window_s.setStyleSheet(
+            "QSpinBox { background-color: #2A2A2A; color: #E0E0E0; font-size: 16px; "
+            "border: 1px solid #555555; border-radius: 3px; padding: 2px 4px; }")
+        self.spin_window_s.setToolTip(_make_tooltip(
+            "Window duration",
+            f"Duration of the visible time window in every plot of this window. "
+            f"Range: 1\u2013{SIG_MAX_S} s, converted to samples with the board's AFE sample "
+            f"rate ($CFG sr, 500 Hz by default). Uses an internal rolling buffer of "
+            f"{SIG_BUF_LEN} samples per curve, independent of the main {WINDOW_SIZE}-sample "
+            f"display buffer; long windows are downsampled only when drawn.",
+            src="PPGPlotsWindow"))
+        sidebar.addWidget(self.spin_window_s)
+
+        # ── Pause / Continue (as PPGSignalsWindow) ────────────────────────────
+        self.btn_pause = QtWidgets.QPushButton("PAUSE")
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setStyleSheet("""
+            QPushButton {
+                background-color: #2A2A2A; color: #CCCCCC; font-size: 15px;
+                font-weight: bold; padding: 6px 4px; border-radius: 4px;
+                border: 1px solid #555555; margin-top: 10px;
+            }
+            QPushButton:checked {
+                background-color: #774400; color: #FFDD44; border: 1px solid #FFAA00;
+            }
+        """)
+        self.btn_pause.setToolTip(_make_tooltip(
+            "Pause / Continue",
+            "Freeze the curves at the current snapshot. Data keeps accumulating in the "
+            "buffers and the SpO2 / HR titles keep showing the live values; press again to "
+            "resume.",
+            src="PPGPlotsWindow"))
+        self.btn_pause.clicked.connect(self._on_pause_clicked)
+        sidebar.addWidget(self.btn_pause)
+
         sidebar.addStretch()
         sb_widget = QtWidgets.QWidget()
         sb_widget.setLayout(sidebar)
@@ -11169,8 +11219,27 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         self.curve_led1.setVisible(False)
         self.curve_aled1.setVisible(False)
         self.curve_led1_sub.setVisible(True)
+        for _c in self._curves_in_order():
+            _sig_draw_downsampled(_c)
 
         outer.addWidget(hint)
+
+    def _curves_in_order(self):
+        """The 11 curves, in the order of self._bufs and of the sources in update_plots()."""
+        return (self.curve_ppg, self.curve_spo2, self.curve_hr1, self.curve_hr2, self.curve_hr3,
+                self.curve_led2, self.curve_led1, self.curve_aled2, self.curve_aled1,
+                self.curve_led2_sub, self.curve_led1_sub)
+
+    def _on_pause_clicked(self, checked):
+        self._paused = checked
+        self.btn_pause.setText("CONTINUE" if checked else "PAUSE")
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): re-seed from scratch (see
+        PPGSignalsWindow.on_stream_discontinuity)."""
+        self._sig_last_sc = None
+        for buf in self._bufs:
+            buf.clear()
 
     def set_ppgdisp_mode(self, mode):
         """Y axis of the PPG plot from the board's ppgdisp_mode ($LCFG, fw 0.30 / lib v0.117): NORM
@@ -11183,7 +11252,8 @@ class PPGPlotsWindow(QtWidgets.QWidget):
                      data_hr1_sqi, data_hr2_sqi, data_hr3_sqi,
                      data_led2, data_led1,
                      data_aled2, data_aled1, data_led2_sub, data_led1_sub,
-                     data_r_method2_reg_corr=None, data_spo2_hold_reason=None):
+                     data_r_method2_reg_corr=None, data_spo2_hold_reason=None,
+                     data_sample_counter=None):
         self.p_spo2.setTitle(
             f"<b style='color:#44FF88'>SpO2: {data_spo2[-1]:.1f} %</b>"
             f" &nbsp; <b style='color:#888888'>SQI: {data_spo2_sqi[-1]:.2f}</b>"
@@ -11195,21 +11265,38 @@ class PPGPlotsWindow(QtWidgets.QWidget):
             f" &nbsp; <b style='color:#FF4444'>HR2: {data_hr2[-1]:.1f}</b><b style='color:#888888'> [{data_hr2_sqi[-1]:.2f}]</b>"
             f" &nbsp; <b style='color:#00CCFF'>HR3: {data_hr3[-1]:.1f}</b><b style='color:#888888'> [{data_hr3_sqi[-1]:.2f}]</b>"
             f" <b style='color:#AAAAAA'>bpm</b>")
-        self.curve_ppg.setData(list(data_ppgdisp)[-PPG_WINDOW_SIZE:])
-        self.curve_spo2.setData(list(data_spo2))
-        self.curve_hr1.setData(list(data_hr1))
-        self.curve_hr2.setData(list(data_hr2))
-        self.curve_hr3.setData(list(data_hr3))
-        self.curve_led2.setData(list(data_led2))
-        self.curve_led1.setData(list(data_led1))
-        self.curve_aled2.setData(list(data_aled2))
-        self.curve_aled1.setData(list(data_aled1))
-        self.curve_led2_sub.setData(list(data_led2_sub))
-        self.curve_led1_sub.setData(list(data_led1_sub))
+        srcs = (data_ppgdisp, data_spo2, data_hr1, data_hr2, data_hr3,
+                data_led2, data_led1, data_aled2, data_aled1, data_led2_sub, data_led1_sub)
+        # ── 1. Accumulate new samples into the rolling buffers (sample-counter diff, as
+        # PPGSignalsWindow; the titles above always show the live values) ─────
+        sc_list = list(data_sample_counter) if data_sample_counter is not None else []
+        if sc_list:
+            last_sc = sc_list[-1]
+            if self._sig_last_sc is not None and last_sc < self._sig_last_sc:
+                # Firmware restart detected (counter reset) — re-seed from scratch.
+                self._sig_last_sc = None
+                for buf in self._bufs:
+                    buf.clear()
+            if self._sig_last_sc is None:
+                n_new = len(sc_list)
+            else:
+                n_new = sum(1 for sc in reversed(sc_list) if sc > self._sig_last_sc)
+            if n_new > 0:
+                for src, dst in zip(srcs, self._bufs):
+                    dst.extend(list(src)[-n_new:])
+            self._sig_last_sc = last_sc
+
+        # ── 2. Render (skip if paused) ───────────────────────────────────────
+        if self._paused:
+            return
+        n = _sig_window_samples(self.spin_window_s.value(), self.main_monitor)
+        for curve, buf in zip(self._curves_in_order(), self._bufs):
+            curve.setData(list(buf)[-n:])
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
         s.setValue("PPGPlotsWindow/geometry",    self.saveGeometry())
+        s.setValue("PPGPlotsWindow/window_s",    self.spin_window_s.value())
         s.setValue("PPGPlotsWindow/check_led2_raw",  self.check_led2_raw.isChecked())
         s.setValue("PPGPlotsWindow/check_aled2",  self.check_aled2.isChecked())
         s.setValue("PPGPlotsWindow/check_led2_sub",  self.check_led2_sub.isChecked())
@@ -16892,7 +16979,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             self._lab_capture.add_event(f"stream discontinuity: {reason}")
         for name in ("spo2lab_window", "spo2test_window", "hr1test_window", "hr2test_window",
                      "hr3test_window", "pilab_window", "xylab_window", "hr1lab_window", "hr2lab_window", "ppgdisplab_window",
-                     "signals_window", "signals2_window"):
+                     "signals_window", "signals2_window", "ppgplots_window"):
             win = getattr(self, name, None)
             hook = getattr(win, "on_stream_discontinuity", None) if win is not None else None
             if hook is None:
@@ -17940,7 +18027,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self.data_led2, self.data_led1,
                     self.data_aled2, self.data_aled1, self.data_led2_sub, self.data_led1_sub,
                     data_r_method2_reg_corr=self.data_r_method2_reg_corr,
-                    data_spo2_hold_reason=self.data_spo2_hold_reason)
+                    data_spo2_hold_reason=self.data_spo2_hold_reason,
+                    data_sample_counter=self.data_sample_counter)
                 self._py_timing['plot_ppgplots'].append((time.perf_counter() - _t0p) * 1000)
 
             # PPGSignalsWindow: throttled to 20 Hz
