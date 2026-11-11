@@ -29392,3 +29392,24 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   `88:50` (IncuNest) no se tocó.
 - **Pendiente:** medir el coste en el pico sistólico con el filtro nuevo; transitorio de 1 a 6 s tras
   aplicar el sensor; apagar el punto de acceso al terminar.
+
+### 2026-11-10 (lab v1.108) — PPGDISPLAB sigue el gráfico de IncuNest; diagnóstico de PPG SIGNALS 2
+
+- **Petición de Alex:** actualizar PPGDISPLAB con los cambios de hoy (la sesión IncuNest cambió la
+  duración del gráfico) y explicar por qué PPG SIGNALS 2 dibuja una décima parte de la duración.
+- **PPGDISPLAB (hecho, sin commit):** valores por defecto de la emulación del HMI según
+  `ElementsCreation.h` de IncuNest (árbol de trabajo, sin commit allí): transporte 50 Hz, barrido
+  25 mm/s, 5,19 px/mm, 177 puntos = 3,5 s sobre 460 px; hueco de borrado como tiempo, 0,24 s.
+  Ayuda de `f_hi` con el significado de la v0.119 y la regla del consumidor. Spec v1.108.
+- **PPG SIGNALS 2 (solo diagnóstico):** la ventana convierte segundos en muestras con la constante
+  `SPO2_RECEIVED_FS` = 50 Hz, de la época del puerto serie. Desde el transporte UDP llegan las 500
+  muestras por segundo, así que N s se dibujan como N/10 s, y el búfer de 60 s guarda solo 6 s.
+  PPG SIGNALS tiene el mismo defecto. Arreglo pendiente de decisión de Alex.
+
+### 2026-11-10 (lab v1.109) — duración real en PPG SIGNALS y PPG SIGNALS 2
+
+- **Alex: "Sí, arréglalo".** Las dos ventanas convierten los segundos en muestras con la tasa real
+  de la placa (`afe_fs()`), no con los 50 Hz del puerto serie. Búferes de 60 s a la tasa máxima del
+  AFE (1600 Hz). Reducción de puntos solo al dibujar (método de picos), datos guardados intactos.
+- El eje X sigue en muestras. El cargador de ficheros sigue suponiendo 50 Hz (sin tocar).
+- Sin commit. Sin probar con la ventana abierta y una placa transmitiendo.

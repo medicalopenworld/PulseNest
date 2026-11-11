@@ -259,7 +259,10 @@ WINDOW_SIZE        = 500   # 10 s @ 50 Hz (500 Hz / SERIAL_DOWNSAMPLING_RATIO=10
 PPG_WINDOW_SIZE    = 500   # 10 s — same as WINDOW_SIZE
 SPO2_CAL_BUFSIZE   = 3000  # 60 s @ 50 Hz — rolling buffer for SpO2LabWindow
 SPO2_RECEIVED_FS   = 50.0  # AFE4490 @ 500 Hz, SERIAL_DOWNSAMPLING_RATIO=10
-SIG_MAX_S          = 60    # PPGSignalsWindow internal accumulator: 60 s @ SPO2_RECEIVED_FS
+SIG_MAX_S          = 60    # PPG SIGNALS / PPG SIGNALS 2: longest window the operator can ask for [s]
+SIG_MAX_FS         = 1600  # highest AFE sample rate (kAFE_SAMPLE_RATE_HZ); every sample is streamed
+SIG_BUF_LEN        = SIG_MAX_S * SIG_MAX_FS   # their rolling buffers hold SIG_MAX_S at any AFE rate
+SIG_DEFAULT_S      = 10    # their default window [s]
 
 
 class SpO2LocalCalc:
@@ -10315,14 +10318,18 @@ class _HmiEmu:
     or block average), the 8-bit byte, and a circular LVGL-like sweep of `points` values with
     an erase gap, sized from the chart geometry and the sweep speed."""
     FIXED_LSB = 1.6e-8          # CommTask PPG_DISP_UNITS_PER_LSB (NO_NORM transport scale)
-    GAP = 6
+    GAP_S = 0.24                # LOCK_PPG_GAP: the erase gap is a time, 12 points at 50 Hz
 
     def __init__(self):
-        self.rate = 25.0; self.decim = "HOLD"
-        # defaults = today's ui_LockPPGChart: 460×105 px, 128 points at 25 Hz, which over the
-        # measured 5.2 px/mm is a 17.3 mm/s sweep (the clinical convention is 25 mm/s)
-        self.width_px = 460; self.height_px = 105; self.sweep_mm_s = 17.3; self.px_per_mm = 5.2
+        self.rate = 50.0; self.decim = "HOLD"
+        # defaults = IncuNest's ui_LockPPGChart since 2026-11-10 (ElementsCreation.h): CTRL,PPG at
+        # 50 Hz, 460×105 px, 800 px over 154 mm = 5.19 px/mm, 25 mm/s (the usual pleth sweep) →
+        # 177 points = 3.5 s. Until then: 25 Hz, 128 points = 5.1 s (17.3 mm/s).
+        self.width_px = 460; self.height_px = 105; self.sweep_mm_s = 25.0; self.px_per_mm = 5.19
         self.reset()
+
+    def gap(self):
+        return max(1, int(round(self.rate * self.GAP_S)))
 
     def points(self):
         return max(8, int(round(self.rate * self.width_px / (self.px_per_mm * self.sweep_mm_s))))
@@ -10346,7 +10353,7 @@ class _HmiEmu:
         b = min(255, max(0, int(b)))
         n = len(self.buf)
         self.buf[self.cursor] = b
-        for k in range(1, self.GAP + 1):
+        for k in range(1, self.gap() + 1):
             self.buf[(self.cursor + k) % n] = np.nan
         self.cursor = (self.cursor + 1) % n
         self.bytes.append(b)
@@ -10507,7 +10514,7 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
         self.p_hmi.setToolTip(_make_tooltip(
             "HMI chart emulation (1:1 pixels)",
             "The trace the HMI would draw: bytes 0–255 at the transport RATE, `points` of them "
-            "across WIDTH px, circular sweep with a 6-point erase gap, as ui_LockPPGChart. The "
+            "across WIDTH px, circular sweep with a 0.24 s erase gap, as ui_LockPPGChart. The "
             "widget is exactly WIDTH × HEIGHT px on this monitor, whose px/mm is not the "
             "CrowPanel's, so judge shape and legibility, not physical size.",
             src="_HmiEmu"))
@@ -10567,9 +10574,10 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
             "f_lo", "Lower corner. 0.5 Hz = 30 BPM, the HR floor; removes the respiratory drift.",
             src="setPPGDispFilter"))
         spin(f, "f_hi", "f_hi (Hz)", self.calc.f_hi, 2.0, 100.0, 1.0, 1, _make_tooltip(
-            "f_hi", "Upper corner. 20 Hz is the inherited default with no written rationale; the "
-            "candidates are 8–10 Hz (PI uses 15, Masimo's display FIR 7.5). Below the consumer's "
-            "Nyquist (12.5 Hz at 25 Hz, 25 Hz at 50 Hz) with margin, or the trace aliases.",
+            "f_hi", "Upper corner: with BP2+LP4 the -3 dB point of the whole chain (lib v0.119). "
+            "20 Hz is the library default (Alex, 2026-11-10). Consumer rule: f_hi <= 0.4 x the "
+            "transport rate gives >= 10 dB at the consumer's Nyquist, <= 0.3 x rate >= 20 dB "
+            "(at 50 Hz: 20 Hz and 15 Hz), or the trace aliases.",
             src="setPPGDispFilter"))
 
         f = group("NORMALIZER (amplitude tracker)")
@@ -10612,10 +10620,10 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
             "the waveform's shape at low PI (rationale §21.6).", src="PPGDispCalc.floor"))
 
         f = group("HMI (transport and chart)")
-        combo(f, "rate", "rate (Hz)", ("25", "50", "62.5", "100", "125", "250"), "25",
-              _make_tooltip("Transport RATE", "Samples per second sent to the HMI. 25 Hz today "
-                            "(CTRL,PPG every 40 ms); a constant of the contract, to be chosen for "
-                            "the largest display (rationale §21.7).", src="CommTask"),
+        combo(f, "rate", "rate (Hz)", ("25", "50", "62.5", "100", "125", "250"), "50",
+              _make_tooltip("Transport RATE", "Samples per second sent to the HMI. 50 Hz since "
+                            "IncuNest motherBoard 18.57.0 (CTRL,PPG every 20 ms; 25 Hz before); "
+                            "a constant of the contract (rationale §21.7).", src="CommTask"),
               on=self._on_hmi)
         combo(f, "decim", "decimation", ("HOLD", "AVG"), "HOLD",
               _make_tooltip("Decimation", "HOLD: the latest full-rate sample, as CommTask does "
@@ -10628,12 +10636,12 @@ class PPGDispLabWindow(QtWidgets.QMainWindow):
             "Chart HEIGHT", "ui_LockPPGChart is 105 px; the byte range 0–255 maps onto it.",
             src="ElementsCreation.cpp"), on=self._on_hmi)
         spin(f, "sweep", "sweep (mm/s)", self.hmi.sweep_mm_s, 5.0, 100.0, 0.1, 1, _make_tooltip(
-            "Sweep speed", "17.3 mm/s is what the HMI draws today (128 points over 460 px at 25 Hz); "
-            "the clinical convention is 25 mm/s (12.5 and 50 optional). With px/mm it sets how "
-            "many seconds the chart holds: points = rate × width / (px_per_mm × sweep).",
+            "Sweep speed", "25 mm/s is what the HMI draws since 2026-11-10 (177 points = 3.5 s over "
+            "460 px at 50 Hz; 17.3 mm/s = 128 points = 5.1 s at 25 Hz before). With px/mm it sets "
+            "how many seconds the chart holds: points = rate × width / (px_per_mm × sweep).",
             src="rationale §21.7"), on=self._on_hmi)
         spin(f, "px_mm", "px/mm", self.hmi.px_per_mm, 1.0, 20.0, 0.1, 2, _make_tooltip(
-            "Pixel density of the HMI", "CrowPanel 7\": 800 px over 154 mm measured = 5.2 px/mm.",
+            "Pixel density of the HMI", "CrowPanel 7\": 800 px over 154 mm measured = 5.19 px/mm.",
             src="rationale §21.7"), on=self._on_hmi)
 
         btns = QtWidgets.QGridLayout(); btns.setSpacing(4)
@@ -11214,6 +11222,22 @@ class PPGPlotsWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
 
+def _sig_window_samples(window_s, monitor):
+    """Samples in a window of `window_s` seconds of PPG SIGNALS / PPG SIGNALS 2: the board's AFE
+    rate (PPGMonitor.afe_fs(), `sr` of the last $CFG, 500 Hz by default), since every sample is
+    streamed. Until v1.108 this used the serial-era SPO2_RECEIVED_FS = 50 Hz, so a window of N s
+    showed N/10 s and the 60 s buffer held 6 s."""
+    fs = monitor.afe_fs() if monitor is not None else 500.0
+    return max(1, min(SIG_BUF_LEN, int(window_s * fs)))
+
+
+def _sig_draw_downsampled(curve):
+    """A 60 s window is 30 000–96 000 points per curve: reduce them when drawing only (peak
+    method, so no excursion is lost), never in the stored data."""
+    curve.setDownsampling(auto=True, method='peak')
+    curve.setClipToView(True)
+
+
 class PPGSignalsWindow(QtWidgets.QWidget):
     """Floating window with the 6 raw AFE4490 signals (LED2/LED1 raw·amb·sub) and PPG_DISP."""
 
@@ -11223,7 +11247,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.setWindowTitle(_win("PPG Signals"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._paused = False
-        _sig_buf = int(SIG_MAX_S * SPO2_RECEIVED_FS)
+        _sig_buf = SIG_BUF_LEN
         self._sig_led2     = deque(maxlen=_sig_buf)
         self._sig_led1     = deque(maxlen=_sig_buf)
         self._sig_aled2    = deque(maxlen=_sig_buf)
@@ -11245,7 +11269,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.check_led1_raw.setChecked( s.value("PPGSignalsWindow/check_led1_raw",  False, type=bool))
         self.check_aled1.setChecked( s.value("PPGSignalsWindow/check_aled1",  False, type=bool))
         self.check_led1_sub.setChecked( s.value("PPGSignalsWindow/check_led1_sub",  True,  type=bool))
-        self.spin_window_s.setValue(s.value("PPGSignalsWindow/window_s", int(WINDOW_SIZE / SPO2_RECEIVED_FS), type=int))
+        self.spin_window_s.setValue(s.value("PPGSignalsWindow/window_s", SIG_DEFAULT_S, type=int))
 
     def _setup_ui(self):
         outer = QtWidgets.QVBoxLayout(self)
@@ -11331,7 +11355,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         sidebar.addWidget(lbl_win)
         self.spin_window_s = QtWidgets.QSpinBox()
         self.spin_window_s.setRange(1, SIG_MAX_S)
-        self.spin_window_s.setValue(int(WINDOW_SIZE / SPO2_RECEIVED_FS))
+        self.spin_window_s.setValue(SIG_DEFAULT_S)
         self.spin_window_s.setSuffix(" s")
         self.spin_window_s.setStyleSheet(
             "QSpinBox { background-color: #2A2A2A; color: #E0E0E0; font-size: 16px; "
@@ -11339,9 +11363,10 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         self.spin_window_s.setToolTip(_make_tooltip(
             "Window duration",
             f"Duration of the visible time window in the signal plots. "
-            f"Range: 1\u2013{SIG_MAX_S} s. Uses an internal rolling buffer of "
-            f"{int(SIG_MAX_S * SPO2_RECEIVED_FS)} samples "
-            f"independent of the main {WINDOW_SIZE}-sample display buffer.",
+            f"Range: 1\u2013{SIG_MAX_S} s, converted to samples with the board's AFE sample "
+            f"rate ($CFG sr, 500 Hz by default). Uses an internal rolling buffer of "
+            f"{SIG_BUF_LEN} samples independent of the main {WINDOW_SIZE}-sample display "
+            f"buffer; long windows are downsampled only when drawn.",
             src="PPGSignalsWindow"))
         sidebar.addWidget(self.spin_window_s)
 
@@ -11396,6 +11421,9 @@ class PPGSignalsWindow(QtWidgets.QWidget):
 
         self.p3 = self.graphics_layout.addPlot(title="<b style='color:#AAFFAA'>PPG_DISP</b>")
         self.curve_ppgdisp = self.p3.plot(pen=pg.mkPen('#AAFFAA', width=2), name="PPG_DISP")
+        for _c in (self.curve_led1, self.curve_aled1, self.curve_led1_sub, self.curve_led2,
+                   self.curve_aled2, self.curve_led2_sub, self.curve_ppgdisp):
+            _sig_draw_downsampled(_c)
         self.p3.showGrid(x=True, y=True, alpha=0.3)
         self.p3.getAxis('left').setWidth(80)
         self.set_ppgdisp_mode("no_norm")
@@ -11459,7 +11487,7 @@ class PPGSignalsWindow(QtWidgets.QWidget):
         # ── 2. Render (skip if paused) ───────────────────────────────────────
         if self._paused:
             return
-        n = int(self.spin_window_s.value() * SPO2_RECEIVED_FS)
+        n = _sig_window_samples(self.spin_window_s.value(), self.main_monitor)
         def tail(d): return list(d)[-n:]
         self.curve_led2.setData(tail(self._sig_led2))
         self.curve_led1.setData(tail(self._sig_led1))
@@ -11541,7 +11569,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
         self.setWindowTitle(_win("PPG Signals 2 (any channel)"))
         self.setStyleSheet("background-color: #121212; color: #E0E0E0;")
         self._paused = False
-        _sig_buf = int(SIG_MAX_S * SPO2_RECEIVED_FS)
+        _sig_buf = SIG_BUF_LEN
         # Per-slot rolling buffer, independent of PPGMonitor's fixed WINDOW_SIZE — same
         # long-history + pause + adjustable-duration pattern as PPGSignalsWindow. Cleared
         # and re-seeded whenever the slot's signal selection changes.
@@ -11559,7 +11587,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
             self.restoreGeometry(geom)
         else:
             self.resize(1400, 900)
-        self.spin_window_s.setValue(s.value("PPGSignals2Window/window_s", int(WINDOW_SIZE / SPO2_RECEIVED_FS), type=int))
+        self.spin_window_s.setValue(s.value("PPGSignals2Window/window_s", SIG_DEFAULT_S, type=int))
         for g in range(3):
             for slot in range(3):
                 key     = f"PPGSignals2Window/g{g}_{slot}"
@@ -11585,7 +11613,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
         top_bar.addWidget(lbl_win)
         self.spin_window_s = QtWidgets.QSpinBox()
         self.spin_window_s.setRange(1, SIG_MAX_S)
-        self.spin_window_s.setValue(int(WINDOW_SIZE / SPO2_RECEIVED_FS))
+        self.spin_window_s.setValue(SIG_DEFAULT_S)
         self.spin_window_s.setSuffix(" s")
         self.spin_window_s.setStyleSheet(
             "QSpinBox { background-color: #2A2A2A; color: #E0E0E0; font-size: 37px; "
@@ -11594,8 +11622,10 @@ class PPGSignals2Window(QtWidgets.QWidget):
         self.spin_window_s.setToolTip(_make_tooltip(
             "Window duration",
             f"Duration of the visible time window in the plots. Range: 1–{SIG_MAX_S} s. "
-            f"Uses an internal rolling buffer of {int(SIG_MAX_S * SPO2_RECEIVED_FS)} samples "
-            f"per slot, independent of the main {WINDOW_SIZE}-sample display buffer.",
+            f"Converted to samples with the board's AFE sample rate ($CFG sr, 500 Hz by "
+            f"default). Uses an internal rolling buffer of {SIG_BUF_LEN} samples per slot, "
+            f"independent of the main {WINDOW_SIZE}-sample display buffer; long windows are "
+            f"downsampled only when drawn.",
             src="PPGSignals2Window"))
         top_bar.addWidget(self.spin_window_s)
 
@@ -11664,6 +11694,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
             self._plots[g] = plot
             for slot in range(3):
                 curve = plot.plot(pen=pg.mkPen(self._SLOT_COLORS[slot], width=1.5))
+                _sig_draw_downsampled(curve)
                 curve.setVisible(False)
                 self._curves[g][slot] = curve
             row.addWidget(plot, stretch=1)
@@ -11745,7 +11776,7 @@ class PPGSignals2Window(QtWidgets.QWidget):
         # ── 2. Render (skip if paused) ───────────────────────────────────────────────────
         if self._paused:
             return
-        n = int(self.spin_window_s.value() * SPO2_RECEIVED_FS)
+        n = _sig_window_samples(self.spin_window_s.value(), self.main_monitor)
         for g in range(3):
             for slot in range(3):
                 if self._selected_attr[g][slot] is None:

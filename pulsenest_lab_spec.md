@@ -2748,7 +2748,7 @@ spec; the chart geometry is a parameter here and never a constant, because it be
 | FILTER | `BP2`: the library's one-biquad Butterworth band-pass (`_lib_biquad_bp` through `_LibBiquad`, a mirror of `BiquadFilter` with its steady-state precharge) — the v0.115 filter. `BP2+LP4`: the same followed by the library's `LowPass4` at `f_hi` (two `init_lp` sections, Q 0.6180 and 1.6180 as `LowPass4::init_butter5_pairs()`, `_lib_biquad_lp`), the library's chain since v0.119 (default here since v1.107). Output negated (peaks up), as `_process_sample()` |
 | NORMALIZER | Amplitude tracker, **updated at every sample**: `SLEW` (hi/lo chase the max/min of the last WINDOW; up at most RISE × range per second, down with TAU), `INSTANT` (jump to any new extreme, decay with TAU), `MAXMIN` (max/min of the last WINDOW), `RMS` (EMA mean, semi-amplitude √2·RMS — the first spec draft). The window targets come from 100 ms block extrema, what the library could reuse from the PI blocks. HEADROOM multiplies the semi-amplitude (default 1.15, the spec's, since 2026-11-07). **`SLEW` with rise 0.5/s, window 1 s, τ 1 s is the estimator of spec §5.9 since 2026-11-07 (Alex, after watching the four in this window: INSTANT plateaus, MAXMIN jumps, RMS breathes — rationale §21.5 addendum)** |
 | MODE | `NO_NORM` (the filter output, no tracker), `NORM` (`(x − centre)/semi` clamped to ±1), `NORM_PI` (× A **then clamped to ±1, never to ±A** — 2026-11-07, spec §5.9; `A = floor + (1 − floor)·ln(PI/PI_lo)/ln(PI_hi/PI_lo)` clamped to [floor, 1], NaN PI → floor). Probe not APPLIED → output 0 and the tracker starts again (spec §5.9) |
-| HMI (`_HmiEmu`) | Decimation to RATE (25/50/62.5/100/125/250 Hz) by `HOLD` (the latest sample, as `CommTask`) or `AVG`; byte `128 + round(y·127)` in the NORM modes, `128 + round(ppg/1.6e-8)` in `NO_NORM` (CommTask's fixed scale), clipped 0–255; a circular sweep with a 6-point erase gap as `ui_LockPPGChart`; `points = rate × width_px / (px_per_mm × sweep_mm_s)`. The preview widget is exactly WIDTH × HEIGHT px (defaults = today's `ui_LockPPGChart`: 460 × 105, 5.2 px/mm, 17.3 mm/s → 128 points = 5.1 s at 25 Hz; at the clinical 25 mm/s it holds 88 points = 3.5 s) |
+| HMI (`_HmiEmu`) | Decimation to RATE (25/50/62.5/100/125/250 Hz) by `HOLD` (the latest sample, as `CommTask`) or `AVG`; byte `128 + round(y·127)` in the NORM modes, `128 + round(ppg/1.6e-8)` in `NO_NORM` (CommTask's fixed scale), clipped 0–255; a circular sweep with a 0.24 s erase gap (`rate × 0.24` points, 12 at 50 Hz) as `ui_LockPPGChart`; `points = rate × width_px / (px_per_mm × sweep_mm_s)`. The preview widget is exactly WIDTH × HEIGHT px (defaults since v1.108 = IncuNest's `ui_LockPPGChart` of 2026-11-10: 50 Hz, 460 × 105, 5.19 px/mm, 25 mm/s → 177 points = 3.5 s; until then 25 Hz, 17.3 mm/s → 128 points = 5.1 s) |
 
 **Plots:** top, the Python chain's `ppg_disp` (ppm, cyan) over the board's own (grey) with the
 tracker's hi/lo (magenta dashes, the same colour as ±A below: they are the same frame); its title shows the **mismatch** between the two, p99 of |Δ| over
@@ -2996,6 +2996,22 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.109 — 2026-11-10
+**PPG SIGNALS and PPG SIGNALS 2 showed a tenth of the window asked for.** Both converted the
+duration to samples with the serial-era `SPO2_RECEIVED_FS` = 50 Hz, while every sample is streamed
+since the UDP transport (500 Hz by default): N s showed N/10 s and the "60 s" buffer held 6 s. Now
+`_sig_window_samples()` uses the board's rate (`afe_fs()`, `sr` of the last `$CFG`), the buffers
+hold `SIG_MAX_S` × `SIG_MAX_FS` (60 s at the highest AFE rate, 1600 Hz) and the curves are
+downsampled at draw time only (`setDownsampling(auto, 'peak')` + `setClipToView`), never in the
+stored data. The X axis stays in samples. Not changed: the offline loader's 50 Hz assumption.
+
+### v1.108 — 2026-11-10
+**PPGDISPLAB follows IncuNest's chart of 2026-11-10.** `_HmiEmu` defaults: transport RATE 50 Hz
+(25 before), sweep 25 mm/s (17.3), 5.19 px/mm (5.2) → 177 points = 3.5 s over 460 px (128 points =
+5.1 s); the erase gap is a time, 0.24 s (`rate × 0.24` points: 12 at 50 Hz, 6 at 25 Hz as before).
+Source: IncuNest `Display_HMI/include/ui/ElementsCreation.h` (`LOCK_PPG_*`). `f_hi` tooltip: the
+−3 dB point of the whole chain and the consumer rule of lib v0.119.
 
 ### v1.107 — 2026-11-10
 **Lib v0.119 in PPGDISPLAB's chain.** `PPGDispCalc`'s default FILTER is `BP2+LP4` (§7.22): the
@@ -4158,6 +4174,7 @@ see `project_ot_domain_experiment_task.md`). See §5.2–§5.5 and §7.7–§7.1
   - Layout: each graph's 3-combo group sits to the **left** of its own plot (3 stacked rows),
     with a shared top bar (window duration `spin_window_s` + `PAUSE`/`CONTINUE` button — same
     controls and pattern as `PPGSignalsWindow`).
+  - The window duration is converted to samples with the board's AFE rate (`afe_fs()`), v1.109.
   - Each of the 9 slots keeps its own independent rolling buffer (up to `SIG_MAX_S` seconds,
     same sample-counter-diff accumulation as `PPGSignalsWindow`), cleared and re-seeded from
     current history whenever that slot's signal selection changes.
