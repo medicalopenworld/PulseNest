@@ -81,6 +81,10 @@ same commit.
 | `NSDF`, `MPM` | normalised square difference function; McLeod pitch method, minimises NSDF with a *clarity* metric (planned) |
 | `CMND`, `YIN` | cumulative mean normalized difference; YIN (not an acronym, de Cheveigné and Kawahara 2002) takes its minimum (planned). Grep `\bACF\b`: `setTIACF` matches by substring |
 | `HPS` | harmonic product spectrum, fundamental × 2nd × 3rd harmonic over the FFT; used by HR3 |
+| harmonic comb, teeth | the fundamental and its harmonics seen as equally spaced lines in the spectrum; each line is a tooth, their spacing is the pulse rate |
+| spectral autocorrelation, `rho[d]` | correlation of the HR3 spectrum with itself shifted d bins along the **frequency** axis; the lag of its first maximum is the spacing of the harmonic comb. Not the `ACF` of HR2, which runs along time. Offline only (`experiments/spectral_autocorrelation_20261112.py`), not in the library |
+| local contrast | dB by which a spectral bin stands out of the median of its ±8 neighbours, minus a margin, clipped; the sequence the spectral autocorrelation reads (`logc6` = margin 6 dB, cap 30 dB). Working label, offline only |
+| comb purity | fraction of the band's linear power inside the teeth n·f0 ± 3 bins, rescaled so that a flat spectrum gives 0; how much of what varies is the pulse. Working label, offline only |
 | double-counting | the dicrotic notch and the diastolic wave counted as a beat: pulse rate doubled, which can mask a bradycardia (60 counted as 120). The refractory period protects less the slower the rhythm |
 | missed beat | a beat not detected: fakes a bradycardia, but produces out-of-range intervals and is easier to catch |
 | dicrotic notch | notch on the falling edge from aortic valve closure; more marked and closer to the peak in neonates; what HR1's low-pass must attenuate |

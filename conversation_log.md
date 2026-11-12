@@ -29478,3 +29478,42 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   nota de memoria de la tarea, el informe y el script.
 - **Commit (Alex: "sí"):** lab v1.110 (pausa y duración en PPG Plots, sin probar con una placa
   transmitiendo), su spec, el script y el informe del estudio, y este log.
+
+### 2026-11-12 — Estructura pulsátil del PPG y autocorrelación del espectro de HR3
+
+- **Tres afirmaciones de Alex, confirmadas con matices:** HR depende del periodo de repetición
+  del pulso (no "latencia"); PI, de la amplitud de lo que se repite, pero `PI-METHOD-1` es un valor
+  eficaz y cuenta toda la energía de la banda; SpO2 no necesita repetición en la fórmula, pero la
+  variación tiene que ser arterial y la repetición es la única prueba práctica de ello.
+- **Idea de Alex:** autocorrelar el espectro (FFT) a lo largo de la frecuencia en vez del HPS.
+  Arte previo: autocorrelación espectral y cepstrum (voz); Datex-Ohmeda US 7,139,599. En potencia
+  lineal se reduce a `P1·P2` (B1 sin anclaje). Tras ver los espectrogramas de SUBJ08-11 (fundamental
+  + 3 armónicos sobre fondo oscuro), Alex pidió medir la versión logarítmica ("Sí, lánzala").
+- **Medida:** `experiments/spectral_autocorrelation_20261112.py`, informe
+  `docs/spectral_autocorrelation_20261112.md`; SUBJ08-11 y MS100, 23 940 ventanas, mismo banco,
+  referencias y puerta del 21-oct. Salidas en `captures/sessions/SPECTRAL_ACF_20261112/` (sin versionar).
+- **Resultados:** las tres variantes propuestas aciertan la frecuencia en limpio pero su ρ no
+  discrimina (la inclinación del espectro hace de pedestal). Con contraste local (mediana de ±8
+  bins, añadido tras la primera pasada de SUBJ10): 99,1 / 99,5 / 100 % de acierto en las ventanas
+  de consenso de SUBJ08/09/11 (HR3 actual 89,5 / 92,5 / 90,2); frecuencia disponible en 89 / 88 /
+  26 / 99 % de las ventanas (HR3 actual 69 / 71 / 7 / 88); MS100 100 % de 60 a 240 lpm y 0 % a 30.
+  ρ no sirve de puerta de SpO2; la pureza del peine (potencia lineal dentro de los dientes) iguala
+  la puerta actual y es continua. El HR3 actual publica f0/3 en el 4,5-6,4 % de sus ventanas
+  válidas (19 % en SUBJ10), sin referencia numérica en ellas.
+- **Otras preguntas:** qué es B1 (HPS de dos armónicos, 21-oct); cambiar de modelo a mitad de
+  sesión no pierde el contexto pero el primer turno relee todo sin caché; de dónde sale restar la
+  media antes de autocorrelar (correlación de Pearson, para que los valles cuenten; no viene de un
+  artículo de pulsioximetría, y en la medida lo que funcionó fue restar el fondo local).
+- **Tarea apuntada, sin empezar:** índice único de arte previo (patentes y artículos) por familia
+  de algoritmo de la librería, propuesto como `docs/algorithm_prior_art_index.md`. Llegó desde una
+  bifurcación de esta sesión; la estructura es su propuesta, sin revisar por Alex. No se ejecuta
+  hasta que él lo diga.
+- **Sesión de desarrollo:** Alex confirma que es esta. Script e informe copiados al repo;
+  `docs/nomenclature.md` con los términos nuevos (harmonic comb, spectral autocorrelation, local
+  contrast, comb purity).
+- **Sin decidir:** seguir o no con el detector de peine como candidato a HR3; estudiar la pureza
+  como índice de calidad continuo de SpO2 y PI; qué hacer con el f0/3 del HR3 actual. Nada cambiado
+  en la librería, su spec ni su rationale.
+- **Commit (a petición de Alex):** el script y el informe del estudio, `docs/nomenclature.md` y
+  este log. Fuera, sin versionar: `docs/pi_motion_prior_art_20261111.md` (de otra sesión; el
+  informe lo cita), los TOML de sesión, los PDF de terceros y `analysis/`. Sin push.
