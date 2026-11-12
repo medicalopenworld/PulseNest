@@ -29516,4 +29516,39 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   en la librería, su spec ni su rationale.
 - **Commit (a petición de Alex):** el script y el informe del estudio, `docs/nomenclature.md` y
   este log. Fuera, sin versionar: `docs/pi_motion_prior_art_20261111.md` (de otra sesión; el
-  informe lo cita), los TOML de sesión, los PDF de terceros y `analysis/`. Sin push.
+  informe lo cita; Alex: "Déjalo fuera"), los TOML de sesión, los PDF de terceros y `analysis/`.
+  Subido después a `origin/master` (0679f1b) cuando Alex lo pidió.
+- **Índice de arte previo, fase 1 (Alex: "Sí, ejecútala; enséñame antes la estructura"):**
+  `docs/algorithm_prior_art_index.md`, 85 filas consolidadas de los informes existentes, la spec
+  §13 y el rationale; ninguna cita se volvió a comprobar. Servirá de base a un plan de trabajo
+  posterior. Decisiones de estructura, con dos comentarios de Alex: los métodos espectrales
+  (producto armónico y autocorrelación del espectro) van en un solo apartado y el cepstrum en uno
+  propio aunque no se use; las decisiones sobre el valor se definen por la pregunta que responden
+  (estado del sensor, validación del pulso, índice de confianza) para que no se solapen. A raíz de
+  su tercer comentario (HR1/HR2/HR3 sirven a más estimadores que la frecuencia), el eje principal
+  es la familia de análisis y el documento abre con una matriz familia × uso ("Sí, así"). Una fila
+  por método y fuente. Fuera: estudios clínicos y lista de estudios de calibración.
+- **Sin decidir:** la regla de nombres que propuse (`hrN` solo para frecuencias y su calidad; los
+  demás productos, por lo que miden; sin renombrar campos ahora) y `HR4`, que Alex mencionó para
+  el cepstrum y la spec §5.5 reserva para un detector de picos por derivada. La spec no se tocó.
+  `docs/nomenclature.md`: analysis family, `AMDF`, `HR3_HPS`, `HR3_SAC`, cepstrum.
+- **Pendiente (fase 2 del índice):** cotejar la bibliografía de la spec §13 (Noll impreso como
+  1969 con el volumen 41 de JASA; de memoria es 1967), las citas hechas de memoria, los estados de
+  patente (Nellcor US 7,392,075 caduca el 2026-11-16) y las celdas vacías de la familia 2. El
+  índice y estos cambios de log y nomenclatura quedan sin commit.
+- **Decidido después (Alex: "Sí, aplícalo con HR1_DRV"):** el número de un nombre HR es el
+  dominio donde se busca el pulso (1 tiempo, 2 retardo, 3 frecuencia, 4 cepstrum) y el sufijo es
+  el método. El `HR4` de la spec §5.5 (detector de picos por derivada, que solo existía en dos
+  líneas de la spec) pasa a `HR1_DRV`, como "catalogado, no previsto" (el rationale §5.4 midió que
+  cambiar el detector no mejora nada); el 4 queda reservado para el cepstrum, sin nada previsto.
+  El HR1 actual sigue sin sufijo. Librería: spec §5.5 (regla, fila y la frase con `led1_aled1` y
+  `hr4_valid`, que estaba anticuada) y rationale §22 nuevo, con las opciones descartadas; sin
+  código, sin versión nueva, `check_version.py v0.119` sigue pasando; sin commit en su repo. Al
+  etiquetar la próxima versión, citar el cambio en la fila de §14. Sigue sin decidir si los
+  productos que no son una frecuencia conservan el prefijo `hrN_`.
+- **Commit en los dos repos (Alex: "Sí, en los dos"):** librería `1e83696` (spec §5.5 y
+  rationale §22; sin etiqueta y sin versión nueva: `master` queda un commit por delante de
+  v0.119, y PulseNest sigue fijado a v0.119, cuya spec etiquetada aún dice `HR4`); PulseNest:
+  `docs/algorithm_prior_art_index.md`, `docs/nomenclature.md` y este log. Sin push en ninguno
+  de los dos (no pedido). Sigue fuera `docs/pi_motion_prior_art_20261111.md`, que el índice cita
+  como fichero local.
