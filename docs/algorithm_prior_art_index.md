@@ -9,7 +9,9 @@ left it, and whether the citation was checked against its source.
 reports below already say, and no citation was re-checked while writing it. It is not a
 freedom-to-operate analysis: the patent status is the legal-status line the source report read on
 Google Patents on its own date, not a legal opinion. It does not repeat the analysis: every row
-points to the report and section that holds it.
+points to the report and section that holds it. The exceptions are §2.4 and §2.5, added on
+2026-11-13 from a short web search that asked whether the literature has families beyond ours, and
+the rows keyed H2, from a search on family 2 of 2026-11-12.
 
 **Entry criterion.** What the library uses, what we measured or discarded, and what Nellcor, Masimo,
 Philips and the other makers publish. Not exhaustive.
@@ -31,6 +33,8 @@ Sources consolidated, with the key used in the *Detail* column and the date each
 | PIA | `docs/pi_artifact_robustness_20261111.md` | 2026-11-11 |
 | SPEC | `incunest_afe4490_spec.md` in the library repository (§5 algorithms, §13 references) | — |
 | RAT | `incunest_afe4490_design_rationale.md` in the library repository | — |
+| WS | web search of 2026-11-13; summary in `conversation_log.md`, block of that date | 2026-11-13 |
+| H2 | search on family 2 (lag estimators) by an analysis session: one patent read in part, the rest search summaries; summary in `conversation_log.md`, block of 2026-11-13 | 2026-11-12 |
 
 Columns:
 
@@ -46,7 +50,9 @@ Columns:
   being a method of ours); *not evaluated*.
 - **Citation.** *read* = the source report states it read the primary source (its VERIFIED or
   [source] tag); *second-hand*; *claim* = maker marketing; *no record* = cited without any statement
-  that the source was read; *from memory* = cited in conversation, never looked up.
+  that the source was read; *from memory* = cited in conversation, never looked up. Two more values
+  for the rows of WS: *summary* = the page was opened and read through an automatic summary, not in
+  full; *search result* = known only from the title and snippet a search returned.
 
 ## 1. What each family of analysis can serve
 
@@ -57,18 +63,26 @@ and our own measurements show each family can feed.
 | Family | Pulse rate | PI | SpO2 | Confidence index | Pulse validation | Probe state |
 |---|---|---|---|---|---|---|
 | 1. Beats in time (`HR1`) | today | makers: peak to valley per accepted beat | makers: ratio per beat, beat-synchronous averaging | today (`hr1_sqi`); makers: pulse density | makers: per-pulse tests | makers: pulse density inside the probe-off rule |
-| 2. Periodicity in time lag (`HR2_*`) | today | none recorded | listed, not run (RAT §9, option 6) | today (`hr2_sqi`) | none recorded | none recorded |
+| 2. Periodicity in time lag (`HR2_*`) | today; one maker argues against it for an arrhythmic pulse (§2.2) | none recorded | listed, not run (RAT §9, option 6) | today (`hr2_sqi`) | none recorded | none recorded |
 | 3. Spectrum (`HR3_*`) | today | makers: amplitude of the harmonic peaks | measured: R on the harmonic bins; makers: Masimo FST and SST, Philips FAST | today (`hr3_sqi`); measured: comb purity | today: the SpO2 gate is `hr3_sqi > 0` | makers: share of the energy at the pulse rate and its harmonics |
-| 4. Cepstrum (`HR4`, reserved) | speech only | makers: locates the peaks for a spectral PI | title of one patent only | none recorded | title of one patent application only | none recorded |
+| 3, its cepstrum (`HR3_CEP`, not evaluated) | speech only | makers: locates the peaks for a spectral PI | title of one patent only | none recorded | title of one patent application only | none recorded |
+| 4. Oscillator locked to the signal (`HR4_*`, candidate) | makers and articles: the oscillator's frequency | none recorded | none recorded | one maker: a signal-to-noise estimate that steers the loop | none recorded | none recorded |
 
 *none recorded* means absent from our reports, not absent from the literature.
 
-Identifiers. Since 2026-11-12 the number in an HR name is the domain in which the pulse is searched
-and the suffix is the method (SPEC §5.5; RAT §22). `HR2_ACF` (implemented), `HR2_MPM` and `HR2_YIN`
-(planned) and `HR1_DRV` (a derivative-based peak detector, named `HR4` until that day; catalogued,
-not planned) are in SPEC §5.5, which reserves `HR4` for the cepstrum without planning any method.
-`HR2_AMDF`, `HR3_HPS` (today's HR3) and `HR3_SAC` (the spectral autocorrelation of SAC) are working
-labels of 2026-11-12, not library identifiers.
+Families 1 to 3 are implemented in the library. Family 4 is a candidate (Alex, 2026-11-13), taken
+from the web search of that day: nothing is planned or evaluated (§2.4). §2.5 lists the two other
+domains that search found in which a pulse is searched and a rate obtained (time-frequency plane,
+phase space); neither has a number.
+
+Identifiers. Since 2026-11-12 the number in an HR name is the domain of the analysis and the suffix
+is the method (SPEC §5.5; RAT §22). `HR2_ACF` (implemented), `HR2_MPM` and `HR2_YIN` (planned) and
+`HR1_DRV` (a derivative-based peak detector, named `HR4` until that day; catalogued, not planned)
+are in SPEC §5.5. The number 4 was reserved for the cepstrum from 2026-11-12 to 2026-11-13; since
+then the cepstrum is a method of family 3 and 4 names the locked oscillator (RAT §22.2). `HR1_THR`
+(today's HR1), `HR2_AMDF`, `HR3_HPS` (today's HR3), `HR3_SAC` (the spectral autocorrelation of SAC),
+`HR3_CEP` (a cepstral method) and `HR4_PLL` (a phase-locked loop) are working labels, not library
+identifiers.
 
 ## 2. Analyses of the pulsatile structure
 
@@ -94,6 +108,7 @@ Finds each beat. Products: beat times, amplitude and shape of each beat.
 | Amplitude ratio per beat by regression, then a moving average weighted by its beat-to-beat variation (NPi) | Nihon Kohden, SpO2 Monitoring Performance Digest 2023 §7.1 | M | — | SpO2 | not evaluated | read | PIM Nihon Kohden |
 | 4-beat or 8-beat exponential average; flag when a beat does not match the current pulse interval | Nonin OEM III module specification | M | — | AVG, VAL | not evaluated | read | PIM Nonin |
 | Median of beat ratios as the baseline that ICA, singular-spectrum and accelerometer cancellation do not beat at the wrist | Liang 2026, arXiv 2607.08001 | A | — | SpO2 | context: those methods are on the "not to do" list (MN §6) | read | MN §6, §9 |
+| Pattern matching of crests and valleys, mean period over 512 samples (about 9 s at 57 Hz): the rate path for an arrhythmic pulse without motion | Nellcor US 7,865,224 | P | expired 2021 | PR | not evaluated | read (first third of the text) | H2 |
 
 ### 2.2 Family 2 — periodicity in time lag
 
@@ -107,11 +122,16 @@ strength of the periodicity.
 | McLeod pitch method: normalised square difference function with a clarity metric | none cited | — | — | PR, Q | planned: `HR2_MPM` (SPEC §5.5) | no record | SPEC §5.5 |
 | Average magnitude difference function | none cited | — | — | PR | candidate named 2026-11-12 (`HR2_AMDF`), not evaluated | no record | — |
 | R from the autocorrelation at the pulse lag | own option (Alex, 2026-10-02) | — | — | SpO2 | listed, not run (RAT §9, option 6) | — | RAT §9 |
+| A maker's reason for not taking the rate from an autocorrelation: with an arrhythmic pulse it may show no strong local maximum | Nellcor US 7,865,224 | P | expired 2021 | PR | context for `HR2_ACF` and its planned variants | read (first third of the text) | H2 |
+
+H2 found no maker that takes the pulse rate from a lag estimator alone, and no comparison of YIN,
+MPM or AMDF on PPG, nor anything neonatal. It is one short search, not an absence in the literature.
 
 ### 2.3 Family 3 — spectrum
 
-Looks at how the energy is distributed over the fundamental and its harmonics without leaving the
-frequency axis. Products: the fundamental, the power of each harmonic, the power between them.
+Looks at how the energy is distributed over the fundamental and its harmonics. Products: the
+fundamental, the power of each harmonic, the power between them. All its methods start from the
+spectrum; the cepstrum, at the end of this section, transforms it once more.
 
 | What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
 |---|---|---|---|---|---|---|---|
@@ -123,6 +143,7 @@ frequency axis. Products: the fundamental, the power of each harmonic, the power
 | Sine and cosine projection at the pulse frequency, refined 4, 2, 1 BPM by minimum residual (SST) | Masimo US 6,850,787 family | P | expired 2022–2023 | SpO2, PR | not evaluated on its own (same family as the harmonic-bin R) | read | MN §1.2 |
 | Spectral "scrubber": ratio lines at the spectral peaks, largest = noise coupling, smallest = arterial | Masimo US 6,002,952 / 6,699,194 | P | expired 2017 | SpO2, VAL | not evaluated | read | MN §1.2 |
 | Harmonic comb filter with cardiac-gated averaged pulses as a second SpO2 path; typical harmonic energy 82.8 / 14.4 / 2.1 / 0.5 % | Nellcor US 5,853,364 (Table 1); US 7,302,284 / 7,315,753 / 7,336,983 | P | expired | SpO2, Q | not evaluated | read | MN §1.1 |
+| FFT every 10 s whose job is to find or correct the frequency of the adaptive comb filter of §2.4 | Nellcor US 7,865,224 | P | expired 2021 | PR | context: a finder beside a tracker | read (first third of the text) | H2 |
 | Heart-rate comb in front of the plain ratio matches the DST in 7 of 8 exercise stages at 1/28 of its computing time | Alkhoury 2021, J Clin Monit Comput 35:797 | A | — | SpO2 | context: evidence for measuring the harmonic-bin R (MN §0.3) | read | MN §0.3, §5 |
 | Narrow-band filtering around the fundamental found by frequency analysis (NPi) | Nihon Kohden, Performance Digest 2023 §7.1 | M | — | SpO2, VAL | not evaluated | read | PIM Nihon Kohden |
 | Wavelet SpO2: Lissajous slope of wavelet coefficients in 0.67–3.33 Hz, pulse-ridge amplitude ratio | CardioDigital / Nellcor US 8,255,029; 8,761,855; 8,898,037 | P | in force to 2028–2033 | SpO2 | not to implement (MN §6) | read | MN §1.1, §7 |
@@ -131,17 +152,92 @@ Our own measurements in this family, for reference: HPS with two harmonics and f
 preprocessing (`experiments/hr3_spectral_variants_20261021.py`, not adopted; RAT §17.1); local
 contrast and comb purity (SAC, not adopted).
 
-### 2.4 Family 4 — cepstrum
-
-Transforms the logarithm of the spectrum to a new domain, where the spacing of the harmonics shows
-as one peak. Boundary with family 3: the autocorrelation of the log spectrum and the power cepstrum
-are a Fourier pair; family 3 stays on the frequency axis, family 4 leaves it.
+*The cepstrum (`HR3_CEP`, working label).* Transforms the logarithm of the spectrum once more; the
+spacing of the harmonics shows as one peak on a time-like axis (quefrency). It was a family of its
+own, with the number 4, until 2026-11-13, and is a method of this family since (RAT §22.2): it
+starts from the same FFT, and the power cepstrum and the autocorrelation of the log spectrum are a
+Fourier pair. No cepstral method has been evaluated.
 
 | What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
 |---|---|---|---|---|---|---|---|
 | Cepstrum pitch determination | Noll, JASA 41(2) (SPEC prints 1969) | A | — | PR | not evaluated; cited as historical context for HR3 | no record | SPEC §13.3 |
 | Cepstral domain pulse oximetry: PI from the amplitudes of the fundamental and harmonic peaks that the cepstrum identifies, motion peaks ignored; also a time-domain PI per pulse | Datex-Ohmeda US 7,139,599 | P | expired | PI; SpO2 by its title only | not evaluated | read (PI part) | PIM GE; SAC |
 | Validating pulse oximetry signals in the potential presence of artifact | Datex-Ohmeda EP 1611847 A1 | P | withdrawn | VAL by its title only | not evaluated | read (title and PI part) | PIM GE |
+
+### 2.4 Family 4 — an oscillator locked to the signal (candidate)
+
+A model oscillator has its phase and frequency steered sample by sample until it follows the pulse;
+there is no window. The rate is the oscillator's frequency and the quality of the lock is a
+by-product. Found by the web search of 2026-11-13 (WS) and kept by Alex that day as the candidate
+for the number 4, which the cepstrum had until then. Nothing is planned or evaluated; `HR4_PLL` is a
+working label. Three things to keep in mind, argued in RAT §22.2: a locked oscillator follows a
+rate but does not find it, so it needs a starting frequency from family 2 or 3 and inherits an
+octave error of that seed; nothing is measured on our captures or on neonates; two of the patents
+below are listed in force and their claims were not read.
+
+| What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
+|---|---|---|---|---|---|---|---|
+| Phase-locked loop on the PPG: phase comparator, oscillator and a loop filter that switches between noise, following and normal modes from an autocorrelation signal-to-noise estimate and the phase error | Murata US 9,717,462 | P | listed active, anticipated expiry 2034-09-16 (Google Patents, 2026-11-13) | PR, Q | not evaluated | summary | WS |
+| Many digital phase-locked loops with different parameters run in parallel; those whose output correlates best with the samples are kept and their frequencies combined | Verily US 9,826,940 | P | listed active, adjusted expiry 2036-02-19 (Google Patents, 2026-11-13) | PR | not evaluated | summary (claims not read) | WS |
+| Adaptive lattice notch filter as a frequency estimator; sequential notches remove the cardiac component and its harmonics to reach the respiratory rate | Park & Lee 2014, BioMedical Engineering OnLine 13:170 | A | — | PR | not evaluated | search result | WS |
+| Adaptive comb filter in time on the derivative of the normalised IR: fundamental and four harmonics, the frequency fitted sample by sample so that the energy outside the comb is least. By the patent's own account a robust tracker of the rate but not a good finder; it can lock onto a harmonic or a sub-harmonic after minutes of motion, and at 30 bpm it needs 32-bit floating point to be stable | Nellcor US 7,865,224 (Baker & Yorkey); also US 6,836,679 (from memory, same family as US 5,853,364 of §2.3) | P | US 7,865,224 expired 2021; US 6,836,679 not recorded | PR | not evaluated | US 7,865,224: read (first third of the text); US 6,836,679: search result | H2; WS |
+
+### 2.5 Candidate domains outside the families (web search of 2026-11-13)
+
+Alex's question: is there any family besides time, time lag, spectrum and cepstrum? Eleven searches
+and seven sources opened; not exhaustive. Almost everything found is adult, wrist-worn and about
+motion; nothing is neonatal. The reference used for the taxonomy is the chapter *Photoplethysmography
+Signal Processing and Synthesis* (Mejía-Mejía, Allen, Budidha, El-Hajj, Kyriacou and Charlton, in
+*Photoplethysmography*, Elsevier 2021; preprint on peterhcharlton.github.io), which sorts PPG
+analysis into time domain, frequency domain (spectral and time-frequency), machine learning and
+nonlinear analysis in phase space. Outcome (Alex, 2026-11-13): of the three domains found that give
+a pulse rate, the oscillator locked to the signal became the candidate family 4 (§2.4); the two
+below were not taken up and have no number or identifier.
+
+**Two domains that give a pulse rate.**
+
+*Time-frequency plane.* The pulse is a ridge in a map of time against frequency; its height is the
+instantaneous rate. The chapter files it under the frequency domain, so whether it is a family of
+its own or a branch of family 3 is open.
+
+| What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
+|---|---|---|---|---|---|---|---|
+| Ridge of the pulse band in the wavelet scalogram, rescaled to an instantaneous frequency that gives the pulse rate | CardioDigital / Nellcor, "Method of analyzing and processing signals": US 8,255,029; US 9,192,336; US 10,182,764 | P | US 8,255,029: see §2.3; the others not recorded | PR | not to implement (same patents as the wavelet SpO2 row of §2.3) | search result | WS |
+| De-shape short-time Fourier transform plus synchrosqueezing (deppG): instantaneous heart and respiratory rate from one PPG channel, tested during intense activity | Cicone & Wu 2017, arXiv 1701.02072 | A | — | PR | not evaluated | summary (abstract) | WS |
+| Wavelet transform, Hilbert transform and empirical mode decomposition split the signal into components and a peak detector reads the cardiac one; judged very hard to embed for their processing cost | Mejía-Mejía et al. 2021, §3.6.1 | A | — | PR | context | read | WS |
+
+*Phase space.* The signal is plotted against delayed copies of itself and the shape of the
+trajectory (the attractor) is analysed; one loop is one pulse. It builds on a time lag, as family 2
+does, but reads a geometry instead of a similarity.
+
+| What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
+|---|---|---|---|---|---|---|---|
+| Time-delay embedding in 2 to 4 dimensions, delay from one sample to 1/m of the pulse duration; needs no identification of individual pulse waves; symmetric projection (SPAR) onto the plane orthogonal to (1,1,1) reduces baseline drift; density plot for morphology and variability | Mejía-Mejía et al. 2021, §3.5 | A | — | Q, PR | not evaluated | read | WS |
+| SPAR beat detector: a beat is a crossing of a Poincaré section by the projected attractor; delay = 1/N of the cycle length, itself the autocorrelation maximum between 0.4 and 1.5 s; on wrist PPG (WESAD, adults) its F1 is close to an existing detector at rest and lower under stress (about 63 % against 69 %) | Pettit, Charlton & Aston 2024, Front. Physiol. 15:1228439 | A | the paper declares a patent of one author on SPAR; number and status not read | PR, VAL | not evaluated; takes its delay from family 2 | summary | WS |
+
+**Two groups that give no rate.**
+
+| What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
+|---|---|---|---|---|---|---|---|
+| Statistics of the amplitudes with no time order: eight quality indices compared on 106 recordings of 60 s (perfusion, kurtosis, skewness, relative power, non-stationarity, zero crossing, entropy, agreement of two detectors); skewness best | Elgendi 2016, Bioengineering 3(4):21 | A | — | Q | not evaluated; Nellcor's derivative skewness is in §4.3 | search result (abstract) | WS |
+| Learned models as a class of their own: regression, trees, support vector machines, neural networks; used for blood pressure, atrial fibrillation and quality assessment | Mejía-Mejía et al. 2021, §3.4; review: Nie et al. 2024, arXiv 2401.12783 | A | — | Q, PR | not evaluated; no neonatal training set | chapter: read (§3.4.4); review: search result | WS |
+
+**Found, and not a family under the rule of the number (the domain of the analysis).**
+
+- *Subspace and parametric spectra* (MUSIC, ESPRIT, a harmonic model fitted by least squares):
+  another way to estimate the spectrum, so methods of family 3. Sources not read: an Analog Devices
+  article on MUSIC for wrist PPG; a 2021 Frontiers in Human Neuroscience paper with ESPRIT.
+- *Decomposition* (empirical mode decomposition, singular spectrum analysis, independent component
+  analysis): a stage before a family, which then reads the cardiac component. TROIKA (Zhang, Pi &
+  Liu 2015, IEEE TBME; search result) chains singular spectrum analysis, a sparse high-resolution
+  spectrum and spectral peak tracking. See also the last row of §2.1.
+- *Template of the beat* (dynamic time warping against an ideal period; Li & Clifford 2012,
+  second-hand): needs the beat segmented, so a product of family 1.
+- *Tracking across windows* (TROIKA's peak tracking with verification, Kalman and similar): a layer
+  above the families. It bears on how a family would form one output from several methods
+  (RAT §22.1). The makers' arbitrators between rate or SpO2 paths are in §4.3.
+- *Higher-order statistics and cyclostationarity:* no pulse-rate estimator on PPG was found; the
+  cyclostationary work found is on radar.
 
 ## 3. Methods of one output that do not rest on the pulse structure
 
@@ -195,7 +291,7 @@ curves with numbers is RC §3 and RCU; the chronological list of calibration stu
 
 ### 3.4 PI: definitions on a window and stabilisation
 
-Per-beat PI is in §2.1 and spectral PI in §2.4. Our own measurement of a median of 1 s sub-windows
+Per-beat PI is in §2.1 and spectral PI in §2.3 (cepstrum rows). Our own measurement of a median of 1 s sub-windows
 is PIA.
 
 | What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
@@ -248,6 +344,7 @@ and not adopted: comb purity (SAC) and the artefact ratio Q (PIA).
 | Signal IQ: one confidence marker per pulse, three tiers; alert when integrity, pulse density and harmonic ratio cross 0.3, 0.7 and 0.8 | Masimo US 6,606,511; US 6,684,090 / 7,024,233; Radical-7 manual | P, M | expired 2020 | Q | not evaluated; "SQI = confidence, PI = perfusion" (MN §5 item 2) | read | MN §1.2 |
 | Metrics: derivative skewness, red–IR uncorrelation, ratio-of-ratios variance over 3 s and 9 s, pulse amplitude against a 60 s history, period variability, harmonicity | Nellcor US 7,194,293; US 7,006,856; US 6,035,223 | P | expired | Q | not evaluated; candidates for the joint SQI analysis (MN §5 item 2) | read | MN §1.1 |
 | Several engines in parallel, each with a confidence, and an arbitrator that picks the output | Masimo US 5,632,272; US 6,157,850 claim 1; white paper LAB3213D | P, M | expired | Q | context: the architectural lesson (MN §0.5) | patents: read; white paper: claim | MN §1.2 |
+| Three pulse-rate paths (adaptive comb filter, FFT, pattern matching) and a "best rate" arbitrator that picks one by confidence: fall-off of the harmonic energy, probability of arrhythmia, share of motion, signal-to-noise of the comb, red–IR uncorrelation; a Kalman filter on the change of rate | Nellcor US 7,865,224 | P | expired 2021 | Q, PR | not evaluated; the library publishes `hr1`, `hr2` and `hr3` side by side, with no arbitrator | read (first third of the text) | H2 |
 | Two SpO2 paths and a confidence formula on variance and age; the more confident path wins | Nellcor US 5,853,364; US 7,302,284 / 7,315,753 / 7,336,983 | P | expired | Q | not evaluated | read | MN §1.1 |
 
 ## 5. Left out on purpose
@@ -280,4 +377,18 @@ and not adopted: comb purity (SAC) and the artefact ratio Q (PIA).
    it does for SpO2 and for the pulse rate has to be read.
 7. **Empty cells of §1.** Family 2 has no prior art recorded beyond the pulse rate and its own
    quality; whether the makers use the periodicity for PI, validation or probe state was not
-   searched.
+   searched. On the rate itself there is only H2, one short search.
+8. **§2.4 and §2.5 rest on one short search.** To read in full: the rows marked *summary* and
+   *search result*, the wavelet-ridge patents, the SPAR patent the 2024 paper declares, and the two
+   sources that could not be opened (the Analog Devices article on MUSIC; Hess's classification of
+   pitch determination algorithms, which the search summarised as time-domain against short-term
+   analysis). Nothing neonatal was found. For family 4, first the claims of the two patents listed
+   in force (Murata US 9,717,462, Verily US 9,826,940) and a citation for the plain phase-locked
+   loop as old art (RAT §22.2).
+9. **H2 is a partial reading.** Two thirds of Nellcor US 7,865,224 are unread, and its family
+   relation to US 5,853,364 and US 6,836,679 is not checked. Known only from search summaries and
+   left out of the tables: an application US 2022/0192529 (holder not verified) with rate engines in
+   time and in frequency chosen by a confidence score; how the Masimo US 6,002,952 family obtains
+   the pulse rate; the plausibility scoring of rate candidates in a Philips FAST application note;
+   Sicbaldi 2025 (Comput. Biol. Med.), a comparison of open-source rate algorithms on wrist PPG whose
+   text could not be opened.

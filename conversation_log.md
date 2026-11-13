@@ -29725,3 +29725,106 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
   ventana limpia o toda artefactada; < 1 si la ráfaga es mayoría), no un detector general. Sin campo
   en la librería. La tarjeta de sesión propuesta para medirlo se retira; el pendiente vive en la
   memoria y en el diccionario.
+
+### 2026-11-13 — Traspaso de arte previo de la familia HR2 (MPM/YIN) y borrador del plan de trabajo
+
+- **Borrador del plan (en el chat, sin fichero):** fase 0 banco común sobre las capturas guardadas;
+  1 familia HR3 (fallos de `HR3_SAC`, f0/3 de `HR3_HPS`, cepstrum, reglas de combinación, pureza del
+  peine); 2 familia HR2 (`HR2_MPM`, `HR2_YIN`, `HR2_AMDF` frente a `HR2_ACF`); 3 familia HR1 (lo que
+  solo da el latido: PI por latido, validación del pulso); 4 entre familias (análisis conjunto de
+  los índices de calidad, puerta de pulso con nombre propio, frecuencia mostrada); 5 librería;
+  6 etiquetas en `pulsenest_lab.py` (opcional). Tabla con el cepstrum como método de HR3
+  (`HR3_CEP`, etiqueta mía, no acordada). **Sin decidir por Alex:** si el cepstrum pasa a HR3.
+- **Traspaso de una bifurcación de análisis (sesión `local_845fbe8a-5a8c-4159-91ee-fbf66d3cf17d`),
+  PROPUESTA, sin aplicar:** búsqueda de arte previo para la familia HR2 hecha el 12-nov; detalle al
+  final de la nota de memoria `project_hr4_hr5_mpm_yin_task`. Leído en la fuente solo el primer
+  tercio de Nellcor US 7,865,224 (Baker y Yorkey, caducada 2021): la frecuencia de pulso no sale de
+  una autocorrelación, sino de un filtro peine adaptativo en el tiempo (fundamental + 4 armónicos,
+  ajusta la frecuencia muestra a muestra; «a robust pulse rate tracker, but not a good pulse rate
+  finder»), corregido por una FFT cada 10 s y por emparejamiento de crestas y valles, con un árbitro
+  por confianza y un filtro de Kalman. Masimo y Philips: resúmenes de búsqueda, sin leer la fuente.
+  Ninguna comparativa de YIN, MPM o AMDF sobre PPG encontrada, ni nada en neonatos. Lectura de la
+  bifurcación (interpretación suya): frente a los fabricantes falta un árbitro entre estimadores y
+  memoria temporal, más que otro estimador de retardo; candidato nuevo: el peine adaptativo.
+- **Cotejado por la sesión de desarrollo:** MPM y YIN solo aparecen en comentarios de la librería
+  (`incunest_afe4490.h` 1622, 1626 y 1809–1810; `test/test_hr2/test_hr2.cpp` 132) y en las filas
+  «Planned» de la spec §5.5. US 7,865,224 no está en `docs/algorithm_prior_art_index.md`; el mismo
+  mecanismo figura en su §2.5 («oscillator locked to the signal») con US 6,836,679 como resultado de
+  búsqueda. La bifurcación lo propone como método de HR2; por lo que describe es un seguidor (lo que
+  aporta es memoria entre muestras, no un dominio nuevo). Patente no leída por esta sesión.
+- **Cómo tocaría al borrador (propuesto, sin decidir):** (1) la fase 2 cambia de pregunta: de
+  «¿mejora MPM, YIN o AMDF a ACF?» a «¿qué cubre HR2 que no cubra el peine espectral de HR3?» (el
+  peine falla a 30 lpm); (2) la fase 4 gana peso y recibe dos piezas con arte previo: árbitro entre
+  familias y memoria entre ventanas.
+- **Estado del repo, comprobado:** las filas de `docs/nomenclature.md` (`HR1_THR`, time-frequency
+  ridge, PLL, SPAR) y los bloques del log que esta sesión tenía sin commit entraron en el repo con
+  el commit b80b467 de la versión v0.120 (añadió los dos ficheros enteros). El índice
+  (`docs/algorithm_prior_art_index.md`, §2.5) sigue sin commit, así que la nomenclatura publicada
+  cita un §2.5 que el repo aún no tiene. La fila v0.120 de la spec §14 no cita los dos commits de
+  texto de §5.5 (`1e83696`, `f706ef6`), que salieron con esa etiqueta; la etiqueta no se mueve:
+  citarlos en la fila de la próxima versión.
+- **Segundo traspaso del día (sesión `local_364c9057-2e03-4337-be29-d933d6ee9be8`), PROPUESTA, sin
+  aplicar:** palabras de Alex en esa bifurcación, citadas por ella y no escritas en esta sesión:
+  «Creo que sólo me gusta la segunda familia (PLL) como candidato a un HR4» y «hemos reubicado
+  cepstrum en HR3; ahora se llama HR3_CEP». Detalle propuesto por la bifurcación, no acordado por
+  Alex: dominio 4 = fase de un oscilador enganchado a la señal (trabaja muestra a muestra; no es la
+  capa de seguimiento entre ventanas); etiqueta `HR4_PLL`, con sitio para `HR4_ANF` (ranura
+  adaptativa) y `HR4_KF` (Kalman); la familia publicaría `hr4` y `hr4_sqi` (indicador de enganche);
+  estado «candidato, no previsto». Matices que pide dejar en el rationale: (1) no es independiente:
+  necesita una frecuencia de arranque de HR2 o HR3 y hereda su error de octava; complementa, no
+  desempata; (2) sin medir en nuestras capturas ni en neonatos; frecuencia que varía rápido y PI
+  bajo son el caso difícil, y hace falta un detector de enganche; (3) patentes en vigor según el
+  índice §2.5 (Murata US 9,717,462, Verily US 9,826,940), reivindicaciones sin leer; (4) `HR4` ha
+  tenido tres significados (detector por derivada hasta 12-nov, cepstrum reservado hasta 13-nov,
+  este). Experimento sugerido por la bifurcación, no pedido por Alex: PLL fuera de línea sembrado
+  con HR3 sobre `captures/v04_corpus/`.
+- **Cotejado por la sesión de desarrollo:** ninguna sesión ha escrito `HR3_CEP` ni `HR4_PLL` en los
+  repos; la spec §5.5 de la librería sigue diciendo «`HR4` cepstrum (reserved)». Observación propia:
+  los dos traspasos del día convergen: el peine adaptativo de Nellcor (US 7,865,224) es un modelo
+  enganchado a la señal, es decir, un método del candidato HR4 y no de HR2; su frase «tracker, not
+  finder» respalda el matiz (1) con una fuente leída. Recomendación propia: escribir solo
+  `HR4_PLL` como etiqueta de trabajo, sin `HR4_ANF`, `HR4_KF` ni campos `hr4`/`hr4_sqi` hasta que
+  hagan falta. **Pendiente de la confirmación de Alex en esta sesión.**
+- **Decisión (Alex, «Sí, aplícalo»):** el cepstrum pasa a ser un método de la familia 3 (etiqueta
+  de trabajo `HR3_CEP`) y el número 4 nombra una familia candidata, el oscilador enganchado a la
+  señal (`HR4_PLL`); ninguno previsto ni evaluado. Aplicado con la recomendación de esta sesión:
+  sin `HR4_ANF`, `HR4_KF` ni campos `hr4`/`hr4_sqi`. Cambios, solo texto y **sin commit**:
+  - Librería: spec §5.5 (frase de dominios; el número se define ahora como «the domain of the
+    analysis, that is, what its methods start from», redacción de esta sesión, porque el pico
+    cepstral se lee en un eje de tiempo y con «donde se busca el pulso» caería más cerca de HR2);
+    rationale §22.2 nuevo (razones de Alex y una tercera, límites del argumento de la octava, por
+    qué el oscilador y no los otros dos candidatos, los cuatro matices, los tres significados de
+    `HR4` con fecha, lo que no se escribe a propósito) y una nota de reversión en §22 y §22.1.
+    Tercer commit de texto pendiente de citar en la fila de §14 de la próxima versión.
+  - PulseNest: `docs/algorithm_prior_art_index.md` (matriz de §1; el cepstrum al final de §2.3;
+    §2.4 = familia 4 candidata con las cuatro filas del oscilador movidas tal cual desde §2.5;
+    §2.5 se queda con el plano tiempo-frecuencia y el espacio de fases; §6 punto 8);
+    `docs/nomenclature.md` (familia de análisis, fila nueva `HR4` con sus tres significados,
+    etiquetas de trabajo, cepstrum, PLL).
+  - No aplicado: el traspaso de HR2 (fila de Nellcor US 7,865,224 y los dos cambios del borrador
+    del plan) sigue pendiente de Alex; el rationale §22.2 solo cita la frase de esa patente como
+    apoyo del matiz 1, con su nivel de lectura.
+- **Traspaso de HR2 aplicado (Alex, «Sí, aplícalo»), sin commit:**
+  - Índice: clave de fuente nueva `H2` (búsqueda del 12-nov de una sesión de análisis; una patente
+    leída en parte, el resto resúmenes). Nellcor US 7,865,224 repartida por familias, como pide la
+    regla «una fila por método y fuente»: emparejamiento de crestas y valles (§2.1); la razón del
+    fabricante para no sacar la frecuencia de una autocorrelación (§2.2); la FFT cada 10 s que
+    encuentra o corrige (§2.3); el peine adaptativo, fusionado con la fila de US 6,836,679 (§2.4,
+    familia 4 candidata); el árbitro «best rate» y el Kalman (§4.3). Frase nueva en §2.2: no se
+    halló fabricante que saque la frecuencia de un estimador de retardo suelto ni comparativa de
+    YIN, MPM o AMDF sobre PPG. §6: punto 9 nuevo con lo que queda sin leer o sin verificar (dos
+    tercios de la patente, US 2022/0192529, la frecuencia en la familia Masimo 6,002,952, la
+    puntuación de candidatos de Philips FAST, Sicbaldi 2025); nada de eso entra en las tablas.
+  - Nomenclatura: fila `arbitrator`. El índice ya tenía desde el 12-nov la fila de Masimo («several
+    engines … and an arbitrator», «the architectural lesson», informe del 27-oct): la lectura de la
+    bifurcación coincide con una lección ya anotada para SpO2; la patente de Nellcor la extiende a
+    la frecuencia de pulso.
+  - Borrador del plan (en el chat, sin fichero): la fase 2 (HR2) pasa a preguntar qué cubre HR2
+    que no cubra el peine espectral de HR3 (30 lpm, pulso irregular) y se queda en una pasada del
+    banco; la fase 4 (entre familias) pasa a ser la de diseño principal, con el árbitro y la
+    memoria entre ventanas; el orden no cambia. La tabla de familias incluye HR4 (candidata, sin
+    experimento pedido).
+- **Commit en los dos repos (Alex), sin push:** librería `adbc4cb` (spec §5.5, rationale §22.2;
+  tercer commit de texto por delante de la etiqueta v0.120, con `1e83696` y `f706ef6` ya dentro de
+  ella sin citar en §14); PulseNest: índice (incluido el §2.5 que estaba sin commit desde la
+  búsqueda), nomenclatura y este log.
