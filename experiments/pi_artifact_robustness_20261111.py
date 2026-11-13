@@ -74,9 +74,14 @@ Q_THRESHOLDS = (1.2, 1.5, 2.0)
 MEDIAN_N = (5, 7, 9, 11, 12)                # medians of N x 1 s chunks besides the six of PI_rob.
                                             # Odd N tolerates (N-1)/2 s of artefact; an even N
                                             # tolerates N/2 - 1, the same as N - 1 (Alex, 2026-11-11)
-VARIANTS = tuple(f"median of {n} x 1 s" for n in MEDIAN_N) + ("q25 of 6 x 1 s", "2nd lowest of 6 x 1 s")
+# PI-METHOD-2 as shipped in lib v0.120 (2026-11-13): 7 s window, median of the 61 overlapping 1 s
+# sub-windows (one per 100 ms block), DC over the same 7 s. Replica of _pi_update_sample(); with
+# --lib2-replay the library's own PI from that replay is compared with it (section A2).
+M2_WIN_BLOCKS = 70
+M2_KEY = "PI-METHOD-2 (7 s, 61 x 1 s)"
+VARIANTS = tuple(f"median of {n} x 1 s" for n in MEDIAN_N) + ("q25 of 6 x 1 s", "2nd lowest of 6 x 1 s", M2_KEY)
 G_ORDER = ("box", "median of 5 x 1 s", "rob", "median of 7 x 1 s", "median of 9 x 1 s",
-           "median of 11 x 1 s", "median of 12 x 1 s", "q25 of 6 x 1 s", "2nd lowest of 6 x 1 s")
+           "median of 11 x 1 s", "median of 12 x 1 s", "q25 of 6 x 1 s", "2nd lowest of 6 x 1 s", M2_KEY)
 
 
 def bp_coeffs(f_low, f_high, fs):
@@ -90,16 +95,22 @@ def bp_coeffs(f_low, f_high, fs):
 B_BP, A_BP = bp_coeffs(0.5, 15.0, FS)
 
 
-def load(session_dir, replay):
+def load(session_dir, replay, lib2_replay=None):
     board, _ = B.parse_board_session(session_dir, replay=replay)
-    ot, sqi3 = [], []
+    ot, sqi3, pi2 = [], [], []
     for path in sorted(glob.glob(os.path.join(session_dir, "*_p[0-9][0-9].csv"))):
         rp = os.path.join(session_dir, "derived", replay, os.path.basename(path)[:-4] + "_replay.csv")
         with open(rp, encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
                 ot.append(float(row["OT_LED1"])); sqi3.append(float(row["HR3_SQI"]))
+        if lib2_replay:   # the PI column of a replay made with lib >= 0.120 (PI-METHOD-2)
+            rp2 = os.path.join(session_dir, "derived", lib2_replay, os.path.basename(path)[:-4] + "_replay.csv")
+            with open(rp2, encoding="utf-8", newline="") as f:
+                for row in csv.DictReader(f):
+                    pi2.append(float(row["PI"]))
     d = {"t": board["t"], "ps": board["ps"], "r": board["r"], "rc": board["r_method2_reg_corr"],
-         "pi": board["pi"], "hr3": board["hr"], "ot": np.array(ot), "hr3_sqi": np.array(sqi3)}
+         "pi": board["pi"], "hr3": board["hr"], "ot": np.array(ot), "hr3_sqi": np.array(sqi3),
+         "pi2": np.array(pi2) if pi2 else None}
     if len(d["ot"]) != len(d["t"]):
         raise ValueError(f"{session_dir}: OT rows {len(d['ot'])} != {len(d['t'])}")
     return d
@@ -151,6 +162,15 @@ def pi_blocks(d):
             vn = PI_K * np.sqrt(np.median(subs_n, axis=0)) / dcm * 100.0
             vn[j < need] = np.nan
             var[f"median of {n_ch} x 1 s"].append(vn)
+        # PI-METHOD-2 as shipped: window of M2_WIN_BLOCKS, DC over that window, median of the
+        # overlapping 1 s sub-windows ending at every block of the window. NaN until 7 s.
+        j2 = np.minimum(np.maximum(j, M2_WIN_BLOCKS), nb)
+        dcm2 = (cdc[j2] - cdc[j2 - M2_WIN_BLOCKS]) / (M2_WIN_BLOCKS * BLOCK)
+        subs2 = np.stack([(cac[j2 - k] - cac[j2 - k - SUB_BLOCKS]) / (SUB_BLOCKS * BLOCK)
+                          for k in range(M2_WIN_BLOCKS - SUB_BLOCKS + 1)])
+        v2 = PI_K * np.sqrt(np.median(subs2, axis=0)) / dcm2 * 100.0
+        v2[j < M2_WIN_BLOCKS] = np.nan
+        var[M2_KEY].append(v2)
         seg.append(np.full(len(j), s // 2))
     cat = lambda v: np.concatenate(v) if v else np.array([])
     out = {"i": cat(idx).astype(int), "box": cat(box), "rob": cat(rob), "e1": cat(e1), "seg": cat(seg)}
@@ -198,6 +218,8 @@ def burst_response(b, k0, key):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--replay", default="replay_lib0.108_inputot")
+    ap.add_argument("--lib2-replay", default=None,
+                    help="a replay made with lib >= 0.120: its PI column is PI-METHOD-2, compared in A2")
     ap.add_argument("--out", default=os.path.join(B.SESSIONS_DIR, "PI_ROBUST_ANALYSIS_20261111"))
     args = ap.parse_args(argv)
     os.makedirs(args.out, exist_ok=True)
@@ -209,7 +231,7 @@ def main(argv=None):
     per = {}
     win_rows = []
     for subject in SUBJECTS:
-        acc = {k: [] for k in ("box", "rob", "lib", "hr3ok", "stab_box", "stab_rob",
+        acc = {k: [] for k in ("box", "rob", "lib", "lib2", "hr3ok", "stab_box", "stab_rob",
                                "pk_box", "pk_rob", "du_box", "du_rob")}
         for vk in VARIANTS:
             for pre in ("", "stab_", "pk_", "du_"):
@@ -218,13 +240,16 @@ def main(argv=None):
         for sd in sorted(glob.glob(os.path.join(B.SESSIONS_DIR, subject, f"{subject}_*_20*"))):
             if not os.path.isdir(os.path.join(sd, "derived", args.replay)):
                 continue
-            d = load(sd, args.replay)
+            if args.lib2_replay and not os.path.isdir(os.path.join(sd, "derived", args.lib2_replay)):
+                continue
+            d = load(sd, args.replay, args.lib2_replay)
             b = pi_blocks(d)
             if not len(b["i"]):
                 continue
             n_blocks += len(b["i"])
             acc["box"].append(b["box"]); acc["rob"].append(b["rob"])
             acc["lib"].append(d["pi"][b["i"]]); acc["hr3ok"].append(d["hr3_sqi"][b["i"]] > 0)
+            acc["lib2"].append(d["pi2"][b["i"]] if d["pi2"] is not None else np.full(len(b["i"]), np.nan))
             for vk in VARIANTS:
                 acc[vk].append(b[vk])
             for s in np.unique(b["seg"]):
@@ -290,7 +315,18 @@ def main(argv=None):
     for sj, a in per.items():
         ok = np.isfinite(a["lib"]) & (a["lib"] > 0)
         e = np.abs(a["box"][ok] / a["lib"][ok] - 1.0)
-        P(f"{sj}   {ok.sum():7d}   {q(e, 50) * 100:8.3f} %              {q(e, 95) * 100:6.3f} %")
+        P(f"{sj}   {ok.sum():7d}   {q(e, 50) * 100:8.3f} %              {q(e, 95) * 100:6.3f} %"
+          f"   blocks > 1 %: {(e > 0.01).sum()}, > 5 %: {(e > 0.05).sum()}")
+
+    if args.lib2_replay:
+        P()
+        P(f"A2. Replica of PI-METHOD-2 against the library's PI ({args.lib2_replay}), per block")
+        P("subject   blocks   median |replica/lib - 1|   p95     max      (outliers: HGAC RF steps and stream gaps, as in A)")
+        for sj, a in per.items():
+            ok = np.isfinite(a["lib2"]) & (a["lib2"] > 0) & np.isfinite(a[M2_KEY])
+            e = np.abs(a[M2_KEY][ok] / a["lib2"][ok] - 1.0)
+            P(f"{sj}   {ok.sum():7d}   {q(e, 50) * 100:8.3f} %              {q(e, 95) * 100:6.3f} %  {e.max() * 100 if len(e) else math.nan:6.3f} %"
+              f"   blocks > 1 %: {(e > 0.01).sum()}, > 5 %: {(e > 0.05).sum()}")
 
     P()
     P("B. Level and stability (all applied time with a full window)")
@@ -367,6 +403,8 @@ def main(argv=None):
             tol = "-"
             if name.startswith("median of"):
                 n_ch = int(name.split()[2]); tol = f"{(n_ch - 1) // 2} s"
+            elif vk == M2_KEY:
+                tol = "2 s"
             r = a[vk] / a["box"]
             P(f"{sj}   {name:24s}  {tol:>4s}        {q(r[a['hr3ok']], 50):5.3f}"
               f"                 {q(a['stab_' + vk], 50) * 100:5.1f} % ({q(a['stab_' + vk], 90) * 100:5.1f} %)"

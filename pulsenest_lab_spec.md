@@ -1267,10 +1267,15 @@ Chain, per applied sample, everything at the AFE rate:
   (`alg_window_block_s`, lib v0.103) and the block sums over a sliding window of `spo2_window_s` seconds — circular buffers
   with fixed-cost running totals (add the block that enters, subtract the one that leaves), rebuilt at every wrap. R = Σdx·dy / Σdx², r = Σdx·dy / √(Σdx²·Σdy²).
 - **PI**: its own band-pass 0.5–15 Hz; AC² and the raw OT (DC) summed at the full rate over each
-  100 ms block, the block sums over a sliding window of `pi_window_s` seconds;
-  PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100 with N the samples in the window, peak-to-peak units. Run **before** SpO2 on every sample, as `_process_sample()` does, because
+  100 ms block, the block sums over a sliding window of `pi_window_s` seconds (7 s since lib
+  v0.120). **PI-METHOD-2 (lib v0.120, lab v1.111):** AC²_med = the median of the mean AC² of the
+  window's overlapping 1 s sub-windows (`PI_SUB_BLOCKS` = 10 blocks, one sub-window per block, 61
+  in 7 s), read off the block buffer in chronological order with a running sum, as
+  `_pi_update_sample()` does; PI = 2√2·√(AC²_med) / (ΣDC/N) × 100 with N the samples in the
+  window, peak-to-peak units. The whole-window number of PI-METHOD-1, PI_box = 2√2·√(ΣAC²/N) /
+  (ΣDC/N) × 100, is kept (`_pi_box`) for the 20 % bound only. Run **before** SpO2 on every sample, as `_process_sample()` does, because
   SpO2's SQI reads the PI of the same sample.
-- **SpO2**: a − b·R, published when r ≥ `r_method2_reg_corr_min`, PI is known and ≤ 20 % and
+- **SpO2**: a − b·R, published when r ≥ `r_method2_reg_corr_min`, PI_box is known and ≤ 20 % and
   70 ≤ SpO2 ≤ 110 (clamped to 100; `SPO2_CLAMP_MARGIN` 10, lib v0.107 — 3 until v0.106); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise `NaN`,
   SQI 0 — R and r stay reported so the reason is visible.
 
@@ -1283,7 +1288,7 @@ blocks with PI's AC² taken once per block; v1.87 follows lib v0.103.)
 
 **Parameters** (`SpO2TestCalc.PARAMS`, each with its library default as a class attribute):
 `spo2_r_curve_a`/`spo2_r_curve_b` (123.98 / 39.13, R-CURVE-STS0163-HOSPNAV-20261004),
-`dc_ema_tau_s` (2.0), `spo2_window_s` (6.0), `pi_window_s` (6.0), `r_method2_reg_corr_min` (0.8). They are
+`dc_ema_tau_s` (2.0), `spo2_window_s` (6.0), `pi_window_s` (7.0 since lib v0.120; 6.0 before), `r_method2_reg_corr_min` (0.8). They are
 the ones the library exposes at runtime through `$SET`; the window lengths are clamped to 2–12 s
 as the library's setters do. Everything else (band-pass corners, decimation target, SQI
 thresholds, `spo2_pi_max`, the numerical guards) is a constant here as in the library.
@@ -2492,7 +2497,7 @@ Purpose: view and change RSQM / HGAC / SpO2 library parameters in real time via 
 - R method (`spo2_r_method`) — 1 = R-METHOD-1 (RMS ratio), 2 = R-METHOD-2 (regression on derivatives, default); the switch is immediate, and `$CFG` (re-emitted by the firmware on this `$SET`) shows `spo2_r_method_id` and whether the curve in force was fitted with it
 - r gate (`spo2_r_method2_reg_corr_min`) — R-METHOD-2 only: SpO2 withheld while the regression's correlation r is below it (default 0.8, provisional; −1 = off)
 - SpO2 window (`spo2_window_s`) [s] — the SpO2 averaging time, a true sliding window (lib v0.102); 2–12 s, default 6; the window is the warm-up and a change empties it
-- PI window (`pi_window_s`) [s] — PI's averaging time, independent of SpO2's; 2–12 s, default 6
+- PI window (`pi_window_s`) [s] — PI's averaging time, independent of SpO2's; 2–12 s, default 7 (lib v0.120; 6 before)
 
 **Contents (PPG DISPLAY group, v1.105 / fw 0.30 / lib v0.117):** — see incunest_afe4490 §5.9
 - mode (`ppgdisp_mode`) — combo NO_NORM / NORM / NORM_PI (index = library enum; the `$SET` carries the lower-case name). NO_NORM: the band-passed OT as before fw 0.30; NORM: [−1, 1] at constant amplitude (the ISO "normalized" lab mode); NORM_PI: NORM × A(PI), clamp at ±1 (the product mode). Changing it re-fixes the Y axis of the PPG plots
@@ -3003,6 +3008,12 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.111 — 2026-11-13
+**The SpO2/PI mirror follows lib v0.120's PI-METHOD-2 (§7.17).** `SpO2TestCalc`'s PI is the
+median of the overlapping 1 s sub-windows of the window instead of the window RMS, the default
+`pi_window_s` is 7 s, and the 20 % bound reads the whole-window PI (`_pi_box`) as the library's
+`spo2_pi_max` does. LIB CONFIG's `pi_window_s` tooltip says so. No window or key is added.
 
 ### v1.110 — 2026-11-11
 **PPG Plots: window duration and PAUSE, as PPG SIGNALS (§7.1).** The window drew its 11 curves

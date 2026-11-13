@@ -134,3 +134,16 @@ Reading:
   for having one more second.
 - No N removes the excursion: even 11–12 leave ×1.2–1.6, because part of these events is longer
   than 5 s or is a real change of amplitude after the movement.
+
+## Addendum: decision and what ships (2026-11-13)
+
+Alex chose **PI-METHOD-2 = median of the overlapping 1 s sub-windows of a 7 s window, one
+sub-window per 100 ms block (61 of them)**, lib v0.120. The whole-window PI is kept internally for
+`spo2_pi_max`. Why 1 s and not 2 s, why 7 s and not 9–12 s, why a step of one block and not 1 s —
+with the simulated bias of the median against the pulse rate (`experiments/pi_subwindow_median_bias_20261113.py`)
+and the prior art of `docs/pi_motion_prior_art_20261111.md` — is in the library's
+`incunest_afe4490_design_rationale.md` §23. The row of this report nearest to what ships is
+"median of 7 × 1 s" (non-overlapping, DC at 6 s); the shipped variant was added to section G of
+the script (`PI-METHOD-2 (7 s, 61 x 1 s)`) and the library's own output on the corpus is checked
+against it in section A2 (`--lib2-replay replay_lib0.120_inputot`); results in the conversation log
+of 2026-11-13.

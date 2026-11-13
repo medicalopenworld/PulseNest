@@ -29592,3 +29592,112 @@ resumido a Alex aquí y aplicado con su "Sí, aplícalo".
 - **Commit en los dos repos (Alex: "Sí, en los dos"):** librería `f706ef6` (spec §5.5 y
   rationale §22.1; `master` queda dos commits por delante de la etiqueta v0.119, sin etiqueta ni
   versión nueva); PulseNest: `docs/nomenclature.md` y este log. Sin push (no pedido).
+- **Subidos los dos (Alex: "Sí, sube los dos"):** librería `1e83696..f706ef6` y PulseNest
+  `2b88d8d..481cf6b`, ambos a `origin/master`. La etiqueta v0.119 no se ha movido.
+
+### 2026-11-13 — ¿Hay más familias de análisis que las cuatro? Búsqueda en internet
+
+Encargo de Alex al cerrar el día: buscar si existe alguna familia más aparte de tiempo, retardo,
+espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún repo salvo este log.
+
+- **Tres dominios más donde la literatura busca el pulso y obtiene una frecuencia:**
+  (a) plano tiempo-frecuencia (cresta del escalograma wavelet, synchrosqueezing): patentes de
+  Addison/Nellcor que ya están en el índice bajo la familia 3; Cicone y Wu 2017 (deppG);
+  (b) oscilador que se engancha a la señal (lazo de enganche de fase, filtro de ranura adaptativo,
+  Kalman): Murata US 9,717,462 y Verily US 9,826,940, ambas en vigor según Google Patents; Nellcor
+  US 6,836,679; (c) espacio de fases por coordenadas de retardo (reconstrucción del atractor,
+  SPAR): Mejía-Mejía et al. 2021 §3.5; Pettit, Charlton y Aston 2024, con patente del autor.
+- **Dos grupos que no dan frecuencia:** estadística de amplitudes sin orden temporal (asimetría,
+  curtosis, entropía; Elgendi 2016: la asimetría fue el mejor de ocho índices de calidad) y
+  modelos aprendidos (aprendizaje automático; Mejía-Mejía 2021 §3.4).
+- **Lo que parece familia y no lo es con nuestra regla:** estimadores paramétricos y de subespacio
+  del espectro (MUSIC, ESPRIT, modelo armónico): métodos de la familia 3; descomposición (EMD,
+  análisis de espectro singular, ICA): etapa previa; ajuste a una plantilla del latido (DTW): un
+  producto de la familia 1. Estadísticos de orden superior y cicloestacionariedad: no encontré
+  ningún estimador de frecuencia de pulso sobre PPG.
+- **Límites:** búsqueda no exhaustiva; casi todo es adulto con pulsera y movimiento, nada
+  neonatal; el artículo de MUSIC y la clasificación de Hess no se pudieron leer (solo resumen del
+  buscador); estados de patente según Google Patents.
+- **Sin decidir:** si alguna entra como familia 5-7 y si se añaden al índice de arte previo.
+- **Añadidos al índice (Alex: "Sí, añádelos"):** `docs/algorithm_prior_art_index.md` §2.5
+  "Candidate domains outside the four families": nueve filas en los tres dominios, dos en los
+  grupos sin frecuencia y la lista de lo que no es familia; clave de fuente WS, dos valores nuevos
+  de la columna de cita (*summary*, *search result*) y punto 8 en la lista de pendientes. Sin
+  número ni identificador para ningún candidato. `docs/nomenclature.md`: time-frequency ridge, PLL,
+  attractor reconstruction / SPAR. Sin commit. Sigue sin decidir si alguno pasa a ser familia.
+- **Traspaso recibido de otra bifurcación (propuesta, sin aplicar):** cepstrum frente a
+  `HR3_SAC`. Cuatro puntos: el nombre («HR3_SPC» no existe en ningún repo; se propone mantener
+  `HR3_SAC`); la comparación (misma información, el cepstrum tiende a leer la mitad y el SAC el
+  doble; recomendación: SAC; cepstrum sin medir); la idea de Alex de combinarlos para cancelar el
+  error de octava, con el paso previo de clasificar los fallos restantes de HR3_SAC; y el coste
+  estimado (del orden del HR3 actual). Comprobado aquí: la FFT de HR3 calcula coseno y seno una
+  vez por etapa, no en cada mariposa. Detalle en la memoria del estudio. Pendiente de Alex.
+  Alex después: "Todavía no" a clasificar los fallos de HR3_SAC.
+- **Hacia un plan de trabajo con la nomenclatura nueva (Alex):** primero una tabla de familias y
+  métodos (cuatro familias, ocho métodos con etiqueta); Alex introduce `HR1_THR` para el HR1
+  actual. Dos comentarios suyos: (1) **decidido:** la nomenclatura nueva no va todavía a la
+  librería, mientras no sea necesario; solo a los análisis y quizás a `pulsenest_lab.py`
+  (`docs/nomenclature.md`: `HR1_THR` como etiqueta de trabajo, con ese alcance); (2) **sin
+  decidir («quizás»):** pasar el cepstrum a una variante de HR3, porque comparte la FFT inicial y
+  puede combinarse con los otros métodos del espectro para resolver errores de octava. Mi opinión:
+  de acuerdo; implica definir la familia por la representación de la que parten sus métodos, deja
+  libre el 4 y obliga a corregir una frase de la spec §5.5 cuando se decida. Borrador del plan
+  presentado en el chat, sin fichero.
+
+## Sesión 2026-11-13 — PI inmune a artefactos de movimiento: PI-METHOD-2 (lib v0.120, lab v1.111)
+
+- **Punto de partida:** el estudio del 11-nov (`docs/pi_artifact_robustness_20261111.md`): el PI
+  sube 5–6 s con cada artefacto por construcción (energía de la ventana de 6 s); una mediana de N
+  trozos de 1 s recorta la subida pero ninguna N la elimina. Intención de Alex: 7 s con mediana de 7.
+- **Prior art, antes de diseñar (sesión aparte, `docs/pi_motion_prior_art_20261111.md`):** la
+  industria calcula el PI por latido aceptado y los rechazados no entran (Masimo, Nellcor, Nonin);
+  el artefacto solo sube el PI, así que el estadístico robusto es de un lado (Masimo muestra el
+  mínimo de línea base limpia y valor actual, media recortada de 25 valores en 30 s); nadie muestra
+  un PI inflado en silencio (Philips "-?-", Nihon Kohden y GE guiones); ventanas publicadas más
+  largas (Philips 10 s por defecto también en neonatos). Nota de patentes: la familia US 8,983,564
+  (vigente 2027–2028) reivindica "dos técnicas de PI, sacar la más baja"; la mediana de subventanas
+  iguales de una técnica es otra construcción (no es consejo legal).
+- **Comentarios de Alex y lo simulado** (`experiments/pi_subwindow_median_bias_20261113.py`,
+  pulso sintético, fase barrida): (1) a 30 bpm un trozo de 1 s contiene medio latido → con L = 1 s
+  la mediana lee +6–10 % a 40–45 bpm, 0 a ≥ 60 bpm; (2) un paso fino (100 ms) quita el bamboleo
+  (±10 → ±5 % a 90 bpm) pero NO el sesgo: la mediana de la distribución de fases no es su media.
+  L = 2 s quita el sesgo (≤ 4 %) pero cuesta inmunidad: tolerancia = (W − 3·L)/2 con paso fino;
+  cada segundo de L cuesta 1,5 s, cada segundo de W compra 0,5 s, el paso solo compra uniformidad y
+  cadencia. Opciones cerradas: 1 s/7 s (tolera 2 s), 1 s/9 s (3 s), 2 s/8 s (1 s), 2 s/12 s (3 s).
+- **Decisión (Alex):** L = 1 s, paso 100 ms (un bloque: conserva la cadencia del PI), W = 7 s.
+  Por qué frente a las otras: rationale de la librería §23 (para reanalizarlo en el futuro).
+- **Librería v0.120 (commit 4f56b1b, sin etiqueta todavía):** `PI_METHOD_ID` = `PI-METHOD-2`:
+  paso 4 del método = mediana de las 61 subventanas solapadas de 1 s (sumas prefijas sobre el búfer
+  de bloques + `std::nth_element` cada 100 ms); `pi_window_s` 6 → 7 s; `spo2_pi_max` lee el PI de la
+  ventana completa (`_pi_box`, interno, no publicado); `AFE4490Config::pi_subwindow_s` solo lectura.
+  Tests 9–11 de `test_pi` (ráfaga de 1 s ×4: PI dentro del 5 %, box > 1,5×; ráfaga de 4 s mueve el PI
+  y la mediana supera al box, porque la mayoría de subventanas es ráfaga; N par); `test_spo2` 1b fija
+  el segundo extra de `HOLD_PI` (invisible tras la puerta de pulso de 10 s). 11/11 suites en verde,
+  `check_version v0.120` OK. Spec §2.1, §5.1 (fórmula, tabla de métodos), §5.9, §10.3b, §14.
+- **PulseNest:** espejo `SpO2TestCalc` sigue PI-METHOD-2 (lab v1.111; `FW_PI_WINDOW_S` 7,
+  `PI_SUB_BLOCKS` 10, `_pi_box` en la puerta del 20 %), verificado contra la réplica
+  `replay_lib0.120_inputot` de SUBJ11 115518: validez idéntica en 81 965 muestras, PI mediana 0,07 %,
+  máx 0,21 %. `lib/incunest_afe4490.version` → v0.120; fw V18 compila (fw 0.30, lib 4f56b1b).
+  `pulsenest_lab_spec.md` §7.17 + changelog; `capture_dict.py` comentario; `docs/nomenclature.md`
+  (sub-window, burst tolerance); addendum en el informe del 11-nov; el guion del experimento gana
+  la variante `PI-METHOD-2 (7 s, 61 x 1 s)` y la sección A2 (`--lib2-replay`).
+- **Réplicas** de las 17 sesiones SUBJ08–11 con la librería nueva (`derived/replay_lib0.120_inputot`,
+  runner offline recompilado). Resultado de A2 y G: ver la entrada siguiente.
+- **Pendiente:** etiqueta y release v0.120 (esperan el sí de Alex), OTA a 87:A4 y 82:5C, commit de
+  PulseNest. No adoptado y reanalizable: subventanas de 2 s, ventana de 10–12 s para pantalla,
+  descartar subventanas que HR3 rechaza, publicar Q, retener el último PI válido con marca.
+- **Réplica sobre el corpus (17 sesiones, `captures/sessions/PI_ROBUST_ANALYSIS_20261113/summary.txt`):**
+  A2, librería v0.120 frente a la réplica numpy de PI-METHOD-2, por bloque: mediana 0,06–0,14 %,
+  p95 0,2–1,2 %; máximos aislados del 33–35 % en SUBJ08/09 (saltos de RF del HGAC y huecos del
+  flujo, como en la réplica de PI-METHOD-1 del 11-nov). G, variante embarcada frente al PI actual:
+  pico de ráfaga ×1,29–1,69 (hoy ×1,47–2,02; mediana de 7 sin solape ×1,49–1,75), tiempo sobre
+  +20 % 2,4–5,0 s (hoy 5,8–7,0 s), nivel en reposo 0,985–0,992 (SUBJ10 0,909), oscilación a 6 s
+  7–48 % (hoy 8–50 %).
+  Atípicos de A2 contados: bloques con error > 5 %: 23 de 32 228 (SUBJ08), 92 de 37 266 (SUBJ09),
+  0 en SUBJ10/11; > 1 %: 352 / 2402 / 0 / 0. La mediana elige UNA subventana, así que una diferencia
+  float32/float64 pequeña puede cambiar cuál es la mediana cuando dos tienen energías cercanas: la
+  comparación es más discontinua que la de PI-METHOD-1, no el método. Los mismos recuentos se añaden
+  a la sección A del guion para la próxima ejecución.
+  Recuento equivalente en A (PI-METHOD-1, lib 0.108 frente al guion): > 5 %: 37 / 32 / 0 / 0; > 1 %:
+  783 / 574 / 0 / 2. Los atípicos están en los mismos sujetos y en la misma proporción (0,1–0,25 %
+  de los bloques) con los dos métodos: son de la comparación (saltos de RF, huecos), no del método.

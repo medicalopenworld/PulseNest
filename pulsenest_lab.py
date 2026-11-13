@@ -616,8 +616,11 @@ class SpO2TestCalc:
               r = Σdx·dy / √(Σdx²·Σdy²) (its correlation, the validity gate r ≥ r_method2_reg_corr_min).
       PI    : its own band-pass 0.5–15 Hz; AC² and the raw OT (DC) summed at the full rate over
               each 100 ms block, the block sums over a sliding window of pi_window_s seconds;
-              PI = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100  (N = samples in the window; peak-to-peak units).
-      SpO2  : a − b·R; valid when r ≥ r_method2_reg_corr_min, PI known and ≤ 20 %, 70 ≤ SpO2 ≤ 110
+              PI-METHOD-2 (lib v0.120): AC²_med = median of the mean AC² of the window's
+              overlapping 1 s sub-windows (one per block, 61 in 7 s);
+              PI = 2√2·√(AC²_med) / (ΣDC/N) × 100  (N = samples in the window; peak-to-peak units).
+              PI_box = 2√2·√(ΣAC²/N) / (ΣDC/N) × 100 is PI-METHOD-1's number, kept for the 20 % bound.
+      SpO2  : a − b·R; valid when r ≥ r_method2_reg_corr_min, PI_box known and ≤ 20 %, 70 ≤ SpO2 ≤ 110
               (clamped to 100); SQI = clamp((PI − 0.5)/(2.0 − 0.5), 0, 1). Otherwise NaN, SQI 0.
     The outputs refresh at the block cadence (10 Hz) and hold between blocks; they are NaN while
     their window is still filling — the window is the warm-up, there is no warm-up parameter.
@@ -646,7 +649,7 @@ class SpO2TestCalc:
     # Firmware defaults — must match incunest_afe4490.cpp's constants (lib v0.103, spec §5.1)
     FW_DC_EMA_TAU_S    = 2.0      # spo2_ema_mean_tau_s (EmaChannel τ_mean, DC of both channels)
     FW_SPO2_WINDOW_S   = 6.0      # spo2_window_s — SpO2 averaging window
-    FW_PI_WINDOW_S     = 6.0      # pi_window_s   — PI averaging window, independent length
+    FW_PI_WINDOW_S     = 7.0      # pi_window_s   — PI averaging window, independent length (7 s since lib v0.120)
     FW_R_METHOD2_REG_CORR_MIN      = 0.8      # spo2_r_method2_reg_corr_min — R-METHOD-2 validity gate on r
     FW_PULSE_GATE_ENABLE = True   # spo2_pulse_gate_enable (lib v0.110): SpO2 only while HR3 has a pulse
     FW_SPO2_R_CURVE_A  = 123.98   # R-CURVE-STS0163-HOSPNAV-20261004, fitted with R-METHOD-2
@@ -662,6 +665,7 @@ class SpO2TestCalc:
     SPO2_REG_EPS       = 1e-30         # spo2_reg_eps — Σdx² / Σdy² at or below this: no slope yet
     PI_DIV_EPS         = 1e-9          # pi_div_eps
     PI_RMS_TO_PP_RATIO       = 2.8284271     # pi_rms_to_pp_ratio = 2·√2 (sinusoid RMS → peak-to-peak)
+    PI_SUB_BLOCKS      = 10            # _pi_sub_n: pi_subwindow_s (1 s) / alg_window_block_s — PI-METHOD-2 (lib v0.120)
     FW_SPO2_MIN        = 70.0
     FW_SPO2_MAX        = 100.0
     SPO2_CLAMP_MARGIN  = 10.0          # spo2_clamp_margin — up to 110 % reads 100 % (lib v0.107; 3.0 until v0.106)
@@ -771,6 +775,7 @@ class SpO2TestCalc:
         self._pi_ac_sum = self._pi_dc_sum = 0.0
         self._pi_idx    = 0
         self._pi_count  = 0
+        self._pi_box    = nan                   # PI-METHOD-1's number, read by the spo2_pi_max gate (lib v0.120)
         # Outputs hold between blocks (as the firmware's AFE4490Data fields do)
         self._out = {'hold_reason': 2, 'dc_ir': nan, 'dc_red': nan, 'R': nan, 'r_method2_reg_corr': nan, 'pi': nan,
                      'spo2': nan, 'sqi': 0.0, 'valid': False, 'filling': True}
@@ -842,11 +847,28 @@ class SpO2TestCalc:
             if self._pi_count < self._pi_n:         # the window is the warm-up
                 self._pi_count += 1
                 out['pi'] = nan
+                self._pi_box = nan
             else:
                 n_raw = self._pi_n * self._block_len
                 dc    = self._pi_dc_sum / n_raw
-                ac_pp = self.PI_RMS_TO_PP_RATIO * math.sqrt(max(0.0, self._pi_ac_sum / n_raw))
-                out['pi'] = (ac_pp / dc) * 100.0 if dc > self.PI_DIV_EPS else nan
+                if dc > self.PI_DIV_EPS:
+                    self._pi_box = self.PI_RMS_TO_PP_RATIO * math.sqrt(max(0.0, self._pi_ac_sum / n_raw)) / dc * 100.0
+                    # PI-METHOD-2 (lib v0.120): the median of the overlapping sub-window energies.
+                    # _pi_idx points at the oldest block; a running sum of PI_SUB_BLOCKS blocks
+                    # walked in chronological order forms each sub-window, as the library does.
+                    sub_n = min(self.PI_SUB_BLOCKS, self._pi_n)
+                    buf, n = self._pi_ac_buf, self._pi_n
+                    order = [buf[(self._pi_idx + i) % n] for i in range(n)]
+                    run = sum(order[:sub_n]); subs = [run]
+                    for i in range(sub_n, n):
+                        run += order[i] - order[i - sub_n]
+                        subs.append(run)
+                    subs.sort(); m = len(subs) // 2
+                    med = subs[m] if len(subs) & 1 else 0.5 * (subs[m - 1] + subs[m])
+                    ac_pp = self.PI_RMS_TO_PP_RATIO * math.sqrt(max(0.0, med / (sub_n * self._block_len)))
+                    out['pi'] = (ac_pp / dc) * 100.0
+                else:
+                    out['pi'] = nan; self._pi_box = nan
         elif self._pi_count < self._pi_n:
             out['pi'] = nan                         # holding "no value", never a stale 0
 
@@ -903,7 +925,7 @@ class SpO2TestCalc:
         spo2 = self.spo2_r_curve_a - self.spo2_r_curve_b * R
         pi   = out['pi']
         reg_corr_ok = r >= self.r_method2_reg_corr_min
-        pi_ok    = not math.isnan(pi) and pi <= self.FW_PI_MAX
+        pi_ok    = not math.isnan(self._pi_box) and self._pi_box <= self.FW_PI_MAX   # the whole-window PI (lib v0.120)
         range_ok = self.FW_SPO2_MIN <= spo2 <= self.FW_SPO2_MAX + self.SPO2_CLAMP_MARGIN
         # Pulse gate (lib v0.110): the board's own HR3 validity is the input. The value of the
         # PREVIOUS sample: in _process_sample() SpO2 runs before HR3's update of the same sample
@@ -8145,7 +8167,9 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         ("pi_window_s",       "PI window",          "PI averaging time [s] (lib v0.102): AC and DC from the\n"
                                                     "same sliding window; independent of the SpO2 window.\n"
                                                     "Clamped 2-12 s by the library; a change empties the\n"
-                                                    "window (PI NaN for one window length). Default 6 s.",       1,   2.0, 12.0, " s",  1.0),
+                                                    "window (PI NaN for one window length). Default 7 s\n"
+                                                    "(lib v0.120, PI-METHOD-2: the median of the window's\n"
+                                                    "1 s sub-windows ignores bursts up to (W - 3 s)/2 = 2 s).",   1,   2.0, 12.0, " s",  1.0),
     ]
 
     # ppg_disp display modes (fw 0.30 / lib v0.117, spec §5.9): the SLEW tracker of NORM / NORM_PI
