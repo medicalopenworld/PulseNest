@@ -29717,3 +29717,11 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
   limpia de ~1 min), dentro de la lógica de calidad. Pendiente de decidir: entrada al SQI o a la puerta
   de pulso, umbral (1,2–1,5 sin optimizar), y una Q contra una línea base limpia larga (estilo Nellcor)
   frente a la Q intra-ventana. Rationale §23 lo lista entre lo no adoptado.
+- **Q, decisión de Alex (13-nov, tarde):** queda como **tarea pendiente**, no se mide ahora; la mejora
+  de la puerta de SpO2 se explorará por la estructura pulsátil en las sesiones ya abiertas (familias
+  2–3, autocorrelación espectral de HR3). Nombre acordado en `docs/nomenclature.md`: **burst ratio,
+  `Q`, etiqueta de trabajo `pi_burst_ratio`** = PI de la ventana completa / PI-METHOD-2; es un
+  *indicador de artefacto breve* (> 1 solo cuando la ráfaga ocupa una minoría de la ventana; ≈ 1 en
+  ventana limpia o toda artefactada; < 1 si la ráfaga es mayoría), no un detector general. Sin campo
+  en la librería. La tarjeta de sesión propuesta para medirlo se retira; el pendiente vive en la
+  memoria y en el diccionario.
