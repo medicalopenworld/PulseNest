@@ -29552,3 +29552,43 @@ resuelto. El hub en marcha tiene el código viejo hasta que se reinicie (sale so
   `docs/algorithm_prior_art_index.md`, `docs/nomenclature.md` y este log. Sin push en ninguno
   de los dos (no pedido). Sigue fuera `docs/pi_motion_prior_art_20261111.md`, que el índice cita
   como fichero local.
+- **Subidos los dos (2026-11-13, Alex: "Sí, sube los dos"):** librería `11ae84d..1e83696` y
+  PulseNest `0679f1b..2b88d8d`, ambos a `origin/master`. La etiqueta v0.119 no se ha movido.
+
+### 2026-11-13 — HR = «heartbeat resolver», qué juzga `hrN_sqi` y nombres de lo que venga
+
+Traspaso de una bifurcación de esta sesión (Alex allí: "pásaselo a la sesión de desarrollo");
+resumido a Alex aquí y aplicado con su "Sí, aplícalo".
+
+- **Decidido:** `HR` se lee *heartbeat resolver*: el algoritmo que analiza la estructura pulsátil
+  del PPG en un dominio, no una magnitud (las magnitudes son la frecuencia de pulso, PI, SpO2 y
+  SQI). `hrN_sqi` es la calidad de la señal como pulso periódico vista en el dominio N: juzga la
+  señal, no la frecuencia calculada. Lo que produce un método de una familia se nombra
+  `hrN_<método>_<producto>` (`hr3_sac_sqi`, `hr3_sac_purity`); regla para lo que venga, sin
+  código ni campos nuevos. Lecturas descartadas: Heartbeat Recurrence, Hemodynamic Rhythm,
+  Heartbeat Retrieval, Heartbeat Researcher, Heartbeat Recovery.
+- **Precisión de Alex al aplicarlo:** hacia fuera la librería seguirá ofreciendo tres estimadores
+  de frecuencia de pulso y su SQI; `hr3` podría ser en el futuro una combinación de los
+  resultados de sus métodos (`_hr3_hps_pr`, `_hr3_sac_pr`) según sus SQI. Escrito así: `hrN` y
+  `hrN_sqi` son lo que publica la familia y no se renombran; la combinación es una intención, sin
+  diseñar. La frecuencia de un método lleva el producto `pr`, como en su ejemplo.
+- **Duda de Alex:** ¿la nomenclatura actual (`_hr3_result_sqi`) pasará algún día a la nueva
+  (`_hr3_hps_sqi`) o se mezclarán para siempre? Respuesta propuesta, **sin acordar**: los campos
+  publicados, las tramas y las columnas CSV no cambian nunca; los miembros privados y las once
+  claves de configuración con prefijo de familia se renombran en el commit que traiga el segundo
+  método de esa familia (ni antes ni nunca), las claves como cambio incompatible de esa versión.
+- **Sin decidir:** esa regla de renombrado; la «puerta de pulso» (SpO2 lee `hr3_sqi > 0`: si
+  `hr3` pasa a ser una combinación, la puerta cambia de significado sin tocar SpO2); `hrN` →
+  `hrN_pr`.
+- **Ficheros:** librería, spec §5.5 y rationale §22.1 (nuevo); PulseNest, `docs/nomenclature.md`
+  (fila de `HR1`..`HR3` y tres filas nuevas). Solo texto, `check_version.py v0.119` pasa, sin
+  versión nueva; citar en la fila de §14 al etiquetar, junto con lo de `1e83696`. Sin commit.
+- **Acordado después (Alex: "Sí, acordado"):** la regla de renombrado. Los miembros privados y
+  las claves de configuración de una familia toman la forma nueva en el commit que traiga su
+  segundo método, las claves como cambio incompatible de esa versión; ni antes ni nunca. Los
+  campos publicados, las tramas y las columnas CSV no cambian. Pasada de «sin decidir» a
+  «acordada» en el rationale §22.1, con una frase en la spec §5.5 y en la nomenclatura. Siguen
+  sin decidir la «puerta de pulso» y `hrN` → `hrN_pr`.
+- **Commit en los dos repos (Alex: "Sí, en los dos"):** librería `f706ef6` (spec §5.5 y
+  rationale §22.1; `master` queda dos commits por delante de la etiqueta v0.119, sin etiqueta ni
+  versión nueva); PulseNest: `docs/nomenclature.md` y este log. Sin push (no pedido).

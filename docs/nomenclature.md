@@ -59,7 +59,7 @@ same commit.
 | `SpO2` | `spo2` | 201.3.261 | functional oxygen saturation [%] |
 | `R` | `spo2_r` | 201.3.239 "modulation ratio / ratio of ratios" | SpO2 derives from R through an empirical calibration curve (`R-CURVE-*` labels) |
 | `pi` | `pi` | not defined; manufacturer term (Masimo) | AC/DC × 100 on IR, peak-to-peak since v0.101. ISO's official equivalent is `%mod`, 201.3.245 "percent modulation"; `pi` is its implementation, there is no separate field |
-| `HR1`, `HR2`, `HR3` | `hr1`.. | not defined | pulse rate by peak detection, autocorrelation, FFT+HPS. ISO and the manufacturers call a PPG-derived rate *pulse rate* (PR); the HR/PR label decision is parked (2026-11-02) |
+| `HR1`, `HR2`, `HR3` | `hr1`.. | not defined | the three heartbeat resolvers (§5): beat detection in time, autocorrelation, FFT+HPS. Each publishes a pulse rate `hrN` and its `hrN_sqi`. ISO and the manufacturers call a PPG-derived rate *pulse rate* (PR); the HR/PR label decision is parked (2026-11-02) |
 | `rsqi` | `rsqi` | Table GG.1 "signal quality indicator" | 0 invalid, 1 valid |
 | `DiagCode` | `diag_code` | 201.12.4.102 "signal inadequacy" | bitmask; `RSQM_DIAG_*` bits symmetric with `AFE_DIAG_*` |
 | `ProbeState` | `probe_state` | 201.13.101 "probe fault"; Table GG.3 "probe not detected" | five states, values fixed on the wire (`$M2` to `$M4`, CSV): see the library spec §3 |
@@ -86,6 +86,9 @@ same commit.
 | local contrast | dB by which a spectral bin stands out of the median of its ±8 neighbours, minus a margin, clipped; the sequence the spectral autocorrelation reads (`logc6` = margin 6 dB, cap 30 dB). Working label, offline only |
 | comb purity | fraction of the band's linear power inside the teeth n·f0 ± 3 bins, rescaled so that a flat spectrum gives 0; how much of what varies is the pulse. Working label, offline only |
 | analysis family | one of the four analyses of the pulsatile structure, named by the domain where the pulse is searched: 1 beats in time (`HR1`), 2 periodicity in time lag (`HR2_*`), 3 spectrum (`HR3_*`), 4 cepstrum (`HR4`, reserved, nothing planned). Rule of the library spec §5.5 since 2026-11-12: the number is the domain, the suffix the method (rationale §22). The pulse rate is only the first product of each family; `docs/algorithm_prior_art_index.md` §1 lists what each can serve |
+| heartbeat resolver | what `HR` stands for since 2026-11-13: the algorithm that analyses the pulsatile structure of the PPG in one domain (`HRn`). It names the algorithm, not a magnitude; the magnitudes are the pulse rate, PI, SpO2 and SQI (library spec §5.5, rationale §22.1) |
+| `hrN_sqi` | quality of the signal as a periodic pulse, as seen in domain N. It judges the signal, not the rate computed from it |
+| `hrN_<method>_<product>` | name of what one method of a family produces (`hr3_hps_pr`, `hr3_sac_sqi`, `hr3_sac_purity`). Rule of 2026-11-13 for names to come: nothing carries such a name yet. `hrN` and `hrN_sqi` are the family's published outputs and are not renamed; the library's private members and configuration keys of a family take the new form when its second method is implemented |
 | `HR1_DRV` | derivative-based peak detector of the time family, named `HR4` in the library spec until 2026-11-12; catalogued, not planned (library rationale §5.3, §5.4) |
 | `AMDF` | average magnitude difference function; `HR2_AMDF` is a candidate named on 2026-11-12, not evaluated |
 | `HR3_HPS`, `HR3_SAC` | working labels of the spectral family: today's HR3 (harmonic product spectrum) and the spectral autocorrelation of 2026-11-12. Not library identifiers |
