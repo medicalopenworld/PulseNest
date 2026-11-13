@@ -29701,3 +29701,19 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
   Recuento equivalente en A (PI-METHOD-1, lib 0.108 frente al guion): > 5 %: 37 / 32 / 0 / 0; > 1 %:
   783 / 574 / 0 / 2. Los atípicos están en los mismos sujetos y en la misma proporción (0,1–0,25 %
   de los bloques) con los dos métodos: son de la comparación (saltos de RF, huecos), no del método.
+- **Cierre (Alex: "Etiqueta, commit, push y flash"):** librería etiquetada `v0.120` (4f56b1b), push y
+  release https://github.com/medicalopenworld/incunest_afe4490/releases/tag/v0.120 (notas *What
+  changes / Breaking / When upgrading*; la CI sube el zip y su SHA-256). PulseNest commit b80b467 (pin
+  v0.120, lab v1.111, docs, experimentos) y push. **OTA 2026-11-13** a `87:A4` (.18) y `82:5C` (.221):
+  fw 0.30 / lib 0.120, `libsha=4f56b1b`, `elfsha=9fdef9c4849fd20f`, verificado por MAC en las dos;
+  `docs/boards.md` al día.
+- **Q (cociente de artefacto = PI de la ventana completa / PI de la mediana), qué se decidió:** NO se
+  publica ni se usa todavía. Se calcula implícitamente en la librería (el numerador es `_pi_box`,
+  interno para `spo2_pi_max`; el denominador es el PI publicado), pero no hay campo, ni $M4, ni puerta.
+  Lo medido el 11-nov: Q predice el error de SpO2 (> 4 puntos en el 2,4 % de las ventanas con Q < 1,2
+  frente al 18,6 % con Q > 1,5) y sumaría a la puerta de pulso; es ciego a los artefactos que llenan
+  toda la ventana (Q 1,1–1,35 en eventos sostenidos). Prior art: nadie publica un cociente así en
+  pantalla; sus ingredientes son la métrica de movimiento de Nellcor (amplitud actual frente a media
+  limpia de ~1 min), dentro de la lógica de calidad. Pendiente de decidir: entrada al SQI o a la puerta
+  de pulso, umbral (1,2–1,5 sin optimizar), y una Q contra una línea base limpia larga (estilo Nellcor)
+  frente a la Q intra-ventana. Rationale §23 lo lista entre lo no adoptado.
