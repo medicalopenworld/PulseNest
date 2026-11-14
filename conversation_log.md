@@ -30057,3 +30057,9 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
   las referencias del informe y de `docs/boards.md` apunten a algo. **Alex: «adelante».** Commits
   locales, sin push: librería `822ae00` en `experiment/hr3-sac` (`master` sigue en `adbc4cb`) y
   PulseNest (script de comparación, addendum del informe, `docs/boards.md` y este log).
+- **Principio (Alex, 2026-11-14):** el burst ratio y cualquier detector de artefactos de movimiento es
+  mejorable si no utiliza la estructura pulsátil de la PPG. La energía sola (RMS, mediana, Q) no
+  distingue artefacto de cambio real de amplitud ni ve el artefacto que llena la ventana; la
+  periodicidad y el peine armónico (familias 2–3, `HR3_SAC`) sí. Consecuencia para el PI: el paso
+  siguiente es elegir las subventanas por estructura pulsátil (las que HR3/`HR3_SAC` acepta) en vez
+  de por rango de energía (rationale lib §23). Registrado en memoria como regla de diseño.
