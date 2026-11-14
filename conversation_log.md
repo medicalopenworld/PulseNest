@@ -29828,3 +29828,120 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
   tercer commit de texto por delante de la etiqueta v0.120, con `1e83696` y `f706ef6` ya dentro de
   ella sin citar en §14); PulseNest: índice (incluido el §2.5 que estaba sin commit desde la
   búsqueda), nomenclatura y este log.
+
+### 2026-11-14 — Propuesta de medida: banco común y familia HR3 (fases 0 y 1 del borrador)
+
+- Alex no quiso subir todavía los dos commits del 13-nov (`adbc4cb`, `27897c1`). Pidió un plan en
+  pocas palabras de lo siguiente y, con su «Sí, prepárala», la propuesta de medida antes de
+  ejecutar nada.
+- **Comprobado antes de proponer (solo lectura):**
+  - No queda caché de espectros del 12-nov (ningún `.npz` bajo `captures/`): la primera pasada
+    vuelve a leer los CSV.
+  - La caché de entonces guardaba espectros de HR3; no sirve para los métodos de retardo. El banco
+    común debe guardar las columnas crudas (IR, rojo, estado del sensor, tiempos, HR1/HR2/HR3 de
+    la placa) y recalcular lo demás.
+  - Los fallos de `HR3_SAC` sobre la referencia ya están en `summary.csv` del 12-nov: 0 % doble y
+    0 % mitad; queda un 0,6 % (SUBJ08) y un 0,5 % (SUBJ09) de «otro» y un 0,3 % sin valor; SUBJ11
+    100 %. En las ventanas limpias no hay error de octava que una combinación pueda arreglar.
+  - La referencia de frecuencia (consenso HR1 = HR2 de la placa) cubre el 37 / 56 / 0 / 38 % de las
+    ventanas de SUBJ08 / 09 / 10 / 11. Fuera de ella no hay verdad numérica: la columna `pr` de
+    `reference_spo2.csv` está vacía (el OCR solo leyó SpO2), salvo 23 lecturas tecleadas desde
+    fotos en una sesión de SUBJ10 (las primeras, 138–147 lpm) y 20 en una del MS100. Las fotos
+    están en el teléfono, no en las capturas.
+- **Propuesta presentada en el chat (sin fichero), pendiente del OK de Alex:** seis preguntas
+  (octava de cada método fuera de las ventanas limpias; dónde publica `HR3_HPS` un tercio; si
+  `HR3_CEP` acierta y si falla donde `HR3_SAC`; si alguna combinación arregla algo; qué regla
+  formaría `hr3`/`hr3_sqi` y su efecto en la puerta de SpO2; 30 lpm). Criterios indirectos donde
+  no hay referencia: razones entre métodos, continuidad en el tiempo, puerta de SpO2 contra el
+  SpO2 del monitor, las 23 lecturas de SUBJ10. Variantes y reglas fijadas antes de medir.
+  Entregables: módulo de banco, guion del estudio, informe con una conclusión por pregunta.
+  Decisiones pedidas: dónde vive el banco (`pulsenest/` recomendado) y si existen las fotos del
+  monitor con la frecuencia de pulso.
+- **Corrección (Alex):** las fotos están en `captures/sessions/SUBJnn/VideoNest/Snapshots` y la HR
+  aparece siempre arriba a la derecha; debajo el SpO2 y, a su derecha y pequeño, el PR. Alex cree
+  que la HR viene del ECG. Yo había mirado solo `reference_spo2.csv` y afirmé que la frecuencia
+  del monitor no estaba en las capturas: era falso.
+- **Comprobado (solo lectura):** 1453 fotos de los cuatro neonatos, 480×640, una cada 10 s. Ya
+  estaban leídas a ojo desde el 16 y 17-oct
+  (`captures/sessions/BIAS_ANALYSIS_SUBJ10_SUBJ11/ocr_vs_eye/SUBJnn_snapshots_eye.csv`): SUBJ08
+  537 lecturas de HR del ECG (123–195 lpm), SUBJ09 369 (122–178), SUBJ11 262 de HR (154–181) y 235
+  de PR, SUBJ10 259 de PR (122–180; nota del 16-oct: sin ECG, el número grande es el PR del
+  oxímetro). Cinco fotos abiertas hoy coinciden con el CSV. En SUBJ11, HR del ECG y PR del monitor
+  difieren más del 10 % en 10 de 235 fotos. No hay OCR instalado (ni tesseract ni cv2); no hace
+  falta leer las fotos de nuevo.
+- **Sin aclarar:** Alex describe la HR en cian y el SpO2 y el PR en verde; en las fotos abiertas de
+  SUBJ08/09/11 se ve la HR en verde (con traza de ECG verde) y el SpO2 y el PR en cian. Las
+  posiciones coinciden. Para SUBJ10 queda por confirmar con Alex si había ECG.
+- **Propuesta actualizada (pendiente de su OK):** la referencia principal de frecuencia pasa a ser
+  la lectura del monitor (ECG en SUBJ08/09/11; PR del monitor en SUBJ10, con esa reserva), una cada
+  10 s, también en los tramos con artefacto; el consenso HR1 = HR2 queda como segunda referencia,
+  para comparar con los estudios del 21-oct y del 12-nov. El banco puede así puntuar también HR1 y
+  HR2 de la placa contra una verdad que no depende de ellos.
+- **Alex: «Sí, adelante».** Banco en el paquete (opción por defecto anunciada). Creado, sin commit:
+  - `pulsenest/hr_bench.py`: banco común fuera de línea de los resolutores de latido. Extraído de
+    los estudios del 21-oct y del 12-nov (que se quedan como estudios fechados y no se importan):
+    carga de sesiones con caché de columnas crudas (`OT_LED1`, `OT_LED2`, estado del sensor,
+    HR1/HR2/HR3 de la placa, tiempos), cadena de entrada de HR3 y espectros, producto armónico,
+    autocorrelación del espectro con contraste local, pureza del peine, mesetas del MS100,
+    consenso HR1 = HR2, clases de error, puerta de SpO2. Nuevo: referencia del monitor (lectura
+    más cercana al final de la ventana, a 6 s como mucho; «estable» si las lecturas vecinas están
+    dentro del 10 %), desfase del reloj del móvil por sesión (`offset_ms`), cepstrum de la banda
+    (transformada a lo largo de la frecuencia de la secuencia de la banda, sin media, con ventana
+    de Hann y relleno a 2048: paso de 5 ms en quefrencia) y clases de error por razón armónica
+    (doble, mitad, triple, tercio, 3/2, 2/3). No importa `tools/`: los cuatro límites de
+    `spo2_bias_analysis` entran como argumentos.
+  - `test_pulsenest/hr_bench_test.py`: 16 comprobaciones sobre señales de respuesta conocida (peine
+    sintético de 90 a 240 lpm leído dentro del 1 % por los tres métodos, clases de error,
+    emparejado ventana-lectura, retención). Pasa 16 de 16.
+  - `experiments/hr3_methods_20261114.py`: el estudio (seis preguntas, variantes y reglas fijadas
+    en el docstring antes de medir; comprueba contra las tablas del 12-nov que el banco las
+    reproduce).
+  - README: `hr_bench` en la fila de `pulsenest/`. Nomenclatura: quefrency, consensus reference,
+    monitor reference.
+  - Primera pasada lanzada (relee los CSV; caché en `captures/sessions/HR_BENCH_CACHE/`, salidas
+    en `captures/sessions/HR3_METHODS_20261114/`, sin versionar). Visto en el registro: el reloj
+    del móvil de SUBJ09 iba 1,95 s desfasado respecto al portátil (SUBJ08: menos de 40 ms).
+    Resultados e informe, pendientes.
+- **Medido. Informe: `docs/hr3_methods_20261114.md` (inglés, una conclusión por pregunta, límites,
+  seis decisiones propuestas). Nada adoptado; nada tocado en la librería.**
+  - El banco reproduce todas las filas del 12-nov (diferencia máxima 0,0) y, donde hay las dos
+    referencias, el consenso HR1 = HR2 está dentro del 10 % de la lectura del monitor en el
+    100,0 % de las ventanas (1913 / 3946 / 1430 de SUBJ08 / 09 / 11; cociente p5–p95 0,98–1,02).
+    Ventanas con lectura estable del monitor: 80,6 / 92,0 / 91,5 / 99,3 %.
+  - **P1.** Contra el ECG (SUBJ08 / 09 / 11): `HR3_SAC` acierta el 97,9 / 98,5 / 99,8 % y se
+    equivoca en el 0,9 / 0,8 / 0,1 %, sin errores de octava; fuera de las ventanas limpias, 96,9 /
+    97,0 / 99,7 %. El HR3 actual acierta el 63,9 / 67,6 / 82,9 % (sin valor 30 / 28 / 12 %,
+    equivocado 5,9 / 4,0 / 5,3 %). SUBJ10 (referencia = PR del monitor, movimiento): `HR3_SAC`
+    51,7 % bien, 32,6 % mal.
+  - **P2.** El HR3 actual publica un tercio de la frecuencia cardiaca en el 6,6 / 4,0 / 4,2 % de
+    sus ventanas válidas (55–59 lpm frente a 166–175 del ECG): confirmado con referencia numérica.
+    `HR3_SAC` acierta ahí el 97–100 %. `hr3_sqi` vale 0,45–0,80 de mediana en esas ventanas
+    (1,00 donde acierta) pero es mayor que 0, así que se publican y pasan la puerta de SpO2.
+    Hipótesis sin medir: f0/3 cae en la frecuencia respiratoria neonatal.
+  - **P3.** El cepstrum acierta el 93,7 / 91,6 / 99,1 % (suelo de 40 dB), se equivoca de octava
+    (mitad y tercio; con suelo de 60 dB lee la mitad en el 8–24 %) y solo aporta 0,1–0,9 puntos a
+    `HR3_SAC`. Ningún otro método (HPS, B1, HR1, HR2) aporta más de 0,3.
+  - **P4.** El voto de octava no arregla nada. La coincidencia SAC-cepstrum sirve de validez
+    (valores equivocados 0,1 / 0,3 / 0,0 % con el 92,8 / 91,3 / 99,1 % publicado), pero con
+    movimiento deja pasar doce veces más errores que la puerta de rho y pureza (añadida tras la
+    primera pasada: 0,1 / 0,1 / 0,0 % equivocado con 77 / 79 / 97 % publicado).
+  - **P5.** Puerta de SpO2: que dos métodos coincidan no es puerta (SUBJ10: 33,1 % publicado, Arms
+    14,93); la pureza con rho sí, y el cepstrum no le añade nada. Quitar de la puerta actual las
+    ventanas donde el HR3 actual no coincide con `HR3_SAC` baja el Arms de 2,47 a 2,14 (SUBJ08) y
+    de 2,39 a 2,07 (SUBJ09) por 3–4 puntos de publicación.
+  - **P6.** A 30 lpm del MS100 solo leen el HR3 actual, B1 y HR1 de la placa; `HR3_SAC` 0 %, el
+    cepstrum 1–40 %. No hay meseta entre 30 y 60 lpm.
+  - De paso: HR1 de la placa acierta el 99,5–99,9 % de lo que publica (42–59 % de las ventanas);
+    HR2, el 94–98 % (78–98 %).
+  - Tres pasadas en total: la primera, la que añadió las dos tablas marcadas «post hoc» y una
+    final para las figuras; los números no cambiaron entre ellas. Caché de columnas: 418 MB.
+- **Decisiones propuestas a Alex (en el informe):** (1) llevar `HR3_SAC` adelante como frecuencia
+  de `hr3` y medir su coste en la placa; (2) captura de banco con el MS100 a 35–55 lpm para ver
+  dónde empieza a funcionar; (3) retirar el cepstrum del plan; (4) validez por rho y pureza, a la
+  fase 4; (5) un remedio provisional para el tercio del HR3 actual; (6) leer la frecuencia
+  respiratoria de las fotos para probar la hipótesis. Pendiente también: si SUBJ10 tenía ECG.
+- El índice de arte previo recoge la medida (clave de fuente `H3M`; el cepstrum pasa de «not
+  evaluated» a «measured, not adopted») y la nomenclatura, las etiquetas.
+- **Commit en PulseNest (Alex), sin push:** banco, test, estudio, informe, README, nomenclatura,
+  índice y este log. La librería no tiene cambios. Siguen sin subir este commit y los dos del
+  13-nov (`adbc4cb` en la librería, `27897c1` en PulseNest).

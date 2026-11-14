@@ -128,7 +128,7 @@ The folder says what a Python file *is*, not when it was written:
 | Folder | What lives there | Rule |
 |---|---|---|
 | repo root | `pulsenest_lab.py` | The project's main program (its state files and the launch hooks live beside it) |
-| `pulsenest/` | `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set`, `session_events`, `fleet_trace`, `fleet_widgets` | Importable package: anything more than one program imports (`from pulsenest.net import ...`) |
+| `pulsenest/` | `net`, `hub_client`, `capture_csv`, `capture_dict`, `capture_set`, `session_events`, `fleet_trace`, `fleet_widgets`, `hr_bench` (offline bench of the pulse-rate methods, used by the studies in `experiments/`) | Importable package: anything more than one program imports (`from pulsenest.net import ...`) |
 | `tools/` | session launcher, hub, recorder, recorder GUI, converter, fleet monitor, PPG viewer, UDP utilities, capture index | Programs an operator or maintainer runs on purpose; importable as `tools.<name>` |
 | `test_pulsenest/` | `*_test.py` | Python tests of this repo's own software, one per module (`python test_pulsenest/<name>.py`) |
 | `test_lib/` | `runner/run_host_tests.py` | Runs the C++ unit tests of the `incunest_afe4490` library on the PC (`python test_lib/runner/run_host_tests.py`); the suites live in the library's repo, `lib/incunest_afe4490/test/`, since 2026-10-30 |

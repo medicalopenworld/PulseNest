@@ -30,6 +30,7 @@ Sources consolidated, with the key used in the *Detail* column and the date each
 | RC | `docs/r_curve_calibration_survey.md` | 2026-10-26 |
 | RCU | `docs/spo2_r_curves.md` | register, kept up to date |
 | SAC | `docs/spectral_autocorrelation_20261112.md` | 2026-11-12 |
+| H3M | `docs/hr3_methods_20261114.md` (the methods of family 3 against the ward monitor's ECG heart rate) | 2026-11-14 |
 | PIA | `docs/pi_artifact_robustness_20261111.md` | 2026-11-11 |
 | SPEC | `incunest_afe4490_spec.md` in the library repository (§5 algorithms, §13 references) | — |
 | RAT | `incunest_afe4490_design_rationale.md` in the library repository | — |
@@ -65,7 +66,7 @@ and our own measurements show each family can feed.
 | 1. Beats in time (`HR1`) | today | makers: peak to valley per accepted beat | makers: ratio per beat, beat-synchronous averaging | today (`hr1_sqi`); makers: pulse density | makers: per-pulse tests | makers: pulse density inside the probe-off rule |
 | 2. Periodicity in time lag (`HR2_*`) | today; one maker argues against it for an arrhythmic pulse (§2.2) | none recorded | listed, not run (RAT §9, option 6) | today (`hr2_sqi`) | none recorded | none recorded |
 | 3. Spectrum (`HR3_*`) | today | makers: amplitude of the harmonic peaks | measured: R on the harmonic bins; makers: Masimo FST and SST, Philips FAST | today (`hr3_sqi`); measured: comb purity | today: the SpO2 gate is `hr3_sqi > 0` | makers: share of the energy at the pulse rate and its harmonics |
-| 3, its cepstrum (`HR3_CEP`, not evaluated) | speech only | makers: locates the peaks for a spectral PI | title of one patent only | none recorded | title of one patent application only | none recorded |
+| 3, its cepstrum (`HR3_CEP`, measured, not adopted) | speech; measured (H3M): errs on the octave, adds under one point to `HR3_SAC` | makers: locates the peaks for a spectral PI | title of one patent only | none recorded | title of one patent application only | none recorded |
 | 4. Oscillator locked to the signal (`HR4_*`, candidate) | makers and articles: the oscillator's frequency | none recorded | none recorded | one maker: a signal-to-noise estimate that steers the loop | none recorded | none recorded |
 
 *none recorded* means absent from our reports, not absent from the literature.
@@ -150,13 +151,17 @@ spectrum; the cepstrum, at the end of this section, transforms it once more.
 
 Our own measurements in this family, for reference: HPS with two harmonics and floor-removing
 preprocessing (`experiments/hr3_spectral_variants_20261021.py`, not adopted; RAT §17.1); local
-contrast and comb purity (SAC, not adopted).
+contrast and comb purity (SAC, not adopted); the harmonic product, the spectral autocorrelation and
+the cepstrum against the ECG heart rate (H3M: the spectral autocorrelation is right in 98–100 % of
+the windows, today's harmonic product in 64–83 %, publishing one third of the heart rate in 4–7 % of
+its valid windows; nothing adopted).
 
 *The cepstrum (`HR3_CEP`, working label).* Transforms the logarithm of the spectrum once more; the
 spacing of the harmonics shows as one peak on a time-like axis (quefrency). It was a family of its
 own, with the number 4, until 2026-11-13, and is a method of this family since (RAT §22.2): it
 starts from the same FFT, and the power cepstrum and the autocorrelation of the log spectrum are a
-Fourier pair. No cepstral method has been evaluated.
+Fourier pair. Measured on 2026-11-14 against the ward monitor's ECG heart rate (H3M): right less
+often than the spectral autocorrelation, with errors on the octave (half, third); not adopted.
 
 | What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
 |---|---|---|---|---|---|---|---|
