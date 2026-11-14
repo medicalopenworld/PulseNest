@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.103
+# pulsenest_lab — Specification v1.112
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -876,7 +876,9 @@ What the event does, in order:
    monitor buffers, which carry counter 0, are not taken for 500 new samples; parameters and
    spinboxes untouched; windows in offline/CSV mode ignore the event), `PI LAB` (new time origin,
    estimators reset, buffers cleared — what GO LIVE does minus the buttons), `HR1 LAB` (new
-   recording, as when resuming from PAUSE; a paused window keeps its frozen view), `HR2 LAB`
+   recording, as when resuming from PAUSE; a paused window keeps its frozen view), `HR3 LAB`
+   (v1.112: front end, current window and history start over; a paused window keeps its frozen
+   picture), `HR2 LAB`
    (biquad state and filtered buffer dropped), `SIGNALS`/`SIGNALS2` (re-seed from scratch).
 5. Logs `[STREAM] discontinuity: <reason> — plot and algorithm buffers restarted`.
 
@@ -1541,7 +1543,7 @@ feed passed the constant `SPO2_RECEIVED_FS` = 50 Hz for a 500 Hz stream: every t
 was 10× too long and the 400-sample buffer held 0.8 s. Same defect as SPO2TEST's (§5.2, fixed
 in v1.86).
 
-### 5.5 HR3TestCalc / HRFFTCalc
+### 5.5 HR3TestCalc / HR3LabCalc
 
 **`HR3TestCalc`** — mirror of `_hr3_update_sample()` + `_hr3_prepare_fft_input()` +
 `_hr3_compute()` (library spec §5.4), lib v0.103, rewritten in v1.88. Fed every `$M4` sample at
@@ -1570,12 +1572,50 @@ FFT of the library and numpy's float64 one agree to the print quantisation.
 **History.** Until v1.87 the mirror still ran the pre-v0.83 band-pass 0.4–15 Hz (scipy), an HPS on
 |X| instead of |X|², no decimation, and was fed 50 Hz nominal for a 500 Hz stream.
 
-**`HRFFTCalc`** (`self.hr3_calc`, HR3LAB diagnostics) is **not** a library mirror: a prototype
-of HR3 on `LED1_SUB` with its own design (scipy 2nd-order low-pass 10 Hz, 512-sample buffer, Hann,
-rfft, HPS on |X|, harmonic power ratio). Since v1.88 it decimates its low-pass output by
-round(fs / 50) before the buffer, so the buffer means 10.24 s at any AFE rate (it held ~1 s while
-fed the 500 Hz stream as 50 Hz); `rate_hz` is exposed for HR3LAB's info line. It had been left
-unmigrated to the OT domain on purpose (experiment scope, v1.2x).
+For `HR3LabCalc` the mirror also keeps `last_power` (P of the last window, not normalised) and
+`window_count` (windows computed since creation, never reset: a change means a new window).
+
+**`HR3LabCalc`** (v1.112, owned by `HR3LabWindow`, §7.12) — the methods of analysis family 3 on one
+HR3 window. It is **not** a second implementation of anything:
+
+- **Front end:** an `HR3TestCalc` of its own, always at the library's values (the instance HR3TEST
+  owns can be edited from its panel), fed every `$M4` sample at the AFE rate.
+- **Methods:** each time the front end completes a window, its `last_power` goes through
+  `pulsenest.hr_bench` — the offline bench of `docs/hr3_methods_20261114.md` — called with one
+  row, with the bench's own defaults. The lab and the bench therefore cannot drift apart.
+
+| Label | Bench calls | Rate | Quality index |
+|---|---|---|---|
+| `HR3_HPS` | `hps(P, 3)`, `hps_estimate` | today's HR3 (product of three harmonics) | its SQI, 0..1 |
+| `HR3_SAC` | `hr3_sac`, `comb_purity` | lag of the first maximum of the spectral autocorrelation of the local contrast reaching 0.8 of the highest | rho at that lag; comb purity at that rate |
+| `HR3_CEP` | `log_floor(…, CEP_FLOOR_DB = 40)`, `band_cepstrum`, `pick_quefrency` | 60 over the quefrency picked by the same rule (the report's `cep40`) | peak height over the RMS of the search range |
+
+- **State kept:** the last window's power spectrum, local contrast, harmonic product, rho against
+  lag and cepstrum (what the window draws); a history of `HIST_LEN` = 300 windows (`HIST_S` =
+  120 s) of the three rates, the SQI, rho, the comb purity and the board's HR1 / HR2 of the same
+  frame, on the clock `t_s` (time fed, s); `revision`, +1 on every new window, lost window or
+  reset (what tells the window to redraw).
+- **Per sample** only the front end runs (about 1 µs). **Per window** (every 0.5 s, in the drain
+  tick) the methods cost about 3.5 ms (HPS 0.3, SAC 1.6, purity 1.4, cepstrum 0.2), recorded in
+  `window_ms` (PYTHON TIMING row `algo_hr3lab`).
+- **Probe not applied, or another AFE rate:** the front end starts over; every value is NaN / 0
+  and the history gets one NaN entry so the traces do not join across the gap.
+- **Geometry guard:** the bench is written for the library's 512-sample window with the 0.49–15 Hz
+  band and the contrast's neighbourhood inside the spectrum; any other geometry gives no values.
+- `bench_defaults()` reads the bench's own parameters back from its function signatures (contrast
+  margin 6 dB, cap 30 dB, pick 0.8) for the window's info line: derived, not declared twice.
+
+**Verification (v1.112):** `test_pulsenest/hr3lab_test.py` (§7.12). On the stored session
+`SUBJ11_HOSPNAV_20261013_112510` (498 745 samples, read only): 1974 windows, the same as the
+bench's, each ending on the same sample; the seven numbers per window equal the bench's in batch
+(largest difference 0 on the rates and indices, 4·10⁻¹⁵ on the cepstrum's peak ratio), `NaN` in the
+same places; 65 windows where `HR3_HPS` reads one third of `HR3_SAC`.
+
+**`HRFFTCalc`** (`self.hr3_calc`), what HR3LAB drew until v1.111, was **removed in v1.112**: a
+prototype of HR3 on `LED1_SUB` with its own design (scipy 2nd-order low-pass 10 Hz, 512-sample
+buffer, Hann, rfft, HPS on |X|, harmonic power ratio), older than the library's chain and fed on
+every sample whether the window was open or not (11 µs per sample). What it showed is in HR3TEST
+on the library's chain.
 
 
 ## 6. Main window — PPGMonitor
@@ -1937,7 +1977,7 @@ All rates relative to the render timer tick (~50 ms = ~20 Hz):
 | Constant | Value | Applies to |
 |----------|-------|-----------|
 | `_PPGPLOTS_REFRESH_EVERY` | 1 | PPGPlotsWindow, PPGSignalsWindow, AlgoResultsWindow (20 Hz) |
-| `_SUBWIN_REFRESH_EVERY` | 2 | SpO2Lab, HR3Lab, HR2Lab (10 Hz) |
+| `_SUBWIN_REFRESH_EVERY` | 2 | SpO2Lab, HR3Lab, HR2Lab (10 Hz; HR3Lab redraws only when a window arrived or was lost, or the time plots are due to move: twice a second, §7.12) |
 | `_SPOST_REFRESH_EVERY` | 2 | SpO2TestWindow (10 Hz) |
 | `_HR1TEST_REFRESH_EVERY` | 2 | HR1TestWindow (10 Hz) |
 | `_HR2TEST_REFRESH_EVERY` | 2 | HR2TestWindow (10 Hz) |
@@ -2317,12 +2357,68 @@ rate, duration, format and any restarts/gaps/skipped rows.
 
 ### 7.12 HR3LabWindow — "HR3LAB"
 
-Purpose: diagnostic view combining FFT spectrum and HR algorithm comparison.
-`HRFFTCalc` (§5.5) is fed at `PPGMonitor.afe_fs()` and decimates to 50 Hz itself (v1.88).
+**v1.112 (rewritten).** The methods of analysis family 3 side by side, live, on the same HR3
+window: `HR3_HPS` (today's HR3), `HR3_SAC` (spectral autocorrelation) and `HR3_CEP` (cepstrum) —
+the three measured against the ward monitor's ECG in `docs/hr3_methods_20261114.md`. For what
+stored captures cannot show: probe placement, motion, low perfusion. Sidebar button in the LAB
+group. Requires frame mode `$M4` (runs on `OT_LED1`).
 
-Layout: left (FFT spectrum with HPS peak line) + right (2 stacked: LP signal + HR1/HR2/HR3 comparison).
+The calculation is `HR3LabCalc` (§5.5), which calls `pulsenest.hr_bench` on each window: the window
+shows what the bench measured, with the bench's parameters. **No parameter can be edited** —
+purely observational.
 
-No parameter editing — purely observational.
+Layout, top to bottom (one `GraphicsLayoutWidget`; the third row is a nested layout so the three
+methods get equal widths):
+
+| Zone | Content |
+|---|---|
+| Bar | `PROBE` (probe state of the last sample fed), `PI` (the board's, `PPGMonitor.data_pi`), PAUSE / RESUME (key `P`) |
+| SPECTRUM | Power spectrum of the window in dB below the maximum of the 0.49–15 Hz band, 0–15 Hz. Three rows of ticks, one per method in its colour, at n × the rate it reads: **the comb each method claims**. A right rate puts its ticks on the peaks; a rate read at one third puts two ticks out of three between them. Dashed line at −40 dB: the floor of `HR3_CEP` |
+| LOCAL CONTRAST | The sequence `HR3_SAC` reads (0..30 dB), on the same frequency axis (X linked; the spectrum shows no tick values of its own) |
+| `HR3_HPS` | Header: rate, SQI. Plot: the harmonic product against rate (bpm), normalised to its maximum inside the search band |
+| `HR3_SAC` | Header: rate, rho, comb purity. Plot: rho against the lag along frequency read as a rate (bpm), dashed line at rho 0.5 |
+| `HR3_CEP` | Header: rate, peak/RMS. Plot: the cepstrum against quefrency (s), normalised to its maximum inside the search range |
+| RATES | The three rates, one point per window, and the board's HR1 and HR2 of the same frame as thin lines, over the last 120 s (X = seconds before the last sample fed), 0–280 bpm. A method with no value leaves a gap |
+| QUALITY | `HR3_HPS`'s SQI, `HR3_SAC`'s rho and the comb purity over the same 120 s (X linked), with dashed lines at rho 0.5 and purity 0.3: the validity rule of 2026-11-12, drawn as a reference, nothing is gated |
+| Info line | The fixed parameters, read from `hr_bench`: window, search band, contrast margin and cap, pick rule, cepstrum floor, tooth width. While the window is filling it shows the percentage |
+
+Conventions of the three method plots: the search band (27–263 bpm, or its quefrency range) is
+shaded; the chosen value is a yellow vertical line, hidden when the method gives none; a curve
+normalised to its in-band maximum is drawn up to 1.2, so what stands above the band's maximum
+outside the band leaves the view by the top. Colours: `HR3_HPS` cyan (HR3's colour in the lab),
+`HR3_SAC` magenta, `HR3_CEP` orange, HR1 yellow, HR2 red, comb purity white.
+
+**Titles.** Each plot's title carries its legend (the names in the colour of their traces), so
+there are no legend boxes over the data; the method headers are two lines. Titles are short on
+purpose: a pyqtgraph title is a layout item with a minimum width, and on a 192 dpi screen a long
+one makes the graphics layout wider than the window, which cuts off the right edge — the newest
+data. `_set_title()` also gives the title row the height its text needs (pyqtgraph fixes it at
+30 px, one line at 96 dpi). The explanation of each view is the tooltip of its title.
+
+**Data path.** `feed_sample(ot_led1, fs, probe_state, sample_counter, hr1, hr2)` from the frame
+loop, per `$M4` sample at the AFE rate and only while the window is open (fields 31, 22, 14 and 16);
+`$M1`–`$M3` frames feed 0 with the frame's probe state, as HR3TEST. `update_plots(data_pi)` from the
+render tick at 10 Hz redraws only when `HR3LabCalc.revision` changed or the time plots are due to
+move (0.5 s of fed signal): the curves change twice a second at most. PAUSE freezes the picture,
+zoom and pan included; the methods keep running, so RESUME shows the present with its history.
+`on_stream_discontinuity()` restarts the front end and the history.
+
+**Cost** (measured on the session of §5.5 through the frame loop, 20 ms ticks of 10 frames): a
+drain tick 0.17 ms (median), 4.1 ms when a window is due (max 7.8 ms); a redraw 3.9 ms (max 7.4 ms),
+160 in 90 s. PYTHON TIMING shows them as `algo_hr3lab` and `plot_hr3lab`.
+
+**Verification:** `test_pulsenest/hr3lab_test.py`, offscreen, no board, hub, network or stored
+capture — (1) `HR3LabCalc` fed sample by sample equals `hr_bench` in batch at every window of a
+synthetic pulse with a stretch of probe not applied, and its `HR3_HPS` equals `HR3TestCalc`;
+(2) the three methods read the pulse, a lost window leaves one break in the history; (3) the
+window opened from the monitor is fed through `_process_frames_tick()` with `$M4` lines pushed
+into the serial queue, draws once per new window, pauses, is refreshed by the monitor's render
+tick with its two PYTHON TIMING rows filled, clears on probe off, restarts on a stream
+discontinuity and closes. The look on screen was approved by Alex on 2026-11-14, from a second lab
+instance started in the worktree beside his own (read-only through the hub, §4.11).
+
+Until v1.111 the window drew `HRFFTCalc` (§5.5): the FFT spectrum with the HPS peak line, the
+low-pass signal and an HR1/HR2/HR3 comparison. HR3TEST (§7.10) shows those on the library's chain.
 
 ### 7.12 HR2LabWindow — "HR2LAB"
 
@@ -2451,6 +2547,9 @@ Purpose: measure the execution time of the Python algorithm replicas running in 
 **Contents:**
 - Section A — Tick timers: `_process_frames_tick()` (serial+UDP drain) and `_refresh_plots_tick()` total.
 - Per-algorithm mean/max µs: HR1TestCalc, HR2TestCalc, HR3TestCalc, SpO2LocalCalc.
+- `algo_hr3lab` (v1.112): what `HR3LabCalc` spends on each HR3 window, once every 0.5 s, in the
+  drain tick. The gap row `gap_hr3lab` reads `HR3LabWindow.calc.gap_count` ("—" with HR3LAB closed;
+  until v1.111 it read the always-fed `hr3_calc`).
 - Updated every ~1 s. Useful for verifying the Python algorithms stay within the 20 ms budget.
 
 ### 7.16 HWConfigWindow — "HW CONFIG"
@@ -3008,6 +3107,35 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.112 — 2026-11-14
+**HR3LAB rewritten: the methods of analysis family 3 side by side, live (§7.12, §5.5).** The window
+shows `HR3_HPS` (today's HR3), `HR3_SAC` (spectral autocorrelation of the local contrast) and
+`HR3_CEP` (cepstrum of the band) on the same HR3 window, each with its rate, its quality index
+(SQI; rho and comb purity; peak/RMS) and the view that explains it (the harmonic product against
+rate, rho against lag, the cepstrum against quefrency, the chosen value marked); above them the
+spectrum in dB with the comb each method claims drawn as ticks, and the local contrast; below
+them the three rates and the board's HR1 / HR2 over 120 s, and the quality indices with the
+rule of 2026-11-12 as dashed lines. PAUSE freezes the picture. No parameter can be edited.
+
+- **New `HR3LabCalc`** (§5.5): an `HR3TestCalc` of its own as front end and **`pulsenest.hr_bench`
+  called on each window's spectrum** — the methods are not re-implemented, so the lab and the
+  offline bench of `docs/hr3_methods_20261114.md` cannot drift apart. `HR3TestCalc` gains
+  `last_power` and `window_count`. The methods run once per window (every 0.5 s) in the drain
+  tick, about 3.5 ms; per sample only the front end runs, and only while the window is open.
+- **Removed `HRFFTCalc`** and `PPGMonitor.hr3_calc`, the prototype the window drew until v1.111
+  (Alex, 2026-11-14: replace): not the library's chain, and fed on every sample whether the window
+  was open or not (11 µs per sample). HR3TEST shows the spectrum, the product and the filtered
+  signal of the library's chain.
+- Monitor: the frame loop feeds `hr3lab_window.feed_sample()` (OT_LED1, ProbeState, HR1, HR2);
+  `update_plots(data_pi)`; `hr3lab_window` joins the stream-discontinuity list (§4.10); PYTHON
+  TIMING gains the row `algo_hr3lab` and `gap_hr3lab` reads the window's front end (§7.15).
+- Verified: `test_pulsenest/hr3lab_test.py` 34/34 (new), `disable_plots_test.py` 13/13,
+  `hr_bench_test.py` 16/16; on the stored session `SUBJ11_HOSPNAV_20261013_112510` the window's
+  1974 windows equal the bench's in batch (largest difference 0), also through the frame loop.
+  The look on screen approved by Alex, from a second lab instance beside his (read-only through
+  the hub).
+- The spec's title had stayed at v1.103 since 2026-10-28; it follows the changelog again.
 
 ### v1.111 — 2026-11-13
 **The SpO2/PI mirror follows lib v0.120's PI-METHOD-2 (§7.17).** `SpO2TestCalc`'s PI is the

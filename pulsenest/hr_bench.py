@@ -21,6 +21,11 @@ References of the pulse rate, in order of independence:
 
 Method labels (docs/nomenclature.md): HR3_HPS = today's HR3, HR3_SAC = spectral autocorrelation
 with local contrast, HR3_CEP = cepstrum of the band.
+
+Since lab v1.112 pulsenest_lab.py's HR3LAB window (HR3LabCalc) calls hps, hps_estimate, hr3_sac,
+comb_purity, log_floor, band_cepstrum and pick_quefrency on each live HR3 window, one row at a
+time and with their defaults: a change to any of them, or to a default, changes that window too
+(test_pulsenest/hr3lab_test.py compares the two).
 """
 import csv
 import glob

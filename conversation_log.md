@@ -30063,3 +30063,50 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
   periodicidad y el peine armónico (familias 2–3, `HR3_SAC`) sí. Consecuencia para el PI: el paso
   siguiente es elegir las subventanas por estructura pulsátil (las que HR3/`HR3_SAC` acepta) en vez
   de por rango de energía (rationale lib §23). Registrado en memoria como regla de diseño.
+
+## Sesión 2026-11-14 — HR3LAB nuevo: los métodos de la familia 3 lado a lado (lab v1.112)
+
+Sesión lateral en el worktree `hr3lab-methods-4b61f2` (rama `claude/hr3lab-methods-4b61f2`),
+abierta por la sesión de desarrollo. Al terminar, Alex pidió fusionarla en `master` y cerrar el
+worktree.
+
+- **Petición de Alex:** una ventana HR3LAB que enseñe en vivo los métodos de la familia 3 medidos
+  el 14-nov (`HR3_HPS`, `HR3_SAC`, `HR3_CEP`), para ver lo que las capturas guardadas no enseñan
+  (colocación del sensor, movimiento, baja perfusión). HR2LAB queda para después.
+- **Diseño aprobado por Alex** antes de escribir código, sobre una maqueta con datos reales de
+  SUBJ11: espectro en dB con el peine que afirma cada método dibujado como marcas; contraste
+  local; una columna por método con su frecuencia, su índice de calidad y la vista que lo explica
+  (producto armónico contra lpm, rho contra desfase, cepstrum contra quefrency, valor elegido
+  marcado); las tres frecuencias y HR1/HR2 de la placa en 120 s; SQI, rho y pureza en 120 s con
+  la regla del 12-nov (rho 0,5, pureza 0,3) como líneas de referencia. Único control: PAUSE.
+- **Decisión de Alex:** sustituir el contenido antiguo y borrar `HRFFTCalc` (prototipo sobre
+  `LED1_SUB` anterior a la cadena de la librería, que se alimentaba siempre, 11 µs por muestra).
+- **Cómo está hecho:** `HR3LabCalc` usa un `HR3TestCalc` propio como etapa de entrada y llama a
+  `pulsenest.hr_bench` sobre el espectro de cada ventana (una vez cada 0,5 s, en el tick de
+  drenaje); no reimplementa los métodos, así que el lab y el banco no pueden divergir.
+- **Verificado:** `hr3lab_test.py` 34/34 (nuevo), `disable_plots_test.py` 13/13,
+  `hr_bench_test.py` 16/16. En `SUBJ11_HOSPNAV_20261013_112510` las 1974 ventanas dan los mismos
+  números que el banco (diferencia 0), también por el bucle real de tramas; 65 ventanas con el
+  HR3 actual leyendo un tercio. Coste: 4,1 ms en el tick de drenaje cuando toca ventana, redibujo
+  3,9 ms dos veces por segundo. **Alex la vio en pantalla y la aprobó** («se ve bien»), en una
+  segunda instancia del lab lanzada desde el worktree junto a la suya: el hub permite varios
+  clientes y el segundo lab queda en solo lectura. **No verificado:** `udp_multiboard_test.py`
+  (abre puertos UDP).
+- **Hallazgo de aspecto:** en la pantalla de Alex (192 ppp) un título largo de pyqtgraph hace el
+  dibujo más ancho que la ventana y corta el borde derecho; por eso los títulos son cortos, llevan
+  la leyenda y la cabecera de cada método va en dos líneas.
+- **Pendiente (Alex, para más tarde):** la ventana de HR3 dura 10,24 s por la resolución que exige
+  el extremo de 30 lpm, no por las 512 muestras (anchura de bin = 1 / duración); a frecuencias
+  neonatales bastarían 2,5–5 s. Analizar en el banco una ventana más corta o dos ventanas según
+  la frecuencia. Propuesto como sesión aparte, sin arrancar.
+- **Incidente:** un comando de la sesión (un script de parche que recibía `pulsenest_lab.py` como
+  argumento) coincidió con el patrón del hook de lanzamiento, que cierra las instancias del lab;
+  no se lanzó nada. Si el lab de Alex estaba abierto, se cerró. Regla en memoria.
+- **Alex preguntó qué es un worktree** y si la carpeta `incunest_afe4490_exp_hr3_sac` tenía que
+  ver: es otro worktree, de la librería (rama `experiment/hr3-sac`, de otra sesión), con el mismo
+  método en C++; esta sesión no la tocó.
+- **Fusión (Alex):** un solo commit con el HR3LAB, la spec, la nomenclatura, el test y este log,
+  llevado a `master` por avance rápido (fast-forward); sin push. Worktree y rama cerrados.
+- Ficheros: `pulsenest_lab.py`, `pulsenest_lab_spec.md`, `docs/nomenclature.md`,
+  `test_pulsenest/hr3lab_test.py`, `pulsenest/hr_bench.py` (docstring), `README.md`,
+  `conversation_log.md`.

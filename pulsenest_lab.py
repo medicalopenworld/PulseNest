@@ -220,6 +220,7 @@ BAUD             = 921600
 # include/wifi_config.h, gitignored; `python pulsenest/net.py` checks they agree).
 from pulsenest.net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
 from pulsenest.capture_csv import CaptureCsvWriter, LabCaptureWriter, CAPTURE_COLS  # noqa: F401
+from pulsenest import hr_bench  # noqa: E402  (HR3LAB runs the offline bench's methods on the live window)
 import pulsenest.hub_client as _hubc  # noqa: E402  (the lab is a hub subscriber and its controller)
 from pulsenest.net import script_name as _script_name  # noqa: E402
 
@@ -357,212 +358,6 @@ class SpO2LocalCalc:
             'spo2':       spo2,
             'spo2_valid': self._SPO2_MIN <= spo2 <= self._SPO2_MAX,
         }
-
-
-class HRFFTCalc:
-    """FFT-based HR estimator (HR3). Prototype of the planned firmware HR3 algorithm.
-
-    Pipeline per sample:
-      led1_aled1 → 2nd-order Butterworth LP 10 Hz → circular buffer 512 samples →
-      [every UPDATE_INTERVAL_S] Hann window → rfft → dominant peak in [HR_MIN_HZ, HR_MAX_HZ]
-      + parabolic sub-bin interpolation → HR3 (bpm)
-
-    Constants must match the firmware implementation when ported:
-      LP_CUTOFF_HZ=10, BUF_LEN=512, UPDATE_INTERVAL_S=0.5, HR_MIN_HZ=0.5, HR_MAX_HZ=4.3333
-
-    The 512-sample buffer is designed for 50 Hz (10.24 s): since lab v1.88 the input is
-    the AFE rate (every $M4 sample streams) and the low-pass output is decimated by
-    round(fs / 50) before the buffer, as the library's HR3 chain does. Until v1.87 the
-    caller claimed 50 Hz for a 500 Hz stream, so the buffer held ~1 s.
-    """
-    DECIM_TARGET_HZ    = 50.0
-    LP_CUTOFF_HZ       = 10.0
-    BUF_LEN            = 512
-    UPDATE_INTERVAL_S  = 0.5
-    HR_MIN_HZ          = 30.0 / 60.0  # 0.5 Hz    — 30 BPM — reported valid lower bound (lib hr_min_bpm, v0.99)
-    HR_MAX_HZ          = 260.0 / 60.0 # 4.3333 Hz — 260 BPM — reported valid upper bound (lib hr_max_bpm)
-    # Guard band: internal search extends ±3 BPM beyond the reported valid range.
-    # Ensures signals at the boundary are found before the validity gate is applied.
-    HR_SEARCH_MIN_HZ   = 27.0 / 60.0  # 0.45 Hz   — 27 BPM
-    HR_SEARCH_MAX_HZ   = 263.0 / 60.0 # 4.3833 Hz — 263 BPM
-
-    def __init__(self):
-        self._fs           = 0.0
-        self._b            = None
-        self._a            = None
-        self._zi           = None
-        self._buf          = np.zeros(self.BUF_LEN)
-        self._buf_idx      = 0
-        self._buf_count    = 0
-        self._update_n     = 0
-        self._sample_count = 0
-        self.hr_bpm        = 0.0
-        self.hr_valid      = False
-        # Diagnostic state exposed for HR3LabWindow
-        self.last_spectrum         = np.zeros(self.BUF_LEN // 2 + 1)
-        self.last_freqs            = np.zeros(self.BUF_LEN // 2 + 1)
-        self.last_peak_freq        = 0.0
-        self.last_harmonic_ratio = 0.0
-        self.last_filtered_buf     = np.zeros(self.BUF_LEN)
-        self.last_hps              = np.zeros(self.BUF_LEN // 2 + 1)
-        # Gap detection (data_sample_counter continuity — Punto C, post-decimation)
-        self._last_counter = None
-        self._nominal_step = None
-        self.gap_count     = 0
-
-    def _recalc_params(self, fs):
-        self._fs      = fs
-        self._factor  = max(1, int(round(fs / self.DECIM_TARGET_HZ)))
-        self._rate    = fs / self._factor
-        self._phase   = 0
-        self._update_n = max(1, int(self.UPDATE_INTERVAL_S * self._rate))
-        self._b, self._a = signal.butter(2, self.LP_CUTOFF_HZ / (fs / 2.0), btype='low')
-        self._zi      = signal.lfilter_zi(self._b, self._a) * 0.0
-        self._buf     = np.zeros(self.BUF_LEN)
-        self._buf_idx = 0
-        self._buf_count   = 0
-        self._sample_count = 0
-        self.hr_bpm   = 0.0
-        self.hr_valid = False
-        self.last_spectrum         = np.zeros(self.BUF_LEN // 2 + 1)
-        self.last_freqs            = np.zeros(self.BUF_LEN // 2 + 1)
-        self.last_peak_freq        = 0.0
-        self.last_harmonic_ratio = 0.0
-        self.last_filtered_buf     = np.zeros(self.BUF_LEN)
-        self.last_hps              = np.zeros(self.BUF_LEN // 2 + 1)
-
-    def reset(self):
-        self._fs      = 0.0
-        self.hr_bpm   = 0.0
-        self.hr_valid = False
-
-    @property
-    def rate_hz(self):
-        """The decimated rate the buffer runs at (50 Hz at the default PRF)."""
-        return getattr(self, '_rate', 0.0)
-
-    def update(self, led1_aled1, fs, sample_counter=None):
-        """Process one sample. Returns (hr_bpm, hr_valid)."""
-        if fs != self._fs:
-            self._recalc_params(fs)
-
-        if sample_counter is not None:
-            if self._last_counter is not None:
-                step = sample_counter - self._last_counter
-                if self._nominal_step is None:
-                    self._nominal_step = step
-                elif step > self._nominal_step:
-                    self.gap_count += step - self._nominal_step
-            self._last_counter = sample_counter
-
-        # LP filter (anti-aliasing before virtual decimation; magnitude-only FFT → no need to negate)
-        x = float(led1_aled1)
-        filtered, self._zi = signal.lfilter(self._b, self._a, [x], zi=self._zi)
-        filtered = filtered[0]
-
-        # Decimate to the design rate (the low-pass above is the anti-alias filter)
-        self._phase += 1
-        if self._phase < self._factor:
-            return self.hr_bpm, self.hr_valid
-        self._phase = 0
-
-        # Circular buffer
-        self._buf[self._buf_idx] = filtered
-        self._buf_idx = (self._buf_idx + 1) % self.BUF_LEN
-        if self._buf_count < self.BUF_LEN:
-            self._buf_count += 1
-
-        # Update every UPDATE_INTERVAL_S seconds
-        self._sample_count += 1
-        if self._sample_count < self._update_n:
-            return self.hr_bpm, self.hr_valid
-        self._sample_count = 0
-
-        if self._buf_count < self.BUF_LEN:
-            self.hr_valid = False
-            return self.hr_bpm, self.hr_valid
-
-        # Reconstruct ordered segment (oldest first)
-        seg_raw = np.roll(self._buf, -self._buf_idx)
-        self.last_filtered_buf = seg_raw.copy()
-
-        # Apply Hann window and compute rfft
-        seg      = seg_raw * np.hanning(self.BUF_LEN)
-        fft_cplx = np.fft.rfft(seg)
-        spectrum = np.abs(fft_cplx)
-        freqs    = np.fft.rfftfreq(self.BUF_LEN, d=1.0 / self._rate)
-
-        # Restrict search to guard-band HR range (±3 BPM beyond reported valid range)
-        mask = (freqs >= self.HR_SEARCH_MIN_HZ) & (freqs <= self.HR_SEARCH_MAX_HZ)
-        if not np.any(mask):
-            self.hr_valid = False
-            return self.hr_bpm, self.hr_valid
-
-        # Harmonic Product Spectrum (HPS): HPS[i] = S[i] · S[2i] · S[3i].
-        # Reinforces the fundamental frequency (all harmonics peak together) and
-        # suppresses isolated harmonic peaks (their sub-harmonics are weak).
-        # Solves the problem of locking onto the 2nd harmonic when it has more
-        # power than the fundamental (common in slow PPG signals).
-        n_hps = len(spectrum)
-        hps   = spectrum.copy()
-        for k in range(2, 4):          # k = 2, 3
-            n_valid        = n_hps // k
-            hps[:n_valid] *= spectrum[np.arange(n_valid) * k]
-            hps[n_valid:]  = 0.0
-        self.last_hps = hps.copy()     # exposed for HR3LabWindow
-
-        idx_offset = int(np.where(mask)[0][0])
-        hps_hr     = hps[mask]
-
-        # Dominant peak in HPS — argmax (same logic as firmware)
-        spec_hr = spectrum[mask]       # kept for harmonic_ratio computation below
-        peak_local = int(np.argmax(hps_hr))
-        peak_global = idx_offset + peak_local
-
-        # Gaussian interpolation: parabolic fit on log|X|² (accurate for Hann window).
-        # Jacobsen (complex) gives δ ≈ -0.5·δ_true for Hann: adjacent bins carry
-        # phase e^{±jπ}=-1, inverting the numerator sign.  Gaussian gives δ ≈ 1.07·δ_true.
-        if 0 < peak_global < len(fft_cplx) - 1:
-            pm = abs(fft_cplx[peak_global - 1])**2
-            pc = abs(fft_cplx[peak_global    ])**2
-            pp = abs(fft_cplx[peak_global + 1])**2
-            lm, lc, lp = np.log(max(pm, 1e-30)), np.log(max(pc, 1e-30)), np.log(max(pp, 1e-30))
-            denom = lm - 2.0*lc + lp
-            delta = 0.5*(lm - lp) / denom if denom != 0.0 else 0.0
-        else:
-            delta = 0.0
-
-        freq_res  = self._rate / self.BUF_LEN
-        peak_freq = freqs[peak_global] + delta * freq_res
-        hr_bpm    = peak_freq * 60.0
-
-        # Store diagnostic state for HR3LabWindow
-        spec_max = np.max(spec_hr) if np.max(spec_hr) > 0.0 else 1.0
-        self.last_spectrum  = spectrum / spec_max          # normalised to HR-band max
-        self.last_freqs     = freqs
-        self.last_peak_freq = peak_freq
-
-        # Harmonic power ratio: signal = power at f0, 2·f0, 3·f0 (±1 bin each);
-        # denominator = total power in [HR_MIN_HZ, min(3·f0 + 2 bins, Nyquist)].
-        # Physically motivated: a clean PPG concentrates energy at the fundamental
-        # + harmonics; noise spreads it uniformly.
-        f_top    = min(peak_freq * 3.0 + 2.0 * freq_res, self._rate / 2.0)
-        ext_mask = (freqs >= self.HR_SEARCH_MIN_HZ) & (freqs <= f_top)
-        total_power  = np.sum(spectrum[ext_mask])
-        signal_power = 0.0
-        for k in (1, 2, 3):
-            h_bin = int(round(peak_freq * k / freq_res))
-            for b in range(max(0, h_bin - 1), min(len(spectrum), h_bin + 2)):
-                signal_power += spectrum[b]
-        self.last_harmonic_ratio = float(signal_power / total_power) if total_power > 0.0 else 0.0
-
-        if (self.HR_MIN_HZ * 60.0) <= hr_bpm <= (self.HR_MAX_HZ * 60.0):
-            self.hr_bpm   = hr_bpm
-            self.hr_valid = True
-        else:
-            self.hr_valid = False
-
-        return self.hr_bpm, self.hr_valid
 
 
 SPO2_HOLD_REASON_NAMES = ("none", "probe", "window", "eps", "reg_corr", "PI", "range", "pulse")  # lib v0.110 SpO2HoldReason
@@ -4566,6 +4361,8 @@ class HR3TestCalc:
     Diagnostic state for HR3TestWindow: last_spectrum (|X| normalised to the search-band
     maximum), last_freqs, last_hps (normalised likewise), last_peak_freq, last_filtered_buf
     (the decimated buffer, oldest first), rate_hz.
+    For HR3LabCalc (v1.112): last_power (P of the last window, not normalised) and window_count
+    (windows computed since creation; never reset, so a change means a new window).
     """
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
@@ -4610,6 +4407,7 @@ class HR3TestCalc:
         self._last_counter = None
         self._nominal_step = None
         self.gap_count     = 0
+        self.window_count  = 0      # windows computed since creation (HR3LabCalc watches it)
         self._reset_state()
 
     # ── Parameters ────────────────────────────────────────────────────────────
@@ -4638,6 +4436,7 @@ class HR3TestCalc:
         self.last_hps          = np.zeros(0)
         self.last_peak_freq    = 0.0
         self.last_filtered_buf = np.zeros(n)
+        self.last_power        = np.zeros(0)
         self.hist_filtered     = deque(maxlen=self.HIST_LEN)   # every decimated sample, 60 s (v1.101)
         self._clean = True
 
@@ -4722,6 +4521,8 @@ class HR3TestCalc:
         x    = (seg_raw - seg_raw.mean()) * self._hann
         X    = np.fft.rfft(x)                # bins 0..N/2 of the library's complex radix-2 FFT
         P    = (X.real * X.real + X.imag * X.imag)
+        self.last_power    = P
+        self.window_count += 1
         bin_res = rate / n
         nyq     = n // 2
         search_min = int(np.ceil(self.FW_HR_SEARCH_MIN / 60.0 / bin_res))
@@ -4788,6 +4589,158 @@ class HR3TestCalc:
         else:
             self.hr_sqi = 0.0
         self.hr_bpm = hr if self.hr_sqi > 0.0 else float('nan')
+
+
+
+class HR3LabCalc:
+    """The methods of analysis family 3 side by side on one HR3 window, for HR3LAB (lab v1.112).
+
+    Front end: an HR3TestCalc of its own, always at the library's values (the instance HR3TEST
+    owns can be edited from its panel), fed every $M4 sample at the AFE rate. Each time it
+    completes a window (512 samples at 50 Hz, one every 0.5 s) the power spectrum of that
+    window goes through pulsenest.hr_bench, the offline bench of docs/hr3_methods_20261114.md,
+    called with one row. The methods are not re-implemented here, so the lab and the bench
+    cannot drift apart (test_pulsenest/hr3lab_test.py compares the two on the same signal).
+
+      HR3_HPS  hr_bench.hps + hps_estimate: today's HR3, the product of three harmonics, and
+               its SQI (the two-bin local SNR of the product).
+      HR3_SAC  hr_bench.hr3_sac: autocorrelation along frequency of the local contrast; rho at
+               the chosen lag, and hr_bench.comb_purity at that rate.
+      HR3_CEP  hr_bench.log_floor (CEP_FLOOR_DB under the band maximum, 'cep40' of the report),
+               band_cepstrum and pick_quefrency: the chosen peak over the RMS of its range.
+
+    The bench's own defaults are used (contrast margin and cap, the 'first maximum reaching
+    alpha of the highest' pick); bench_defaults() reads them back for the window's info line.
+
+    Per sample only the front end runs. The methods run once per window, in the drain tick;
+    window_ms receives what each window cost (PYTHON TIMING, algo_hr3lab). While the probe is
+    not applied the front end resets, every value is NaN and the history gets a break.
+    The labels are the working labels of docs/nomenclature.md, not library identifiers.
+    """
+
+    CEP_FLOOR_DB = 40.0     # the cepstrum reads the band's dB above a floor this far under its maximum
+    HIST_S       = 120.0    # span of the rate / quality history the window draws
+    HIST_LEN     = 300      # windows kept: HIST_S at one every 0.5 s, plus room for breaks
+
+    _HIST_KEYS = ("t", "hps", "sac", "cep", "sqi", "rho", "purity", "hr1", "hr2")
+
+    def __init__(self):
+        self._fe       = HR3TestCalc()
+        self._seen     = self._fe.window_count
+        self._fs       = 0.0
+        self.t_s       = 0.0            # time fed so far [s], the history's clock
+        self.revision  = 0              # +1 on every new window, lost window or reset: redraw
+        self.probe_state = -1           # last one fed
+        self.window_ms = deque(maxlen=50)
+        self.hist = {k: deque(maxlen=self.HIST_LEN) for k in self._HIST_KEYS}
+        self._clear_window()
+
+    @staticmethod
+    def bench_defaults():
+        """The bench's own parameters of the methods, read from its signatures: what the calls
+        below use, since they pass none of them."""
+        import inspect
+        sac = inspect.signature(hr_bench.hr3_sac).parameters
+        return {"margin_db": sac["margin_db"].default, "cap_db": sac["cap_db"].default,
+                "alpha_sac": sac["alpha"].default,
+                "alpha_cep": inspect.signature(hr_bench.pick_quefrency).parameters["alpha"].default}
+
+    def _clear_window(self):
+        nan = float('nan')
+        self.has_window = False
+        self.rate_hz = 0.0
+        self.bin_res = 0.0
+        self.b_lo = self.b_hi = 0
+        self.dq = 0.0
+        self.power = self.contrast = self.hps = self.rho_lags = self.cepstrum = np.zeros(0)
+        self.hr_hps = self.hr_sac = self.hr_cep = nan
+        self.sqi_hps = self.rho = self.purity = self.cep_peak = 0.0
+        self.hr1 = self.hr2 = nan
+
+    def _lose_window(self):
+        """The front end started over (probe not applied, another rate): nothing is current, and
+        the traces must not join what came before to what comes after."""
+        self._clear_window()
+        nan = float('nan')
+        for k in self._HIST_KEYS:
+            self.hist[k].append(self.t_s if k == "t" else nan)
+        self.revision += 1
+
+    def reset(self):
+        """Stream discontinuity: front end, current window and history start over."""
+        self._fe.reset()
+        self._seen = self._fe.window_count
+        self.t_s = 0.0
+        for q in self.hist.values():
+            q.clear()
+        self._clear_window()
+        self.revision += 1
+
+    @property
+    def gap_count(self):
+        return self._fe.gap_count
+
+    @property
+    def fill_fraction(self):
+        """How full the front end's buffer is, 0..1 (1 = a window is computed every 0.5 s)."""
+        fe = self._fe
+        return fe._buf_count / fe._buf.shape[0]
+
+    def update(self, ot_led1, fs, probe_state, sample_counter=None,
+               hr1=float('nan'), hr2=float('nan')):
+        """One sample at the AFE rate. hr1 / hr2: the board's own rates in the same frame (<= 0 =
+        none), stored with each window as the live reference."""
+        if fs != self._fs:
+            self._fs = fs
+            if self.has_window:
+                self._lose_window()
+        self.probe_state = probe_state
+        if fs > 0.0:
+            self.t_s += 1.0 / fs
+        fe = self._fe
+        fe.update(ot_led1, fs, probe_state, sample_counter)
+        if fe.window_count != self._seen:
+            self._seen = fe.window_count
+            self._on_window(fe.last_power, fe.rate_hz, hr1, hr2)
+        elif self.has_window and probe_state != HR3TestCalc.PROBE_APPLIED:
+            self._lose_window()
+
+    def _on_window(self, power, rate, hr1, hr2):
+        t0 = time.perf_counter()
+        bin_res, b_lo, b_hi = hr_bench.band_bins(rate)
+        # The bench is written for the library's 512-sample window with its 0.49-15 Hz band, and
+        # the contrast's neighbourhood, inside the spectrum. Any other geometry: no values.
+        if (power.shape[0] != hr_bench.BUF_LEN // 2 + 1
+                or b_hi + hr_bench.CONTRAST_HALF_W + 1 > power.shape[0]):
+            if self.has_window:
+                self._lose_window()
+            return
+        P = power[np.newaxis, :]
+        C, Cs = hr_bench.hps(P, 3)
+        hr_hps, sqi = hr_bench.hps_estimate(P, C, Cs, rate)
+        hr_sac, rho, contrast, R = hr_bench.hr3_sac(P, rate)
+        purity = hr_bench.comb_purity(P, hr_sac, rate)
+        S = hr_bench.log_floor(P, b_lo, b_hi, self.CEP_FLOOR_DB)
+        A, dq = hr_bench.band_cepstrum(S, bin_res)
+        hr_cep, peak = hr_bench.pick_quefrency(A, dq)
+
+        self.has_window = True
+        self.rate_hz, self.bin_res, self.b_lo, self.b_hi, self.dq = rate, bin_res, b_lo, b_hi, dq
+        self.power, self.contrast, self.hps = power, contrast[0], C[0]
+        self.rho_lags, self.cepstrum = R[0], A[0]
+        self.hr_hps, self.sqi_hps = float(hr_hps[0]), float(sqi[0])
+        self.hr_sac, self.rho, self.purity = float(hr_sac[0]), float(rho[0]), float(purity[0])
+        self.hr_cep, self.cep_peak = float(hr_cep[0]), float(peak[0])
+        nan = float('nan')
+        self.hr1 = hr1 if hr1 > 0 else nan
+        self.hr2 = hr2 if hr2 > 0 else nan
+        h = self.hist
+        h["t"].append(self.t_s)
+        h["hps"].append(self.hr_hps); h["sac"].append(self.hr_sac); h["cep"].append(self.hr_cep)
+        h["sqi"].append(self.sqi_hps); h["rho"].append(self.rho); h["purity"].append(self.purity)
+        h["hr1"].append(self.hr1); h["hr2"].append(self.hr2)
+        self.revision += 1
+        self.window_ms.append((time.perf_counter() - t0) * 1000.0)
 
 
 
@@ -6622,6 +6575,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("algo_spo2lab",  "[_py_timing['algo_spo2lab']]   SPO2LAB   |  SpO2LabWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
         ("algo_spo2test", "[_py_timing['algo_spo2test']]  SPO2TEST  |  SpO2TestWindow.update_algorithms()", _SERIAL_TICK_BUDGET_MS),
         ("algo_hr2test",  "[_py_timing['algo_hr2test']]   HR2TEST   |  HR2TestWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
+        ("algo_hr3lab",   "[_py_timing['algo_hr3lab']]    HR3LAB    |  HR3LabCalc, once per HR3 window (0.5 s)", _SERIAL_TICK_BUDGET_MS),
     ]
     _PLOTS_TICK_ROWS = [  # renderers timed inside _refresh_plots_tick()
         ("plot_ppgplots", "[_py_timing['plot_ppgplots']]  PPGPLOTS  |  PPGPlotsWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
@@ -6644,7 +6598,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("gap_queue",    "[PPGMonitor._queue_size_buf]          Queue size (frames)"),
         ("gap_B",        "[PPGMonitor._gaps_B]                  Ingestion"),
         ("gap_hr1test",  "[PPGMonitor.hr1test_calc.gap_count]   HR1TEST"),
-        ("gap_hr3lab",   "[PPGMonitor.hr3_calc.gap_count]       HR3LAB"),
+        ("gap_hr3lab",   "[HR3LabWindow.calc.gap_count]         HR3LAB"),
         ("gap_hr3test",  "[PPGMonitor.hr3test_calc.gap_count]   HR3TEST"),
         ("gap_spo2lab",  "[SpO2LabWindow.gap_count]             SPO2LAB"),
         ("gap_spo2test", "[SpO2TestWindow.gap_count]            SPO2TEST"),
@@ -9697,15 +9651,45 @@ class XYLabWindow(QtWidgets.QMainWindow):
 
 
 class HR3LabWindow(QtWidgets.QMainWindow):
-    """Diagnostic window for the HR3 (FFT-based) algorithm.
+    """HR3LAB — the methods of analysis family 3 side by side, live (lab v1.112).
 
-    Layout:
-      Left (wide):   FFT spectrum — magnitude normalised to HR-band max, shaded HR band,
-                     peak marker (cyan), harmonic markers (2×, 3×).
-      Right top:     LP-filtered signal — last 512 samples fed into the FFT.
-      Right bottom:  HR comparison over time — HR1 (yellow), HR2 (red), HR3 (cyan).
-      Bottom bar:    Algorithm parameters and last-update diagnostics.
+    What stored captures cannot show (probe placement, motion, low perfusion), seen on the three
+    methods measured in docs/hr3_methods_20261114.md, all on the same HR3 window: HR3_HPS
+    (today's HR3), HR3_SAC (spectral autocorrelation) and HR3_CEP (cepstrum).
+
+    Layout, top to bottom:
+      Bar        PROBE, PI (the board's), PAUSE.
+      Spectrum   the window's spectrum in dB re the band maximum, with three rows of ticks: the
+                 comb each method claims (n x its rate). A wrong rate shows as ticks that miss
+                 the peaks.
+      Contrast   the local contrast, the sequence HR3_SAC reads, on the same frequency axis.
+      Columns    one per method: rate and quality index in the title, and the view that
+                 explains it (the harmonic product against rate, rho against lag, the cepstrum
+                 against quefrency) with the chosen value marked.
+      Rates      the three rates and the board's HR1 and HR2 over the last 120 s.
+      Quality    HR3_HPS's SQI, rho and comb purity over the same 120 s.
+      Info line  the fixed parameters, read-only: they are the bench's.
+
+    Purely observational: no parameter can be edited. Requires $M4 (OT_LED1).
+    The calculation is HR3LabCalc; this class draws, and only when there is something new.
+    Until v1.111 the window drew HRFFTCalc, a prototype of HR3 older than the library's chain
+    (removed in v1.112; HR3TEST shows the library's spectrum, product and filtered signal).
     """
+
+    _COL_HPS    = '#00CCFF'     # HR3's colour everywhere in the lab
+    _COL_SAC    = '#FF66FF'
+    _COL_CEP    = '#FFAA33'
+    _COL_HR1    = '#FFDD44'
+    _COL_HR2    = '#FF4444'
+    _COL_PICK   = '#FFDD44'     # the chosen value, as HR3TEST's peak
+    _F_MAX_HZ   = 15.0          # top of the frequency axis: the band the methods read
+    _RATE_Y_MAX = 280.0
+    _CLIP       = 1.2           # a normalised curve is drawn up to this (the view ends at 1.05)
+    _SCROLL_S   = 0.5           # with no new window the time plots still move this often
+    GATE_RHO    = 0.5           # the validity rule of 2026-11-12 (not tuned), drawn as a
+    GATE_PURITY = 0.3           # reference on the quality plot; nothing is gated here
+    _PS_NAME = {0: "DISCONNECTED", 1: "OT HIGH", 2: "APPLIED", 3: "AMB SATURATING",
+                4: "ONLY LED SATURATING"}
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -9715,131 +9699,419 @@ class HR3LabWindow(QtWidgets.QMainWindow):
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
+        self.calc       = HR3LabCalc()
+        self._bench     = HR3LabCalc.bench_defaults()
+        self._paused    = False
+        self._drawn_rev = -1
+        self._drawn_t   = 0.0
+
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        outer = QtWidgets.QVBoxLayout(central)
-        outer.setContentsMargins(8, 8, 8, 4)
-        outer.setSpacing(4)
+        root = QtWidgets.QVBoxLayout(central)
+        root.setContentsMargins(8, 6, 8, 4)
+        root.setSpacing(4)
 
-        # ── plots ────────────────────────────────────────────────────────────────
-        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        self._splitter.setHandleWidth(2)
-        outer.addWidget(self._splitter, stretch=1)
+        # ── Bar: what the probe is doing, and PAUSE ───────────────────────────
+        bar = QtWidgets.QWidget()
+        hb = QtWidgets.QHBoxLayout(bar)
+        hb.setContentsMargins(2, 0, 2, 0)
+        self._lbl_state = QtWidgets.QLabel("PROBE --")
+        self._lbl_pi    = QtWidgets.QLabel("PI --")
+        for w, col in ((self._lbl_state, '#FFDD44'), (self._lbl_pi, '#8888FF')):
+            w.setStyleSheet("color: %s; font-weight: bold;" % col)
+            hb.addWidget(w)
+            hb.addSpacing(28)
+        self._lbl_state.setToolTip(_make_tooltip(
+            "PROBE — probe state",
+            "RSQM's probe classification. The HR3 window restarts whenever this is not APPLIED: "
+            "the three methods show no value until 10.24 s of applied signal have been buffered.",
+            src="ProbeState"))
+        self._lbl_pi.setToolTip(_make_tooltip(
+            "PI — perfusion index",
+            "AC/DC ratio [%] from the board. Context for what you are doing to the probe: it "
+            "falls when perfusion or optical coupling drops.",
+            src="PPGMonitor.data_pi"))
+        hb.addStretch(1)
+        self._btn_pause = QtWidgets.QPushButton("PAUSE")
+        self._btn_pause.setCheckable(True)
+        self._btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_pause.setShortcut("P")
+        self._btn_pause.clicked.connect(self._toggle_pause)
+        self._btn_pause.setToolTip(_make_tooltip(
+            "PAUSE / RESUME  (shortcut: P)",
+            "Freeze the picture to study a window: the spectrum, the three views and the two "
+            "time plots stop where they are. The methods keep running, so RESUME shows the "
+            "present with its full history.",
+            src="HR3LabWindow._toggle_pause"))
+        hb.addWidget(self._btn_pause)
+        root.addWidget(bar)
 
-        # Left: FFT spectrum
-        left_gw = pg.GraphicsLayoutWidget()
-        self.p_fft = left_gw.addPlot(title="<b style='color:#00CCFF'>FFT SPECTRUM</b>")
-        self.p_fft.setLabel('bottom', 'Frequency', units='Hz')
-        self.p_fft.setLabel('left', 'Magnitude (norm. to HR-band max)')
-        self.p_fft.setXRange(0, 5.5)
-        self.p_fft.setYRange(0, 1.05)
-        self.p_fft.showGrid(x=True, y=True, alpha=0.3)
-        self._hr_region = pg.LinearRegionItem(
-            values=[HRFFTCalc.HR_MIN_HZ, HRFFTCalc.HR_MAX_HZ],
-            brush=pg.mkBrush(0, 180, 255, 38), movable=False,   # alpha 25 -> 38 (v1.100, Alex: a touch lighter)
-            pen=pg.mkPen(None))     # v1.99: the fill alone marks the band; no edge lines (Alex)
-        self.p_fft.addItem(self._hr_region)
-        self.curve_fft = self.p_fft.plot(pen=pg.mkPen('#00CCFF', width=1.5), name="Spectrum")
-        self.curve_hps = self.p_fft.plot(pen=pg.mkPen('#FF8800', width=1.5), name="HPS")
-        self._line_peak = pg.InfiniteLine(
-            pos=0, angle=90,
-            pen=pg.mkPen('#FFDD44', width=2),      # v1.99: yellow, as HR3TEST's peak (was cyan, the spectrum's colour)
-            label='peak', labelOpts={'color': '#FFDD44', 'position': 0.92})
-        self._line_h2 = pg.InfiniteLine(
-            pos=0, angle=90,
-            pen=pg.mkPen('#006688', width=1, style=QtCore.Qt.DashLine),
-            label='2×', labelOpts={'color': '#006688', 'position': 0.85})
-        self._line_h3 = pg.InfiniteLine(
-            pos=0, angle=90,
-            pen=pg.mkPen('#004455', width=1, style=QtCore.Qt.DashLine),
-            label='3×', labelOpts={'color': '#004455', 'position': 0.78})
-        for item in [self._line_peak, self._line_h2, self._line_h3]:
-            self.p_fft.addItem(item)
+        # ── Plots ─────────────────────────────────────────────────────────────
+        # One column; the third row is a nested layout holding the three methods side by side,
+        # so the three get equal widths whatever the rows above and below need.
+        glw = pg.GraphicsLayoutWidget()
+        root.addWidget(glw, 1)
+        methods = glw.addLayout(row=2, col=0)
+        methods.setContentsMargins(0, 0, 0, 0)
+        for r, stretch in enumerate((5, 3, 6, 5, 3)):
+            glw.ci.layout.setRowStretchFactor(r, stretch)
+        for col in range(3):
+            methods.layout.setColumnStretchFactor(col, 1)
+        grey = "<b style='color:#CCCCCC'>%s</b> <span style='color:#888888'>%s</span>"
+        band = (hr_bench.HR_MIN - hr_bench.HR_GUARD, hr_bench.HR_MAX + hr_bench.HR_GUARD)   # bpm
 
-        # Right: two stacked plots
-        right_gw = pg.GraphicsLayoutWidget()
-        self.p_sig = right_gw.addPlot(
-            row=0, col=0,
-            title="<b style='color:#AAFFAA'>LP-FILTERED SIGNAL (input to FFT)</b>")
-        self.p_sig.setLabel('bottom', 'Sample')
-        self.p_sig.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_sig = self.p_sig.plot(pen=pg.mkPen('#AAFFAA', width=1))
+        def _plot(layout, row, col, left, bottom=None, units=None):
+            p = layout.addPlot(row=row, col=col)
+            p.showGrid(x=True, y=True, alpha=0.3)
+            p.setLabel('left', left)
+            if bottom is None:      # X axis shared with the plot below: no values, no label
+                p.getAxis('bottom').setStyle(showValues=False)
+            else:
+                p.setLabel('bottom', bottom, units=units)
+            return p
 
-        self.p_hr_cmp = right_gw.addPlot(
-            row=1, col=0,
-            title="<b style='color:#FFFFFF'>HR COMPARISON (bpm)</b>")
-        self.p_hr_cmp.setLabel('bottom', 'Sample')
-        self.p_hr_cmp.setYRange(40, 180)
-        self.p_hr_cmp.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_hr1_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#FFDD44', width=2),  name="HR1")
-        self.curve_hr2_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#FF4444', width=1.5), name="HR2")
-        self.curve_hr3_cmp = self.p_hr_cmp.plot(pen=pg.mkPen('#00CCFF', width=2),  name="HR3")
+        def _named(*pairs):         # a title's legend: each name in the colour of its trace
+            return " · ".join("<span style='color:%s'>%s</span>" % (col, name) for name, col in pairs)
 
-        left_gw.setMinimumWidth(0)
-        right_gw.setMinimumWidth(0)
-        self._splitter.setMinimumWidth(0)
-        self._splitter.addWidget(left_gw)
-        self._splitter.addWidget(right_gw)
+        def _search_band(p, lo, hi):
+            p.addItem(pg.LinearRegionItem(values=[lo, hi], brush=pg.mkBrush(0, 180, 255, 38),
+                                          movable=False, pen=pg.mkPen(None)))
 
-        # ── info bar ─────────────────────────────────────────────────────────────
+        def _pick_line(p):
+            line = pg.InfiniteLine(pos=0, angle=90, movable=False,
+                                   pen=pg.mkPen(self._COL_PICK, width=2))
+            line.setVisible(False)
+            p.addItem(line)
+            return line
+
+        # Spectrum, with the comb each method claims
+        self.p_spec = _plot(glw, 0, 0, 'dB re max')
+        self._set_title(self.p_spec, grey % ("SPECTRUM", "ticks:") + " " + _named(
+            ("HR3_HPS", self._COL_HPS), ("HR3_SAC", self._COL_SAC), ("HR3_CEP", self._COL_CEP)))
+        self.p_spec.titleLabel.setToolTip(_make_tooltip(
+            "Spectrum of the window",
+            "Power spectrum of the HR3 window (512 samples at 50 Hz, Hann), in dB below the "
+            "maximum of the 0.49–15 Hz band. The three methods read this one spectrum.\n\n"
+            "<b>Ticks</b>: one row per method, at n × the rate it reads. A right rate puts its "
+            "ticks on the peaks; a rate read at one third puts two ticks out of three between "
+            "them.\n\n"
+            "<b>Dashed line</b>: the floor of HR3_CEP; the cepstrum reads only what is above it.",
+            src="HR3LabCalc.power"))
+        self.curve_spec = self.p_spec.plot(pen=pg.mkPen('#CCCCCC', width=1.5))
+        self.p_spec.addItem(pg.InfiniteLine(
+            pos=-HR3LabCalc.CEP_FLOOR_DB, angle=0, movable=False,
+            pen=pg.mkPen('#777777', width=1, style=QtCore.Qt.DashLine),
+            label='floor of HR3_CEP',
+            labelOpts={'color': '#999999', 'position': 0.995, 'anchors': [(1.0, 1.0), (1.0, 1.0)]}))
+        self.ticks_hps = pg.VTickGroup(xvals=[], yrange=[0.93, 0.99], pen=pg.mkPen(self._COL_HPS, width=2))
+        self.ticks_sac = pg.VTickGroup(xvals=[], yrange=[0.86, 0.92], pen=pg.mkPen(self._COL_SAC, width=2))
+        self.ticks_cep = pg.VTickGroup(xvals=[], yrange=[0.79, 0.85], pen=pg.mkPen(self._COL_CEP, width=2))
+        for ticks in (self.ticks_hps, self.ticks_sac, self.ticks_cep):
+            self.p_spec.addItem(ticks)
+        self.p_spec.setXRange(0, self._F_MAX_HZ, padding=0)
+        self.p_spec.setYRange(-70, 20, padding=0)     # 0 dB sits under the three rows of ticks
+
+        # Local contrast
+        self.p_con = _plot(glw, 1, 0, 'dB', 'Frequency', 'Hz')
+        self._set_title(self.p_con, grey % ("LOCAL CONTRAST", "read by HR3_SAC"))
+        self.p_con.titleLabel.setToolTip(_make_tooltip(
+            "Local contrast",
+            "dB by which each bin stands out of the median of its ±%d neighbours, minus a margin "
+            "of %.0f dB, clipped to 0..%.0f dB. It keeps the teeth of the harmonic comb whatever "
+            "their height and removes the slope of the spectrum; HR3_SAC correlates this "
+            "sequence with itself."
+            % (hr_bench.CONTRAST_HALF_W, self._bench["margin_db"], self._bench["cap_db"]),
+            src="hr_bench.local_contrast"))
+        self.curve_con = self.p_con.plot(pen=pg.mkPen('#FFFFFF', width=1), fillLevel=0.0,
+                                         brush=pg.mkBrush(255, 255, 255, 150))
+        self.p_con.setXRange(0, self._F_MAX_HZ, padding=0)    # fixed before linking: a linked view
+        self.p_con.setXLink(self.p_spec)                      # left on auto-range drives the other
+        self.p_con.setYRange(0, self._bench["cap_db"] + 1, padding=0)
+
+        # HR3_HPS: the harmonic product against rate
+        self.p_hps = _plot(methods, 0, 0, 'Product, norm.', 'Rate (bpm)')
+        self.p_hps.titleLabel.setToolTip(_make_tooltip(
+            "HR3_HPS — harmonic product spectrum",
+            "Today's HR3 in the library: the product of the power at k, 2k and 3k, normalised "
+            "here to its maximum inside the search band (shaded). The rate is the product's "
+            "highest bin (yellow line).\n\n"
+            "<b>SQI</b>: how much the two bins around the peak stand out of their ±5 "
+            "neighbours in the product, 0..1. The rate is published only while it is above 0.\n\n"
+            "Known failure: it reads one third of the rate when something periodic sits at f0/3.",
+            src="hr_bench.hps, hr_bench.hps_estimate"))
+        _search_band(self.p_hps, *band)
+        self.curve_hps = self.p_hps.plot(pen=pg.mkPen(self._COL_HPS, width=1.5))
+        self.line_hps = _pick_line(self.p_hps)
+        self.p_hps.setXRange(0, 300, padding=0)
+        self.p_hps.setYRange(0, 1.05, padding=0)
+
+        # HR3_SAC: rho against lag
+        self.p_sac = _plot(methods, 0, 1, 'rho', 'Lag along frequency, as a rate (bpm)')
+        self.p_sac.titleLabel.setToolTip(_make_tooltip(
+            "HR3_SAC — spectral autocorrelation",
+            "Correlation of the local contrast with itself shifted along the <b>frequency</b> "
+            "axis. A harmonic comb repeats every f0, so rho peaks at the lag f0 and at 2·f0, "
+            "3·f0. The rate is the smallest lag whose maximum reaches %.1f of the highest "
+            "(yellow line), inside the search band (shaded).\n\n"
+            "<b>rho</b>: the correlation at the chosen lag.\n"
+            "<b>comb purity</b>: fraction of the band's power inside the teeth n·f0 ± %d bins, "
+            "rescaled so that a flat spectrum gives 0.\n\n"
+            "Dashed line: rho %.1f, the validity rule of 2026-11-12."
+            % (self._bench["alpha_sac"], hr_bench.TOOTH_HALF_W, self.GATE_RHO),
+            src="hr_bench.hr3_sac, hr_bench.comb_purity"))
+        _search_band(self.p_sac, *band)
+        self.p_sac.addItem(pg.InfiniteLine(
+            pos=self.GATE_RHO, angle=0, movable=False,
+            pen=pg.mkPen('#777777', width=1, style=QtCore.Qt.DashLine)))
+        self.curve_sac = self.p_sac.plot(pen=pg.mkPen(self._COL_SAC, width=1.5))
+        self.line_sac = _pick_line(self.p_sac)
+        self.p_sac.setXRange(0, 60.0 * hr_bench.D_MAX_HZ, padding=0)
+        self.p_sac.setYRange(-0.4, 1.05, padding=0)
+
+        # HR3_CEP: the cepstrum against quefrency
+        self.p_cep = _plot(methods, 0, 2, 'Cepstrum, norm.', 'Quefrency', 's')
+        self.p_cep.titleLabel.setToolTip(_make_tooltip(
+            "HR3_CEP — cepstrum of the band",
+            "Fourier transform, along frequency, of the band's spectrum in dB above a floor "
+            "%.0f dB under its maximum. A comb of spacing f0 shows as a peak at the quefrency "
+            "1/f0 and at its multiples. The rate is 60 over the smallest quefrency whose maximum "
+            "reaches %.1f of the highest (yellow line), inside the search range (shaded).\n\n"
+            "<b>peak / RMS</b>: height of the chosen peak over the RMS of the search range.\n\n"
+            "Measured on 2026-11-14: it errs on the octave (half, a third) more than HR3_SAC."
+            % (HR3LabCalc.CEP_FLOOR_DB, self._bench["alpha_cep"]),
+            src="hr_bench.log_floor, hr_bench.band_cepstrum, hr_bench.pick_quefrency"))
+        _search_band(self.p_cep, 60.0 / band[1], 60.0 / band[0])
+        self.curve_cep = self.p_cep.plot(pen=pg.mkPen(self._COL_CEP, width=1.5))
+        self.line_cep = _pick_line(self.p_cep)
+        self.p_cep.setXRange(0, 60.0 / band[0] + 0.1, padding=0)
+        self.p_cep.setYRange(0, 1.05, padding=0)
+
+        # Rates against time
+        self.p_rate = _plot(glw, 3, 0, 'bpm')
+        self._set_title(self.p_rate, grey % ("RATES", "") + _named(
+            ("HR3_HPS", self._COL_HPS), ("HR3_SAC", self._COL_SAC), ("HR3_CEP", self._COL_CEP),
+            ("board HR1", self._COL_HR1), ("board HR2", self._COL_HR2)))
+        self.p_rate.titleLabel.setToolTip(_make_tooltip(
+            "Rates against time",
+            "The rate of each method at every window (one every 0.5 s), and the board's HR1 and "
+            "HR2 in the same frame as thin lines: where those two agree they are a reference "
+            "(within 10 % of the ECG in every window that had both, 2026-11-14). A method with "
+            "no value leaves a gap.",
+            src="HR3LabCalc.hist"))
+        self.curve_hr1 = self.p_rate.plot(pen=pg.mkPen(self._COL_HR1, width=1), connect='finite')
+        self.curve_hr2 = self.p_rate.plot(pen=pg.mkPen(self._COL_HR2, width=1), connect='finite')
+
+        def _rate_curve(col):
+            return self.p_rate.plot(pen=pg.mkPen(col, width=2), symbol='o', symbolSize=4,
+                                    symbolBrush=col, symbolPen=None, connect='finite')
+
+        self.curve_r_cep = _rate_curve(self._COL_CEP)
+        self.curve_r_hps = _rate_curve(self._COL_HPS)
+        self.curve_r_sac = _rate_curve(self._COL_SAC)
+        self.p_rate.setXRange(-HR3LabCalc.HIST_S, 0, padding=0)
+        self.p_rate.setYRange(0, self._RATE_Y_MAX, padding=0)
+
+        # Quality against time
+        self.p_qual = _plot(glw, 4, 0, '', 'Time before now', 's')
+        self._set_title(self.p_qual, grey % ("QUALITY", "") + _named(
+            ("HR3_HPS SQI", self._COL_HPS), ("HR3_SAC rho", self._COL_SAC), ("comb purity", '#FFFFFF')))
+        self.p_qual.titleLabel.setToolTip(_make_tooltip(
+            "Quality against time",
+            "HR3_HPS's SQI, HR3_SAC's rho and the comb purity at HR3_SAC's rate, at every "
+            "window. The dashed lines are the validity rule measured on 2026-11-12 (rho ≥ %.1f "
+            "and purity ≥ %.1f): drawn as a reference, nothing is gated in this window."
+            % (self.GATE_RHO, self.GATE_PURITY),
+            src="HR3LabCalc.hist"))
+        for level, col in ((self.GATE_RHO, self._COL_SAC), (self.GATE_PURITY, '#FFFFFF')):
+            self.p_qual.addItem(pg.InfiniteLine(
+                pos=level, angle=0, movable=False,
+                pen=pg.mkPen(col, width=1, style=QtCore.Qt.DashLine)))
+        self.curve_q_sqi = self.p_qual.plot(pen=pg.mkPen(self._COL_HPS, width=1.5), connect='finite')
+        self.curve_q_rho = self.p_qual.plot(pen=pg.mkPen(self._COL_SAC, width=1.5), connect='finite')
+        self.curve_q_pur = self.p_qual.plot(pen=pg.mkPen('#FFFFFF', width=1.5), connect='finite')
+        self.p_qual.setXRange(-HR3LabCalc.HIST_S, 0, padding=0)
+        self.p_qual.setXLink(self.p_rate)
+        self.p_qual.setYRange(0, 1.05, padding=0)
+
+        # ── Info line: the fixed parameters ───────────────────────────────────
         self._info_label = QtWidgets.QLabel()
         self._info_label.setFont(QtGui.QFont("Consolas", 10))
         self._info_label.setStyleSheet("color: #AAAAAA; padding: 2px 4px;")
+        self._info_label.setWordWrap(True)
         self._info_label.setMinimumWidth(0)
         self._info_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
-        outer.addWidget(self._info_label)
-        self._refresh_info(None)
+        self._info_label.setToolTip(_make_tooltip(
+            "Parameters",
+            "What the three methods run with. Nothing here can be edited: the front end is the "
+            "library's HR3 chain and the methods are those of the offline bench, with the "
+            "bench's own values, so what this window shows is what the bench measured.",
+            src="pulsenest/hr_bench.py"))
+        root.addWidget(self._info_label)
 
-        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        geom = s.value("HR3LabWindow/geometry")
+        self._draw()
+
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR3LabWindow/geometry")
         if geom:
             self.restoreGeometry(geom)
         else:
-            self.resize(1800, 900)
+            self.resize(1800, 1000)
 
-    def _refresh_info(self, calc):
-        if calc is None or calc._fs == 0.0:
-            self._info_label.setText(
-                "HR3 params: LP 10 Hz · BUF 512 · Hann · update 0.5 s · band [0.5–3.5 Hz]   |   waiting for data...")
-            return
-        freq_res_bpm = (calc.rate_hz / calc.BUF_LEN) * 60.0
-        buf_pct      = 100.0 * calc._buf_count / calc.BUF_LEN
+    # ── Data path ────────────────────────────────────────────────────────────
+    def feed_sample(self, ot_led1, fs, probe_state, sample_counter=None,
+                    hr1=float('nan'), hr2=float('nan')):
+        """One sample at the AFE rate, from the frame loop (drain tick). Fed while paused too:
+        PAUSE freezes the picture, not the methods."""
+        self.calc.update(ot_led1, fs, probe_state, sample_counter, hr1, hr2)
+
+    def on_stream_discontinuity(self):
+        """Monitor buffers restarted (board restart / source change): the front end, the current
+        window and the history start over. A paused window keeps its frozen picture."""
+        self.calc.reset()
+
+    def _toggle_pause(self):
+        self._paused = self._btn_pause.isChecked()
+        self._btn_pause.setText("RESUME" if self._paused else "PAUSE")
+        if not self._paused:
+            self._drawn_rev = -1      # redraw on the next tick, whatever arrived meanwhile
+
+    # ── Refresh ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _method_title(name, colour, rate, detail):
+        val = ("%.1f bpm" % rate) if rate == rate else "--- bpm"
+        return ("<span style='color:%s'><b>%s &nbsp; %s</b></span><br>"
+                "<span style='color:#BBBBBB'>%s</span>" % (colour, name, val, detail))
+
+    @staticmethod
+    def _set_title(plot, html):
+        """A plot title of any height. pyqtgraph fixes the title row at 30 px, which is one line
+        at 96 dpi: a two-line header, or one line on a 192 dpi screen, runs into the plot. Give
+        the row what the text needs."""
+        plot.setTitle(html)
+        height = int(math.ceil(plot.titleLabel.itemRect().height()))
+        plot.titleLabel.setMaximumHeight(height)
+        plot.layout.setRowFixedHeight(0, height)
+
+    def _teeth(self, rate_bpm):
+        """The harmonics n x rate inside the frequency axis [Hz]; none without a rate."""
+        if not (rate_bpm == rate_bpm) or rate_bpm <= 0.0:
+            return []
+        f0 = rate_bpm / 60.0
+        return list(np.arange(1, int(self._F_MAX_HZ / f0) + 1) * f0)
+
+    def _refresh_info(self):
+        c = self.calc
+        b = self._bench
+        if c.has_window:
+            live = ("%d samples at %.1f Hz (%.2f s, %.1f bpm per bin)"
+                    % (hr_bench.BUF_LEN, c.rate_hz, hr_bench.BUF_LEN / c.rate_hz, 60.0 * c.bin_res))
+        else:
+            live = "%d samples, filling: %d %%" % (hr_bench.BUF_LEN, round(100.0 * c.fill_fraction))
         self._info_label.setText(
-            f"LP {calc.LP_CUTOFF_HZ:.0f} Hz · BUF {calc.BUF_LEN} · Hann · "
-            f"update {calc.UPDATE_INTERVAL_S:.1f} s · band [{calc.HR_MIN_HZ:.1f}–{calc.HR_MAX_HZ:.1f} Hz]   |   "
-            f"freq_res {freq_res_bpm:.1f} BPM/bin · "
-            f"peak {calc.last_peak_freq:.3f} Hz = {calc.last_peak_freq * 60:.1f} BPM · "
-            f"harmonic_ratio {calc.last_harmonic_ratio * 100:.1f}% · "
-            f"buf {buf_pct:.0f}%")
+            "WINDOW %s, Hann, one every %.1f s · search %.0f–%.0f bpm   |   "
+            "HR3_SAC band %.2f–%.0f Hz, contrast margin %.0f dB, cap %.0f dB, first maximum "
+            "≥ %.1f of the highest   |   HR3_CEP floor %.0f dB under the band maximum, first "
+            "maximum ≥ %.1f of the highest   |   comb purity: teeth ±%d bins"
+            % (live, hr_bench.UPDATE_N / hr_bench.DECIM_TARGET_HZ,
+               hr_bench.HR_MIN - hr_bench.HR_GUARD, hr_bench.HR_MAX + hr_bench.HR_GUARD,
+               hr_bench.F_LO_HZ, hr_bench.F_HI_HZ, b["margin_db"], b["cap_db"], b["alpha_sac"],
+               HR3LabCalc.CEP_FLOOR_DB, b["alpha_cep"], hr_bench.TOOTH_HALF_W))
 
-    def update_plots(self, data_hr1, data_hr2, data_hr3, calc):
-        self._refresh_info(calc)
+    def _refresh_context(self, data_pi):
+        self._lbl_state.setText("PROBE %s" % self._PS_NAME.get(self.calc.probe_state, "--"))
+        pi = data_pi[-1] if data_pi is not None and len(data_pi) else float('nan')
+        self._lbl_pi.setText("PI %.2f %%" % pi if pi == pi and pi >= 0.0 else "PI --")
+        mm = self.main_monitor
+        if mm is not None:
+            lib_id = mm.data_lib_id[-1] if mm.data_lib_id else ""
+            if lib_id != "M4":
+                self.statusBar().showMessage(
+                    "⚠ Requires frame mode $M4 (OT_LED1 not available in current mode "
+                    f"${lib_id or '?'}) — the HR3 window is not being fed.")
+            else:
+                self.statusBar().showMessage(_MOUSE_HINT)
 
-        if len(calc.last_freqs) > 1:
-            self.curve_fft.setData(calc.last_freqs, calc.last_spectrum)
-            hr_mask  = (calc.last_freqs >= calc.HR_SEARCH_MIN_HZ) & (calc.last_freqs <= calc.HR_SEARCH_MAX_HZ)
-            hps_band = calc.last_hps[hr_mask]
-            hps_max  = float(np.max(hps_band)) if len(hps_band) > 0 and np.max(hps_band) > 0.0 else 1.0
-            self.curve_hps.setData(calc.last_freqs, calc.last_hps / hps_max)
-            self._line_peak.setValue(calc.last_peak_freq)
-            self._line_h2.setValue(calc.last_peak_freq * 2.0)
-            self._line_h3.setValue(calc.last_peak_freq * 3.0)
-            self.p_fft.setTitle(
-                f"<b style='color:#00CCFF'>FFT SPECTRUM</b>  "
-                f"<span style='color:#AAAAAA'>peak {calc.last_peak_freq:.3f} Hz = "
-                f"{calc.last_peak_freq * 60:.1f} BPM · "
-                f"harmonic_ratio {calc.last_harmonic_ratio * 100:.1f}%</span>")
+    def update_plots(self, data_pi=None):
+        """Render tick (10 Hz). Redraws only when a window arrived or was lost, or when the time
+        plots are due to move; the curves change twice a second at most."""
+        if self._paused:
+            return          # leave the frozen picture alone, including zoom and pan
+        self._refresh_context(data_pi)
+        c = self.calc
+        if c.revision == self._drawn_rev and abs(c.t_s - self._drawn_t) < self._SCROLL_S:
+            return
+        self._draw()
 
-        if calc._buf_count > 0:
-            self.curve_sig.setData(calc.last_filtered_buf)
+    def _draw(self):
+        c = self.calc
+        self._drawn_rev = c.revision
+        self._drawn_t   = c.t_s
+        self._refresh_info()
 
-        self.curve_hr1_cmp.setData(np.array(data_hr1))
-        self.curve_hr2_cmp.setData(np.array(data_hr2))
-        self.curve_hr3_cmp.setData(np.array(data_hr3))
+        if c.has_window:
+            # Spectrum in dB below the band maximum, up to the top of the band
+            n_hi = min(c.power.shape[0], int(self._F_MAX_HZ / c.bin_res) + 2)
+            level = 10.0 * np.log10(np.maximum(c.power[:n_hi], 1e-30))
+            level -= level[c.b_lo:c.b_hi + 1].max()
+            self.curve_spec.setData(np.arange(n_hi) * c.bin_res, level)
+            self.curve_con.setData(np.arange(c.b_lo, c.b_hi + 1) * c.bin_res, c.contrast)
+            for ticks, rate in ((self.ticks_hps, c.hr_hps), (self.ticks_sac, c.hr_sac),
+                                (self.ticks_cep, c.hr_cep)):
+                ticks.setXVals(self._teeth(rate))
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        QtCore.QTimer.singleShot(0, lambda: self._splitter.setSizes([1100, 700]))
+            # HR3_HPS: the product, normalised to its maximum inside the search band
+            bpm_bin = 60.0 * c.bin_res
+            s_min = max(1, int(math.ceil((hr_bench.HR_MIN - hr_bench.HR_GUARD) / bpm_bin)))
+            s_max = min(int(math.floor((hr_bench.HR_MAX + hr_bench.HR_GUARD) / bpm_bin)),
+                        len(c.hps) - 1)
+            top = float(c.hps[s_min:s_max + 1].max()) if s_max >= s_min else 0.0
+            prod = np.minimum(c.hps / top, self._CLIP) if top > 0.0 else np.zeros(len(c.hps))
+            self.curve_hps.setData(np.arange(len(c.hps)) * bpm_bin, prod)
+
+            # HR3_SAC: rho against the lag, the lag read as a rate
+            self.curve_sac.setData(np.arange(len(c.rho_lags)) * bpm_bin, c.rho_lags)
+
+            # HR3_CEP: the cepstrum, normalised to its maximum inside the search range
+            n_min = max(2, int(math.ceil(60.0 / (hr_bench.HR_MAX + hr_bench.HR_GUARD) / c.dq)))
+            n_max = min(int(math.floor(60.0 / (hr_bench.HR_MIN - hr_bench.HR_GUARD) / c.dq)),
+                        len(c.cepstrum) - 1)
+            top = float(c.cepstrum[n_min:n_max + 1].max()) if n_max >= n_min else 0.0
+            cep = np.minimum(c.cepstrum / top, self._CLIP) if top > 0.0 else np.zeros(len(c.cepstrum))
+            self.curve_cep.setData(np.arange(len(c.cepstrum)) * c.dq, cep)
+        else:
+            for curve in (self.curve_spec, self.curve_con, self.curve_hps, self.curve_sac,
+                          self.curve_cep):
+                curve.setData([], [])
+            for ticks in (self.ticks_hps, self.ticks_sac, self.ticks_cep):
+                ticks.setXVals([])
+
+        for line, pos in ((self.line_hps, c.hr_hps), (self.line_sac, c.hr_sac),
+                          (self.line_cep, 60.0 / c.hr_cep if c.hr_cep == c.hr_cep else float('nan'))):
+            shown = pos == pos
+            if shown:
+                line.setValue(pos)
+            line.setVisible(shown)
+
+        dash = "---"
+        self._set_title(self.p_hps, self._method_title(
+            "HR3_HPS", self._COL_HPS, c.hr_hps,
+            "SQI %.2f" % c.sqi_hps if c.has_window else "SQI " + dash))
+        self._set_title(self.p_sac, self._method_title(
+            "HR3_SAC", self._COL_SAC, c.hr_sac,
+            "rho %.2f · purity %.2f" % (c.rho, c.purity) if c.has_window
+            else "rho %s · purity %s" % (dash, dash)))
+        self._set_title(self.p_cep, self._method_title(
+            "HR3_CEP", self._COL_CEP, c.hr_cep,
+            "peak/RMS %.2f" % c.cep_peak if c.has_window else "peak/RMS " + dash))
+
+        # The two time plots: seconds before the last sample fed
+        h = c.hist
+        n = len(h["t"])
+        t = np.fromiter(h["t"], dtype=float, count=n) - c.t_s
+        for curve, key in ((self.curve_hr1, "hr1"), (self.curve_hr2, "hr2"),
+                           (self.curve_r_cep, "cep"), (self.curve_r_hps, "hps"),
+                           (self.curve_r_sac, "sac"), (self.curve_q_sqi, "sqi"),
+                           (self.curve_q_rho, "rho"), (self.curve_q_pur, "purity")):
+            curve.setData(t, np.fromiter(h[key], dtype=float, count=n))
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -14397,12 +14669,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self._stream_disc_t     = 0.0
         self._stream_disc_count = 0
         self._stream_disc_last  = ""
-        self.hr3_calc = HRFFTCalc()
-
         # ── Python timing rolling buffers (last 50 measurements, in ms) ──────────
         _pt_keys = [
             'drain', 'drain_interval', 'render', 'render_interval',
-            'algo_spo2lab', 'algo_spo2test', 'algo_hr2test',
+            'algo_spo2lab', 'algo_spo2test', 'algo_hr2test', 'algo_hr3lab',
             'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hr2lab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
             'plot_hr1test', 'plot_hr1lab', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
@@ -14890,9 +15160,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hr3lab.clicked.connect(self.toggle_hr3lab)
         self.btn_hr3lab.setToolTip(_make_tooltip(
             "HR3LAB",
-            "Show or hide the HR3 FFT/HPS analysis window. "
-            "Displays FFT spectrum, Harmonic Product Spectrum and HR1/HR2/HR3 comparison in real time. "
-            "HR3 uses a 512-sample Hann window + rfft + HPS on the LED1_SUB-signal at 50 Hz.",
+            "Show or hide the window that compares the methods of analysis family 3 live, on the "
+            "library's HR3 window (512 samples at 50 Hz): <b>HR3_HPS</b> (today's HR3), "
+            "<b>HR3_SAC</b> (spectral autocorrelation) and <b>HR3_CEP</b> (cepstrum). "
+            "Each with its rate, its quality index and the view that explains it, and the three "
+            "rates against time next to the board's HR1 and HR2. Requires frame mode $M4.",
             src="HR3LabWindow"))
         self.sidebar_layout.addWidget(self.btn_hr3lab)
 
@@ -15927,6 +16199,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.btn_hr3lab.isChecked():
             self.hr3lab_window = HR3LabWindow(None)
             self.hr3lab_window.main_monitor = self
+            self.hr3lab_window.calc.window_ms = self._py_timing['algo_hr3lab']   # PYTHON TIMING row
             self.hr3lab_window.show()
         else:
             if self.hr3lab_window is not None:
@@ -17002,7 +17275,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self._lab_capture is not None and self._lab_capture.active:
             self._lab_capture.add_event(f"stream discontinuity: {reason}")
         for name in ("spo2lab_window", "spo2test_window", "hr1test_window", "hr2test_window",
-                     "hr3test_window", "pilab_window", "xylab_window", "hr1lab_window", "hr2lab_window", "ppgdisplab_window",
+                     "hr3test_window", "pilab_window", "xylab_window", "hr1lab_window", "hr2lab_window",
+                     "hr3lab_window", "ppgdisplab_window",
                      "signals_window", "signals2_window", "ppgplots_window"):
             win = getattr(self, name, None)
             hook = getattr(win, "on_stream_discontinuity", None) if win is not None else None
@@ -17649,8 +17923,14 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 if self.pilab_window is not None:
                                     self.pilab_window.feed_sample(
                                         _ot500, float(_p500[32].split('*')[0]), self.afe_fs(), float(_p500[2]))
-                                # HR3LAB diagnostics (v1.97): LED1_SUB (field 8), always fed
-                                self.hr3_calc.update(float(_p500[8]), self.afe_fs(), _sc500)
+                                # HR3LAB (v1.112): the methods of family 3 on the library's HR3
+                                # window, fed OT_LED1 like HR3TEST; the board's HR1 / HR2 (fields
+                                # 14 / 16) travel with the sample as the live reference. Until
+                                # v1.111 a prototype on LED1_SUB was fed here, window open or not.
+                                if self.hr3lab_window is not None:
+                                    self.hr3lab_window.feed_sample(
+                                        _ot500, self.afe_fs(), _ps500, _sc500,
+                                        float(_p500[14]), float(_p500[16]))
                             except (ValueError, IndexError):
                                 pass
                         elif len(_p500) >= 4 and _p500[0] in ('M1', 'M2', 'M3'):
@@ -17667,7 +17947,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     _ps500 = 0
                                 if self.hr3test_window is not None:
                                     self.hr3test_calc.update(0.0, self.afe_fs(), _ps500, _sc500)
-                                self.hr3_calc.update(0.0, self.afe_fs(), _sc500)
+                                if self.hr3lab_window is not None:
+                                    self.hr3lab_window.feed_sample(0.0, self.afe_fs(), _ps500, _sc500)
                             except (ValueError, IndexError):
                                 pass
 
@@ -18103,8 +18384,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if self.hr3lab_window is not None and self._hr3lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
                 self._hr3lab_refresh_counter = 0
                 _t0p = time.perf_counter()
-                self.hr3lab_window.update_plots(
-                    self.data_hr1, self.data_hr2, self.data_hr3, self.hr3_calc)
+                self.hr3lab_window.update_plots(self.data_pi)
                 self._py_timing['plot_hr3lab'].append((time.perf_counter() - _t0p) * 1000)
 
             self._spo2test_refresh_counter += 1
@@ -18179,7 +18459,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if self.spo2lab_window   is None:
                     self._py_timing['plot_spo2lab'].clear()
                     self._py_timing['algo_spo2lab'].clear()
-                if self.hr3lab_window    is None: self._py_timing['plot_hr3lab'].clear()
+                if self.hr3lab_window    is None:
+                    self._py_timing['plot_hr3lab'].clear()
+                    self._py_timing['algo_hr3lab'].clear()
                 if self.spo2test_window  is None:
                     self._py_timing['plot_spo2test'].clear()
                     self._py_timing['algo_spo2test'].clear()
@@ -18204,7 +18486,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                      max(self._queue_size_buf)) if self._queue_size_buf else (0, 0),
                     'gap_B':        self._gaps_B,
                     'gap_hr1test':  self.hr1test_calc.gap_count,
-                    'gap_hr3lab':   self.hr3_calc.gap_count,
+                    'gap_hr3lab':   self.hr3lab_window.calc.gap_count if self.hr3lab_window is not None else None,
                     'gap_hr3test':  self.hr3test_calc.gap_count,
                     'gap_spo2lab':  self.spo2lab_window.gap_count  if self.spo2lab_window  is not None else None,
                     'gap_spo2test': self.spo2test_window.gap_count if self.spo2test_window is not None else None,
