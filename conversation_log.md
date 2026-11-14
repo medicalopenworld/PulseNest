@@ -29945,3 +29945,115 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
 - **Commit en PulseNest (Alex), sin push:** banco, test, estudio, informe, README, nomenclatura,
   índice y este log. La librería no tiene cambios. Siguen sin subir este commit y los dos del
   13-nov (`adbc4cb` en la librería, `27897c1` en PulseNest).
+- Commit hecho: PulseNest `2bcd4d3`.
+- **Alex:** «Sí, prepárala» (propuesta para medir el coste de `HR3_SAC` en la placa). Además quiere
+  un HR3LAB y un HR2LAB nuevos con los métodos de cada familia y pregunta si en esta sesión o en
+  otra, y si dentro del plan o al terminarlo; y si la HR del ECG tiene menos retardo que la PR
+  del PPG.
+- **Retardo ECG frente a PPG, estimado con el banco (solo lectura, guion en el scratchpad, sin
+  fichero en el repo):** para cada lectura del ECG se busca el desfase que minimiza la diferencia
+  con nuestras series. `HR3_SAC` coincide mejor con la lectura del ECG tomada 1,2 / 0,3 / 2,4 s
+  DESPUÉS (SUBJ08 / 09 / 11; 182 / 290 / 171 lecturas; error cuadrático 0,9 / 1,7 / 0,6 lpm en el
+  mínimo); HR2 de la placa, 1,3 / 2,2 / 2,9 s después. Es decir, la cifra de ECG de la pantalla va
+  por detrás de nuestras estimaciones por PPG, que a su vez miran unos 5 s atrás (centro de la
+  ventana de 10,24 s; 4 s en HR2): retardo de la cifra de ECG del monitor, del orden de 6–8 s.
+  Precisión de ±1 s (una lectura cada 10 s, hora de la foto truncada al segundo, lo que añade
+  medio segundo más de retraso al ECG). HR1 de la placa: muy pocas lecturas válidas en todos los
+  desfases, sin resultado. PR del monitor frente a su propio ECG (SUBJ11, 225 fotos): el mejor
+  ajuste es en la misma foto; con una foto cada 10 s no se resuelve un desfase menor de unos 5 s.
+- **Propuesta de coste de `HR3_SAC` presentada en el chat (pendiente de OK):** paso 1 sin placa
+  (núcleo en C++ en una rama experimental de la librería, apagado por defecto, con test de PC
+  contra el banco); paso 2 con una placa (OTA a `87:A4` o `82:5C`, `$TIMING` y `$TASK` con y sin,
+  vuelta al firmware publicado). Hechos comprobados: el firmware ya compila con
+  `INCUNEST_TIMING_STATS=1`, la librería ya mide `_hr3_compute()` (`_ts_hr3_compute`) y la pila de
+  la tarea de HR3 es de 2048 bytes.
+- **HR3LAB / HR2LAB, recomendación dada (decisión de Alex):** en otra sesión con su propia rama,
+  para no mezclar commits (regla de una sola sesión de desarrollo); HR3LAB ya (los tres métodos
+  están en `pulsenest/hr_bench.py`), HR2LAB tras la pasada de banco de HR2; sustituye a la fase 6
+  del borrador («etiquetas en el lab»). Hoy existen `HR2LabWindow` y `HR3LabWindow` (esta con el
+  prototipo `HRFFTCalc`).
+- **Alex: «Sí, sesión nueva».** Arrancada la sesión «Nuevo HR3LAB con los métodos de la familia 3»
+  (`local_06bc6bec-d137-44d9-bdd3-646297189467`, nombre `hr3lab`), en su propio worktree y rama
+  (`hr3lab-methods`, cortada de `master` local, que incluye `2bcd4d3`). Encargo: primero proponer
+  el diseño a Alex y esperar su OK; después implementar en `pulsenest_lab.py` llamando a
+  `pulsenest/hr_bench.py`, con spec, nomenclatura y test; solo PC (sin firmware ni librería); no
+  toca `conversation_log.md` (entrega el bloque en su informe para que lo añada esta sesión); lee
+  las capturas del checkout principal sin escribir en él; commit solo si Alex lo pide y sin push.
+  HR2LAB queda fuera, para después de la pasada de banco de HR2.
+- **Alex: «Sí, empieza (si crees que puedes trabajar en paralelo con la nueva sesión)».** Sí: la
+  sesión del HR3LAB toca `pulsenest_lab.py` en su rama de PulseNest y este paso toca la librería.
+  Para no interferir, la rama experimental se hizo en un worktree aparte,
+  `C:\PRJ\MOW\incunest_afe4490_exp_hr3_sac` (rama `experiment/hr3-sac`, cortada de `adbc4cb`); el
+  checkout de la librería que usa el firmware por el junction sigue en `master`, sin cambios.
+- **Paso 1 del coste de `HR3_SAC`, hecho (sin placa; nada con commit):**
+  - Librería, rama experimental: flag `INCUNEST_AFE4490_EXP_HR3_SAC` (0 por defecto);
+    `_hr3_sac_compute()`, llamada desde `_hr3_compute()` tras la FFT y antes de sus retornos
+    tempranos; resultados en miembros privados (`_hr3_sac_rate`, `_hr3_sac_rho`,
+    `_hr3_sac_purity`), borrados con el resto de HR3 si el sensor no está aplicado; búferes como
+    miembros (unos 4,8 kB), ninguno en la pila de la tarea salvo los 17 floats de una mediana.
+    Nada se publica: `hr3`, `hr3_sqi`, tramas y configuración no cambian. Compatible con C++11.
+    Nota en la spec §5.5 de esa rama.
+  - Tests de PC de la librería: suite nueva `test_hr3_sac` (peine sintético de 60 a 240 lpm
+    dentro del 2 %, con ruido, ruido solo con pureza baja, borrado al retirar el sensor, y una
+    réplica opcional de captura que se salta si no se le da fichero). Con el flag encendido en la
+    compilación de tests pasan las 12 suites, incluida la de HR3 sin tocar (9 tests).
+  - Comparación con el banco, `experiments/hr3_sac_port_check_20261114.py` (PulseNest): las 23 940
+    ventanas de las 19 sesiones emparejan una a una; el HR3 actual coincide dentro de 0,5 lpm en
+    el 100,00 % (la cadena de entrada del banco y la real son la misma); `HR3_SAC` coincide
+    dentro de 0,1 lpm en el 99,41 % y de 1 lpm en el 99,70 % (mediana de la diferencia 0,002 lpm).
+    Difieren 71 ventanas (0,30 %), todas sin peine (rho mediana 0,00): float32 frente a float64
+    decide distinto en un umbral. De las ventanas que una regla de validez publicaría (rho ≥ 0,5 y
+    pureza ≥ 0,3: 17 525 en el banco, 17 527 en el C++) ninguna difiere más de 1 lpm.
+  - Coste: sin medir. Estimación propia por cuenta de operaciones, del orden de la FFT actual; la
+    cifra saldrá del paso 2 (`$TIMING`, `$TASK`).
+- **Pendiente para el paso 2 (decisiones de Alex):** qué placa (`87:A4` o `82:5C`) y cuándo estará
+  encendida con el simulador, y quién hace el OTA.
+- **Alex: «Paso 2: usa cualquiera de las dos placas y haz tú la OTA».** Preparado, sin tocar
+  ninguna placa todavía:
+  - `tools/udp_fw_versions.py`: las dos emiten por el hub, `87:A4` en .18 y `82:5C` en .221, fw
+    0.30 / lib 0.120, `elfsha=9fdef9c4849fd20f`. `88:50` no aparece (dedicada a IncuNest).
+  - `build_V18/pulsenest.bin` es la imagen publicada (mismo `elfsha`, del 13-nov): copiada al
+    scratchpad para restaurar exactamente esa imagen al terminar, sin recompilar.
+  - Lectura de `$TIMING`/`$TASK` por el hub (suscriptor de solo lectura, guion en el scratchpad),
+    22 s: **ninguna de las dos tiene el sensor aplicado** (`hr2cmp` y `hr3cmp` = 0 en todas las
+    emisiones; HR2 y HR3 no calculan sin `PROBE_APPLIED`). Con el firmware publicado: ciclo 457 µs
+    de media y 1153 de máximo, SPI 230 µs, tarea de adquisición 22,8 % de CPU, pila libre de la
+    tarea de HR3 1232–1240 bytes.
+  - Árbol de compilación desechable `C:\PRJ\MOW\PulseNest_exp_hr3sac` (worktree de PulseNest en
+    `2bcd4d3`, HEAD suelto), con `lib/incunest_afe4490` enlazado a la rama experimental y una línea
+    local en su `CMakeLists.txt` que enciende `INCUNEST_AFE4490_EXP_HR3_SAC`; así `build_V18/` del
+    checkout principal sigue siendo el del firmware publicado. Compilación lanzada.
+  - **Bloqueado hasta que Alex aplique el sensor** (simulador o dedo) en una de las dos placas:
+    sin él no hay cálculo de HR3 que cronometrar, ni con el firmware publicado ni con el
+    experimental.
+  - La primera compilación del árbol desechable falló en CMake: faltaba `include/` (git lo
+    ignora; contiene `wifi_config.h`). Copiada desde el checkout principal y recompilado; el
+    `sdkconfig` resultante es idéntico al del firmware publicado.
+- **Alex: «He puesto el simulador en la 87:A4»**, y avisa de que sospecha estar gastando créditos
+  en una mera comprobación de que el coste es el esperado. Terminado en una sola pasada
+  automática (guion en el scratchpad, que se detiene sin enviar nada más si algo no cuadra):
+  - **Coste medido en `87:A4`** (V18, MS100 aplicado; siete emisiones de `$TIMING` de 5 s por
+    lado; firmware publicado frente al mismo código con el flag encendido):
+    cálculo de HR3 por ventana 1,9 → 4,5 ms de media (máximo 3,8 → 5,9 ms); CPU de la tarea de HR3
+    0,34 → 0,86 %; pila libre de esa tarea 1240 → 1056 bytes (de 2048); ciclo de muestreo 600 →
+    612 µs de media (máximo 1792 → 1431, sin empeorar); CPU de la tarea de adquisición 30,0 →
+    30,6 %; imagen +2656 bytes. `HR3_SAC` añade unos 2,6 ms por ventana y medio punto de un
+    núcleo: 1,3 veces el cálculo actual de HR3, algo más que «del orden de la FFT» estimado.
+    Tiempos de reloj dentro de una tarea que la de adquisición interrumpe. La frecuencia que
+    calculó la placa no se leyó (el experimento no publica nada): la igualdad con el banco es la
+    comprobación de PC del paso 1.
+  - **OTA, las dos verificadas por MAC:** a la imagen experimental (`build=b4ff083-dirty`,
+    `libsha=4f56b1b-dirty`, `elfsha=871a480cc25f7098`) y de vuelta a la publicada
+    (`elfsha=9fdef9c4849fd20f`, el mismo fichero del 13-nov). `82:5C` no se tocó. Anotado en
+    `docs/boards.md`.
+  - Árbol de compilación desechable borrado (quitando antes el enlace a la librería, para no
+    arrastrar la rama experimental). Queda `C:\PRJ\MOW\incunest_afe4490_exp_hr3_sac` con la rama
+    `experiment/hr3-sac`, sin commit.
+  - Añadido un apartado «Addendum» a `docs/hr3_methods_20261114.md` con la tabla de coste, y las
+    cifras a la nota de la spec en la rama experimental.
+- **Alex preguntó si la rama experimental se borra y para qué el commit.** Respuesta: no se borra
+  mientras `HR3_SAC` siga como candidato (es la base de la implementación si se adopta; si se
+  descarta, se borran rama y carpeta); el commit hace que el código medido exista en git y que
+  las referencias del informe y de `docs/boards.md` apunten a algo. **Alex: «adelante».** Commits
+  locales, sin push: librería `822ae00` en `experiment/hr3-sac` (`master` sigue en `adbc4cb`) y
+  PulseNest (script de comparación, addendum del informe, `docs/boards.md` y este log).
