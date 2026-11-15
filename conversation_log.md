@@ -30225,3 +30225,7 @@ artículo, elegidos o ambos? Al decidir, el análisis va al rationale de la libr
 - OTA hecha y verificada por MAC: `87:A4` (.12) y `82:5C` (.149) con fw 0.30 / lib 0.121,
   `libsha=f3fd922`, `elfsha=ad270bdd1419ce6f`, antes de la etiqueta (sobre su commit). Anotado en
   `docs/boards.md`. Pendiente: etiqueta v0.121 + release (sí de Alex) y push de PulseNest.
+- Alex: «Sí, adelante». Etiqueta v0.121 sobre f3fd922 y release publicado
+  (https://github.com/medicalopenworld/incunest_afe4490/releases/tag/v0.121); el CI de la etiqueta
+  sube el zip y su SHA-256 (en curso al cerrar; el de master sobre el mismo commit, verde). PulseNest
+  subido (incluye el commit del HR3LAB de la sesión anterior).
