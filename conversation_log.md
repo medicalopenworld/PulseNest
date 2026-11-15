@@ -30229,3 +30229,29 @@ artículo, elegidos o ambos? Al decidir, el análisis va al rationale de la libr
   (https://github.com/medicalopenworld/incunest_afe4490/releases/tag/v0.121); el CI de la etiqueta
   sube el zip y su SHA-256 (en curso al cerrar; el de master sobre el mismo commit, verde). PulseNest
   subido (incluye el commit del HR3LAB de la sesión anterior).
+
+**Continuación — próximas medidas y HR1LAB.**
+- Alex: en las próximas semanas espera volver al hospital a medir nuevos neonatos prematuros.
+  Apuntado: son la primera validación fuera de muestra de las decisiones de HR2/HR3; conviene fijar
+  antes qué se comprobará y pedir, si se puede, la onda de ECG sincronizada.
+- Alex: rehacer HR1LAB; primero propuesta de métodos, después el plan. Propuesta entregada: comparar
+  cadenas detector × regla de publicación (THR actual, TERMA, SSF, MSPTD como referencia offline ×
+  regla actual, rechazo de latido atípico, ancla a HR3_SAC). Pendiente de la elección de Alex.
+- Desde una sesión bifurcada (listado de bases de datos con PPG), Alex aprobó añadir a la propuesta
+  del HR1LAB **plantillas neonatales de forma de onda**:
+  - Se agrupan por condición: prematuro o a término, banda de FC, PI y pie o mano. No por base de
+    datos.
+  - Cadena común: cada latido se normaliza en duración y amplitud y se toma la mediana de los latidos
+    de calidad.
+  - Usos: validar latidos por correlación con la plantilla (regla candidata), detectar por plantilla y
+    generar señales de prueba.
+  - Límites: muesca débil, mucha variabilidad entre bebés y corpus propio pequeño. Sin ECG, recortar
+    con nuestro propio detector es circular. MIMIC exige credencial de PhysioNet, un trámite de Alex.
+  - Detalle en memoria (`project_hr1lab_redesign_task`). Entra en el plan de trabajo.
+- Desde otra sesión bifurcada (explicación de la envolvente de Hilbert), Alex me pidió decidir si
+  entraba en HR1LAB como quinto detector. Decisión: no; va a la familia 4 como variante de `HR4_PLL`
+  (índice de prior art §2.4, fila nueva). Sola, la fase da vueltas de más con armónicos y muesca;
+  guiada por HR3_SAC ya es un oscilador enganchado. Corregido el motivo antiguo («caro»): un FIR
+  causal de 30–60 coeficientes a 50 Hz.
+- Alex: el plan del HR1LAB se hará en una **sesión de desarrollo nueva**. Esta («HR2LAB algoritmos
+  nuevos») queda parada y deja de ser la de desarrollo.
