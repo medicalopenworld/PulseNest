@@ -30222,3 +30222,6 @@ artículo, elegidos o ambos? Al decidir, el análisis va al rationale de la libr
   (elegidos fuera de muestra; `hr_bench.*_PPG`), no los del artículo. Lab v1.114: `HR2TestCalc` y el
   banco a 300 muestras; los dos estudios del día pasan 400 explícito y siguen reproduciendo.
 - `lib/incunest_afe4490.version` → v0.121. OTA a `87:A4` y `82:5C` (88:50 es de IncuNest).
+- OTA hecha y verificada por MAC: `87:A4` (.12) y `82:5C` (.149) con fw 0.30 / lib 0.121,
+  `libsha=f3fd922`, `elfsha=ad270bdd1419ce6f`, antes de la etiqueta (sobre su commit). Anotado en
+  `docs/boards.md`. Pendiente: etiqueta v0.121 + release (sí de Alex) y push de PulseNest.
