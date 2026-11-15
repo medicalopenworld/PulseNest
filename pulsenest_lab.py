@@ -1370,7 +1370,7 @@ class HR2TestCalc:
                (0.5–5 Hz, precharged) at the AFE rate; the output is negated (peaks up).
       Decim  : _hr2_decim, target 50 Hz — factor = round(fs / 50), one sample in `factor`
                kept (the band-pass is the anti-alias filter, §5.3.1).
-      Buffer : hr2_buf_len = 400 decimated samples (8 s at 50 Hz), circular.
+      Buffer : hr2_buf_len = 300 decimated samples (6 s at 50 Hz, lib v0.121; 400 = 8 s before), circular.
       Every hr2_update_interval_s × rate = 25 decimated samples, once the buffer is full:
                acorr0 = Σx²; below hr2_ot_energy_eps (1e-16) → SQI 0.
                Lags min_lag = int(60 / (hr_max_bpm + 3) · rate) = 11 … max_lag =
@@ -1396,7 +1396,8 @@ class HR2TestCalc:
     400-sample buffer that held 0.8 s. Lab v1.88 rewrote it to the library's chain.
 
     Diagnostic state for HR2TestWindow: last_acorr (lags min_lag..max_lag), last_lags_s,
-    last_peak_lag_s, last_filtered (the 400-sample decimated buffer, oldest first), rate_hz.
+    last_peak_lag_s, last_filtered (the hr2_buf_len-sample decimated buffer, oldest first), rate_hz.
+    For HR2LabCalc (v1.113): window_count, windows computed since creation.
     """
 
     # ProbeState ordinals (must match incunest_afe4490.h enum class ProbeState)
@@ -1410,7 +1411,7 @@ class HR2TestCalc:
     FW_FS              = 50.0   # the decimated rate at the default PRF (legacy name, HR2TestWindow)
     FW_BPF_LOW_HZ      = 0.5    # hr2_f_low_hz
     FW_BPF_HIGH_HZ     = 5.0    # hr2_f_high_hz
-    FW_BUF_LEN         = 400    # hr2_buf_len — 8 s at 50 Hz
+    FW_BUF_LEN         = 300    # hr2_buf_len — 6 s at 50 Hz (lib v0.121; 400 before)
     FW_MAX_LAG         = 137    # hr2_acorr_lag_cap — the sweep's scratch capacity
     FW_UPDATE_N        = 25     # hr2_update_interval_s (0.5 s) × 50 Hz
     FW_MIN_LAG_S       = 0.22   # int(60 / (hr_max_bpm + 3) × 50 Hz) = 11 samples = 0.22 s
@@ -1441,6 +1442,7 @@ class HR2TestCalc:
         self.last_lags_s     = np.zeros(0)
         self.last_peak_lag_s = 0.0
         self.last_filtered   = np.zeros(self.FW_BUF_LEN)
+        self.window_count    = 0      # windows computed since creation (HR2LabCalc watches it)
         self._reset_state()
 
     # ── Parameters ────────────────────────────────────────────────────────────
@@ -1544,6 +1546,7 @@ class HR2TestCalc:
     def _compute(self, seg):
         """_hr2_compute() on the linearised snapshot (oldest first)."""
         self.last_filtered = seg
+        self.window_count += 1
         n      = seg.shape[0]
         rate   = self._rate
         acorr0 = float(seg @ seg)
@@ -3850,7 +3853,7 @@ class HR2TestWindow(QtWidgets.QMainWindow):
             "One-biquad Butterworth bandpass upper cutoff [Hz], at the AFE rate. Firmware default: 5.0 Hz.",
             src="hr2_f_high_hz"))
         self._spin_buf_len.setToolTip(_make_tooltip("Buffer length",
-            "Circular buffer length [decimated samples]. Firmware default: 400 (8 s at 50 Hz).",
+            "Circular buffer length [decimated samples]. Firmware default: 300 (6 s at 50 Hz, lib v0.121; 400 = 8 s before).",
             src="hr2_buf_len"))
         self._spin_max_lag.setToolTip(_make_tooltip("Max lag",
             "Cap on the autocorrelation lag sweep [decimated samples]. The library sweeps up to "
@@ -4739,6 +4742,154 @@ class HR3LabCalc:
         h["hps"].append(self.hr_hps); h["sac"].append(self.hr_sac); h["cep"].append(self.hr_cep)
         h["sqi"].append(self.sqi_hps); h["rho"].append(self.rho); h["purity"].append(self.purity)
         h["hr1"].append(self.hr1); h["hr2"].append(self.hr2)
+        self.revision += 1
+        self.window_ms.append((time.perf_counter() - t0) * 1000.0)
+
+
+class HR2LabCalc:
+    """The methods of analysis family 2 side by side on one HR2 window, for HR2LAB (lab v1.113).
+
+    Front end: an HR2TestCalc of its own, always at the library's values (the instance HR2TEST
+    owns can be edited from its panel), fed every $M4 sample at the AFE rate. Each time it
+    completes a window (300 samples at 50 Hz, 6 s, one every 0.5 s) the band-passed buffer goes
+    through pulsenest.hr_bench, the offline bench of docs/hr2_methods_20261115.md, called with
+    one row. The methods are not re-implemented here, so the lab and the bench cannot drift
+    apart (test_pulsenest/hr2lab_test.py compares the two on the same signal).
+
+      HR2_ACF  hr_bench.hr2_acf: today's HR2, the unbiased normalised autocorrelation, first
+               local maximum >= 0.5; quality = the peak value.
+      HR2_MPM  hr_bench.hr2_mpm: McLeod's normalised square difference function (NSDF), first key
+               maximum reaching k = 0.5 of the highest; quality = clarity, published from 0.5.
+      HR2_YIN  hr_bench.hr2_yin: YIN's cumulative mean normalised difference (CMND) of the
+               difference over a fixed window (hr_bench.yin_difference), first dip under 0.6
+               down to its minimum; quality = 1 - d'.
+    All three come from one sweep of the buffer (hr_bench.lag_sweep). Since lab v1.114 MPM and
+    YIN run with the values chosen for PPG out of sample (hr_bench.*_PPG, report part 2), not
+    the papers' (k = 0.9, threshold 0.10).
+
+    Per sample only the front end runs. The methods run once per window, in the drain tick;
+    window_ms receives what each window cost (PYTHON TIMING, algo_hr2lab). While the probe is
+    not applied the front end resets, every value is NaN and the history gets a break.
+    The labels are the working labels of docs/nomenclature.md, not library identifiers.
+    """
+
+    HIST_S   = 120.0    # span of the rate / quality history the window draws
+    HIST_LEN = 300      # windows kept: HIST_S at one every 0.5 s, plus room for breaks
+
+    _HIST_KEYS = ("t", "acf", "mpm", "yin", "q_acf", "q_mpm", "q_yin", "hr1", "hr3")
+
+    def __init__(self):
+        self._fe       = HR2TestCalc()
+        self._seen     = self._fe.window_count
+        self._fs       = 0.0
+        self.t_s       = 0.0            # time fed so far [s], the history's clock
+        self.revision  = 0              # +1 on every new window, lost window or reset: redraw
+        self.probe_state = -1           # last one fed
+        self.window_ms = deque(maxlen=50)
+        self.hist = {k: deque(maxlen=self.HIST_LEN) for k in self._HIST_KEYS}
+        # Gap detection (data_sample_counter continuity), as HR3TestCalc
+        self._last_counter = None
+        self._nominal_step = None
+        self.gap_count     = 0
+        self._clear_window()
+
+    @staticmethod
+    def bench_defaults():
+        """The bench's parameters of the three methods: what the calls below use."""
+        return {"min_corr": hr_bench.HR2_MIN_CORR, "mpm_k": hr_bench.MPM_K_PPG,
+                "mpm_min_clarity": hr_bench.MPM_MIN_CLARITY_PPG, "yin_threshold": hr_bench.YIN_THRESHOLD_PPG}
+
+    def _clear_window(self):
+        nan = float('nan')
+        self.has_window = False
+        self.rate_hz = 0.0
+        self.lag_lo = self.lag_hi = 0
+        self.segment = np.zeros(0)
+        self.curves = {m: np.zeros(0) for m in hr_bench.HR2_METHODS}
+        self.hr = {m: nan for m in hr_bench.HR2_METHODS}
+        self.q = {m: 0.0 for m in hr_bench.HR2_METHODS}
+        self.lag = {m: nan for m in hr_bench.HR2_METHODS}
+        self.hr1 = self.hr3 = nan
+
+    def _lose_window(self):
+        """The front end started over (probe not applied, another rate): nothing is current, and
+        the traces must not join what came before to what comes after."""
+        self._clear_window()
+        nan = float('nan')
+        for k in self._HIST_KEYS:
+            self.hist[k].append(self.t_s if k == "t" else nan)
+        self.revision += 1
+
+    def reset(self):
+        """Stream discontinuity: front end, current window and history start over."""
+        self._fe.reset()
+        self._seen = self._fe.window_count
+        self.t_s = 0.0
+        self._last_counter = None
+        for q in self.hist.values():
+            q.clear()
+        self._clear_window()
+        self.revision += 1
+
+    @property
+    def fill_fraction(self):
+        """How full the front end's buffer is, 0..1 (1 = a window is computed every 0.5 s)."""
+        fe = self._fe
+        return fe._buf_count / fe._buf.shape[0]
+
+    def update(self, ot_led1, fs, probe_state, sample_counter=None,
+               hr1=float('nan'), hr3=float('nan')):
+        """One sample at the AFE rate. hr1 / hr3: the board's own rates of the other two families
+        in the same frame (<= 0 = none), stored with each window as the live reference."""
+        if sample_counter is not None:
+            if self._last_counter is not None:
+                step = sample_counter - self._last_counter
+                if self._nominal_step is None:
+                    self._nominal_step = step
+                elif step > self._nominal_step:
+                    self.gap_count += step - self._nominal_step
+            self._last_counter = sample_counter
+        if fs != self._fs:
+            self._fs = fs
+            if self.has_window:
+                self._lose_window()
+        self.probe_state = probe_state
+        if fs > 0.0:
+            self.t_s += 1.0 / fs
+        fe = self._fe
+        fe.update(ot_led1, fs, probe_state)
+        if fe.window_count != self._seen:
+            self._seen = fe.window_count
+            self._on_window(fe.last_filtered, fe.rate_hz, hr1, hr3)
+        elif self.has_window and probe_state != HR2TestCalc.PROBE_APPLIED:
+            self._lose_window()
+
+    def _on_window(self, seg, rate, hr1, hr3):
+        t0 = time.perf_counter()
+        # The bench is written for the library's hr2_buf_len buffer; any other geometry: no values.
+        if seg.shape[0] != hr_bench.HR2_BUF_LEN or rate <= 0.0:
+            if self.has_window:
+                self._lose_window()
+            return
+        b = self.bench_defaults()
+        fam = hr_bench.hr2_family(seg[np.newaxis, :], rate, mpm_k=b["mpm_k"],
+                                  mpm_min_clarity=b["mpm_min_clarity"], yin_threshold=b["yin_threshold"])
+
+        self.has_window = True
+        self.rate_hz = rate
+        self.lag_lo, self.lag_hi = hr_bench.hr2_lag_range(rate)
+        self.segment = seg
+        for m, (hr, q, lag, curve) in fam.items():
+            self.hr[m], self.q[m], self.lag[m] = float(hr[0]), float(q[0]), float(lag[0])
+            self.curves[m] = curve[0]
+        nan = float('nan')
+        self.hr1 = hr1 if hr1 > 0 else nan
+        self.hr3 = hr3 if hr3 > 0 else nan
+        h = self.hist
+        h["t"].append(self.t_s)
+        h["acf"].append(self.hr["HR2_ACF"]); h["mpm"].append(self.hr["HR2_MPM"]); h["yin"].append(self.hr["HR2_YIN"])
+        h["q_acf"].append(self.q["HR2_ACF"]); h["q_mpm"].append(self.q["HR2_MPM"]); h["q_yin"].append(self.q["HR2_YIN"])
+        h["hr1"].append(self.hr1); h["hr3"].append(self.hr3)
         self.revision += 1
         self.window_ms.append((time.perf_counter() - t0) * 1000.0)
 
@@ -6575,6 +6726,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("algo_spo2lab",  "[_py_timing['algo_spo2lab']]   SPO2LAB   |  SpO2LabWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
         ("algo_spo2test", "[_py_timing['algo_spo2test']]  SPO2TEST  |  SpO2TestWindow.update_algorithms()", _SERIAL_TICK_BUDGET_MS),
         ("algo_hr2test",  "[_py_timing['algo_hr2test']]   HR2TEST   |  HR2TestWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
+        ("algo_hr2lab",   "[_py_timing['algo_hr2lab']]    HR2LAB    |  HR2LabCalc, once per HR2 window (0.5 s)", _SERIAL_TICK_BUDGET_MS),
         ("algo_hr3lab",   "[_py_timing['algo_hr3lab']]    HR3LAB    |  HR3LabCalc, once per HR3 window (0.5 s)", _SERIAL_TICK_BUDGET_MS),
     ]
     _PLOTS_TICK_ROWS = [  # renderers timed inside _refresh_plots_tick()
@@ -6598,6 +6750,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("gap_queue",    "[PPGMonitor._queue_size_buf]          Queue size (frames)"),
         ("gap_B",        "[PPGMonitor._gaps_B]                  Ingestion"),
         ("gap_hr1test",  "[PPGMonitor.hr1test_calc.gap_count]   HR1TEST"),
+        ("gap_hr2lab",   "[HR2LabWindow.calc.gap_count]         HR2LAB"),
         ("gap_hr3lab",   "[HR3LabWindow.calc.gap_count]         HR3LAB"),
         ("gap_hr3test",  "[PPGMonitor.hr3test_calc.gap_count]   HR3TEST"),
         ("gap_spo2lab",  "[SpO2LabWindow.gap_count]             SPO2LAB"),
@@ -10133,6 +10286,42 @@ class _ResizableGraphicsLayout(pg.GraphicsLayoutWidget):
 
 
 class HR2LabWindow(QtWidgets.QMainWindow):
+    """HR2LAB — the methods of analysis family 2 side by side, live (lab v1.113).
+
+    What stored captures cannot show (probe placement, motion, low perfusion), seen on the three
+    methods measured in docs/hr2_methods_20261115.md, all on the same HR2 buffer: HR2_ACF
+    (today's HR2), HR2_MPM (McLeod's NSDF) and HR2_YIN (YIN's CMND). The three curves come from
+    one sweep and are nearly the same; what differs is how each picks its lag, which is what
+    the report found decisive.
+
+    Layout, top to bottom:
+      Bar        PROBE, PI (the board's), PAUSE.
+      Buffer     the band-passed 8 s the methods read, with three rows of ticks: the period each
+                 method claims, laid back from the last beat. A wrong rate shows as ticks that
+                 skip beats (a multiple of the period) or fall between them.
+      Columns    one per method: rate and quality in the title, and its curve against lag with
+                 the chosen lag (yellow), its multiples (ticks), the search range (shaded) and
+                 the method's own bar (dashed).
+      Rates      the three rates and the board's HR1 and HR3 over the last 120 s.
+      Quality    the three quality indices over the same 120 s.
+      Info line  the fixed parameters, read-only: they are the bench's.
+
+    Purely observational: no parameter can be edited. Requires $M4 (OT_LED1).
+    The calculation is HR2LabCalc; this class draws, and only when there is something new.
+    Until v1.112 this window was a placeholder of six empty plots fed on PPG_DISP.
+    """
+
+    _COL = {"HR2_ACF": '#FF4444',   # HR2's colour everywhere in the lab
+            "HR2_MPM": '#44DD88',
+            "HR2_YIN": '#5599FF'}
+    _COL_HR1    = '#FFDD44'
+    _COL_HR3    = '#00CCFF'
+    _COL_PICK   = '#FFDD44'     # the chosen lag, as HR3LAB
+    _RATE_Y_MAX = 280.0
+    _SCROLL_S   = 0.5           # with no new window the time plots still move this often
+    _PS_NAME = {0: "DISCONNECTED", 1: "OT HIGH", 2: "APPLIED", 3: "AMB SATURATING",
+                4: "ONLY LED SATURATING"}
+
     def __init__(self, main_monitor):
         super().__init__()
         self.main_monitor = main_monitor
@@ -10141,262 +10330,351 @@ class HR2LabWindow(QtWidgets.QMainWindow):
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
+        self.calc       = HR2LabCalc()
+        self._bench     = HR2LabCalc.bench_defaults()
+        self._paused    = False
+        self._drawn_rev = -1
+        self._drawn_t   = 0.0
+
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        main_layout = QtWidgets.QVBoxLayout(central)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(5)
+        root = QtWidgets.QVBoxLayout(central)
+        root.setContentsMargins(8, 6, 8, 4)
+        root.setSpacing(4)
 
-        # QSplitter for exact column proportions (1:1:1)
-        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        self._splitter.setHandleWidth(2)
-        main_layout.addWidget(self._splitter)
+        # ── Bar: what the probe is doing, and PAUSE ───────────────────────────
+        bar = QtWidgets.QWidget()
+        hb = QtWidgets.QHBoxLayout(bar)
+        hb.setContentsMargins(2, 0, 2, 0)
+        self._lbl_state = QtWidgets.QLabel("PROBE --")
+        self._lbl_pi    = QtWidgets.QLabel("PI --")
+        for w, col in ((self._lbl_state, '#FFDD44'), (self._lbl_pi, '#8888FF')):
+            w.setStyleSheet("color: %s; font-weight: bold;" % col)
+            hb.addWidget(w)
+            hb.addSpacing(28)
+        self._lbl_state.setToolTip(_make_tooltip(
+            "PROBE — probe state",
+            "RSQM's probe classification. The HR2 buffer restarts whenever this is not APPLIED: "
+            "the three methods show no value until 8 s of applied signal have been buffered.",
+            src="ProbeState"))
+        self._lbl_pi.setToolTip(_make_tooltip(
+            "PI — perfusion index",
+            "AC/DC ratio [%] from the board. Context for what you are doing to the probe: it "
+            "falls when perfusion or optical coupling drops.",
+            src="PPGMonitor.data_pi"))
+        hb.addStretch(1)
+        self._btn_pause = QtWidgets.QPushButton("PAUSE")
+        self._btn_pause.setCheckable(True)
+        self._btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_pause.setShortcut("P")
+        self._btn_pause.clicked.connect(self._toggle_pause)
+        self._btn_pause.setToolTip(_make_tooltip(
+            "PAUSE / RESUME  (shortcut: P)",
+            "Freeze the picture to study a window: the buffer, the three curves and the two "
+            "time plots stop where they are. The methods keep running, so RESUME shows the "
+            "present with its full history.",
+            src="HR2LabWindow._toggle_pause"))
+        hb.addWidget(self._btn_pause)
+        root.addWidget(bar)
 
-        self._col_a = _ResizableGraphicsLayout()
-        self._col_b = _ResizableGraphicsLayout()
-        self._col_c = _ResizableGraphicsLayout()
-        self._splitter.addWidget(self._col_a)
-        self._splitter.addWidget(self._col_b)
-        self._splitter.addWidget(self._col_c)
+        # ── Plots ─────────────────────────────────────────────────────────────
+        glw = pg.GraphicsLayoutWidget()
+        root.addWidget(glw, 1)
+        methods = glw.addLayout(row=1, col=0)
+        methods.setContentsMargins(0, 0, 0, 0)
+        for r, stretch in enumerate((4, 6, 5, 3)):
+            glw.ci.layout.setRowStretchFactor(r, stretch)
+        for col in range(3):
+            methods.layout.setColumnStretchFactor(col, 1)
+        grey = "<b style='color:#CCCCCC'>%s</b> <span style='color:#888888'>%s</span>"
+        lag_lo_s = 60.0 / (hr_bench.HR_MAX + hr_bench.HR_GUARD)    # the search range, as lags [s]
+        lag_hi_s = 60.0 / (hr_bench.HR_MIN - hr_bench.HR_GUARD)
+        self._lag_axis_s = lag_hi_s + 0.1
+        buf_s = hr_bench.HR2_BUF_LEN / hr_bench.DECIM_TARGET_HZ
 
-        # Column A
-        self.p_1a = self._col_a.addPlot(row=0, col=0, title="<span style='color:#AAAAFF'>PPG(original)</span>")
-        self.curve_1a = self.p_1a.plot(pen=pg.mkPen('#AAAAFF', width=1.5))
-        self.p_1a.showGrid(x=True, y=True, alpha=0.3)
+        def _plot(layout, row, col, left, bottom=None, units=None):
+            p = layout.addPlot(row=row, col=col)
+            p.showGrid(x=True, y=True, alpha=0.3)
+            p.setLabel('left', left)
+            if bottom is None:      # X axis shared with the plot below: no values, no label
+                p.getAxis('bottom').setStyle(showValues=False)
+            else:
+                p.setLabel('bottom', bottom, units=units)
+            return p
 
-        self.p_2a = self._col_a.addPlot(row=1, col=0, title="<span style='color:#FF88FF'>PPG(0.5–3.7 Hz)</span>")
-        self.curve_2a = self.p_2a.plot(pen=pg.mkPen('#FF88FF', width=1.5))
-        self.p_2a.showGrid(x=True, y=True, alpha=0.3)
-        self.p_2a.setXLink(self.p_1a)
+        def _named(*pairs):         # a title's legend: each name in the colour of its trace
+            return " · ".join("<span style='color:%s'>%s</span>" % (col, name) for name, col in pairs)
 
-        # Column B
-        self.p_1b = self._col_b.addPlot(row=0, col=0, title="<span style='color:#AAAAFF'>1B</span>")
-        self.curve_1b = self.p_1b.plot(pen=pg.mkPen('#AAAAFF', width=1.5))
-        self.p_1b.showGrid(x=True, y=True, alpha=0.3)
-        self.p_1b.setYRange(-1.0, 1.0)
-        self.vline_1b = pg.InfiniteLine(pos=0, angle=90, movable=False,
-                                        pen=pg.mkPen('#FFDD44', width=2))
-        self.vline_1b.setVisible(False)
-        self.p_1b.addItem(self.vline_1b)
+        def _dashed(p, level, col='#777777'):
+            p.addItem(pg.InfiniteLine(pos=level, angle=0, movable=False,
+                                      pen=pg.mkPen(col, width=1, style=QtCore.Qt.DashLine)))
 
-        self.p_2b = self._col_b.addPlot(row=1, col=0, title="<span style='color:#FF88FF'>2B</span>")
-        self.curve_2b = self.p_2b.plot(pen=pg.mkPen('#FF88FF', width=1.5))
-        self.p_2b.showGrid(x=True, y=True, alpha=0.3)
-        self.p_2b.setYRange(-1.0, 1.0)
-        self.vline_2b = pg.InfiniteLine(pos=0, angle=90, movable=False,
-                                        pen=pg.mkPen('#FFDD44', width=2))
-        self.vline_2b.setVisible(False)
-        self.p_2b.addItem(self.vline_2b)
+        # Buffer, with the period each method claims
+        self.p_buf = _plot(glw, 0, 0, 'norm.', 'Time in the buffer', 's')
+        self._set_title(self.p_buf, grey % ("BUFFER", "8 s band-passed · ticks:") + " " + _named(
+            *((m, self._COL[m]) for m in hr_bench.HR2_METHODS)))
+        self.p_buf.titleLabel.setToolTip(_make_tooltip(
+            "The buffer the methods read",
+            "The library's HR2 chain: OT_LED1 band-passed 0.5–5 Hz, negated (peaks up), "
+            "decimated to 50 Hz, the last 400 samples (8 s), normalised to its largest value. "
+            "The three methods read this one buffer.\n\n"
+            "<b>Ticks</b>: one row per method, laid back from the last beat every period the "
+            "method reads. A right rate puts a tick on every beat; a rate read at one half puts "
+            "a tick on every other beat.",
+            src="HR2LabCalc.segment"))
+        self.curve_buf = self.p_buf.plot(pen=pg.mkPen('#CCCCCC', width=1.5))
+        self.ticks = {}
+        for i, m in enumerate(hr_bench.HR2_METHODS):
+            y0 = 0.93 - 0.07 * i
+            self.ticks[m] = pg.VTickGroup(xvals=[], yrange=[y0, y0 + 0.06],
+                                          pen=pg.mkPen(self._COL[m], width=2))
+            self.p_buf.addItem(self.ticks[m])
+        self.p_buf.setXRange(-buf_s, 0, padding=0)
+        self.p_buf.setYRange(-1.1, 2.0, padding=0)    # room above the trace for the ticks
 
-        # Column C
-        self.p_1c = self._col_c.addPlot(row=0, col=0, title="<span style='color:#AAAAFF'>1C</span>")
-        self.curve_1c = self.p_1c.plot(pen=pg.mkPen('#AAAAFF', width=1.5))
-        self.p_1c.showGrid(x=True, y=True, alpha=0.3)
-        self.p_1c.setYRange(-1.0, 1.0)
-        self.vline_1c = pg.InfiniteLine(pos=0, angle=90, movable=False,
-                                        pen=pg.mkPen('#FFDD44', width=2))
-        self.vline_1c.setVisible(False)
-        self.p_1c.addItem(self.vline_1c)
+        # One column per method: its curve against lag
+        specs = (
+            ("HR2_ACF", 'Autocorrelation', (-1.05, 1.05), self._bench["min_corr"],
+             "HR2_ACF — autocorrelation (today's HR2)",
+             "Unbiased normalised autocorrelation of the buffer, r(τ)·N / (r(0)·(N − τ)). The "
+             "rate is the <b>first</b> local maximum inside the search range (shaded) that reaches "
+             "%.1f (dashed), interpolated (yellow line); ticks mark its multiples.\n\n"
+             "<b>Quality</b>: the peak value. Measured on 2026-11-15 against the ECG: wrong in "
+             "4.4 %% of what it publishes." % self._bench["min_corr"],
+             "hr_bench.hr2_acf"),
+            ("HR2_MPM", 'NSDF', (-1.05, 1.05), self._bench["mpm_min_clarity"],
+             "HR2_MPM — McLeod pitch method",
+             "Normalised square difference function 2·r(τ) / m(τ), where m is the energy of the "
+             "two overlapping parts: almost the same curve as the autocorrelation. Key maxima: "
+             "the top of each positive lobe after the first negative crossing. The rate is the "
+             "first key maximum reaching k = %.1f of the highest (yellow line).\n\n"
+             "<b>Clarity</b>: the NSDF there, published from %.1f (dashed). Measured on "
+             "2026-11-15: on neonatal PPG the later peaks are often taller than the first, and "
+             "k = %.1f jumps to two periods (wrong in 17.5 %% of what it publishes)."
+             % (self._bench["mpm_k"], self._bench["mpm_min_clarity"], self._bench["mpm_k"]),
+             "hr_bench.hr2_mpm"),
+            ("HR2_YIN", 'CMND', (0.0, 2.0), self._bench["yin_threshold"],
+             "HR2_YIN — YIN",
+             "Cumulative mean normalised difference d'(τ) = d(τ)·τ / Σ d(1..τ), with d the squared "
+             "difference of the buffer and its copy τ later: a dip, not a peak, at the period. "
+             "The rate is the first lag where d' drops under %.2f (dashed), followed down to its "
+             "minimum (yellow line). No dip under it, no value.\n\n"
+             "<b>Quality</b>: 1 − d' at the minimum. Measured on 2026-11-15: it publishes in a "
+             "third of the windows and reaches up to five periods."
+             % self._bench["yin_threshold"],
+             "hr_bench.hr2_yin"),
+        )
+        self.p_m, self.curve_m, self.line_m, self.mult_m = {}, {}, {}, {}
+        for col, (m, ylabel, yr, bar_level, tip_title, tip, src) in enumerate(specs):
+            p = _plot(methods, 0, col, ylabel, 'Lag', 's')
+            p.titleLabel.setToolTip(_make_tooltip(tip_title, tip, src=src))
+            p.addItem(pg.LinearRegionItem(values=[lag_lo_s, lag_hi_s], brush=pg.mkBrush(0, 180, 255, 38),
+                                          movable=False, pen=pg.mkPen(None)))
+            _dashed(p, bar_level)
+            self.curve_m[m] = p.plot(pen=pg.mkPen(self._COL[m], width=1.5))
+            line = pg.InfiniteLine(pos=0, angle=90, movable=False, pen=pg.mkPen(self._COL_PICK, width=2))
+            line.setVisible(False)
+            p.addItem(line)
+            self.line_m[m] = line
 
-        self.p_2c = self._col_c.addPlot(row=1, col=0, title="<span style='color:#FF88FF'>2C</span>")
-        self.curve_2c = self.p_2c.plot(pen=pg.mkPen('#FF88FF', width=1.5))
-        self.p_2c.showGrid(x=True, y=True, alpha=0.3)
-        self.p_2c.setYRange(-1.0, 1.0)
-        self.vline_2c = pg.InfiniteLine(pos=0, angle=90, movable=False,
-                                        pen=pg.mkPen('#FFDD44', width=2))
-        self.vline_2c.setVisible(False)
-        self.p_2c.addItem(self.vline_2c)
+            self.mult_m[m] = pg.VTickGroup(xvals=[], yrange=[0.93, 0.99], pen=pg.mkPen(self._COL_PICK, width=1))
+            p.addItem(self.mult_m[m])
+            p.setXRange(0, self._lag_axis_s, padding=0)
+            p.setYRange(*yr, padding=0)
+            self.p_m[m] = p
 
-        for p in [self.p_1a, self.p_2a,
-                  self.p_1b, self.p_2b,
-                  self.p_1c, self.p_2c]:
-            p.setMinimumWidth(0)
-            p.getViewBox().setMinimumWidth(0)
+        # Rates against time
+        self.p_rate = _plot(glw, 2, 0, 'bpm')
+        self._set_title(self.p_rate, grey % ("RATES", "") + _named(
+            *((m, self._COL[m]) for m in hr_bench.HR2_METHODS),
+            ("board HR1", self._COL_HR1), ("board HR3", self._COL_HR3)))
+        self.p_rate.titleLabel.setToolTip(_make_tooltip(
+            "Rates against time",
+            "The rate of each method at every window (one every 0.5 s), and the board's HR1 and "
+            "HR3 in the same frame as thin lines: the other two families, read on other "
+            "buffers. A method with no value leaves a gap.",
+            src="HR2LabCalc.hist"))
+        self.curve_hr1 = self.p_rate.plot(pen=pg.mkPen(self._COL_HR1, width=1), connect='finite')
+        self.curve_hr3 = self.p_rate.plot(pen=pg.mkPen(self._COL_HR3, width=1), connect='finite')
+        self.curve_r = {}
+        for m in ("HR2_YIN", "HR2_MPM", "HR2_ACF"):
+            col = self._COL[m]
+            self.curve_r[m] = self.p_rate.plot(pen=pg.mkPen(col, width=2), symbol='o', symbolSize=4,
+                                               symbolBrush=col, symbolPen=None, connect='finite')
+        self.p_rate.setXRange(-HR2LabCalc.HIST_S, 0, padding=0)
+        self.p_rate.setYRange(0, self._RATE_Y_MAX, padding=0)
 
-        self._hr_refresh_counter = 0
+        # Quality against time
+        self.p_qual = _plot(glw, 3, 0, '', 'Time before now', 's')
+        self._set_title(self.p_qual, grey % ("QUALITY", "") + _named(
+            ("HR2_ACF peak", self._COL["HR2_ACF"]), ("HR2_MPM clarity", self._COL["HR2_MPM"]),
+            ("HR2_YIN 1 − d'", self._COL["HR2_YIN"])))
+        self.p_qual.titleLabel.setToolTip(_make_tooltip(
+            "Quality against time",
+            "The quality index of each method at every window, 0 where it published nothing. "
+            "Dashed: 0.5, the bar from which HR2_ACF and HR2_MPM publish.",
+            src="HR2LabCalc.hist"))
+        _dashed(self.p_qual, 0.5)
+        self.curve_q = {m: self.p_qual.plot(pen=pg.mkPen(self._COL[m], width=1.5), connect='finite')
+                        for m in hr_bench.HR2_METHODS}
+        self.p_qual.setXRange(-HR2LabCalc.HIST_S, 0, padding=0)
+        self.p_qual.setXLink(self.p_rate)
+        self.p_qual.setYRange(0, 1.05, padding=0)
 
-        # Stateful incunest biquad filter state
-        self._incunest_zi         = None   # biquad state (2 floats)
-        self._incunest_filt_buf   = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
-        self._last_sample_cnt = None
-        self._incunest_fs_cached  = None
-        self._incunest_ba_cached  = None   # cached (b, a) coefficients — recomputed only when fs changes
+        # ── Info line: the fixed parameters ───────────────────────────────────
+        self._info_label = QtWidgets.QLabel()
+        self._info_label.setFont(QtGui.QFont("Consolas", 10))
+        self._info_label.setStyleSheet("color: #AAAAAA; padding: 2px 4px;")
+        self._info_label.setWordWrap(True)
+        self._info_label.setMinimumWidth(0)
+        self._info_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self._info_label.setToolTip(_make_tooltip(
+            "Parameters",
+            "What the three methods run with. Nothing here can be edited: the front end is the "
+            "library's HR2 chain and the methods are those of the offline bench, MPM and YIN "
+            "with the values chosen for PPG out of sample (report part 2), so what this window "
+            "shows is what the bench measured.",
+            src="pulsenest/hr_bench.py"))
+        root.addWidget(self._info_label)
 
-        s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
-        geom = s.value("HR2LabWindow/geometry")
+        self._draw()
+
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR2LabWindow/geometry")
         if geom:
             self.restoreGeometry(geom)
         else:
-            self.resize(2400, 450)
+            self.resize(1800, 1000)
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        QtCore.QTimer.singleShot(0, self._set_splitter_sizes)
-        self._dbg_timer = QtCore.QTimer()
-        self._dbg_timer.timeout.connect(self._dbg_print_ranges)
-        self._dbg_timer.start(1000)
+    # ── Data path ────────────────────────────────────────────────────────────
+    def feed_sample(self, ot_led1, fs, probe_state, sample_counter=None,
+                    hr1=float('nan'), hr3=float('nan')):
+        """One sample at the AFE rate, from the frame loop (drain tick). Fed while paused too:
+        PAUSE freezes the picture, not the methods."""
+        self.calc.update(ot_led1, fs, probe_state, sample_counter, hr1, hr3)
 
-    def _dbg_print_ranges(self):
-        vr = self.p_1b.viewRange()
-        ar = self.p_1b.getViewBox().state['autoRange']
-        col_w = self._col_b.width()
-        vb_w  = self.p_1b.getViewBox().width()
-        print(f"[DBG] p_1b viewRange={vr[0]}  autoRange={ar}  col_b.width={col_w}  vb.width={vb_w:.0f}", flush=True)
-
-    def _set_splitter_sizes(self):
-        w = self._splitter.width()
-        if w > 0:
-            col_a = int(w * 0.42)
-            col_bc = (w - col_a) // 2
-            self._splitter.setSizes([col_a, col_bc, w - col_a - col_bc])
-
-    @staticmethod
-    def _incunest_biquad_coeffs(fs, f_low, f_high):
-        """Replicate incunest_afe4490::_recalc_biquad() exactly (bilinear transform)."""
-        k    = 2.0 * fs
-        o_low = k * np.tan(np.pi * f_low  / fs)
-        o_hi  = k * np.tan(np.pi * f_high / fs)
-        o0sq  = o_low * o_hi
-        bw    = o_hi - o_low
-        d     = k*k + bw*k + o0sq
-        b = np.array([ bw*k/d,  0.0, -bw*k/d])
-        a = np.array([1.0, 2.0*(o0sq - k*k)/d, (k*k - bw*k + o0sq)/d])
-        return b, a
+    @property
+    def gap_count(self):
+        return self.calc.gap_count
 
     def on_stream_discontinuity(self):
-        """Monitor buffers restarted (board restart / source change): drop the biquad state and the
-        filtered buffer so the filter re-seeds from the new stream, not from the spliced one."""
-        self._incunest_zi = None
-        self._last_sample_cnt = None
-        self._incunest_filt_buf = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        """Monitor buffers restarted (board restart / source change): the front end, the current
+        window and the history start over. A paused window keeps its frozen picture."""
+        self.calc.reset()
 
-    def update_plots(self, ppg_data, timestamp_us_data, sample_counter_data):
-        data = np.array(ppg_data)
-        self.curve_1a.setData(data)
+    def _toggle_pause(self):
+        self._paused = self._btn_pause.isChecked()
+        self._btn_pause.setText("RESUME" if self._paused else "PAUSE")
+        if not self._paused:
+            self._drawn_rev = -1      # redraw on the next tick, whatever arrived meanwhile
 
-        fs = 50.0  # AFE4490 @ 500 Hz, SERIAL_DOWNSAMPLING_RATIO=10
+    # ── Refresh ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _method_title(name, colour, rate, detail):
+        val = ("%.1f bpm" % rate) if rate == rate else "--- bpm"
+        return ("<span style='color:%s'><b>%s &nbsp; %s</b></span><br>"
+                "<span style='color:#BBBBBB'>%s</span>" % (colour, name, val, detail))
 
-        nyq = fs / 2.0
-        high_norm = 3.7 / nyq
+    _set_title = staticmethod(HR3LabWindow._set_title)
 
-        # Plot 2A: incunest_afe4490 biquad — stateful, processes only new samples
-        incunest_filtered = None
-        if high_norm < 1.0:
-            try:
-                # Recompute coefficients only when fs changes
-                if fs != self._incunest_fs_cached or self._incunest_ba_cached is None:
-                    self._incunest_ba_cached = self._incunest_biquad_coeffs(fs, 0.5, 3.7)
-                    self._incunest_fs_cached = fs
-                    self._incunest_zi = None   # force filter reset on coefficient change
-                b, a = self._incunest_ba_cached
+    def beat_ticks(self, method):
+        """Times [s, 0 = newest sample] of the beats the method's period implies, laid back from
+        the highest sample of the buffer's last period; none without a rate."""
+        c = self.calc
+        lag = c.lag[method]
+        if not c.has_window or not (lag == lag) or lag <= 0.0:
+            return []
+        n = len(c.segment)
+        last = n - 1 - int(np.argmax(c.segment[::-1][:max(1, int(round(lag)))]))
+        k = np.arange(0, int(last / lag) + 1)
+        return list((last - k * lag - (n - 1)) / c.rate_hz)
 
-                cur_cnt = int(sample_counter_data[-1])
-                reset = self._incunest_zi is None or self._last_sample_cnt is None
+    def _refresh_info(self):
+        c = self.calc
+        b = self._bench
+        if c.has_window:
+            live = ("%d samples at %.1f Hz (%.2f s), lags %d–%d"
+                    % (hr_bench.HR2_BUF_LEN, c.rate_hz, hr_bench.HR2_BUF_LEN / c.rate_hz, c.lag_lo, c.lag_hi))
+        else:
+            live = "%d samples, filling: %d %%" % (hr_bench.HR2_BUF_LEN, round(100.0 * c.fill_fraction))
+        self._info_label.setText(
+            "BUFFER %s, band-pass %.1f–%.1f Hz, one every %.1f s · search %.0f–%.0f bpm   |   "
+            "HR2_ACF first maximum ≥ %.2f   |   HR2_MPM k = %.2f, clarity ≥ %.2f   |   "
+            "HR2_YIN threshold %.2f   |   one sweep r(τ), m(τ) for the three"
+            % (live, hr_bench.HR2_F_LOW_HZ, hr_bench.HR2_F_HIGH_HZ,
+               hr_bench.HR2_UPDATE_N / hr_bench.DECIM_TARGET_HZ,
+               hr_bench.HR_MIN - hr_bench.HR_GUARD, hr_bench.HR_MAX + hr_bench.HR_GUARD,
+               b["min_corr"], b["mpm_k"], b["mpm_min_clarity"], b["yin_threshold"]))
 
-                if not reset:
-                    n_new = (cur_cnt - self._last_sample_cnt) // 10  # SERIAL_DOWNSAMPLING_RATIO=10
-                    if n_new <= 0 or n_new > len(data):
-                        reset = True
+    def _refresh_context(self, data_pi):
+        self._lbl_state.setText("PROBE %s" % self._PS_NAME.get(self.calc.probe_state, "--"))
+        pi = data_pi[-1] if data_pi is not None and len(data_pi) else float('nan')
+        self._lbl_pi.setText("PI %.2f %%" % pi if pi == pi and pi >= 0.0 else "PI --")
+        mm = self.main_monitor
+        if mm is not None:
+            lib_id = mm.data_lib_id[-1] if mm.data_lib_id else ""
+            if lib_id != "M4":
+                self.statusBar().showMessage(
+                    "⚠ Requires frame mode $M4 (OT_LED1 not available in current mode "
+                    f"${lib_id or '?'}) — the HR2 buffer is not being fed.")
+            else:
+                self.statusBar().showMessage(_MOUSE_HINT)
 
-                if reset:
-                    # First call or anomaly: warm up on full buffer
-                    zi_init = signal.lfilter_zi(b, a) * data[0]
-                    full_out, self._incunest_zi = signal.lfilter(b, a, data, zi=zi_init)
-                    self._incunest_filt_buf = deque(full_out, maxlen=WINDOW_SIZE)
-                else:
-                    new_samples = data[-n_new:]
-                    new_out, self._incunest_zi = signal.lfilter(b, a, new_samples, zi=self._incunest_zi)
-                    self._incunest_filt_buf.extend(new_out)
+    def update_plots(self, data_pi=None):
+        """Render tick (10 Hz). Redraws only when a window arrived or was lost, or when the time
+        plots are due to move; the curves change twice a second at most."""
+        if self._paused:
+            return          # leave the frozen picture alone, including zoom and pan
+        self._refresh_context(data_pi)
+        c = self.calc
+        if c.revision == self._drawn_rev and abs(c.t_s - self._drawn_t) < self._SCROLL_S:
+            return
+        self._draw()
 
-                self._last_sample_cnt = cur_cnt
-                incunest_filtered = np.array(self._incunest_filt_buf)
-                self.curve_2a.setData(incunest_filtered)
-            except Exception:
-                pass
+    def _draw(self):
+        c = self.calc
+        self._drawn_rev = c.revision
+        self._drawn_t   = c.t_s
+        self._refresh_info()
 
-        # Plots 4 & 5: autocorrelation-based HR, refreshed at 5 Hz
-        self._hr_refresh_counter += 1
-        refresh_every = max(1, int(round(fs / 5.0)))
-        if self._hr_refresh_counter >= refresh_every and incunest_filtered is not None:
-            self._hr_refresh_counter = 0
-            window_n  = int(round(4.0 * fs))
-            max_lag_n = int(round((60.0 / 27.0) * fs))  # covers guard band minimum 27 BPM
-            needed    = window_n + max_lag_n
-            max_lag_s = max_lag_n / fs
+        if c.has_window:
+            n = len(c.segment)
+            top = float(np.max(np.abs(c.segment)))
+            seg = c.segment / top if top > 0.0 else c.segment
+            self.curve_buf.setData((np.arange(n) - (n - 1)) / c.rate_hz, seg)
+            for m in hr_bench.HR2_METHODS:
+                curve = c.curves[m]
+                self.curve_m[m].setData(np.arange(len(curve)) / c.rate_hz, curve)
+                self.ticks[m].setXVals(self.beat_ticks(m))
+        else:
+            self.curve_buf.setData([], [])
+            for m in hr_bench.HR2_METHODS:
+                self.curve_m[m].setData([], [])
+                self.ticks[m].setXVals([])
 
-            _HR_COLOR = {
-                HRStatus.VALID:        '#FFDD44',
-                HRStatus.OUT_OF_RANGE: '#FF4444',
-                HRStatus.INVALID:      '#888888',
-            }
+        dash = "---"
+        details = {"HR2_ACF": "peak %.2f", "HR2_MPM": "clarity %.2f", "HR2_YIN": "1 − d' %.2f"}
+        for m in hr_bench.HR2_METHODS:
+            lag = c.lag[m]
+            shown = c.has_window and lag == lag
+            if shown:
+                lag_s = lag / c.rate_hz
+                self.line_m[m].setValue(lag_s)
+                self.mult_m[m].setXVals(list(np.arange(2, int(self._lag_axis_s / lag_s) + 1) * lag_s))
+            else:
+                self.mult_m[m].setXVals([])
+            self.line_m[m].setVisible(shown)
+            detail = details[m] % c.q[m] if (c.has_window and c.hr[m] == c.hr[m]) else details[m].replace("%.2f", dash)
+            self._set_title(self.p_m[m], self._method_title(m, self._COL[m], c.hr[m], detail))
 
-            # Plot 1B: xcorr_v1 on raw PPG
-            if len(data) >= needed:
-                try:
-                    r = _estimate_hr_xcorr_v1(data[-needed:], fs, max_lag_n)
-                    hr_color = _HR_COLOR[r.hr_status]
-                    self.curve_1b.setData(r.lags_s, r.acorr)
-                    self.p_1b.setXRange(0, max_lag_s)
-                    self.p_1b.setTitle(
-                        f"<span style='color:#AAAAFF'>xcorr_v1 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
-                    )
-                    self.vline_1b.setPen(pg.mkPen(hr_color, width=2))
-                    self.vline_1b.setPos(r.peak_lag)
-                    self.vline_1b.setVisible(True)
-                except Exception:
-                    pass
-
-            # Plot 2B: xcorr_v1 on incunest BPF
-            if len(incunest_filtered) >= needed:
-                try:
-                    r = _estimate_hr_xcorr_v1(incunest_filtered[-needed:], fs, max_lag_n)
-                    hr_color = _HR_COLOR[r.hr_status]
-                    self.curve_2b.setData(r.lags_s, r.acorr)
-                    self.p_2b.setXRange(0, max_lag_s)
-                    self.p_2b.setTitle(
-                        f"<span style='color:#FF88FF'>xcorr_v1 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
-                    )
-                    self.vline_2b.setPen(pg.mkPen(hr_color, width=2))
-                    self.vline_2b.setPos(r.peak_lag)
-                    self.vline_2b.setVisible(True)
-                except Exception:
-                    pass
-
-            # Plot 1C: autocorr_v2 on raw PPG (single vector, only window_n samples)
-            if len(data) >= window_n:
-                try:
-                    r = _estimate_hr_autocorr_v2(data[-window_n:], fs, max_lag_n)
-                    hr_color = _HR_COLOR[r.hr_status]
-                    self.curve_1c.setData(r.lags_s, r.acorr)
-                    self.p_1c.setXRange(0, max_lag_s)
-                    self.p_1c.setTitle(
-                        f"<span style='color:#AAAAFF'>autocorr_v2 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
-                    )
-                    self.vline_1c.setPen(pg.mkPen(hr_color, width=2))
-                    self.vline_1c.setPos(r.peak_lag)
-                    self.vline_1c.setVisible(True)
-                except Exception:
-                    pass
-
-            # Plot 2C: autocorr_v2 on incunest BPF (single vector, only window_n samples)
-            if len(incunest_filtered) >= window_n:
-                try:
-                    r = _estimate_hr_autocorr_v2(incunest_filtered[-window_n:], fs, max_lag_n)
-                    hr_color = _HR_COLOR[r.hr_status]
-                    self.curve_2c.setData(r.lags_s, r.acorr)
-                    self.p_2c.setXRange(0, max_lag_s)
-                    self.p_2c.setTitle(
-                        f"<span style='color:#FF88FF'>autocorr_v2 &nbsp;|&nbsp; </span>"
-                        f"<b style='color:{hr_color}'>HR: {r.hr_bpm:.2f} bpm &nbsp; corr: {r.peak_val:.2f}</b>"
-                    )
-                    self.vline_2c.setPen(pg.mkPen(hr_color, width=2))
-                    self.vline_2c.setPos(r.peak_lag)
-                    self.vline_2c.setVisible(True)
-                except Exception:
-                    pass
+        # The two time plots: seconds before the last sample fed
+        h = c.hist
+        n = len(h["t"])
+        t = np.fromiter(h["t"], dtype=float, count=n) - c.t_s
+        for curve, key in ((self.curve_hr1, "hr1"), (self.curve_hr3, "hr3"),
+                           (self.curve_r["HR2_ACF"], "acf"), (self.curve_r["HR2_MPM"], "mpm"),
+                           (self.curve_r["HR2_YIN"], "yin"), (self.curve_q["HR2_ACF"], "q_acf"),
+                           (self.curve_q["HR2_MPM"], "q_mpm"), (self.curve_q["HR2_YIN"], "q_yin")):
+            curve.setData(t, np.fromiter(h[key], dtype=float, count=n))
 
     def closeEvent(self, event):
         s = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -10404,7 +10682,7 @@ class HR2LabWindow(QtWidgets.QMainWindow):
         if self.main_monitor is not None:
             self.main_monitor.btn_hr2lab.setChecked(False)
             self.main_monitor.hr2lab_window = None
-        event.accept()
+        super().closeEvent(event)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -14672,7 +14950,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # ── Python timing rolling buffers (last 50 measurements, in ms) ──────────
         _pt_keys = [
             'drain', 'drain_interval', 'render', 'render_interval',
-            'algo_spo2lab', 'algo_spo2test', 'algo_hr2test', 'algo_hr3lab',
+            'algo_spo2lab', 'algo_spo2test', 'algo_hr2test', 'algo_hr2lab', 'algo_hr3lab',
             'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hr2lab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
             'plot_hr1test', 'plot_hr1lab', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
@@ -14706,7 +14984,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             ("PI",         "data_pi",         "Perfusion Index: (AC_ir / DC_ir) × 100 [%]. Measures signal strength / perfusion quality. Typical range: 0.02–20 %. Low PI (<0.3 %) indicates weak signal or poor perfusion.", "AFE4490Data::pi"),
             ("HR1",        "data_hr1",        "Heart rate from algorithm HR1 (adaptive threshold peak detection). Threshold = 0.6 × running_max; refractory 185 ms. Average of last 5 RR intervals. Units: BPM. Valid range: 40–260 BPM.",                    "AFE4490Data::hr1"),
             ("HR1_SQI",    "data_hr1_sqi",    "HR1 Signal Quality Index [0–1]. Coefficient of variation (CV = std/mean) of the 5 most recent RR intervals: SQI = clamp(1 − CV/0.15, 0, 1). CV = 0 (perfectly regular rhythm) → 1. CV ≥ 15 % (arrhythmia or motion artefact) → 0. Forced to 0 if fewer than 5 intervals detected or HR1 outside valid range.", "AFE4490Data::hr1_sqi"),
-            ("HR2",        "data_hr2",        "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 400-sample buffer → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 40–260 BPM.",  "AFE4490Data::hr2"),
+            ("HR2",        "data_hr2",        "Heart rate from algorithm HR2 (normalized autocorrelation). BPF 0.5–5 Hz → decimate ×10 → 300-sample buffer (6 s, lib v0.121) → autocorr every 0.5 s → first local max ≥ 0.5 → parabolic interpolation. Units: BPM. Valid range: 40–260 BPM.",  "AFE4490Data::hr2"),
             ("HR2_SQI",    "data_hr2_sqi",    "HR2 Signal Quality Index [0–1]. Unbiased normalised autocorrelation at the dominant RR lag: SQI = acorr[τ] / (acorr[0]·(N−τ)/N). Unbiased correction removes finite-window underestimation — clean signal yields SQI ≈ 1.0 at all HR. Minimum threshold 0.5: below this no HR2 is reported and SQI = 0. Forced to 0 if buffer not full or HR2 outside valid range.", "AFE4490Data::hr2_sqi"),
             ("HR3",        "data_hr3",        "Heart rate from algorithm HR3 (FFT + HPS, computed in firmware). LP 10 Hz → decimate ×10 → 512-sample Hann window → FFT → Harmonic Product Spectrum (harmonics 2–3) → parabolic interpolation. Units: BPM. Valid range: 40–260 BPM.", "AFE4490Data::hr3"),
             ("HR3_SQI",    "data_hr3_sqi",    "HR3 Signal Quality Index [0–1]. Spectral concentration of fundamental power at the HPS peak bin vs. search range: SQI = (P[peak]/ΣP[k] − 1/N) / (1 − 1/N). Pure dominant tone → SQI ≈ 1. Diffuse or noisy spectrum → SQI ≈ 0. Forced to 0 if buffer not full or HR3 outside valid range.", "AFE4490Data::hr3_sqi"),
@@ -15149,8 +15427,11 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hr2lab.clicked.connect(self.toggle_hr2lab)
         self.btn_hr2lab.setToolTip(_make_tooltip(
             "HR2LAB",
-            "Show or hide the HR2 diagnostic window. "
-            "Displays the normalised autocorrelation (HR2) used to detect the dominant pulse period.",
+            "Show or hide the window that compares the methods of analysis family 2 live, on the "
+            "library's HR2 buffer (400 samples at 50 Hz): <b>HR2_ACF</b> (today's HR2), "
+            "<b>HR2_MPM</b> (McLeod's NSDF) and <b>HR2_YIN</b> (YIN). The same curve read by "
+            "three pickers, each with its rate, its quality and its curve against lag, and the "
+            "three rates against time next to the board's HR1 and HR3. Requires frame mode $M4.",
             src="HR2LabWindow"))
         self.sidebar_layout.addWidget(self.btn_hr2lab)
 
@@ -16096,6 +16377,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.btn_hr2lab.isChecked():
             self.hr2lab_window = HR2LabWindow(None)
             self.hr2lab_window.main_monitor = self
+            self.hr2lab_window.calc.window_ms = self._py_timing['algo_hr2lab']   # PYTHON TIMING row
             self.hr2lab_window.show()
         else:
             if self.hr2lab_window is not None:
@@ -17931,6 +18213,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     self.hr3lab_window.feed_sample(
                                         _ot500, self.afe_fs(), _ps500, _sc500,
                                         float(_p500[14]), float(_p500[16]))
+                                # HR2LAB (v1.113): the methods of family 2 on the library's HR2
+                                # buffer; the board's HR1 / HR3 (fields 14 / 18) as the live
+                                # reference of the other two families.
+                                if self.hr2lab_window is not None:
+                                    self.hr2lab_window.feed_sample(
+                                        _ot500, self.afe_fs(), _ps500, _sc500,
+                                        float(_p500[14]), float(_p500[18]))
                             except (ValueError, IndexError):
                                 pass
                         elif len(_p500) >= 4 and _p500[0] in ('M1', 'M2', 'M3'):
@@ -17949,6 +18238,8 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                     self.hr3test_calc.update(0.0, self.afe_fs(), _ps500, _sc500)
                                 if self.hr3lab_window is not None:
                                     self.hr3lab_window.feed_sample(0.0, self.afe_fs(), _ps500, _sc500)
+                                if self.hr2lab_window is not None:
+                                    self.hr2lab_window.feed_sample(0.0, self.afe_fs(), _ps500, _sc500)
                             except (ValueError, IndexError):
                                 pass
 
@@ -18370,7 +18661,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
             if self.hr2lab_window is not None and self._hr2lab_refresh_counter >= self._SUBWIN_REFRESH_EVERY:
                 self._hr2lab_refresh_counter = 0
                 _t0p = time.perf_counter()
-                self.hr2lab_window.update_plots(self.data_ppgdisp, self.data_timestamp_us, self.data_sample_counter)
+                self.hr2lab_window.update_plots(self.data_pi)
                 self._py_timing['plot_hr2lab'].append((time.perf_counter() - _t0p) * 1000)
 
             self._spo2lab_refresh_counter += 1
@@ -18455,7 +18746,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                 if self.ppgplots_window  is None: self._py_timing['plot_ppgplots'].clear()
                 if self.signals_window   is None: self._py_timing['plot_signals'].clear()
                 if self.results_window   is None: self._py_timing['plot_results'].clear()
-                if self.hr2lab_window    is None: self._py_timing['plot_hr2lab'].clear()
+                if self.hr2lab_window    is None:
+                    self._py_timing['plot_hr2lab'].clear()
+                    self._py_timing['algo_hr2lab'].clear()
                 if self.spo2lab_window   is None:
                     self._py_timing['plot_spo2lab'].clear()
                     self._py_timing['algo_spo2lab'].clear()
@@ -18486,6 +18779,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                      max(self._queue_size_buf)) if self._queue_size_buf else (0, 0),
                     'gap_B':        self._gaps_B,
                     'gap_hr1test':  self.hr1test_calc.gap_count,
+                    'gap_hr2lab':   self.hr2lab_window.calc.gap_count if self.hr2lab_window is not None else None,
                     'gap_hr3lab':   self.hr3lab_window.calc.gap_count if self.hr3lab_window is not None else None,
                     'gap_hr3test':  self.hr3test_calc.gap_count,
                     'gap_spo2lab':  self.spo2lab_window.gap_count  if self.spo2lab_window  is not None else None,

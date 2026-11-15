@@ -30057,6 +30057,11 @@ espectro y cepstrum. Once búsquedas y siete lecturas; nada cambiado en ningún 
   las referencias del informe y de `docs/boards.md` apunten a algo. **Alex: «adelante».** Commits
   locales, sin push: librería `822ae00` en `experiment/hr3-sac` (`master` sigue en `adbc4cb`) y
   PulseNest (script de comparación, addendum del informe, `docs/boards.md` y este log).
+- **Sesión de desarrollo, reconfirmada (Alex: «Sí, esta»).** Comprobado antes de preguntar: desde
+  el 12-nov otras sesiones hicieron commits en `master` (`b80b467`, `051fede`, `1401e38` el 13-nov;
+  `afd19e3` el 14-nov); la sesión `hr3lab` fusionó ella misma su rama (`8e8720b`, lab v1.112, con
+  su bloque de log), en contra de su encargo; y alguien subió `27897c1`, `2bcd4d3`, `c5d03b3` y
+  `afd19e3`. Solo `8e8720b` queda sin subir. Ningún cambio ajeno choca con los de esta sesión.
 - **Principio (Alex, 2026-11-14):** el burst ratio y cualquier detector de artefactos de movimiento es
   mejorable si no utiliza la estructura pulsátil de la PPG. La energía sola (RMS, mediana, Q) no
   distingue artefacto de cambio real de amplitud ni ve el artefacto que llena la ventana; la
@@ -30110,3 +30115,110 @@ worktree.
 - Ficheros: `pulsenest_lab.py`, `pulsenest_lab_spec.md`, `docs/nomenclature.md`,
   `test_pulsenest/hr3lab_test.py`, `pulsenest/hr_bench.py` (docstring), `README.md`,
   `conversation_log.md`.
+
+---
+
+## Sesión 2026-11-15 — HR2LAB: los métodos de la familia 2, banco, informe y ventana
+
+**Sesión:** «HR2LAB algoritmos nuevos» (Fable 5.1 → Opus 5.5 a mitad, por créditos). Desde hoy es la
+sesión de desarrollo (Alex: «Sí, aquí»); la anterior («Nuevo HR3LAB con los métodos de la familia 3»)
+no estaba viva y no se pudo avisar; queda apuntado en memoria.
+
+**Preguntas y decisiones:**
+- Alex propone un HR2LAB inspirado en el HR3LAB para probar los métodos nuevos de la familia 2.
+  Opinión dada: primero los métodos en el banco y un informe contra el ECG, después la ventana que
+  llama al banco (como HR3LAB). Aceptado.
+- **Criterios de comparación de métodos (Alex pidió pocos y ponderados):** honestidad al fallar 35,
+  disponibilidad 20, dinámica 15, rango y perfusión baja 15, precisión cuando acierta 10, coste 5;
+  eliminatorios: coste fuera de presupuesto, no determinista/no testable, patente vigente; y un mapa
+  de huecos sin puntuar para una fase posterior que combine métodos. Guardado en memoria
+  (`project_method_comparison_criteria`); sustituye a la matriz de la tarea MPM/YIN.
+- Plan aprobado (Alex: «adelante con el plan del HR2LAB»): preguntas fijadas antes de medir, valores de
+  los artículos sin afinar (MPM k = 0,9; YIN umbral 0,10), AMDF fuera.
+
+**Hecho:**
+- `pulsenest/hr_bench.py`: familia de lag (`hr2_segments`, `lag_sweep`, `hr2_acf`, `hr2_mpm`, `hr2_yin`,
+  `hr2_family`); `hr_bench_test.py` 27/27 (trampa de octava sintética: ACF lee el doble, MPM y YIN el
+  fundamental). El `HR2_ACF` del banco coincide con el HR2 de la placa en clase en el 99,5–100 % de
+  las ventanas (diferencias de ±3 %, nunca de octava).
+- `experiments/hr2_methods_20261115.py` + informe `docs/hr2_methods_20261115.md`. Resultado: en PPG
+  neonatal real el pico de la función de lag en el latido suele ser más bajo que los de dos o más
+  latidos después (variabilidad latido a latido y modulación respiratoria), así que los selectores de
+  MPM y YIN, pensados para voz, saltan a múltiplos del periodo. ECG agrupado: publicado mal ACF
+  4,4 %, MPM 17,5 %, YIN 17,7 %; ACF gana el ranking ponderado (135 frente a 165 y 205). *Post hoc*: la
+  NSDF con el selector de la ACF da lo mismo que la ACF (la función no importa, el selector sí); MPM
+  k = 0,5 / YIN 0,5 se acercan a la ACF, elegidos sobre los mismos datos. Donde HR3_SAC falla, la
+  familia 2 acierta en ≤ 0,3 % de las ventanas; aporta ~2 s menos de arranque y los 30 bpm del MS100.
+- **HR2LAB reescrito, lab v1.113:** `HR2LabCalc` (su propio `HR2TestCalc` + `hr_bench.hr2_family` por
+  ventana, ~0,6 ms) y `HR2LabWindow` (búfer de 8 s con los latidos que implica cada periodo, una
+  columna por método con su curva contra lag, tasas y calidades en 120 s, HR1/HR3 de la placa).
+  Fuera el marcador de posición anterior. PYTHON TIMING `algo_hr2lab`/`gap_hr2lab`.
+  `test_pulsenest/hr2lab_test.py` 36/36; en SUBJ11_HOSPNAV_20261013_112510 las 1979 ventanas de la
+  ventana igualan al banco en lote (diferencia máxima 0). Resto de tests Python en verde salvo
+  `udp_multiboard_test.py` 98/100, que falla igual en `HEAD` (dos comprobaciones del puerto UDP
+  compartido; no lo toca este cambio).
+- Spec del lab v1.113 (§5.4, §7.12b, §7.15, changelog), nomenclatura (HR2_ACF/MPM/YIN, clarity, key
+  maximum, NSDF, CMND), README, índice de prior art (fuente H2M), docstring del banco.
+
+**Pendiente de Alex (decisiones del informe):** no portar MPM/YIN; no seguir con las variantes
+relajadas; mantener `HR2_ACF` y valorar su arranque y las frecuencias bajas en la fase entre familias
+(con la captura MS100 de 35–55 bpm); mirar la ventana en pantalla. Al decidir, el análisis va al
+rationale de la librería. Sin commit todavía.
+
+**Continuación (misma sesión, tarde) — MPM y YIN con parámetros elegidos fuera de muestra; ¿parametrizar mejor HR2_ACF?**
+- Alex: dejar a MPM y YIN tan mal es injusto si se parecen tanto a ACF; repetir con mejor
+  parametrización, y después analizar si `HR2_ACF` debe parametrizarse mejor. Aceptado.
+- Revisión previa del banco: el YIN de la primera parte sumaba su diferencia sobre N − τ muestras
+  (decrece con el lag). Corregido a la ventana fija del artículo (`hr_bench.yin_difference`, por
+  defecto; la primera parte conserva la versión antigua y se reproduce idéntica). Medido: el defecto
+  pesaba poco (acierto 29,5 → 31,7 %); lo que hundía a YIN era el umbral.
+- `experiments/hr2_tuning_20261115.py` (partes 2 y 3 del informe `docs/hr2_methods_20261115.md`):
+  puntuación fijada antes de medir = ok % − 1,75 × mal % (1,75 = 35/20 de los pesos acordados);
+  elección dejando un sujeto ECG fuera; SUBJ10 y MS100 nunca eligen; regla para proponer un cambio
+  a la librería fijada antes.
+- Resultado partes 2: con parámetros para PPG, MPM (k 0,5) y YIN (umbral 0,6) son tan honestos como
+  ACF (3,7 / 4,9 % mal frente a 4,4 %) pero publican menos: puntuación ACF 75,1, YIN 68,8, MPM 65,1.
+  Ambos eligen el borde de su rejilla (*post hoc*: k 0,3; umbral 0,75–0,85; YIN 71,3): en PPG la mejor
+  regla de todos es "el primer pico que supera un listón", la de ACF. Lo que YIN sí aporta: su
+  1 − d' separa acierto de error mejor (AUC 0,96 frente a 0,85; al 1 % de error, listón elegido fuera
+  de muestra, 70,6 % de ventanas frente a 50,2 %) y lee 30 bpm del MS100 siempre (ACF la mitad).
+  El ranking ponderado por rangos sale al revés (MPM 120, YIN 190, ACF 200) porque cuenta orden y no
+  magnitud; el informe lo explica.
+- Resultado parte 3 (ACF): min_corr 0,4 da +1,3 puntos, bajo los 2 de la regla, y empeora SUBJ10: se
+  queda 0,5. Banda: 3 y 4 Hz peores; se queda 5 Hz. Buffer: 6 s pasa la regla de arranque (2 s antes
+  en mediana, 5 s en el p90, −0,2 puntos; SUBJ08 −1, SUBJ10 −2,1, 30 bpm igual); 4 s no.
+- Tests: `hr_bench_test.py` 30/30 (ventana fija de YIN, MPM separado en `mpm_keys`/`mpm_pick`),
+  `hr2lab_test.py` 36/36. Spec del lab v1.113 (changelog, §5.4), nomenclatura (ventana fija, fuera de
+  muestra), índice de prior art, docstrings.
+
+**Pendiente de Alex (sustituye a lo anterior):** no portar MPM/YIN como sustitutos; llevar el 1 − d'
+de YIN a la fase de combinación como índice de calidad candidato; frecuencias bajas con la captura
+MS100 35–55 bpm; ¿buffer de HR2 a 6 s ahora o en la fase entre familias?; ¿HR2LAB con valores del
+artículo, elegidos o ambos? Al decidir, el análisis va al rationale de la librería. Sin commit.
+
+**Continuación — el ranking ponderado se sustituye por un total ponderado de magnitudes.**
+- Alex no entendía tres cosas de mi resumen: columnas distintas en las dos tablas, la «puntuación
+  fuera de muestra» y por qué el ranking ponderado «salía al revés». Explicado. El ranking por
+  puestos (puesto 1–3 × peso) cuenta orden y no magnitud: 0,7 puntos de honestidad valían 35.
+- Alex: «Sí, sustitúyelo». Hecho en los dos scripts (`weighted_total` en
+  `experiments/hr2_methods_20261115.py`): cada criterio en una **escala fija**, decidida antes de
+  recalcular y no tomada de los datos (escalar entre el mejor y el peor de tres métodos repetiría el
+  defecto con diferencias pequeñas). Honestidad 0–20 % mal, disponibilidad 100–0 % publicado,
+  dinámica 0–20 s, rango 100–0 % en el MS100, precisión 0–5 bpm; total 0 (mejor) a 100 (peor).
+- Al hacerlo apareció una incoherencia mía: la disponibilidad se medía al listón del 1 % de error,
+  no «en el mismo punto de trabajo» que la honestidad, como dicen los criterios acordados. Corregido;
+  la disponibilidad al 1 % queda como dato sin puntuar.
+- Totales nuevos (sustituyen a 135/165/205 y 120/190/200 de más arriba): parte 1 ACF 22,2, MPM 46,0,
+  YIN 60,2; parte 2 (afinados, fuera de muestra) ACF 22,2, MPM 22,3, YIN 24,3: **MPM afinado empata
+  con ACF**. La puntuación fijada (aciertos − 1,75 × errores) deja a ACF 10 puntos por delante. Ninguno
+  es claramente mejor que el actual; propuesta sin cambio: no portar.
+
+**Continuación — Alex: «Adelante: búffer a 6s, parámetros, commit, push y flash».**
+- Librería v0.121 (commit f3fd922, subido; **etiqueta y release pendientes del sí de Alex**, regla del
+  CLAUDE.md): `hr2_buf_len` 400 → 300; spec §5.3/§5.5/§14 (cita también los commits de solo texto
+  1e83696, f706ef6, adbc4cb), rationale §24 con el análisis y lo descartado; test 1b de `test_hr2`
+  fija los 6 s; 11/11 suites, `check_version.py v0.121` OK.
+- «Parámetros» interpretado como la decisión 6 del informe: HR2LAB con MPM k 0,5 y YIN umbral 0,6
+  (elegidos fuera de muestra; `hr_bench.*_PPG`), no los del artículo. Lab v1.114: `HR2TestCalc` y el
+  banco a 300 muestras; los dos estudios del día pasan 400 explícito y siguen reproduciendo.
+- `lib/incunest_afe4490.version` → v0.121. OTA a `87:A4` y `82:5C` (88:50 es de IncuNest).

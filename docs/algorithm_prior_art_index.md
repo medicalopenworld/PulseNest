@@ -31,6 +31,7 @@ Sources consolidated, with the key used in the *Detail* column and the date each
 | RCU | `docs/spo2_r_curves.md` | register, kept up to date |
 | SAC | `docs/spectral_autocorrelation_20261112.md` | 2026-11-12 |
 | H3M | `docs/hr3_methods_20261114.md` (the methods of family 3 against the ward monitor's ECG heart rate) | 2026-11-14 |
+| H2M | `docs/hr2_methods_20261115.md` (the methods of family 2 against the ward monitor's ECG heart rate) | 2026-11-15 |
 | PIA | `docs/pi_artifact_robustness_20261111.md` | 2026-11-11 |
 | SPEC | `incunest_afe4490_spec.md` in the library repository (§5 algorithms, §13 references) | — |
 | RAT | `incunest_afe4490_design_rationale.md` in the library repository | — |
@@ -118,15 +119,28 @@ strength of the periodicity.
 
 | What it does | Source | Type | Patent status | Serves | In this project | Citation | Detail |
 |---|---|---|---|---|---|---|---|
-| Fundamental frequency from the normalised autocorrelation and the cumulative mean normalised difference (YIN) | de Cheveigné & Kawahara 2002, JASA 111(4) | A | — | PR | used: HR2 derives from it (SPEC §5.3); `HR2_YIN` planned (SPEC §5.5) | no record | SPEC §13.2 |
+| Fundamental frequency from the normalised autocorrelation and the cumulative mean normalised difference (YIN) | de Cheveigné & Kawahara 2002, JASA 111(4) | A | — | PR | used: HR2 derives from it (SPEC §5.3); `HR2_YIN` measured 2026-11-15, not adopted: with the paper's threshold it publishes in a third of the windows and reaches up to five periods; with a threshold chosen out of sample (0.6) it is as honest as `HR2_ACF` but publishes less, and its 1 − d' is the family's best quality index | no record | SPEC §13.2, H2M |
 | Autocorrelation methods for pitch | Rabiner & Schafer 1978, *Digital Processing of Speech Signals* | A | — | PR | used as background (SPEC §5.3) | no record | SPEC §13.2 |
-| McLeod pitch method: normalised square difference function with a clarity metric | none cited | — | — | PR, Q | planned: `HR2_MPM` (SPEC §5.5) | no record | SPEC §5.5 |
+| McLeod pitch method: normalised square difference function with a clarity metric | none cited | — | — | PR, Q | `HR2_MPM` measured 2026-11-15, not adopted: with k = 0.9 it jumps to two periods (wrong in 17.5 % of what it publishes, against 4.4 % for `HR2_ACF`); chosen out of sample, k goes to the edge of the grid, towards `HR2_ACF`'s picker | no record | SPEC §5.5, H2M |
 | Average magnitude difference function | none cited | — | — | PR | candidate named 2026-11-12 (`HR2_AMDF`), not evaluated | no record | — |
 | R from the autocorrelation at the pulse lag | own option (Alex, 2026-10-02) | — | — | SpO2 | listed, not run (RAT §9, option 6) | — | RAT §9 |
 | A maker's reason for not taking the rate from an autocorrelation: with an arrhythmic pulse it may show no strong local maximum | Nellcor US 7,865,224 | P | expired 2021 | PR | context for `HR2_ACF` and its planned variants | read (first third of the text) | H2 |
 
 H2 found no maker that takes the pulse rate from a lag estimator alone, and no comparison of YIN,
 MPM or AMDF on PPG, nor anything neonatal. It is one short search, not an absence in the literature.
+
+H2M (2026-11-15) measured `HR2_ACF`, `HR2_MPM` and `HR2_YIN` on one sweep of the same buffer against
+the ECG. On neonatal PPG the peak of the lag function at the beat is often lower than the peaks
+two or more beats later, so pickers built for speech (the tallest peak first) jump to multiples of
+the period; the NSDF read with `HR2_ACF`'s picker gives the same result as `HR2_ACF`. Where
+`HR3_SAC` fails, no method of family 2 is right in more than 0.3 % of the windows; what family 2
+adds is about 2 s less start-up and the simulator's 30 bpm.
+
+H2M parts 2 and 3 chose the parameters out of sample (leave one ECG subject out). Every method's
+best rule on this signal is to take the first peak or dip that clears a bar, which is `HR2_ACF`'s;
+`HR2_ACF` with the library's values keeps the best score. YIN's 1 − d' sorts right from wrong
+better than `HR2_ACF`'s peak height (out of sample, at 1 % wrong: 70.6 % of the windows against
+50.2 %). For `HR2_ACF` the band and min_corr stay; a 6 s buffer starts 2 s sooner for 0.2 points.
 
 ### 2.3 Family 3 — spectrum
 

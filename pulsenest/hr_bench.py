@@ -20,12 +20,21 @@ References of the pulse rate, in order of independence:
   plateau    the rate set on the MS100 simulator, from the session's keyboard events.
 
 Method labels (docs/nomenclature.md): HR3_HPS = today's HR3, HR3_SAC = spectral autocorrelation
-with local contrast, HR3_CEP = cepstrum of the band.
+with local contrast, HR3_CEP = cepstrum of the band; HR2_ACF = today's HR2, HR2_MPM = McLeod pitch
+method, HR2_YIN = YIN.
+
+Added on 2026-11-15 (docs/hr2_methods_20261115.md): the time-lag family. hr2_segments is the
+library's HR2 chain on the raw columns; lag_sweep is the one sweep r(tau), m(tau) the three methods
+share; hr2_acf, hr2_mpm and hr2_yin read it, with the papers' values for MPM and YIN.
+Parts 2 and 3 the same day: yin_difference (YIN's fixed integration window, now the default),
+mpm_keys / mpm_pick (MPM split so a sweep of k does not search the key maxima again), and
+hr2_segments with f_high and buf_len for the front-end variants (experiments/hr2_tuning_20261115.py).
 
 Since lab v1.112 pulsenest_lab.py's HR3LAB window (HR3LabCalc) calls hps, hps_estimate, hr3_sac,
 comb_purity, log_floor, band_cepstrum and pick_quefrency on each live HR3 window, one row at a
 time and with their defaults: a change to any of them, or to a default, changes that window too
-(test_pulsenest/hr3lab_test.py compares the two).
+(test_pulsenest/hr3lab_test.py compares the two). Since lab v1.113 its HR2LAB window (HR2LabCalc)
+calls hr2_family on each live HR2 buffer, under the same rule (test_pulsenest/hr2lab_test.py).
 """
 import csv
 import glob
@@ -412,6 +421,252 @@ def pick_quefrency(A, dq, alpha=0.8):
     ok = has & (hr >= HR_MIN) & (hr <= HR_MAX)
     q = np.divide(pc, rms, out=np.zeros(len(pc)), where=rms > 0)
     return np.where(ok, hr, np.nan), np.where(ok, q, 0.0)
+
+
+# ============================================================================= HR2 front end (time-lag family)
+
+HR2_F_LOW_HZ, HR2_F_HIGH_HZ = 0.5, 5.0   # hr2_f_low_hz, hr2_f_high_hz: one-biquad Butterworth band-pass
+HR2_BUF_LEN     = 300                    # hr2_buf_len: 6 s at 50 Hz since lib v0.121 (400 = 8 s before;
+                                         # the studies of 2026-11-15 pass 400 explicitly)
+HR2_UPDATE_N    = 25                     # hr2_update_interval_s * 50 Hz
+HR2_LAG_CAP     = 137                    # hr2_acorr_lag_cap
+HR2_MIN_CORR    = 0.5                    # hr2_min_corr: HR2_ACF publishes from this peak height
+HR2_ENERGY_EPS  = 1e-16                  # hr2_ot_energy_eps
+# Fixed on 2026-11-15 before measuring, from the methods' own papers, not tuned on this signal:
+MPM_K           = 0.9    # McLeod & Wyvill 2005: first key maximum reaching k of the highest
+MPM_MIN_CLARITY = 0.5    # the same bar as HR2_ACF's hr2_min_corr, so both publish on the same rule
+YIN_THRESHOLD   = 0.10   # de Cheveigne & Kawahara 2002: absolute threshold on the CMND
+# YIN's difference over a fixed integration window (the paper's eq. 6), the default since the second
+# part of 2026-11-15: the first part summed over N - tau samples, which shrinks d with the lag and
+# pushes YIN to multiples of the period. "shrinking" keeps that first part reproducible.
+YIN_WINDOW      = "fixed"
+# Chosen for PPG on 2026-11-15, out of sample (docs/hr2_methods_20261115.md part 2: on all three ECG
+# subjects, 8 s buffer); what HR2LAB runs since lab v1.114. Not library values: MPM and YIN were
+# not adopted.
+MPM_K_PPG           = 0.5
+MPM_MIN_CLARITY_PPG = 0.5
+YIN_THRESHOLD_PPG   = 0.6
+
+
+def _biquad_bp(f_low, f_high, fs):
+    """BiquadFilter::init_bp (lab _Biquad.init_bp): 2nd-order Butterworth band-pass."""
+    k = 2.0 * fs
+    o_lo, o_hi = k * math.tan(math.pi * f_low / fs), k * math.tan(math.pi * f_high / fs)
+    o0sq, bw = o_lo * o_hi, o_hi - o_lo
+    den = k * k + bw * k + o0sq
+    return bw * k / den, 0.0, -bw * k / den, 2.0 * (o0sq - k * k) / den, (k * k - bw * k + o0sq) / den
+
+
+def hr2_segments(d, f_high=HR2_F_HIGH_HZ, buf_len=HR2_BUF_LEN):
+    """Every HR2 window of the session: (S [W x HR2_BUF_LEN] the decimated band-passed buffer, oldest
+    first, raw row index of each window's last sample, decimated rate). The library's chain: band-pass
+    at the AFE rate, precharged, negated (peaks up), one sample in `factor` kept, a window every
+    HR2_UPDATE_N decimated samples once the buffer is full. Runs of ProbeState APPLIED are processed
+    independently, as the library resets on any other state. f_high and buf_len default to the
+    library's; other values are bench variants (docs/hr2_methods_20261115.md, part 3)."""
+    fs = d["fs"]
+    factor = max(1, int(round(fs / DECIM_TARGET_HZ)))
+    c = _biquad_bp(HR2_F_LOW_HZ, f_high, fs)
+    on = (d["ps"] == APPLIED).astype(np.int8)
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], on, [0]))))
+    S_all, end_rows = [], []
+    for r0, r1 in zip(edges[::2], edges[1::2]):
+        x = d["OT_LED1"][r0:r1]
+        if len(x) < factor * (buf_len + HR2_UPDATE_N):
+            continue
+        dec = -_run_biquad(x, c)[factor - 1::factor]
+        first = ((buf_len - 1) // HR2_UPDATE_N + 1) * HR2_UPDATE_N - 1
+        idx = np.arange(first, len(dec), HR2_UPDATE_N)
+        if len(idx) == 0:
+            continue
+        S_all.append(np.lib.stride_tricks.sliding_window_view(dec, buf_len)[idx - (buf_len - 1)].copy())
+        end_rows.append(r0 + (idx + 1) * factor - 1)
+    if not S_all:
+        return np.zeros((0, buf_len)), np.zeros(0, dtype=np.int64), fs / factor
+    return np.vstack(S_all), np.concatenate(end_rows), fs / factor
+
+
+def hr2_lag_range(rate, n=HR2_BUF_LEN):
+    """(min_lag, max_lag) in decimated samples, as _hr2_compute: the periods of HR_MAX + HR_GUARD and
+    HR_MIN - HR_GUARD, capped by HR2_LAG_CAP and n / 2 - 1. 11 and 111 at 50 Hz."""
+    lo = max(1, int(60.0 / (HR_MAX + HR_GUARD) * rate))
+    hi = min(int(60.0 / (HR_MIN - HR_GUARD) * rate), HR2_LAG_CAP, n // 2 - 1)
+    return lo, hi
+
+
+def lag_sweep(S, max_lag):
+    """The one sweep the three methods share, for lags 0..max_lag:
+      r[tau] = sum_i x[i] x[i+tau]             m[tau] = sum_i (x[i]^2 + x[i+tau]^2),  i = 0..N-tau-1
+    m comes from a prefix sum of x^2 at no extra cost per lag."""
+    W, N = S.shape
+    r = np.empty((W, max_lag + 1))
+    for tau in range(max_lag + 1):
+        r[:, tau] = np.einsum("ij,ij->i", S[:, :N - tau], S[:, tau:])
+    c = np.concatenate([np.zeros((W, 1)), np.cumsum(S * S, axis=1)], axis=1)
+    tau = np.arange(max_lag + 1)
+    m = c[:, N - tau] + (c[:, N:N + 1] - c[:, tau])
+    return r, m
+
+
+def _parabola(y_prev, y, y_next, peak=True):
+    """Offset of the vertex of the parabola through three equally spaced points, within +-0.5."""
+    den = y_prev - 2.0 * y + y_next
+    good = den < 0 if peak else den > 0
+    return np.clip(np.where(good, 0.5 * (y_prev - y_next) / np.where(good, den, 1.0), 0.0), -0.5, 0.5)
+
+
+def _publish(lag, has, q, rate):
+    """(HR bpm or NaN, quality or 0, lag or NaN) with the library's range check."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hr = 60.0 * rate / lag
+    ok = has & np.isfinite(hr) & (hr >= HR_MIN) & (hr <= HR_MAX)
+    return np.where(ok, hr, np.nan), np.where(ok, q, 0.0), np.where(ok, lag, np.nan)
+
+
+def hr2_acf(r, rate, n=HR2_BUF_LEN, min_corr=HR2_MIN_CORR):
+    """HR2_ACF, today's HR2 (_hr2_compute): unbiased normalised autocorrelation
+    A[tau] = r[tau] N / (r[0] (N - tau)); the first interior strict local maximum inside the lag range
+    at or above min_corr; parabolic interpolation; quality = the peak value.
+    Returns (HR, quality, lag in decimated samples, A over lags 0..max_lag)."""
+    W, L = r.shape
+    lo, hi = hr2_lag_range(rate, n)
+    tau = np.arange(L)
+    r0 = r[:, 0]
+    energy = r0 >= HR2_ENERGY_EPS
+    A = r * n / (np.where(energy, r0, 1.0)[:, None] * (n - tau)[None, :])
+    A[~energy] = 0.0
+    j = np.arange(lo + 1, hi)                             # interior of [lo, hi]
+    loc = (A[:, j] > A[:, j - 1]) & (A[:, j] > A[:, j + 1]) & (A[:, j] >= min_corr)
+    has = energy & loc.any(axis=1)
+    k = j[np.argmax(loc, axis=1)]
+    rows = np.arange(W)
+    lag = k + _parabola(A[rows, k - 1], A[rows, k], A[rows, k + 1])
+    hr, q, lag = _publish(lag, has, A[rows, k], rate)
+    return hr, q, lag, A
+
+
+def nsdf(r, m):
+    """McLeod's normalised square difference function 2 r / m, in [-1, 1]."""
+    return np.divide(2.0 * r, m, out=np.zeros_like(r), where=m > 0)
+
+
+def mpm_keys(Nf, lo, hi):
+    """The key maxima of each NSDF row inside [lo, hi]: the highest point of each positive lobe after
+    the first negative-going zero crossing (the lobe at lag 0 is skipped), confirmed by a lower point
+    after it. A list of integer lags per window, in increasing order."""
+    W, L = Nf.shape
+    out = []
+    for w in range(W):
+        y = Nf[w]
+        keys = []
+        neg = np.flatnonzero(y < 0)
+        if len(neg):
+            pos = np.concatenate(([False], y[neg[0]:] > 0, [False]))
+            e = np.flatnonzero(np.diff(pos.astype(np.int8)))
+            for a, b in zip(e[::2] + neg[0], e[1::2] + neg[0]):     # positive lobe [a, b)
+                j = a + int(np.argmax(y[a:b]))
+                if j + 1 >= L or y[j + 1] >= y[j] or not (lo <= j <= hi):
+                    continue                                         # not confirmed, or out of range
+                keys.append(j)
+        out.append(keys)
+    return out
+
+
+def mpm_pick(Nf, keys, rate, k=MPM_K, min_clarity=MPM_MIN_CLARITY):
+    """McLeod's choice among the key maxima of each window: the first reaching k of the highest,
+    published from min_clarity; parabolic interpolation. Returns (HR, clarity, lag)."""
+    W = Nf.shape[0]
+    lag = np.full(W, np.nan)
+    q = np.zeros(W)
+    for w, ks in enumerate(keys):
+        if not ks:
+            continue
+        y = Nf[w]
+        top = max(y[j] for j in ks)
+        j = next(j for j in ks if y[j] >= k * top)
+        if y[j] < min_clarity:
+            continue
+        lag[w] = j + float(_parabola(y[j - 1], y[j], y[j + 1]))
+        q[w] = y[j]
+    return _publish(lag, np.isfinite(lag), q, rate)
+
+
+def hr2_mpm(r, m, rate, n=HR2_BUF_LEN, k=MPM_K, min_clarity=MPM_MIN_CLARITY):
+    """HR2_MPM, the McLeod pitch method on the NSDF (mpm_keys, then mpm_pick): among the key maxima
+    inside the lag range, the first reaching k of the highest; parabolic interpolation; clarity = the
+    NSDF at that key maximum, published from min_clarity.
+    Returns (HR, clarity, lag, NSDF over lags 0..max_lag)."""
+    Nf = nsdf(r, m)
+    lo, hi = hr2_lag_range(rate, n)
+    hr, q, lag = mpm_pick(Nf, mpm_keys(Nf, lo, hi), rate, k, min_clarity)
+    return hr, q, lag, Nf
+
+
+def yin_difference(S, max_lag):
+    """YIN's difference function over a fixed integration window (de Cheveigne & Kawahara 2002, eq. 6),
+    for lags 0..max_lag: the newest Wi = N - max_lag samples against their copies tau earlier,
+      d[tau] = sum_{i=N-Wi..N-1} (x[i] - x[i-tau])^2,
+    the same number of terms at every lag. (m - 2 r sums over N - tau terms instead, so it shrinks as
+    the lag grows; that version is YIN_WINDOW = "shrinking".)"""
+    W, N = S.shape
+    wi = N - max_lag
+    seg = S[:, N - wi:]
+    d = np.empty((W, max_lag + 1))
+    for tau in range(max_lag + 1):
+        e = seg - S[:, N - wi - tau:N - tau]
+        d[:, tau] = np.einsum("ij,ij->i", e, e)
+    return d
+
+
+def cmnd(d):
+    """YIN's cumulative mean normalised difference of the difference function d (yin_difference, or
+    m - 2 r for the shrinking window): d'[0] = 1, d'[tau] = d[tau] tau / sum_{j=1..tau} d[j]."""
+    d = np.maximum(np.array(d, dtype=float), 0.0)
+    d[:, 0] = 0.0
+    cs = np.cumsum(d, axis=1)
+    tau = np.arange(d.shape[1])
+    out = np.divide(d * tau, cs, out=np.ones_like(d), where=cs > 0)
+    out[:, 0] = 1.0
+    return out
+
+
+def hr2_yin(r, m, rate, n=HR2_BUF_LEN, threshold=YIN_THRESHOLD, d=None):
+    """HR2_YIN: the first lag inside the range where the CMND drops under the absolute threshold, then
+    downhill to its local minimum (which must be confirmed inside the range); parabolic
+    interpolation; quality = 1 - d' at that minimum. No dip under the threshold: nothing published
+    (the paper falls back to the global minimum; a monitor should not). d: the difference function
+    (yin_difference, fixed window); None = m - 2 r (shrinking window).
+    Returns (HR, quality, lag, d' over lags 0..max_lag)."""
+    D = cmnd(m - 2.0 * r if d is None else d)
+    W, L = D.shape
+    lo, hi = hr2_lag_range(rate, n)
+    j = np.arange(lo, hi)                                   # candidates with a right neighbour
+    below = D[:, j] < threshold
+    has = below.any(axis=1)
+    j0 = np.argmax(below, axis=1)
+    stop = (D[:, j + 1] >= D[:, j]) & (np.arange(len(j))[None, :] >= j0[:, None])
+    has &= stop.any(axis=1)
+    k = np.maximum(j[np.argmax(stop, axis=1)], 1)
+    rows = np.arange(W)
+    lag = k + _parabola(D[rows, k - 1], D[rows, k], D[rows, k + 1], peak=False)
+    hr, q, lag = _publish(lag, has, np.clip(1.0 - D[rows, k], 0.0, 1.0), rate)
+    return hr, q, lag, D
+
+
+HR2_METHODS = ("HR2_ACF", "HR2_MPM", "HR2_YIN")
+
+
+def hr2_family(S, rate, yin_window=YIN_WINDOW, mpm_k=MPM_K, mpm_min_clarity=MPM_MIN_CLARITY,
+               yin_threshold=YIN_THRESHOLD):
+    """The three time-lag methods on the same windows, from one sweep (plus YIN's fixed-window
+    difference): {label: (HR, quality, lag, curve over lags 0..max_lag + 1)}. MPM and YIN default
+    to the papers' values; HR2LAB passes the *_PPG ones."""
+    _, hi = hr2_lag_range(rate, S.shape[1])
+    r, m = lag_sweep(S, hi + 1)
+    dy = yin_difference(S, hi + 1) if yin_window == "fixed" else None
+    return {"HR2_ACF": hr2_acf(r, rate, S.shape[1]),
+            "HR2_MPM": hr2_mpm(r, m, rate, S.shape[1], k=mpm_k, min_clarity=mpm_min_clarity),
+            "HR2_YIN": hr2_yin(r, m, rate, S.shape[1], threshold=yin_threshold, d=dy)}
 
 
 # ============================================================================= references

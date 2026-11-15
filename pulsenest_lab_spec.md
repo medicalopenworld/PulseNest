@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.112
+# pulsenest_lab — Specification v1.114
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -879,7 +879,7 @@ What the event does, in order:
    recording, as when resuming from PAUSE; a paused window keeps its frozen view), `HR3 LAB`
    (v1.112: front end, current window and history start over; a paused window keeps its frozen
    picture), `HR2 LAB`
-   (biquad state and filtered buffer dropped), `SIGNALS`/`SIGNALS2` (re-seed from scratch).
+   (v1.113: as HR3 LAB), `SIGNALS`/`SIGNALS2` (re-seed from scratch).
 5. Logs `[STREAM] discontinuity: <reason> — plot and algorithm buffers restarted`.
 
 What the event deliberately does **not** touch: user parameters (spinboxes, combos, presets),
@@ -1520,7 +1520,7 @@ read the decimated deques with fs = 500, see the changelog); the chain is the li
 
 - `_Biquad.init_bp` 0.5–5 Hz (`hr2_f_low_hz` / `hr2_f_high_hz`) at the AFE rate, output negated.
 - Decimation: factor = round(fs / 50), one sample in `factor` kept (rate 50 Hz at 500 Hz).
-- Circular buffer of `hr2_buf_len` = 400 decimated samples (8 s); every 25 decimated samples
+- Circular buffer of `hr2_buf_len` = 300 decimated samples (6 s, lib v0.121; 400 = 8 s before, v1.114); every 25 decimated samples
   (`hr2_update_interval_s` 0.5 s × 50 Hz), once full: `acorr0 = Σx²` (< 1e-16 → SQI 0); lags
   min_lag = int(60 / 263 · rate) = 11 … max_lag = min(int(60 / 27 · rate) = 111, cap 137,
   buf/2 − 1); unbiased normalised autocorrelation Σx[i]x[i+lag] · N / (acorr0 · (N − lag)); the
@@ -1530,6 +1530,8 @@ read the decimated deques with fs = 500, see the changelog); the chain is the li
 
 Parameters keep the HR2TEST panel's names (`bpf_low_hz`, `bpf_high_hz`, `buf_len`, `max_lag`
 = the lag cap, `update_n`, `min_lag_s`, `min_corr`); `rate_hz` / `decim_factor` expose the chain.
+For `HR2LabCalc` (v1.113) the mirror also keeps `window_count` (windows computed since creation,
+never reset: a change means a new window; `last_filtered` is then the window's buffer).
 
 **Verification (v1.88):** against the offline runner v0.27 (lib v0.103, `--input ot`) on the SUBJ09
 HOSPNAV replay at 500 Hz, sample by sample: HR2 to 5·10⁻³ BPM and SQI to 5·10⁻³ (the runner's
@@ -1542,6 +1544,35 @@ decimated to 50 Hz — the serial era, when the firmware sent one sample in ten 
 feed passed the constant `SPO2_RECEIVED_FS` = 50 Hz for a 500 Hz stream: every time constant
 was 10× too long and the 400-sample buffer held 0.8 s. Same defect as SPO2TEST's (§5.2, fixed
 in v1.86).
+
+**`HR2LabCalc`** (v1.113, owned by `HR2LabWindow`, §7.12b) — the methods of analysis family 2 on
+one HR2 buffer, built as `HR3LabCalc` (§5.5): not a second implementation of anything.
+
+- **Front end:** an `HR2TestCalc` of its own, always at the library's values, fed every `$M4`
+  sample at the AFE rate.
+- **Methods:** each time the front end completes a window, its `last_filtered` (400 samples,
+  oldest first) goes through `pulsenest.hr_bench.hr2_family` — the offline bench of
+  `docs/hr2_methods_20261115.md` — called with one row: one sweep `lag_sweep` gives r(τ) and m(τ),
+  and the three methods read it; YIN adds its fixed-window difference (`yin_difference`).
+
+| Label | Bench call | Curve | Pick | Quality |
+|---|---|---|---|---|
+| `HR2_ACF` | `hr2_acf` | unbiased normalised autocorrelation r(τ)·N / (r(0)·(N − τ)) | first local maximum ≥ 0.5 (today's HR2) | the peak value |
+| `HR2_MPM` | `hr2_mpm` | NSDF 2·r(τ) / m(τ) | first key maximum ≥ k = 0.5 of the highest (0.9 in the paper; v1.114) | clarity, published from 0.5 |
+| `HR2_YIN` | `hr2_yin` | CMND d'(τ) of the difference over a fixed window, the newest N − 112 samples against their copies τ earlier (`yin_difference`, the paper's eq. 6) | first dip under 0.6 (0.10 in the paper; v1.114), down to its minimum | 1 − d' |
+
+- **State kept:** the last buffer and the three curves over lags 0..112 (what the window draws),
+  each method's rate, quality and interpolated lag; a history of `HIST_LEN` = 300 windows
+  (`HIST_S` = 120 s) of the three rates and qualities and the board's HR1 / HR3 of the same frame,
+  on the clock `t_s`; `revision`, as `HR3LabCalc`. Sample gaps counted from `sample_counter`
+  (`gap_count`, PYTHON TIMING row `gap_hr2lab`).
+- **Per sample** only the front end runs. **Per window** (every 0.5 s, in the drain tick) the
+  three methods cost about 0.6 ms, recorded in `window_ms` (PYTHON TIMING row `algo_hr2lab`).
+- **Probe not applied, or another AFE rate:** the front end starts over; every value is NaN / 0
+  and the history gets one NaN entry.
+- **Geometry guard:** any buffer other than the library's 400 samples gives no values.
+- `bench_defaults()` reads the bench's constants (`HR2_MIN_CORR`, `MPM_K`, `MPM_MIN_CLARITY`,
+  `YIN_THRESHOLD`) for the window's info line.
 
 ### 5.5 HR3TestCalc / HR3LabCalc
 
@@ -1977,7 +2008,7 @@ All rates relative to the render timer tick (~50 ms = ~20 Hz):
 | Constant | Value | Applies to |
 |----------|-------|-----------|
 | `_PPGPLOTS_REFRESH_EVERY` | 1 | PPGPlotsWindow, PPGSignalsWindow, AlgoResultsWindow (20 Hz) |
-| `_SUBWIN_REFRESH_EVERY` | 2 | SpO2Lab, HR3Lab, HR2Lab (10 Hz; HR3Lab redraws only when a window arrived or was lost, or the time plots are due to move: twice a second, §7.12) |
+| `_SUBWIN_REFRESH_EVERY` | 2 | SpO2Lab, HR3Lab, HR2Lab (10 Hz; HR3Lab and HR2Lab redraw only when a window arrived or was lost, or the time plots are due to move: twice a second, §7.12, §7.12b) |
 | `_SPOST_REFRESH_EVERY` | 2 | SpO2TestWindow (10 Hz) |
 | `_HR1TEST_REFRESH_EVERY` | 2 | HR1TestWindow (10 Hz) |
 | `_HR2TEST_REFRESH_EVERY` | 2 | HR2TestWindow (10 Hz) |
@@ -2420,14 +2451,55 @@ instance started in the worktree beside his own (read-only through the hub, §4.
 Until v1.111 the window drew `HRFFTCalc` (§5.5): the FFT spectrum with the HPS peak line, the
 low-pass signal and an HR1/HR2/HR3 comparison. HR3TEST (§7.10) shows those on the library's chain.
 
-### 7.12 HR2LabWindow — "HR2LAB"
+### 7.12b HR2LabWindow — "HR2LAB"
 
-**v1.36:** renamed from `HRLabWindow` — the class, `btn_hrlab`, `toggle_hrlab`, `_open_hrlab_default`, the `plot_hrlab` timing slot and the `hrlab_open` / `HRLabWindow` settings keys all lacked the "2" the window has shown since HR3LAB appeared. Existing `.ini` keys were migrated in place, so saved geometry and open-state survive.
+**v1.113 (rewritten).** The methods of analysis family 2 side by side, live, on the same HR2
+buffer: `HR2_ACF` (today's HR2), `HR2_MPM` (McLeod's NSDF) and `HR2_YIN` (YIN's CMND) — the three
+measured against the ward monitor's ECG in `docs/hr2_methods_20261115.md`. The three curves come
+from one sweep and are nearly the same; what differs is how each picks its lag, which the report
+found decisive. Sidebar button in the LAB group. Requires frame mode `$M4` (runs on `OT_LED1`).
+Built as HR3LAB (§7.12): the calculation is `HR2LabCalc` (§5.4), which calls `pulsenest.hr_bench`;
+**no parameter can be edited**.
 
-Purpose: interactive filter chain visualization for HR algorithm development.
+| Zone | Content |
+|---|---|
+| Bar | `PROBE`, `PI` (the board's), PAUSE / RESUME (key `P`) |
+| BUFFER | The 6 s band-passed buffer the methods read (8 s before v1.114), normalised to its largest value, X = seconds with 0 at the newest sample. Three rows of ticks, one per method in its colour: **the beats its period implies**, laid back every period from the highest sample of the buffer's last period. A right rate puts a tick on every beat; a rate read at one half on every other beat |
+| `HR2_ACF` | Header: rate, peak. Plot: the autocorrelation against lag (s), dashed line at 0.5 |
+| `HR2_MPM` | Header: rate, clarity. Plot: the NSDF against lag, dashed line at clarity 0.5 |
+| `HR2_YIN` | Header: rate, 1 − d'. Plot: the CMND against lag (0–2), dashed line at the threshold 0.6 |
+| RATES | The three rates, one point per window, and the board's HR1 and HR3 of the same frame (the other two families) as thin lines, over the last 120 s, 0–280 bpm |
+| QUALITY | The three quality indices over the same 120 s (X linked), dashed line at 0.5 |
+| Info line | The fixed parameters, read from `hr_bench`; while the buffer is filling it shows the percentage |
 
-3-column layout showing PPG signal chain variants side by side.
-Each column shows a different filter combination to compare quality.
+Conventions of the three method plots: lags 0–2.32 s; the search range (the periods of 263 to
+27 bpm) shaded; the chosen lag a yellow vertical line and its multiples yellow ticks at the top,
+hidden when the method gives none. Colours: `HR2_ACF` red (HR2's colour in the lab), `HR2_MPM`
+green, `HR2_YIN` blue, HR1 yellow, HR3 cyan. Titles carry their legend and get the height they
+need (`HR3LabWindow._set_title`); the explanation of each view is the tooltip of its title.
+
+**Data path.** `feed_sample(ot_led1, fs, probe_state, sample_counter, hr1, hr3)` from the frame
+loop, per `$M4` sample at the AFE rate and only while the window is open (fields 31, 22, 14 and 18);
+`$M1`–`$M3` frames feed 0 with the frame's probe state. `update_plots(data_pi)` from the render tick
+at 10 Hz redraws only when `HR2LabCalc.revision` changed or the time plots are due to move.
+PAUSE freezes the picture; the methods keep running. `on_stream_discontinuity()` restarts the front
+end and the history.
+
+**Cost:** about 0.6 ms per window (every 0.5 s) in the drain tick. PYTHON TIMING shows
+`algo_hr2lab`, `plot_hr2lab` and `gap_hr2lab`.
+
+**Verification:** `test_pulsenest/hr2lab_test.py`, offscreen, no board, hub, network or stored
+capture — (1) `HR2LabCalc` fed sample by sample equals `hr_bench` in batch at every window of a
+synthetic pulse with a stretch of probe not applied (rate, quality and lag of the three), and its
+`HR2_ACF` equals `HR2TestCalc`; (2) the three read the pulse, a lost window leaves one break in the
+history; (3) the window opened from the monitor is fed through `_process_frames_tick()`, draws
+once per new window, marks the beats and the chosen lag, pauses, is refreshed by the render tick
+with its PYTHON TIMING rows filled, clears on probe off, restarts on a stream discontinuity and
+closes.
+
+**History.** v1.36 renamed it from `HRLabWindow`. Until v1.112 it was a placeholder for filter
+chain experiments: two signal plots fed on `PPG_DISP` and four empty ones, with estimators of its
+own (`_estimate_hr_xcorr_v1`, `_estimate_hr_autocorr_v2`) that were not the library's chain.
 
 ### 7.13 LabCaptureWindow
 
@@ -2550,6 +2622,7 @@ Purpose: measure the execution time of the Python algorithm replicas running in 
 - `algo_hr3lab` (v1.112): what `HR3LabCalc` spends on each HR3 window, once every 0.5 s, in the
   drain tick. The gap row `gap_hr3lab` reads `HR3LabWindow.calc.gap_count` ("—" with HR3LAB closed;
   until v1.111 it read the always-fed `hr3_calc`).
+- `algo_hr2lab` (v1.113): the same for `HR2LabCalc` on each HR2 window; gap row `gap_hr2lab`.
 - Updated every ~1 s. Useful for verifying the Python algorithms stay within the 20 ms budget.
 
 ### 7.16 HWConfigWindow — "HW CONFIG"
@@ -3107,6 +3180,42 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.114 — 2026-11-15
+**HR2's buffer 8 → 6 s (lib v0.121) and HR2LAB on the values chosen for PPG.**
+- `HR2TestCalc.FW_BUF_LEN` 400 → 300, the library's `hr2_buf_len` since v0.121 (library
+  rationale §24; PulseNest `docs/hr2_methods_20261115.md` part 3: the first HR2 2 s sooner for
+  0.2 points of score). HR2TEST's spin box defaults to 300; `pulsenest.hr_bench.HR2_BUF_LEN`
+  follows. The two studies of 2026-11-15 pass 400 explicitly, so their tables still reproduce.
+- **HR2LAB:** `HR2_MPM` with k = 0.5 and `HR2_YIN` with threshold 0.6, the values chosen out of
+  sample in part 2 (`hr_bench.MPM_K_PPG`, `MPM_MIN_CLARITY_PPG`, `YIN_THRESHOLD_PPG`), not the
+  papers' 0.9 and 0.10; `bench_defaults()` and the info line read them. `hr_bench.hr2_family`
+  takes the three as arguments, papers' values by default.
+- Against a board still on lib v0.120 the HR2 mirror runs one buffer of 6 s, the board 8 s: the
+  two start 2 s apart and read slightly different windows.
+
+### v1.113 — 2026-11-15
+**HR2LAB rewritten: the methods of analysis family 2 side by side, live (§7.12b, §5.4).** The
+window shows `HR2_ACF` (today's HR2), `HR2_MPM` (McLeod's NSDF) and `HR2_YIN` (YIN's CMND) on the
+same HR2 buffer, each with its rate, its quality and its curve against lag (the chosen lag and its
+multiples marked); above them the 8 s buffer with the beats each method's period implies drawn
+as ticks; below them the three rates with the board's HR1 / HR3 over 120 s, and the three
+qualities. PAUSE freezes the picture. No parameter can be edited.
+
+- **New `HR2LabCalc`** (§5.4): an `HR2TestCalc` of its own as front end and
+  **`pulsenest.hr_bench.hr2_family` called on each window's buffer** (new in the bench the same day:
+  `hr2_segments`, `lag_sweep`, `hr2_acf`, `hr2_mpm`, `hr2_yin`), so the lab and the offline bench of
+  `docs/hr2_methods_20261115.md` cannot drift apart. `HR2TestCalc` gains `window_count`. About
+  0.6 ms per window in the drain tick.
+- **YIN with the paper's fixed integration window** (`hr_bench.yin_difference`; parts 2 and 3 of
+  the report): the first version summed its difference over N − τ samples. The report's first
+  part keeps that version so its tables reproduce; the difference in results is small.
+- **Removed** the placeholder the window was (two signal plots on `PPG_DISP`, four empty ones,
+  estimators of its own that were not the library's chain).
+- Monitor: the frame loop feeds `hr2lab_window.feed_sample()` (OT_LED1, ProbeState, HR1, HR3);
+  `update_plots(data_pi)`; PYTHON TIMING gains `algo_hr2lab` and `gap_hr2lab` (§7.15); the sidebar
+  tooltip says what the window is.
+- Verified: `test_pulsenest/hr2lab_test.py` 36/36 (new), `hr_bench_test.py` 27/27.
 
 ### v1.112 — 2026-11-14
 **HR3LAB rewritten: the methods of analysis family 3 side by side, live (§7.12, §5.5).** The window
