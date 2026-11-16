@@ -30339,3 +30339,9 @@ primer nivel a petición de Alex).
   etiqueta y release v0.122, pin en PulseNest, OTA de 87:A4 y 82:5C.
 - Incidente: el hook de lanzamiento del lab se disparó tres veces al parchear (comandos con
   `python … pulsenest_lab.py`); si el lab estaba abierto, se cerró. Desde entonces, sin el nombre literal.
+- Alex: «Sí, todo». Librería: commit `5c5bb4e`, etiqueta v0.122 y release publicada
+  (https://github.com/medicalopenworld/incunest_afe4490/releases/tag/v0.122); CI verde en master y en
+  la etiqueta, zip y SHA-256 subidos. PulseNest: `lib/incunest_afe4490.version` → v0.122, commit
+  `bdda82a` (banco, estudios F1–F3, informe, lab v1.115). Compilación limpia V18 (`libsha 5c5bb4e`).
+  OTA de 87:A4 (.12) y 82:5C (.149) a fw 0.30 / lib 0.122, verificada por MAC, `elfsha=e7d2a37f3d745d33`
+  en las dos; anotada en `docs/boards.md`. PulseNest sin subir (pendiente del sí de Alex).
