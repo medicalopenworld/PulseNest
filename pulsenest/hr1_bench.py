@@ -61,6 +61,17 @@ Publication rules (times in seconds)
                  3: reported apart.
 The R1/R2 values were fixed with Alex on 2026-11-16 before measuring.
 
+Part 2 of the study (experiments/hr1_tuning_20261116.py) added options, off by default so part 1 and
+the library mirror are unchanged: ThrDetector(refractory_rr=k) and SsfDetector(eye_closing_rr=k), a
+refractory / eye-closing of k x the median of the last 5 intervals kept within RR_BOUNDS_S (0.15-0.6 s;
+the eye-closing starts at SSF_EC_INIT_S); RuleR1(q_min, cv_max), R1 publishing only while the accepted
+share of the last 8 RR reaches q_min and, with cv_max, while the CV of the accepted RR stays under it.
+
+HR1LAB (lab v1.116) draws what each detector decides on, recorded only when asked: ThrDetector.trace
+(the threshold at every sample), SsfDetector.t1_trace (each change of T1 after the learning period; the
+slope sum is SsfDetector.ssf.v) and TermaDetector.trace (MA_peak and MA_beat + offset on the centred
+axis). Recording changes no beat (test_pulsenest/hr1_bench_test.py).
+
 Synthetic signals (synth_ppg) and beat matching (match_beats) serve the tests now and the beat-level
 F1 on MIMIC PERform later; the neonatal templates (plan F5) will replace the parametric pulse.
 """
@@ -94,6 +105,10 @@ TERMA_W1_S, TERMA_W2_S, TERMA_BETA = 0.111, 0.667, 0.02
 SSF_SLOPE_W_S, SSF_EYE_CLOSING_S, SSF_LEARN_S = 0.17, 0.34, 8.0
 SSF_NO_PULSE_S, SSF_T_MIN = 2.5, 5.0
 MSPTD_WIN_S, MSPTD_OVERLAP, MSPTD_TOL_S = 6.0, 0.2, 0.05
+
+# ── part 2 (2026-11-16): an RR-proportional refractory / eye-closing is kept within these bounds ──
+RR_BOUNDS_S = (0.15, 0.6)
+SSF_EC_INIT_S = 0.25          # adaptive eye-closing before two onsets are known
 
 # ── rules R1 / R2 (fixed 2026-11-16) ─────────────────────────────────────────────────────────
 R1_TOL, R1_RESTART, R1_Q_WINDOW, R_TIMEOUT_S = 0.20, 3, 8, 3.0
@@ -232,14 +247,20 @@ class ThrDetector:
     name = "HR1_THR"
 
     def __init__(self, rate, interpolate=True, threshold_frac=LIB_THRESHOLD_FRAC,
-                 decay_tau_s=LIB_MAX_DECAY_TAU_S, refractory_s=LIB_REFRACTORY_S):
+                 decay_tau_s=LIB_MAX_DECAY_TAU_S, refractory_s=LIB_REFRACTORY_S, refractory_rr=None,
+                 rr_bounds_s=RR_BOUNDS_S):
+        """refractory_rr = k (part 2 of the study, 2026-11-16): the refractory becomes k x the median
+        of the last 5 accepted RR, kept within rr_bounds_s; refractory_s until two beats are known."""
         self.rate = float(rate)
         self.interpolate = interpolate
         self.frac = threshold_frac
         self.alpha = math.exp(-1.0 / (decay_tau_s * rate))
         self.refr = refractory_s * rate
+        self.refr_rr = refractory_rr
+        self.rr_lo, self.rr_hi = rr_bounds_s[0] * rate, rr_bounds_s[1] * rate
         self.latency_s = 0.0                        # decides at the crossing
         self.latency_max_s = self.latency_s         # longest a beat can wait to be decided
+        self.trace = None       # a list here records the threshold at every input sample (HR1LAB)
         self.reset()
 
     def reset(self):
@@ -248,14 +269,24 @@ class ThrDetector:
         self.above = False
         self.last = None
         self.prev = None
+        self.rr = []                                # last accepted RR, decimated samples
+
+    def _refractory(self):
+        if self.refr_rr is None or not self.rr:
+            return self.refr
+        return min(self.rr_hi, max(self.rr_lo, self.refr_rr * float(np.median(self.rr))))
 
     def push(self, y):
         out = []
         rmax, above, last, prev, n = self.rmax, self.above, self.last, self.prev, self.n
-        a, frac, refr, interp = self.alpha, self.frac, self.refr, self.interpolate
+        a, frac, interp = self.alpha, self.frac, self.interpolate
+        refr = self._refractory()
+        tr = self.trace
         for v in y.tolist():
             rmax = max(rmax * a, v)
             thr = frac * rmax
+            if tr is not None:
+                tr.append(thr)
             if v > thr and not above:
                 above = True
                 tc = float(n)
@@ -263,6 +294,9 @@ class ThrDetector:
                     tc = n - 1 + (thr - prev) / (v - prev)
                 if last is not None and tc - last > refr:
                     out.append((tc, float(n), (tc - last) / self.rate))
+                    if self.refr_rr is not None:
+                        self.rr = (self.rr + [tc - last])[-LIB_N_RR:]
+                        refr = self._refractory()
                 elif last is None:
                     out.append((tc, float(n), math.nan))
                 last = tc
@@ -291,6 +325,9 @@ class TermaDetector:
         self.lag = self.w2 - 1                      # centre of both = n - lag
         self.latency_s = self.lag / self.rate
         self.latency_max_s = self.latency_s + self.w2 / self.rate   # plus a block up to a beat long
+        # A list here records, per call, (first sample, MA_peak, MA_beat + offset) on the centred
+        # time axis: what the blocks of interest are decided on (HR1LAB).
+        self.trace = None
         self.reset()
 
     def reset(self):
@@ -325,9 +362,14 @@ class TermaDetector:
         cz = self.zsum + np.cumsum(z)
         cnt = self.zn + np.arange(1, len(z) + 1)
         self.zsum, self.zn = float(cz[-1]), int(cnt[-1])
-        cond = p_al > b + self.beta * cz / cnt
+        thr = b + self.beta * cz / cnt
+        cond = p_al > thr
         out = []
         n0 = self.n
+        if self.trace is not None:
+            k0 = max(0, self.lag - n0)                     # centred index n0 + i - lag >= 0
+            if k0 < len(y):
+                self.trace.append((n0 + k0 - self.lag, p_al[k0:].copy(), thr[k0:].copy()))
         for i, c in enumerate(cond.tolist()):
             m = n0 + i - self.lag
             if m < 0:
@@ -379,18 +421,34 @@ class SsfDetector:
     name = "HR1_SSF"
 
     def __init__(self, rate, slope_w_s=SSF_SLOPE_W_S, eye_closing_s=SSF_EYE_CLOSING_S,
-                 learn_s=SSF_LEARN_S, no_pulse_s=SSF_NO_PULSE_S, t_min=SSF_T_MIN):
+                 learn_s=SSF_LEARN_S, no_pulse_s=SSF_NO_PULSE_S, t_min=SSF_T_MIN, eye_closing_rr=None,
+                 rr_bounds_s=RR_BOUNDS_S):
+        """eye_closing_rr = k (part 2 of the study, 2026-11-16): the eye-closing becomes k x the median
+        of the last 5 intervals between onsets, kept within rr_bounds_s; SSF_EC_INIT_S until two
+        onsets are known. The look-ahead the detector waits for is then the upper bound, so the
+        decisions do not depend on how the input is fed."""
         r = self.rate = float(rate)
         self.w = int(round(slope_w_s * r))
-        self.ec = int(round(eye_closing_s * r))
+        self.ec_rr = eye_closing_rr
+        if eye_closing_rr is None:
+            self.ec = int(round(eye_closing_s * r))
+            self.ec_min = self.ec_max = self.ec
+        else:
+            self.ec = int(round(SSF_EC_INIT_S * r))
+            self.ec_min, self.ec_max = int(round(rr_bounds_s[0] * r)), int(round(rr_bounds_s[1] * r))
+        self.ec0 = self.ec
         self.half_ec = self.ec // 2
         self.learn = int(round(learn_s * r))
         self.expect = int(round(no_pulse_s * r))
         self.t_min = t_min
         self.d40, self.d24, self.d16 = int(round(0.04 * r)), int(round(0.024 * r)), int(round(0.016 * r))
         self.v_back, self.v_fwd = int(round(0.20 * r)), int(round(0.05 * r))
-        self.latency_s = (self.ec + 1) / r            # the eye-closing look-ahead
+        self.latency_s = (self.ec_max + 1) / r        # the eye-closing look-ahead
         self.latency_max_s = self.latency_s
+        # A list here records (sample, T1) every time the detection threshold changes after the
+        # learning period: T1 holds from that sample to the next record (HR1LAB). The slope sum
+        # itself is self.ssf.v.
+        self.t1_trace = None
         self.reset()
 
     def reset(self):
@@ -402,6 +460,9 @@ class SsfDetector:
         self.T0 = self.Ta = self.T1 = 0.0
         self.timer = 0
         self.last_beat = -1
+        self.ec = self.ec0
+        self.half_ec = self.ec // 2
+        self.onset_rr = []                 # intervals between emitted onsets (adaptive eye-closing)
 
     def _extend(self, y):
         """Rescale (learning-period min/max -> +-2000) and append the slope sum of the new samples."""
@@ -419,7 +480,7 @@ class SsfDetector:
         y = np.asarray(y, float)
         if self.scale is None:
             self.pending.extend(y.tolist())
-            if len(self.pending) < self.learn + self.ec + 2:
+            if len(self.pending) < self.learn + self.ec_max + 2:
                 return []
             first = np.asarray(self.pending)
             lo, hi = float(first[:self.learn].min()), float(first[:self.learn].max())
@@ -443,9 +504,11 @@ class SsfDetector:
                     self.learning = False
                     self.T1 = self.T0
                     self.t = t = 0
+                    if self.t1_trace is not None:
+                        self.t1_trace.append((0, self.T1))
                 else:
                     self.T1 = 2.0 * self.T0
-            if t + self.ec + 1 >= N:
+            if t + self.ec_max + 1 >= N:
                 break
             if s[t] > self.T1:
                 self.timer = 0
@@ -478,18 +541,27 @@ class SsfDetector:
                     if not self.learning and v > self.last_beat and v > 0:
                         # decided once the eye-closing look-ahead is in, and never before the
                         # learning period (whose beats are replayed when it ends)
-                        decided = max(t + self.ec + 1, self.learn + self.ec + 1)
+                        decided = max(t + self.ec + 1, self.learn + self.ec_max + 1)
                         out.append((float(v), float(decided), math.nan))
+                        if self.ec_rr is not None and self.last_beat > 0:
+                            self.onset_rr = (self.onset_rr + [v - self.last_beat])[-LIB_N_RR:]
+                            ec = self.ec_rr * float(np.median(self.onset_rr))
+                            self.ec = int(round(min(self.ec_max, max(self.ec_min, ec))))
+                            self.half_ec = self.ec // 2
                         self.last_beat = v
                     self.Ta += (maxd - self.Ta) / 10.0
                     self.T1 = self.Ta / 3.0
-                    self.t = int(tpq + self.ec) + 1        # eye-closing: no detection for 0.34 s
+                    if self.t1_trace is not None and not self.learning:
+                        self.t1_trace.append((t, self.T1))
+                    self.t = int(tpq + self.ec) + 1        # eye-closing: no detection for 0.34 s (papers)
                     continue
             elif not self.learning:
                 self.timer += 1
                 if self.timer > self.expect and self.Ta > self.t_min:
                     self.Ta -= 1.0
                     self.T1 = self.Ta / 3.0
+                    if self.t1_trace is not None:
+                        self.t1_trace.append((t, self.T1))
             self.t = t + 1
         return out
 
@@ -602,8 +674,12 @@ class RuleR1:
     name = "R1"
 
     def __init__(self, n=LIB_N_RR, tol=R1_TOL, restart=R1_RESTART, q_window=R1_Q_WINDOW,
-                 timeout_s=R_TIMEOUT_S):
+                 timeout_s=R_TIMEOUT_S, q_min=0.0, cv_max=None):
+        """q_min, cv_max (part 2 of the study, 2026-11-16): publish only while the accepted share of the
+        last q_window candidates is at least q_min and, when cv_max is set, while the CV of the
+        accepted RR is at most cv_max (R0's gate over R1's beats). Defaults = R1 as first measured."""
         self.n, self.tol, self.restart, self.qw, self.timeout = n, tol, restart, q_window, timeout_s
+        self.q_min, self.cv_max = q_min, cv_max
         self.reset()
 
     def reset(self):
@@ -640,6 +716,12 @@ class RuleR1:
         hr = 60.0 / float(np.median(self.acc))
         if not (hb.HR_MIN <= hr <= hb.HR_MAX):
             return math.nan, 0.0, False
+        if q < self.q_min:
+            return hr, q, False
+        if self.cv_max is not None:
+            a = np.asarray(self.acc[-self.n:], float)
+            if float(a.std() / a.mean()) > self.cv_max:
+                return hr, q, False
         return hr, q, True
 
 

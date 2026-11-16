@@ -64,6 +64,27 @@ blk = h1.detect(x, FS, h1.LibFrontEnd(FS), h1.ThrDetector(FS, interpolate=False)
 check("library front end + HR1_THR are block invariant",
       whole.shape == blk.shape and np.allclose(whole, blk, atol=1e-6, equal_nan=True))
 
+# ── HR1LAB's traces (what each detector decides on) record without changing a beat ──
+n_dec = len(h1.FrontEnd(FS).process(x)[0])
+for D in (h1.ThrDetector, h1.SsfDetector, h1.TermaDetector):
+    plain = h1.detect(x, FS, h1.FrontEnd(FS), D(100.0), block=10)
+    d = D(100.0)
+    if D is h1.SsfDetector:
+        d.t1_trace = []
+    else:
+        d.trace = []
+    traced = h1.detect(x, FS, h1.FrontEnd(FS), d, block=10)
+    same = plain.shape == traced.shape and np.array_equal(plain, traced, equal_nan=True)
+    if D is h1.ThrDetector:
+        rec = len(d.trace) == n_dec
+    elif D is h1.SsfDetector:
+        rec = len(d.t1_trace) > 0 and d.t1_trace[0][0] == 0 and len(d.ssf.v) == n_dec
+    else:
+        idx = np.concatenate([np.arange(m0, m0 + len(p)) for m0, p, _ in d.trace])
+        rec = idx[0] == 0 and np.array_equal(idx, np.arange(len(idx))) and len(idx) == n_dec - d.lag
+    check(f"{D.name}: recording its trace leaves every beat as it was, and the trace covers the run",
+          same and rec, f"same {same} recorded {rec}")
+
 
 # ── the library's HR1, literal per-sample port of _hr1_update (v0.121) ──
 def lib_hr1_literal(x, fs):
@@ -206,6 +227,40 @@ ref = np.arange(10) * 50.0
 tp, fp, fn, lag = h1.match_beats(ref, np.concatenate([ref[1:] + 7.0, [1000.0]]), tol=5.0, max_lag=20.0)
 check("match_beats: constant lag found, one missed and one extra counted", tp == 9 and fp == 1 and fn == 1
       and abs(lag - 7.0) <= 1.25)
+
+# ── part 2 options: RR-proportional refractory / eye-closing, R1's gates ──
+rr = 60.0 / 240 * (1.0 + 0.02 * np.random.default_rng(7).standard_normal(250))
+x, pk = h1.synth_ppg(FS, 60, rr_s=list(rr), noise=0.02, seed=7)
+for name, mk in (("HR1_SSF eye-closing 0.5 x RR", lambda: h1.SsfDetector(100.0, eye_closing_rr=0.5)),
+                 ("HR1_THR refractory 0.5 x RR", lambda: h1.ThrDetector(100.0, refractory_rr=0.5))):
+    a = h1.detect(x, FS, h1.FrontEnd(FS), mk())
+    b = h1.detect(x, FS, h1.FrontEnd(FS), mk(), block=10)
+    check(f"{name}: the same beats fed whole or in 20 ms blocks",
+          a.shape == b.shape and np.allclose(a, b, atol=1e-6, equal_nan=True))
+    lo, hi = 12 * FS, 50 * FS
+    tp, fp, fn, _ = h1.match_beats(pk[(pk > lo) & (pk < hi)], a[(a[:, 0] > lo) & (a[:, 0] < hi), 0],
+                                   tol=0.15 * FS, max_lag=0.075 * FS)
+    check(f"{name}: no beat lost at 240 bpm", fn == 0 and fp == 0, f"tp {tp} fp {fp} fn {fn}")
+x, pk = h1.synth_ppg(FS, 90, bpm=30, noise=0.01, seed=30)
+a = h1.detect(x, FS, h1.FrontEnd(FS), h1.SsfDetector(100.0, eye_closing_rr=0.5))
+lo, hi = 12 * FS, 80 * FS
+tp, fp, fn, _ = h1.match_beats(pk[(pk > lo) & (pk < hi)], a[(a[:, 0] > lo) & (a[:, 0] < hi), 0], tol=0.15 * FS,
+                               max_lag=0.4 * FS)
+check("HR1_SSF eye-closing 0.5 x RR does not count the dicrotic wave at 30 bpm", fp <= 1, f"extra {fp}")
+g = h1.RuleR1(q_min=6 / 8)
+t = 0.0
+for rr_ in [0.5] * 6 + [0.25, 0.25, 0.5]:
+    t += rr_; g.on_beat(rr_, t)
+check("R1 with q >= 6/8: two rejected of the last 8 still publishes, a third would not",
+      g.state(t)[2] and abs(g.state(t)[1] - 6 / 8) < 1e-9)
+g.on_beat(0.25, t + 0.25)
+check("R1 with q >= 6/8: three rejected of the last 8 withholds", not g.state(t + 0.25)[2])
+c, plain = h1.RuleR1(cv_max=0.15), h1.RuleR1()
+t = 0.0
+for rr_ in [0.5, 0.7, 0.3, 0.5, 0.5]:         # the first three are accepted before R1 has a median: CV 25 %
+    t += rr_; c.on_beat(rr_, t); plain.on_beat(rr_, t)
+check("R1 with the CV gate withholds 5 accepted RR whose CV is 25 %; plain R1 publishes them",
+      len(c.acc) == 5 and not c.state(t)[2] and plain.state(t)[2])
 
 # ── ECG reference and Charlton's beat scores (F2) ──
 FE = 125.0

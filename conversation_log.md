@@ -30345,3 +30345,92 @@ primer nivel a petición de Alex).
   `bdda82a` (banco, estudios F1–F3, informe, lab v1.115). Compilación limpia V18 (`libsha 5c5bb4e`).
   OTA de 87:A4 (.12) y 82:5C (.149) a fw 0.30 / lib 0.122, verificada por MAC, `elfsha=e7d2a37f3d745d33`
   en las dos; anotada en `docs/boards.md`. PulseNest sin subir (pendiente del sí de Alex).
+- Alex: «Sí, súbelos». PulseNest subido (`e83d358..82b32b5`).
+- Alex: «adelante» → propuesta de la parte 2 (rejillas de SSF y THR, puertas de R1, selección en MIMIC
+  training, informe en test y en nuestro corpus, regla de adopción contra v0.122); Alex: «Sí, mide».
+  Banco: refractario y bloqueo proporcionales al RR (`refractory_rr`, `eye_closing_rr`) y puertas de R1
+  (`q_min`, `cv_max`), apagados por defecto; tests 43/43. `experiments/hr1_tuning_20261116.py`:
+  ninguna configuración de SSF mantiene la meseta de 30 bpm del MS100 (lee 60); en THR el umbral es la
+  palanca (F1 95,2 % a 0,4 frente a 93,4 % a 0,6); R1 con puerta falla en test. **THR 0,4 + R0 pasa la
+  regla de adopción**: MIMIC test 71,3 % publicado con 0,43 % mal (v0.122: 63,4 / 0,57), nuestro corpus
+  total 12,7 (14,5), MS100 intacto. Comprobación extra con el barrido perturbado de 2026-09-08: 0,4 pierde
+  1,9 puntos a 60 bpm con la sonda apretada y gana 2,6–4,9 en 140–250. Informe, parte 2. Pendiente del
+  sí de Alex: lib v0.123 con `hr1_threshold_fraction` 0,4.
+- Alex: SSF se descartó por la meseta de 30 bpm del MS100, cuya dícrota «parece un pulso sistólico»;
+  pidió la forma real del PPG a baja FC. Medido: el MS100 estira una única plantilla con el RR (la 2.ª
+  onda siempre al 31 % del ciclo, 0,66 s tras el pico a 30 bpm). MIMIC neonatos: mínimo 87 bpm, sin
+  muesca visible entre 85 y 210 bpm. Con el sí de Alex, descargado el PhysioNet Challenge 2015
+  (`C:\PRJ\MOW\datasets\physionet_challenge2015\`, integridad comprobada). Nuevo
+  `experiments/hr1_lowrate_pulse_20261116.py`: 641 latidos lentos concordantes (ECG y PPG, 30 adultos,
+  ~37 bpm) son una sola joroba (pico ~0,31 s, base ~1,1 s); su segunda subida, medida como SSF, vale
+  una mediana de 0,02 del pulso principal (p90 0,08) frente a 0,18 del MS100 a 30 bpm. Propuesto a Alex:
+  quitar la meseta de 30 bpm del eliminatorio, sustituirla por estos pulsos reales y repetir la etapa 1
+  de SSF y THR (corrección a posteriori, marcada). El umbral 0,4 de THR, en suspenso hasta entonces.
+- Alex: «Sí, repítela». Fijado antes de la corrida corregida (docstring de
+  `experiments/hr1_tuning_20261116.py`): (a) mesetas del MS100 de 60 a 240 bpm; (b) pulsos lentos reales
+  del PhysioNet 2015 (21 registros, 164 ventanas de 10 s concordantes con ECG < 50 bpm, 1 125 latidos de
+  ECG), PPV ≥ 95 % y Se ≥ 90 %. Resultado (`--corrected`): SSF pasa en 6 de 108 configuraciones, todas con
+  bloqueo 0,6 × RR y ventana de pendiente 0,10 s; **THR 0,4 queda fuera** (PPV 87,7–92,8 % en los pulsos
+  lentos). Seleccionados SSF (0,6 × RR, 0,10 s, aprendizaje 2 s, 15 Hz) + R0 y THR 0,5 + R1 q ≥ 5/8 + CV:
+  los dos fallan la honestidad en MIMIC test (1,19 y 2,69 % mal). **THR 0,5 + R0 pasa la regla de
+  adopción** (MIMIC test 67,7 % publicado / 0,49 % mal frente a 63,4 / 0,57; nuestro corpus total 13,6
+  frente a 14,5, publica 71,2 % frente a 66,4; MS100 60–240 y pulsos lentos bien). Barrido perturbado a
+  0,5: −1,9 puntos a 60 bpm con la sonda apretada, +0–3 por encima.
+- Diagnóstico (`--slowhp`, a posteriori, no selecciona): los latidos falsos en los pulsos lentos los
+  fabrica el paso alto de 0,5 Hz del filtro común. Tras un pulso lento el filtro cae por debajo del pie
+  (la mitad del pulso) y remonta en la diástole; la suma de pendientes secundaria pasa de 0,020 (PPG
+  crudo) a 0,296 (0,5 Hz) y 0,163 (0,3 Hz). Con 0,3 Hz, THR 0,4 y SSF con los valores del artículo dan
+  PPV 98,2–98,5 %; la librería (THR 0,6) pasa de 98,5 a 99,6 %. El argumento del rationale §5.5 («la
+  esquina adelanta el pico lo mismo en cada latido») vale para el pico, no para la diástole. Informe:
+  sección «Part 2 corrected». Propuesto a Alex: medir el corte del paso alto (0,5 / 0,3 / 0,2 Hz) como
+  un factor más antes de ninguna v0.123.
+- Alex: «Sí, mide el corte». Fijado antes de medir (docstring de `hr1_tuning_20261116.py`, `--hp`): el
+  corte del paso alto del filtro común como un factor más de las dos rejillas (0,5 / 0,3 / 0,2 Hz; SSF 324
+  configuraciones, THR 72), con el eliminatorio corregido, las mismas etapas, el mismo test y la misma
+  regla de adopción. Empates: gana el corte más alto. Se informa al lado la cadena de la corrida corregida
+  (THR 0,5 a 0,5 Hz + R0). Si pasan varias cadenas, se propone la de menor total ponderado. Comprobado:
+  a 0,5 Hz el paso alto aplicado a la caché previa reproduce bit a bit la salida guardada.
+- Parte 3 medida (`--hp`, corrida de las 11:37). Con 0,3 Hz, SSF pasa el eliminatorio en 96 de 108
+  configuraciones (a 0,5 Hz, en 6) y su mejor F1 sube a 97,48 % (96,45). THR pierde F1 con cortes más bajos
+  (94,41 / 93,71 / 92,67 %) y se queda en 0,5 Hz. Seleccionados: SSF (bloqueo 0,30 s, pendiente 0,17 s,
+  aprendizaje 2 s, 15 Hz, 0,3 Hz) y THR 0,5 a 0,5 Hz. Las dos cadenas con R1 + puertas fallan la
+  honestidad en test (2,00 y 2,69 %). Pasan SSF + R0 y THR 0,5 + R0; **propuesta por la regla fijada:
+  SSF (parte 3) + R0**: MIMIC test F1 96,4 % frente a 91,5, publica 78,1 % frente a 63,4 con 0,40 % mal
+  frente a 0,57; nuestro corpus total 11,9 frente a 14,5, publica 86,2 % frente a 66,4, MAE 1,51 frente a
+  1,77; pulsos lentos PPV 98,1 %; MS100 de 60 a 240 bpm bien (a 30 bpm lee 61). Barrido perturbado: −3,4
+  puntos a 60 bpm, +4–9,5 entre 140 y 250. Informe, sección «Part 3». Propuesto a Alex: lib v0.123 con
+  SSF + R0 y filtro 15 Hz / 0,3 Hz, THR fuera de la librería (cambio de API incompatible); pendiente de
+  su sí.
+- Alex no supo decidir la v0.123 y propuso rehacer HR1LAB para comparar THR y SSF a ojo. Recomendado
+  (paso F4 del plan). Alex: «Sí, rehazlo. Incluye TERMA», y preguntó si costaría mucho editar los
+  parámetros (respuesta: poco; incluidos). **Lab v1.116, HR1LAB reescrita:** `HR1LabCalc` corre tres
+  cadenas del banco (`HR1_THR` = lib v0.122, `HR1_SSF` = parte 3 a 0,3 Hz, `HR1_TERMA` = valores del
+  artículo), cada una con su filtro, su detector y R0; sus latidos y FC son los del banco (detect +
+  apply_rule por tramo aplicado; en directo, muestra a muestra, lo mismo). La ventana dibuja la señal
+  de cada cadena con sus latidos y lo que decide (umbral de THR; suma de pendientes y T1 de SSF; las
+  dos medias de TERMA), RR, FC, calidad y las HR1/HR2/HR3 de la placa; LOAD SESSION lee una carpeta
+  de sesión como el banco (con región de detalle); panel de parámetros (rojo = sin aplicar, naranja =
+  distinto del medido, MEASURED para volver). El banco gana trazas opcionales que no cambian ningún
+  latido (`hr1_bench_test` 46/46). `test_pulsenest/hr1lab_test.py` 49/49; hr1test_mirror 10/10,
+  hr2lab 36/36, hr3lab 34/34, disable_plots 13/13. Spec §5.3.4, §7.19, v1.116. Se va el banco de
+  variantes v1.34 (`HR1LabRow`, `HR1_VARIANTS`); `HR1BiquadCalc` se queda (dos experimentos de 2026-09).
+- Revisión de HR1LAB renderizada sin pantalla sobre SUBJ08 (solo maquetación; las fuentes no valen en ese
+  modo): corregido el eje derecho de SSF y TERMA (la señal de redimensionado pasaba la ViewBox como
+  primer argumento y las curvas se dibujaban en miniatura en una esquina), el panel toma el ancho de su
+  contenido en vez de 400 px fijos y su leyenda se parte en líneas. hr1lab_test 49/49 y disable_plots
+  13/13 tras los arreglos. En SUBJ08 (sesión de 1 092 s, 14 aplicaciones) THR publica el 82,5 %, SSF el
+  94,3 % y TERMA el 70,8 % del tiempo aplicado. Laboratorio relanzado con la v1.116 (regla de relanzar).
+  `udp_multiboard_test`: 98/100, los dos fallos en el modo solo lectura del hub (no tocado aquí);
+  comprobando si ya fallaban con la versión anterior del laboratorio.
+- `udp_multiboard_test` con la versión anterior del laboratorio (v1.115, copia aparte): los mismos dos
+  fallos (botón READ-ONLY y retorno del control cuando el rival se va). No vienen de HR1LAB; quedan como
+  tarea aparte.
+- `docs/nomenclature.md`: puertas de R1 (`q ≥ 5/8`, `q ≥ 6/8`, `+ CV`), «secondary slope-sum ratio», «real
+  slow pulses» y el corte del paso alto del filtro común por cadena (decisión pendiente).
+- **Cierre (16-nov, noche):** Alex vuelve a la sesión de IncuNest (Pablo ha contestado a una PR) y esta
+  sesión deja de ser la sesión de desarrollo de PulseNest; ninguna lo es hasta que Alex nombre otra. Estado
+  del traspaso en la memoria (`project_hr1lab_plan_20261115`, bloque TRASPASO): librería limpia en v0.122;
+  en PulseNest, trabajo sin commit (banco, partes 2/2 corregida/3, informe, nomenclatura, lab v1.116 con
+  HR1LAB, tests). Pendiente de Alex: mirar THR/SSF/TERMA en HR1LAB y decidir la v0.123 (propuesta SSF + R0
+  a 15 Hz / 0,3 Hz); el commit de lo anterior.
+- Alex: «sí, haz commit». Commit local de todo lo anterior (este commit), sin push.

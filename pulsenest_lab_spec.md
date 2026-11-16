@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.115
+# pulsenest_lab — Specification v1.116
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1328,8 +1328,10 @@ in exactly what they are meant to differ in, which is what makes a comparison be
 honest.
 
 `HR1Param` / `HR1Curve` (namedtuples) let a variant declare its tunable parameters and its
-diagnostic curves. HR1LAB builds its controls and its plots from those declarations, so adding a
-variant costs one subclass plus one line in the `HR1_VARIANTS` registry — no UI code.
+diagnostic curves. Until v1.115 HR1LAB built its controls and its plots from those declarations
+(the `HR1_VARIANTS` registry, one row per variant). Since v1.116 HR1LAB runs the methods of the
+family-1 study instead (§5.3.4, §7.19): the framework stays for HR1TEST's mirror (§5.3.1) and for
+two experiments of 2026-09 that run `HR1BiquadCalc`.
 
 **Owned by `HR1Variant` (shared, never redefined by a variant):**
 
@@ -1348,7 +1350,8 @@ period and `display_value` is the waveform to plot.
 
 #### 5.3.2 `HR1BiquadCalc` — the BPF variant
 
-**v1.35.** Replaces SPEC's IIR DC remover + moving average with a single 2nd-order Butterworth
+No window shows it since v1.116; kept because `experiments/hr1_decay_sweep.py` and
+`experiments/hr1_probepert_sweep.py` run it. **v1.35.** Replaces SPEC's IIR DC remover + moving average with a single 2nd-order Butterworth
 bandpass, ported from the library's `BiquadFilter::init_bp()` (same bilinear algebra, same DF-II
 transposed structure, same steady-state precharge) so the bench measures what the firmware would
 run. Verified against `scipy.signal.butter(1, [f_lo, f_hi], 'band')`: coefficients agree to 1e-17
@@ -1524,6 +1527,44 @@ whole 40–250 bpm range, not just above 60.
 
 The τ sweep counts extra detections alongside missed beats for the same reason (§5.3.0): recovering
 availability by counting the dicrotic notch would score as success on availability alone.
+
+#### 5.3.4 `HR1LabCalc` — the methods of family 1 side by side (v1.116)
+
+Owned by `HR1LabWindow` (§7.19). Three chains of the family-1 study
+(`docs/hr1_methods_20261116.md`), each the common front end of `pulsenest.hr1_bench` at its own
+corners, a detector of the bench and the library's rule `R0` (mean of the last 5 RR,
+`hr1_sqi = clamp(1 − CV/0.15)`, published 30–260 bpm with `hr1_sqi > 0`, read every 0.5 s). Nothing
+is re-implemented: `_HR1LabChain` calls `FrontEnd`, the detector and `RuleR0` of the bench.
+
+| Chain | Detector | Measured values (`HR1LabCalc.measured()`) | Where they come from |
+|---|---|---|---|
+| `HR1_THR` | `ThrDetector` | threshold 0.6, max decay τ 1.5 s, refractory 0.185 s; LP 15 Hz, HP 0.5 Hz | lib v0.122: what the board publishes as HR1 |
+| `HR1_SSF` | `SsfDetector` | eye-closing 0.30 s, slope window 0.17 s, learning 2 s; LP 15 Hz, HP 0.3 Hz | part 3 of the study: the proposal for lib v0.123 |
+| `HR1_TERMA` | `TermaDetector` | W1 0.111 s, W2 0.667 s, β 0.02; LP 15 Hz, HP 0.5 Hz | Elgendi 2013 on the v0.122 front end (F2, F3) |
+
+- **Runs.** A chain runs only while the probe is applied; front end, detector and rule start from
+  reset at the first sample of each run, as the bench's applied runs do. A rate change or a stream
+  discontinuity ends the run. Every trace gets a break (NaN) where a run ends.
+- **Beats and rates are the bench's.** A beat is (beat time, decision time, RR) as `detect()`
+  returns it; the rule receives the beats decided by each reading time, in the order they were
+  decided, exactly as `apply_rule()`; reading times every 0.5 s from the run's start
+  (`output_rows`). Verified in `test_pulsenest/hr1lab_test.py`.
+- **What each detector decides on** comes from the bench's traces (`hr1_bench` docstring): the
+  threshold of `ThrDetector` at every sample; the slope sum of `SsfDetector` (`ssf.v`) and each change
+  of its threshold T1 after the learning period (drawn as steps); `TermaDetector`'s MA_peak and
+  MA_beat + offset on the centred time axis (they end W2 before the newest sample).
+- **Live:** `update(ot_led1, fs, probe_state, sample_counter, hr1, hr2, hr3)` per `$M4` sample at
+  the AFE rate; the samples of the run are collected and the three chains run on blocks of
+  `BLOCK_S` = 0.1 s (the bench is block invariant, so the beats do not depend on it). Kept: the last
+  `SHOW_S` = 10 s of signal and traces and `HIST_S` = 120 s of beats, rates and the board's HR1 /
+  HR2 / HR3 (every 0.5 s of the clock `t_s`). `block_ms` takes the cost of each block (PYTHON
+  TIMING row `algo_hr1lab`; ~0.5 ms); sample gaps in `gap_count` (row `gap_hr1lab`).
+- **Session:** `load_session(d, name)` takes a session as `pulsenest.hr_bench.parse_columns` returns
+  it (OT_LED1, ProbeState, the board's HR1/HR2/HR3, the AFE rate) and runs every applied run at once,
+  keeping everything; the clock is row / rate from the session's first row.
+- **Parameters:** `set_values(chain, values)` changes one chain only. Live, that chain starts over
+  where it is (with its learning period, if it has one); on a session it reruns the whole session.
+  `edited()` lists every parameter that is not the measured value.
 
 ### 5.4 HR2TestCalc
 
@@ -2637,6 +2678,8 @@ Purpose: measure the execution time of the Python algorithm replicas running in 
   drain tick. The gap row `gap_hr3lab` reads `HR3LabWindow.calc.gap_count` ("—" with HR3LAB closed;
   until v1.111 it read the always-fed `hr3_calc`).
 - `algo_hr2lab` (v1.113): the same for `HR2LabCalc` on each HR2 window; gap row `gap_hr2lab`.
+- `algo_hr1lab` (v1.116): what `HR1LabCalc` spends on each 0.1 s block of its three chains; gap row
+  `gap_hr1lab`.
 - Updated every ~1 s. Useful for verifying the Python algorithms stay within the 20 ms budget.
 
 ### 7.16 HWConfigWindow — "HW CONFIG"
@@ -2815,44 +2858,70 @@ This allows the same `_build_combos()` / `_apply_combo()` logic to treat `value(
 
 ### 7.19 HR1LabWindow — "HR1LAB"
 
-**v1.34.** Bench for exploring HR1 peak-detection variants. Sidebar button in ANALYSIS, above
-HR2LAB. Requires frame mode `$M4` (runs on `OT_LED1`).
+**v1.116 (rewritten).** The methods of analysis family 1 side by side, live or on a stored
+session, every parameter editable: `HR1_THR` (the library's detector, what the board publishes as
+HR1), `HR1_SSF` (qppg's slope sum with the values part 3 of the study chose, behind a 0.3 Hz
+high-pass: the proposal for lib v0.123) and `HR1_TERMA` (Elgendi's two moving averages, the papers'
+values). Built to decide v0.123 by looking, after the numbers of `docs/hr1_methods_20261116.md`:
+where the detectors disagree and why. Sidebar button in ANALYSIS. The calculation is `HR1LabCalc`
+(§5.3.4).
 
-Every variant in `HR1_VARIANTS` gets one collapsible row and is fed **the same sample in the same
-call** (`feed_sample()`), so comparing them live is rigorous: they see an identical signal. The
-window is for **exploration, not validation** — provoke a failure by hand (move the finger, change
-ambient light, switch the phototherapy lamp on) and watch which variant breaks and why. Deciding
-between the survivors is a separate batch run over the capture set with known truth, and is not
-part of this window.
-
-**Row (`HR1LabRow`)** — built entirely from the variant's declarations, so a new variant needs no
-UI code:
+Layout: the plots on the left, top to bottom, X axes shared within each group, every plot with
+the same left and right axis widths so the time axes line up; the parameter panel on the right.
 
 | Zone | Content |
 |---|---|
-| Header | Collapse arrow, variant `NAME`, `run` checkbox, live `HR` / `SQI` / `AVAIL` |
-| Left | Plot of the curves declared in `DIAG_CURVES`, detection markers scattered on `diag_display`, event marks as dashed vertical lines. X axis in seconds before now (5 s window) |
-| Detection marker | **v1.40:** bright yellow, size 20, white outline — it marks where the signal crosses the threshold and a beat is declared, the single most important event in the plot |
-| Threshold while refractory | **v1.40:** a curve declared with `dim_refr=True` is drawn twice from one array, split by NaN with `connect='finite'`: solid in its own colour where detection is live, dark dashed (35 % brightness) where the refractory period is vetoing it. The base records that state per sample in `diag_refractory`. One array and one time axis, so the two halves cannot disagree |
-| Right | One spin box per `HR1Param` (int or float by `decimals`), plus RESET TO DEFAULTS |
+| Bar | `PROBE` and `PI` (live), `SOURCE` (live or the session's name), LOAD SESSION, LIVE, PAUSE (key `P`, live only) |
+| `HR1_THR` | Its front-end output (grey), its threshold (yellow), its beats (dots on the signal: the interpolated crossings) |
+| `HR1_SSF` | Its front-end output and its onsets; right axis: the slope sum (dim) and its threshold T1 (dashed steps) |
+| `HR1_TERMA` | Its front-end output and its maxima; right axis: MA_peak (dim) and MA_beat + offset (dashed), on the squared positive signal, centred |
+| RR | Every beat's RR as its rule receives it, per chain [ms]: a missed beat shows at twice the others, a beat counted twice as two points near half |
+| RATES | Each chain's HR every 0.5 s where it publishes, and the board's HR1 (dashed yellow), HR2 (red) and HR3 (cyan). With the measured THR values and a board on v0.122, the board's HR1 lies on `HR1_THR` |
+| QUALITY | Each chain's `hr1_sqi` |
+| Info line | The rule, where the measured values come from, and in orange `EDITED:` every parameter that is not its measured value, with the measured one |
+| Panel | One group per chain with a spin box per parameter (`HR1LabCalc.PARAMS`: label, range, step, unit, tooltip with the measured value), APPLY and MEASURED |
 
-Changing a parameter resets that variant's state — the old state was produced by different
-coefficients. Unchecking `run` freezes a variant without removing its row; re-checking it restarts
-it, so no time discontinuity enters the RR buffer. A collapsed row keeps running: only its display
-is hidden, and the freed height goes to the expanded rows.
+Chain headers: live, the rate published now and `hr1_sqi`; on a session, the share of the applied
+time the chain published and its number of beats; "edited" in orange when a value differs.
+Colours: `HR1_THR` yellow (HR1's colour in the lab), `HR1_SSF` green, `HR1_TERMA` blue.
 
-**Window controls:**
+**Live.** Fed `feed_sample(ot_led1, fs, probe_state, sample_counter, hr1, hr2, hr3)` from the
+`$M4` path at the AFE rate (fields 31, 22, 14, 16, 18). The signal plots show the last 8 s, the
+others the last 120 s, X = seconds before now. `update_plots(data_pi)` at 10 Hz redraws when a block
+was computed or the clock moved 0.1 s; PAUSE freezes the picture, the chains keep running.
+`on_stream_discontinuity()` restarts the clock and every trace.
 
-| Control | Effect |
-|---|---|
-| Context bar | `PROBE` (probe state), `OT_LED1` (the signal every variant consumes), `PI` (from the main window) — what you are physically doing to the signal |
-| PAUSE / CONTINUE (key `P`) | **v1.39.** Freezes the feed: traces, metrics and the save buffer stop where they are, so the frozen view can be studied and saved. CONTINUE starts a fresh recording — variants, marks and buffer cleared — because resuming into the old state would splice two moments of signal into one RR interval and one timeline |
-| MARK (key `M`) | Stamps a dashed line across every trace at the current instant, so a failure can be tied to the action that caused it. The mark points at the newest buffered sample, so marking and pausing immediately still keeps it |
-| SAVE LAST 30s | Writes `captures/hr1lab_<timestamp>.csv` — `t_s,ot_led1,probe_state,mark`. Saves the **signal**, not the variant outputs, so the same stretch can be replayed later through any variant. While paused it writes the buffer as it stood at PAUSE: nothing has entered it since |
-| RESET ALL | Clears every variant's state and drops the marks; parameters are kept |
+**Session.** LOAD SESSION asks for a session folder (the board CSV parts `*_pNN.csv` of
+`captures/sessions/SUBJxx/...`) and reads it as the bench does: `pulsenest.hr_bench.load_columns`
+with the bench's cache (`captures/sessions/HR_BENCH_CACHE`), so the window shows what the study
+measured. The lower plots show the whole session (X = seconds from the first row); a shaded region
+on RATES is the stretch the signal plots show: drag it, or zoom the signal plots and it follows
+(first 20 s of the first application). The live stream is ignored until LIVE.
 
-Fed at 500 Hz from the serial path, next to the HR1TEST mirror; redrawn at 10 Hz
-(`_HR1LAB_REFRESH_EVERY`), timed as `plot_hr1lab` in PYTHON TIMING.
+**Parameters.** A value typed but not applied is red; APPLY runs that chain with the group's
+values — live it starts over where it is, on a session it reruns the whole session — and an
+applied value that is not the measured one is orange. MEASURED goes back to the measured values
+and applies them. Refused with a message: an LP corner not well above the HP corner, `W1 ≥ W2`.
+The values are not kept when the window closes: it always opens on the measured ones.
+
+**Cost.** ~0.5 ms per 0.1 s block for the three chains (PYTHON TIMING `algo_hr1lab`, `gap_hr1lab`,
+`plot_hr1lab`). A session of 70 s runs in ~50 ms; the plots decimate to the pixel.
+
+**Verification:** `test_pulsenest/hr1lab_test.py` (49 checks), offscreen, no board, hub or stored
+capture — (1) on a session with three applications each chain's beats equal `hr1_bench.detect()`
+on every run and its rates every 0.5 s `apply_rule()`; fed live sample by sample it gives the same;
+`HR1_THR` publishes what HR1TEST's mirror publishes; (2) an edit reruns that chain only, and
+`edited()` names it; (3) the window opened from the monitor and fed through
+`_process_frames_tick()` draws the three chains with their beats and traces, the board's three
+rates, pauses, marks red / orange values, refuses `W1 ≥ W2`, goes back to the measured values,
+fills its PYTHON TIMING rows, stops on probe off and restarts on a stream discontinuity; (4) a
+synthetic session folder in the board's CSV format loads with the same beats as (1), is drawn
+whole with the detail region, and LIVE goes back to the stream.
+
+**History.** v1.34–v1.115: the HR1 variant bench — every class in `HR1_VARIANTS` (SPEC, BPF) as a
+collapsible row with its own spin boxes and plots, MARK and SAVE LAST 30s, for provoking failures by
+hand. Its variants went with the decision of 2026-11-16 (one front end for every HR1 method); HR1TEST
+keeps the library's mirror, and the capture tools save the signal.
 
 ### 7.20 MultiCaptureWindow — "MULTI CAPTURE" (v1.46)
 
@@ -3194,6 +3263,25 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.116 — 2026-11-16
+**HR1LAB rewritten: the methods of family 1 side by side, live or on a stored session, every
+parameter editable (§5.3.4, §7.19).**
+- `HR1LabCalc` runs three chains of `pulsenest.hr1_bench`: `HR1_THR` (lib v0.122), `HR1_SSF` (part 3's
+  values behind a 0.3 Hz high-pass: the proposal for lib v0.123) and `HR1_TERMA` (the papers'
+  values), each with its own front end and the library's rule R0; their beats and rates are the
+  bench's (`test_pulsenest/hr1lab_test.py`, 49 checks).
+- The window draws each chain's signal, beats and what it decides on (THR's threshold, SSF's slope
+  sum and T1, TERMA's two moving averages), the RR, rates and quality of the three and the board's
+  HR1/HR2/HR3; LOAD SESSION reads a session folder as the bench does, with a detail region; a panel
+  edits every parameter, red until applied, orange while not the measured value, MEASURED to go back.
+- `pulsenest/hr1_bench.py`: the detectors record what they decide on when asked
+  (`ThrDetector.trace`, `SsfDetector.t1_trace`, `TermaDetector.trace`); recording changes no beat
+  (`test_pulsenest/hr1_bench_test.py`, 46 checks).
+- The frame loop passes the board's HR1/HR2/HR3 (fields 14/16/18) to HR1LAB; PYTHON TIMING gains
+  `algo_hr1lab` and `gap_hr1lab`.
+- Gone: the variant bench of v1.34 (`HR1LabRow`, the `HR1_VARIANTS` registry, MARK, SAVE LAST 30s).
+  `HR1BiquadCalc` stays for two experiments of 2026-09.
 
 ### v1.115 — 2026-11-16
 **HR1's mirror follows lib v0.122: the common front end of the HR1 methods (§5.3.1).**

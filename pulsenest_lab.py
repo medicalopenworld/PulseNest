@@ -221,6 +221,7 @@ BAUD             = 921600
 from pulsenest.net import UDP_DATA_PORT, UDP_CMD_PORT  # noqa: E402
 from pulsenest.capture_csv import CaptureCsvWriter, LabCaptureWriter, CAPTURE_COLS  # noqa: F401
 from pulsenest import hr_bench  # noqa: E402  (HR3LAB runs the offline bench's methods on the live window)
+from pulsenest import hr1_bench  # noqa: E402  (HR1LAB runs the family-1 bench's chains)
 import pulsenest.hub_client as _hubc  # noqa: E402  (the lab is a hub subscriber and its controller)
 from pulsenest.net import script_name as _script_name  # noqa: E402
 
@@ -740,7 +741,7 @@ class SpO2TestCalc:
         return out
 
 
-# ── HR1 variant framework (shared by HR1TEST and HR1LAB) ──────────────────────
+# ── HR1 variant framework (HR1TEST's mirror; HR1LAB had its rows until v1.115) ──
 
 HR1Param = namedtuple('HR1Param', 'attr label lo hi default decimals step unit tooltip')
 HR1Curve = namedtuple('HR1Curve', 'key label color dim_refr', defaults=(False,))
@@ -1300,6 +1301,9 @@ class _LowPass4:
 class HR1BiquadCalc(HR1Variant):
     """BPF variant — one biquad bandpass in place of SPEC's IIR DC remover + moving average.
 
+    No window shows it since v1.116 (HR1LAB now runs the methods of the family-1 study); kept because
+    experiments/hr1_decay_sweep.py and experiments/hr1_probepert_sweep.py (2026-09) run it.
+
     Hypothesis under test (Alex, 2026-09-06): SPEC's front end is the main reason HR1 loses
     intervals. Its DC remover is a one-pole high-pass with τ=1.6 s, i.e. a corner at
     0.0995 Hz — five times lower than the 0.5 Hz the library already uses for ppg_disp. It
@@ -1406,8 +1410,6 @@ class HR1BiquadCalc(HR1Variant):
         return peak_raw, bp_out
 
 
-# Registry consumed by HR1LAB. Adding a variant = one subclass + one line here.
-HR1_VARIANTS = (HR1TestCalc, HR1BiquadCalc)
 
 
 class HR2TestCalc:
@@ -4940,6 +4942,459 @@ class HR2LabCalc:
         self.window_ms.append((time.perf_counter() - t0) * 1000.0)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  HR1LabCalc — the methods of analysis family 1 side by side (HR1LAB, v1.116)
+# ──────────────────────────────────────────────────────────────────────────────
+
+HR1LabParam = namedtuple('HR1LabParam', 'key label lo hi default decimals step unit tooltip')
+
+
+class _HR1LabSeries:
+    """(t, values...) appended in chunks, trimmed from the front in live mode. NaN rows are breaks
+    (pyqtgraph connect='finite')."""
+
+    def __init__(self, width):
+        self.width = width
+        self.clear()
+
+    def clear(self):
+        self._chunks = []
+        self._cache = None
+
+    def append(self, t, *vals):
+        t = np.asarray(t, dtype=float)
+        if t.size == 0:
+            return
+        self._chunks.append(np.column_stack([t] + [np.broadcast_to(np.asarray(v, dtype=float), t.shape)
+                                                   for v in vals]))
+        self._cache = None
+
+    def brk(self, t):
+        """A break: a row of NaN values at time t."""
+        self._chunks.append(np.array([[t] + [math.nan] * self.width]))
+        self._cache = None
+
+    def trim(self, t_min):
+        while len(self._chunks) > 1 and self._chunks[0][-1, 0] < t_min:
+            self._chunks.pop(0)
+            self._cache = None
+
+    @property
+    def data(self):
+        if self._cache is None:
+            self._cache = (np.concatenate(self._chunks) if self._chunks
+                           else np.zeros((0, self.width + 1)))
+        return self._cache
+
+
+class _HR1LabChain:
+    """One chain of HR1LAB: the common front end of family 1 at its own corners, one detector of
+    pulsenest.hr1_bench and the library's rule (R0), plus what the window draws.
+
+    A run is a stretch of the probe applied. Front end, detector and rule start from reset at its
+    first sample, as in the bench's applied runs, so the beats are those of hr1_bench.detect() on
+    the run and the rates those of hr1_bench.apply_rule() every 0.5 s from the run's start
+    (test_pulsenest/hr1lab_test.py). A parameter change restarts the chain where it is, so live it
+    starts over on the rest of the run, with a learning period if it has one.
+
+    Times are seconds on the calc's clock: live, since the window opened (or the stream restarted);
+    offline, since the session's first row."""
+
+    def __init__(self, key, values):
+        self.key = key
+        self.values = dict(values)
+        self.keep_s = None                    # None: keep everything (offline); else the live span
+        self.sig = _HR1LabSeries(1)           # front-end output
+        self.da = _HR1LabSeries(1)            # THR threshold / SSF slope sum / TERMA MA_peak
+        self.db = _HR1LabSeries(1)            # SSF T1 (steps) / TERMA MA_beat + offset
+        self.beats = _HR1LabSeries(1)         # beat time, RR used by the rule (NaN: none)
+        self.out = _HR1LabSeries(3)           # every 0.5 s: hr, hr1_sqi, published
+        self.fe = self.det = self.rule = None
+        self.in_run = False
+        self.hr, self.sqi, self.published = math.nan, 0.0, False
+
+    # ── a run ────────────────────────────────────────────────────────────────
+    def _make(self, fs):
+        p = self.values
+        fe = hr1_bench.FrontEnd(fs, lp_hz=p['lp_hz'], hp_hz=p['hp_hz'])
+        r = fe.rate
+        if self.key == "HR1_THR":
+            det = hr1_bench.ThrDetector(r, threshold_frac=p['threshold_frac'], decay_tau_s=p['decay_tau_s'],
+                                        refractory_s=p['refractory_s'])
+            det.trace = []
+        elif self.key == "HR1_SSF":
+            det = hr1_bench.SsfDetector(r, slope_w_s=p['slope_w_s'], eye_closing_s=p['eye_closing_s'],
+                                        learn_s=p['learn_s'])
+            det.t1_trace = []
+        else:
+            det = hr1_bench.TermaDetector(r, w1_s=p['w1_s'], w2_s=p['w2_s'], beta=p['beta'])
+            det.trace = []
+        return fe, det
+
+    def start(self, t0, fs):
+        """A run starts at clock time t0 (its first sample)."""
+        self.fe, self.det = self._make(fs)
+        self.rule = hr1_bench.RuleR0()
+        self.fs, self.t0 = float(fs), float(t0)
+        self.n_raw = 0                        # raw samples fed in this run
+        self.n_dec = 0                        # front-end samples produced in this run
+        self.ssf_read = 0                     # SSF: slope-sum samples already drawn
+        self.pending = []                     # (decided row, beat row, rr) not yet given to the rule
+        self.prev_beat = math.nan             # beat row of the previous beat (RR when not explicit)
+        self.step = int(round(hr1_bench.OUT_STEP_S * fs))
+        self.next_out = self.step - 1         # output rows: every 0.5 s from the run's start
+        self.in_run = True
+
+    def stop(self, t_now):
+        """The run ends (probe off, rate change, stream restart, parameter change)."""
+        if self.in_run:                       # beats are drawn as points: no break needed
+            for s in (self.sig, self.da, self.db, self.out):
+                s.brk(t_now)
+        self.in_run = False
+        self.fe = self.det = self.rule = None
+        self.hr, self.sqi, self.published = math.nan, 0.0, False
+
+    def _t_dec(self, k):
+        """Clock time of front-end sample k of the run (raw row k * factor + factor - 1)."""
+        f = self.fe.factor
+        return self.t0 + (np.asarray(k, dtype=float) * f + (f - 1)) / self.fs
+
+    def feed(self, x):
+        """A block of raw samples of the run."""
+        if not self.in_run or len(x) == 0:
+            return
+        fe, det = self.fe, self.det
+        y, _ = fe.process(np.asarray(x, dtype=float))
+        k0 = self.n_dec
+        beats = det.push(y) if len(y) else []
+        if len(y):
+            self.sig.append(self._t_dec(np.arange(k0, k0 + len(y))), y)
+        self.n_dec += len(y)
+        self.n_raw += len(x)
+        self._diagnostics(k0, len(y))
+        f = fe.factor
+        for tb, td, rr in beats:
+            b_row, d_row = tb * f + (f - 1), td * f + (f - 1)
+            if not math.isfinite(rr):
+                rr = (b_row - self.prev_beat) / self.fs if math.isfinite(self.prev_beat) else math.nan
+            self.prev_beat = b_row
+            self.pending.append((d_row, b_row, rr))
+            self.beats.append([self.t0 + b_row / self.fs], rr)
+        self._read_rule()
+
+    def _diagnostics(self, k0, n):
+        det = self.det
+        if self.key == "HR1_THR":
+            if det.trace:
+                self.da.append(self._t_dec(np.arange(k0, k0 + len(det.trace))), det.trace)
+                det.trace.clear()
+        elif self.key == "HR1_SSF":
+            v = det.ssf.v
+            if len(v) > self.ssf_read:
+                self.da.append(self._t_dec(np.arange(self.ssf_read, len(v))), v[self.ssf_read:])
+                self.ssf_read = len(v)
+            if det.t1_trace:
+                k, val = zip(*det.t1_trace)
+                self.db.append(self._t_dec(k), val)
+                det.t1_trace.clear()
+        else:
+            for m0, p, thr in det.trace:
+                t = self._t_dec(np.arange(m0, m0 + len(p)))
+                self.da.append(t, p)
+                self.db.append(t, thr)
+            det.trace.clear()
+
+    def _read_rule(self):
+        """The rule read every 0.5 s from the run's start, on the beats decided by then (apply_rule)."""
+        while self.next_out <= self.n_raw - 1:
+            r = self.next_out
+            self.pending.sort(key=lambda b: b[0])
+            while self.pending and self.pending[0][0] <= r:
+                _, b_row, rr = self.pending.pop(0)
+                self.rule.on_beat(rr, b_row / self.fs)
+            hr, q, v = self.rule.state(r / self.fs - self.det.latency_s)
+            self.hr, self.sqi, self.published = hr, q, v
+            self.out.append([self.t0 + r / self.fs], hr, q, 1.0 if v else 0.0)
+            self.next_out += self.step
+
+    def trim(self, t_now):
+        if self.keep_s is None:
+            return
+        self.sig.trim(t_now - self.keep_s[0])
+        self.da.trim(t_now - self.keep_s[0])
+        self.db.trim(t_now - self.keep_s[0])
+        self.beats.trim(t_now - self.keep_s[1])
+        self.out.trim(t_now - self.keep_s[1])
+
+    def clear(self):
+        for s in (self.sig, self.da, self.db, self.beats, self.out):
+            s.clear()
+        self.in_run = False
+        self.fe = self.det = self.rule = None
+        self.hr, self.sqi, self.published = math.nan, 0.0, False
+
+
+class HR1LabCalc:
+    """The methods of analysis family 1 side by side, for HR1LAB (lab v1.116).
+
+    Three chains, each the common front end at its own corners, a detector of pulsenest.hr1_bench
+    and the library's rule R0 (mean of the last 5 RR, hr1_sqi = clamp(1 - CV / 0.15)). The
+    detectors are not re-implemented here: the window shows what docs/hr1_methods_20261116.md
+    measured, and test_pulsenest/hr1lab_test.py compares the two on the same signal.
+
+      HR1_THR    the library's detector (v0.122, the board's HR1): rising crossing of 0.6 x a running
+                 maximum decaying with tau 1.5 s, refractory 0.185 s; front end 15 Hz / 0.5 Hz.
+      HR1_SSF    qppg's slope sum, with the values part 3 of the study chose (eye-closing 0.30 s, slope
+                 window 0.17 s, learning period 2 s) behind a 0.3 Hz high-pass: the proposal for
+                 lib v0.123.
+      HR1_TERMA  Elgendi's two event-related moving averages with the papers' values (W1 111 ms,
+                 W2 667 ms, beta 0.02) on the v0.122 front end: out after F2/F3, shown for comparison.
+
+    Every parameter can be edited from the window. The values above are the MEASURED ones
+    (measured()); an edit restarts that chain only, and the window marks what differs.
+
+    Live: update() per $M4 sample at the AFE rate; the chains run on blocks of 0.1 s (the bench is
+    block invariant) and the window keeps the last SHOW_S of signal and HIST_S of beats and rates.
+    Offline: load_session() runs the whole session at once and keeps everything.
+    While the probe is not applied nothing runs, and every trace gets a break.
+    """
+
+    CHAINS = ("HR1_THR", "HR1_SSF", "HR1_TERMA")
+    SHOW_S  = 10.0
+    HIST_S  = 120.0
+    BLOCK_S = 0.1
+    PROBE_APPLIED = HR1Variant.PROBE_APPLIED
+
+    PARAMS = None           # _HR1LAB_PARAMS, below the class
+
+    def __init__(self):
+        self.values = self.measured()
+        self.chains = {k: _HR1LabChain(k, self.values[k]) for k in self.CHAINS}
+        self.board = _HR1LabSeries(3)         # the board's HR1, HR2, HR3 every 0.5 s
+        self.block_ms = deque(maxlen=50)      # cost of each block (PYTHON TIMING, algo_hr1lab)
+        self.offline = False
+        self.source = "live"
+        self._last_counter = None
+        self._nominal_step = None
+        self.gap_count = 0
+        self.reset()
+
+    @classmethod
+    def params(cls, chain):
+        return cls.PARAMS[chain]
+
+    @classmethod
+    def measured(cls):
+        """The measured values of every chain: what the study and the library use."""
+        return {k: {p.key: p.default for p in cls.PARAMS[k]} for k in cls.CHAINS}
+
+    def edited(self):
+        """{chain: [(label, value, measured, unit), ...]} for every parameter that differs."""
+        out = {}
+        for k in self.CHAINS:
+            diffs = [(p.label, self.values[k][p.key], p.default, p.unit) for p in self.PARAMS[k]
+                     if abs(self.values[k][p.key] - p.default) > 0.5 * 10 ** -p.decimals]
+            if diffs:
+                out[k] = diffs
+        return out
+
+    def reset(self):
+        """Stream discontinuity: the clock, the chains and every trace start over (live)."""
+        self.t_s = 0.0
+        self.fs = 0.0
+        self.n = 0
+        self.probe_state = -1
+        self._x = []
+        self._run = False
+        self._board_step = 0
+        self._last_counter = None
+        for c in self.chains.values():
+            c.clear()
+            c.keep_s = None if self.offline else (self.SHOW_S, self.HIST_S)
+        self.board.clear()
+        self.revision = getattr(self, 'revision', 0) + 1
+
+    # ── live ──────────────────────────────────────────────────────────────────
+    def update(self, ot_led1, fs, probe_state, sample_counter=None,
+               hr1=float('nan'), hr2=float('nan'), hr3=float('nan')):
+        """One $M4 sample at the AFE rate. hr1/hr2/hr3: the board's rates in the same frame (<= 0 =
+        none), kept every 0.5 s as the live reference."""
+        if self.offline:
+            return
+        if sample_counter is not None:
+            if self._last_counter is not None:
+                step = sample_counter - self._last_counter
+                if self._nominal_step is None:
+                    self._nominal_step = step
+                elif step > self._nominal_step:
+                    self.gap_count += step - self._nominal_step
+            self._last_counter = sample_counter
+        if fs <= 0.0:
+            return
+        if fs != self.fs:
+            self._end_run()
+            self.fs = fs
+            self._block = max(1, int(round(self.BLOCK_S * fs)))
+            self._board_every = max(1, int(round(hr1_bench.OUT_STEP_S * fs)))
+        self.probe_state = probe_state
+        if probe_state == self.PROBE_APPLIED:
+            if not self._run:
+                self._run = True
+                for c in self.chains.values():
+                    c.start(self.t_s, fs)
+            self._x.append(ot_led1)
+            if len(self._x) >= self._block:
+                self._flush()
+        elif self._run:
+            self._end_run()
+        self._board_step += 1
+        if self._board_step >= self._board_every:
+            self._board_step = 0
+            nan = float('nan')
+            self.board.append([self.t_s], hr1 if hr1 > 0 else nan, hr2 if hr2 > 0 else nan,
+                              hr3 if hr3 > 0 else nan)
+            self.board.trim(self.t_s - self.HIST_S)
+            self.revision += 1
+        self.n += 1
+        self.t_s += 1.0 / fs
+
+    def _flush(self):
+        if not self._x:
+            return
+        t0 = time.perf_counter()
+        x = np.asarray(self._x, dtype=float)
+        self._x = []
+        for c in self.chains.values():
+            c.feed(x)
+            c.trim(self.t_s)
+        self.revision += 1
+        self.block_ms.append((time.perf_counter() - t0) * 1000.0)
+
+    def _end_run(self):
+        self._flush()
+        for c in self.chains.values():
+            c.stop(self.t_s)
+        if self._run:
+            self.revision += 1
+        self._run = False
+
+    def set_values(self, chain, values):
+        """New parameters for one chain: it starts over where it is (live) or reruns (offline)."""
+        self.values[chain] = dict(values)
+        c = self.chains[chain]
+        c.values = dict(values)
+        if self.offline:
+            self._run_offline(only=chain)
+            return
+        self._flush()
+        if c.in_run:
+            c.stop(self.t_s)
+            c.start(self.t_s, self.fs)
+        self.revision += 1
+
+    # ── offline ───────────────────────────────────────────────────────────────
+    def load_session(self, d, source):
+        """A whole session (pulsenest.hr_bench.parse_columns: OT_LED1, ps, HR1, HR2, HR3, fs): every
+        applied run through the three chains, at once."""
+        self.offline = True
+        self.source = source
+        self._d = d
+        self.reset()
+        self.fs = float(d["fs"])
+        self.n = len(d["OT_LED1"])
+        self.t_s = self.n / self.fs
+        step = int(round(hr1_bench.OUT_STEP_S * self.fs))
+        rows = np.arange(step - 1, self.n, step)
+        nan = float('nan')
+        b = [np.where(d[k][rows] > 0, d[k][rows], nan) for k in ("HR1", "HR2", "HR3")]
+        self.board.append(rows / self.fs, *b)
+        self._run_offline()
+
+    def _runs(self):
+        on = (self._d["ps"] == self.PROBE_APPLIED).astype(np.int8)
+        e = np.flatnonzero(np.diff(np.concatenate(([0], on, [0]))))
+        return list(zip(e[::2], e[1::2]))
+
+    def _run_offline(self, only=None):
+        t0 = time.perf_counter()
+        x_all = self._d["OT_LED1"]
+        for k, c in self.chains.items():
+            if only is not None and k != only:
+                continue
+            c.clear()
+            c.keep_s = None
+            for r0, r1 in self._runs():
+                c.start(r0 / self.fs, self.fs)
+                c.feed(x_all[r0:r1])
+                c.stop(r1 / self.fs)
+        self.revision += 1
+        self.block_ms.append((time.perf_counter() - t0) * 1000.0)
+
+    def go_live(self):
+        self.offline = False
+        self.source = "live"
+        self._d = None
+        self.reset()
+
+
+def _hr1lab_lp():
+    return HR1LabParam('lp_hz', 'LP corner', 3.0, 40.0, 15.0, 1, 0.5, 'Hz',
+                       "Low-pass corner of the front end: 4th-order Butterworth at the AFE rate, also the "
+                       "anti-alias filter of the decimation to ~100 Hz. 15 Hz keeps the 2nd and 3rd "
+                       "harmonics up to 260 bpm. Measured at 8 and 15 Hz in part 2: within 0.15 points.")
+
+
+def _hr1lab_hp(default, why):
+    return HR1LabParam('hp_hz', 'HP corner', 0.05, 2.0, default, 2, 0.05, 'Hz',
+                       "High-pass corner of the front end: 2nd-order Butterworth at ~100 Hz, precharged "
+                       "(no start-up transient). " + why)
+
+
+_HR1LAB_PARAMS = {
+    "HR1_THR": (
+        _hr1lab_lp(),
+        _hr1lab_hp(0.5, "0.5 Hz = the library since v0.122. Part 3 of docs/hr1_methods_20261116.md: "
+                        "lower corners let THR through real slow pulses but cost it beats on neonates."),
+        HR1LabParam('threshold_frac', 'Threshold', 0.1, 1.0, 0.6, 2, 0.05, '',
+                    "Detection threshold as a fraction of the running maximum. 0.6 = the library (spec "
+                    "§10.4). 0.4 detects more on neonates but counts slow pulses twice (part 2 corrected)."),
+        HR1LabParam('decay_tau_s', 'Max decay τ', 0.2, 20.0, 1.5, 1, 0.1, 's',
+                    "Time constant of the running maximum's exponential decay: how long an old peak "
+                    "keeps the threshold up. 1.5 s = the library since v0.93."),
+        HR1LabParam('refractory_s', 'Refractory', 0.05, 1.0, 0.185, 3, 0.005, 's',
+                    "No beat is declared this long after a crossing; a crossing inside it restarts the "
+                    "interval (the library's quirk, kept). 0.185 s = the library."),
+    ),
+    "HR1_SSF": (
+        _hr1lab_lp(),
+        _hr1lab_hp(0.3, "0.3 Hz = part 3's choice: at 0.5 Hz a slow pulse's undershoot climbs back in the "
+                        "diastole and the slope sum takes it for a second beat."),
+        HR1LabParam('eye_closing_s', 'Eye-closing', 0.05, 1.0, 0.30, 2, 0.01, 's',
+                    "After an onset no other is searched for this long. The papers' 0.34 s locks out "
+                    "beats above ~176 bpm; part 3 chose 0.30 s."),
+        HR1LabParam('slope_w_s', 'Slope window', 0.03, 0.5, 0.17, 2, 0.01, 's',
+                    "Window of the slope sum: the rising slopes added over it. 0.17 s = the paper's, "
+                    "kept by part 3."),
+        HR1LabParam('learn_s', 'Learning', 0.5, 20.0, 2.0, 1, 0.5, 's',
+                    "Learning period: it sets the scale and the first threshold, then is replayed from "
+                    "its start. The papers' 8 s delays the first beat; part 3 chose 2 s."),
+    ),
+    "HR1_TERMA": (
+        _hr1lab_lp(),
+        _hr1lab_hp(0.5, "0.5 Hz = the front end TERMA was measured on (F2, F3); part 3 did not tune it."),
+        HR1LabParam('w1_s', 'W1 (peak MA)', 0.03, 0.5, 0.111, 3, 0.005, 's',
+                    "Window of the moving average that follows each systolic peak (Elgendi 2013: 111 ms)."),
+        HR1LabParam('w2_s', 'W2 (beat MA)', 0.1, 2.0, 0.667, 3, 0.01, 's',
+                    "Window of the moving average of a whole beat (Elgendi 2013: 667 ms). Longer than a "
+                    "beat above 90 bpm, which is why TERMA loses fast neonatal beats."),
+        HR1LabParam('beta', 'β (offset)', 0.0, 0.5, 0.02, 3, 0.005, '',
+                    "Offset added to the beat MA, as a fraction of the mean of the squared signal since "
+                    "the probe was applied (Elgendi 2013: 0.02)."),
+    ),
+}
+HR1LabCalc.PARAMS = _HR1LAB_PARAMS
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  PICalc — configurable 3-step Perfusion Index pipeline
@@ -6774,6 +7229,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("algo_hr2test",  "[_py_timing['algo_hr2test']]   HR2TEST   |  HR2TestWindow.update_algorithms()",  _SERIAL_TICK_BUDGET_MS),
         ("algo_hr2lab",   "[_py_timing['algo_hr2lab']]    HR2LAB    |  HR2LabCalc, once per HR2 window (0.5 s)", _SERIAL_TICK_BUDGET_MS),
         ("algo_hr3lab",   "[_py_timing['algo_hr3lab']]    HR3LAB    |  HR3LabCalc, once per HR3 window (0.5 s)", _SERIAL_TICK_BUDGET_MS),
+        ("algo_hr1lab",   "[_py_timing['algo_hr1lab']]    HR1LAB    |  HR1LabCalc, three chains per 0.1 s block", _SERIAL_TICK_BUDGET_MS),
     ]
     _PLOTS_TICK_ROWS = [  # renderers timed inside _refresh_plots_tick()
         ("plot_ppgplots", "[_py_timing['plot_ppgplots']]  PPGPLOTS  |  PPGPlotsWindow.update_plots()",    _PLOTS_TICK_BUDGET_MS),
@@ -6796,6 +7252,7 @@ class PythonTimingWindow(QtWidgets.QMainWindow):
         ("gap_queue",    "[PPGMonitor._queue_size_buf]          Queue size (frames)"),
         ("gap_B",        "[PPGMonitor._gaps_B]                  Ingestion"),
         ("gap_hr1test",  "[PPGMonitor.hr1test_calc.gap_count]   HR1TEST"),
+        ("gap_hr1lab",   "[HR1LabWindow.calc.gap_count]         HR1LAB"),
         ("gap_hr2lab",   "[HR2LabWindow.calc.gap_count]         HR2LAB"),
         ("gap_hr3lab",   "[HR3LabWindow.calc.gap_count]         HR3LAB"),
         ("gap_hr3test",  "[PPGMonitor.hr3test_calc.gap_count]   HR3TEST"),
@@ -8825,289 +9282,53 @@ class LIBConfigWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
-class HR1LabRow(QtWidgets.QFrame):
-    """One collapsible variant row inside HR1LAB.
-
-    Header : collapse arrow, variant name, enable box, live HR / SQI / availability.
-    Body   : signal plot on the left, parameter controls on the right.
-
-    The controls are generated from the variant's PARAMS declaration and the plot curves
-    from its DIAG_CURVES, so a new variant needs no UI code of its own.
-    """
-
-    _PLOT_BG    = '#121212'
-    _LBL_S      = "color: #CCCCCC; font-size: 18px;"
-    _SPIN_S     = "background-color: #2A2A2A; color: #FFDD44; padding: 3px; font-size: 18px;"
-    _GROUP_S    = ("QGroupBox { color: #AAAAAA; font-weight: bold; font-size: 16px; "
-                   "border: 1px solid #444; border-radius: 4px; margin-top: 8px; } "
-                   "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }")
-
-    def __init__(self, variant, on_toggle):
-        super().__init__()
-        self.calc       = variant
-        self._on_toggle = on_toggle
-        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
-        self.setStyleSheet("QFrame { border: 1px solid #333; border-radius: 4px; }")
-
-        root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(4, 2, 4, 4)
-        root.setSpacing(2)
-
-        # ── Header ────────────────────────────────────────────────────────────
-        header = QtWidgets.QWidget()
-        header.setStyleSheet("border: none;")
-        hb = QtWidgets.QHBoxLayout(header)
-        hb.setContentsMargins(2, 0, 2, 0)
-
-        self._btn_collapse = QtWidgets.QToolButton()
-        self._btn_collapse.setArrowType(QtCore.Qt.DownArrow)
-        self._btn_collapse.setCheckable(True)
-        self._btn_collapse.setChecked(True)
-        self._btn_collapse.setStyleSheet("QToolButton { border: none; color: #FFDD44; }")
-        self._btn_collapse.clicked.connect(self._toggle_body)
-        self._btn_collapse.setToolTip(_make_tooltip(
-            "Collapse / expand",
-            "Hide this variant's plot and controls to give the remaining rows more height. "
-            "A collapsed variant keeps running — only its display is hidden.",
-            src="HR1LabRow._toggle_body"))
-        hb.addWidget(self._btn_collapse)
-
-        name = QtWidgets.QLabel(variant.NAME)
-        name.setStyleSheet("color: #FFDD44; font-weight: 800; font-size: 20px; border: none;")
-        name.setToolTip(_make_tooltip(variant.NAME, variant.DESCRIPTION or "HR1 variant",
-                                      src=type(variant).__name__))
-        hb.addWidget(name)
-
-        self._chk_enable = QtWidgets.QCheckBox("run")
-        self._chk_enable.setChecked(True)
-        self._chk_enable.setStyleSheet("color: #CCCCCC; font-size: 16px; border: none;")
-        self._chk_enable.toggled.connect(self._on_enable_toggled)
-        self._chk_enable.setToolTip(_make_tooltip(
-            "Run this variant",
-            "Feed samples to this variant. Unchecking it freezes the variant and stops "
-            "consuming CPU, without removing the row.",
-            src="HR1LabRow.enabled"))
-        hb.addWidget(self._chk_enable)
-
-        hb.addStretch(1)
-
-        self._lbl_hr    = QtWidgets.QLabel("HR --")
-        self._lbl_sqi   = QtWidgets.QLabel("SQI --")
-        self._lbl_avail = QtWidgets.QLabel("AVAIL --")
-        for w, col in ((self._lbl_hr, '#44FF88'), (self._lbl_sqi, '#8888FF'),
-                       (self._lbl_avail, '#FF8844')):
-            w.setStyleSheet("color: %s; font-weight: bold; font-size: 20px; border: none;" % col)
-            hb.addWidget(w)
-        self._lbl_hr.setToolTip(_make_tooltip(
-            "HR", "Heart rate published by this variant [BPM].", src="HR1Variant.hr_bpm"))
-        self._lbl_sqi.setToolTip(_make_tooltip(
-            "SQI", "Signal Quality Index of this variant: clamp(1 - CV/0.15, 0, 1) over the "
-                   "last 5 RR intervals.", src="HR1Variant.hr_sqi"))
-        self._lbl_avail.setToolTip(_make_tooltip(
-            "AVAIL — availability",
-            "Fraction of the last 30 s in which this variant published a valid reading "
-            "(SQI > 0). This is the metric that separates variants: under interference the "
-            "published HR stays accurate while most intervals are discarded.",
-            src="HR1Variant.availability"))
-        root.addWidget(header)
-
-        # ── Body ──────────────────────────────────────────────────────────────
-        self._body = QtWidgets.QWidget()
-        self._body.setStyleSheet("border: none;")
-        bb = QtWidgets.QHBoxLayout(self._body)
-        bb.setContentsMargins(0, 0, 0, 0)
-
-        self.plot = pg.PlotWidget()
-        self.plot.setBackground(self._PLOT_BG)
-        self.plot.showGrid(x=True, y=True, alpha=0.2)
-        self.plot.setLabel('bottom', 'time before now', units='s')
-        self.plot.addLegend(offset=(-10, 10))
-        self.plot.setMouseEnabled(x=False, y=True)
-        bb.addWidget(self.plot, 1)
-
-        self._curves, self._dim_curves = {}, {}
-        for c in variant.DIAG_CURVES:
-            if c.dim_refr:
-                # Drawn twice: the live threshold, and a dim dashed twin for the samples
-                # where the refractory period is vetoing detection. Splitting them by NaN
-                # keeps one array and one time axis, so the two can never disagree.
-                self._dim_curves[c.key] = self.plot.plot(
-                    pen=pg.mkPen(self._dim(c.color), width=1,
-                                 style=QtCore.Qt.DashLine))
-            self._curves[c.key] = self.plot.plot(pen=pg.mkPen(c.color, width=2), name=c.label)
-        # Detection marker: where the signal crosses the threshold and a beat is declared.
-        self._peaks = pg.ScatterPlotItem(size=20, brush=pg.mkBrush('#FFFF00'),
-                                         pen=pg.mkPen('#FFFFFF', width=2), symbol='o')
-        self.plot.addItem(self._peaks)
-        self._mark_lines = []
-
-        bb.addWidget(self._build_controls(variant), 0)
-        root.addWidget(self._body, 1)
-
-    @staticmethod
-    def _dim(color, factor=0.35):
-        """Darken a #RRGGBB colour, for the refractory twin of a curve."""
-        c = color.lstrip('#')
-        return '#%02X%02X%02X' % tuple(int(int(c[i:i + 2], 16) * factor) for i in (0, 2, 4))
-
-    # ── Controls generated from the variant declaration ───────────────────────
-    def _build_controls(self, variant):
-        panel = QtWidgets.QWidget()
-        panel.setFixedWidth(300)
-        vb = QtWidgets.QVBoxLayout(panel)
-        vb.setContentsMargins(0, 0, 0, 0)
-
-        grp = QtWidgets.QGroupBox("Parameters")
-        grp.setStyleSheet(self._GROUP_S)
-        form = QtWidgets.QFormLayout(grp)
-        form.setSpacing(4)
-
-        self._spins = {}
-        for p in variant.PARAMS:
-            if p.decimals == 0:
-                w = QtWidgets.QSpinBox()
-                w.setRange(int(p.lo), int(p.hi))
-                w.setSingleStep(int(p.step) or 1)
-                w.setValue(int(p.default))
-            else:
-                w = QtWidgets.QDoubleSpinBox()
-                w.setRange(p.lo, p.hi)
-                w.setDecimals(p.decimals)
-                w.setSingleStep(p.step)
-                w.setValue(p.default)
-            if p.unit:
-                w.setSuffix(" " + p.unit)
-            w.setStyleSheet(self._SPIN_S)
-            w.setToolTip(_make_tooltip(p.label, p.tooltip, src="hr1_" + p.attr))
-            w.valueChanged.connect(self._apply_params)
-            self._spins[p.attr] = w
-            lbl = QtWidgets.QLabel(p.label)
-            lbl.setStyleSheet(self._LBL_S)
-            form.addRow(lbl, w)
-        vb.addWidget(grp)
-
-        btn = QtWidgets.QPushButton("RESET TO DEFAULTS")
-        btn.setStyleSheet(ACTION_BUTTON_STYLE)
-        btn.clicked.connect(self._reset_defaults)
-        btn.setToolTip(_make_tooltip(
-            "RESET TO DEFAULTS",
-            "Restore this variant's parameters to their declared defaults and clear its state.",
-            src="HR1Variant.reset_to_defaults"))
-        vb.addWidget(btn)
-        vb.addStretch(1)
-        return panel
-
-    def _apply_params(self):
-        """Push spin values into the variant. Changing a parameter resets its filter state,
-        because the old state was produced by different coefficients."""
-        for attr, w in self._spins.items():
-            setattr(self.calc, attr, w.value())
-        self.calc.reset()
-
-    def _reset_defaults(self):
-        self.calc.reset_to_defaults()
-        for p in self.calc.PARAMS:
-            w = self._spins[p.attr]
-            w.blockSignals(True)
-            w.setValue(int(p.default) if p.decimals == 0 else p.default)
-            w.blockSignals(False)
-        self.calc.reset()
-
-    def _on_enable_toggled(self, on):
-        """Restart on re-enable: the state left behind belongs to a different stretch of
-        signal, and resuming from it would put a time discontinuity inside the RR buffer."""
-        if on:
-            self.calc.reset()
-
-    def _toggle_body(self):
-        expanded = self._btn_collapse.isChecked()
-        self._btn_collapse.setArrowType(QtCore.Qt.DownArrow if expanded
-                                        else QtCore.Qt.RightArrow)
-        self._body.setVisible(expanded)
-        self._on_toggle()
-
-    # ── State ────────────────────────────────────────────────────────────────
-    @property
-    def enabled(self):
-        return self._chk_enable.isChecked()
-
-    @property
-    def expanded(self):
-        return self._btn_collapse.isChecked()
-
-    def redraw(self, fs, n_fed, marks):
-        """Redraw plot and header metrics. Cheap enough for the 10 Hz refresh."""
-        hr = self.calc.hr_bpm
-        self._lbl_hr.setText("HR --" if (hr is None or hr != hr or hr <= 0)
-                             else "HR %.1f" % hr)
-        self._lbl_sqi.setText("SQI %.2f" % self.calc.hr_sqi)
-        self._lbl_avail.setText("AVAIL %3.0f%%" % (100.0 * self.calc.availability))
-
-        if not self.expanded:
-            return
-
-        disp = np.array(self.calc.diag_display, dtype=float)
-        n = len(disp)
-        if n == 0:
-            for c in list(self._curves.values()) + list(self._dim_curves.values()):
-                c.setData([], [])
-            self._peaks.setData([], [])
-            return
-
-        # x axis: seconds before now, so the newest sample sits at 0
-        t = (np.arange(n) - n) / fs
-        refr = np.array(self.calc.diag_refractory, dtype=float)
-        for key, curve in self._curves.items():
-            y = np.array(self.calc.diag[key], dtype=float)
-            tx = t[-len(y):] if len(y) <= n else t
-            y  = y[-n:] if len(y) > n else y
-            if key in self._dim_curves and len(refr) == len(y):
-                blanked = refr > 0
-                curve.setData(tx, np.where(blanked, np.nan, y), connect='finite')
-                self._dim_curves[key].setData(tx, np.where(blanked, y, np.nan),
-                                              connect='finite')
-            else:
-                curve.setData(tx, y)
-
-        mask = np.array(self.calc.diag_peak_mask, dtype=float)
-        idx = np.flatnonzero(mask[-n:] > 0) if len(mask) else np.array([], dtype=int)
-        self._peaks.setData(t[idx], disp[idx])
-
-        # Event marks, positioned relative to the newest sample
-        for ln in self._mark_lines:
-            self.plot.removeItem(ln)
-        self._mark_lines = []
-        span = n / fs
-        for m in marks:
-            dt = (m - n_fed) / fs
-            if -span <= dt <= 0.0:
-                ln = pg.InfiniteLine(pos=dt, angle=90,
-                                     pen=pg.mkPen('#FF44FF', width=2,
-                                                  style=QtCore.Qt.DashLine))
-                self.plot.addItem(ln)
-                self._mark_lines.append(ln)
-
-
 class HR1LabWindow(QtWidgets.QMainWindow):
-    """HR1LAB — bench for exploring HR1 peak-detection variants.
+    """HR1LAB — the methods of analysis family 1 side by side, live or on a stored session (lab v1.116).
 
-    Every variant in HR1_VARIANTS gets a collapsible row and is fed the *same sample at the
-    same instant*, so comparing them live is rigorous: they see an identical signal. That is
-    what makes this a bench rather than a viewer — provoke a failure by hand (move the
-    finger, change ambient light, switch the phototherapy lamp on) and watch which variant
-    breaks and why, in its own trace.
+    Three chains of docs/hr1_methods_20261116.md on the same OT_LED1 (HR1LabCalc): HR1_THR (the
+    library's detector, what the board publishes as HR1), HR1_SSF (qppg with part 3's values behind a
+    0.3 Hz high-pass: the proposal for lib v0.123) and HR1_TERMA (Elgendi's moving averages with the
+    papers' values). Each chain has its own front end, so each draws its own signal; the X axes are
+    shared, so a beat one detector misses or counts twice shows against the other two.
 
-    This window explores; it does not validate. Deciding between the survivors is a separate
-    batch run over the capture set with known truth, and it is not part of HR1LAB.
+    Layout (left, top to bottom; the parameter panel on the right):
+      Bar        PROBE and PI (live), the source, LOAD SESSION, LIVE, PAUSE.
+      HR1_THR    its front-end output, its threshold (fraction x decaying running maximum), its beats.
+      HR1_SSF    its front-end output and its onsets; right axis: the slope sum and its threshold T1.
+      HR1_TERMA  its front-end output and its maxima; right axis: MA_peak and MA_beat + offset.
+      RR         every beat's interval, per chain [ms].
+      RATES      each chain's HR (R0, every 0.5 s, where it publishes) and the board's HR1/HR2/HR3.
+      QUALITY    each chain's hr1_sqi.
+      Info line  the rule, the measured values and, in orange, what is edited.
+      Panel      every parameter of the three chains. APPLY restarts that chain where it is (live) or
+                 reruns it (session); MEASURED goes back to the values the study measured. A value
+                 typed but not applied is red; an applied value that is not the measured one, orange.
+    Live: the signal plots show the last 8 s, the others the last 120 s; X = seconds before now.
+    Session (LOAD SESSION: a folder of board CSV parts, read as the bench reads it): the whole
+    session in the lower plots; the shaded region there is the stretch the signal plots show (drag
+    it, or zoom the signal plots and it follows); X = seconds from the first row.
 
-    MARK stamps a dashed line across every trace, so a failure can be tied to the action
-    that caused it. SAVE writes the last SAVE_WINDOW_S of raw signal, with the marks, so a
-    chance finding can be replayed later through any variant.
-
-    HR1LAB requires $M4: it runs on OT_LED1, which no other frame mode carries.
+    Until v1.115 this window was the HR1 variant bench of v1.34 (SPEC and BPF rows with their own
+    controls, SAVE LAST 30s). The variants went with the decision of 2026-11-16 (one front end for
+    every HR1 method); HR1TEST keeps the library's mirror.
     """
 
-    SAVE_WINDOW_S = 30.0     # rolling raw buffer kept for SAVE
+    _COL = {"HR1_THR": '#FFDD44',     # HR1's colour everywhere in the lab
+            "HR1_SSF": '#44DD88',
+            "HR1_TERMA": '#5599FF'}
+    _COL_DIM = {"HR1_THR": '#FFDD44', "HR1_SSF": '#2E8B5A', "HR1_TERMA": '#3A66AA'}
+    _COL_SIG    = '#BBBBBB'
+    _COL_BOARD  = {"hr1": '#FFDD44', "hr2": '#FF4444', "hr3": '#00CCFF'}
+    _COL_EDIT   = '#FF9933'
+    _RATE_Y_MAX = 280.0
+    _SHOW_S     = 8.0           # live: span of the signal plots
+    _DETAIL_S   = 20.0          # session: first span of the signal plots
+    _SCROLL_S   = 0.1           # live: redraw at least this often while the clock moves
+    _PS_NAME = {0: "DISCONNECTED", 1: "OT HIGH", 2: "APPLIED", 3: "AMB SATURATING",
+                4: "ONLY LED SATURATING"}
+    _SUBTITLE = {"HR1_THR": "the library's detector (v0.122): what the board publishes as HR1",
+                 "HR1_SSF": "qppg's slope sum, part 3's values: the proposal for v0.123",
+                 "HR1_TERMA": "two event-related moving averages, the papers' values"}
 
     def __init__(self, main_monitor):
         super().__init__()
@@ -9117,221 +9338,582 @@ class HR1LabWindow(QtWidgets.QMainWindow):
         self.statusBar().setStyleSheet("color: #FFAA44; font-size: 20px; font-style: italic;")
         self.statusBar().showMessage(_MOUSE_HINT)
 
-        self._fs      = 500.0
-        self._n_fed   = 0
-        self._marks   = []
-        self._raw     = deque(maxlen=int(self.SAVE_WINDOW_S * 500))
-        self._last_ot = float('nan')
-        self._last_ps = -1
-        self._paused  = False
+        self.calc = HR1LabCalc()
+        self._applied = {k: dict(v) for k, v in self.calc.values.items()}
+        self._paused = False
+        self._drawn_rev = -1
+        self._drawn_t = 0.0
+        self._syncing = False
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        root = QtWidgets.QVBoxLayout(central)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(4)
+        outer = QtWidgets.QHBoxLayout(central)
+        outer.setContentsMargins(8, 6, 8, 4)
+        outer.setSpacing(8)
+        left = QtWidgets.QVBoxLayout()
+        left.setSpacing(4)
+        outer.addLayout(left, 1)
 
-        # ── Context bar: what you are physically doing to the signal ──────────
+        # ── Bar ───────────────────────────────────────────────────────────────
         bar = QtWidgets.QWidget()
         hb = QtWidgets.QHBoxLayout(bar)
         hb.setContentsMargins(2, 0, 2, 0)
-
         self._lbl_state = QtWidgets.QLabel("PROBE --")
-        self._lbl_ot    = QtWidgets.QLabel("OT_LED1 --")
         self._lbl_pi    = QtWidgets.QLabel("PI --")
-        for w, col in ((self._lbl_state, '#FFDD44'), (self._lbl_ot, '#44FF88'),
-                       (self._lbl_pi, '#8888FF')):
-            w.setStyleSheet("color: %s; font-weight: bold; font-size: 20px;" % col)
+        self._lbl_src   = QtWidgets.QLabel("SOURCE live")
+        for w, col in ((self._lbl_state, '#FFDD44'), (self._lbl_pi, '#8888FF'), (self._lbl_src, '#CCCCCC')):
+            w.setStyleSheet("color: %s; font-weight: bold;" % col)
             hb.addWidget(w)
+            hb.addSpacing(28)
         self._lbl_state.setToolTip(_make_tooltip(
             "PROBE — probe state",
-            "RSQM's probe classification. Every variant is frozen and reset while this is "
-            "not APPLIED, so nothing is measured until the probe is on the patient.",
+            "RSQM's probe classification. Every chain runs only while this is APPLIED and starts "
+            "from reset at each new application, as the bench does.",
             src="ProbeState"))
-        self._lbl_ot.setToolTip(_make_tooltip(
-            "OT_LED1 — optical transmittance",
-            "The signal all variants consume [A/A]. Gain-invariant, so it does not jump when "
-            "HGAC changes gain. Its slow component is the optical DC.",
-            src="AFE4490Data::ot_led1"))
         self._lbl_pi.setToolTip(_make_tooltip(
             "PI — perfusion index",
-            "AC/DC ratio [%] from the main window. Context for what you are doing to the "
-            "probe: it falls when perfusion or optical coupling drops.",
+            "AC/DC ratio [%] from the board: context for what you are doing to the probe.",
             src="PPGMonitor.data_pi"))
+        self._lbl_src.setToolTip(_make_tooltip(
+            "SOURCE",
+            "live: the board's $M4 stream. Otherwise the session loaded with LOAD SESSION.",
+            src="HR1LabCalc.source"))
         hb.addStretch(1)
-
+        self._btn_load = QtWidgets.QPushButton("LOAD SESSION")
+        self._btn_load.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_load.clicked.connect(self._load_session)
+        self._btn_load.setToolTip(_make_tooltip(
+            "LOAD SESSION",
+            "Run the three chains over a stored session: pick its folder (the board CSV parts "
+            "*_p01.csv, *_p02.csv ... of captures/sessions/SUBJxx/...). It is read as the offline "
+            "bench reads it (pulsenest.hr_bench.load_columns, with the bench's cache), so what you "
+            "see is what the study measured. The live stream is ignored until LIVE.",
+            src="HR1LabWindow._load_session"))
+        hb.addWidget(self._btn_load)
+        self._btn_live = QtWidgets.QPushButton("LIVE")
+        self._btn_live.setStyleSheet(ACTION_BUTTON_STYLE)
+        self._btn_live.clicked.connect(self._go_live)
+        self._btn_live.setEnabled(False)
+        self._btn_live.setToolTip(_make_tooltip(
+            "LIVE", "Leave the session and go back to the board's stream (the chains start over).",
+            src="HR1LabWindow._go_live"))
+        hb.addWidget(self._btn_live)
         self._btn_pause = QtWidgets.QPushButton("PAUSE")
         self._btn_pause.setCheckable(True)
         self._btn_pause.setStyleSheet(ACTION_BUTTON_STYLE)
         self._btn_pause.setShortcut("P")
         self._btn_pause.clicked.connect(self._toggle_pause)
         self._btn_pause.setToolTip(_make_tooltip(
-            "PAUSE / CONTINUE  (shortcut: P)",
-            "Freeze the feed to study what just happened. Every trace, every metric and the "
-            "save buffer stop where they are, so SAVE writes what is on screen rather than "
-            "what arrived while you were reading it.\n\n"
-            "CONTINUE starts a fresh recording: variants, marks and the save buffer are "
-            "cleared. Resuming into the old state would splice two moments of signal into "
-            "one RR interval and one timeline, which would be a lie in both.",
+            "PAUSE / RESUME  (shortcut: P)",
+            "Freeze the picture to study it, zoom and pan included. The chains keep running, so "
+            "RESUME shows the present with its history.",
             src="HR1LabWindow._toggle_pause"))
         hb.addWidget(self._btn_pause)
+        left.addWidget(bar)
 
-        self._btn_mark = QtWidgets.QPushButton("MARK")
-        self._btn_mark.setStyleSheet(ACTION_BUTTON_STYLE)
-        self._btn_mark.setShortcut("M")
-        self._btn_mark.clicked.connect(self.add_mark)
-        self._btn_mark.setToolTip(_make_tooltip(
-            "MARK  (shortcut: M)",
-            "Stamp a dashed line at the current instant across every trace. Use it the moment "
-            "you act on the signal — move the finger, switch the lamp on — so a failure can "
-            "be tied to what caused it.",
-            src="HR1LabWindow.add_mark"))
-        hb.addWidget(self._btn_mark)
+        # ── Plots ─────────────────────────────────────────────────────────────
+        glw = pg.GraphicsLayoutWidget()
+        left.addWidget(glw, 1)
+        for r, stretch in enumerate((3, 3, 3, 2, 3, 2)):
+            glw.ci.layout.setRowStretchFactor(r, stretch)
+        grey = "<b style='color:#CCCCCC'>%s</b> <span style='color:#888888'>%s</span>"
 
-        self._btn_save = QtWidgets.QPushButton("SAVE LAST %ds" % int(self.SAVE_WINDOW_S))
-        self._btn_save.setStyleSheet(ACTION_BUTTON_STYLE)
-        self._btn_save.clicked.connect(self.save_window)
-        self._btn_save.setToolTip(_make_tooltip(
-            "SAVE LAST %ds" % int(self.SAVE_WINDOW_S),
-            "Write the last %d s of raw OT_LED1, probe state and event marks to a CSV in the "
-            "captures folder. Saves the signal, not the variant outputs, so the same stretch "
-            "can be replayed later through any variant.\n\n"
-            "While paused this writes the buffer as it was when you pressed PAUSE — nothing "
-            "has entered it since." % int(self.SAVE_WINDOW_S),
-            src="HR1LabWindow.save_window"))
-        hb.addWidget(self._btn_save)
+        def _named(*pairs):
+            return " · ".join("<span style='color:%s'>%s</span>" % (col, name) for name, col in pairs)
 
-        self._btn_reset = QtWidgets.QPushButton("RESET ALL")
-        self._btn_reset.setStyleSheet(ACTION_BUTTON_STYLE)
-        self._btn_reset.clicked.connect(self.reset_all)
-        self._btn_reset.setToolTip(_make_tooltip(
-            "RESET ALL",
-            "Clear the state of every variant and drop the event marks. Parameters are kept.",
-            src="HR1LabWindow.reset_all"))
-        hb.addWidget(self._btn_reset)
-        root.addWidget(bar)
+        def _plot(row, left_label, bottom=None):
+            p = glw.addPlot(row=row, col=0)
+            p.showGrid(x=True, y=True, alpha=0.3)
+            p.setLabel('left', left_label)
+            if bottom is None:
+                p.getAxis('bottom').setStyle(showValues=False)
+            else:
+                p.setLabel('bottom', bottom, units='s')
+            p.getAxis('left').setWidth(70)
+            p.showAxis('right')                       # every plot the same width: the X axes line up
+            p.getAxis('right').setStyle(showValues=False)
+            p.getAxis('right').setWidth(70)
+            return p
 
-        # ── One row per registered variant ────────────────────────────────────
-        self._rows_box = QtWidgets.QVBoxLayout()
-        self._rows_box.setSpacing(4)
-        self.rows = []
-        for cls in HR1_VARIANTS:
-            row = HR1LabRow(cls(), self._relayout)
-            self.rows.append(row)
-            self._rows_box.addWidget(row)
-        self._rows_box.addStretch(0)
-        root.addLayout(self._rows_box, 1)
-        self._relayout()
+        def _curve(target, col, width=1.0, dash=False):
+            c = pg.PlotDataItem(pen=pg.mkPen(col, width=width, style=QtCore.Qt.DashLine if dash else QtCore.Qt.SolidLine),
+                                connect='finite')
+            c.setDownsampling(auto=True, method='peak')
+            c.setClipToView(True)
+            target.addItem(c)
+            return c
 
-        self.resize(1600, 950)
-        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value(
-            "HR1LabWindow/geometry")
-        if geom is not None:
+        self.p_chain, self.curve_sig, self.curve_da, self.curve_db, self.marks, self.vb2 = {}, {}, {}, {}, {}, {}
+        self._syncs = []            # the right-axis view boxes follow their plot's geometry
+        tips = {
+            "HR1_THR": ("HR1_THR — threshold crossing (the library's HR1)",
+                        "Grey: the chain's front end (LowPass4 at the LP corner, negated, ~100 Hz, "
+                        "high-pass at the HP corner). Yellow: the threshold, a fraction of a running "
+                        "maximum that decays with τ. A beat (dot) is the rising crossing, interpolated "
+                        "between samples; no beat inside the refractory, and a crossing there restarts "
+                        "the interval (the library's quirk)."),
+            "HR1_SSF": ("HR1_SSF — slope sum (qppg)",
+                        "Grey: the chain's front end. Dots: the onsets, the valley before each upstroke. "
+                        "Right axis: the slope sum (rising slopes added over the slope window, dim) and "
+                        "its threshold T1 (dashed), which adapts to each detected pulse and decays after "
+                        "2.5 s without one. After an onset none is searched during the eye-closing. The "
+                        "learning period sets the scale and is replayed."),
+            "HR1_TERMA": ("HR1_TERMA — two event-related moving averages",
+                          "Grey: the chain's front end. Dots: the beats, the maximum of each block of "
+                          "interest. Right axis, on the squared positive signal: MA_peak (W1, dim) and "
+                          "MA_beat + offset (W2 and β, dashed); a block of interest is where MA_peak "
+                          "is above it for at least W1. Both MAs are centred, so they end W2 before now."),
+        }
+        right_label = {"HR1_SSF": "slope sum", "HR1_TERMA": "MA (squared)"}
+        for row, k in enumerate(HR1LabCalc.CHAINS):
+            p = _plot(row, 'front end', bottom='Time' if row == 2 else None)
+            p.enableAutoRange(axis='y')
+            p.setAutoVisible(y=True)
+            p.titleLabel.setToolTip(_make_tooltip(tips[k][0], tips[k][1], src="hr1_bench." + {
+                "HR1_THR": "ThrDetector", "HR1_SSF": "SsfDetector", "HR1_TERMA": "TermaDetector"}[k]))
+            self.curve_sig[k] = _curve(p, self._COL_SIG)
+            if k == "HR1_THR":
+                self.curve_da[k] = _curve(p, self._COL[k], 1.5)
+                self.curve_db[k] = None
+            else:
+                vb = pg.ViewBox()
+                p.getAxis('right').setStyle(showValues=True)
+                p.scene().addItem(vb)
+                p.getAxis('right').linkToView(vb)
+                p.getAxis('right').setLabel(right_label[k])
+                p.getAxis('right').setWidth(70)
+                vb.setXLink(p)
+                vb.enableAutoRange(axis=pg.ViewBox.YAxis)
+                vb.setAutoVisible(y=True)
+
+                def _sync(*_emitted, p=p, vb=vb):     # sigResized passes the view box: not p
+                    vb.setGeometry(p.vb.sceneBoundingRect())
+                    vb.linkedViewChanged(p.vb, vb.XAxis)
+                p.vb.sigResized.connect(_sync)
+                self._syncs.append(_sync)
+                self.vb2[k] = vb
+                self.curve_da[k] = _curve(vb, self._COL_DIM[k], 1.0)
+                self.curve_db[k] = _curve(vb, self._COL[k], 1.5, dash=True)
+            self.marks[k] = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(self._COL[k]),
+                                               pen=pg.mkPen('#FFFFFF', width=0.8))
+            p.addItem(self.marks[k])
+            self.p_chain[k] = p
+            if row:
+                p.setXLink(self.p_chain["HR1_THR"])
+
+        self.p_rr = _plot(3, 'RR [ms]')
+        self._set_title(self.p_rr, grey % ("RR", "every beat's interval ·") + " " + _named(
+            *((k, self._COL[k]) for k in HR1LabCalc.CHAINS)))
+        self.p_rr.titleLabel.setToolTip(_make_tooltip(
+            "RR against time",
+            "The interval each detector measured at each beat, the one its rule (R0) receives. A missed "
+            "beat shows as a point at twice the others, a beat counted twice as two points near half.",
+            src="HR1LabCalc.chains[k].beats"))
+        self.rr_pts = {}
+        for k in HR1LabCalc.CHAINS:
+            self.rr_pts[k] = pg.ScatterPlotItem(size=5, brush=pg.mkBrush(self._COL[k]), pen=None)
+            self.p_rr.addItem(self.rr_pts[k])
+        self.p_rr.enableAutoRange(axis='y')
+        self.p_rr.setAutoVisible(y=True)
+
+        self.p_rate = _plot(4, 'bpm')
+        self._set_title(self.p_rate, grey % ("RATES", "R0, where published ·") + " " + _named(
+            *((k, self._COL[k]) for k in HR1LabCalc.CHAINS),
+            ("board HR1", self._COL_BOARD["hr1"]), ("HR2", self._COL_BOARD["hr2"]),
+            ("HR3", self._COL_BOARD["hr3"])))
+        self.p_rate.titleLabel.setToolTip(_make_tooltip(
+            "Rates against time",
+            "Each chain's HR every 0.5 s, drawn only where its rule publishes (mean of the last 5 RR, "
+            "30–260 bpm, hr1_sqi > 0), and the board's HR1, HR2 and HR3 as thin lines. The board's "
+            "HR1 is the library's HR1_THR: it should lie on the yellow chain when the board runs "
+            "v0.122 and the THR values are the measured ones.",
+            src="HR1LabCalc.chains[k].out"))
+        self.curve_board = {key: _curve(self.p_rate, col, 1.0, dash=(key == "hr1"))
+                            for key, col in self._COL_BOARD.items()}
+        self.curve_rate = {}
+        for k in reversed(HR1LabCalc.CHAINS):
+            c = self.p_rate.plot(pen=pg.mkPen(self._COL[k], width=2), symbol='o', symbolSize=3,
+                                 symbolBrush=self._COL[k], symbolPen=None, connect='finite')
+            c.setDownsampling(auto=True, method='peak')
+            c.setClipToView(True)
+            self.curve_rate[k] = c
+        self.p_rate.setYRange(0, self._RATE_Y_MAX, padding=0)
+        self.p_rate.setXLink(self.p_rr)
+        self.region = pg.LinearRegionItem(values=(0.0, self._DETAIL_S), brush=pg.mkBrush(255, 255, 255, 30),
+                                          pen=pg.mkPen('#888888'))
+        self.region.setZValue(-10)
+        self.region.setVisible(False)
+        self.region.sigRegionChanged.connect(self._region_moved)
+        self.p_rate.addItem(self.region)
+        self.p_chain["HR1_THR"].sigXRangeChanged.connect(self._detail_zoomed)
+
+        self.p_q = _plot(5, 'hr1_sqi', bottom='Time')
+        self._set_title(self.p_q, grey % ("QUALITY", "R0's hr1_sqi = 1 − CV / 0.15 ·") + " " + _named(
+            *((k, self._COL[k]) for k in HR1LabCalc.CHAINS)))
+        self.p_q.titleLabel.setToolTip(_make_tooltip(
+            "Quality against time",
+            "Each chain's hr1_sqi every 0.5 s: 1 − CV / 0.15 of its last 5 RR, clamped to 0..1. It "
+            "publishes while this is above 0.",
+            src="HR1LabCalc.chains[k].out"))
+        self.curve_q = {k: _curve(self.p_q, self._COL[k], 1.5) for k in HR1LabCalc.CHAINS}
+        self.p_q.setYRange(0, 1.05, padding=0)
+        self.p_q.setXLink(self.p_rr)
+
+        # ── Info line ─────────────────────────────────────────────────────────
+        self._info_label = QtWidgets.QLabel()
+        self._info_label.setFont(QtGui.QFont("Consolas", 10))
+        self._info_label.setStyleSheet("color: #AAAAAA; padding: 2px 4px;")
+        self._info_label.setWordWrap(True)
+        self._info_label.setTextFormat(QtCore.Qt.RichText)
+        self._info_label.setMinimumWidth(0)
+        self._info_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self._info_label.setToolTip(_make_tooltip(
+            "Rule and values",
+            "The rule of the three chains, where their measured values come from, and in orange "
+            "every parameter that is not the measured value.",
+            src="HR1LabCalc.edited"))
+        left.addWidget(self._info_label)
+
+        # ── Parameter panel ───────────────────────────────────────────────────
+        outer.addWidget(self._build_panel())
+
+        self._set_live_ranges()
+        self._draw()
+
+        geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR1LabWindow/geometry")
+        if geom:
             self.restoreGeometry(geom)
+        else:
+            self.resize(1900, 1150)
 
-    # ── Layout ───────────────────────────────────────────────────────────────
-    def _relayout(self):
-        """Give the height to expanded rows only, so collapsing one enlarges the rest."""
-        for i, row in enumerate(self.rows):
-            self._rows_box.setStretch(i, 1 if row.expanded else 0)
-        self._rows_box.setStretch(len(self.rows), 0 if any(r.expanded for r in self.rows) else 1)
+    # ── Parameter panel ──────────────────────────────────────────────────────
+    def _build_panel(self):
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        panel = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(panel)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(10)
+        title = QtWidgets.QLabel("PARAMETERS")
+        title.setStyleSheet("color: #AAAAAA; font-weight: 800;")
+        lay.addWidget(title)
+        self._spins = {}
+        for k in HR1LabCalc.CHAINS:
+            col = self._COL[k]
+            box = QtWidgets.QGroupBox(k)
+            box.setStyleSheet(
+                "QGroupBox { color: %s; font-weight: bold; border: 1px solid #444444; border-radius: 4px;"
+                " margin-top: 16px; padding-top: 6px; }"
+                " QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }" % col)
+            box.setToolTip(_make_tooltip(k, self._SUBTITLE[k], src="HR1LabCalc.PARAMS"))
+            form = QtWidgets.QFormLayout(box)
+            form.setLabelAlignment(QtCore.Qt.AlignRight)
+            self._spins[k] = {}
+            for p in HR1LabCalc.params(k):
+                sp = QtWidgets.QDoubleSpinBox()
+                sp.setRange(p.lo, p.hi)
+                sp.setDecimals(p.decimals)
+                sp.setSingleStep(p.step)
+                sp.setSuffix((" " + p.unit) if p.unit else "")
+                sp.setValue(p.default)
+                sp.setKeyboardTracking(False)
+                sp.valueChanged.connect(lambda _v, k=k: self._restyle(k))
+                tip = _make_tooltip(p.label, p.tooltip + "\n\nMeasured value: %s%s" % (
+                    ("%%.%df" % p.decimals) % p.default, (" " + p.unit) if p.unit else ""),
+                    src="HR1LabCalc.PARAMS['%s'].%s" % (k, p.key))
+                sp.setToolTip(tip)
+                lbl = QtWidgets.QLabel(p.label)
+                lbl.setStyleSheet("color: #CCCCCC; font-weight: normal;")
+                lbl.setToolTip(tip)
+                form.addRow(lbl, sp)
+                self._spins[k][p.key] = sp
+            row = QtWidgets.QHBoxLayout()
+            b_apply = QtWidgets.QPushButton("APPLY")
+            b_apply.setStyleSheet(ACTION_BUTTON_STYLE)
+            b_apply.clicked.connect(lambda _c=False, k=k: self._apply(k))
+            b_apply.setToolTip(_make_tooltip(
+                "APPLY", "Run %s with these values: live it starts over where it is (with its learning "
+                "period, if it has one); on a session it reruns the whole session." % k,
+                src="HR1LabWindow._apply"))
+            b_meas = QtWidgets.QPushButton("MEASURED")
+            b_meas.setStyleSheet(ACTION_BUTTON_STYLE)
+            b_meas.clicked.connect(lambda _c=False, k=k: self._measured(k))
+            b_meas.setToolTip(_make_tooltip(
+                "MEASURED", "Back to the values the study measured for %s, and apply them." % k,
+                src="HR1LabWindow._measured"))
+            row.addWidget(b_apply)
+            row.addWidget(b_meas)
+            form.addRow(row)
+            lay.addWidget(box)
+        legend = QtWidgets.QLabel(
+            "<span style='color:#FF5555'>red</span>: typed, not applied<br>"
+            "<span style='color:%s'>orange</span>: applied, not the measured value<br>"
+            "Values are not kept when the window closes." % self._COL_EDIT)
+        legend.setStyleSheet("color: #999999;")
+        legend.setWordWrap(True)
+        lay.addWidget(legend)
+        lay.addStretch(1)
+        scroll.setWidget(panel)
+        # as wide as its content with the screen's real fonts (a width in px would not scale)
+        scroll.setMinimumWidth(panel.sizeHint().width() + scroll.verticalScrollBar().sizeHint().width() + 6)
+        return scroll
+
+    def _restyle(self, k):
+        for p in HR1LabCalc.params(k):
+            sp = self._spins[k][p.key]
+            tol = 0.5 * 10 ** -p.decimals
+            pending = abs(sp.value() - self._applied[k][p.key]) > tol
+            edited = abs(self._applied[k][p.key] - p.default) > tol
+            style = []
+            if pending:
+                style.append("color: #FF5555;")
+            if edited:
+                style.append("background-color: #4A3000; border: 1px solid %s;" % self._COL_EDIT)
+            sp.setStyleSheet("QDoubleSpinBox { %s }" % " ".join(style) if style else "")
+
+    def _apply(self, k):
+        vals = {key: sp.value() for key, sp in self._spins[k].items()}
+        if vals['lp_hz'] <= 2.0 * vals['hp_hz']:
+            self.statusBar().showMessage("⚠ %s: the LP corner must be well above the HP corner" % k)
+            return
+        if k == "HR1_TERMA" and vals['w1_s'] >= vals['w2_s']:
+            self.statusBar().showMessage("⚠ HR1_TERMA: W1 must be shorter than W2")
+            return
+        if self.calc.offline:
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            self.calc.set_values(k, vals)
+        finally:
+            if self.calc.offline:
+                QtWidgets.QApplication.restoreOverrideCursor()
+        self._applied[k] = dict(vals)
+        self._restyle(k)
+        self._draw()
+
+    def _measured(self, k):
+        for p in HR1LabCalc.params(k):
+            sp = self._spins[k][p.key]
+            sp.blockSignals(True)
+            sp.setValue(p.default)
+            sp.blockSignals(False)
+        self._apply(k)
 
     # ── Data path ────────────────────────────────────────────────────────────
-    def feed_sample(self, ot_led1, fs, probe_state, sample_counter=None):
-        """Feed one full-rate sample to every enabled variant.
+    def feed_sample(self, ot_led1, fs, probe_state, sample_counter=None,
+                    hr1=float('nan'), hr2=float('nan'), hr3=float('nan')):
+        """One $M4 sample at the AFE rate, from the frame loop. Ignored while a session is loaded."""
+        self.calc.update(ot_led1, fs, probe_state, sample_counter, hr1, hr2, hr3)
 
-        All variants receive the same sample in the same call, which is what makes a live
-        comparison between them fair. While paused nothing enters here, which is what lets
-        SAVE write the frozen buffer.
-        """
-        if self._paused:
-            return
-        self._fs      = fs
-        self._last_ot = ot_led1
-        self._last_ps = probe_state
-        self._raw.append((self._n_fed, ot_led1, probe_state))
-        for row in self.rows:
-            if row.enabled:
-                row.calc.update(ot_led1, fs, probe_state, sample_counter)
-        self._n_fed += 1
+    @property
+    def gap_count(self):
+        return self.calc.gap_count
+
+    def on_stream_discontinuity(self):
+        """Board restart / source change: the live chains and traces start over (a loaded session
+        is left alone)."""
+        if not self.calc.offline:
+            self.calc.reset()
 
     def _toggle_pause(self):
         self._paused = self._btn_pause.isChecked()
-        if self._paused:
-            # One last redraw so the frozen view is the newest data, not the previous tick.
-            for row in self.rows:
-                row.redraw(self._fs, self._n_fed, self._marks)
-            self._btn_pause.setText("CONTINUE")
-            self.statusBar().showMessage(
-                "PAUSED — %.0f s buffered; SAVE writes this, not what arrives next"
-                % (len(self._raw) / self._fs if self._fs else 0.0))
-        else:
-            # Resuming means a new recording: splicing two moments of signal would create
-            # one false RR interval and one false timeline in the saved CSV.
-            self._n_fed = 0
-            self._raw.clear()
-            self.reset_all()
-            self._btn_pause.setText("PAUSE")
-            self.statusBar().showMessage(_MOUSE_HINT)
+        self._btn_pause.setText("RESUME" if self._paused else "PAUSE")
+        if not self._paused:
+            self._drawn_rev = -1
 
-    def add_mark(self):
-        # The newest sample already buffered — _n_fed is the index the next one will take,
-        # and pausing right after a mark would leave that index forever out of the buffer.
-        self._marks.append(max(0, self._n_fed - 1))
-        # keep only marks still inside the save buffer
-        oldest = self._n_fed - self._raw.maxlen
-        self._marks = [m for m in self._marks if m >= oldest]
-        self.statusBar().showMessage("Mark %d stamped" % len(self._marks), 2000)
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, lambda: [f() for f in self._syncs])   # once the layout is placed
 
-    def reset_all(self):
-        for row in self.rows:
-            row.calc.reset()
-        self._marks = []
-        self.statusBar().showMessage("All variants reset", 2000)
+    def _load_session(self):
+        start = os.path.join(CAPTURES_DIR, "sessions")
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Load session: the folder with the board CSV parts", start if os.path.isdir(start) else "")
+        if path:
+            self.load_session(path)
 
-    def save_window(self):
-        if not self._raw:
-            self.statusBar().showMessage("Nothing to save yet", 3000)
-            return
-        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(CAPTURES_DIR, "hr1lab_%s.csv" % now)
-        marks = set(self._marks)
+    def load_session(self, path):
+        """Read a session folder as the bench does and run the three chains over it."""
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            os.makedirs(CAPTURES_DIR, exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write("# HR1LAB raw capture — fs=%.1f Hz, %d marks\n" % (self._fs, len(marks)))
-                f.write("t_s,ot_led1,probe_state,mark\n")
-                n0 = self._raw[0][0]
-                for n, ot, ps in self._raw:
-                    f.write("%.6f,%.9g,%d,%d\n"
-                            % ((n - n0) / self._fs, ot, ps, 1 if n in marks else 0))
-            self.statusBar().showMessage("Saved %s (%d samples)" % (path, len(self._raw)), 6000)
-        except OSError as e:
-            self.statusBar().showMessage("Save failed: %s" % e, 8000)
+            d = hr_bench.load_columns(path, os.path.join(CAPTURES_DIR, "sessions", "HR_BENCH_CACHE"))
+            self.calc.load_session(d, os.path.basename(os.path.normpath(path)))
+        except Exception as e:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.warning(self, "Load session", str(e))
+            return False
+        QtWidgets.QApplication.restoreOverrideCursor()
+        c = self.calc
+        runs = c._runs()
+        self._lbl_src.setText("SOURCE %s" % c.source)
+        self._btn_live.setEnabled(True)
+        self._btn_pause.setChecked(False)
+        self._toggle_pause()
+        self._btn_pause.setEnabled(False)
+        t_end = c.n / c.fs
+        self.p_rr.setXRange(0.0, t_end, padding=0.01)
+        start = runs[0][0] / c.fs if runs else 0.0
+        self.region.setVisible(True)
+        self.region.setRegion((start, min(t_end, start + self._DETAIL_S)))
+        self._region_moved()          # setRegion emits nothing when the region was already there
+        applied = sum(r1 - r0 for r0, r1 in runs) / c.fs
+        self.statusBar().showMessage(
+            "Session %s: %.0f s at %.0f Hz, %d applications of the probe (%.0f s applied)"
+            % (c.source, t_end, c.fs, len(runs), applied))
+        self._draw()
+        return True
+
+    def _go_live(self):
+        self.calc.go_live()
+        self._lbl_src.setText("SOURCE live")
+        self._btn_live.setEnabled(False)
+        self._btn_pause.setEnabled(True)
+        self.region.setVisible(False)
+        self._set_live_ranges()
+        self.statusBar().showMessage(_MOUSE_HINT)
+        self._draw()
+
+    def _set_live_ranges(self):
+        self.p_chain["HR1_THR"].setXRange(-self._SHOW_S, 0.0, padding=0)
+        self.p_rr.setXRange(-HR1LabCalc.HIST_S, 0.0, padding=0)
+
+    def _region_moved(self):
+        if self._syncing or not self.calc.offline:
+            return
+        self._syncing = True
+        lo, hi = self.region.getRegion()
+        self.p_chain["HR1_THR"].setXRange(lo, hi, padding=0)
+        self._syncing = False
+
+    def _detail_zoomed(self, _vb, rng):
+        if self._syncing or not self.calc.offline:
+            return
+        self._syncing = True
+        self.region.setRegion(rng)
+        self._syncing = False
 
     # ── Refresh ──────────────────────────────────────────────────────────────
-    def on_stream_discontinuity(self):
-        """Monitor buffers restarted (board restart / source change): a new recording, exactly as
-        when the user resumes from PAUSE — splicing two moments would create a false RR interval.
-        A paused window keeps its frozen view."""
-        if self._paused:
+    @staticmethod
+    def _set_title(plot, html):
+        HR3LabWindow._set_title(plot, html)
+
+    @staticmethod
+    def _steps(t, v, t_end):
+        """A piecewise-constant curve through (t, v) records (each value holds to the next record),
+        the last one held to t_end; NaN records are breaks."""
+        if len(t) == 0:
+            return np.zeros(0), np.zeros(0)
+        x, y = [], []
+        for i in range(len(t)):
+            if not math.isfinite(v[i]):
+                x.append(t[i]); y.append(math.nan)
+                continue
+            nxt = t[i + 1] if i + 1 < len(t) else t_end
+            x += [t[i], nxt]
+            y += [v[i], v[i]]
+        return np.asarray(x), np.asarray(y)
+
+    def _chain_title(self, k):
+        c = self.calc.chains[k]
+        col = self._COL[k]
+        if self.calc.offline:
+            o = c.out.data
+            fin = o[np.isfinite(o[:, 3])]
+            pub = 100.0 * fin[:, 3].mean() if len(fin) else float('nan')
+            nb = int(np.isfinite(c.beats.data[:, 0]).sum())
+            head = "%s &nbsp; published %s of the applied time" % (k, ("%.0f %%" % pub) if pub == pub else "--")
+            detail = "%d beats · %s" % (nb, self._SUBTITLE[k])
+        else:
+            val = ("%.1f bpm" % c.hr) if (c.published and c.hr == c.hr) else "--- bpm"
+            head = "%s &nbsp; %s" % (k, val)
+            detail = "hr1_sqi %.2f · %s" % (c.sqi, self._SUBTITLE[k]) if c.in_run else self._SUBTITLE[k]
+        ed = self.calc.edited().get(k)
+        if ed:
+            detail += " · <span style='color:%s'>edited</span>" % self._COL_EDIT
+        return ("<span style='color:%s'><b>%s</b></span><br><span style='color:#BBBBBB'>%s</span>"
+                % (col, head, detail))
+
+    def _refresh_info(self):
+        ed = self.calc.edited()
+        txt = ("R0 for the three: mean of the last 5 RR, hr1_sqi = 1 − CV/0.15, published 30–260 bpm "
+               "with hr1_sqi &gt; 0, read every 0.5 s &nbsp;|&nbsp; measured values: HR1_THR = lib v0.122, "
+               "HR1_SSF = part 3 of docs/hr1_methods_20261116.md, HR1_TERMA = Elgendi 2013 on the v0.122 "
+               "front end")
+        if ed:
+            parts = []
+            for k, diffs in ed.items():
+                parts.append("%s %s" % (k, ", ".join(
+                    "%s %g%s (measured %g)" % (lab, val, (" " + u) if u else "", m) for lab, val, m, u in diffs)))
+            txt += " &nbsp;|&nbsp; <span style='color:%s'>EDITED: %s</span>" % (self._COL_EDIT, "; ".join(parts))
+        self._info_label.setText(txt)
+
+    def _refresh_context(self, data_pi):
+        if self.calc.offline:
             return
-        self._n_fed = 0
-        self._raw.clear()
-        self.reset_all()
+        self._lbl_state.setText("PROBE %s" % self._PS_NAME.get(self.calc.probe_state, "--"))
+        pi = data_pi[-1] if data_pi is not None and len(data_pi) else float('nan')
+        self._lbl_pi.setText("PI %.2f %%" % pi if pi == pi and pi >= 0.0 else "PI --")
+        mm = self.main_monitor
+        if mm is not None:
+            lib_id = mm.data_lib_id[-1] if mm.data_lib_id else ""
+            if lib_id != "M4":
+                self.statusBar().showMessage(
+                    "⚠ Requires frame mode $M4 (OT_LED1 not available in current mode "
+                    f"${lib_id or '?'}) — the chains are not being fed.")
+            else:
+                self.statusBar().showMessage(_MOUSE_HINT)
 
     def update_plots(self, data_pi=None):
-        if self._paused:
-            return          # leave the frozen view alone, including zoom and pan
-        ps_name = {0: "DISCONNECTED", 1: "OT HIGH", 2: "APPLIED", 3: "AMB SATURATING",
-                   4: "ONLY LED SATURATING"}
-        self._lbl_state.setText("PROBE %s" % ps_name.get(self._last_ps, "--"))
-        self._lbl_ot.setText("OT_LED1 --" if self._last_ot != self._last_ot
-                             else "OT_LED1 %.6g" % self._last_ot)
-        if data_pi is not None and len(data_pi):
-            self._lbl_pi.setText("PI %.2f %%" % data_pi[-1])
-        for row in self.rows:
-            row.redraw(self._fs, self._n_fed, self._marks)
+        """Render tick (10 Hz). Live: redraws when something was computed or the clock moved;
+        a loaded session is drawn once (and again after APPLY)."""
+        if self.calc.offline or self._paused:
+            return
+        self._refresh_context(data_pi)
+        c = self.calc
+        if c.revision == self._drawn_rev and abs(c.t_s - self._drawn_t) < self._SCROLL_S:
+            return
+        self._draw()
+
+    def _draw(self):
+        c = self.calc
+        self._drawn_rev = c.revision
+        self._drawn_t = c.t_s
+        shift = 0.0 if c.offline else -c.t_s          # live: seconds before now
+        self._refresh_info()
+        for k in HR1LabCalc.CHAINS:
+            ch = c.chains[k]
+            s = ch.sig.data
+            self.curve_sig[k].setData(s[:, 0] + shift, s[:, 1])
+            a = ch.da.data
+            self.curve_da[k].setData(a[:, 0] + shift, a[:, 1])
+            if self.curve_db[k] is not None:
+                b = ch.db.data
+                if k == "HR1_SSF":
+                    t_end = s[-1, 0] if (len(s) and ch.in_run) else (b[-1, 0] if len(b) else 0.0)
+                    x, y = self._steps(b[:, 0], b[:, 1], t_end)
+                    self.curve_db[k].setData(x + shift, y)
+                else:
+                    self.curve_db[k].setData(b[:, 0] + shift, b[:, 1])
+            bt = ch.beats.data
+            fin = np.isfinite(s[:, 1])
+            if len(bt) and fin.sum() > 1:
+                lo = s[fin, 0][0] if not c.offline else -math.inf
+                tb = bt[bt[:, 0] >= lo, 0]
+                yb = np.interp(tb, s[fin, 0], s[fin, 1])
+                self.marks[k].setData(tb + shift, yb)
+            else:
+                self.marks[k].setData([], [])
+            rr = bt[np.isfinite(bt[:, 1])]
+            self.rr_pts[k].setData(rr[:, 0] + shift, 1000.0 * rr[:, 1])
+            o = ch.out.data
+            pub = np.where(o[:, 3] > 0.5, o[:, 1], np.nan)
+            self.curve_rate[k].setData(o[:, 0] + shift, pub)
+            self.curve_q[k].setData(o[:, 0] + shift, o[:, 2])
+            self._set_title(self.p_chain[k], self._chain_title(k))
+        bd = c.board.data
+        for i, key in enumerate(("hr1", "hr2", "hr3")):
+            self.curve_board[key].setData(bd[:, 0] + shift, bd[:, i + 1])
 
     def closeEvent(self, event):
         QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).setValue(
@@ -9340,8 +9922,6 @@ class HR1LabWindow(QtWidgets.QMainWindow):
             self.main_monitor.btn_hr1lab.setChecked(False)
             self.main_monitor.hr1lab_window = None
         super().closeEvent(event)
-
-
 
 
 # The R-method candidate (R-method plan, step 2): what PILAB's [R CANDIDATE] preset loads and
@@ -14996,7 +15576,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         # ── Python timing rolling buffers (last 50 measurements, in ms) ──────────
         _pt_keys = [
             'drain', 'drain_interval', 'render', 'render_interval',
-            'algo_spo2lab', 'algo_spo2test', 'algo_hr2test', 'algo_hr2lab', 'algo_hr3lab',
+            'algo_spo2lab', 'algo_spo2test', 'algo_hr2test', 'algo_hr2lab', 'algo_hr3lab', 'algo_hr1lab',
             'plot_ppgplots', 'plot_signals', 'plot_results', 'plot_hr2lab',
             'plot_spo2lab', 'plot_hr3lab', 'plot_spo2test',
             'plot_hr1test', 'plot_hr1lab', 'plot_hr2test', 'plot_hr3test', 'plot_pilab',
@@ -15448,9 +16028,10 @@ class PPGMonitor(QtWidgets.QMainWindow):
         self.btn_hr1lab.clicked.connect(self.toggle_hr1lab)
         self.btn_hr1lab.setToolTip(_make_tooltip(
             "HR1LAB",
-            "Show or hide the HR1 variant bench. Runs every registered HR1 variant on the "
-            "same samples at once, one collapsible row each, so they can be compared live "
-            "while you provoke a failure by hand. Requires frame mode $M4.",
+            "Show or hide the methods of analysis family 1 side by side: HR1_THR (the library's "
+            "HR1), HR1_SSF (the proposal for lib v0.123) and HR1_TERMA, each with its front end, "
+            "its beats and what it decides on, their RR, rates and quality. Live on $M4, or on a "
+            "stored session (LOAD SESSION). Every parameter can be edited from its panel.",
             src="HR1LabWindow"))
         self.sidebar_layout.addWidget(self.btn_hr1lab)
 
@@ -16396,6 +16977,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
         if self.btn_hr1lab.isChecked():
             self.hr1lab_window = HR1LabWindow(None)
             self.hr1lab_window.main_monitor = self
+            self.hr1lab_window.calc.block_ms = self._py_timing['algo_hr1lab']   # PYTHON TIMING row
             self.hr1lab_window.show()
         else:
             if self.hr1lab_window is not None:
@@ -18218,10 +18800,13 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                 _sc500 = int(_p500[1])
                                 if self.hr1test_window is not None:
                                     self.hr1test_calc.update(_ot500, self.afe_fs(), _ps500, _sc500)
-                                # HR1LAB: every variant gets the same sample in the same call,
-                                # which is what makes a live comparison between them fair.
+                                # HR1LAB (v1.116): the methods of family 1, each chain on the same
+                                # sample; the board's HR1 / HR2 / HR3 (fields 14 / 16 / 18) travel
+                                # with it as the live reference.
                                 if self.hr1lab_window is not None:
-                                    self.hr1lab_window.feed_sample(_ot500, self.afe_fs(), _ps500, _sc500)
+                                    self.hr1lab_window.feed_sample(
+                                        _ot500, self.afe_fs(), _ps500, _sc500,
+                                        float(_p500[14]), float(_p500[16]), float(_p500[18]))
                                 # PPGDISPLAB: OT_LED1, the board's ppg_disp (field 9) and PI (13)
                                 if self.ppgdisplab_window is not None:
                                     self.ppgdisplab_window.feed_sample(
@@ -18805,7 +19390,9 @@ class PPGMonitor(QtWidgets.QMainWindow):
                     self._py_timing['plot_spo2test'].clear()
                     self._py_timing['algo_spo2test'].clear()
                 if self.hr1test_window   is None: self._py_timing['plot_hr1test'].clear()
-                if self.hr1lab_window    is None: self._py_timing['plot_hr1lab'].clear()
+                if self.hr1lab_window    is None:
+                    self._py_timing['plot_hr1lab'].clear()
+                    self._py_timing['algo_hr1lab'].clear()
                 if self.ppgdisplab_window is None: self._py_timing['plot_ppgdisplab'].clear()
                 if self.hr2test_window   is None:
                     self._py_timing['plot_hr2test'].clear()
@@ -18825,6 +19412,7 @@ class PPGMonitor(QtWidgets.QMainWindow):
                                      max(self._queue_size_buf)) if self._queue_size_buf else (0, 0),
                     'gap_B':        self._gaps_B,
                     'gap_hr1test':  self.hr1test_calc.gap_count,
+                    'gap_hr1lab':   self.hr1lab_window.calc.gap_count if self.hr1lab_window is not None else None,
                     'gap_hr2lab':   self.hr2lab_window.calc.gap_count if self.hr2lab_window is not None else None,
                     'gap_hr3lab':   self.hr3lab_window.calc.gap_count if self.hr3lab_window is not None else None,
                     'gap_hr3test':  self.hr3test_calc.gap_count,
