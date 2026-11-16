@@ -30434,3 +30434,4 @@ primer nivel a petición de Alex).
   HR1LAB, tests). Pendiente de Alex: mirar THR/SSF/TERMA en HR1LAB y decidir la v0.123 (propuesta SSF + R0
   a 15 Hz / 0,3 Hz); el commit de lo anterior.
 - Alex: «sí, haz commit». Commit local de todo lo anterior (este commit), sin push.
+- Alex: «sí, haz push». Subidos `9fbc865` y este commit del log.
