@@ -1021,50 +1021,48 @@ class HR1Variant:
 class HR1TestCalc(HR1Variant):
     """HR1 algorithm mirror for the HR1TEST window — the SPEC variant.
 
-    Independent reimplementation of firmware _update_hr1() from incunest_afe4490_spec.md §5.2.
-    Purpose: post-implementation verification — compare against firmware output to detect bugs.
-    This variant is frozen by definition: it must track the library, never explore. New ideas
-    go in a sibling HR1Variant subclass, never here.
+    Mirrors INCUNEST_AFE4490::_hr1_update() of lib v0.122 (incunest_afe4490_spec.md §5.2): the
+    common front end of the HR1 methods, today's detector and rule. Purpose: post-implementation
+    verification — compare against the firmware's HR1 to detect bugs. Frozen by definition: it must
+    track the library, never explore. New ideas go in a sibling HR1Variant subclass, never here.
 
-    EXPERIMENT (OT-domain input, branch experiment/ot-domain-inputs, lib v0.41-experiment):
-    input is OT_LED1 [A/A], not the raw ambient-corrected LED1_SUB used before this migration.
-    No threshold recalibration needed — peak timing/CV are invariant to a uniform input scale.
-    OT only travels in the $M4 frame — this mirror requires $M4 (live) or a CSV captured in $M4.
+    Built on pulsenest.hr1_bench (FrontEnd's filters, ThrDetector's crossing, RuleR0's formula),
+    the code the library port was checked against (experiments/hr1_port_check_20261116.py: same
+    validity in 99.97 % of 25 158 outputs, HR1 within 0.1 bpm in 99.77 %), fed one sample at a time:
 
-    probe_state (RSQM's classification) is consumed, never computed here — mirrors lib v0.41
-    (see SpO2TestCalc for the design). While probe_state != PROBE_APPLIED, internal state
-    resets every sample (idempotent) and hr_bpm/hr_sqi become nan/0.
+      OT_LED1 → LowPass4 f_high (15 Hz, AFE rate) → negate → keep 1 sample in round(fs/100) →
+      high-pass f_low (0.5 Hz, 2nd-order Butterworth, ~100 Hz) → running max (decay τ 1.5 s) →
+      rising crossing of 0.6 × running max, interpolated between the two decimated samples,
+      refractory 0.185 s (a crossing inside it restarts the interval, as the library) →
+      RR buffer (last 5, seconds) → HR1 = 60 / mean(RR) → SQI = clamp(1 − CV/0.15, 0, 1)
 
-    Processing chain per sample:
-      OT_LED1 → IIR DC removal (τ=1.6 s) → negate (PPG polarity) →
-      moving average LP (cutoff ~5 Hz, len=fs/(2×5), max 64) →
-      running maximum (exponential decay, τ = 1.5 s — lib v0.93) →
-      threshold crossing (0.6 × running_max, refractory 0.185 s) →
-      RR buffer (last 5 intervals) →
-      HR1 = fs × 60 / mean(RR) →
-      SQI = clamp(1 − CV/0.15, 0, 1)  where CV = std/mean of RR intervals
+    Unlike the other variants it does not use the base's per-sample detection path (the base counts
+    RR in whole samples at the AFE rate and blanks with a counter); it keeps the base's outputs,
+    diagnostic buffers and availability, so HR1TEST and HR1LAB read it as before. The diagnostic
+    buffers stay at the AFE rate: between two decimated samples they hold the last value.
 
-    Diagnostic buffers expose every intermediate signal for visualization.
-    PPGMonitor feeds this calc at full 500 Hz (before decimation).
+    probe_state is consumed, never computed: while != PROBE_APPLIED everything resets every sample
+    and hr_bpm/hr_sqi are nan/0. OT only travels in the $M4 frame — this mirror requires $M4.
     """
 
     NAME        = "SPEC"
-    DESCRIPTION = "Firmware algorithm as specified in incunest_afe4490_spec.md §5.2"
+    DESCRIPTION = "Library HR1 as specified in incunest_afe4490_spec.md §5.2 (lib v0.122)"
 
-    # Firmware defaults — must match incunest_afe4490_spec.md §5.2
-    FW_DC_IIR_TAU_S      = 1.6
-    FW_MA_CUTOFF_HZ      = 5.0
-    FW_MA_MAX_LEN        = 64
+    # Library defaults — must match incunest_afe4490_spec.md §5.2 / §10.4 (lib v0.122)
+    FW_F_LOW_HZ          = 0.5     # hr1_f_low_hz: high-pass corner at the decimated rate
+    FW_F_HIGH_HZ         = 15.0    # hr1_f_high_hz: LowPass4 corner at the AFE rate
+    FW_DECIM_TARGET_HZ   = 100.0   # hr1_decim_target_rate_hz
     FW_THRESHOLD_FACTOR  = 0.6
-    FW_REFRACTORY_S      = 0.185  # hr1_refractory_s (lib: 0.200→0.185)
+    FW_REFRACTORY_S      = 0.185   # hr1_refractory_s
 
     PARAMS = (
-        HR1Param('dc_iir_tau_s',      'DC IIR tau',    0.1,  20.0,  FW_DC_IIR_TAU_S,      1, 0.1,    's',
-                 "Time constant of the IIR DC remover. Longer keeps more low-frequency content."),
-        HR1Param('ma_cutoff_hz',      'MA cutoff',     0.5,  50.0,  FW_MA_CUTOFF_HZ,      1, 0.5,    'Hz',
-                 "Nominal cutoff of the moving-average low-pass. Sets its length: fs/(2*fc)."),
-        HR1Param('ma_max_len',        'MA max len',    1,    256,   FW_MA_MAX_LEN,        0, 1,      'samples',
-                 "Upper bound on the moving-average length, so a high sample rate cannot grow it without limit."),
+        HR1Param('f_low_hz',          'HP corner',     0.1,  2.0,   FW_F_LOW_HZ,          2, 0.05,   'Hz',
+                 "High-pass corner of the front end (2nd-order Butterworth at HR1's ~100 Hz). "
+                 "Removes the DC and the slow baseline; precharged, so no start-up transient."),
+        HR1Param('f_high_hz',         'LP corner',     3.0,  40.0,  FW_F_HIGH_HZ,         1, 0.5,    'Hz',
+                 "Low-pass corner of the front end (4th-order Butterworth at the AFE rate), also the "
+                 "anti-alias filter of the decimation to 100 Hz. 15 Hz keeps the 2nd and 3rd harmonics "
+                 "up to 260 bpm."),
         HR1Param('max_decay_tau_s',   'Max decay tau',   0.2,  60.0,
                  HR1Variant.FW_MAX_DECAY_TAU_S,   1, 0.5, 's',
                  "Time constant of the running maximum's exponential decay. Sets how long an "
@@ -1076,91 +1074,146 @@ class HR1TestCalc(HR1Variant):
                  HR1Variant.FW_MAX_DECAY_BEATS,   1, 0.5, 'beats',
                  "0 = use the fixed tau above (firmware behaviour). Above 0, the decay time "
                  "becomes N x the measured RR, so the threshold falls by the same fraction "
-                 "every beat regardless of heart rate. The lower bound is ~2.5 beats: below "
-                 "that the threshold collapses between beats and noise crosses it."),
+                 "every beat regardless of heart rate."),
         HR1Param('threshold_factor',  'Threshold',     0.1,  1.0,   FW_THRESHOLD_FACTOR,  2, 0.05,   '',
                  "Detection threshold as a fraction of the running maximum."),
         HR1Param('refractory_s',      'Refractory',    0.05, 2.0,   FW_REFRACTORY_S,      3, 0.005,  's',
-                 "Blanking period after a detected peak, to reject the dicrotic notch."),
+                 "Blanking period after a detected beat, to reject the dicrotic notch."),
     )
 
     DIAG_CURVES = (
-        HR1Curve('dc_removed',  'DC removed',  '#8888FF'),
-        HR1Curve('ma_filtered', 'MA filtered', '#44FF88'),
-        HR1Curve('running_max', 'Running max', '#FF8844'),
-        HR1Curve('threshold',   'Threshold',   '#FFDD44', True),
+        HR1Curve('lp_negated',  'LP 15 Hz, negated', '#8888FF'),
+        HR1Curve('front_end',   'Front end',         '#44FF88'),
+        HR1Curve('running_max', 'Running max',       '#FF8844'),
+        HR1Curve('threshold',   'Threshold',         '#FFDD44', True),
     )
 
     def _init_variant(self):
-        self._dc_alpha     = 0.0
-        self._dc_est       = 0.0
-        self._ma_len       = 1
-        self._ma_buf       = np.zeros(self.FW_MA_MAX_LEN)
-        self._ma_idx       = 0
-        self._ma_sum       = 0.0
-        self._ma_count     = 0
-        self._running_max  = 0.0
-        self._above_thresh = False
-        # Legacy aliases: HR1TestWindow reads these attributes directly.
-        self.diag_dc_removed  = self.diag['dc_removed']
-        self.diag_ma_filtered = self.diag['ma_filtered']
+        self._fe = None
+        self._dec_fs = 0.0
+        self._phase = 0
+        self._n = 0
+        self._run_max = 0.0
+        self._above = False
+        self._prev = None
+        self._cross = None            # (index, fraction) of the last crossing, decimated samples
+        self._rr_s = []
+        self._hold = (0.0, 0.0, 0.0, 0.0)
+        self._refr_left = 0           # AFE-rate samples left in the refractory (display only)
+        # Aliases HR1TestWindow reads directly.
+        self.diag_lp_negated  = self.diag['lp_negated']
+        self.diag_front_end   = self.diag['front_end']
         self.diag_running_max = self.diag['running_max']
         self.diag_threshold   = self.diag['threshold']
 
     def _reset_variant(self):
-        self._dc_est       = 0.0
-        self._ma_buf[:]    = 0.0
-        self._ma_idx       = 0
-        self._ma_sum       = 0.0
-        self._ma_count     = 0
-        self._running_max  = 0.0
-        self._above_thresh = False
+        self._fe = None
+        self._phase = 0
+        self._n = 0
+        self._run_max = 0.0
+        self._above = False
+        self._prev = None
+        self._cross = None
+        self._rr_s = []
+        self._hold = (0.0, 0.0, 0.0, 0.0)
+        self._refr_left = 0
 
     def _recalc_variant(self, fs):
-        self._dc_alpha     = float(np.exp(-1.0 / (self.dc_iir_tau_s * fs)))
-        raw_len            = int(round(fs / (2.0 * self.ma_cutoff_hz)))
-        self._ma_len       = max(1, min(raw_len, self.ma_max_len))
-        self._ma_buf       = np.zeros(self.ma_max_len)
-        self._ma_idx       = 0
-        self._ma_sum       = 0.0
-        self._ma_count     = 0
-        self._dc_est       = 0.0
-        self._running_max  = 0.0
-        self._above_thresh = False
+        self._reset_variant()
 
-    def _detect(self, sample, fs):
-        # 1. IIR DC removal
-        self._dc_est = self._dc_alpha * self._dc_est + (1.0 - self._dc_alpha) * sample
-        dc_removed   = sample - self._dc_est
+    def _detect(self, sample, fs):          # not used: update() is overridden
+        raise NotImplementedError
 
-        # 2. Negate for conventional PPG polarity (peaks up)
-        dc_removed = -dc_removed
+    def _build(self, fs):
+        """Front end of lib v0.122 at this AFE rate: LowPass4 at fs, factor round-half-up(fs/100),
+        high-pass at the rate achieved (hr1_bench.FrontEnd's filters, one sample at a time)."""
+        from pulsenest import hr1_bench
+        self._fe = hr1_bench.FrontEnd(fs, target_hz=self.FW_DECIM_TARGET_HZ,
+                                      lp_hz=self.f_high_hz, hp_hz=self.f_low_hz)
+        self._dec_fs = self._fe.rate
 
-        # 3. Moving average low-pass
-        old_val = self._ma_buf[self._ma_idx]
-        self._ma_buf[self._ma_idx] = dc_removed
-        self._ma_idx = (self._ma_idx + 1) % self._ma_len
-        self._ma_sum += dc_removed - old_val
-        if self._ma_count < self._ma_len:
-            self._ma_count += 1
-        ma_out = self._ma_sum / self._ma_count
+    def _alpha(self):
+        tau = self.max_decay_tau_s
+        if self.max_decay_beats > 0 and self._rr_s:
+            tau = self.max_decay_beats * (sum(self._rr_s) / len(self._rr_s))
+        tau = max(tau, 1.0 / self._dec_fs)
+        return math.exp(-1.0 / (tau * self._dec_fs))
 
-        # 4. Running maximum with exponential decay (shared alpha, see _update_decay_alpha)
-        self._running_max *= self._decay_alpha_v
-        if ma_out > self._running_max:
-            self._running_max = ma_out
+    def update(self, sample, fs, probe_state, sample_counter=None):
+        self._track_gap(sample_counter)
+        if probe_state != self.PROBE_APPLIED:
+            self.reset()
+            self.hr_bpm = float('nan')
+            self.hr_sqi = 0.0
+            return
+        if fs != self._fs:
+            self._recalc_params(fs)
+        if self._fe is None:
+            self._build(fs)
+        fe = self._fe
+        lp = float(fe._lp[1].process(fe._lp[0].process(np.array([sample], float)))[0])
+        self._phase += 1
+        beat = False
+        if self._phase >= fe.factor:
+            self._phase = 0
+            v = float(fe._hp.process(np.array([-lp]))[0])
+            n = self._n
+            self._n += 1
+            self._run_max = max(self._run_max * self._alpha(), v)
+            thr = self.threshold_factor * self._run_max
+            if v > thr and not self._above:
+                self._above = True
+                idx, frac = n, 0.0
+                if self._prev is not None and v != self._prev and n > 0:
+                    idx, frac = n - 1, (thr - self._prev) / (v - self._prev)
+                if self._cross is not None:
+                    el = (idx - self._cross[0]) + (frac - self._cross[1])
+                    if el > self.refractory_s * self._dec_fs:
+                        self._rr_s = (self._rr_s + [el / self._dec_fs])[-self.FW_RR_BUF_LEN:]
+                        beat = True
+                        self._on_rr()
+                self._cross = (idx, frac)
+                self._refr_left = int(round(self.refractory_s * fs))
+            elif v <= thr:
+                self._above = False
+            self._prev = v
+            self._hold = (-lp, v, self._run_max, thr)
+        if beat:
+            self._peak_marker_ctr = self.FW_PEAK_MARKER_N
+        in_refr = self._refr_left > 0
+        if self._refr_left > 0:
+            self._refr_left -= 1
+        lp_neg, front, rmax, thr = self._hold
+        if self._peak_marker_ctr > 0:
+            self._peak_marker_ctr -= 1
+            hr1_ppg = 0.0
+        else:
+            hr1_ppg = front
+        self.diag_hr1_ppg.append(hr1_ppg)
+        self.diag_peak_mask.append(1.0 if beat else 0.0)
+        self.diag_display.append(front)
+        self.diag_refractory.append(1.0 if in_refr else 0.0)
+        self.diag['lp_negated'].append(lp_neg)
+        self.diag['front_end'].append(front)
+        self.diag['running_max'].append(rmax)
+        self.diag['threshold'].append(thr)
+        self._note_availability(fs, self.hr_sqi > 0.0)
+        self._sample_idx += 1
 
-        threshold = self.threshold_factor * self._running_max
-
-        # 5. Rising edge through the threshold (the base applies the refractory veto)
-        peak_raw = (ma_out >= threshold > 0) and not self._above_thresh
-        self._above_thresh = (ma_out >= threshold > 0)
-
-        self.diag['dc_removed'].append(dc_removed)
-        self.diag['ma_filtered'].append(ma_out)
-        self.diag['running_max'].append(self._running_max)
-        self.diag['threshold'].append(threshold)
-        return peak_raw, ma_out
+    def _on_rr(self):
+        """RuleR0 (the library's rule): mean of the last 5 RR, the CV gate, the HR range."""
+        if len(self._rr_s) < self.FW_RR_BUF_LEN:
+            return
+        mean = sum(self._rr_s) / len(self._rr_s)
+        hr = 60.0 / mean
+        self.rr_buf_copy = [1000.0 * r for r in self._rr_s]      # ms
+        if not (self.FW_HR_MIN_BPM <= hr <= self.FW_HR_MAX_BPM):
+            self.hr_bpm, self.hr_sqi = float('nan'), 0.0
+            return
+        cv = math.sqrt(sum((r - mean) ** 2 for r in self._rr_s) / len(self._rr_s)) / mean
+        self.hr_bpm = hr
+        self.hr_sqi = min(1.0, max(0.0, 1.0 - cv / self.FW_SQI_CV_MAX))
+        self._hr_bpm, self._hr_sqi = self.hr_bpm, self.hr_sqi
 
 
 class _Biquad:
@@ -3094,8 +3147,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         THR_PEN  = pg.mkPen('#FF3333', width=1, style=QtCore.Qt.DashLine)   # threshold:   red dashed
 
         self.p_chain.addLegend()
-        self.curve_dc_removed  = self.p_chain.plot(pen=DCR_PEN, name="DC-removed")
-        self.curve_ma_filtered = self.p_chain.plot(pen=MAF_PEN, name="MA-filtered")
+        self.curve_dc_removed  = self.p_chain.plot(pen=DCR_PEN, name="LP, negated")
+        self.curve_ma_filtered = self.p_chain.plot(pen=MAF_PEN, name="front end (+HP)")
         self.curve_running_max = self.p_chain.plot(pen=MAX_PEN, name="running max")
         self.curve_threshold   = self.p_chain.plot(pen=THR_PEN, name="threshold")
         for _c in (self.curve_dc_removed, self.curve_ma_filtered,
@@ -3151,24 +3204,22 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             w.setRange(lo, hi); w.setValue(val); w.setStyleSheet(_sp_s)
             return w
 
-        self._spin_dc_tau    = _dspin(0.1, 20.0,  HR1TestCalc.FW_DC_IIR_TAU_S,      1, 0.1, " s")
-        self._spin_ma_cut    = _dspin(0.5, 50.0,  HR1TestCalc.FW_MA_CUTOFF_HZ,       1, 0.5, " Hz")
-        self._spin_ma_max    = _ispin(1,   256,   HR1TestCalc.FW_MA_MAX_LEN)
+        self._spin_f_low     = _dspin(0.1,  2.0,  HR1TestCalc.FW_F_LOW_HZ,          2, 0.05, " Hz")
+        self._spin_f_high    = _dspin(3.0, 40.0,  HR1TestCalc.FW_F_HIGH_HZ,         1, 0.5, " Hz")
         self._spin_decay     = _dspin(0.2, 60.0,  HR1TestCalc.FW_MAX_DECAY_TAU_S,    1, 0.5, " s")
         self._spin_thr       = _dspin(0.1,  1.0,  HR1TestCalc.FW_THRESHOLD_FACTOR,   2, 0.05)
         self._spin_refr      = _dspin(0.05, 2.0,  HR1TestCalc.FW_REFRACTORY_S,       3, 0.005, " s")
 
-        self._spin_dc_tau.setToolTip(_make_tooltip("DC IIR τ",
-            "Time constant for IIR DC removal [s]. Firmware default: 1.6 s. "
-            "α = exp(−1/(τ·fs)). Larger τ → slower DC tracking.",
-            src="hr1_dc_iir_tau_s"))
-        self._spin_ma_cut.setToolTip(_make_tooltip("MA cutoff",
-            "Moving average low-pass cutoff frequency [Hz]. Firmware default: 5 Hz. "
-            "MA length = fs / (2 × cutoff), capped at MA max len.",
-            src="hr1_ma_cutoff_hz"))
-        self._spin_ma_max.setToolTip(_make_tooltip("MA max len",
-            "Maximum moving average window length [samples]. Firmware default: 64.",
-            src="hr1_ma_max_len"))
+        self._spin_f_low.setToolTip(_make_tooltip("HP corner",
+            "High-pass corner of HR1's front end [Hz], a 2nd-order Butterworth at HR1's ~100 Hz "
+            "decimated rate. Library default: 0.5 Hz (lib v0.122). Removes the DC and the slow "
+            "baseline; precharged, so there is no start-up transient.",
+            src="hr1_f_low_hz"))
+        self._spin_f_high.setToolTip(_make_tooltip("LP corner",
+            "Low-pass corner of HR1's front end [Hz], a 4th-order Butterworth at the AFE rate and "
+            "the anti-alias filter of the decimation to 100 Hz. Library default: 15 Hz (lib v0.122): "
+            "keeps the 2nd and 3rd harmonics up to 260 bpm.",
+            src="hr1_f_high_hz"))
         self._spin_decay.setToolTip(_make_tooltip("Running max decay tau",
             "Time constant of the running maximum's exponential decay [s]. "
             "Firmware default: 1.5 s (lib v0.93, measured — it was 20 s, the inherited 0.9999 "
@@ -3184,9 +3235,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         def _lbl(t):
             w = QtWidgets.QLabel(t); w.setStyleSheet(_lbl_s); return w
 
-        form.addRow(_lbl("DC τ"),          self._spin_dc_tau)
-        form.addRow(_lbl("MA cutoff"),     self._spin_ma_cut)
-        form.addRow(_lbl("MA max len"),    self._spin_ma_max)
+        form.addRow(_lbl("HP corner"),     self._spin_f_low)
+        form.addRow(_lbl("LP corner"),     self._spin_f_high)
         form.addRow(_lbl("Max decay τ"),   self._spin_decay)
         form.addRow(_lbl("Threshold"),     self._spin_thr)
         form.addRow(_lbl("Refractory"),    self._spin_refr)
@@ -3209,7 +3259,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         rr_gw = pg.GraphicsLayoutWidget()
         rr_gw.setFixedHeight(120)
         self._rr_plot = rr_gw.addPlot()
-        self._rr_plot.setLabel('left', 'samples')
+        self._rr_plot.setLabel('left', 'ms')
         self._rr_plot.showGrid(y=True, alpha=0.3)
         self._rr_plot.getAxis('bottom').setTicks([[(i, str(i+1)) for i in range(5)]])
         self._rr_bars = pg.BarGraphItem(x=list(range(5)), height=[0]*5, width=0.6,
@@ -3250,10 +3300,9 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         right_vbox.addStretch()
 
         # Connect parameter spinboxes
-        for sp in [self._spin_dc_tau, self._spin_ma_cut, self._spin_decay,
+        for sp in [self._spin_f_low, self._spin_f_high, self._spin_decay,
                    self._spin_thr, self._spin_refr]:
             sp.valueChanged.connect(self._on_param_changed)
-        self._spin_ma_max.valueChanged.connect(self._on_param_changed)
 
         geom = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat).value("HR1TestWindow/geometry")
         if geom: self.restoreGeometry(geom)
@@ -3268,9 +3317,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
 
     def _on_param_changed(self):
         calc = self._get_live_calc() if not self._offline_mode else self._offline_calc
-        calc.dc_iir_tau_s      = self._spin_dc_tau.value()
-        calc.ma_cutoff_hz      = self._spin_ma_cut.value()
-        calc.ma_max_len        = self._spin_ma_max.value()
+        calc.f_low_hz          = self._spin_f_low.value()
+        calc.f_high_hz         = self._spin_f_high.value()
         calc.max_decay_tau_s   = self._spin_decay.value()
         calc.threshold_factor  = self._spin_thr.value()
         calc.refractory_s      = self._spin_refr.value()
@@ -3284,9 +3332,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
 
     def _reset_to_defaults(self):
         for sp, attr in [
-            (self._spin_dc_tau, 'FW_DC_IIR_TAU_S'),
-            (self._spin_ma_cut, 'FW_MA_CUTOFF_HZ'),
-            (self._spin_ma_max, 'FW_MA_MAX_LEN'),
+            (self._spin_f_low,  'FW_F_LOW_HZ'),
+            (self._spin_f_high, 'FW_F_HIGH_HZ'),
             (self._spin_decay,  'FW_MAX_DECAY_TAU_S'),
             (self._spin_thr,    'FW_THRESHOLD_FACTOR'),
             (self._spin_refr,   'FW_REFRACTORY_S'),
@@ -3401,9 +3448,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
 
         self._offline_calc.reset_to_defaults()
         # Apply current spinbox params to offline calc
-        self._offline_calc.dc_iir_tau_s      = self._spin_dc_tau.value()
-        self._offline_calc.ma_cutoff_hz      = self._spin_ma_cut.value()
-        self._offline_calc.ma_max_len        = self._spin_ma_max.value()
+        self._offline_calc.f_low_hz          = self._spin_f_low.value()
+        self._offline_calc.f_high_hz         = self._spin_f_high.value()
         self._offline_calc.max_decay_tau_s   = self._spin_decay.value()
         self._offline_calc.threshold_factor  = self._spin_thr.value()
         self._offline_calc.refractory_s      = self._spin_refr.value()
@@ -3429,8 +3475,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         arr_delta = arr_hr_fw - arr_hr_py
 
         # For the signal chain, use whatever is in the diagnostic buffer at the end
-        diag_dc  = np.array(self._offline_calc.diag_dc_removed)
-        diag_ma  = np.array(self._offline_calc.diag_ma_filtered)
+        diag_dc  = np.array(self._offline_calc.diag_lp_negated)
+        diag_ma  = np.array(self._offline_calc.diag_front_end)
         diag_max = np.array(self._offline_calc.diag_running_max)
         diag_thr = np.array(self._offline_calc.diag_threshold)
         diag_pk  = np.array(self._offline_calc.diag_peak_mask)
@@ -3480,7 +3526,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             calc = self._get_live_calc() if not self._offline_mode else self._offline_calc
             with open(filename, 'w', encoding="cp1252", errors="replace") as f:
                 f.write(f"# HR1TEST export — {datetime.datetime.now()}\n")
-                f.write(f"# dc_tau={calc.dc_iir_tau_s:.1f}s, ma_cut={calc.ma_cutoff_hz:.1f}Hz, "
+                f.write(f"# f_low={calc.f_low_hz:.2f}Hz, f_high={calc.f_high_hz:.1f}Hz, "
                         f"decay_tau={calc.max_decay_tau_s:.1f}s, thr={calc.threshold_factor:.2f}, "
                         f"refr={calc.refractory_s:.3f}s\n")
                 f.write(f"# defaults={'YES' if calc.using_defaults else 'NO'}\n")
@@ -3569,8 +3615,8 @@ class HR1TestWindow(QtWidgets.QMainWindow):
         # Signal chain from live calc diagnostic buffers
         calc = self._get_live_calc()
         fs   = calc._fs if calc._fs > 0 else 500.0
-        diag_dc  = np.array(calc.diag_dc_removed)
-        diag_ma  = np.array(calc.diag_ma_filtered)
+        diag_dc  = np.array(calc.diag_lp_negated)
+        diag_ma  = np.array(calc.diag_front_end)
         diag_max = np.array(calc.diag_running_max)
         diag_thr = np.array(calc.diag_threshold)
         diag_pk  = np.array(calc.diag_peak_mask)
@@ -3639,7 +3685,7 @@ class HR1TestWindow(QtWidgets.QMainWindow):
             t_range = diag_n / fs
             self.p_chain.setTitle(
                 f"<b style='color:#CCCCCC'>Signal chain  (last {t_range:.1f} s, "
-                f"MA len={int(round(fs / (2.0 * (self._spin_ma_cut.value() or 1))))}, "
+                f"LP {self._spin_f_high.value():.1f} Hz → 100 Hz → HP {self._spin_f_low.value():.2f} Hz, "
                 f"fs={fs:.0f} Hz)</b>")
 
     def closeEvent(self, event):

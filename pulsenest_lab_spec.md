@@ -1,4 +1,4 @@
-# pulsenest_lab — Specification v1.114
+# pulsenest_lab — Specification v1.115
 
 Python desktop application for real-time visualization, analysis, algorithm verification
 and data capture of PPG/SpO2 signals from the AFE4490 via the `incunest_afe4490` firmware.
@@ -1441,7 +1441,21 @@ Replicates `INCUNEST_AFE4490::_hr1_update()`. **Frozen by definition:** it track
 never explores. New ideas go in a sibling `HR1Variant` subclass, never here — HR1TEST's value as
 a verification window depends on this variant not drifting from the firmware.
 
-**Algorithm:** IIR DC removal → moving average LP filter (cutoff 5 Hz) → threshold-based peak detection (threshold = 0.6 × running max) → refractory period 185 ms → RR intervals buffer (5 intervals) → HR = 60 / mean(RR).
+**Algorithm (v1.115, mirrors lib v0.122):** the common front end of the HR1 methods — LowPass4
+`f_high` (15 Hz) at the AFE rate → negate → one sample in round-half-up(fs/100) → 2nd-order
+Butterworth high-pass `f_low` (0.5 Hz) at the decimated rate — then today's detector: rising crossing
+of 0.6 × a running max (decay τ 1.5 s), the crossing interpolated between the two decimated samples,
+refractory 185 ms (a crossing inside it restarts the interval, as the library) → RR buffer (5
+intervals, seconds) → HR = 60 / mean(RR). Built on `pulsenest.hr1_bench` (FrontEnd's filters, the
+ThrDetector crossing, RuleR0's formula) fed one sample at a time, the chain the library port was
+checked against (`experiments/hr1_port_check_20261116.py`); `test_pulsenest/hr1test_mirror_test.py`
+checks mirror = bench every 0.5 s. It overrides `update()` instead of using the base's per-sample
+detection path (whole-sample RR, a blanking counter), keeping the base's outputs, diagnostic buffers
+(at the AFE rate, holding the last decimated value) and availability. Parameters: `f_low_hz`,
+`f_high_hz` (replace v1.114's `dc_iir_tau_s`, `ma_cutoff_hz`, `ma_max_len`), `max_decay_tau_s`,
+`max_decay_beats` (0 = library), `threshold_factor`, `refractory_s`. Diagnostic curves:
+`lp_negated`, `front_end`, `running_max`, `threshold`. `rr_buf_copy` in ms (HR1TEST's RR chart).
+Until v1.114: IIR DC removal (τ 1.6 s) → moving average (5 Hz) → the same detector on whole samples.
 
 SQI: `1 − CV/0.15` where CV = std(RR)/mean(RR); clamped to [0, 1]. SQI = 0 if < 2 peaks.
 
@@ -3180,6 +3194,18 @@ pyqtgraph context menus from being too narrow to read.
 ---
 
 ## 12. Changelog
+
+### v1.115 — 2026-11-16
+**HR1's mirror follows lib v0.122: the common front end of the HR1 methods (§5.3.1).**
+- `HR1TestCalc` (the SPEC variant of HR1TEST and HR1LAB) mirrors the library's new HR1: LowPass4
+  15 Hz at the AFE rate, decimated to 100 Hz, high-pass 0.5 Hz, today's detector with the crossing
+  interpolated, mean of 5 RR. Built on `pulsenest.hr1_bench`, which the library port was checked
+  against; `test_pulsenest/hr1test_mirror_test.py` (10 checks) pins mirror = bench.
+- HR1TEST: the spin boxes DC τ / MA cutoff / MA max len become **HP corner** (0.5 Hz) and **LP
+  corner** (15 Hz); the chain plot shows "LP, negated" and "front end (+HP)" and names the chain in
+  its title; the RR chart is in ms; the export header writes `f_low` / `f_high`.
+- Against a board still on lib v0.121 the mirror and the board differ by design (front end, start-up
+  ~10 s sooner in the mirror): compare with a board on v0.122.
 
 ### v1.114 — 2026-11-15
 **HR2's buffer 8 → 6 s (lib v0.121) and HR2LAB on the values chosen for PPG.**

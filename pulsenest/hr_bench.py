@@ -30,6 +30,10 @@ Parts 2 and 3 the same day: yin_difference (YIN's fixed integration window, now 
 mpm_keys / mpm_pick (MPM split so a sweep of k does not search the key maxima again), and
 hr2_segments with f_high and buf_len for the front-end variants (experiments/hr2_tuning_20261115.py).
 
+Family 1 (beats in time) lives in pulsenest/hr1_bench.py (2026-11-16): it is causal and fed in
+blocks, unlike the window methods here, and it reuses this module's sessions, references and HR3_SAC.
+HR1_SQI joined COLUMNS the same day (cache tag cols_v2) so that bench can check its mirror of the board.
+
 Since lab v1.112 pulsenest_lab.py's HR3LAB window (HR3LabCalc) calls hps, hps_estimate, hr3_sac,
 comb_purity, log_floor, band_cepstrum and pick_quefrency on each live HR3 window, one row at a
 time and with their defaults: a change to any of them, or to a default, changes that window too
@@ -78,8 +82,8 @@ R_CORR_MIN, PI_MAX, SPO2_MIN, SPO2_MAX, CLAMP_MARGIN = 0.8, 20.0, 70.0, 100.0, 1
 GATE_WINDOW_S   = 8.0
 REF_CONF_MIN    = 0.9
 
-COLUMNS = ("OT_LED1", "OT_LED2", "ProbeState", "HR1", "HR2", "HR3", "HR3_SQI")
-CACHE_TAG = "cols_v1"
+COLUMNS = ("OT_LED1", "OT_LED2", "ProbeState", "HR1", "HR1_SQI", "HR2", "HR3", "HR3_SQI")
+CACHE_TAG = "cols_v2"         # v2 (2026-11-16): HR1_SQI added, for the HR1 bench's mirror of the board
 
 
 # ============================================================================= sessions

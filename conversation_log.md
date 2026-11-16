@@ -30255,3 +30255,87 @@ artículo, elegidos o ambos? Al decidir, el análisis va al rationale de la libr
   causal de 30–60 coeficientes a 50 Hz.
 - Alex: el plan del HR1LAB se hará en una **sesión de desarrollo nueva**. Esta («HR2LAB algoritmos
   nuevos») queda parada y deja de ser la de desarrollo.
+
+## Sesión 2026-11-15/16 — HR1LAB algoritmos nuevos: plan de trabajo y F1 (banco de la familia 1)
+
+Sesión de desarrollo nueva (antes «HR1LAB: plan de trabajo (familia 1)», renombrada y separada del
+primer nivel a petición de Alex).
+
+**Plan del HR1LAB (aprobado por Alex el 16-nov).**
+- Prior art al principio: Nonin (media de 4 u 8 latidos, marca del latido que no encaja), Nellcor
+  (ajuste de crestas y valles, prueba de la derivada por latido), Masimo (reconocimiento por curvatura).
+- Verificado Charlton et al. 2022 (Physiol Meas 43 085007): 15 detectores; neonatos = 100 + 100 de
+  MIMIC PERform; F1 neonatal MSPTD 95,9 %, qppg 95,2 %. Corrección a la propuesta: MIMIC PERform y
+  MIMIC-III Waveform son de acceso abierto (ODbL); la credencial solo hace falta para la base clínica
+  (plantillas por edad gestacional).
+- Decisiones de Alex: R1 = ±20 % de la mediana de 5 RR y publicar la mediana; R2 = ±15 % del periodo
+  de HR3_SAC, informado aparte; detectores a 100 Hz; descarga de MIMIC PERform aprobada (fuera de git);
+  Alex tramita la credencial de PhysioNet.
+- **Filtro:** Alex decide el mismo biquad para todos los métodos HR1 (el MA ya no tiene ventajas).
+  Elegido: LowPass4 15 Hz de HR3 → diezmado a 100 Hz → paso alto Butterworth 0,5 Hz. Análisis en el
+  rationale de la librería §5.5.
+- **Sin ECG:** Alex pide planificar sin la onda de ECG (solo fotos de VideoNest y OCR). Latido a latido
+  = MIMIC PERform neonatal, sintéticas y MS100; en nuestro instrumento, la cifra del monitor; piloto
+  de conteo de QRS en la traza de las fotos; OCR de FC en diferido. El Mindray N17 tiene salida
+  analógica de ECG y de sincronía (ficha spec-8101), anotado como ruta futura.
+- Alex: en el próximo viaje subirá cadencia y resolución de las fotos e intentará encuadrar la traza
+  de ECG para proyectar los QRS por procesado de imagen.
+
+**F1 hecho (sin commit).**
+- `pulsenest/hr1_bench.py`: filtro común, front end espejo de la librería, detectores HR1_THR,
+  HR1_TERMA, HR1_SSF, HR1_MSPTD (causales, por bloques, con su retardo de decisión), reglas R0/R1/R2,
+  ancla HR3_SAC, pulsos sintéticos y emparejado de latidos.
+- `test_pulsenest/hr1_bench_test.py` 30/30 (incluye la igualdad con una traducción literal de
+  `_hr1_update` y la invariancia al tamaño de bloque).
+- `experiments/hr1_board_mirror_20261116.py`: el banco reproduce el HR1 de la placa en las 19 sesiones
+  (misma validez 97,9–100 %, HR1 a 1 % 99,1–100 %).
+- `hr_bench`: HR1_SQI en las columnas (caché cols_v2). Rationale de la librería §5.5, nomenclatura,
+  README.
+- Hallazgos con los valores de los artículos: qppg pierde latidos por encima de ~176 bpm (bloqueo de
+  0,34 s); TERMA pierde latidos a 165 bpm y cuenta la dícrota a 30 bpm; el detector actual reinicia
+  el intervalo con un cruce dentro del refractario.
+- Siguiente: F2 (MIMIC PERform neonatal, latido a latido).
+
+**Continuación 16-nov — F2 en curso (MIMIC PERform neonatal).**
+- Alex: «Sí, sigue con F2». Formato elegido por Alex: CSV (160 MB). Descargados test_n y train_n de
+  Zenodo 6950488 (MD5 correctos) a `C:\PRJ\MOW\datasets\mimic_perform\`, fuera de los repos; training
+  reservado para la parte 2.
+- `hr1_bench`: referencia de ECG (dos detectores QRS propios, acuerdo 150 ms, ventanas de 20 s fuera
+  con desacuerdo o PPG plano > 0,2 s), puntuación de Charlton (`beat_scores`), FC de referencia
+  (`ref_hr_at`), `apply_rule(return_last)`, `latency_max_s` por detector. Tests 35/35.
+- `experiments/hr1_mimic_perform_20261116.py`: preguntas fijadas antes de medir. Primera ejecución:
+  latido a latido MSPTD 97,9 % y SSF 97,5 % de F1 mediano (Charlton 95,9 / 95,2), THR 93,9, TERMA 90,3;
+  fallos = latidos perdidos, crecen por encima de 170 bpm.
+- Corregido tras la primera ejecución (defectos de medida, antes de leer las cadenas como resultado):
+  desfase PPG–ECG que salta latidos enteros en ritmo regular (Q3 lo busca en −1..+2 s; control con el
+  desfase sin restringir) y referencia de las cadenas sobre los latidos que usó la regla (MSPTD llega
+  0–11 s tarde). Descartada una alineación por patrón de FC (desfases espurios).
+- Índice de prior art: cita de Zong completa; filas de MSPTD y Charlton 2022; clave H1M.
+- **F2 terminado** (informe `docs/hr1_methods_20261116.md`). Latido a latido: MSPTD 97,9 %, SSF 97,5 %,
+  THR 93,9 %, TERMA 90,3 % de F1 mediano; PPV ≥ 99,8 %: se pierden latidos, no se inventan; más por
+  encima de 170 bpm. Cadenas contra la FC del ECG: R0 honesto con todos los detectores (0,4–1,8 % mal)
+  y el detector fija cuánto publica (SSF 74 %, THR 63 %, TERMA 49 %); TERMA+R0 publica la mitad de la FC
+  con calidad alta (a posteriori); R1 sin umbral publica 87–96 % con 3–12 % mal (mediana vieja mientras
+  falla el detector); R2 intermedio. Mejor cadena en vivo en estos datos: HR1_SSF + R0. Propuestas a
+  Alex: parte 2 eligiendo parámetros en los 100 neonatos de training; nada a la librería hasta F3.
+- Alex: «Sí, sigue con F3». **F3 hecho** (`experiments/hr1_methods_20261116.py`, sección F3 del informe):
+  las tres predicciones de F2 se cumplen en nuestras capturas. Con R0, todos honestos (≤ 0,6 % mal) y
+  el detector fija cuánto se publica: MSPTD 85,8 %, SSF 82,0 %, THR con el filtro común 66,4 %, TERMA
+  43,2 %; el HR1 de la placa 47,2 %. El filtro común solo lleva el detector actual de 47 a 66 % y su
+  arranque de 12 a 2,5 s en SUBJ08 (el DC de la librería arranca de cero); total ponderado 26,1 → 14,5.
+  R1 publica 88–94 % con 0,5–3,3 % mal (hasta 13 % con artefacto). SSF falla a 30 bpm (cuenta la dícrota)
+  y a 240 bpm (ojo cerrado de 0,34 s) en el MS100 y arranca a los 8,5 s. SSF+R0 y HR3_SAC juntos aciertan
+  el 91 % (HR3_SAC solo 83 %). Piloto de fotos: unos 7 px por latido, no usable; protocolo para el viaje
+  en el informe. Propuestas a Alex: portar el filtro común a la librería con THR+R0; parte 2 en training.
+- Alex: «Sí, pórtalo». **Lib v0.122 preparada (sin commit ni etiqueta):** HR1 lee el filtro común
+  (LowPass4 15 Hz propio → 100 Hz → paso alto 0,5 Hz con el nuevo `BiquadFilter::init_hp`), detector
+  y regla sin cambios (cruce interpolado; se conserva la peculiaridad del refractario). API:
+  `setHR1Filter(f_low, f_high)` sustituye a `setHR1DcTauS`/`setHR1LpCutoffHz`; config
+  `hr1_f_low_hz`/`hr1_f_high_hz`. Tests de la librería 11/11 (test_hr1 9–12, biquad paso alto,
+  sample_rate 100 Hz). `experiments/hr1_port_check_20261116.py`: la librería reproduce el banco
+  (misma validez 99,97 % de 25 158 salidas, HR1 ≤ 0,1 bpm 99,77 %). Spec, rationale §5.5,
+  check_version v0.122. Lab v1.115: `HR1TestCalc` sobre `hr1_bench` (test 10/10), HR1TEST con
+  esquinas HP/LP y RR en ms. Firmware V18 compila (-Werror). Pendiente del sí de Alex: commit,
+  etiqueta y release v0.122, pin en PulseNest, OTA de 87:A4 y 82:5C.
+- Incidente: el hook de lanzamiento del lab se disparó tres veces al parchear (comandos con
+  `python … pulsenest_lab.py`); si el lab estaba abierto, se cerró. Desde entonces, sin el nombre literal.
