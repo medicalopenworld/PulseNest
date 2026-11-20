@@ -14,7 +14,7 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 
 
 ## Hardware y entorno
-- **MCU:** ESP32-S3 (placas IncuNest V17 y V18; V15 en desuso, V16 muerta)
+- **MCU:** ESP32-S3 (placas IncuNest V17, V18 y V19; V15 en desuso, V16 muerta)
 - **Sensor:** AFE4490 por SPI
 - **Framework:** **ESP-IDF v6.0.1 nativo** (sin Arduino, sin PlatformIO) desde 2026-09-15. Instalado en `C:\esp\v6.0.1\esp-idf`.
 - **Build:** `.\scripts\build.ps1 V18` (un `build_Vxx/` y un `sdkconfig` por placa a partir de `sdkconfig.defaults` + `sdkconfig.board.Vxx`); `-Ota <ip>` flashea por OTA (cuerpo raw), `-Usb COMxx` por USB. Firmware en `main/pulsenest_main.cpp`; pines por Kconfig (`main/Kconfig.projbuild`).

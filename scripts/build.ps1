@@ -12,7 +12,7 @@
     idf_tools refuses to run from an MSYS-flavoured shell (Git Bash sets that variable).
 
 .PARAMETER Board
-    V15, V16, V17 or V18 — must match the physical board (BOARD_VERSION travels in every $CFG frame
+    V15, V16, V17, V18 or V19 — must match the physical board (BOARD_VERSION travels in every $CFG frame
     and into every capture header).
 .PARAMETER Ota
     IP of a board already running PulseNest (ESP-IDF firmware, fw >= 0.11 IDF): POST the raw image to
@@ -33,7 +33,7 @@
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('V15', 'V16', 'V17', 'V18')]
+    [ValidateSet('V15', 'V16', 'V17', 'V18', 'V19')]
     [string]$Board,
     [string]$Ota,
     [string]$Usb,

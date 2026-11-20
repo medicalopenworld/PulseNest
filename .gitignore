@@ -103,7 +103,7 @@ docs/19061_WHO-UNICEF*.pdf
 
 # ESP-IDF build: generated per-board build dirs and sdkconfig (scripts/build.ps1)
 build/
-build_V1[5-8]/
+build_V1[5-9]/
 sdkconfig
 sdkconfig.old
 managed_components/

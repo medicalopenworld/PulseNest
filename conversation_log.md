@@ -30435,3 +30435,31 @@ primer nivel a petición de Alex).
   a 15 Hz / 0,3 Hz); el commit de lo anterior.
 - Alex: «sí, haz commit». Commit local de todo lo anterior (este commit), sin push.
 - Alex: «sí, haz push». Subidos `9fbc865` y este commit del log.
+
+---
+
+## 2026-11-20 — Preset V19 (fw 0.31) y la primera V19 con PulseNest
+
+**Sesión:** "Primeros pasos con V19". Alex (2026-11-20): una sola sesión de desarrollo para IncuNest,
+PulseNest y la librería, y esa sesión es esta.
+
+- Alex trajo dos V19.A (tanda de validación). La primera (`74:50`) lleva IncuNest; para la segunda
+  (`74:4C`) pidió PulseNest. Revisado antes de flashear: con el preset V18 el AFE no convertiría en
+  una V19 (el raíl de 5 V que alimenta su driver de LED y su LDO 3v3_ANA arranca apagado, EN en
+  IO40 con pull-down) y el PWDN iría a GPIO0, que en la V19 es BOOT (S2/J1); el PDN del AFE está en IO7.
+- **fw 0.31, preset V19:** `CONFIG_PULSENEST_BOARD_V19` (`board=incunest_V19`), PWDN 7, y dos pines
+  nuevos por Kconfig, `PULSENEST_PWR_5V_EN_PIN` (40) y `PULSENEST_GSM_PWR_EN_PIN` (39), -1 en V15–V18.
+  `board_rails_init()` al principio de `app_main`: módem apagado a propósito, 5 V encendido y 10 ms
+  de margen; con `#if` (con -1 la rama muerta daría un desplazamiento negativo bajo -Werror).
+  `sdkconfig.board.V19`, `scripts/build.ps1 V19`, `docs/boards.md` (filas de las dos V19 y tabla de
+  lo que cambia en la V19, con el pinout de J1, que viene sin montar).
+- Compilan V19 y V18 (V18: 905 072 bytes, sin cambio de comportamiento: el código nuevo queda fuera).
+- **La librería v0.124 no compila con ESP-IDF** (`isfinite` sin `std::` en `_disp_publish()`,
+  `incunest_afe4490.cpp:3164`, gnu++26 + `<cmath>`); en IncuNest/Arduino sí. PulseNest sigue fijada
+  en v0.122, así que se compiló con la copia local de la librería en la etiqueta v0.122 y se volvió a
+  `master` al acabar. Antes de subir el pin de PulseNest hará falta una v0.125 con el arreglo.
+- Flasheo de `74:4C` por USB (J14, alimentada solo por el portátil, COM15), a la primera; arrancó la
+  aplicación (no se quedó en modo descarga). Entró en `ACM-ASUS-RT-B50` (192.168.50.122), no en el
+  hotspot, y llega al PC (192.168.50.88): 99,8 datagramas/s, `board=incunest_V19 fw=0.31 lib=0.122
+  elfsha=e016045b3dc42499` (`-dirty`: flasheada antes del commit). El flujo a ritmo normal confirma
+  que el AFE convierte con el raíl de 5 V encendido por el firmware.

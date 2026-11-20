@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.30"   // 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.31"   // 0.31: V19 board preset (PWDN on GPIO7; the 5 V rail, which feeds the AFE, is enabled at boot; the GSM modem rail is held off); 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_METHOD2_REG_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_method2_reg_corr_min
@@ -69,6 +69,8 @@
 #define AFE4490_DRDY_PIN  CONFIG_PULSENEST_AFE_DRDY_PIN
 #define AFE4490_PWDN_PIN  CONFIG_PULSENEST_AFE_PWDN_PIN
 #define BOARD_VERSION     CONFIG_PULSENEST_BOARD_VERSION
+#define PWR_5V_EN_PIN     CONFIG_PULSENEST_PWR_5V_EN_PIN   // -1 up to V18: rail not gated
+#define GSM_PWR_EN_PIN    CONFIG_PULSENEST_GSM_PWR_EN_PIN  // -1 up to V18: rail not gated
 
 // Serial output mutex — prevents interleaving of frames from concurrent tasks.
 // Created in setup() before tasks start; all Serial writes in tasks use these helpers.
@@ -512,6 +514,38 @@ static int udp_listen(uint16_t port) {
     if (bind(s, reinterpret_cast<struct sockaddr*>(&a), sizeof(a)) < 0) { close(s); return -1; }
     fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
     return s;
+}
+
+// Board power rails (V19 onwards). Both bucks come up OFF at reset (pull-downs on their EN pins).
+// The 5 V rail feeds the AFE4490's LED driver and the 3v3_ANA LDO of its receiver: without it the
+// chip never converts and the symptom is a DRDY timeout with every register read as 0 (seen on a
+// V15 that had lost its 5 V, docs/boards.md). It also powers whatever hangs off the board's 5 V
+// (display connector, AIR SENSOR USB VBUS, humidifier switch), as in IncuNest. The modem rail is
+// driven LOW explicitly rather than left to its pull-down: PulseNest never uses the SIM800C, and an
+// idle 2G modem is one less source of interference on the PPG. Called once, early in app_main, so
+// the rail has settled long before start_incunest() pulses PWDN (the buck's soft start is 1.5 ms).
+// On V15-V18 both pins are -1 and this does nothing.
+static void board_rails_init(void) {
+    // #if, not if(): with -1 the dead branch would still compile a negative shift (-Werror).
+#if GSM_PWR_EN_PIN >= 0
+    {
+        gpio_config_t io = {};
+        io.pin_bit_mask = 1ULL << GSM_PWR_EN_PIN;
+        io.mode         = GPIO_MODE_OUTPUT;
+        ESP_ERROR_CHECK(gpio_config(&io));
+        ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)GSM_PWR_EN_PIN, 0));
+    }
+#endif
+#if PWR_5V_EN_PIN >= 0
+    {
+        gpio_config_t io = {};
+        io.pin_bit_mask = 1ULL << PWR_5V_EN_PIN;
+        io.mode         = GPIO_MODE_OUTPUT;
+        ESP_ERROR_CHECK(gpio_config(&io));
+        ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)PWR_5V_EN_PIN, 1));
+        vTaskDelay(pdMS_TO_TICKS(10));  // soft start 1.5 ms + LDO, with margin
+    }
+#endif
 }
 
 // SPI bus for the AFE4490: SPI2, no DMA (4-byte frames travel in the transaction's own fields).
@@ -1604,6 +1638,7 @@ extern "C" void app_main(void) {
     g_udp_diag_queue  = xQueueCreate(UDP_DIAG_QUEUE_DEPTH, UDP_QUEUE_FRAME_SIZE);
     // UART0 console with a 1024 B TX ring (see console_init) and NVS for the WiFi driver.
     console_init();
+    board_rails_init();   // V19: the AFE's supplies are firmware-gated (no-op up to V18)
     nvs_init();
     board_serial_read();
     // UART0 has nothing to enumerate; this delay only gives an already-attached monitor time to
