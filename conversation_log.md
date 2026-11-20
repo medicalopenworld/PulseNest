@@ -30486,3 +30486,6 @@ PulseNest y la librería, y esa sesión es esta.
   Compilan V19 (905 968 B) y V18 (905 664 B). Pendiente, como avisa la release de v0.123: las réplicas
   offline de HR1 del lab (`HR1TestCalc`, `pulsenest/hr1_bench.py` `RuleR0`) no tienen la caducidad ni el
   NaN a SQI 0, y difieren de la placa en esas salidas hasta que la sigan.
+- Commit `4aa7d8a` (fw 0.32). Compilado limpio y OTA a las tres placas de PulseNest, verificadas por
+  MAC con `scripts/build.ps1`: V18 `87:A4` y `82:5C` `elfsha=c67de65bf46767f7`, V19 `74:4C`
+  `elfsha=d7538577a4479a1c`; todas `fw=0.32 lib=0.124b build=4aa7d8a libsha=88c4156`.
