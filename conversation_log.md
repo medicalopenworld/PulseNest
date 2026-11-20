@@ -30463,3 +30463,8 @@ PulseNest y la librería, y esa sesión es esta.
   hotspot, y llega al PC (192.168.50.88): 99,8 datagramas/s, `board=incunest_V19 fw=0.31 lib=0.122
   elfsha=e016045b3dc42499` (`-dirty`: flasheada antes del commit). El flujo a ritmo normal confirma
   que el AFE convierte con el raíl de 5 V encendido por el firmware.
+- Alex: «Sí, commit». Commit `c6e99d5` (fw 0.31, preset V19). Compilado limpio con la librería en
+  v0.122 y OTA a `74:4C`: `build=c6e99d5`, `elfsha=33a2a2e6e54b46e6`. Volvió por el hotspot
+  (192.168.137.135) en vez de por la red del laboratorio, así que `build.ps1` no pudo verificarlo por
+  IP; verificado por MAC con `tools/udp_fw_versions.py` (99,9 datagramas/s). Librería de vuelta en
+  `master` (v0.124).
