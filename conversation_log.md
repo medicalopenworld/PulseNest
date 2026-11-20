@@ -30489,3 +30489,12 @@ PulseNest y la librería, y esa sesión es esta.
 - Commit `4aa7d8a` (fw 0.32). Compilado limpio y OTA a las tres placas de PulseNest, verificadas por
   MAC con `scripts/build.ps1`: V18 `87:A4` y `82:5C` `elfsha=c67de65bf46767f7`, V19 `74:4C`
   `elfsha=d7538577a4479a1c`; todas `fw=0.32 lib=0.124b build=4aa7d8a libsha=88c4156`.
+- Alex quiere probar, antes de pasarle a Pablo el documento de los picos, si la V19 ha resuelto las
+  ráfagas del 2G (IncuNest known issue 28; cree que Pablo añadió dos condensadores). Todas las placas
+  llevan SIM. Con fw 0.32 la V19 tiene el módem siempre apagado, así que no se podría probar. **fw
+  0.33:** `$SET gsm_power=on|off` en la V19 (interruptor de banco, no se guarda: cada arranque empieza
+  con el módem apagado; `off` corta VBAT en el acto) y `$CFG gsm_pwr=on|off|none`, para que la
+  cabecera de cada captura diga en qué estado estaba el módem. Plan: A/B en la misma sesión, con la
+  V19 alimentada por su fuente (el módem pide picos de ~2 A) y el simulador; captura con el módem
+  apagado y otra encendiéndolo, al menos hasta 30 s después de encenderlo (en la V18 la ráfaga llegaba
+  a los ~22 s del encendido del módem) y mejor unos 5 min (rejilla de 66 s en IncuNest).

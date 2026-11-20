@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.32"   // 0.32: lib v0.124b; SpO2/HR1/HR2/HR3 in $M2/$M3/$M4 are -1 when the value is not finite, no longer when its SQI is 0 (lib v0.123 data contract: a valid SpO2 at PI <= 0.5 % carries spo2_sqi 0, and hr1 expires to NaN after 2 s without a beat); 0.31: V19 board preset (PWDN on GPIO7; the 5 V rail, which feeds the AFE, is enabled at boot; the GSM modem rail is held off); 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.33"   // 0.33: $SET gsm_power=on|off on V19 (bench switch for the 2G-burst test, not persisted) and $CFG gsm_pwr=on|off|none; 0.32: lib v0.124b; SpO2/HR1/HR2/HR3 in $M2/$M3/$M4 are -1 when the value is not finite, no longer when its SQI is 0 (lib v0.123 data contract: a valid SpO2 at PI <= 0.5 % carries spo2_sqi 0, and hr1 expires to NaN after 2 s without a beat); 0.31: V19 board preset (PWDN on GPIO7; the 5 V rail, which feeds the AFE, is enabled at boot; the GSM modem rail is held off); 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_METHOD2_REG_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_method2_reg_corr_min
@@ -525,6 +525,19 @@ static int udp_listen(uint16_t port) {
 // idle 2G modem is one less source of interference on the PPG. Called once, early in app_main, so
 // the rail has settled long before start_incunest() pulses PWDN (the buck's soft start is 1.5 ms).
 // On V15-V18 both pins are -1 and this does nothing.
+// GSM modem supply state (V19): what GSM_PWR_EN is driving. Written by board_rails_init() and by
+// $SET gsm_power (Cmd_Task); read by send_cfg_frame() from several tasks. A plain bool written in
+// one place at a time and read whole: no mutex needed.
+static volatile bool g_gsm_power_on = false;
+
+static const char* gsm_power_str(void) {
+#if GSM_PWR_EN_PIN >= 0
+    return g_gsm_power_on ? "on" : "off";
+#else
+    return "none";   // V15-V18: the modem rail is not gated; this firmware cannot see or switch it
+#endif
+}
+
 static void board_rails_init(void) {
     // #if, not if(): with -1 the dead branch would still compile a negative shift (-Werror).
 #if GSM_PWR_EN_PIN >= 0
@@ -534,6 +547,7 @@ static void board_rails_init(void) {
         io.mode         = GPIO_MODE_OUTPUT;
         ESP_ERROR_CHECK(gpio_config(&io));
         ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)GSM_PWR_EN_PIN, 0));
+        g_gsm_power_on = false;
     }
 #endif
 #if PWR_5V_EN_PIN >= 0
@@ -887,7 +901,11 @@ static void send_cfg_frame(const char* cause) {
         // CSV become uninterpretable as soon as the algorithms change — see
         // captures/CAPTURE_SET_SPEC.md §2.3.
         ",fw=%s,lib=%s,build=%s,libsha=%s,elfsha=%s,idfver=%s"
-        ",cause=%s,ts_us=%llu,hgac_rf_changes=%lu",
+        ",cause=%s,ts_us=%llu,hgac_rf_changes=%lu"
+        // GSM modem supply (fw 0.33): on / off on V19, none where the rail is not gated. In
+        // every capture header, because the modem's 2G bursts reach the AFE (known issue 28 of
+        // IncuNest, V18) and a capture is only comparable with others in the same modem state.
+        ",gsm_pwr=%s",
         cfg.afe_sample_rate_hz, cfg.afe_adc_averages,
         cfg.afe_led1_current_mA, cfg.afe_led2_current_mA, (unsigned)cfg.afe_led_range_mA,
         cfg.afe_sep_tia_en ? 1 : 0,
@@ -920,7 +938,8 @@ static void send_cfg_frame(const char* cause) {
         PULSENEST_FW_VERSION, INCUNEST_AFE4490_VERSION,
         PULSENEST_GIT_HASH, INCUNEST_GIT_HASH,
         elf_sha8, app_desc->idf_ver,
-        cause, (unsigned long long)ts_us, (unsigned long)hgac_rf_changes);
+        cause, (unsigned long long)ts_us, (unsigned long)hgac_rf_changes,
+        gsm_power_str());
     // Fail loudly rather than emit a truncated frame the host would accept as valid.
     if (!frame_finish(buf, sizeof(buf), n, "CFG")) return;
     Serial_print_locked(buf);
@@ -1235,6 +1254,28 @@ static void apply_set_cmd(const char* key, const char* val) {
         }
         return;
     // ── HGAC parameters (Phase 1: RF-only descent) ───────────────────────────
+    } else if (strcmp(key, "gsm_power") == 0) {
+        // Bench switch (fw 0.33): power the SIM800C on V19 to test whether its 2G bursts still
+        // reach the AFE (IncuNest known issue 28, measured on V18). With PWRKEY tied to GND the
+        // modem boots by itself when VBAT appears and, with a SIM, registers ~20 s later; "off"
+        // cuts VBAT at once (no AT+CPOWD: PulseNest never talks to the modem). Not persisted:
+        // every boot starts with the modem off. Needs the board's own supply, not the USB alone
+        // (the modem draws ~2 A peaks).
+#if GSM_PWR_EN_PIN >= 0
+        const bool on  = (strcmp(val, "on") == 0  || strcmp(val, "1") == 0);
+        const bool off = (strcmp(val, "off") == 0 || strcmp(val, "0") == 0);
+        if (on || off) {
+            ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)GSM_PWR_EN_PIN, on ? 1 : 0));
+            g_gsm_power_on = on;
+            Serial_printf("# SET gsm_power=%s\n", gsm_power_str());
+            send_cfg_frame("set");   // the capture header records the modem state
+        } else {
+            Serial_printf("$ERR,gsm_power,invalid (on or off)\r\n");
+        }
+#else
+        Serial_printf("$ERR,gsm_power,not available on %s (modem rail not gated)\r\n", BOARD_VERSION);
+#endif
+        return;
     } else if (strcmp(key, "hgac_enable") == 0) {
         int v = atoi(val);
         if (v == 0 || v == 1) {
