@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.31"   // 0.31: V19 board preset (PWDN on GPIO7; the 5 V rail, which feeds the AFE, is enabled at boot; the GSM modem rail is held off); 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.32"   // 0.32: lib v0.124b; SpO2/HR1/HR2/HR3 in $M2/$M3/$M4 are -1 when the value is not finite, no longer when its SQI is 0 (lib v0.123 data contract: a valid SpO2 at PI <= 0.5 % carries spo2_sqi 0, and hr1 expires to NaN after 2 s without a beat); 0.31: V19 board preset (PWDN on GPIO7; the 5 V rail, which feeds the AFE, is enabled at boot; the GSM modem rail is held off); 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_METHOD2_REG_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_method2_reg_corr_min
@@ -650,9 +650,9 @@ void Incunest_Task(void *pvParameters) {
                         (unsigned long)incunest_sample_count,
                         (unsigned long long)esp_timer_get_time(),   // %llu: long is 32-bit here, %lu wrapped every 71,6 min (2026-09-20)
                         data.ppg_disp,
-                        data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
+                        std::isfinite(data.spo2) ? data.spo2 : -1.0f,
                         data.spo2_sqi,
-                        data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
+                        std::isfinite(data.hr3) ? data.hr3 : -1.0f,
                         data.hr3_sqi,
                         (unsigned)data.rsqi,
                         (unsigned long)data.diag_code,
@@ -674,15 +674,15 @@ void Incunest_Task(void *pvParameters) {
                         (long)data.aled2,      (long)data.aled1,
                         (long)data.led2_sub,   (long)data.led1_sub,
                         data.ppg_disp,
-                        data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
+                        std::isfinite(data.spo2) ? data.spo2 : -1.0f,
                         data.spo2_sqi,
                         data.spo2_r,
                         data.pi,
-                        data.hr1_sqi > 0.0f ? data.hr1 : -1.0f,
+                        std::isfinite(data.hr1) ? data.hr1 : -1.0f,
                         data.hr1_sqi,
-                        data.hr2_sqi > 0.0f ? data.hr2 : -1.0f,
+                        std::isfinite(data.hr2) ? data.hr2 : -1.0f,
                         data.hr2_sqi,
-                        data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
+                        std::isfinite(data.hr3) ? data.hr3 : -1.0f,
                         data.hr3_sqi,
                         (unsigned)data.rsqi,
                         (unsigned long)data.diag_code,
@@ -718,15 +718,15 @@ void Incunest_Task(void *pvParameters) {
                         (long)data.aled2,      (long)data.aled1,
                         (long)data.led2_sub,   (long)data.led1_sub,
                         data.ppg_disp,
-                        data.spo2_sqi > 0.0f ? data.spo2 : -1.0f,
+                        std::isfinite(data.spo2) ? data.spo2 : -1.0f,
                         data.spo2_sqi,
                         data.spo2_r,
                         data.pi,
-                        data.hr1_sqi > 0.0f ? data.hr1 : -1.0f,
+                        std::isfinite(data.hr1) ? data.hr1 : -1.0f,
                         data.hr1_sqi,
-                        data.hr2_sqi > 0.0f ? data.hr2 : -1.0f,
+                        std::isfinite(data.hr2) ? data.hr2 : -1.0f,
                         data.hr2_sqi,
-                        data.hr3_sqi > 0.0f ? data.hr3 : -1.0f,
+                        std::isfinite(data.hr3) ? data.hr3 : -1.0f,
                         data.hr3_sqi,
                         (unsigned)data.rsqi,
                         (unsigned long)data.diag_code,

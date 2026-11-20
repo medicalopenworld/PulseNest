@@ -30468,3 +30468,21 @@ PulseNest y la librería, y esa sesión es esta.
   (192.168.137.135) en vez de por la red del laboratorio, así que `build.ps1` no pudo verificarlo por
   IP; verificado por MAC con `tools/udp_fw_versions.py` (99,9 datagramas/s). Librería de vuelta en
   `master` (v0.124).
+- Alex: «Sí, prepárala» (el arreglo de la librería). Corregido el número: según la regla de
+  publicación, un arreglo sin cambio de comportamiento es letra, **v0.124b** (`library.json`
+  0.124.1), no v0.125. `std::isfinite` en `_disp_publish()` y `std::isnan` en las cinco llamadas sin
+  calificar; spec título y §14. Tests 13/13 (con `--clean`: la carpeta de los tests estaba configurada
+  antes de la v0.123 y el GLOB de CMake no veía `test_data_contract` ni `test_disp`); PulseNest V19
+  compila contra ella con ESP-IDF v6.0.1. Alex: «Sí, publícala». Commit `88c4156`, etiqueta y push,
+  release https://github.com/medicalopenworld/incunest_afe4490/releases/tag/v0.124b; CI verde en
+  `master` y en la etiqueta, zip y SHA-256 subidos. PulseNest sigue fijada en v0.122: subir el pin es
+  un paso aparte (le trae los valores de pantalla de v0.123/v0.124).
+- Alex: «Sí, súbelo» (pin de PulseNest a v0.124b). La release de v0.123 avisa de que el SQI no sirve
+  para decidir si un valor es válido (una SpO2 válida a PI ≤ 0,5 % lleva `spo2_sqi` 0; `hr1` caduca a
+  NaN tras 2 s sin latido aunque su SQI siga > 0), y PulseNest escribía `-1` en $M2/$M3/$M4 cuando el
+  SQI era 0. **fw 0.32:** SpO2, HR1, HR2 y HR3 salen `-1` cuando el valor no es finito
+  (`std::isfinite`), no cuando su SQI es 0; diez sitios. El lab ya trataba como «sin valor» todo lo que
+  no es ≥ 0, así que entiende igual `-1` y `nan`. Pin `lib/incunest_afe4490.version` v0.122 → v0.124b.
+  Compilan V19 (905 968 B) y V18 (905 664 B). Pendiente, como avisa la release de v0.123: las réplicas
+  offline de HR1 del lab (`HR1TestCalc`, `pulsenest/hr1_bench.py` `RuleR0`) no tienen la caducidad ni el
+  NaN a SQI 0, y difieren de la placa en esas salidas hasta que la sigan.
