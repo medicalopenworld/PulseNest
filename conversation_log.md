@@ -30498,3 +30498,15 @@ PulseNest y la librería, y esa sesión es esta.
   V19 alimentada por su fuente (el módem pide picos de ~2 A) y el simulador; captura con el módem
   apagado y otra encendiéndolo, al menos hasta 30 s después de encenderlo (en la V18 la ráfaga llegaba
   a los ~22 s del encendido del módem) y mejor unos 5 min (rejilla de 66 s en IncuNest).
+- **Prueba 2G en la V19 (`captures/TEST_V19_20261120_020118.csv`, 419 s, simulador 85 lpm / SpO2 ~100,
+  V19 por su fuente, SIM puesta, HGAC apagado por la Lab Capture, fw 0.33 / lib 0.124b):** módem
+  apagado los primeros 85,9 s y `$SET gsm_power=on` a las 02:02:44 (confirmado después: `$CFG
+  gsm_pwr=on`). **La ráfaga sigue:** antes de encender el módem, cero sucesos; a los **21,3 s** del
+  encendido (como en la V18, 21,8-22,3 s), 58 caídas >1 % en 1,24 s, **todas hacia abajo**, LED1 hasta
+  **−19,7 %**, LED2 hasta −13 %, también en ALED1/ALED2. Después solo una cola débil (>0,4 % hasta ~170 s)
+  y limpio hasta el final: sin rejilla de 66 s visible. El periodo de la trama GSM no sale (Rayleigh R
+  0,14 a 4,615 ms; con 58 sucesos no es concluyente). Algoritmos: SpO2 retenida 6,6 s (`reg_corr`),
+  vuelve a 100; HR1/HR2/HR3 sin efecto (84,8-85,3); PI sin efecto (4,45-4,70). Frente a la V18 con
+  PulseNest (ráfaga de 1,8-5 s, caídas del 15-32 %, SpO2 retenida 9,4 s, HR1 perdida 3,9 s): más corta y
+  con menos efecto, pero **no eliminada**. Una sola captura; la V18 se medía tras encender toda la placa
+  y aquí solo el módem.
