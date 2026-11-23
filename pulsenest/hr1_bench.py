@@ -50,7 +50,8 @@ Detectors (times in samples of their input rate; each beat = (t_beat, t_decided,
 
 Publication rules (times in seconds)
   RuleR0         today's: mean of the last 5 RR, hr1_sqi = clamp(1 - CV / 0.15), published when 5 RR,
-                 30-260 bpm and sqi > 0. No timeout (as the library).
+                 30-260 bpm and sqi > 0. Expires (as the library since v0.123): no value once the last
+                 beat is more than 60 / HR_MIN (2 s) old; the stored RR are kept.
   RuleR1         own, after Nonin's "flag the beat that does not match the current pulse interval": an RR
                  more than 20 % away from the median of the last 5 accepted is rejected; 3 rejected in a row
                  that agree among themselves (within 20 % of their median) restart the buffer (a real change
@@ -652,13 +653,20 @@ class RuleR0:
 
     def reset(self):
         self.rr = []
+        self.t_beat = -math.inf
 
     def on_beat(self, rr_s, t_s, anchor_s=None):
+        self.t_beat = t_s
         if math.isfinite(rr_s):
             self.rr = (self.rr + [rr_s])[-self.n:]
 
     def state(self, t_s):
         if len(self.rr) < self.n:
+            return math.nan, 0.0, False
+        # Expiry, as the library since v0.123 (spec 2.1.1, rule 4): the interval in progress is already
+        # longer than the longest one of the range. The library counts it from the last crossing,
+        # refractory ones included; here from the last beat the detector reported.
+        if t_s - self.t_beat > 60.0 / hb.HR_MIN:
             return math.nan, 0.0, False
         mean = sum(self.rr) / self.n
         hr = 60.0 / mean
@@ -666,7 +674,8 @@ class RuleR0:
             return math.nan, 0.0, False
         cv = math.sqrt(sum((r - mean) ** 2 for r in self.rr) / self.n) / mean
         sqi = min(1.0, max(0.0, 1.0 - cv / self.cv_max))
-        return hr, sqi, sqi > 0.0
+        # v0.123: no value when the CV gate fails (hr1 = NaN at hr1_sqi = 0), as the library.
+        return (hr if sqi > 0.0 else math.nan), sqi, sqi > 0.0
 
 
 class RuleR1:

@@ -30510,3 +30510,15 @@ PulseNest y la librería, y esa sesión es esta.
   PulseNest (ráfaga de 1,8-5 s, caídas del 15-32 %, SpO2 retenida 9,4 s, HR1 perdida 3,9 s): más corta y
   con menos efecto, pero **no eliminada**. Una sola captura; la V18 se medía tras encender toda la placa
   y aquí solo el módem.
+
+### 2026-11-23 — Réplicas offline de HR1 al contrato de la librería v0.123 (sesión "Primeros pasos con V19")
+
+- `pulsenest_lab.py` `HR1TestCalc` (ventana HR1TEST, variante SPEC) y `pulsenest/hr1_bench.py` `RuleR0`
+  siguen ahora las dos reglas de HR1 que la v0.123 añadió: **HR1 = NaN cuando hr1_sqi = 0** y **caducidad**
+  (NaN y SQI 0 cuando el intervalo en curso supera 60 / hr_min = 2 s; los RR guardados se conservan y el
+  siguiente latido vuelve a publicar). Diferencia que queda en `RuleR0`: cuenta la caducidad desde el
+  último latido que da el detector; la librería, desde el último cruce (también los del refractario).
+- Comprobado con una señal sintética (120 lpm, 4 s plana, vuelve) y con casos directos de `RuleR0`.
+- Efecto en los bancos: los resultados de R0 publicados antes de hoy (p. ej. `docs/hr1_methods_20261116.md`)
+  se hicieron sin caducidad; al repetirlos, R0 puede dar algo menos de disponibilidad en tramos sin latidos.
+  `experiments/hr1_port_check_20261116.py` compara con la v0.122 y queda como registro histórico.

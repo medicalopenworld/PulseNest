@@ -1022,7 +1022,7 @@ class HR1Variant:
 class HR1TestCalc(HR1Variant):
     """HR1 algorithm mirror for the HR1TEST window — the SPEC variant.
 
-    Mirrors INCUNEST_AFE4490::_hr1_update() of lib v0.122 (incunest_afe4490_spec.md §5.2): the
+    Mirrors INCUNEST_AFE4490::_hr1_update() of lib v0.123 (incunest_afe4490_spec.md §5.2): the
     common front end of the HR1 methods, today's detector and rule. Purpose: post-implementation
     verification — compare against the firmware's HR1 to detect bugs. Frozen by definition: it must
     track the library, never explore. New ideas go in a sibling HR1Variant subclass, never here.
@@ -1037,6 +1037,10 @@ class HR1TestCalc(HR1Variant):
       refractory 0.185 s (a crossing inside it restarts the interval, as the library) →
       RR buffer (last 5, seconds) → HR1 = 60 / mean(RR) → SQI = clamp(1 − CV/0.15, 0, 1)
 
+    Data contract of v0.123 (spec §2.1.1): HR1 is NaN when its SQI is 0, and it expires (NaN, SQI 0)
+    once the interval in progress since the last crossing exceeds 60 / hr_min_bpm (2 s); the stored
+    RR are kept and the next beat publishes again.
+
     Unlike the other variants it does not use the base's per-sample detection path (the base counts
     RR in whole samples at the AFE rate and blanks with a counter); it keeps the base's outputs,
     diagnostic buffers and availability, so HR1TEST and HR1LAB read it as before. The diagnostic
@@ -1047,9 +1051,9 @@ class HR1TestCalc(HR1Variant):
     """
 
     NAME        = "SPEC"
-    DESCRIPTION = "Library HR1 as specified in incunest_afe4490_spec.md §5.2 (lib v0.122)"
+    DESCRIPTION = "Library HR1 as specified in incunest_afe4490_spec.md §5.2 (lib v0.123)"
 
-    # Library defaults — must match incunest_afe4490_spec.md §5.2 / §10.4 (lib v0.122)
+    # Library defaults — must match incunest_afe4490_spec.md §5.2 / §10.4 (lib v0.123; front end unchanged since v0.122)
     FW_F_LOW_HZ          = 0.5     # hr1_f_low_hz: high-pass corner at the decimated rate
     FW_F_HIGH_HZ         = 15.0    # hr1_f_high_hz: LowPass4 corner at the AFE rate
     FW_DECIM_TARGET_HZ   = 100.0   # hr1_decim_target_rate_hz
@@ -1179,6 +1183,11 @@ class HR1TestCalc(HR1Variant):
                 self._above = False
             self._prev = v
             self._hold = (-lp, v, self._run_max, thr)
+            # Expiry (lib v0.123): checked at every decimated sample, as _hr1_update().
+            if (not beat and self._cross is not None and len(self._rr_s) >= self.FW_RR_BUF_LEN
+                    and (n - self._cross[0]) - self._cross[1] > 60.0 / self.FW_HR_MIN_BPM * self._dec_fs):
+                self.hr_bpm, self.hr_sqi = float('nan'), 0.0
+                self._hr_bpm, self._hr_sqi = self.hr_bpm, self.hr_sqi
         if beat:
             self._peak_marker_ctr = self.FW_PEAK_MARKER_N
         in_refr = self._refr_left > 0
@@ -1212,8 +1221,8 @@ class HR1TestCalc(HR1Variant):
             self.hr_bpm, self.hr_sqi = float('nan'), 0.0
             return
         cv = math.sqrt(sum((r - mean) ** 2 for r in self._rr_s) / len(self._rr_s)) / mean
-        self.hr_bpm = hr
         self.hr_sqi = min(1.0, max(0.0, 1.0 - cv / self.FW_SQI_CV_MAX))
+        self.hr_bpm = hr if self.hr_sqi > 0.0 else float('nan')     # lib v0.123: NaN at SQI 0
         self._hr_bpm, self._hr_sqi = self.hr_bpm, self.hr_sqi
 
 
