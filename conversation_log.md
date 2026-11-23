@@ -30540,3 +30540,18 @@ PulseNest y la librería, y esa sesión es esta.
   fuentes descargadas son documentos de terceros y no van al repositorio. Términos nuevos en
   `docs/nomenclature.md` (MIMIC PERform, [transfer], MorphSSF/Pulses, SWIPE'/harmonic NLS, oracle union,
   freedom to operate) y una entrada en `docs/algorithm_prior_art_index.md` que apunta al informe.
+
+### 2026-11-23 — Propuesta: detector de artefactos separado y PI-METHOD-3 (`docs/pi_artifact_detector_proposal_20261123.md`)
+
+- Traspasado a la sesión de desarrollo por la sesión «Señal ppg_disp en AFE4490Data» a petición de Alex.
+  Primero el prior art (lo ya reunido en `pi_motion_prior_art_20261111.md`, el índice y el estudio de
+  frecuencia cardíaca, más tres búsquedas web sin verificar), luego la propuesta. **Sin medir.**
+- Propuesta A: juzgar cada subventana de 1 s del PI por su correlación con ella misma un periodo de pulso
+  antes (`r_T`, periodo de HR3, si no de HR2): la correlación entre pulsos consecutivos de Karlen, la mejor
+  de las comparadas por Pereira 2020, sin segmentar latidos. `artefact_frac` ve la ventana llena de
+  artefacto, que Q no ve. Q se queda como indicador de energía, también contra una línea base larga (estilo
+  Nellcor).
+- Propuesta B: PI-METHOD-3 = mediana de las subventanas aceptadas; NaN si quedan menos de ~3 s limpios.
+- Patentes a evitar: mín(línea base, actual) de Masimo (vigentes hasta 2027-2028) y cambiar umbrales tras N
+  rechazos (Covidien US 7,922,665, hasta 2030-02-10).
+- Cinco decisiones para Alex en el apartado 6. Nada implementado ni etiquetado.
