@@ -30522,3 +30522,21 @@ PulseNest y la librería, y esa sesión es esta.
 - Efecto en los bancos: los resultados de R0 publicados antes de hoy (p. ej. `docs/hr1_methods_20261116.md`)
   se hicieron sin caducidad; al repetirlos, R0 puede dar algo menos de disponibilidad en tramos sin latidos.
   `experiments/hr1_port_check_20261116.py` compara con la v0.122 y queda como registro histórico.
+
+### 2026-11-23 — Estudio bibliográfico de métodos de frecuencia cardíaca por PPG (`docs/pulse_rate_methods_survey_20261123.md`)
+
+- Estudio exhaustivo, del 22 al 23 de noviembre, de métodos de frecuencia cardíaca por PPG con sonda estándar
+  rojo+IR, sin acelerómetro ni wearables (sesión de análisis bifurcada de «Bibliografía análisis señales PPG»;
+  Alex decidió guardarlo en `docs/`). 47 búsquedas, 316 métodos catalogados, 88 verificados contra la fuente
+  primaria. Solo el capítulo de HR2 pasó revisión adversarial.
+- **Veredicto:** nada publicado supera a HR1/HR2/HR3, pero no se puede afirmar «lo mejor conocido». HR1 está en
+  la frontera (SSF parte 3 al nivel de MSPTD y qppg). HR2 y HR3 no tienen comparativas publicadas en PPG. Falta
+  la capa entre ventanas y familias.
+- **Acciones 1-3:** puntuar HR2/HR3 en los neonatos de MIMIC PERform; tramos de 200-240 lpm del MIMIC-III WDB
+  neonatal; prematuros del hospital como conjunto reservado.
+- **Riesgo:** la patente Covidien US 9,314,209 (vigente hasta 2034-05-24) podría leerse sobre el selector de
+  `HR2_ACF`; necesita opinión legal.
+- Las rutas al material de trabajo se han sustituido por «kept locally outside the repository»: las ~3 500
+  fuentes descargadas son documentos de terceros y no van al repositorio. Términos nuevos en
+  `docs/nomenclature.md` (MIMIC PERform, [transfer], MorphSSF/Pulses, SWIPE'/harmonic NLS, oracle union,
+  freedom to operate) y una entrada en `docs/algorithm_prior_art_index.md` que apunta al informe.

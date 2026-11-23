@@ -13,6 +13,12 @@ points to the report and section that holds it. The exceptions are §2.4 and §2
 2026-11-13 from a short web search that asked whether the literature has families beyond ours, and
 the rows keyed H2, from a search on family 2 of 2026-11-12.
 
+**Exhaustive survey of 2026-11-23 (pulse rate only).** `docs/pulse_rate_methods_survey_20261123.md` is a
+literature survey of the pulse-rate methods for standard red/IR probes, done after this index: 316 methods
+catalogued, 88 checked against their primary source, one chapter per family (HR1, HR2, HR3), one on the layer
+across windows and families and one on the inputs. Where it and the rows of §2 disagree on the pulse rate, its
+verified records are the better source; this index was not re-edited to match it.
+
 **Entry criterion.** What the library uses, what we measured or discarded, and what Nellcor, Masimo,
 Philips and the other makers publish. Not exhaustive.
 
