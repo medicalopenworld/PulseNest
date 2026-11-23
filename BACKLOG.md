@@ -109,6 +109,13 @@ has not been triaged yet.
   de pantalla? ¿Cuánto vale el PI real en nuestros transitorios (sonda al aire: 118 % el 21-oct)? ¿Qué umbral
   separa transitorio de perfusión con nuestro estimador 2√2·RMS?
 
+- [ ] (2026-11-23, Alex) HR1_TERMA: analizar si hace falta el offset alfa (alpha = beta x media de la señal al
+  cuadrado, beta = 0,02; `TermaDetector` en `pulsenest/hr1_bench.py`). Según lo que Alex ha leído, evita detectar
+  ruido como latidos en tramos planos sin pulso (p. ej. sonda retirada). Comparar con y sin alfa en tramos sin pulso
+  (sonda fuera, al aire) y en pulsos de baja amplitud.
+	(Ojo al analizarlo: la adaptación causal usa la media ACUMULADA desde el arranque (`cz / cnt`), no la del tramo
+	como el artículo offline; tras mucho rato sin pulso esa media va bajando y alfa con ella.)
+
 ## Parked
 
 Triaged ideas, deliberately not scheduled: do not implement until Alex asks. (Moved here from
