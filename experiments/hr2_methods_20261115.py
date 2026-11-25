@@ -91,6 +91,14 @@ HR_BANDS = ((0, 100), (100, 140), (140, 170), (170, 300))
 SCALES = {"honesty": (0.0, 20.0), "availability": (100.0, 0.0), "dynamics": (0.0, 20.0),
           "range": (100.0, 0.0), "precision": (0.0, 5.0), "cost": (0.0, 1.0)}
 
+def ecg_subjects(subjects):
+    """The subjects of this run scored against the ward monitor's ECG: a monitor file exists and
+    the subject is not the simulator. The tuple above is the 2026-11 default; a run on other
+    subjects (--subjects) pools what it was given."""
+    return tuple(s for s in subjects if s not in MS100_SUBJECTS
+                 and os.path.exists(os.path.join(MONITOR_DIR, f"{s}_snapshots_eye.csv")))
+
+
 
 def pct(mask, of=None):
     n = len(mask) if of is None else int(of.sum())
@@ -299,6 +307,8 @@ def main(argv=None):
     ap.add_argument("--subjects", nargs="*", default=list(SUBJECTS))
     ap.add_argument("--no-figs", action="store_true")
     args = ap.parse_args(argv)
+    ecg = ecg_subjects(args.subjects)
+    ecg_names = ", ".join(ecg)
     os.makedirs(args.out, exist_ok=True)
     print(f"hr2_methods_20261115 run {datetime.datetime.now().isoformat(timespec='seconds')}")
 
@@ -390,7 +400,7 @@ def main(argv=None):
             bars = np.round(np.arange(0.0, 1.0001, 0.05), 2)
             for b, av, w in curve_points(hr, q, z["stable"], z["ref"], bars):
                 curve_rows.append({"subject": subject, "estimator": k, "bar": b, "available_pct": av, "wrong_of_published_pct": w})
-            if subject in ECG_SUBJECTS:
+            if subject in ecg:
                 for key, arr in (("sel", z["stable"]), ("ref", z["ref"]), ("hr", hr), ("q", q)):
                     pooled[k][key].append(arr)
         # Q6: right or wrong together with HR3_SAC; failure rate by stratum and by rate band
@@ -419,7 +429,7 @@ def main(argv=None):
             if k in LAG:
                 continue
             arrs = {key: [] for key in ("sel", "ref", "hr", "q")}
-            for subject in ECG_SUBJECTS:
+            for subject in ecg:
                 if subject in Z:
                     arrs["sel"].append(Z[subject]["stable"]); arrs["ref"].append(Z[subject]["ref"])
                     arrs["hr"].append(Z[subject]["est"][k][0]); arrs["q"].append(Z[subject]["est"][k][1])
@@ -437,7 +447,7 @@ def main(argv=None):
 
     ph_rows = []
     for name, _, _ in POSTHOC:
-        zs = [Z[s] for s in ECG_SUBJECTS if s in Z]
+        zs = [Z[s] for s in ecg if s in Z]
         if not zs:
             continue
         sel = np.concatenate([z["stable"] for z in zs]); ref = np.concatenate([z["ref"] for z in zs])
@@ -446,7 +456,7 @@ def main(argv=None):
         pts = curve_points(hr, q, sel, ref, np.round(np.arange(0.0, 1.0001, 0.01), 2))
         ph_rows.append({"variant (post hoc)": name} | {k: r[k] for k in ("published_pct", "ok_pct", "wrong_of_published_pct",
                        "x1/2", "x1/3", "other", "auc_quality")} | {"available_at_1pct_wrong": avail_at(pts, 1.0)})
-        for s_, z in zip([s for s in ECG_SUBJECTS if s in Z], zs):
+        for s_, z in zip([s for s in ecg if s in Z], zs):
             r = honesty_row(z["ph"][name][0], z["ph"][name][1], z["stable"], z["ref"])
             ph_rows[-1][f"ok_{s_}"] = r["ok_pct"]
 
@@ -464,7 +474,7 @@ def main(argv=None):
     # weighted total of the three HR2 methods, on the fixed scales of SCALES
     pr = {r["estimator"]: r for r in pool_rows}
     stp = {r["estimator"]: r for r in step_rows}
-    st_ecg = {k: med([x for (s, kk), v in start_acc.items() if kk == k and s in ECG_SUBJECTS for x in v]) for k in LAG}
+    st_ecg = {k: med([x for (s, kk), v in start_acc.items() if kk == k and s in ecg for x in v]) for k in LAG}
     ms = {k: [r["ok_pct"] for r in ms_rows if r["estimator"] == k] for k in LAG}
     ms_lo = {k: [r["ok_pct"] for r in ms_rows if r["estimator"] == k and r["pr_bpm"] <= 60] for k in LAG}
     metric = {
@@ -494,7 +504,7 @@ def main(argv=None):
             "x2", "x1/2", "x3", "x1/3", "other", "auc_quality", "bias_ok_bpm", "mae_ok_bpm"]
     print("\nEach method against the reference (% of the windows with a stable reading):")
     table(rate_rows, cols)
-    print("\nPooled over SUBJ08, SUBJ09, SUBJ11 (ECG):"); table(pool_rows)
+    print(f"\nPooled over {ecg_names} (ECG):"); table(pool_rows)
     print("\nStart-up from the probe applied:"); table(start_rows)
     print("\nMS100 steps:"); table(step_rows)
     if ms_rows:
@@ -511,7 +521,7 @@ def main(argv=None):
     print("\nRight or wrong together with HR3_SAC:"); table(joint_rows)
     print("\nBy reference band:"); table(gap_rows)
     print("\nWeighted total (fixed scales):"); table(rank_rows)
-    print("\nPost hoc, pooled over SUBJ08, SUBJ09, SUBJ11:"); table(ph_rows)
+    print(f"\nPost hoc, pooled over {ecg_names}:"); table(ph_rows)
 
 
 if __name__ == "__main__":

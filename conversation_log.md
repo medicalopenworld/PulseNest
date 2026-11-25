@@ -30697,3 +30697,44 @@ puerta 0 / 1,4 / 2,7 % mal y 72 / 72 / 57 % publicado. Placa: HR3 66,7 / 67,0 / 
 conclusiones que con una foto cada 10 s; la referencia densa puntúa más duro a la placa en SUBJ14 (señal
 débil): caso de prueba para el detector de artefacto propuesto el 23-nov. `findings.md` actualizado.
 **Próxima campaña:** ~200 fotos por móvil leídas a ojo (o por un lector) bastan para entrenar las muestras.
+
+### 2026-11-25 (cont. 2) — Lo que quedó abierto: banco HR2, `hgac_enable=0`, rationale §18, test del OCR `[desarrollo]`
+
+**Alex:** «Abordemos lo que ha quedado abierto.» Cuatro frentes, los cuatro cerrados en código y documentos,
+commit y OTA pendientes de su OK:
+1. **Bancos HR1/HR2** (`experiments/hr1_methods_20261116.py`, `hr2_methods_20261115.py`): las tablas
+   agrupadas tomaban los sujetos de una tupla fija (SUBJ08/09/11) y la ejecución moría con sujetos nuevos
+   (`KeyError`); ahora `ecg_subjects(--subjects)` = los sujetos del run con fichero del monitor que no son el
+   simulador, y los títulos de las tablas los nombran. Repetido sobre SUBJ12–14 (14 178 ventanas estables):
+   HR2_ACF publica 70,3 %, acierta 66,7 %, 5,1 % mal; HR2_MPM 56,0 / 51,3 / 8,3; HR2_YIN 38,9 / 38,0 / 2,3;
+   HR2 de la placa 72,9 / 68,5 / 6,0. El mismo orden que en muestra (15-nov): HR2_ACF se queda.
+2. **`hgac_enable=0` falso en todas las sesiones desde el 13-oct: no era (solo) la caché del hub.** Leído en el
+   crudo de SUBJ12_102648 (al abrir la sesión el hub replica `$CFG cause=hgac ts_us=9,59 s` y `$LCFG
+   hgac_enable=0`: el HGAC ya había movido RF a los 9,6 s del arranque y la línea cacheada decía 0) y en el
+   orden de arranque del firmware: `wifi_adopt()` manda `# RESET_REASON` por UDP → el hub ve la placa por
+   primera vez y pregunta `$CFG?`/`$LCFG?` → la consulta espera en el socket → `Cmd_Task` (prioridad 2,
+   creada después) la contesta en su primer tick, durante los 100 ms de PWDN de `start_incunest()`, antes de
+   `afe.setHgacEnable(true)` → respuesta fresca con `hgac_enable=0`, y nada la corregía nunca. Determinista
+   siempre que el hub ya está en marcha cuando arranca la placa (campaña: portátil primero, placas después;
+   OTA del 18-oct: lo mismo, por eso la caída de caché del hub no bastó). **fw 0.34:** `start_incunest()`
+   emite `$LCFG` tras activar el HGAC; la caché del hub y el grabador conservan la última línea, así que
+   esa manda. Compila (V18, 905 856 B, `81f80df-dirty`); el docstring del hub recoge el mecanismo. **OTA
+   pendiente de Alex.**
+3. **Rationale §18** (repo de la librería): párrafo «Measured 2026-11-25» con los tres prematuros fuera de
+   muestra sobre la referencia del propio ajuste (mismo N17, mismo módulo Nellcor): SUBJ13 −0,5, SUBJ14
+   +1,0, SUBJ12 (28 s, 1,33 kg) −2,8; R mediana por nivel de SUBJ12 +0,09–0,12 sobre la base del ajuste a
+   la misma pendiente (94 % 0,847 vs 0,757 … 99 % 0,744 vs 0,629), SUBJ13+14 a ±0,04. Candidatos por signo:
+   pie fino (signo contrario), HbF (despreciable y máxima a 28 s), pulsación venosa (signo correcto, la
+   mejor perfundida: PI 2,1 % vs 0,9 / 0,7), IR a RF 50K toda la mañana (única diferencia nuestra; misma
+   placa y sonda que SUBJ14), sitio no anotado, calibración Nellcor a 28 s. Nada reajustado. Antes de un
+   término de edad: IR a 100K en el próximo ≤ 30 s (o 50K en uno de 34 s), anotar el sitio, gases. Registro
+   `docs/spo2_r_curves.md`: dos columnas nuevas (SUBJ12; SUBJ13+14) en la tabla de R por nivel y la
+   validación del 25-nov en la fila de la curva.
+4. **`test_pulsenest/monitor_ocr_test.py`** (17 comprobaciones, pasa): dibuja un N17 (pantalla oscura, pared
+   clara, panel encendido, FC verde, SpO2 cian con PR pequeño a la derecha, RR amarillo, inclinación 0,05),
+   entrena con las fotos pares por `train`, lee las impares por `read` (FC/SpO2/PR 10/10), pasa `check` y
+   `merge` y comprueba el formato del banco. Lo que enseñó el test: la regla de corte de `digit_masks`
+   (ancho > 0,62 h = dígitos pegados) parte un dígito de 0,7 h de ancho; vale para la fuente estrecha del
+   N17 (≤ 0,55 h), no para cualquier fuente; el test condensa los suyos a 0,72.
+También: `findings.md` corregido (tres reemplazos del bloque anterior no se habían aplicado por el guion
+corto; «What this changes» tiene ahora los puntos 5 y 6).

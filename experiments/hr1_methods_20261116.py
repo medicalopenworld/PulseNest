@@ -90,6 +90,14 @@ SCALES = {"honesty": (0.0, 20.0), "availability": (100.0, 0.0), "dynamics": (0.0
 STEP_REL, STEP_HOLD, STEP_CAP_S = 0.05, 3, 30.0
 HR_BANDS = ((0, 140), (140, 160), (160, 180), (180, 300))
 
+def ecg_subjects(subjects):
+    """The subjects of this run scored against the ward monitor's ECG: a monitor file exists and
+    the subject is not the simulator. The tuple above is the 2026-11 default; a run on other
+    subjects (--subjects) pools what it was given."""
+    return tuple(s for s in subjects if s not in MS100_SUBJECTS
+                 and os.path.exists(os.path.join(MONITOR_DIR, f"{s}_snapshots_eye.csv")))
+
+
 
 def pct(mask, of=None):
     n = len(mask) if of is None else int(of.sum())
@@ -274,6 +282,8 @@ def main(argv=None):
     ap.add_argument("--subjects", nargs="*", default=list(SUBJECTS))
     ap.add_argument("--no-figs", action="store_true")
     args = ap.parse_args(argv)
+    ecg = ecg_subjects(args.subjects)
+    ecg_names = ", ".join(ecg)
     os.makedirs(args.out, exist_ok=True)
     print(f"hr1_methods_20261116 run {datetime.datetime.now().isoformat(timespec='seconds')}")
 
@@ -365,7 +375,7 @@ def main(argv=None):
 
     # pooled over the three ECG subjects
     pool_rows = []
-    zs = [Z[s] for s in ECG_SUBJECTS if s in Z]
+    zs = [Z[s] for s in ecg if s in Z]
     if zs:
         sel = np.concatenate([z["stable"] for z in zs]); ref = np.concatenate([z["ref"] for z in zs])
         for k in SCORED + (BOARD2, SAC_G):
@@ -394,7 +404,7 @@ def main(argv=None):
 
     pr = {r["estimator"]: r for r in pool_rows}
     stp = {r["estimator"]: r for r in step_rows}
-    st_ecg = {k: med([x for (s, kk), v in start_acc.items() if kk == k and s in ECG_SUBJECTS for x in v]) for k in SCORED}
+    st_ecg = {k: med([x for (s, kk), v in start_acc.items() if kk == k and s in ecg for x in v]) for k in SCORED}
     ms = {k: [r["ok_pct"] for r in ms_rows if r["estimator"] == k] for k in SCORED}
     ms_lo = {k: [r["ok_pct"] for r in ms_rows if r["estimator"] == k and r["pr_bpm"] <= 60] for k in SCORED}
     metric = {
@@ -419,7 +429,7 @@ def main(argv=None):
                      ("gaps.csv", gap_rows), ("weighted_total.csv", wt_rows)):
         write_csv(os.path.join(args.out, fn), rows)
 
-    print("\nPooled over the ECG subjects (SUBJ08, SUBJ09, SUBJ11), every 0.5 s with a stable monitor reading:")
+    print(f"\nPooled over the ECG subjects ({ecg_names}), every 0.5 s with a stable monitor reading:")
     table(pool_rows, ["estimator", "ref_outputs", "published_pct", "ok_pct", "wrong_of_published_pct", "x1/2", "x2",
                       "x3/2", "other", "auc_quality", "mae_ok_bpm", "available_at_1pct_wrong", "available_at_5pct_wrong",
                       "half_rate_n", "half_rate_q08_n"])
@@ -427,7 +437,7 @@ def main(argv=None):
     table([r for r in rate_rows if r["subject"] == "SUBJ10" and r["subset"] == "all"],
           ["estimator", "ref_outputs", "published_pct", "wrong_of_published_pct", "x1/2", "auc_quality"])
     print("\nArtefact stratum (HR3_SAC not valid), ECG subjects:")
-    table([r for r in rate_rows if r["subject"] in ECG_SUBJECTS and r["subset"] == "HR3_SAC not valid"],
+    table([r for r in rate_rows if r["subject"] in ecg and r["subset"] == "HR3_SAC not valid"],
           ["subject", "estimator", "ref_outputs", "published_pct", "wrong_of_published_pct"])
     print("\nStart-up (s) from the probe applied to the first right value:")
     table(sorted(start_rows, key=lambda r: (r["subject"], r["estimator"])))

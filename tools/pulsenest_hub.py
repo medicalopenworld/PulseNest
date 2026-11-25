@@ -58,6 +58,11 @@ Rules.
   recorder stamped a whole session with the stale value and warned in red about a fault that was
   not there. A board that only lost the WiFi for a moment answers the same lines again; a board
   that rebooted answers new ones. Either way subscribers get fresh lines as live traffic.
+  Found 2026-11-25 (fw 0.34): the stale line was not a cache problem alone. A board booting
+  while the hub is up is first seen on its "# RESET_REASON" line, sent before its command
+  task exists; the task then answers the waiting $LCFG? before the firmware has enabled the
+  HGAC, so the FRESH answer said hgac_enable=0 too. The firmware now sends a $LCFG of its
+  own once the measurement starts; the cache keeps the last line seen, so that one wins.
 - Datagram boundaries are preserved: what the board sent as one datagram, the subscriber gets as
   one datagram (with the @FROM line in front). pulsenest_lab.py's batching invariant depends on it.
 - No SO_REUSEADDR. Two hubs must not "coexist" with one of them silently receiving nothing

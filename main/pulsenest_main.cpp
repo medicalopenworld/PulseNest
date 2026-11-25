@@ -50,7 +50,7 @@
 // uninterpretable once the algorithms change. INCUNEST_GIT_HASH comes from build_version.h
 // (scripts/gen_build_version.py, every build) and identifies the exact build, which the version alone does
 // not — during development most builds are uncommitted work on top of the same version.
-#define PULSENEST_FW_VERSION "0.33"   // 0.33: $SET gsm_power=on|off on V19 (bench switch for the 2G-burst test, not persisted) and $CFG gsm_pwr=on|off|none; 0.32: lib v0.124b; SpO2/HR1/HR2/HR3 in $M2/$M3/$M4 are -1 when the value is not finite, no longer when its SQI is 0 (lib v0.123 data contract: a valid SpO2 at PI <= 0.5 % carries spo2_sqi 0, and hr1 expires to NaN after 2 s without a beat); 0.31: V19 board preset (PWDN on GPIO7; the 5 V rail, which feeds the AFE, is enabled at boot; the GSM modem rail is held off); 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
+#define PULSENEST_FW_VERSION "0.34"   // 0.34: $LCFG sent by the board itself once the measurement starts, after HGAC is enabled (a hub that is up before the board boots asked $LCFG? on the "# RESET_REASON" line and was answered hgac_enable=0 by Cmd_Task before start_incunest() had enabled it: every HOSPNAV session since 2026-10-13 was stamped with that stale line); 0.33: $SET gsm_power=on|off on V19 (bench switch for the 2G-burst test, not persisted) and $CFG gsm_pwr=on|off|none; 0.32: lib v0.124b; SpO2/HR1/HR2/HR3 in $M2/$M3/$M4 are -1 when the value is not finite, no longer when its SQI is 0 (lib v0.123 data contract: a valid SpO2 at PI <= 0.5 % carries spo2_sqi 0, and hr1 expires to NaN after 2 s without a beat); 0.31: V19 board preset (PWDN on GPIO7; the 5 V rail, which feeds the AFE, is enabled at boot; the GSM modem rail is held off); 0.30: lib v0.117 ($SET/$LCFG ppgdisp_mode no_norm|norm|norm_pi, ppgdisp_norm_rise_per_s/_win_s/_tau_s/_headroom, ppgdisp_norm_pi_lo/_hi: the ppg_disp display modes of spec 5.9); 0.29: $CFG serial= (board serial number from NVS mb_cfg/serial, written by the IncuNest motherBoard firmware); 0.28: lib v0.110 (pulse gate: $SET/$LCFG spo2_pulse_gate_enable; $M4 field 37 = SPO2_HOLD_REASON); 0.27: lib v0.108 ($CFG/$SET spo2_r_method2_reg_corr_min, $M4 field 36 R_METHOD2_REG_CORR; were spo2_r_corr_min / R_CORR); 0.26: lib v0.107 (spo2_clamp_margin 3 -> 10 %: a curve offset at SaO2 100 % no longer withholds SpO2); 0.25: lib v0.106 ($CFG names the PI method, pi_method_id; default R curve relabelled to its fit date); 0.24: lib v0.105 (HGAC steps RF down, slowly, under LED-only saturation: no more lock at a high RF); 0.23: WiFi reconnects (walks WIFI_NETWORKS[] again after a drop; keeps trying after a failed boot); 0.22: lib v0.104 ($SET/$LCFG afe_settle_freeze_enable, bench switch)
                                       // 0.20: lib v0.102 (SpO2 over a sliding window); $SET/$LCFG spo2_window_s, pi_window_s
                                       // 0.19: $M4 field 36 = R_METHOD2_REG_CORR (R-METHOD-2's r); UDP slot 288 -> 320, datagrams packed by bytes to the MTU
                                       // 0.18: lib v0.100 (R-METHOD-2 default); $SET/$LCFG spo2_r_method, spo2_r_method2_reg_corr_min
@@ -772,6 +772,8 @@ void Incunest_Task(void *pvParameters) {
     }
 }
 
+static void send_lcfg_frame();   // defined with the other frame emitters, below
+
 void start_incunest() {
     // Hard reset via PWDN (afe does not manage this pin)
     {
@@ -800,6 +802,18 @@ void start_incunest() {
     // firmware. Flipping it there would turn the loop on in an incubator as a side effect of a
     // bench convenience. PulseNest opts in for itself; the library default stays OFF.
     afe.setHgacEnable(true);
+    // Announce the library configuration as it is from here on (fw 0.34). The hub asks "$LCFG?"
+    // the first time it sees a board; when the hub is already up while this board boots, that
+    // first sight is the "# RESET_REASON" line of wifi_adopt(), which leaves BEFORE Cmd_Task
+    // exists and before this function runs. Cmd_Task (priority 2, above app_main) then answers
+    // the waiting query in its first tick, during the 100 ms PWDN delay above, with the
+    // library's default hgac_enable=0 -- and nothing ever corrected it: the hub cached that
+    // line, replayed it to every subscriber, and the recorder stamped every HOSPNAV session
+    // from 2026-10-13 to 2026-11-25 with hgac_enable=0 while $CFG cause=hgac rows proved the
+    // loop was running (the hub's 2026-10-18 cache drop re-asked after a silence and got the
+    // same early answer after an OTA reboot). One line here supersedes it wherever it was
+    // cached. Serial and UDP both, like every $LCFG.
+    send_lcfg_frame();
     xTaskCreatePinnedToCore(Incunest_Task, "INCUNEST", 8192, NULL, 3, &g_incunest_task, 0);  // core 0: separates Serial TX from USB-CDC driver (core 1)
     Serial_printf("# incunest_afe4490 started\n");
 }

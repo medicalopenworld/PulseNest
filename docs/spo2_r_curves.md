@@ -13,7 +13,7 @@ simulator never validates accuracy (EE.4).
 |---|---|---|---|---|---|---|---|---|---|---|
 | `R-CURVE-U401D-MS100-20260323` | 114.9208 | 30.5547 | R-METHOD-0 | UpnMed U401-D(01AS-F), IR 905 nm | simulator | CONTEC MS100, "R-Curve Nellcor", 100 bpm | conversation log session 26 (2026-03-23) | sim 70-100 | OLS | **shipped** as default until lib v0.99; superseded. R-METHOD-0 (RMS-based) biases R up and flattens the slope — the 30.55 is the method, not the probe (see 2026-10-19 row) |
 | `R-CURVE-STS0163-HOSPNAV-20260923` (first use) | 115.17 | 21.54 | R-METHOD-1 | Medle ST-S0163 (-25 or -26, not recorded) | neonatal foot | Mindray N17 with Nellcor OxiMax SpO2 module via VideoNest OCR (response mode not recorded) | SUBJ08 + SUBJ09, 3471 stationary 8 s windows; `SUBJ08/Analysis/pooled_fit.py`, `findings.md` | 87-100 | OLS by bands, rms 1.53 | **discarded** 2026-10-02: slope is mostly R-METHOD-1 noise (regression dilution + out-of-band noise). Never applied. Label later reused — see next row |
-| `R-CURVE-STS0163-HOSPNAV-20260923` (**current**, fitted 2026-10-04) | 123.98 | 39.13 | R-METHOD-2 | Medle ST-S0163 (-25 or -26, not recorded) | neonatal foot | Mindray N17 with Nellcor OxiMax SpO2 module via VideoNest OCR (response mode not recorded) | SUBJ08 + SUBJ09 replayed with lib v0.100, 3455 stationary 8 s windows; `SUBJ08/Analysis/fit_method2.py` | 85-100 (31 windows below 85 read −3.4) | OLS, ρ −0.80, scatter 1.65, median \|res\| 0.91, LOSO 0.95-1.38 | **shipped** as default since lib v0.100. Validated on SUBJ11 (30 wk, 1.5 kg) 2026-10-16: bias −0.2, sd 1.2. Pending: relabel to the fit date (`…-20261004`) so the label is unique |
+| `R-CURVE-STS0163-HOSPNAV-20260923` (**current**, fitted 2026-10-04) | 123.98 | 39.13 | R-METHOD-2 | Medle ST-S0163 (-25 or -26, not recorded) | neonatal foot | Mindray N17 with Nellcor OxiMax SpO2 module via VideoNest OCR (response mode not recorded) | SUBJ08 + SUBJ09 replayed with lib v0.100, 3455 stationary 8 s windows; `SUBJ08/Analysis/fit_method2.py` | 85-100 (31 windows below 85 read −3.4) | OLS, ρ −0.80, scatter 1.65, median \|res\| 0.91, LOSO 0.95-1.38 | **shipped** as default since lib v0.100. Validated on SUBJ11 (30 wk, 1.5 kg) 2026-10-16: bias −0.2, sd 1.2. **2026-11-25, three unseen preterms (`BIAS_ANALYSIS_20261125`): SUBJ13 (34 wk, 2.27 kg) −0.5, SUBJ14 (35 wk, 1.74 kg) +1.0, SUBJ12 (28 wk, 1.33 kg) −2.8** (stationary medians, sd 2.3–3.0; SUBJ12's R +0.09–0.12 at every level, same slope); not refitted, rationale §18. Pending: relabel to the fit date (`…-20261004`) so the label is unique |
 | SUBJ08 only (diagnostic) | 129.2 | 46.7 | R-METHOD-2 | Medle ST-S0163 | neonatal foot | Mindray N17 / Nellcor OxiMax | SUBJ08 share of the row above | 85-100 | OLS | diagnostic: per-subject spread of the pooled fit; not a curve to apply |
 | SUBJ09 only (diagnostic) | 118.8 | 32.1 | R-METHOD-2 | Medle ST-S0163 | neonatal foot | Mindray N17 / Nellcor OxiMax | SUBJ09 share of the row above | 85-100 | OLS | diagnostic, as above |
 | `R-CURVE-STS0163-ADULTFINGER-20261020` (diagnostic) | 111.94 | 25.15 | R-METHOD-2 | Medle ST-S0163-26 lot 260521002, 3 units | adult finger (SUBJ01, index/middle/ring) | unbranded home fingertip oximeter via VideoNest OCR | breath-hold 2026-10-18, 1205 stationary pairs; `SUBJ01/SUBJ01_BIAS_ANALYSIS/pairs.csv` (OLS added 2026-10-20, no lag compensation) | **93-99 only** | OLS, rms 0.67 | diagnostic: range too narrow for a slope (R 0.54-0.77). What matters is the bias: current curve +3.0 (Arms 3.2), MS100/U401-D curve −0.5 (Arms 1.0) after 4 s lag compensation. Reference is itself a Nellcor-type adult curve |
@@ -42,12 +42,12 @@ simulator never validates accuracy (EE.4).
 Same probe model and R-METHOD-2 everywhere; stationary 8 s windows; `n` = windows. Full analysis and the
 alternatives in the library's `incunest_afe4490_design_rationale.md` §18.
 
-| reference SpO2 | neonatal feet SUBJ08+09, Mindray N17 (n 3455) | preterm 30 wk SUBJ11, Mindray N17 (n 1121) | adult finger SUBJ01 18-oct, home oximeter (n 1179) | adult finger SUBJ01 23-oct, home oximeter (n 2022) | MS100 Nellcor table |
-|---|---|---|---|---|---|
-| 94 % | 0.757 | 0.766 | 0.712 | 0.705 | 0.692 |
-| 96 % | 0.715 | 0.739 | 0.636 | 0.615 | 0.641 |
-| 98 % | 0.650 | 0.665 | 0.580 | 0.585 | 0.590 |
-| 99 % | 0.629 | 0.635 | 0.545 | 0.531 | 0.564 |
+| reference SpO2 | neonatal feet SUBJ08+09, Mindray N17 (n 3455) | preterm 30 wk SUBJ11, Mindray N17 (n 1121) | preterm 28 wk SUBJ12, 25-nov, N17 (n 1160) | preterm 34–35 wk SUBJ13+14, 25-nov, N17 (n 1333) | adult finger SUBJ01 18-oct, home oximeter (n 1179) | adult finger SUBJ01 23-oct, home oximeter (n 2022) | MS100 Nellcor table |
+|---|---|---|---|---|---|---|---|
+| 94 % | 0.757 | 0.766 | 0.847 | 0.762 | 0.712 | 0.705 | 0.692 |
+| 96 % | 0.715 | 0.739 | 0.812 | — | 0.636 | 0.615 | 0.641 |
+| 98 % | 0.650 | 0.665 | 0.750 | 0.649 | 0.580 | 0.585 | 0.590 |
+| 99 % | 0.629 | 0.635 | 0.744 | 0.593 | 0.545 | 0.531 | 0.564 |
 
 Neonates vs adult/simulator: R higher by 0.05-0.10 at every level (mean 0.07 ≈ 2.7 points), no trend: an
 intercept offset, same slope. Within each group the sets agree within 0.02. Which side a CO-oximeter would
