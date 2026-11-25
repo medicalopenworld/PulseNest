@@ -30740,3 +30740,11 @@ También: `findings.md` corregido (tres reemplazos del bloque anterior no se hab
 corto; «What this changes» tiene ahora los puntos 5 y 6).
 Commits (locales, sin push): PulseNest `915630b` (bancos, fw 0.34, hub, test del OCR, registro, log) y
 librería `a1307d8` (solo el rationale §18, sin versión nueva). OTA del fw 0.34 a 87:A4 / 82:5C: decisión de Alex.
+
+### 2026-11-25 (cont. 3) — OTA del fw 0.34 `[desarrollo]`
+Alex preguntó qué cambiaba antes de decidir: las V18 llevaban fw 0.32 / lib 0.124b; entre medias, fw 0.33 (interruptor
+GSM de la V19; en una V18 solo `gsm_pwr=none` en `$CFG` y `$SET gsm_power` rechazado) y fw 0.34 (`$LCFG` tras activar
+el HGAC). Librería igual; nada toca la medida, solo el registro. Alex: «haz los flash». OTA verificada por MAC a
+`87:A4` (.176) y `82:5C` (.35), `elfsha=cb5e80d448d2e4c1`, y a la V19 `74:4C` (.140), `elfsha=700e6ff1c9b887a8`, todas
+`build=915630b`. Arreglo comprobado: con el hub en marcha durante los reinicios, su `$LCFG` dice `hgac_enable=1` en las
+tres. Anotado en `docs/boards.md`.
