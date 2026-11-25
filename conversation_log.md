@@ -30738,3 +30738,5 @@ commit y OTA pendientes de su OK:
    N17 (≤ 0,55 h), no para cualquier fuente; el test condensa los suyos a 0,72.
 También: `findings.md` corregido (tres reemplazos del bloque anterior no se habían aplicado por el guion
 corto; «What this changes» tiene ahora los puntos 5 y 6).
+Commits (locales, sin push): PulseNest `915630b` (bancos, fw 0.34, hub, test del OCR, registro, log) y
+librería `a1307d8` (solo el rationale §18, sin versión nueva). OTA del fw 0.34 a 87:A4 / 82:5C: decisión de Alex.
