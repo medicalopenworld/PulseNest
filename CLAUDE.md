@@ -42,6 +42,7 @@ En el fichero `docs/boards.md` está el inventario de TODAS las tarjetas física
 ## Log de conversaciones
 - Ver `conversation_log.md` — historial de decisiones de diseño tomadas en cada sesión
 - **Regla obligatoria:** al final de cada sesión, añadir un bloque al fichero `conversation_log.md` con fecha, preguntas clave y decisiones tomadas. Nunca sobreescribir — siempre añadir al final (incremental).
+- **Quién escribe (regla desde 2026-11-25):** **cualquier sesión** (desarrollo, análisis o consulta) que decida, mida, compile o conteste algo que no esté ya escrito añade su bloque al cierre, con fecha, título de la sesión y la marca `[análisis]` o `[desarrollo]`. Bloques cortos: el log es lo destilado, no una transcripción. El código, las specs, `captures/` y sus commits siguen siendo solo de la sesión de desarrollo; un bloque de log añadido por otra sesión lo recoge el siguiente commit de la de desarrollo, o esa sesión hace un commit que contenga únicamente `conversation_log.md` (`git add` explícito). La memoria traspasa el estado del trabajo; el log registra lo ocurrido: son dos cosas distintas. Por qué: la regla anterior (2026-10-02, solo la sesión de desarrollo) perdió el 24-nov-2026 el registro de una sesión que compiló e instaló VideoNest b62. Los transcripts de Claude Code no sustituyen al log: son privados, crudos y no versionados.
 
 ## Reglas de desarrollo (obligatorias)
 

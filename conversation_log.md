@@ -30555,3 +30555,56 @@ PulseNest y la librería, y esa sesión es esta.
 - Patentes a evitar: mín(línea base, actual) de Masimo (vigentes hasta 2027-2028) y cambiar umbrales tras N
   rechazos (Covidien US 7,922,665, hasta 2030-02-10).
 - Cinco decisiones para Alex en el apartado 6. Nada implementado ni etiquetado.
+
+## 2026-11-24/25 — Preparación de la campaña de hospital del 25-nov: revisión de SUBJ08–11 y VideoNest b62
+
+**Alex:** mañana vuelve al hospital; pide revisar el trabajo hecho (SUBJ08, 09, 10, 11) para sacar consejos
+(calidad de snapshots de VideoNest, pantalla completa, SN de la sonda, fotos del equipo Mindray).
+
+**Revisión (sesión de análisis, nada cambiado en PulseNest).** Las 18 sesiones de hospital (SUBJ08 ×4,
+SUBJ09 ×4, SUBJ10 ×7, SUBJ11 ×3) tienen en `session_events.csv` solo START/END, META y la NOTE de
+lanzamiento: **cero RECORD, cero NEW EVENT, cero ABNORMAL CONDITION, cero CLOCK ANCHOR**; el movimiento de
+SUBJ10 que invalidó sus sesiones no está marcado en ningún sitio. `reference_monitor.averaging_s` es `null`
+en todas (el promediado del N17 nunca se fotografió). La META `probe=` llevó modelo y LOT, no SN; el sitio de
+nuestra sonda no consta en SUBJ10/11. `[subject]` (gest_age/age/weight_g/skin) estaba comentado en los TOML y
+fue en `note` como texto libre («skin:WHITE»). HGAC apagado todo el 13-oct (heredado del lab). Placas
+PulseNest hoy: `87:A4`, `82:5C` (V18, fw 0.32 / lib 0.124b) y `74:4C` (V19, fw 0.33); `88:50` y `74:50` son de
+IncuNest. Consejos entregados en el chat y resumidos en memoria
+(`project_hospital_campaign_20261125_prep.md`): botones del grabador, foto del menú de SpO2 y del
+módulo/sensor del Mindray, `avg` en el TOML, SN en `probe`, sitio de nuestra sonda en `note`, `[subject]`
+estructurado, sesiones de 20–30 min en vez de troceadas, Pixel 8a al monitor con la traza de ECG.
+
+**VideoNest b62 (repo VideoNest, commit `4e1b7b4`, push hecho a `main`).** Hallazgo: el snapshot es una copia
+del fotograma de análisis de CameraX, 640×480 por defecto; `SnapshotPolicy.MAX_DIMENSION = 640` no recortaba
+nada y el deslizador de calidad solo cambiaba el JPEG. Cambio: `ImageAnalysis` pide 1280×960
+(`ResolutionSelector`, la talla más cercana, mayor primero), `MAX_DIMENSION` 1280, y la hoja de ajustes
+muestra «last frame WxH px» con el tamaño que la cámara dio de verdad. 151/151 tests. Instalado en los dos
+móviles: **Pixel 8a 1280×960; J6+ 960×720** (cámara LEGACY: el flujo YUV junto a la vista previa queda
+acotado por la pantalla; solo un `ImageCapture` JPEG aparte lo superaría, apuntado para más adelante). Alex
+puso calidad «Best quality» e intervalo 2 s en ambos; recomendado 3–5 s en el J6+ si el OCR deja de
+refrescar. Coste ~0,5 GB/h en el Pixel; copia por cable, no por zip; vaciar snapshots viejos antes de salir.
+
+**Preguntas de Alex respondidas (sin cambios):** red del hospital = adaptador de bucle KM-TEST +
+`scripts/hotspot.ps1 on` (runbook §1 bis y §2); cómo probarlo en casa: desconectar el portátil de la WiFi
+doméstica, no apagar los routers (el caso «portátil sin ninguna WiFi» no se había probado aún); el reloj
+del lanzador y el de Windows difieren hasta ±0,5 s solo por la fase de repintado (ambos leen el mismo
+reloj; los datos se sellan con `datetime.now()`); sincronización móvil-portátil = `offset_ms` por trama
+`$VN1` más CLOCK ANCHOR filmado con el propio VideoNest (nombre de fichero con ms = hora del móvil, dígitos
+= hora del portátil; la fila `CLOCK_ANCHOR` sitúa el ancla en el flujo de la placa, no entra en el
+desfase); «treinta más dos» = edad gestacional al nacer 30 s + 2 d (`gest_age = "30w+2d"`), distinta de
+la edad postnatal (`age`) y de la postmenstrual; los snapshots se guardan aunque el OCR no lea nada (las
+tramas UDP y el CSV del móvil solo con lectura válida).
+
+**Pendiente de Alex para hoy:** comprobar en el banco que el OCR del J6+ sigue al día a 2 s; prueba de
+in3wifi con el portátil desconectado de casa; TOML por kit con `[subject]` y `avg`.
+
+### 2026-11-25 — Regla nueva: todas las sesiones escriben en el conversation_log `[análisis]`
+
+**Alex:** ¿sigue haciendo falta `conversation_log.md` ahora que Claude Code guarda todas las sesiones, y
+debe seguir escribiendo solo la sesión de desarrollo? **Opinión dada y aceptada:** el fichero se queda (los
+transcripts son privados, crudos, no versionados y solo los lee Alex; el log es lo destilado, está en el
+repo y lo leen Pablo y quien mantenga esto) y la regla de 2026-10-02 se relaja: **cualquier sesión añade su
+bloque al cierre** con fecha, título y marca `[análisis]`/`[desarrollo]`; solo la de desarrollo toca código,
+specs y `captures/` y los commitea; un bloque ajeno lo recoge su siguiente commit o se commitea solo el log.
+Aplicado en `CLAUDE.md` («Log de conversaciones») y en la memoria `feedback_single_dev_session`. Apuntado sin
+hacer: partir el log por semestre (2 MB, 30 000 líneas) cuando pese para leerlo.
