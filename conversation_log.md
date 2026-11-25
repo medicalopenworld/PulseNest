@@ -30608,3 +30608,92 @@ bloque al cierre** con fecha, título y marca `[análisis]`/`[desarrollo]`; solo
 specs y `captures/` y los commitea; un bloque ajeno lo recoge su siguiente commit o se commitea solo el log.
 Aplicado en `CLAUDE.md` («Log de conversaciones») y en la memoria `feedback_single_dev_session`. Apuntado sin
 hacer: partir el log por semestre (2 MB, 30 000 líneas) cuando pese para leerlo.
+
+## Sesión 2026-11-25 (tarde) — Campaña HOSPNAV del 25-nov: fotos de los móviles, auditoría y análisis fuera de muestra de SUBJ12/13/14 `[desarrollo]`
+
+**Qué se hizo.** (1) Fotos y CSV de VideoNest por `adb exec-out run-as org.medicalopenworld.videonest tar`
+(la carpeta privada de la app no la ve el explorador USB): J6+ 448 snapshots a 960×720 → `SUBJ13/VideoNest/`;
+Pixel 8a 2778 a 1280×960 (12 giradas) → 1743 a `SUBJ12/VideoNest/` y 1035 a `SUBJ14/VideoNest/`, repartidas
+por la hora del nombre y las horas de `session.json`; el CSV del Pixel abarca los dos sujetos y se copió a los
+dos. Nada borrado en los móviles. (2) Auditoría de las 11 sesiones antes de analizar. (3) Sesgo de SpO2
+(`tools/spo2_bias_analysis.py`), FC del monitor leída a ojo de 774 fotos (una cada 10 s, recortadas a los
+números, 13 lectores en paralelo; saltos > 20 % reverificados a mano; HR y PR del monitor dentro del 10 %
+en 736/739 lecturas) → `BIAS_ANALYSIS_SUBJ10_SUBJ11/ocr_vs_eye/SUBJ1[234]_snapshots_eye.csv`; bancos
+`experiments/hr3_methods_20261114.py` y `hr2_methods_20261115.py --subjects SUBJ12 SUBJ13 SUBJ14`;
+`tools/spo2_spectra.py`. Informe `captures/sessions/BIAS_ANALYSIS_20261125/findings.md` (no versionado,
+como los anteriores).
+
+**Auditoría (lo que faltó otra vez):** cero RECORD / NEW EVENT / ABNORMAL en las 11 sesiones; sí
+CLOCK_ANCHOR (SUBJ12 ×2, SUBJ13 ×1, SUBJ14 ×3). `avg` del monitor null, `[subject]` estructurado null y
+sitio de nuestra sonda en blanco en todas; esta vez la sonda lleva SN (PPG-001 en 87:A4 → SUBJ12 y SUBJ14,
+PPG-002 en 82:5C → SUBJ13). La nota real del bebé solo está en la última sesión de cada uno (las anteriores
+llevan el placeholder del TOML; Alex: los datos se los daban durante la campaña y valen para todas las
+sesiones): SUBJ12 28s+4d al nacer, 12 d, 1,33 kg, piel Monk 4; SUBJ13 34s+2d, 6 d, 2,27 kg, piel 5; SUBJ14
+35s+1d, 5 d, 1,74 kg, piel 5. El J6+ se paró de 11:13:57 a 11:34:15 (bloqueo de pantalla, Alex): los últimos
+20 min de SUBJ13 no tienen referencia ni fotos. Relojes: el móvil va 1,3 s (Pixel) / 0,55 s (J6+) por delante
+del portátil (`offset_ms`); la foto del ancla de SUBJ14 (fichero 11:41:25,1, pantalla 11:41:23,5) lo
+confirma, así que la corrección del banco es correcta. Gaps de placa ≤ 0,3 s por sesión. `alg:` dice
+`hgac_enable=0` en las 11 sesiones pero hay filas `cause=hgac` y `hgac_rf_changes` 1 / 4: el HGAC actuó;
+es la caché `$LCFG` vieja del hub (síntoma del 18-oct, que se dio por arreglado) → pendiente del hub. Una
+sesión vacía (SUBJ12_102520, 20 s sin placa) hacía caer `spo2_bias_analysis` (`--exclude`),
+`spo2_spectra` y `hr_bench.session_dirs`: los dos últimos saltan ahora las sesiones sin partes de placa.
+
+**Q1 — ¿Transfiere la curva `R-CURVE-STS0163-HOSPNAV-20261004`?** Pares estacionarios, sesgo nuestro −
+monitor: **SUBJ13 −0,5 (sd 2,3), SUBJ14 +1,0 (sd 3,0): sí**, |sesgo| mediano 1,0–1,1, ajuste conjunto
+125,3 − 39,4·R encima de la curva. **SUBJ12 −2,8 estacionario / −3,8 usable (sd 2,7): no**, bajo en las
+cinco sesiones (−3,7 a −4,5) y peor en la banda 85–89 (−4,2, p10 −6,7); su R a una misma saturación es
+0,10–0,15 mayor que el de los otros dos (misma pendiente, curva desplazada); la curva de los otros dos lo
+falla por −2,5. Candidatos, sin probar: el sujeto (el más prematuro, 28 s y 1,33 kg, HbF, PI 2–3 % frente a
+0,7–1,2 %, piel 4), la única diferencia de hardware (IR a RF 50K por el HGAC, RED a 100K; SUBJ13/14 a
+100K ambos; R invariante en teoría y banco, O10) y el sitio de nuestra sonda (no apuntado). Residuo frente
+a PI solo entre sujetos (ρ −0,62 agrupado, −0,14/−0,06/−0,09 dentro). **No se reajusta la curva**: es la
+primera evidencia fuera de muestra para el lado «dos curvas o término de edad» del rationale §18.
+
+**Q2 — FC frente al ECG del monitor** (ventanas con lectura estable: 6964 / 2792 / 2746; acierto = ±10 %):
+`HR3_SAC` acierta **99,1 / 90,9 / 81,6 %** y publica mal **0,3 / 6,3 / 12,9 %** de lo publicado (en
+muestra 0,1–0,9), con 2,4 % al doble en SUBJ14: la «ausencia de errores de octava» era de las tres señales
+de octubre, no del método; con la puerta de validez del 12-nov (ρ ≥ 0,5 y pureza ≥ 0,3) vuelve a 0 / 4,1 /
+4,1 % mal con 72 / 71 / 57 % publicado. Placa: HR3 66,6 / 68,3 / 47,2 % acierto (mal 3,6 / 4,6 / 6,3),
+HR2 72,3 / 75,3 / 59,3 (mal 4,7 / 5,6 / 5,2), HR1 con filtro común 68,9 / 72,6 / 58,9 (mal 0 / 5,7 / 4,6;
+en muestra 42–59 % antes de v0.123): como en muestra. SUBJ14 (PI 0,7 %, 110–160 lpm) es el caso de señal
+débil. Cambios reales de FC (SUBJ13 161 → 125 → 157 en 17 s) confirmados a mano.
+
+**Q3 — Puerta de pulso:** SpO2 retenida por `HOLD_PULSE` el 25–48 % del tiempo con sonda puesta (44 % en
+SUBJ14, con el monitor a 91–100 todo el rato y el peine a 2,2 Hz visible entre ráfagas): coste de
+disponibilidad a llevar a la propuesta PI-METHOD-3 / detector de artefacto del 23-nov. Sin decisión.
+
+**Decisiones:** curva sin tocar; `HR3_SAC` solo con su puerta; la placa (HR1/HR2/HR3, puerta) se comporta
+fuera de muestra como dentro. **Pendiente de Alex:** rationale §18 (edad/peso) con SUBJ12; sitio de nuestra
+sonda y `avg` del monitor; bloqueo de pantalla del J6+; botones del grabador. Código: guardas en
+`tools/spo2_spectra.py` y `pulsenest/hr_bench.py`. Experimento `hr2_methods` se cae al agrupar (sujetos
+ECG cableados a 08/09/11): figuras por sesión hechas, tablas no; no corregido hoy.
+
+### 2026-11-25 (cont.) — OCR local del monitor: todas las fotos, no una cada 10 s `[desarrollo]`
+
+**Alex:** no desperdiciar información: ¿por qué una foto cada 10 s si el Pixel saca una cada 2 s y el J6+
+cada 4 s? ¿Y cómo ahorrar tokens, bajando el effort o pasando a Opus? **Respuesta:** nada en contra de usar
+todas (emparejado ±1 s en vez de ±5 s, regla de estabilidad más fina, autocomprobación entre fotos
+consecutivas); el coste no es el effort ni el modelo sino las imágenes que leen los subagentes → OCR local,
+coste único y reutilizable. **Hecho:** Tesseract 5.4 instalado (`winget`, UB-Mannheim) y descartado en una
+hora: sobre estos dígitos lee «171» como 71, 1 o 7 según la escala. En su lugar, `tools/monitor_ocr.py`
+(nuevo): localiza los números del N17 por geometría (blobs encendidos sobre pantalla oscura, agrupados por
+altura; HR y SpO2 = par de grupos altos adyacentes y alineados a la izquierda; PR = grupo pequeño y ancho a
+la derecha del SpO2; el color solo quita el amarillo porque el J6+ satura el verde a casi blanco), separa
+los dígitos (corte en los valles del perfil cuando se tocan), los endereza (eje principal vertical: quita la
+inclinación de la cámara) y los clasifica por k-NN (k = 3, 24×40) contra los dígitos de las fotos leídas a
+ojo. **Validación honesta** (muestras de las fotos pares, prueba en las impares, nunca vistas): HR
+169/169, 84/84, 96/96 en SUBJ12/13/14; SpO2 100 / 98,5 / 100 %; PR 85 % (confusiones de dígito a 22–40 px:
+no es referencia). Las 3226 fotos leídas en minutos: cobertura de HR 93,5 / 90,0 / 86,7 %, 0–2 saltos
+> 15 % entre lecturas a ≤ 5 s en 2863 pares. Fusionadas en
+`BIAS_ANALYSIS_SUBJ10_SUBJ11/ocr_vs_eye/SUBJ1[234]_snapshots_eye.csv` (mismo formato, columna `source` =
+eye/ocr; 1648 / 415 / 909 lecturas); muestras y salida cruda en `BIAS_ANALYSIS_20261125/ocr/`; el banco de
+las 774 lecturas a ojo guardado en `hr3_eye10s/`. README (fila de `tools/`) y `docs/nomenclature.md`
+(«monitor reference») actualizados. Sin test propio todavía: la validación es el subcomando `check`.
+
+**Bancos repetidos con todas las fotos** (ventanas estables 7095 / 3109 / 3943, antes 6964 / 2792 / 2746):
+`HR3_SAC` acierta 99,0 / 92,6 / 81,3 % y publica mal 0,4 / 4,4 / 11,6 % (2,1 % al doble en SUBJ14); con
+puerta 0 / 1,4 / 2,7 % mal y 72 / 72 / 57 % publicado. Placa: HR3 66,7 / 67,0 / 47,0 % (mal 3,6 / 2,6 /
+7,0), HR2 72,2 / 74,2 / 57,2 (mal 4,8 / 5,2 / 9,4), HR1 68,8 / 68,9 / 53,6 (mal 0,1 / 7,4 / 12,5). Mismas
+conclusiones que con una foto cada 10 s; la referencia densa puntúa más duro a la placa en SUBJ14 (señal
+débil): caso de prueba para el detector de artefacto propuesto el 23-nov. `findings.md` actualizado.
+**Próxima campaña:** ~200 fotos por móvil leídas a ojo (o por un lector) bastan para entrenar las muestras.

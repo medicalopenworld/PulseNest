@@ -89,9 +89,12 @@ CACHE_TAG = "cols_v2"         # v2 (2026-11-16): HR1_SQI added, for the HR1 benc
 # ============================================================================= sessions
 
 def session_dirs(sessions_dir, subject):
-    """The subject's session folders that carry a reference file, in time order."""
+    """The subject's session folders that carry a reference file and board CSV parts, in time
+    order (a session the recorder closed before any board reached it has neither samples nor
+    reference rows: SUBJ12_HOSPNAV_20261125_102520)."""
     return [sd for sd in sorted(glob.glob(os.path.join(sessions_dir, subject, f"{subject}_*_20*")))
-            if os.path.exists(os.path.join(sd, "reference_spo2.csv"))]
+            if os.path.exists(os.path.join(sd, "reference_spo2.csv"))
+            and glob.glob(os.path.join(sd, "*_p[0-9][0-9].csv"))]
 
 
 def parse_columns(session_dir):

@@ -119,6 +119,7 @@ description is **[pulsenest_lab_spec.md](pulsenest_lab_spec.md)**; a crash leave
 | `tools/pulsenest_convert.py <session dir> --csv v04` | Rebuild a session's CSVs from its `.pnraw` and prove they match |
 | `tools/udp_fw_versions.py` | Firmware of every board on the air, nothing sent |
 | `tools/spo2_bias_analysis.py SUBJ10 SUBJ11` | SpO2 bias of one or more subjects against the ward monitor: pairs, fits, leave-one-subject-out, residual vs PI / r / HR, plots (`captures/sessions/BIAS_ANALYSIS_<...>/`) |
+| `tools/monitor_ocr.py read <samples.npz> captures/sessions/SUBJ12/VideoNest/Snapshots out.csv` | The ward monitor's heart rate, SpO2 and pulse rate read off every VideoNest snapshot (Mindray N17), locally: digit samples learnt from the frames a person read (`train`), checked against them (`check`), merged into the bench's `SUBJnn_snapshots_eye.csv` (`merge`) |
 | `tools/spo2_spectra.py SUBJ10` | Spectrograms (IR, RED) and the HR3-style HPS of every session of a subject, 0-15 Hz, on the wall clock (`captures/sessions/<SUBJ>/Spectra/`) |
 
 ## Project structure

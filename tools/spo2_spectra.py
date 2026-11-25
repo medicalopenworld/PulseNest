@@ -74,6 +74,9 @@ def main():
                   if os.path.isdir(d))
     for d in dirs:
         name = os.path.basename(d)
+        if not glob.glob(os.path.join(d, "*_p[0-9][0-9].csv")):
+            print(f"{name}: no board CSV parts, skipped")
+            continue
         df = load_ot(d)
         board, _ = parse_board_session(d)
         ref_t, ref_spo2, _ = parse_reference(d)
