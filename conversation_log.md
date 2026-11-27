@@ -30748,3 +30748,44 @@ el HGAC). Librería igual; nada toca la medida, solo el registro. Alex: «haz lo
 `87:A4` (.176) y `82:5C` (.35), `elfsha=cb5e80d448d2e4c1`, y a la V19 `74:4C` (.140), `elfsha=700e6ff1c9b887a8`, todas
 `build=915630b`. Arreglo comprobado: con el hub en marcha durante los reinicios, su `$LCFG` dice `hgac_enable=1` en las
 tres. Anotado en `docs/boards.md`.
+
+### 2026-11-27 — Curva R: edad, grosor, longitud de onda; correcciones del rojo medido `[desarrollo]`
+Sesión «Campaña HOSPNAV 25-nov: fotos y análisis» (sigue siendo la de desarrollo).
+
+**Conversación (sin cambios en ficheros).** Alex: la FC preocupa poco; la SpO2 mucho. ¿La curva R depende de la
+edad? Conclusiones: (1) el catálogo existe (`docs/spo2_r_curves.md`) y registra sonda, método de R, sitio y
+referencia; la población va en la fila, no es clave; (2) las curvas comerciales se calibran en adultos (la ISO 2026
+lo exige) y en neonatos solo se comprueban; el monitor no corrige por bebé y el personal tampoco: los rangos
+objetivo se fijaron con estos mismos pulsioxímetros, así que coincidir con el Nellcor del monitor es la meta
+clínicamente útil; (3) modelo de difusión en lámina (scratchpad, no versionado): el grosor mueve como mucho 1,6
+puntos entre 5 y 17 mm, casi todo por debajo de 8 mm, y con el signo contrario a SUBJ12; un 10 % de sangre venosa
+en lo que late mueve 3 puntos; el rojo, 0,15-0,35 puntos por nm; (4) el sensor Nellcor «neonatal/adulto» usa una
+sola curva en pie de prematuro y dedo adulto (de memoria, sin la ficha): el grosor no es la razón principal, como
+dije al principio; (5) propuesta sin decidir: anotar en el catálogo el dominio de validez de cada curva (edad
+gestacional y posnatal, peso, sitio, piel, lote y número de sonda); no seleccionar curva por edad con un solo
+sujeto fuera; prueba de dos dedos a la vez con cruce de sondas, más un sitio fino y la mano baja/alta para la
+hipótesis venosa.
+
+**Traspaso recibido** de la sesión «Características sonda Medle ST-S0163» (IncuNest): nota
+`IncuNest/Firmware/docs/notes/2026-11-23-espectrometro-sondas-y-error-spo2.md`, versión de la rama
+`notes-alex-2026-11` (`feb80787`). Alex: «Lee la nota y aplica los cambios pendientes».
+
+**Aplicado (apartado 8 de la nota):**
+- Spec de la librería §5.1: rojo **663,1 nm de centro y 664,9 de pico con el AFE** (10 sondas, lote 260521002,
+  desviación 0,83 nm); el 668 era un pico a 50 mA en continua. Quitada la frase «el HGAC mueve el rojo con la
+  corriente del LED»: el HGAC solo mueve RF y la corriente es fija.
+- Rationale: §2.1 (R invariante a ILED en amplitud, no en longitud de onda), §2.9 (si la fase 4 mueve ILED, limitar
+  el rango o corregir la curva), §4.2 (rojo medido; el margen de los 50 mA se sostiene por I_F continuo de 50 mA,
+  no por I_FP 100 mA, que la hoja da a 1/8 de ciclo y 1 kHz), **§27 nuevo** (medidas, sensibilidad, corriente,
+  presupuesto de error, decisiones por lote).
+- `docs/r_curve_calibration_survey.md`: §1 y §5.1 dejan de decir «≈ 0 por encima del 85 %»; fila de la corriente
+  con el efecto térmico; filas nuevas de Milner 2012 y de la exactitud de Nellcor por modelo de sonda (citadas de
+  la nota, sin releer la fuente); §6 con el rojo medido. `docs/spo2_r_curves.md`: la mención del 668.
+- **Comprobado:** los 62 ficheros de captura HOSPNAV de SUBJ08 a SUBJ14 anotan 49800 µA en los dos LED en todos sus
+  registros `afe:`. La curva se ajustó a una sola corriente.
+
+**Sin tocar:** la fila v0.47 del registro de cambios de la spec (histórica; la corrección va en rationale §4.2).
+Sin versión nueva de la librería: solo documentación, `check_version.py v0.124b` pasa.
+**Discrepancia a resolver por Alex:** la nota dice que PPG-001 es la sonda con la que se ajustó la curva; el
+registro dice que en la campaña del 23-sep no se anotó la unidad. No lo he afirmado en ningún fichero.
+**Pendiente:** rojo con el AFE a 50 / 25 / 12,5 / 6 mA cuando Alex tenga el MSC15; PR de notas de IncuNest a `dev`.

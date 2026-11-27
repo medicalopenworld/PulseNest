@@ -127,8 +127,9 @@ What the comparison says:
 - **Our slope (39) is steeper than the classic 25 because our R at 100 % is higher (0.54-0.61 vs 0.40)**, i.e. our
   R range for 70-100 % is compressed (0.6-1.4 instead of 0.4-1.6). Candidates: the derivative/regression
   estimator (no RMS inflation), path-length ratio nearer 1 in thin tissue
-  (not the red wavelength: our 668 nm measured red, vs 660, *lowers* R at 100 % by ≈ 6 % and compresses the
-  70-100 % range by only ≈ 4 %, see `r_curve_calibration_survey.md` §6),
+  (not the red wavelength: our red, 663 nm with the AFE — the 668 quoted here until 2026-11-27 was a
+  continuous-current peak —, vs 660, *lowers* R at 100 % by ≈ 2-4 % and compresses the
+  70-100 % range by only ≈ 2 %, see `r_curve_calibration_survey.md` §6),
   (Atuar/Nitzan 2026, Monte Carlo of a finger at 660/940 nm: ℓIR/ℓR 0.69-0.80 — quoted there as red/IR 1.25-1.45 —
   moving with SaO2 at the standard position, ≤ 1.05 at an "iso-pathlength" geometry; the ratio is not a constant of
   the tissue but of tissue × saturation × geometry).

@@ -44,7 +44,8 @@ source; "not published" = looked for and not found in any fetched source. Full U
    low SaO2 (instruments differed by up to 21 pt at 56 % SaO2 in 1989), sensor fit and optical shunt, low
    perfusion combined with pigmentation, venous pulsation (−1.4 to −18 pt), anaemia below 75 % SaO2,
    dyshaemoglobins, and the neonatal scatter itself (+2.9 ± 5.8 pt). LED temperature drift is negligible; LED
-   current and centre-wavelength tolerance matter only below ≈ 85 % SaO2 (≈ 0.3 pt per nm at 50 %).
+   current and centre-wavelength tolerance matter most below ≈ 85 % SaO2 (≈ 0.3 pt per nm at 50 %) but are not
+   zero above it: 0.1-0.5 pt per nm between 97 and 85 % with our curve (§6, corrected 2026-11-27).
 
 ---
 
@@ -222,13 +223,15 @@ Tamura 2019, AN 6845 (timeouts), Apple white paper (403).
 
 | Factor | Direction | Magnitude | Conditions | Source |
 |---|---|---|---|---|
-| Red LED centre wavelength, unit to unit | error grows with (1 − SaO2); ≈ 0 at ≥ 85 %; sign follows the shift | tolerance "±2-10 nm" at the same drive current (probe-calibration patent); Epitex 660 nm LED spec 650-670 nm. Beer-Lambert model: 8 nm shift → 2.5 pt at 50 % SaO2 (≈ 0.3 pt/nm), "little loss of accuracy" at ≥ 85 %. Reflectance MC 2026: IR 940 → 949.5 nm raised RMSE by +1.04 ± 0.20; worst pair 652.5/949.5 nm RMSE 2.64 vs 1.32 | adult finger model | de Kock 1991; bioRxiv 2026; US 4,621,643 |
+| Red LED centre wavelength, unit to unit | error grows with (1 − SaO2); "little" at ≥ 85 % in de Kock's words, 0.1-0.5 pt/nm at 97-85 % in our own Beer-Lambert table (§6): not zero; sign follows the shift | tolerance "±2-10 nm" at the same drive current (probe-calibration patent); Epitex 660 nm LED spec 650-670 nm. Beer-Lambert model: 8 nm shift → 2.5 pt at 50 % SaO2 (≈ 0.3 pt/nm), "little loss of accuracy" at ≥ 85 %. Reflectance MC 2026: IR 940 → 949.5 nm raised RMSE by +1.04 ± 0.20; worst pair 652.5/949.5 nm RMSE 2.64 vs 1.32 | adult finger model | de Kock 1991; bioRxiv 2026; US 4,621,643 |
 | LED wavelength drift with temperature | red-shift | 0.11 nm/°C (660), 0.16 nm/°C (950): 5.5 / 7.8 nm over 0-50 °C; effect on SpO2 "negligible" | bench | Reynolds 1991 BJA |
-| LED drive current / intensity (AGC) | red-shift with current → error only at low SaO2 | "+8 nm as its intensity is increased ten-fold" → 2.5 pt at 50 % SaO2, little at ≥ 85 % | bench + model | de Kock 1991 |
+| LED drive current / intensity (AGC) | red-shift with current → error larger at low SaO2; lowering the current shortens the red and SpO2 reads low | "+8 nm as its intensity is increased ten-fold" → 2.5 pt at 50 % SaO2, little at ≥ 85 %. **An upper bound, and mostly heat:** at the same 50 mA our red is 3-5 nm longer under continuous current than pulsed by the AFE at 25 % duty (MSC15, 2026-11-19), so a pulsed drive shifts less per decade. With our curve, 50 → 25 mA costs at most −0.3 to −0.6 pt at 97 % and −0.6 to −1.2 at 85 % (−2.4 nm); 50 → 12.5 mA up to −1.6 / −2.6. Zero in PulseNest today: the current is fixed at 49.8 mA and the HGAC moves RF only | bench + model; our probes | de Kock 1991; IncuNest note 2026-11-23 §4.1 |
 | LED spectral width, secondary peaks, detector responsivity slope | shifts the effective wavelength; error mostly at low SaO2; makes the curve melanin-dependent | MC: monochromatic RMSE 1.32 vs LED spectrum (FWHM 17/42 nm) 2.10 (+59 %). Tsiakaka 2020: generic 660/20 nm + 940/50 nm LEDs with `110 − 25R`: deviation up to 8 pt in 90-100 % for the worst photodiode, ≈ 7 pt generic. Blaney 2026: residual melanin slope +2.8 pt per unit melanin fraction with the linear fit → +0.1 after linewidth correction (not statistically resolved) | models | bioRxiv 2026; Tsiakaka 2020; Blaney & Fantini 2026 |
 | Wavelength bins (RCAL) | compensates the previous rows | patent: "if the frequency varies the results of the instrument can be inaccurate"; red "of primary concern" because the Hb extinction slope is steep there; no per-bin error number | — | US 4,621,643; US 8,224,412 |
 | Transmission vs reflectance geometry | reflectance more sensitive to melanin, site and spacing | transmission: "no measurable difference in SpO2… between the two skin types" (p 0.84); reflectance curves differ (p 6e-5), dark skin reads higher at the same R. Newborn head reflectance: "up to 13.4 % in oxygen saturation between the forehead and the occipital area". FDA typical Arms 3.0 transmission vs 3.5 reflectance/ear | 4-layer MC; 7 term newborns | Narayana Swamy 2024; Dassel 1997; FDA 2013 |
 | Emitter-detector spacing, path-length ratio, scattering | slope changes with spacing; path-length ratio drifts with SaO2 → over-reading in hypoxaemia | reflectance MC 667/941: intercept "practically invariant", slope "changes greatly" within 1-3.5 mm, recommend > 3.5 mm. Nellcor sheep: good performance at ≥ 10 mm separation; 660 nm at 14 mm had different head vs neck calibrations. Path-length ratio 660/940: 1.25-1.45 across 60-100 % SaO2 (760/840: 1.05-1.12). `110 − 25R` ↔ ratio 0.65 → 0.70 as SaO2 falls. Heterogeneous pulsatile haemodynamics ≈ 10 % in simulation. Cyanotic newborns: SD 6.5 (660/900) vs 3.6 (761/820) | MC, sheep, neonates | Kirillin 2025; US 5,782,237; Atuar 2026; Blaney 2024; Elron 2023 |
+| Sensor model and site (one monitor, several sensors) | the declared accuracy changes with the sensor, not the monitor: a model allowed on two sites is declared worse, not corrected | Nellcor, same monitor, 1 SD: ±2 adhesive finger sensor, ±3 reusable clip, ±3.5 ear, ±4 reusable sensor on neonates. ISO 80601-2-61:2026 201.12.1.101.1 a): Arms ≤ 3.0 declared per probe-monitor combination | manufacturer's grid | Nellcor accuracy specification grid, March 2002 (as quoted in the IncuNest note 2026-11-23, not re-read here) |
+| Ageing and faults of sensors in clinical use | inaccurate readings or electrical faults, undetected | 258 of 847 sensors in use were inaccurate or had an electrical fault | hospital audit | Milner & Mathews 2012 (PubMed 22324874; as quoted in the IncuNest note, not re-read here) |
 | Optical shunt / penumbra (badly fitting sensor) | under-reads at high SaO2, over-reads at low; slope of SpO2 vs SaO2 decreases | 12 volunteers 100 → 70 %: "one oximeter underestimated at all SaO2 values, three others underestimated at high SaO2 and overestimated at low SaO2… could indicate that a patient was only mildly hypoxemic when hypoxemia was profound"; "calibration curves changed greatly". Penumbra case report: direction only | adults | Barker 1993; Kelleher & Ruff 1989; ISO DD.2.3.2 h) opaque cover |
 | Ambient light | mostly failures / erroneous values | under an OR light: failure rates "approximately 5 % to 50 % depending on the oximeter and source"; magnitude in points not found | 8 volunteers, 5 oximeters | Trivedi 1997 |
 | R estimator (peak-valley / log vs derivative-regression vs FFT) and DC definition | changes R noise and bias; different slope per method | no head-to-head found. FFT/DCT "as accurate without averaging as WMA"; derivative + regression claimed better than ln(peak/valley) (patent, no number). Our register: R-METHOD-0/1 fits gave slopes 21-31 vs 39 with R-METHOD-2 on the same probe | — | Rusch 1996; US 5,577,500; `docs/spo2_r_curves.md` |
@@ -273,13 +276,22 @@ Tamura 2019, AN 6845 (timeouts), Apple white paper (403).
 
 ---
 
-## 6. What this means for PulseNest (668/905 nm, Medle ST-S0163, neonatal foot transmission)
+## 6. What this means for PulseNest (663/905 nm, Medle ST-S0163, neonatal foot transmission)
 
-- **Our red is 668 nm, not 660.** Measured with a visible spectrometer at 50 mA on our probes: 667-670 nm
-  across units, mean ≈ 668 (datasheet 665, 663-667, at the datasheet's lower current; the +3 nm is consistent
-  with de Kock's +8 nm per decade of drive current). Beer-Lambert with Prahl's coefficients (Hb 3227 → 2795 and
+- **Our red is 663 nm as the AFE drives it, not 668 and not 660** (corrected 2026-11-27). Ten probes of lot
+  260521002 on the MSC15 spectrometer, pulsed by the AFE at 49.8 mA and 25 % duty (2026-11-19): centre
+  **663.1 nm**, peak **664.9 nm**, sd 0.83 nm between probes, 2.2 nm from the shortest (662.0) to the longest
+  (664.2), FWHM 20.0-20.5 nm; PPG-001 is 662.2. The 668 nm written here on 2026-10-27 (667-670 across three units)
+  was the peak under 50 mA of *continuous* current: the same current, 3-5 nm longer by self-heating, and twice
+  the spread between units. The datasheet's 665 (663-667, at 20 mA) is therefore right for our drive. The current
+  itself never changes: 49.8 mA in every `afe:` record of every HOSPNAV capture, SUBJ08 to SUBJ14 (checked
+  2026-11-27). Per-probe table, method and error budget: IncuNest
+  `Firmware/docs/notes/2026-11-23-espectrometro-sondas-y-error-spo2.md`; library rationale §27.
+  The table below is the 8 nm case (660 → 668), kept as the worked example; **for our 3-5 nm over a 660 nm
+  device take 0.4-0.6 of each figure**, and for the spread inside the lot (sd 0.83 nm) 0.1-0.3 pt between 97 and
+  90 %. Beer-Lambert with Prahl's coefficients (Hb 3227 → 2795 and
   HbO2 320 → 294 cm⁻¹/M from 660 to 670 nm; IR 905 nm ≈ 750/1200, flat) gives, for the same blood, an R 6-10 %
-  lower than a 660 nm device, the deficit growing as SaO2 falls because the Hb term dominates the numerator:
+  lower than a 660 nm device at 668 nm, the deficit growing as SaO2 falls because the Hb term dominates the numerator:
 
   | True SaO2 | R(668)/R(660) − 1 | Read through a 660 nm curve (668 nm, Beer-Lambert bound) | Spread 667 → 670 nm |
   |---|---|---|---|
@@ -292,17 +304,20 @@ Tamura 2019, AN 6845 (timeouts), Apple white paper (403).
   The reading error is invariant to any monotonic rescaling of R (a √µa diffusion model halves ΔR/R but not the
   SpO2 error); de Kock's bench (2.5 pt at 50 % for 8 nm) says the real effect is about half the Beer-Lambert
   bound, the LED linewidth and scattering accounting for the rest. Either way: a curve fitted at 660 nm must be
-  rescaled in R before it is compared with ours, and the unit-to-unit spread of our probes (3 nm) is within the
-  "≤ 2 nm nothing to do / 2-5 nm consider per-probe correction" protocol of 2026-10-01 only at ≥ 90 %.
+  rescaled in R before it is compared with ours. The unit-to-unit spread of our probes with the AFE (2.2 nm
+  end to end in one lot, not the 3 nm of the continuous-current measurement) sits at the edge of the "≤ 2 nm
+  nothing to do / 2-5 nm consider per-probe correction" protocol of 2026-10-01: no binning within this lot;
+  a new lot is measured with the AFE and compared with 663.1 nm (beyond 1 nm, correct the curve).
   **Direction check:** a red-shift *lowers* R at 100 %; it cannot be what puts our R(100 %) at 0.54-0.61
   instead of 0.40 (`spo2_r_curves.md`). It steepens the SpO2-R slope by only ≈ 4-5 % (range 70-100 % compressed
   from ×4.2 to ×4.05).
 - No table can be transplanted. Even the four "manufacturer-supplied" simulator curves are reproductions of
-  someone else's firmware for someone else's LEDs; with our 668 nm red (vs 660) and 905 nm IR the bins differ.
+  someone else's firmware for someone else's LEDs; with our 663 nm red (vs 660) and 905 nm IR the bins differ.
   The form that the physics and the one open blood-referenced data set both support is the mBLL rational with
   a fitted path-length ratio and an offset, linearised near 85 %; a line is adequate for 85-100 % and wrong below.
-- The things we can control that move the curve by ≥ 2 pt: LED current (AGC changes the red wavelength: 2.5 pt
-  at 50 % SaO2 per decade of current), sensor fit on a small foot (optical shunt flattens the slope), the R
+- The things we can control that move the curve by ≥ 2 pt: LED current, were it ever changed (it is fixed at
+  49.8 mA; our HGAC moves RF only; a decade of current is at most 8 nm, 2.5 pt at 50 % SaO2 and 1.5-2.9 at 97 %,
+  §5.1), sensor fit on a small foot (optical shunt flattens the slope), the R
   estimator (our three methods gave slopes 21-39 on the same probe), the DC definition and the fit range.
 - The things we cannot control but must document per session: perfusion (PI), pigmentation (Monk, recorded
   per baby since 2026-10-16), site (pre/post-ductal), Hb and dyshaemoglobins when a blood gas exists, oedema.
