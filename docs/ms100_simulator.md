@@ -10,6 +10,7 @@ It never validates accuracy (ISO 80601-2-61 EE.4: no simulator does). Session co
 | **TLC** (Trans Level Ctrl) | Scales the whole optical signal. %mod / PI and R unchanged. | Global gain: DC and AC scale together. Emulates tissue transmittance (thick vs thin site). |
 | **Pulse Amp %** | Signal **maximum stays fixed**; only the minimum drops as the setting rises. R unchanged. | AC amplitude defined as (max − min) / max, i.e. relative to the diastolic peak, not to the mean. Consistent with transmission physics: diastole = most light, the pulse subtracts light. |
 | **SpO2** | Changes the red modulation relative to the IR one according to the selected R-curve ("R-Curve Nellcor"). | The only control that moves R. |
+| **R-Curve → R-Value Set** (2026-11-28) | Shows the R of the selected curve at the selected SpO2; editable. Nellcor: 0.90 / 0.78 / 0.64 / 0.46 at 85 / 90 / 95 / 100 %. | The curve's SpO2 → R table, read directly; our R-METHOD-2 R is 1.045 × this value. Tables: `docs/spo2_r_curves.md`, last section. |
 
 Consequences:
 - Library PI (peak-to-peak / mean DC) would read PI ≈ A / (1 − A/2) for Pulse Amp = A if the definition above

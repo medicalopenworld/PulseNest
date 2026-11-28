@@ -22,6 +22,7 @@ has not been triaged yet.
 ## Inbox
 
 <!-- Add new ideas below. One line each; optional indented context line. -->
+- [x] **R por armónicos del pulso frente a R-METHOD-2, con las medidas nuevas** (2026-11-28, Alex). HECHO 28-nov: no confirmado por un bebé (4 de 7), informe `docs/r_harmonic_ab_20261128.md`; decisión de Alex pendiente. Repetir el A/B del 27-oct (`experiments/r_estimators_ab_20261027.py`, rationale §17) añadiendo SUBJ12, SUBJ13 y SUBJ14 del 25-nov, que ya tienen el monitor leído en todas las fotos. Propuesta de medida antes de medir (criterios fijados de antemano); informe `.md`. Entonces: mejora de 0,1-0,3 en SUBJ09/SUBJ11, igual en SUBJ08, peor en SUBJ10 (movimiento).
 - [ ] Grabar una sesión con el simulador MS100 variando lentamente el SpO2 y registrando el valor de la pantalla del simulador (móvil/VideoNest o a mano), para tener pares R↔SpO2 de simulador con R-METHOD-2 (estabilidad de la cadena, no exactitud: ISO EE.4)
 	(16-10, Alex; hilo curva R→SpO2 paso 1)
 - [x] 5 de las 10 sesiones del 13-10 (desde las 10:51) no llevan instantánea `alg:` (la respuesta `$LCFG?` del hub no llegó al grabador; el hub solo la pide al descubrir la placa). Que el hub la vuelva a pedir hasta tenerla, o que el grabador la pida al abrir sesión; `spo2_bias_analysis.py` la hereda de otra sesión con el mismo `build=` mientras tanto

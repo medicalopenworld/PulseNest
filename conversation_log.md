@@ -30789,3 +30789,121 @@ Sin versión nueva de la librería: solo documentación, `check_version.py v0.12
 **Discrepancia a resolver por Alex:** la nota dice que PPG-001 es la sonda con la que se ajustó la curva; el
 registro dice que en la campaña del 23-sep no se anotó la unidad. No lo he afirmado en ningún fichero.
 **Pendiente:** rojo con el AFE a 50 / 25 / 12,5 / 6 mA cuando Alex tenga el MSC15; PR de notas de IncuNest a `dev`.
+
+### 2026-11-27 (cont.) — ¿Dos curvas R? Análisis a fondo `[desarrollo]`
+Alex: la librería da 100 % casi siempre en adultos; sus oxímetros de casa leen 1-2 puntos sobre el MS100 y la
+librería 3-4 (anotado en memoria para la siguiente sesión de desarrollo). Pide el análisis de pros y contras de dos
+curvas, contando con el futuro del método de R. Escrito en rationale §18 («Re-analysed 2026-11-27»), sin decidir.
+- **Causas descartadas en un mes:** dos convenciones de referencia (la neonatal es Nellcor), el estimador de R (el
+  desfase es 3,1-3,25 con los tres), los LED (un lote, 663 nm, una corriente), el grosor (≤ 1,6 puntos y signo contrario).
+- **Lo nuevo que pesa:** el grupo «adulto» es UN sujeto (SUBJ01, +2,7 a +3,0) y entre neonatos el desfase por sujeto
+  va de −2,8 a +1,0: no se distingue «los adultos leen 3 de más» de «Alex lee 3 de más». La convención adulta tiene
+  1-2 puntos de ancho (domésticos frente al MS100).
+- **Método de R:** R-METHOD-2 se queda; nada programado lo sustituye (R por bins armónicos, solo si otra campaña
+  confirma 0,1-0,3 de mejora). Lo previsto actúa después de R. Dos pendientes moverían R un poco y obligarían a
+  reajustar: el reparto del DC y la dependencia de la derivada con la frecuencia de muestreo. Cada cambio de método
+  cuesta un reajuste por curva servida.
+- **Recomendación:** una sola curva servida (neonatal) + selección en ejecución solo como herramienta de banco en el
+  firmware de PulseNest (`$SET`, etiqueta en `$CFG` y en cada captura, arranque siempre neonatal, sin HMI), con la
+  curva del MS100 del registro como curva de banco. Segunda curva en la librería solo si otros 3-5 adultos repiten
+  el +2,5-3 Y el sensor adulto del N17 coincide con los domésticos dentro de 1 punto. Curva por edad gestacional: no.
+- **Riesgo que decide:** una curva adulta puesta por error en un neonato lee 2,9 de menos en la banda 90-95, es
+  decir, más oxígeno administrado.
+
+### 2026-11-28 — R por armónicos frente a R-METHOD-2 con los siete neonatos `[desarrollo]`
+Alex: apuntar la tarea de reevaluar el método por armónicos con las medidas del 25-nov (hecho: `BACKLOG.md` y memoria,
+con otros siete usos propuestos de esas medidas) y empezar por ella. Criterio fijado con Alex ANTES de medir:
+confirmado si, con la puerta de pulso, baja el Arms al menos 0,2 puntos en 5 de los 7 bebés, no lo sube más de 0,2 en
+ninguno quieto y publica al menos el 95 % de las ventanas del método actual; SUBJ10 (movimiento) se informa aparte.
+Guion nuevo `experiments/r_harmonic_ab_20261128.py`: reutiliza sin cambios los estimadores y el emparejado del A/B del
+27-oct; SUBJ08-11 desde sus replays 0.108, SUBJ12-14 directamente de las capturas de la placa (llevan OT y HR3; puerta
+= HR3 > 0 y HR3_SQI > 0, por el contrato de datos de la v0.123). **En ejecución; resultado en el bloque siguiente.**
+
+**Resultado (28-nov).** Informe `docs/r_harmonic_ab_20261128.md`; rationale §17 de la librería.
+- **No confirmado según el criterio, por un bebé:** mejora ≥ 0,2 en 4 de 7 (SUBJ09 2,39 → 2,07; SUBJ12 4,85 → 3,97;
+  SUBJ13 2,47 → 2,08; SUBJ14 2,77 → 1,56). SUBJ11 1,23 → 1,08 (−0,15) y SUBJ08 2,42 → 2,42 no llegan. Ningún bebé
+  quieto empeora y publica el 99,5 % de las ventanas del método actual. SUBJ10: 2,05 → 4,62 en 15 ventanas.
+- **Lo que el veredicto no enseña:** los números de octubre se repiten exactos y la mejora es mayor en los tres bebés
+  nuevos; agrupados los seis quietos, Arms 3,16 → 2,62 y ventanas a más de 4 puntos 16,0 → 11,6 %; la mejora es de
+  dispersión y crece cuando la señal es débil (SUBJ14, PI 0,66 %). No arregla a SUBJ12 (sesgo −3,70 → −3,19).
+- La puerta de pulso vale mucho más que el estimador: sin ella el método actual da Arms 6,89 / 5,00 / 11,47 en los
+  tres nuevos.
+- Comprobación: la regresión en Python queda a 1-7·10⁻⁴ de la R que la placa publicó en vivo, que es la precisión del
+  OT grabado (un replay de SUBJ11 queda a 3,1·10⁻⁴ de la R de su placa).
+- Corrección a lo dicho a Alex: la referencia de SpO2 de las sesiones nuevas es el OCR en vivo de VideoNest
+  (`reference_spo2.csv`), una lectura por segundo; «todas las fotos leídas» es de la FC.
+- **Pendiente de Alex:** cerrarlo como no confirmado, o mantenerlo como candidato y dar el paso siguiente (runner y lab
+  como segunda R, coste en el ESP32-S3, forma causal, reajuste de la curva).
+
+### 2026-11-28 (cont.) — Tablas SpO2-R por bebé, búsqueda de evidencias en otra sesión, peso y curva R `[desarrollo]`
+- **Tablas (chat):** SpO2 del monitor por tramo de R y R mediana por nivel, los siete bebés. Cuatro caen sobre la
+  curva, SUBJ12 va en paralelo 2-5 puntos por encima en todo el rango, SUBJ14 apenas tiene rango. Ajuste con todos:
+  por ventanas 128,2 − 44,5·R (gira por el peso de SUBJ12), con igual peso por bebé 124,8 − 39,5·R (= la servida).
+- **Por qué la curva «rehecha» de SUBJ08+09 sale 120,6 − 34,9·R y no 123,98 − 39,13·R:** no es la puerta de pulso
+  (mueve < 0,2 puntos). El emparejado de hoy exige confianza del OCR ≥ 0,9 y el ajuste de octubre aceptó todas las
+  lecturas: SUBJ08 pasa de 2085 a 560 ventanas estacionarias y SUBJ09 de 1370 a 1060, así que SUBJ08 baja del 60 al
+  35 % de la mezcla. Sus rectas propias casi no cambian (46,7 → 42,6 y 32,1 → 31,1). Sin comprobar si las lecturas
+  de confianza 0,5 son peores.
+- **Sesión nueva** «Evidencias: curva R neonatal vs adulta» (`local_e3d31320…`, análisis): búsqueda en internet con
+  criterios y umbrales de veredicto fijados antes con Alex; primer objetivo, el sí o no. Informe en la carpeta de notas.
+- **Peso y curva R (Alex):** desplazamiento por bebé frente a peso al nacer, edad gestacional y PI. Seis quietos:
+  Spearman −0,03 (peso), −0,09 (edad gestacional), +0,31 (PI). El desplazamiento es estable entre sesiones del mismo
+  bebé. Con SUBJ10 (15 ventanas, a término, 2,75 kg, −2,6) la tendencia apunta al adulto (−3,1), pero la lleva un
+  solo punto débil. Escrito en rationale §18.
+- **Error corregido:** el rationale §18 (25-nov) y yo en el chat decíamos que SUBJ12 es el más prematuro y ligero de
+  los siete. Falso: SUBJ08 (27+3 s, 1,16 kg) y SUBJ09 (26+1 s, 1,53 kg), la base del ajuste, lo son más.
+- Límites: pesos al nacer, no del día; grosor del pie y sitio de nuestra sonda sin medir. A anotar en la próxima
+  campaña: peso del día, grosor del pie en la sonda, sitio. Un bebé a término quieto vale más que otro prematuro.
+
+### 2026-11-28 — Evidencias publicadas: ¿la curva R difiere entre neonato y adulto? `[análisis]`
+
+Sesión «Evidencias: curva R neonatal vs adulta». Búsqueda en internet de un día con seis agentes (estudios
+neonatales contra CO-oxímetro, edad como covariable y línea base en adultos, fabricantes y reguladores, patentes,
+oximetría fetal / baja saturación / revisión de Masimo, mecanismos y simulaciones). Informe en inglés, fuera del
+repo: `…\side-session-notes\local_653eab7f-6d72-4bfe-9284-7b1c4d0967af\r_curve_neonate_vs_adult_evidence_20261128.md`
+(notas de los agentes en la subcarpeta `r_curve_neonate_vs_adult_agent_notes_20261128\`). Nada tocado en los repos
+salvo este bloque.
+
+- **Veredicto con la regla fijada antes: NO CONCLUYENTE.** La cláusula «distintas» se cumple a la letra (sesgo
+  positivo ≥ 1,5 en tres estudios de unidades neonatales: Wackernagel 2020 +2,9, Rosychuk 2012 +2,0, Merz 1999 +3,1;
+  hay dos de signo contrario). La de «un fabricante documenta coeficientes neonatales» no se cumple. La de «una
+  curva» se cumple en parte: tres estudios de ≥ 50 neonatos dentro de ±1 (Bohnhorst 2002, Shiao y Ou 2007, Siefkes
+  2026), pero ninguno probó la tendencia con la edad gestacional.
+- **Recuento sí/no:** 12 fuentes dicen «distinta» (5 con datos, 7 afirmaciones o posibilidades de patente), 39 dicen
+  «la misma» (16 con datos propios), 15 dicen «distinta» por otro eje (sitio, tejido, enfermedad), unas 190 no lo
+  dicen. **Nadie ha publicado R frente a SaO2 en neonatos y adultos con el mismo sensor.**
+- **Lectura mía, aparte de la regla:** por encima de ~90 % y con el mismo sensor, probablemente la misma curva dentro
+  de ~1 punto (confianza media); por debajo de 85–90 % no es la misma, pero el eje es el sitio y el estado del
+  paciente, no la edad (planta o palma leen 3–6 puntos más que un dedo con el mismo sensor).
+- **Fabricantes:** HP Journal 1997 declara una sola curva para los sensores de adulto, pediátrico y neonatal y la
+  valida en 20 neonatos; Masimo K191059 (2019) publica el sesgo neonatal con la calibración adulta sin tocar: +0,13
+  en 42 neonatos. Nellcor MAXN: un sensor para < 3 kg o > 40 kg, exactitud obtenida en adultos, coeficientes por la
+  longitud de onda del LED; **queda verificado lo que el rationale §18 citaba de memoria**. La patente HP US 5,058,588
+  (1989) afirma en un paréntesis que adulto/neonato influye en la corrección, sin datos.
+- **Correcciones a lo que teníamos:** el «± 5,8» de Rosychuk 2012 son dos desviaciones típicas (sd ≈ 2,9); el efecto de
+  la hemoglobina fetal que importa está en el CO-oxímetro (hasta 4,7 puntos sin corrección), no en el pulsioxímetro; la
+  revisión de Masimo (V4.8) no fue una recalibración neonatal.
+- **Huecos que siguen abiertos:** no hay sesgo publicado por tramo de edad gestacional; no hay ninguna simulación
+  publicada de un pie o mano neonatal en transmisión; dos estudios registrados (NCT05994417, NCT06063148) lo preguntan
+  y aún no lo han publicado.
+- Para la decisión de §18 (sin decidirla): la literatura no predice los 2,7–3,2 puntos pie neonatal / dedo adulto por
+  encima del 90 % con una misma sonda; las pruebas baratas de §18 siguen siendo las que faltan. Si se emparejan gases
+  arteriales, anotar el analizador, si la corrección de HbF está activa y si la saturación es funcional o fraccional.
+
+### 2026-11-28 (cont.) — MS100: por qué tiene menú de fabricante y qué es «R Value» `[desarrollo]`
+- **Pregunta de Alex:** por qué un simulador de dedo tiene configurable el fabricante. Respuesta: no simula un SpO2,
+  presenta una R; cada fabricante convierte R en SpO2 con su curva, y el dedo simulado no es espectral (no absorbe
+  como la sangre ni sabe qué longitud de onda tiene delante). Deducción de Alex, correcta: la tabla compensa esa
+  incapacidad; y el simulador necesita distinguir el color de lo que recibe (dos fotodiodos con filtro, la secuencia
+  conocida, o filtros en el camino). La construcción del MS100 no está en el manual ni la hemos mirado.
+- **Manual §5.3.6, leído:** solo la lista de diez curvas y el aviso de que la curva debe corresponder a la tecnología
+  del oxímetro (un monitor con módulo Nellcor se prueba con «Nellcor»). No dice de dónde salen las tablas.
+- **Menú «R-Value Set» (Alex, no está en el manual):** enseña la R de la curva elegida al SpO2 elegido y deja
+  cambiarla. Valores a 85/90/95/100 %: Nellcor 0,90/0,78/0,64/0,46; Masimo 0,94/0,81/0,66/0,48; Nihon-Kohden
+  0,96/0,82/0,66/0,49; Ohmeda 1,01/0,86/0,69/0,50. Anotados en `docs/spo2_r_curves.md` (sección final) y una fila
+  en `docs/ms100_simulator.md`.
+- **Comparación con el barrido del 19-oct:** la R de la librería es 1,045 × la R de pantalla, constante de 85 a 96 %.
+- **Lo que enseña:** elegir fabricante mueve la lectura 1-4 puntos; las cuatro tablas se doblan y nuestra curva es
+  una recta; la recta servida llega al 100 % donde las tablas dicen 96,5-97,7 %. Toca la preocupación del 100 % en
+  adultos, sin demostrarlo (cuatro niveles, dos decimales, interpolado).
+- **Pendiente:** leer las otras seis curvas y los niveles 70-84 y 96-99; probar a inyectar una R arbitraria.

@@ -136,7 +136,8 @@ What the comparison says:
   The Life Meter wrist curve has the same slope (39.4) at a different offset: slope ≈ 39 is not exotic.
 - Every curve fitted against another oximeter in a narrow range (Stubán 86-100, Life Meter, our adult finger)
   comes out with a slope that disagrees with the rest: range and reference noise, as in our own register.
-- **Cheapest source of manufacturers' curves still unused:** the MS100 displays its R value for the active R-curve
+- **Cheapest source of manufacturers' curves, started 2026-11-28 (four curves, four levels; section at the end):**
+  the MS100 displays its R value for the active R-curve
   (BCI, Criticare, Datascope, Datex, PMS, Masimo, Nellcor, Nihon-Kohden, Ohmeda, Respironics) — reading R off the
   screen at 100/95/90/85/80/75/70 for each curve gives Contec's encoding of ten manufacturers' tables in minutes,
   and the ratio between the screen's R and our R-METHOD-2 R (0.61 vs 0.635 at 96 % with Nellcor) calibrates our R
@@ -150,3 +151,60 @@ Sources: [US 12290358](https://patents.google.com/patent/US12290358B2/en) · [US
 [Reynolds 1991](https://researchnow.flinders.edu.au/en/publications/temperature-dependence-of-led-and-its-theoretical-effect-on-pulse/) ·
 [Maxim guidelines](https://www.analog.com/en/resources/technical-articles/guidelines-for-spo2-measurement--maxim-integrated.html) ·
 [OxiMax tech note](https://www.ece.mcmaster.ca/faculty/debruin/debruin/EE%204BD4/OxiMaxTechNote.pdf) · [OpenOximetry repo](https://physionet.org/content/openox-repo/)
+
+## MS100 "R Value" per R-curve, read off the screen (2026-11-28, Alex)
+
+The simulator's R-Curve menu has two entries, which the manual (§5.3.6) does not describe: "R-Curve Select" (the
+manufacturer) and "R-Value Set". On entry, "R-Value Set" shows the R of the selected curve at the selected SpO2,
+and lets the operator change it (an arbitrary R can be injected; not tried). Values read by Alex, two decimals:
+
+| R-curve | 85 % | 90 % | 95 % | 100 % |
+|---|---|---|---|---|
+| Nellcor | 0.90 | 0.78 | 0.64 | 0.46 |
+| Masimo | 0.94 | 0.81 | 0.66 | 0.48 |
+| Nihon-Kohden | 0.96 | 0.82 | 0.66 | 0.49 |
+| Ohmeda | 1.01 | 0.86 | 0.69 | 0.50 |
+
+**The screen's R is our R, to a constant factor.** Against the sweep of 2026-10-19 with the Nellcor curve
+(R-METHOD-2, `captures/sessions/SUBJ90/Analysis/findings.md`; plateaus at 84/88/92/96 interpolated to the levels
+above):
+
+| Setpoint | Screen R (Nellcor) | Library R, interpolated | Ratio |
+|---|---|---|---|
+| 85 % | 0.90 | 0.94 | 1.05 |
+| 90 % | 0.78 | 0.82 | 1.05 |
+| 95 % | 0.64 | 0.67 | 1.04 |
+| 96 % (screen value noted in October) | 0.61 | 0.635 (measured) | 1.04 |
+| 100 % | 0.46 | 0.48–0.53 (SpO2 invalid) | 1.04–1.15 |
+
+Ratio ≈ 1.045, flat from 85 to 96 %. Where the 4–5 % comes from is not known.
+
+What the table says:
+- **The choice of manufacturer moves the reading by 1 to 4 points.** Spread of R across the four curves: 0.11 at
+  85 %, 0.08 at 90 %, 0.05 at 95 %, 0.04 at 100 %. Nellcor is the lowest at every level, Ohmeda the highest.
+- **All four curves bend.** R per point of SpO2, Nellcor: 0.024 (85–90), 0.028 (90–95), 0.036 (95–100); the others
+  alike (0.026–0.030 → 0.034–0.038). Our curves are straight lines; the 39.11 of
+  `R-CURVE-STS0163-MS100-20261019` is the mean slope over 72–100, and the sweep itself shows the bend (31 points
+  per unit R between 92 and 96, 46 between 84 and 88).
+- **The shipped line reaches 100 % where the tables say 96.5–97.7 %.** 123.98 − 39.13·R = 100 at R 0.613, i.e.
+  0.587 on the screen's scale; by linear interpolation between 95 and 100 that is Nellcor 96.5, Masimo 97.0,
+  Nihon-Kohden 97.1, Ohmeda 97.7. A straight line fitted lower down reads high at the top of the range. It bears
+  on the "library reads 100 % on adults" concern (rationale §18); not demonstrated — see the limits.
+
+What the shipped curve would read on each table (**predicted** as 123.98 − 39.13 × 1.045 × screen R; only the
+Nellcor row has a measurement behind it, +1.7 to +3.1 on the plateaus of the sweep):
+
+| R-curve | setpoint 85 % | setpoint 90 % | setpoint 95 % |
+|---|---|---|---|
+| Nellcor | 87.2 | 92.1 | 97.8 |
+| Masimo | 85.5 | 90.9 | 97.0 |
+| Nihon-Kohden | 84.7 | 90.4 | 97.0 |
+| Ohmeda | 82.7 | 88.8 | 95.8 |
+
+At setpoint 100 % all four are above 100 (clamped).
+
+Limits: four levels, two decimals (±0.005 of R ≈ ±0.2 point); the factor 1.045 was measured with the Nellcor
+curve only; "R Value" taken to be the ratio of the red to the infrared modulation, which the flat ratio supports
+and the manual does not state. Contec does not say which monitor and sensor each table was taken from, and the
+simulated finger is not spectral: no table is "the" table of a 663 nm probe. Still to read: the other six curves
+(BCI, Criticare, Datascope, Datex, PMS M1190, Respironics) and the levels 70–84 and 96–99.
