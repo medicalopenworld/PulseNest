@@ -30907,3 +30907,4 @@ salvo este bloque.
   una recta; la recta servida llega al 100 % donde las tablas dicen 96,5-97,7 %. Toca la preocupación del 100 % en
   adultos, sin demostrarlo (cuatro niveles, dos decimales, interpolado).
 - **Pendiente:** leer las otras seis curvas y los niveles 70-84 y 96-99; probar a inyectar una R arbitraria.
+- **Commits (28-nov, locales, sin subir):** PulseNest `8e76c74` (informe y experimento de R por armónicos, tablas del MS100, backlog, log); librería `3ce6012` (rationale §17 y §18).
